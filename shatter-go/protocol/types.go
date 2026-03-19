@@ -8,6 +8,8 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 const ProtocolVersion = "0.1.0"
@@ -340,15 +342,7 @@ type PerfMetrics struct {
 }
 
 // TimingSummary captures aggregated phase timings for a frontend command.
-type TimingSummary struct {
-	Phases []TimingPhaseSummary `json:"phases,omitempty"`
-}
+type TimingSummary = frontendtiming.Summary
 
 // TimingPhaseSummary captures one named timing phase.
-type TimingPhaseSummary struct {
-	PhasePath  string            `json:"phase_path"`
-	TotalMs    float64           `json:"total_ms"`
-	SelfMs     float64           `json:"self_ms"`
-	Count      int               `json:"count"`
-	Attributes map[string]string `json:"attributes,omitempty"`
-}
+type TimingPhaseSummary = frontendtiming.PhaseSummary

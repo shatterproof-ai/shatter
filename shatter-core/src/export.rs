@@ -2,8 +2,232 @@
 //!
 //! Converts a [`BehaviorMap`] into a test file for a specific framework.
 //! Supports Jest (TypeScript) and Go table-driven tests.
+//!
+//! ## MC/DC annotations
+//!
+//! When MC/DC data is available (exploration was run with `--mcdc`), the export
+//! functions can annotate test cases with comments documenting which MC/DC
+//! independence pairs they satisfy. Call [`find_mcdc_pairs`] to derive
+//! annotations from a behavior map's branch paths, then pass the result to
+//! the `_with_annotations` variants of the export functions.
 
 use crate::behavior::{Behavior, BehaviorMap};
+use crate::execution_record::BranchDecision;
+
+// ---------------------------------------------------------------------------
+// MC/DC annotation types
+// ---------------------------------------------------------------------------
+
+/// An annotation describing an MC/DC independence pair satisfied by a behavior.
+///
+/// When a test case participates in an independence pair for condition `i` of
+/// decision `branch_id`, this annotation is attached to that test. It is purely
+/// informational — the test assertion itself is unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McdcAnnotation {
+    /// Branch ID of the compound decision.
+    pub branch_id: u32,
+    /// Source line of the decision (from the branch path).
+    pub line: u32,
+    /// Zero-based index of the condition within the decision.
+    pub condition_index: usize,
+    /// Input args of the paired behavior (the other half of the independence pair).
+    pub paired_inputs: Vec<serde_json::Value>,
+    /// Decision outcome in this behavior (`true` or `false`).
+    pub this_outcome: bool,
+    /// Decision outcome in the paired behavior.
+    pub paired_outcome: bool,
+}
+
+impl McdcAnnotation {
+    /// Render this annotation as one or two comment lines suitable for TypeScript/Jest.
+    ///
+    /// Produces:
+    /// ```text
+    /// // MC/DC: condition 0 independently affects decision at line 15
+    /// // Pair: [5, 3] → true vs [-1, 3] → false
+    /// ```
+    pub fn to_ts_comment(&self, indent: &str) -> String {
+        let paired_args = format_args_short(&self.paired_inputs);
+        let this_outcome = self.this_outcome;
+        let paired_outcome = self.paired_outcome;
+        format!(
+            "{indent}// MC/DC: condition {} independently affects decision at line {}\n\
+             {indent}// Pair: this → {this_outcome} vs [{paired_args}] → {paired_outcome}\n",
+            self.condition_index, self.line,
+        )
+    }
+
+    /// Render this annotation as comment lines suitable for Go tests.
+    ///
+    /// Produces:
+    /// ```text
+    /// // MC/DC: condition 0 independently affects decision at line 15
+    /// // Pair: this → true vs [paired args] → false
+    /// ```
+    pub fn to_go_comment(&self, indent: &str) -> String {
+        // Go uses the same comment format; delegate to the TS variant.
+        self.to_ts_comment(indent)
+    }
+}
+
+/// Find MC/DC independence pairs from a behavior map's branch paths.
+///
+/// Scans each behavior's `branch_path` for `BranchDecision` entries that carry
+/// `conditions` data (present when MC/DC mode was active). For each compound
+/// decision found across all behaviors, checks whether any pair of behaviors
+/// satisfies the unique-cause masking MC/DC criterion for some condition `i`:
+///
+/// - Condition `i` has opposite concrete values in the two behaviors.
+/// - All other non-masked conditions have the same values in both behaviors.
+/// - The decision outcome (taken/not-taken) differs.
+///
+/// Returns a list of `(behavior_index, annotation)` pairs. A single behavior
+/// may appear more than once if it participates in independence pairs for
+/// multiple conditions or decisions. The `behavior_index` is the position of
+/// the behavior in `behavior_map.behaviors`.
+///
+/// When MC/DC data is absent (no behavior has any `conditions` data), returns
+/// an empty Vec.
+pub fn find_mcdc_pairs(behavior_map: &BehaviorMap) -> Vec<(usize, McdcAnnotation)> {
+    use std::collections::HashMap;
+
+    // Index behaviors by branch_id → Vec<(behavior_index, &BranchDecision)>
+    let mut by_branch: HashMap<u32, Vec<(usize, &BranchDecision)>> = HashMap::new();
+    for (bidx, behavior) in behavior_map.behaviors.iter().enumerate() {
+        for decision in &behavior.branch_path {
+            if decision.conditions.is_some() {
+                by_branch
+                    .entry(decision.branch_id)
+                    .or_default()
+                    .push((bidx, decision));
+            }
+        }
+    }
+
+    if by_branch.is_empty() {
+        return vec![];
+    }
+
+    let mut result: Vec<(usize, McdcAnnotation)> = Vec::new();
+
+    // For each decision, find independence pairs.
+    for entries in by_branch.values() {
+        // Determine number of conditions from the first entry.
+        let Some((_, first_dec)) = entries.first() else {
+            continue;
+        };
+        let Some(ref first_conds) = first_dec.conditions else {
+            continue;
+        };
+        let num_conditions = first_conds.len();
+
+        // For each condition i, find the first pair that satisfies independence.
+        // Track which (behavior_a, behavior_b) pairs we've already emitted for this
+        // condition to avoid duplicate annotations.
+        for cond_i in 0..num_conditions {
+            'pair: for a in 0..entries.len() {
+                for b in (a + 1)..entries.len() {
+                    let (bidx_a, dec_a) = entries[a];
+                    let (bidx_b, dec_b) = entries[b];
+
+                    let conds_a = match dec_a.conditions.as_deref() {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    let conds_b = match dec_b.conditions.as_deref() {
+                        Some(c) => c,
+                        None => continue,
+                    };
+
+                    // Condition i must be observed with opposite concrete values.
+                    let val_a = conds_a
+                        .iter()
+                        .find(|c| c.condition_index as usize == cond_i)
+                        .and_then(|c| if c.masked { None } else { c.value });
+                    let val_b = conds_b
+                        .iter()
+                        .find(|c| c.condition_index as usize == cond_i)
+                        .and_then(|c| if c.masked { None } else { c.value });
+
+                    let (va, vb) = match (val_a, val_b) {
+                        (Some(a), Some(b)) => (a, b),
+                        _ => continue,
+                    };
+                    if va == vb {
+                        continue;
+                    }
+
+                    // Decision outcomes must differ.
+                    if dec_a.taken == dec_b.taken {
+                        continue;
+                    }
+
+                    // All other non-masked conditions must agree.
+                    let mut all_others_agree = true;
+                    for j in 0..num_conditions {
+                        if j == cond_i {
+                            continue;
+                        }
+                        let ja = conds_a
+                            .iter()
+                            .find(|c| c.condition_index as usize == j)
+                            .and_then(|c| if c.masked { None } else { c.value });
+                        let jb = conds_b
+                            .iter()
+                            .find(|c| c.condition_index as usize == j)
+                            .and_then(|c| if c.masked { None } else { c.value });
+                        match (ja, jb) {
+                            (Some(ca), Some(cb)) if ca != cb => {
+                                all_others_agree = false;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if all_others_agree {
+                        let inputs_a =
+                            behavior_map.behaviors[bidx_a].input_args.clone();
+                        let inputs_b =
+                            behavior_map.behaviors[bidx_b].input_args.clone();
+                        // Annotate behavior_a: paired with behavior_b's inputs.
+                        result.push((
+                            bidx_a,
+                            McdcAnnotation {
+                                branch_id: dec_a.branch_id,
+                                line: dec_a.line,
+                                condition_index: cond_i,
+                                paired_inputs: inputs_b.clone(),
+                                this_outcome: dec_a.taken,
+                                paired_outcome: dec_b.taken,
+                            },
+                        ));
+                        // Annotate behavior_b: paired with behavior_a's inputs.
+                        result.push((
+                            bidx_b,
+                            McdcAnnotation {
+                                branch_id: dec_b.branch_id,
+                                line: dec_b.line,
+                                condition_index: cond_i,
+                                paired_inputs: inputs_a,
+                                this_outcome: dec_b.taken,
+                                paired_outcome: dec_a.taken,
+                            },
+                        ));
+                        break 'pair;
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Test generation
+// ---------------------------------------------------------------------------
 
 /// Generate Jest test source from a behavior map.
 ///
@@ -19,6 +243,22 @@ pub fn generate_jest_tests(
     function_name: &str,
     module_path: &str,
 ) -> String {
+    generate_jest_tests_with_annotations(behavior_map, function_name, module_path, &[])
+}
+
+/// Like [`generate_jest_tests`] but inserts MC/DC pair annotations above each
+/// test case that participates in an independence pair.
+///
+/// # Arguments
+/// * `annotations` - Per-behavior annotations returned by [`find_mcdc_pairs`].
+///   Each entry is `(behavior_index, annotation)`. When empty, output is identical
+///   to [`generate_jest_tests`].
+pub fn generate_jest_tests_with_annotations(
+    behavior_map: &BehaviorMap,
+    function_name: &str,
+    module_path: &str,
+    annotations: &[(usize, McdcAnnotation)],
+) -> String {
     let mut out = String::new();
 
     // Import statement
@@ -33,7 +273,12 @@ pub fn generate_jest_tests(
         out.push_str("  // No behaviors observed\n");
     }
 
-    for behavior in &behavior_map.behaviors {
+    for (idx, behavior) in behavior_map.behaviors.iter().enumerate() {
+        // Collect all MC/DC annotations for this behavior index.
+        for (_, ann) in annotations.iter().filter(|(i, _)| *i == idx) {
+            out.push_str(&ann.to_ts_comment("  "));
+        }
+
         let test_name = build_test_name(behavior);
         let body = build_test_body(function_name, behavior);
 
@@ -60,6 +305,21 @@ pub fn generate_go_tests(
     function_name: &str,
     package_name: &str,
 ) -> String {
+    generate_go_tests_with_annotations(behavior_map, function_name, package_name, &[])
+}
+
+/// Like [`generate_go_tests`] but inserts MC/DC pair annotations as comments
+/// above each panic test case and as a header comment block for table-driven cases.
+///
+/// # Arguments
+/// * `annotations` - Per-behavior annotations returned by [`find_mcdc_pairs`].
+///   When empty, output is identical to [`generate_go_tests`].
+pub fn generate_go_tests_with_annotations(
+    behavior_map: &BehaviorMap,
+    function_name: &str,
+    package_name: &str,
+    annotations: &[(usize, McdcAnnotation)],
+) -> String {
     let mut out = String::new();
 
     out.push_str(&format!("package {package_name}\n\n"));
@@ -76,29 +336,54 @@ pub fn generate_go_tests(
         return out;
     }
 
-    // Separate panic behaviors from normal return behaviors
-    let (panic_behaviors, normal_behaviors): (Vec<_>, Vec<_>) = behavior_map
-        .behaviors
-        .iter()
-        .partition(|b| b.thrown_error.is_some());
+    // Separate panic behaviors (with original indices) from normal behaviors.
+    let indexed_behaviors: Vec<(usize, &Behavior)> =
+        behavior_map.behaviors.iter().enumerate().collect();
+    let (panic_behaviors, normal_behaviors): (Vec<_>, Vec<_>) =
+        indexed_behaviors.iter().partition(|(_, b)| b.thrown_error.is_some());
 
     if !normal_behaviors.is_empty() {
+        // Emit MC/DC annotation block for table-driven cases, before the table.
+        // Go struct literals don't support per-row comments, so we emit a grouped
+        // comment block listing which test cases participate in MC/DC pairs.
+        let table_annotations: Vec<(usize, &McdcAnnotation)> = annotations
+            .iter()
+            .filter(|(i, _)| normal_behaviors.iter().any(|(bidx, _)| bidx == i))
+            .map(|(i, a)| (*i, a))
+            .collect();
+        if !table_annotations.is_empty() {
+            for (bidx, ann) in &table_annotations {
+                let behavior = &behavior_map.behaviors[*bidx];
+                let test_name = build_test_name(behavior);
+                out.push_str(&format!("\t// MC/DC: \"{test_name}\"\n"));
+                out.push_str(&format!(
+                    "\t//   condition {} independently affects decision at line {}\n",
+                    ann.condition_index, ann.line
+                ));
+                let paired_args = format_args_short(&ann.paired_inputs);
+                out.push_str(&format!(
+                    "\t//   this → {} vs [{paired_args}] → {}\n",
+                    ann.this_outcome, ann.paired_outcome
+                ));
+            }
+        }
+
         out.push_str("\ttests := []struct {\n");
         out.push_str("\t\tname string\n");
 
         // Determine param types from first behavior
-        let first = &normal_behaviors[0];
+        let (_, first) = &normal_behaviors[0];
         for (i, arg) in first.input_args.iter().enumerate() {
             let go_type = go_type_from_value(arg);
             out.push_str(&format!("\t\targ{i}     {go_type}\n"));
         }
 
         // Determine return type from first behavior with a return value
-        let has_return = normal_behaviors.iter().any(|b| b.return_value.is_some());
+        let has_return = normal_behaviors.iter().any(|(_, b)| b.return_value.is_some());
         if has_return {
             let return_type = normal_behaviors
                 .iter()
-                .find_map(|b| b.return_value.as_ref())
+                .find_map(|(_, b)| b.return_value.as_ref())
                 .map(go_type_from_value)
                 .unwrap_or_else(|| "interface{}".to_string());
             out.push_str(&format!("\t\texpected {return_type}\n"));
@@ -106,7 +391,7 @@ pub fn generate_go_tests(
 
         out.push_str("\t}{{\n");
 
-        for behavior in &normal_behaviors {
+        for (_, behavior) in &normal_behaviors {
             let test_name = build_test_name(behavior);
             let args: Vec<String> = behavior.input_args.iter().map(format_go_value).collect();
 
@@ -116,7 +401,7 @@ pub fn generate_go_tests(
                     None => go_zero_value(
                         normal_behaviors
                             .iter()
-                            .find_map(|b| b.return_value.as_ref())
+                            .find_map(|(_, b)| b.return_value.as_ref())
                             .map(go_type_from_value)
                             .as_deref()
                             .unwrap_or("interface{}"),
@@ -139,7 +424,7 @@ pub fn generate_go_tests(
         out.push_str("\tfor _, tt := range tests {\n");
         out.push_str("\t\tt.Run(tt.name, func(t *testing.T) {\n");
 
-        let arg_refs: Vec<String> = (0..normal_behaviors[0].input_args.len())
+        let arg_refs: Vec<String> = (0..normal_behaviors[0].1.input_args.len())
             .map(|i| format!("tt.arg{i}"))
             .collect();
         let call = format!("{function_name}({})", arg_refs.join(", "));
@@ -148,7 +433,7 @@ pub fn generate_go_tests(
             out.push_str(&format!("\t\t\tgot := {call}\n"));
             out.push_str(&format!(
                 "\t\t\tif got != tt.expected {{\n\t\t\t\tt.Errorf(\"{function_name}({}) = %v, want %v\", {}, got, tt.expected)\n\t\t\t}}\n",
-                (0..normal_behaviors[0].input_args.len()).map(|_| "%v").collect::<Vec<_>>().join(", "),
+                (0..normal_behaviors[0].1.input_args.len()).map(|_| "%v").collect::<Vec<_>>().join(", "),
                 arg_refs.join(", "),
             ));
         } else {
@@ -159,8 +444,12 @@ pub fn generate_go_tests(
         out.push_str("\t}\n");
     }
 
-    // Generate panic test cases
-    for behavior in &panic_behaviors {
+    // Generate panic test cases, with per-case MC/DC annotations.
+    for (bidx, behavior) in &panic_behaviors {
+        for (_, ann) in annotations.iter().filter(|(i, _)| i == bidx) {
+            out.push_str(&ann.to_go_comment("\t"));
+        }
+
         let test_name = build_test_name(behavior);
         let args: Vec<String> = behavior.input_args.iter().map(format_go_value).collect();
 
@@ -324,6 +613,21 @@ pub fn generate_vitest_tests(
     function_name: &str,
     module_path: &str,
 ) -> String {
+    generate_vitest_tests_with_annotations(behavior_map, function_name, module_path, &[])
+}
+
+/// Like [`generate_vitest_tests`] but inserts MC/DC pair annotations above each
+/// test case that participates in an independence pair.
+///
+/// # Arguments
+/// * `annotations` - Per-behavior annotations returned by [`find_mcdc_pairs`].
+///   When empty, output is identical to [`generate_vitest_tests`].
+pub fn generate_vitest_tests_with_annotations(
+    behavior_map: &BehaviorMap,
+    function_name: &str,
+    module_path: &str,
+    annotations: &[(usize, McdcAnnotation)],
+) -> String {
     let mut out = String::new();
 
     out.push_str("import { describe, it, expect } from 'vitest';\n");
@@ -337,7 +641,11 @@ pub fn generate_vitest_tests(
         out.push_str("  // No behaviors observed\n");
     }
 
-    for behavior in &behavior_map.behaviors {
+    for (idx, behavior) in behavior_map.behaviors.iter().enumerate() {
+        for (_, ann) in annotations.iter().filter(|(i, _)| *i == idx) {
+            out.push_str(&ann.to_ts_comment("  "));
+        }
+
         let test_name = build_test_name(behavior);
         let body = build_test_body(function_name, behavior);
 
@@ -1085,6 +1393,236 @@ mod tests {
         let output = generate_vitest_tests(&map, "abs", "./src/math");
         let it_count = output.matches("  it('").count();
         assert_eq!(it_count, 3, "expected 3 it blocks, output:\n{output}");
+    }
+
+    // ── MC/DC annotation tests ───────────────────────────────────────────
+
+    fn make_behavior_with_conditions(
+        id: u32,
+        inputs: Vec<serde_json::Value>,
+        return_value: Option<serde_json::Value>,
+        branch_id: u32,
+        line: u32,
+        taken: bool,
+        conditions: Vec<crate::execution_record::ConditionOutcome>,
+    ) -> Behavior {
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        Behavior {
+            id,
+            input_args: inputs,
+            return_value,
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id,
+                line,
+                taken,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: Some(conditions),
+            }],
+            side_effects: vec![],
+            dependency_trace: None,
+            mock_values: vec![],
+        }
+    }
+
+    fn make_condition_outcome(
+        condition_index: u32,
+        value: Option<bool>,
+        masked: bool,
+    ) -> crate::execution_record::ConditionOutcome {
+        use crate::execution_record::SymConstraint;
+        crate::execution_record::ConditionOutcome {
+            condition_index,
+            value,
+            masked,
+            constraint: SymConstraint::Unknown { hint: String::new() },
+        }
+    }
+
+    /// Build a BehaviorMap from two behaviors that form an independence pair
+    /// for condition 0 of decision at branch_id=0, line=15.
+    /// Behavior 0: inputs=[5, 3], conditions=[cond0=T, cond1=T], taken=true
+    /// Behavior 1: inputs=[-1, 3], conditions=[cond0=F, cond1=T], taken=false
+    /// → condition 0 independently affects the decision.
+    fn make_mcdc_behavior_map() -> BehaviorMap {
+        let b0 = make_behavior_with_conditions(
+            0,
+            vec![json!(5), json!(3)],
+            Some(json!("can drive")),
+            0,   // branch_id
+            15,  // line
+            true, // taken
+            vec![
+                make_condition_outcome(0, Some(true), false),
+                make_condition_outcome(1, Some(true), false),
+            ],
+        );
+        let b1 = make_behavior_with_conditions(
+            1,
+            vec![json!(-1), json!(3)],
+            Some(json!("cannot drive")),
+            0,    // branch_id
+            15,   // line
+            false, // taken
+            vec![
+                make_condition_outcome(0, Some(false), false),
+                make_condition_outcome(1, Some(true), false),
+            ],
+        );
+        BehaviorMap {
+            function_id: "classify".to_string(),
+            behaviors: vec![b0, b1],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        }
+    }
+
+    #[test]
+    fn find_mcdc_pairs_detects_independence_pair() {
+        let map = make_mcdc_behavior_map();
+        let pairs = find_mcdc_pairs(&map);
+
+        // Condition 0 has a pair (two behaviors satisfy independence for it).
+        // Condition 1 does not (same value in both observations; no pair found).
+        assert!(!pairs.is_empty(), "expected at least one pair to be found");
+
+        // Both behavior 0 and behavior 1 should be annotated.
+        let bidx_0_count = pairs.iter().filter(|(i, _)| *i == 0).count();
+        let bidx_1_count = pairs.iter().filter(|(i, _)| *i == 1).count();
+        assert!(bidx_0_count > 0, "behavior 0 should be annotated");
+        assert!(bidx_1_count > 0, "behavior 1 should be annotated");
+
+        // Verify annotation content for behavior 0.
+        let (_, ann0) = pairs.iter().find(|(i, _)| *i == 0).unwrap();
+        assert_eq!(ann0.branch_id, 0);
+        assert_eq!(ann0.line, 15);
+        assert_eq!(ann0.condition_index, 0);
+        assert_eq!(ann0.this_outcome, true);
+        assert_eq!(ann0.paired_outcome, false);
+    }
+
+    #[test]
+    fn find_mcdc_pairs_returns_empty_without_conditions_data() {
+        // Behaviors with no `conditions` data (non-MC/DC mode).
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![
+                make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None),
+                make_behavior(1, vec![json!(-1), json!(0)], Some(json!(-1)), None),
+            ],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        let pairs = find_mcdc_pairs(&map);
+        assert!(
+            pairs.is_empty(),
+            "expected no pairs when MC/DC data is absent, got: {pairs:?}"
+        );
+    }
+
+    #[test]
+    fn jest_export_contains_mcdc_annotation_when_present() {
+        let map = make_mcdc_behavior_map();
+        let annotations = find_mcdc_pairs(&map);
+        assert!(!annotations.is_empty(), "test setup: expected pairs to be found");
+
+        let output =
+            generate_jest_tests_with_annotations(&map, "classify", "./src/classify", &annotations);
+
+        assert!(
+            output.contains("// MC/DC: condition 0 independently affects decision at line 15"),
+            "expected MC/DC annotation comment in output:\n{output}"
+        );
+        assert!(
+            output.contains("// Pair: this →"),
+            "expected MC/DC pair comment in output:\n{output}"
+        );
+        // Test assertions must still be present and unchanged.
+        assert!(
+            output.contains("expect(result).toEqual("),
+            "test assertion must remain in output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn jest_export_no_annotation_when_mcdc_data_absent() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![
+                make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None),
+                make_behavior(1, vec![json!(-1), json!(0)], Some(json!(-1)), None),
+            ],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        // Standard generate_jest_tests (no annotations).
+        let output = generate_jest_tests(&map, "add", "./src/math");
+        assert!(
+            !output.contains("// MC/DC"),
+            "expected no MC/DC annotation in output without MC/DC data:\n{output}"
+        );
+    }
+
+    #[test]
+    fn vitest_export_contains_mcdc_annotation_when_present() {
+        let map = make_mcdc_behavior_map();
+        let annotations = find_mcdc_pairs(&map);
+
+        let output = generate_vitest_tests_with_annotations(
+            &map,
+            "classify",
+            "./src/classify",
+            &annotations,
+        );
+
+        assert!(
+            output.contains("// MC/DC: condition 0 independently affects decision at line 15"),
+            "expected MC/DC annotation comment in output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn vitest_export_no_annotation_when_mcdc_data_absent() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![make_behavior(0, vec![json!(1)], Some(json!(2)), None)],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        let output = generate_vitest_tests(&map, "add", "./src/math");
+        assert!(!output.contains("// MC/DC"), "expected no MC/DC annotation:\n{output}");
+    }
+
+    #[test]
+    fn go_export_contains_mcdc_annotation_when_present() {
+        let map = make_mcdc_behavior_map();
+        let annotations = find_mcdc_pairs(&map);
+
+        let output =
+            generate_go_tests_with_annotations(&map, "classify", "main", &annotations);
+
+        assert!(
+            output.contains("// MC/DC:"),
+            "expected MC/DC comment in Go output:\n{output}"
+        );
+        assert!(
+            output.contains("independently affects decision at line 15"),
+            "expected line reference in Go MC/DC comment:\n{output}"
+        );
+    }
+
+    #[test]
+    fn go_export_no_annotation_when_mcdc_data_absent() {
+        let map = BehaviorMap {
+            function_id: "add".to_string(),
+            behaviors: vec![
+                make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None),
+            ],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        let output = generate_go_tests(&map, "add", "math");
+        assert!(!output.contains("// MC/DC"), "expected no MC/DC annotation:\n{output}");
     }
 
     // ── Property-based tests ─────────────────────────────────────────────

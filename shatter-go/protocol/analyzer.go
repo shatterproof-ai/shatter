@@ -10,20 +10,32 @@ import (
 	"go/types"
 	"strconv"
 	"strings"
+
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 // AnalyzeFile parses a Go source file and returns analysis for all exported
 // functions, or a single function if functionName is non-empty.
 func AnalyzeFile(filePath string, functionName string) ([]FunctionAnalysis, error) {
+	return AnalyzeFileWithTiming(filePath, functionName, nil)
+}
+
+// AnalyzeFileWithTiming parses a Go source file and records phase timings when requested.
+func AnalyzeFileWithTiming(filePath string, functionName string, timing *frontendtiming.Collector) ([]FunctionAnalysis, error) {
 	fset := token.NewFileSet()
+	finishParse := timing.Start("analyze.parse")
 	file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+	finishParse()
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 
+	finishTypeCheck := timing.Start("analyze.typecheck")
 	info := typeCheck(fset, file)
+	finishTypeCheck()
 
 	var results []FunctionAnalysis
+	finishWalk := timing.Start("analyze.walk")
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -35,6 +47,7 @@ func AnalyzeFile(filePath string, functionName string) ([]FunctionAnalysis, erro
 		analysis := analyzeFunc(fset, fn, info, file)
 		results = append(results, analysis)
 	}
+	finishWalk()
 
 	if functionName != "" && len(results) == 0 {
 		return nil, fmt.Errorf("function not found: %s", functionName)

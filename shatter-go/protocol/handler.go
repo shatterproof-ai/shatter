@@ -14,6 +14,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/setup"
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 const frontendVersion = "0.1.0"
@@ -27,6 +28,7 @@ type Handler struct {
 	lastAnalyzedFile string // remembered from the most recent analyze command
 	registry         *generators.Registry
 	setupLoader      *setup.Loader
+	timingEnabled    bool
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -145,6 +147,7 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 }
 
 func (h *Handler) handleHandshake(resp Response, req Request) Response {
+	h.timingEnabled = hasCapability(req.Capabilities, "timing")
 	resp.Status = "handshake"
 	resp.FrontendVersion = frontendVersion
 	resp.Language = frontendLanguage
@@ -159,7 +162,37 @@ func (h *Handler) handleHandshake(resp Response, req Request) Response {
 	return resp
 }
 
+func hasCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) maybeTimingCollector() *frontendtiming.Collector {
+	if !h.timingEnabled {
+		return nil
+	}
+	return frontendtiming.NewCollector()
+}
+
+func finalizeResponse(resp Response, timing *frontendtiming.Collector) Response {
+	if timing == nil {
+		return resp
+	}
+
+	finishSerialize := timing.Start("serialize.response")
+	finishSerialize()
+	if summary := timing.Summary(); summary != nil {
+		resp.Timing = &TimingSummary{Phases: summary.Phases}
+	}
+	return resp
+}
+
 func (h *Handler) handleAnalyze(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	if req.File == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
@@ -181,7 +214,9 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		functionName = *req.Function
 	}
 
-	functions, err := AnalyzeFile(req.File, functionName)
+	finishAnalyze := timing.Start("analyze.total")
+	functions, err := AnalyzeFileWithTiming(req.File, functionName, timing)
+	finishAnalyze()
 	if err != nil {
 		if functionName != "" && isNotFound(err) {
 			resp.Status = "error"
@@ -200,7 +235,7 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		functions = []FunctionAnalysis{}
 	}
 	resp.Functions = functions
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 func isNotFound(err error) bool {
@@ -208,6 +243,7 @@ func isNotFound(err error) bool {
 }
 
 func (h *Handler) handleInstrument(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	if req.File == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
@@ -224,7 +260,9 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 
 	h.lastAnalyzedFile = req.File
 
-	outputDir, err := instrument.InstrumentFile(req.File, req.Function, req.ProjectRoot)
+	finishInstrument := timing.Start("instrument.total")
+	outputDir, err := instrument.InstrumentFileWithTiming(req.File, req.Function, req.ProjectRoot, timing)
+	finishInstrument()
 	if err != nil {
 		resp.Status = "error"
 		resp.Code = ErrInternalError
@@ -236,10 +274,11 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	resp.Status = "instrument"
 	resp.Instrumented = &instrumented
 	resp.OutputFile = &outputDir
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	file := req.File
 	if file == "" {
 		file = h.lastAnalyzedFile
@@ -275,7 +314,9 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			DefaultBehavior:  m.DefaultBehavior,
 		})
 	}
-	result, err := instrument.ExecuteFunction(file, *req.Function, req.Inputs, execMocks)
+	finishExecute := timing.Start("execute.total")
+	result, err := instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, execMocks)
+	finishExecute()
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
@@ -308,7 +349,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		HeapAllocatedBytes: result.Performance.HeapAllocatedBytes,
 	}
 
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 func convertErrorInfo(e *instrument.ErrorInfo) *ErrorInfo {
@@ -428,6 +469,7 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	if req.File == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
@@ -468,7 +510,9 @@ func (h *Handler) handleSetup(resp Response, req Request) Response {
 
 	h.log.Debug("Running setup", "file", req.File, "scope", req.Scope, "level", req.Level)
 
+	finishSetup := timing.Start("setup.total")
 	ctx, err := h.setupLoader.RunSetup(req.File, req.Scope, string(req.Level), req.ProjectRoot, parentCtxJSON)
+	finishSetup()
 	if err != nil {
 		resp.Status = "error"
 		resp.Code = ErrInternalError
@@ -479,10 +523,11 @@ func (h *Handler) handleSetup(resp Response, req Request) Response {
 	resp.Status = "setup"
 	ctxCopy := json.RawMessage(ctx)
 	resp.SetupContext = &ctxCopy
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 func (h *Handler) handleTeardown(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	if req.Scope == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
@@ -498,7 +543,9 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 
 	h.log.Debug("Running teardown", "scope", req.Scope, "level", req.Level)
 
+	finishTeardown := timing.Start("teardown.total")
 	found := h.setupLoader.Teardown(req.Scope, string(req.Level))
+	finishTeardown()
 	if !found {
 		resp.Status = "error"
 		resp.Code = ErrInternalError
@@ -511,10 +558,11 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 	h.registry.Handles.Clear()
 
 	resp.Status = "teardown_ack"
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 func (h *Handler) handleGenerate(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
 	if req.File == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
@@ -533,7 +581,9 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 		recipe = *req.Recipe
 	}
 
+	finishGenerate := timing.Start("generate.total")
 	value, generatorID, outRecipe, err := h.registry.Generate(req.File, req.Name, recipe)
+	finishGenerate()
 	if err != nil {
 		resp.Status = "error"
 		resp.Code = ErrInternalError
@@ -549,7 +599,7 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 		recipeCopy := json.RawMessage(outRecipe)
 		resp.Recipe = &recipeCopy
 	}
-	return resp
+	return finalizeResponse(resp, timing)
 }
 
 // Registry returns the generator registry, allowing custom builds to register
