@@ -1,0 +1,27 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 5,
+  "status": "execute",
+  "return_value": 1,
+  "thrown_error": null,
+  "branch_path": [],
+  "lines_executed": [1, 2, 3],
+  "calls_to_external": [],
+  "path_constraints": [],
+  "scope_events": [],
+  "side_effects": [
+    {
+      "kind": "global_state_change",
+      "variable": "Counter",
+      "before": 0,
+      "after": 1
+    }
+  ],
+  "performance": {
+    "wall_time_ms": 2.1,
+    "cpu_time_us": 1200,
+    "heap_used_bytes": 4096,
+    "heap_allocated_bytes": 8192
+  },
+  "capture_truncation": null
+}
