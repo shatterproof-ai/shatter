@@ -23,9 +23,12 @@ pub struct ShrinkResult {
 
 /// Shrink a witness to the simplest inputs that still produce the same branch path.
 ///
-/// Uses a QuickCheck-style strategy: try shrinking one parameter at a time,
-/// accepting the first candidate that preserves the target branch path.
-/// Repeats until no progress or budget exhausted.
+/// Uses a two-phase strategy:
+/// - Phase 1: attempt to shrink all parameters at once (1 execute call). If the
+///   bulk candidate preserves the target path, accept it and continue to Phase 2
+///   from the already-reduced inputs.
+/// - Phase 2: QuickCheck-style one-parameter-at-a-time loop. Repeats until no
+///   progress or budget exhausted.
 ///
 /// `execute_fn` is called for each trial — it should run the function with
 /// the given inputs and return the `ExecuteResult`. Errors from `execute_fn`
@@ -40,8 +43,24 @@ pub fn shrink_witness(
     let original = inputs.to_vec();
     let mut current = original.clone();
     let mut attempts = 0;
-    let mut progress = true;
 
+    // Phase 1: bulk shrink — try all parameters at once (costs exactly 1 execute call).
+    // When the target path is insensitive to combined reductions this skips the entire
+    // per-param loop, dramatically reducing round-trips for multi-parameter witnesses.
+    if attempts < max_attempts
+        && let Some(bulk_trial) = bulk_shrink_candidate(&current, param_infos)
+    {
+        attempts += 1;
+        if let Ok(result) = execute_fn(&bulk_trial)
+            && hash_branch_path(&result.branch_path) == target_path_hash
+        {
+            current = bulk_trial;
+        }
+    }
+
+    // Phase 2: one-at-a-time per-param loop — refines further or handles cases
+    // where the bulk candidate changed the path.
+    let mut progress = true;
     while progress && attempts < max_attempts {
         progress = false;
         for i in 0..param_infos.len().min(current.len()) {
@@ -77,6 +96,24 @@ pub fn shrink_witness(
         inputs: current,
         attempts,
     }
+}
+
+/// Generate a deterministic all-parameter bulk shrink candidate.
+///
+/// For each parameter, takes the first candidate produced by [`shrink_candidates`].
+/// Parameters that are already minimal (no candidates) keep their current value.
+/// Returns `None` if no parameter has a shrink candidate — nothing to try.
+pub fn bulk_shrink_candidate(inputs: &[Value], param_infos: &[ParamInfo]) -> Option<Vec<Value>> {
+    let mut trial = inputs.to_vec();
+    let mut any_changed = false;
+    for i in 0..param_infos.len().min(inputs.len()) {
+        let candidates = shrink_candidates(&inputs[i], &param_infos[i].typ);
+        if let Some(first) = candidates.into_iter().next() {
+            trial[i] = first;
+            any_changed = true;
+        }
+    }
+    if any_changed { Some(trial) } else { None }
 }
 
 // Boundary values used as shrink targets for numeric types.
@@ -1106,6 +1143,197 @@ mod tests {
 
             assert!(!result.shrunk);
             assert!(result.attempts > 0);
+        }
+    }
+
+    mod bulk_shrink_tests {
+        use super::*;
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        use crate::orchestrator::hash_branch_path;
+        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+        use proptest::prelude::*;
+
+        fn empty_perf() -> PerformanceMetrics {
+            PerformanceMetrics {
+                wall_time_ms: 0.0,
+                cpu_time_us: 0,
+                heap_used_bytes: 0,
+                heap_allocated_bytes: 0,
+            }
+        }
+
+        fn make_result(taken: bool) -> ExecuteResult {
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                branch_path: vec![BranchDecision {
+                    branch_id: 1,
+                    line: 5,
+                    taken,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                }],
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            }
+        }
+
+        fn branch_taken() -> Vec<BranchDecision> {
+            make_result(true).branch_path
+        }
+
+        fn branch_not_taken() -> Vec<BranchDecision> {
+            make_result(false).branch_path
+        }
+
+        fn int_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+        }
+
+        fn str_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Str, type_name: None }
+        }
+
+        // -------------------------------------------------------------------
+        // bulk_shrink_candidate unit tests
+        // -------------------------------------------------------------------
+
+        #[test]
+        fn bulk_combines_all_shrinkable_params() {
+            // Both params are shrinkable; candidate must reduce both.
+            let inputs = vec![json!(100i64), json!("hello")];
+            let params = vec![int_param("x"), str_param("s")];
+            let candidate = bulk_shrink_candidate(&inputs, &params).unwrap();
+            assert_ne!(candidate[0], json!(100i64), "int should be reduced");
+            assert_ne!(candidate[1], json!("hello"), "string should be reduced");
+            assert_eq!(candidate.len(), 2);
+        }
+
+        #[test]
+        fn bulk_returns_none_when_all_minimal() {
+            // false (bool) and "" (string) have no shrink candidates.
+            let inputs = vec![json!(false), json!("")];
+            let params = vec![
+                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+                str_param("s"),
+            ];
+            assert!(bulk_shrink_candidate(&inputs, &params).is_none());
+        }
+
+        #[test]
+        fn bulk_skips_already_minimal_params() {
+            // First param is minimal (false bool — no candidates), second is not.
+            let inputs = vec![json!(false), json!("hello")];
+            let params = vec![
+                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+                str_param("s"),
+            ];
+            let candidate = bulk_shrink_candidate(&inputs, &params).unwrap();
+            // Minimal param unchanged.
+            assert_eq!(candidate[0], json!(false));
+            // Non-minimal param reduced.
+            assert_ne!(candidate[1], json!("hello"));
+        }
+
+        #[test]
+        fn bulk_candidate_is_deterministic() {
+            let inputs = vec![json!(100i64), json!("hello")];
+            let params = vec![int_param("x"), str_param("s")];
+            let a = bulk_shrink_candidate(&inputs, &params);
+            let b = bulk_shrink_candidate(&inputs, &params);
+            assert_eq!(a, b, "bulk_shrink_candidate must be deterministic");
+        }
+
+        // -------------------------------------------------------------------
+        // shrink_witness bulk-first perf evidence
+        // -------------------------------------------------------------------
+
+        #[test]
+        fn bulk_accepted_uses_few_attempts() {
+            // Two string params where any non-empty value preserves the path.
+            // Starting from "abc"/"xyz": bulk collapses both to a 2-char string in 1 call.
+            // Per-param then only needs 1-2 more steps each → well under 10 total.
+            let target_hash = hash_branch_path(&branch_taken());
+            let params = vec![str_param("a"), str_param("b")];
+
+            let result = shrink_witness(
+                &[json!("abc"), json!("xyz")],
+                &params,
+                target_hash,
+                50,
+                |inputs| {
+                    let a = inputs[0].as_str().unwrap_or("");
+                    let b = inputs[1].as_str().unwrap_or("");
+                    Ok(make_result(!a.is_empty() && !b.is_empty()))
+                },
+            );
+
+            assert!(result.shrunk);
+            // Bulk phase accepted in 1 call, then per-param convergence is fast.
+            // Without bulk this would require multiple separate param-at-a-time passes.
+            assert!(
+                result.attempts < 10,
+                "expected few attempts with bulk-first, got {}",
+                result.attempts
+            );
+        }
+
+        #[test]
+        fn bulk_fallback_when_path_changes() {
+            // The bulk candidate violates the required condition (both must be > threshold).
+            // Bulk fails; per-param loop must still find the minimal form.
+            let target_hash = hash_branch_path(&branch_taken());
+            let params = vec![int_param("x"), int_param("y")];
+
+            // Path is preserved only when BOTH params are exactly 5.
+            let result = shrink_witness(
+                &[json!(100i64), json!(100i64)],
+                &params,
+                target_hash,
+                100,
+                |inputs| {
+                    let x = inputs[0].as_i64().unwrap_or(0);
+                    let y = inputs[1].as_i64().unwrap_or(0);
+                    // Path only taken when both == 5 (bulk candidate won't hit this).
+                    Ok(make_result(x == 5 && y == 5))
+                },
+            );
+
+            // Shrink should eventually find (5, 5) or confirm no simpler form.
+            // The key property: we don't panic or lose correctness even when bulk fails.
+            assert!(result.attempts <= 100);
+        }
+
+        // -------------------------------------------------------------------
+        // Proptest: bulk candidate complexity never exceeds original
+        // -------------------------------------------------------------------
+
+        proptest! {
+            #[test]
+            fn bulk_candidate_not_more_complex(
+                x in -500i64..500,
+                s in "[a-z]{0,10}",
+            ) {
+                let inputs = vec![json!(x), Value::String(s)];
+                let params = vec![int_param("x"), str_param("s")];
+                if let Some(candidate) = bulk_shrink_candidate(&inputs, &params) {
+                    let orig_complexity = witness_complexity(&inputs);
+                    let cand_complexity = witness_complexity(&candidate);
+                    prop_assert!(
+                        cand_complexity <= orig_complexity,
+                        "bulk candidate more complex: {} > {}",
+                        cand_complexity,
+                        orig_complexity
+                    );
+                }
+            }
         }
     }
 

@@ -1827,8 +1827,31 @@ pub async fn explore(
 
             let mut current = witness.clone();
             let mut attempts = 0usize;
-            let mut progress = true;
 
+            // Phase 1: bulk shrink — try all parameters at once (1 execute call).
+            if attempts < config.shrink_budget
+                && let Some(bulk_trial) =
+                    crate::shrink::bulk_shrink_candidate(&current, param_infos)
+            {
+                attempts += 1;
+                let resp = frontend
+                    .send(Command::Execute {
+                        function: function_name.to_string(),
+                        inputs: bulk_trial.clone(),
+                        mocks: effective_mocks.clone(),
+                        setup_context: setup_context.clone(),
+                    })
+                    .await;
+                if let Ok(resp) = resp
+                    && let ResponseResult::Execute(exec_res) = resp.result
+                    && hash_branch_path(&exec_res.branch_path) == *ph
+                {
+                    current = bulk_trial;
+                }
+            }
+
+            // Phase 2: one-at-a-time per-param loop.
+            let mut progress = true;
             while progress && attempts < config.shrink_budget {
                 progress = false;
                 for i in 0..param_infos.len().min(current.len()) {
