@@ -56,6 +56,33 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
     ))
 }
 
+/// Extract names of all `static mut` items from the top level of a Rust source file.
+///
+/// These are Rust's explicit mutable global variables. The harness snapshots them
+/// before and after the function call to detect global state changes, emitting
+/// `global_state_change` side effects for any that differ.
+///
+/// Only top-level items are considered; statics inside nested modules are skipped.
+/// If the source cannot be parsed, returns an empty list (execution can still proceed).
+fn extract_static_mut_items(source: &str) -> Vec<String> {
+    let file = match syn::parse_file(source) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    file.items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Static(s) = item
+                && matches!(s.mutability, syn::StaticMutability::Mut(_))
+            {
+                return Some(s.ident.to_string());
+            }
+            None
+        })
+        .collect()
+}
+
 /// Check whether a list of attributes already contains `#[derive(...Serialize...)]`.
 fn has_serialize_derive(attrs: &[syn::Attribute]) -> bool {
     use quote::ToTokens;
@@ -276,6 +303,13 @@ fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
 ///
 /// Wraps instrumented source in `mod user_code` to avoid name collisions
 /// (e.g. duplicate `fn main()` when the source file has its own `main`).
+///
+/// `static_mut_names` lists the names of `static mut` items in the source.
+/// The harness snapshots each before and after the function call and emits
+/// `global_state_change` side effects for any whose serialized value differs.
+/// Variables that fail `serde_json::to_value` (e.g. non-Serialize types) are
+/// silently skipped — execution is never blocked by unserializable statics.
+#[allow(clippy::too_many_arguments)] // all args are distinct harness parameters; a wrapper struct would be overkill
 fn generate_harness(
     instrumented_source: &str,
     function_name: &str,
@@ -284,6 +318,7 @@ fn generate_harness(
     return_type: Option<&str>,
     inputs_json: &str,
     mocks_json: &str,
+    static_mut_names: &[String],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(4096);
@@ -314,6 +349,19 @@ fn generate_harness(
 
     // Reset runtime state
     h.push_str("    shatter_rust_runtime::reset();\n\n");
+
+    // Snapshot mutable globals before execution.
+    // Each `static mut` is read with `unsafe` and serialized to JSON.
+    // Variables whose type does not implement Serialize produce `None` and are skipped.
+    if !static_mut_names.is_empty() {
+        h.push_str("    // Snapshot mutable static variables before execution\n");
+        for name in static_mut_names {
+            h.push_str(&format!(
+                "    let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+            ));
+        }
+        h.push('\n');
+    }
 
     // Deserialize each input parameter.
     // Reference types like `&str` can't be deserialized directly — deserialize
@@ -411,8 +459,34 @@ fn generate_harness(
     h.push_str("        \"heap_allocated_bytes\": 0,\n");
     h.push_str("    }));\n\n");
 
-    // Ensure side_effects is present
-    h.push_str("    obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n\n");
+    // Detect global state changes by comparing before/after snapshots of mutable statics.
+    // Changes are appended to the side_effects array in the execution result.
+    if !static_mut_names.is_empty() {
+        h.push_str("    // Detect mutable static changes and emit global_state_change side effects\n");
+        h.push_str("    let mut __global_side_effects: Vec<serde_json::Value> = Vec::new();\n");
+        for name in static_mut_names {
+            h.push_str(&format!(
+                "    let __after_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+            ));
+            h.push_str(&format!(
+                "    if let (Some(__b), Some(__a)) = (__before_{name}, __after_{name}) {{\n"
+            ));
+            h.push_str("        if __b != __a {\n");
+            h.push_str(&format!(
+                "            __global_side_effects.push(serde_json::json!({{\"kind\":\"global_state_change\",\"variable\":\"{name}\",\"before\":__b,\"after\":__a}}));\n"
+            ));
+            h.push_str("        }\n");
+            h.push_str("    }\n");
+        }
+        h.push_str(
+            "    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n",
+        );
+        h.push_str(
+            "    if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_side_effects); }\n\n",
+        );
+    } else {
+        h.push_str("    obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n\n");
+    }
 
     // Print the result JSON to stdout
     h.push_str("    println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
@@ -468,6 +542,10 @@ pub fn execute_function_with_timing(
     } else {
         extract_fn_signature(&source, function_name)?
     };
+
+    // Extract mutable static items for global state change detection.
+    // Parsed from the original source (before instrumentation) so syn sees clean code.
+    let static_mut_names = extract_static_mut_items(&source);
 
     // Reject trait object parameters — they cannot be deserialized from JSON.
     for (name, ty) in sig.param_names.iter().zip(sig.param_types.iter()) {
@@ -533,6 +611,7 @@ pub fn execute_function_with_timing(
                 sig.return_type.as_deref(),
                 &inputs_json,
                 &mocks_json,
+                &static_mut_names,
             )
         })?
     } else {
@@ -544,6 +623,7 @@ pub fn execute_function_with_timing(
             sig.return_type.as_deref(),
             &inputs_json,
             &mocks_json,
+            &static_mut_names,
         )?
     };
 
@@ -711,7 +791,7 @@ pub fn execute_function_with_timing(
     }
 
     // Parse the JSON output from stdout
-    let result: ExecuteResult = if let Some(timing) = timing.as_deref_mut() {
+    let result: ExecuteResult = if let Some(timing) = timing.as_mut() {
         timing.record("execute.parse_result", |_| {
             serde_json::from_str(stdout.trim()).map_err(|e| {
                 ExecuteError::OutputParseError(format!(
@@ -795,6 +875,7 @@ mod tests {
             Some("& 'static str"),
             "[42]",
             "[]",
+            &[],
         )
         .unwrap();
         assert!(harness.contains("mod user_code"));
@@ -806,7 +887,7 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", "[]").unwrap();
+        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", "[]", &[]).unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
     }
@@ -832,6 +913,7 @@ fn main() {
             Some("& 'static str"),
             "[42]",
             "[]",
+            &[],
         )
         .unwrap();
 
@@ -887,6 +969,7 @@ fn main() {
             Some("String"),
             r#"["world"]"#,
             "[]",
+            &[],
         )
         .unwrap();
 
@@ -996,6 +1079,7 @@ fn main() {
             Some("String"),
             r#"["en", ["en", "fr"]]"#,
             "[]",
+            &[],
         )
         .unwrap();
 
@@ -1028,6 +1112,123 @@ fn compute(n: i32) -> MyResult { MyResult { value: n } }
         assert!(
             wrapped.contains("serde :: Serialize") || wrapped.contains("serde::Serialize"),
             "wrap_in_module must inject Serialize derive on structs\n\nwrapped:\n{wrapped}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // extract_static_mut_items tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn extract_static_mut_items_finds_mutable_statics() {
+        let source = r#"
+static mut COUNTER: i32 = 0;
+static mut TOTAL: f64 = 0.0;
+fn increment() { unsafe { COUNTER += 1; } }
+"#;
+        let names = extract_static_mut_items(source);
+        assert!(names.contains(&"COUNTER".to_string()), "expected COUNTER in {names:?}");
+        assert!(names.contains(&"TOTAL".to_string()), "expected TOTAL in {names:?}");
+    }
+
+    #[test]
+    fn extract_static_mut_items_ignores_immutable_statics() {
+        let source = r#"
+static MAX: i32 = 100;
+static NAME: &str = "shatter";
+fn check(x: i32) -> bool { x < MAX }
+"#;
+        let names = extract_static_mut_items(source);
+        assert!(
+            names.is_empty(),
+            "immutable statics should not be returned, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_static_mut_items_empty_on_parse_error() {
+        let names = extract_static_mut_items("this is not valid rust ~~~");
+        assert!(names.is_empty(), "parse error should yield empty list");
+    }
+
+    #[test]
+    fn extract_static_mut_items_empty_when_no_statics() {
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let names = extract_static_mut_items(source);
+        assert!(names.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // generate_harness global-state tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn generate_harness_with_static_mut_includes_snapshot_code() {
+        let source = r#"
+static mut COUNTER: i32 = 0;
+fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
+"#;
+        let harness = generate_harness(
+            source,
+            "increment",
+            &[],
+            &[],
+            Some("i32"),
+            "[]",
+            "[]",
+            &["COUNTER".to_string()],
+        )
+        .unwrap();
+
+        // Before-snapshot code
+        assert!(
+            harness.contains("__before_COUNTER"),
+            "harness must snapshot COUNTER before execution\n\nharness:\n{harness}"
+        );
+        // After-snapshot code
+        assert!(
+            harness.contains("__after_COUNTER"),
+            "harness must snapshot COUNTER after execution\n\nharness:\n{harness}"
+        );
+        // global_state_change side effect emission
+        assert!(
+            harness.contains("global_state_change"),
+            "harness must emit global_state_change\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("\"variable\":\"COUNTER\"") || harness.contains("\"variable\" : \"COUNTER\""),
+            "harness must name the variable COUNTER\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_harness_no_static_mut_emits_no_snapshot_code() {
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let harness = generate_harness(
+            source,
+            "add",
+            &["a".to_string(), "b".to_string()],
+            &["i32".to_string(), "i32".to_string()],
+            Some("i32"),
+            "[1, 2]",
+            "[]",
+            &[],
+        )
+        .unwrap();
+
+        // No snapshot variables should appear
+        assert!(
+            !harness.contains("__before_"),
+            "no before-snapshots when no mutable statics\n\nharness:\n{harness}"
+        );
+        assert!(
+            !harness.contains("__after_"),
+            "no after-snapshots when no mutable statics\n\nharness:\n{harness}"
+        );
+        // side_effects must still be present (via or_insert)
+        assert!(
+            harness.contains("side_effects"),
+            "side_effects entry must still be present\n\nharness:\n{harness}"
         );
     }
 }
