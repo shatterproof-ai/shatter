@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,7 @@ class Scenario:
     language: str | None
     sample_ref: str | None
     timing_target: str
+    isolation_mode: str | None
 
 
 def load_sample_refs() -> set[str]:
@@ -87,13 +89,31 @@ def load_scenarios() -> dict[str, Scenario]:
             language=raw.get("language"),
             sample_ref=raw.get("sample_ref"),
             timing_target=raw.get("timing_target", "none"),
+            isolation_mode=raw.get("isolation_mode"),
         )
         if sample_refs and scenario.sample_ref and scenario.sample_ref not in sample_refs:
             raise SystemExit(
                 f"scenario {scenario.id} refers to unknown sample_ref {scenario.sample_ref}"
             )
+        if scenario.isolation_mode and scenario.isolation_mode != "none":
+            scenario = dataclasses.replace(
+                scenario,
+                command=apply_isolation_flag(scenario.command, scenario.isolation_mode),
+            )
         scenarios[scenario.id] = scenario
     return scenarios
+
+
+def apply_isolation_flag(command: list[str], isolation_mode: str) -> list[str]:
+    """Inject --isolation <mode> after the subcommand name (index 1).
+
+    Only called for non-default modes (function, serial). The "none" mode is
+    the CLI default and does not require an explicit flag.
+    """
+    if len(command) < 2:
+        return list(command)
+    # command[0] = binary, command[1] = subcommand (explore/scan/...)
+    return [command[0], command[1], "--isolation", isolation_mode, *command[2:]]
 
 
 def format_command(command: list[str]) -> str:
@@ -174,6 +194,23 @@ def inject_timing_command(scenario: Scenario, run_dir: Path) -> tuple[list[str],
     return command, None
 
 
+# Named cost centers surfaced in the isolation perf report.
+# Keys become the column names in perf_isolation_report.py output.
+# Prefix matches are summed so aggregate phases (e.g. frontend.remote.execute)
+# include all child spans even when the timing tree grows new children.
+_KEY_PHASE_PREFIXES: dict[str, str] = {
+    "handshake_ms": "frontend.remote.handshake",
+    "setup_ms": "frontend.remote.setup",
+    "module_load_ms": "frontend.remote.setup.module_load",
+    "execute_ms": "frontend.remote.execute",
+    "invoke_ms": "frontend.remote.execute.invoke_function",
+    "await_ms": "frontend.remote.execute.await_result",
+    # Shrink/refine phases are not yet emitted; they will appear under these
+    # prefixes once Z3-solve and path-refinement timing lands.
+    "shrink_refine_ms": "solver.shrink",
+}
+
+
 def load_timing_run(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     phases = payload.get("phases", [])
@@ -195,6 +232,17 @@ def load_timing_run(path: Path) -> dict[str, Any]:
         top_candidates.append((float(phase.get("total_ms", 0.0)), name))
     top_candidates.sort(reverse=True)
 
+    # Extract named cost centers for isolation-mode comparisons.
+    key_phases_ms: dict[str, float] = {}
+    for label, prefix in _KEY_PHASE_PREFIXES.items():
+        total = sum(
+            float(p.get("total_ms", 0.0))
+            for p in phases
+            if p["phase_path"].startswith(prefix)
+        )
+        if total > 0.0:
+            key_phases_ms[label] = total
+
     return {
         "path": display_path(path),
         "command": payload.get("command"),
@@ -202,6 +250,7 @@ def load_timing_run(path: Path) -> dict[str, Any]:
         "total_ms": total_ms,
         "code_under_test_ms": code_under_test_ms,
         "shatter_overhead_ms": max(0.0, total_ms - code_under_test_ms),
+        "key_phases_ms": key_phases_ms,
         "top_phases": [
             {"phase_path": name, "total_ms": total}
             for total, name in top_candidates[:5]
@@ -466,6 +515,7 @@ def summarize(
         "active_profiler": profiler,
         "language": scenario.language,
         "sample_ref": scenario.sample_ref,
+        "isolation_mode": scenario.isolation_mode,
         "min_seconds": round(min(durations), 6),
         "median_seconds": round(statistics.median(durations), 6),
         "max_seconds": round(max(durations), 6),
@@ -679,6 +729,7 @@ def main() -> int:
                 "description": scenario.description,
                 "cache_mode": scenario.cache_mode,
                 "profilers": scenario.profilers,
+                "isolation_mode": scenario.isolation_mode,
             }
             for scenario in scenarios.values()
         ]
