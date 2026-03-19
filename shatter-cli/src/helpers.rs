@@ -335,6 +335,163 @@ mod mcdc_budget_tests {
 }
 
 #[cfg(test)]
+mod cli_parity_tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::args::{Cli, CliCommand};
+
+    /// CLI parity contract: the canonical list of environment variables the CLI must
+    /// set for every frontend invocation, with their expected default values when the
+    /// user does not provide the corresponding flag.
+    ///
+    /// Governed commands: `explore`, `scan`, and other frontend-spawning subcommands
+    /// that do not have intentionally elevated defaults (e.g. `observe` uses 30s/60s
+    /// because it executes many inputs in a single session — that divergence is
+    /// documented in PARITY.md).
+    const GOVERNED_ENV_VARS: &[&str] = &[
+        "SHATTER_LOG_LEVEL",
+        "SHATTER_EXEC_TIMEOUT",
+        "SHATTER_BUILD_TIMEOUT",
+    ];
+    /// Canonical CLI default for `--exec-timeout` (seconds) across governed commands.
+    const CLI_EXEC_TIMEOUT_DEFAULT_SECS: u64 = 10;
+    /// Canonical CLI default for `--build-timeout` (seconds) across governed commands.
+    const CLI_BUILD_TIMEOUT_DEFAULT_SECS: u64 = 30;
+    /// Canonical CLI default for `--log-level`.
+    const CLI_LOG_LEVEL_DEFAULT: &str = "info";
+
+    /// Every governed env var must appear in the env_vars vector produced by
+    /// `apply_frontend_env`. This is the minimal contract: if a var is missing,
+    /// the frontend never receives it regardless of what the CLI flag says.
+    #[test]
+    fn apply_frontend_env_sets_all_governed_vars() {
+        let mut config = FrontendConfig::new(std::path::PathBuf::from("dummy"));
+        apply_frontend_env(
+            &mut config,
+            LogLevel::Info,
+            CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+            CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+        );
+        let keys: std::collections::HashSet<&str> =
+            config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        for var in GOVERNED_ENV_VARS {
+            assert!(
+                keys.contains(var),
+                "apply_frontend_env must set governed env var {var} — \
+                 add it to apply_frontend_env() in helpers.rs"
+            );
+        }
+    }
+
+    /// The governed env vars must carry the correct values matching the contract
+    /// constants, not arbitrary defaults.
+    #[test]
+    fn apply_frontend_env_values_match_contract_defaults() {
+        let mut config = FrontendConfig::new(std::path::PathBuf::from("dummy"));
+        apply_frontend_env(
+            &mut config,
+            LogLevel::Info,
+            CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+            CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+        );
+        let env_map: std::collections::HashMap<&str, &str> =
+            config.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
+        assert_eq!(
+            env_map.get("SHATTER_LOG_LEVEL").copied(),
+            Some(CLI_LOG_LEVEL_DEFAULT),
+            "SHATTER_LOG_LEVEL default must be {CLI_LOG_LEVEL_DEFAULT}"
+        );
+        assert_eq!(
+            env_map.get("SHATTER_EXEC_TIMEOUT").copied(),
+            Some(CLI_EXEC_TIMEOUT_DEFAULT_SECS.to_string().as_str()),
+            "SHATTER_EXEC_TIMEOUT default must be {CLI_EXEC_TIMEOUT_DEFAULT_SECS}"
+        );
+        assert_eq!(
+            env_map.get("SHATTER_BUILD_TIMEOUT").copied(),
+            Some(CLI_BUILD_TIMEOUT_DEFAULT_SECS.to_string().as_str()),
+            "SHATTER_BUILD_TIMEOUT default must be {CLI_BUILD_TIMEOUT_DEFAULT_SECS}"
+        );
+    }
+
+    /// The `explore` subcommand must expose `--exec-timeout` and `--build-timeout`
+    /// with the governed defaults. If a future edit changes the default_value_t,
+    /// this test fails and forces a PARITY.md update.
+    #[test]
+    fn explore_defaults_match_parity_contract() {
+        let cli = Cli::parse_from(["shatter", "explore", "dummy.ts"]);
+        match cli.command {
+            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+                assert_eq!(
+                    exec_timeout, CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+                    "`explore --exec-timeout` default ({exec_timeout}s) diverges from \
+                     parity contract ({CLI_EXEC_TIMEOUT_DEFAULT_SECS}s); \
+                     update the contract constant or restore the arg default"
+                );
+                assert_eq!(
+                    build_timeout, CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+                    "`explore --build-timeout` default ({build_timeout}s) diverges from \
+                     parity contract ({CLI_BUILD_TIMEOUT_DEFAULT_SECS}s); \
+                     update the contract constant or restore the arg default"
+                );
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    /// The `scan` subcommand must expose the same governed defaults as `explore`.
+    #[test]
+    fn scan_defaults_match_parity_contract() {
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
+        match cli.command {
+            CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+                assert_eq!(
+                    exec_timeout, CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+                    "`scan --exec-timeout` default ({exec_timeout}s) diverges from \
+                     parity contract ({CLI_EXEC_TIMEOUT_DEFAULT_SECS}s)"
+                );
+                assert_eq!(
+                    build_timeout, CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+                    "`scan --build-timeout` default ({build_timeout}s) diverges from \
+                     parity contract ({CLI_BUILD_TIMEOUT_DEFAULT_SECS}s)"
+                );
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    /// Every language frontend config must include all governed env vars.
+    /// Tests TypeScript and Go (Rust frontend requires the binary on PATH so is
+    /// skipped here; its env-var handling is tested in shatter-rust unit tests).
+    #[test]
+    fn frontend_config_propagates_all_governed_vars() {
+        for lang in [Language::TypeScript, Language::Go] {
+            let config = frontend_config(
+                lang,
+                shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+                LogLevel::Info,
+                CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+                CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+                None,
+                None,
+                false,
+            )
+            .unwrap_or_else(|e| panic!("frontend_config({lang:?}) failed: {e}"));
+
+            let keys: std::collections::HashSet<&str> =
+                config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
+            for var in GOVERNED_ENV_VARS {
+                assert!(
+                    keys.contains(var),
+                    "frontend_config({lang:?}) must propagate governed env var {var}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
