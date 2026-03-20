@@ -23,10 +23,14 @@ pub struct ShrinkResult {
 
 /// Shrink a witness to the simplest inputs that still produce the same branch path.
 ///
-/// Uses a two-phase strategy:
+/// Uses a three-phase strategy:
 /// - Phase 1: attempt to shrink all parameters at once (1 execute call). If the
 ///   bulk candidate preserves the target path, accept it and continue to Phase 2
 ///   from the already-reduced inputs.
+/// - Phase 1.5: when bulk fails and there are ≥ 3 parameters, try shrinking
+///   parameter groups (halves) before falling back to per-param. Costs at most
+///   `ceil(N / group_size)` execute calls instead of N, reducing round-trips for
+///   multi-parameter witnesses where halving one group preserves the path.
 /// - Phase 2: QuickCheck-style one-parameter-at-a-time loop. Repeats until no
 ///   progress or budget exhausted.
 ///
@@ -47,6 +51,7 @@ pub fn shrink_witness(
     // Phase 1: bulk shrink — try all parameters at once (costs exactly 1 execute call).
     // When the target path is insensitive to combined reductions this skips the entire
     // per-param loop, dramatically reducing round-trips for multi-parameter witnesses.
+    let mut bulk_accepted = false;
     if attempts < max_attempts
         && let Some(bulk_trial) = bulk_shrink_candidate(&current, param_infos)
     {
@@ -55,11 +60,33 @@ pub fn shrink_witness(
             && hash_branch_path(&result.branch_path) == target_path_hash
         {
             current = bulk_trial;
+            bulk_accepted = true;
+        }
+    }
+
+    // Phase 1.5: grouped shrink — try parameter halves before falling back to per-param.
+    // Only fires when bulk failed and there are ≥ 3 parameters: fewer parameters offer
+    // no grouping benefit over per-param. Accepts the first group trial that preserves
+    // the path; Phase 2 then refines further from the already-reduced inputs.
+    let n = param_infos.len().min(current.len());
+    if !bulk_accepted && n >= 3 && attempts < max_attempts {
+        let group_size = n / 2;
+        for group_trial in grouped_shrink_candidates(&current, param_infos, group_size) {
+            if attempts >= max_attempts {
+                break;
+            }
+            attempts += 1;
+            if let Ok(result) = execute_fn(&group_trial)
+                && hash_branch_path(&result.branch_path) == target_path_hash
+            {
+                current = group_trial;
+                break;
+            }
         }
     }
 
     // Phase 2: one-at-a-time per-param loop — refines further or handles cases
-    // where the bulk candidate changed the path.
+    // where neither bulk nor grouped candidates preserved the path.
     let mut progress = true;
     while progress && attempts < max_attempts {
         progress = false;
@@ -114,6 +141,52 @@ pub fn bulk_shrink_candidate(inputs: &[Value], param_infos: &[ParamInfo]) -> Opt
         }
     }
     if any_changed { Some(trial) } else { None }
+}
+
+/// Generate grouped shrink trials: one trial per consecutive parameter group.
+///
+/// Divides the parameter list into non-overlapping groups of `group_size`. For each
+/// group, produces a trial where only the parameters in that group are shrunk (using
+/// the first [`shrink_candidates`] result for each); parameters outside the group keep
+/// their current values. Groups where no parameter has a shrink candidate are skipped —
+/// they would produce no change and cost an execute call.
+///
+/// Returns an empty `Vec` when:
+/// - `inputs` has fewer than 2 parameters (no grouping benefit over bulk or per-param)
+/// - `group_size` is zero
+/// - No group contains any shrinkable parameter
+///
+/// Deterministic: same inputs + same `group_size` → same trials in the same order.
+/// This is a strict subset of [`bulk_shrink_candidate`]: bulk reduces all params at
+/// once, grouped reduces one subset at a time.
+pub fn grouped_shrink_candidates(
+    inputs: &[Value],
+    param_infos: &[ParamInfo],
+    group_size: usize,
+) -> Vec<Vec<Value>> {
+    let n = param_infos.len().min(inputs.len());
+    if n < 2 || group_size == 0 {
+        return vec![];
+    }
+    let mut trials = Vec::new();
+    let mut start = 0;
+    while start < n {
+        let end = (start + group_size).min(n);
+        let mut trial = inputs.to_vec();
+        let mut any_changed = false;
+        for i in start..end {
+            let candidates = shrink_candidates(&inputs[i], &param_infos[i].typ);
+            if let Some(first) = candidates.into_iter().next() {
+                trial[i] = first;
+                any_changed = true;
+            }
+        }
+        if any_changed {
+            trials.push(trial);
+        }
+        start = end;
+    }
+    trials
 }
 
 // Boundary values used as shrink targets for numeric types.
@@ -175,6 +248,10 @@ pub struct ShrinkStats {
     pub paths_shrunk: usize,
     /// Total execute() calls made across all shrink attempts.
     pub total_shrink_attempts: usize,
+    /// Execute calls made during the grouped shrink phase (Phase 1.5).
+    pub grouped_attempts: usize,
+    /// Grouped trials accepted (path hash preserved) during Phase 1.5.
+    pub grouped_accepted: usize,
 }
 
 fn value_complexity(v: &Value) -> usize {
@@ -1372,6 +1449,266 @@ mod tests {
                         cand_complexity <= orig_complexity,
                         "bulk candidate more complex: {} > {}",
                         cand_complexity,
+                        orig_complexity
+                    );
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // grouped_shrink_candidates unit tests
+    // -------------------------------------------------------------------
+
+    mod grouped_shrink_tests {
+        use super::*;
+        use serde_json::json;
+
+        fn int_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+        }
+
+        fn str_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Str, type_name: None }
+        }
+
+        #[test]
+        fn grouped_returns_empty_for_single_param() {
+            let inputs = vec![json!(100i64)];
+            let params = vec![int_param("x")];
+            assert!(grouped_shrink_candidates(&inputs, &params, 1).is_empty());
+        }
+
+        #[test]
+        fn grouped_returns_empty_for_zero_group_size() {
+            let inputs = vec![json!(100i64), json!(200i64)];
+            let params = vec![int_param("x"), int_param("y")];
+            assert!(grouped_shrink_candidates(&inputs, &params, 0).is_empty());
+        }
+
+        #[test]
+        fn grouped_skips_groups_with_no_shrinkable_params() {
+            // Param 0 is Bool(false) — no shrink candidates (false is already minimal).
+            // Param 1 is Int(100) — has shrink candidates.
+            // With group_size=1, group 0 has no candidates → no trial for it.
+            let inputs = vec![json!(false), json!(100i64)];
+            let params = vec![
+                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+                int_param("y"),
+            ];
+            let trials = grouped_shrink_candidates(&inputs, &params, 1);
+            // Only group 1 (param 1) produces a trial.
+            assert_eq!(trials.len(), 1);
+            // The trial must not change param 0.
+            assert_eq!(trials[0][0], json!(false));
+            // The trial must shrink param 1.
+            assert_ne!(trials[0][1], json!(100i64));
+        }
+
+        #[test]
+        fn grouped_only_shrinks_params_in_group() {
+            // 4 params; group_size=2 → two groups: [0,1] and [2,3].
+            let inputs = vec![json!(100i64), json!(200i64), json!(300i64), json!(400i64)];
+            let params = vec![int_param("a"), int_param("b"), int_param("c"), int_param("d")];
+            let trials = grouped_shrink_candidates(&inputs, &params, 2);
+            assert_eq!(trials.len(), 2, "expected exactly 2 group trials");
+
+            // Trial 0 shrinks params 0-1, leaves params 2-3 unchanged.
+            assert_ne!(trials[0][0], json!(100i64));
+            assert_ne!(trials[0][1], json!(200i64));
+            assert_eq!(trials[0][2], json!(300i64));
+            assert_eq!(trials[0][3], json!(400i64));
+
+            // Trial 1 leaves params 0-1 unchanged, shrinks params 2-3.
+            assert_eq!(trials[1][0], json!(100i64));
+            assert_eq!(trials[1][1], json!(200i64));
+            assert_ne!(trials[1][2], json!(300i64));
+            assert_ne!(trials[1][3], json!(400i64));
+        }
+
+        #[test]
+        fn grouped_is_deterministic() {
+            let inputs = vec![json!(100i64), json!("hello"), json!(50i64), json!("world")];
+            let params = vec![int_param("a"), str_param("b"), int_param("c"), str_param("d")];
+            let a = grouped_shrink_candidates(&inputs, &params, 2);
+            let b = grouped_shrink_candidates(&inputs, &params, 2);
+            assert_eq!(a, b, "grouped_shrink_candidates must be deterministic");
+        }
+
+        #[test]
+        fn grouped_four_params_produces_two_trials() {
+            // 4 shrinkable params with group_size=2 → exactly 2 trials.
+            let inputs = vec![json!(10i64), json!(20i64), json!(30i64), json!(40i64)];
+            let params = vec![int_param("a"), int_param("b"), int_param("c"), int_param("d")];
+            let trials = grouped_shrink_candidates(&inputs, &params, 2);
+            assert_eq!(trials.len(), 2);
+            // Each trial must have same length as inputs.
+            for t in &trials {
+                assert_eq!(t.len(), inputs.len());
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // grouped shrink perf evidence (integration test)
+    // -------------------------------------------------------------------
+
+    mod grouped_shrink_perf_tests {
+        use super::*;
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        use crate::orchestrator::hash_branch_path;
+        use crate::protocol::{ExecuteResult, PerformanceMetrics};
+        use serde_json::json;
+
+        fn empty_perf() -> PerformanceMetrics {
+            PerformanceMetrics {
+                wall_time_ms: 0.0,
+                cpu_time_us: 0,
+                heap_used_bytes: 0,
+                heap_allocated_bytes: 0,
+            }
+        }
+
+        fn make_result(taken: bool) -> ExecuteResult {
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                branch_path: vec![BranchDecision {
+                    branch_id: 42,
+                    line: 7,
+                    taken,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                }],
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                performance: empty_perf(),
+            }
+        }
+
+        fn int_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+        }
+
+        #[test]
+        fn grouped_phase_finds_solution_bulk_cannot() {
+            // 4-param witness: [100, 200, 50, 50].
+            // Path taken iff a==100 AND b==200 AND c<100 AND d<100.
+            // Original [100,200,50,50]: a=100✓ b=200✓ c=50<100✓ d=50<100✓ → taken.
+            //
+            // Execution trace with budget=3:
+            //   Phase 1  — bulk [50,100,25,25]: a=50≠100 → FAIL  (1 call)
+            //   Phase 1.5:
+            //     group[a,b] [50,100,50,50]: a=50≠100   → FAIL  (2 calls)
+            //     group[c,d] [100,200,25,25]: all pass  → ACCEPT (3 calls) ← grouped finds it
+            //   Phase 2 — budget exhausted.
+            //
+            // Per-param (no grouped) with same budget=3:
+            //   Phase 1  — bulk [50,100,25,25]: FAIL  (1)
+            //   Phase 2  — param a→50: [50,200,50,50] a≠100 FAIL (2)
+            //              param a→0:  [0,200,50,50]  a≠100 FAIL (3) — budget gone, no solution.
+            //
+            // Grouped finds the solution in 3 calls; per-param does not.
+            let target_hash = hash_branch_path(&make_result(true).branch_path);
+            let params = vec![int_param("a"), int_param("b"), int_param("c"), int_param("d")];
+            let inputs = vec![json!(100i64), json!(200i64), json!(50i64), json!(50i64)];
+
+            let result = shrink_witness(&inputs, &params, target_hash, 3, |trial| {
+                let a = trial[0].as_i64().unwrap_or(0);
+                let b = trial[1].as_i64().unwrap_or(0);
+                let c = trial[2].as_i64().unwrap_or(0);
+                let d = trial[3].as_i64().unwrap_or(0);
+                Ok(make_result(a == 100 && b == 200 && c < 100 && d < 100))
+            });
+
+            assert!(result.shrunk, "grouped phase should find a smaller witness");
+            assert_eq!(result.attempts, 3, "bulk(fail) + group[a,b](fail) + group[c,d](accept)");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Proptest: grouped_shrink_candidates invariants
+    // -------------------------------------------------------------------
+
+    mod grouped_shrink_prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        fn int_param(name: &str) -> ParamInfo {
+            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+        }
+
+        proptest! {
+            #[test]
+            fn grouped_trial_count_bounded(
+                n in 2..8usize,
+                group_size in 1..4usize,
+                base in 1i64..200,
+            ) {
+                let inputs: Vec<Value> = (0..n).map(|i| json!(base + i as i64)).collect();
+                let params: Vec<ParamInfo> = (0..n).map(|i| int_param(&format!("p{i}"))).collect();
+                let trials = grouped_shrink_candidates(&inputs, &params, group_size);
+                let max_groups = n.div_ceil(group_size);
+                prop_assert!(
+                    trials.len() <= max_groups,
+                    "got {} trials but expected ≤ {} groups",
+                    trials.len(),
+                    max_groups
+                );
+            }
+
+            #[test]
+            fn grouped_trials_never_change_outside_group(
+                n in 2..6usize,
+                group_size in 1..3usize,
+                base in 1i64..100,
+            ) {
+                let inputs: Vec<Value> = (0..n).map(|i| json!(base + i as i64)).collect();
+                let params: Vec<ParamInfo> = (0..n).map(|i| int_param(&format!("p{i}"))).collect();
+                let trials = grouped_shrink_candidates(&inputs, &params, group_size);
+
+                for (g, trial) in trials.iter().enumerate() {
+                    prop_assert_eq!(trial.len(), inputs.len(), "trial length mismatch");
+                    let group_start = g * group_size;
+                    let group_end = (group_start + group_size).min(n);
+                    // Params outside the group must be unchanged.
+                    for i in 0..n {
+                        if i < group_start || i >= group_end {
+                            prop_assert_eq!(
+                                &trial[i],
+                                &inputs[i],
+                                "param {} outside group {} was modified",
+                                i,
+                                g
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn grouped_candidates_not_more_complex_than_inputs(
+                n in 2..6usize,
+                group_size in 1..3usize,
+                base in 1i64..100,
+            ) {
+                let inputs: Vec<Value> = (0..n).map(|i| json!(base + i as i64)).collect();
+                let params: Vec<ParamInfo> = (0..n).map(|i| int_param(&format!("p{i}"))).collect();
+                let orig_complexity = witness_complexity(&inputs);
+                let trials = grouped_shrink_candidates(&inputs, &params, group_size);
+                for trial in &trials {
+                    let trial_complexity = witness_complexity(trial);
+                    prop_assert!(
+                        trial_complexity < orig_complexity,
+                        "group trial not simpler: {} >= {}",
+                        trial_complexity,
                         orig_complexity
                     );
                 }

@@ -1055,6 +1055,7 @@ pub async fn explore_function(
             let mut attempts = 0usize;
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
+            let mut bulk_accepted = false;
             if attempts < config.shrink_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
@@ -1075,6 +1076,41 @@ pub async fn explore_function(
                     && crate::orchestrator::hash_branch_path(&exec_res.branch_path) == *ph
                 {
                     current = bulk_trial;
+                    bulk_accepted = true;
+                }
+            }
+
+            // Phase 1.5: grouped shrink — try parameter halves before per-param fallback.
+            // Only fires when bulk failed and there are ≥ 3 parameters.
+            let n = analysis.params.len().min(current.len());
+            if !bulk_accepted && n >= 3 && attempts < config.shrink_budget {
+                let group_size = n / 2;
+                for group_trial in
+                    crate::shrink::grouped_shrink_candidates(&current, &analysis.params, group_size)
+                {
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                    attempts += 1;
+                    shrink_stats.grouped_attempts += 1;
+                    let resp = frontend
+                        .send(ProtoCommand::Execute {
+                            function: analysis.name.clone(),
+                            inputs: group_trial.clone(),
+                            mocks: effective_mocks.clone(),
+                            setup_context: None,
+                            capture: false,
+                        })
+                        .instrument(tracing::info_span!("shrink.execute_round_trip"))
+                        .await;
+                    if let Ok(resp) = resp
+                        && let ResponseResult::Execute(exec_res) = resp.result
+                        && crate::orchestrator::hash_branch_path(&exec_res.branch_path) == *ph
+                    {
+                        current = group_trial;
+                        shrink_stats.grouped_accepted += 1;
+                        break;
+                    }
                 }
             }
 
@@ -1132,6 +1168,8 @@ pub async fn explore_function(
             paths_skipped_simple = shrink_stats.paths_skipped_simple,
             paths_shrunk = shrink_stats.paths_shrunk,
             total_shrink_attempts = shrink_stats.total_shrink_attempts,
+            grouped_attempts = shrink_stats.grouped_attempts,
+            grouped_accepted = shrink_stats.grouped_accepted,
             "shrink pass complete"
         );
     }

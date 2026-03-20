@@ -2100,6 +2100,7 @@ pub async fn explore(
             let mut attempts = 0usize;
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
+            let mut bulk_accepted = false;
             if attempts < config.shrink_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
@@ -2119,6 +2120,40 @@ pub async fn explore(
                     && hash_branch_path(&exec_res.branch_path) == *ph
                 {
                     current = bulk_trial;
+                    bulk_accepted = true;
+                }
+            }
+
+            // Phase 1.5: grouped shrink — try parameter halves before per-param fallback.
+            // Only fires when bulk failed and there are ≥ 3 parameters.
+            let n = param_infos.len().min(current.len());
+            if !bulk_accepted && n >= 3 && attempts < config.shrink_budget {
+                let group_size = n / 2;
+                for group_trial in
+                    crate::shrink::grouped_shrink_candidates(&current, param_infos, group_size)
+                {
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                    attempts += 1;
+                    shrink_stats.grouped_attempts += 1;
+                    let resp = frontend
+                        .send(Command::Execute {
+                            function: function_name.to_string(),
+                            inputs: group_trial.clone(),
+                            mocks: effective_mocks.clone(),
+                            setup_context: setup_context.clone(),
+                            capture: false,
+                        })
+                        .await;
+                    if let Ok(resp) = resp
+                        && let ResponseResult::Execute(exec_res) = resp.result
+                        && hash_branch_path(&exec_res.branch_path) == *ph
+                    {
+                        current = group_trial;
+                        shrink_stats.grouped_accepted += 1;
+                        break;
+                    }
                 }
             }
 
@@ -2175,6 +2210,8 @@ pub async fn explore(
             paths_skipped_simple = shrink_stats.paths_skipped_simple,
             paths_shrunk = shrink_stats.paths_shrunk,
             total_shrink_attempts = shrink_stats.total_shrink_attempts,
+            grouped_attempts = shrink_stats.grouped_attempts,
+            grouped_accepted = shrink_stats.grouped_accepted,
             "shrink pass complete"
         );
     }
