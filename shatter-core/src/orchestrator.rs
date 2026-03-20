@@ -2098,10 +2098,14 @@ pub async fn explore(
 
             let mut current = witness.clone();
             let mut attempts = 0usize;
+            let witness_budget = crate::shrink::shrink_budget_for_witness(
+                crate::shrink::witness_complexity(witness),
+                config.shrink_budget,
+            );
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
             let mut bulk_accepted = false;
-            if attempts < config.shrink_budget
+            if attempts < witness_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
             {
@@ -2128,12 +2132,12 @@ pub async fn explore(
             // consecutive groups of floor(N/2) parameters before the per-param loop.
             // Costs ≈2 execute calls and shrinks multiple params per accepted trial.
             let n = param_infos.len().min(current.len());
-            if !bulk_accepted && n >= 3 && attempts < config.shrink_budget {
+            if !bulk_accepted && n >= 3 && attempts < witness_budget {
                 let group_size = n / 2;
                 for trial in
                     crate::shrink::grouped_shrink_candidates(&current, param_infos, group_size)
                 {
-                    if attempts >= config.shrink_budget {
+                    if attempts >= witness_budget {
                         break;
                     }
                     attempts += 1;
@@ -2157,13 +2161,13 @@ pub async fn explore(
 
             // Phase 2: one-at-a-time per-param loop.
             let mut progress = true;
-            while progress && attempts < config.shrink_budget {
+            while progress && attempts < witness_budget {
                 progress = false;
                 for i in 0..param_infos.len().min(current.len()) {
                     let candidates =
                         crate::shrink::shrink_candidates(&current[i], &param_infos[i].typ);
                     for candidate in candidates {
-                        if attempts >= config.shrink_budget {
+                        if attempts >= witness_budget {
                             break;
                         }
                         let mut trial = current.clone();
@@ -2189,7 +2193,7 @@ pub async fn explore(
                             break;
                         }
                     }
-                    if attempts >= config.shrink_budget {
+                    if attempts >= witness_budget {
                         break;
                     }
                 }
@@ -2197,6 +2201,7 @@ pub async fn explore(
 
             shrink_stats.paths_shrunk += 1;
             shrink_stats.total_shrink_attempts += attempts;
+            shrink_stats.total_budget_assigned += witness_budget;
 
             if current != *witness {
                 shrunk_witnesses.insert(*ph, current);
@@ -2208,6 +2213,7 @@ pub async fn explore(
             paths_skipped_simple = shrink_stats.paths_skipped_simple,
             paths_shrunk = shrink_stats.paths_shrunk,
             total_shrink_attempts = shrink_stats.total_shrink_attempts,
+            total_budget_assigned = shrink_stats.total_budget_assigned,
             "shrink pass complete"
         );
     }

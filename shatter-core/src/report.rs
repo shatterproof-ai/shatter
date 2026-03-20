@@ -1872,6 +1872,7 @@ mod tests {
             test_order: vec![],
             skipped: vec![],
             workers_used: 1,
+            workers_reaped: 0,
             sampling: None,
         };
         // Add a skipped function with special chars in reason
