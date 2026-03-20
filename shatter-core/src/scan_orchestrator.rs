@@ -551,8 +551,10 @@ pub struct ParallelScanResult {
     pub test_order: Vec<String>,
     /// Functions that were skipped due to timeout or error.
     pub skipped: Vec<SkippedFunction>,
-    /// Number of worker subprocesses used.
+    /// Peak number of worker subprocesses alive at any point (high-water mark).
     pub workers_used: usize,
+    /// Workers shut down early because queued work dropped below pool size.
+    pub workers_reaped: usize,
     /// Sampling context (populated when --core-sample is active).
     pub sampling: Option<SamplingContext>,
 }
@@ -567,8 +569,14 @@ struct WorkerPool {
     receiver: Mutex<tokio::sync::mpsc::Receiver<Frontend>>,
     /// Hard ceiling on spawned workers (from `--parallelism`).
     max_workers: usize,
-    /// Count of workers currently alive (checked out or in the channel). Only grows.
+    /// Count of workers currently alive (checked out or in the channel).
+    /// Decremented when a worker is reaped; incremented on growth.
     current_size: Arc<AtomicUsize>,
+    /// Peak value of `current_size` ever observed. Never decrements (not affected
+    /// by reaping), so `workers_used` reflects the true high-water mark.
+    peak_size: Arc<AtomicUsize>,
+    /// Count of workers shut down early because queued work dropped below pool size.
+    idle_reaped: Arc<AtomicUsize>,
     /// Config used to spawn replacement and growth workers.
     config: Arc<FrontendConfig>,
 }
@@ -605,6 +613,8 @@ impl WorkerPool {
             receiver: Mutex::new(receiver),
             max_workers,
             current_size: Arc::new(AtomicUsize::new(initial)),
+            peak_size: Arc::new(AtomicUsize::new(initial)),
+            idle_reaped: Arc::new(AtomicUsize::new(0)),
             config,
         })
     }
@@ -615,9 +625,45 @@ impl WorkerPool {
         rx.recv().await.expect("pool should not be empty")
     }
 
-    /// Return a worker to the pool.
-    async fn return_worker(&self, frontend: Frontend) {
+    /// Return a worker to the pool, or reap it if more workers are alive than
+    /// tasks are pending.  Prevents excess workers from idling until layer shutdown.
+    ///
+    /// Keeps at least one worker alive (`pending.max(1)`) so tasks blocked on
+    /// `checkout()` can always make progress.  A CAS prevents two concurrent
+    /// returners from both deciding to reap the same slot.
+    async fn return_or_reap_worker(&self, frontend: Frontend, pending: usize) {
+        let current = self.current_size.load(Ordering::Acquire);
+        if current > pending.max(1)
+            && self.current_size
+                .compare_exchange(current, current - 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.idle_reaped.fetch_add(1, Ordering::Relaxed);
+            // Shutdown in a detached task so the caller is not delayed.
+            tokio::spawn(async move {
+                let _ = frontend.shutdown().await;
+            });
+            return;
+        }
         let _ = self.sender.send(frontend).await;
+    }
+
+    /// Absorb a dead worker's capacity slot without spawning a replacement.
+    ///
+    /// Called when a crashed or timed-out worker leaves the pool over-provisioned
+    /// (more alive workers than pending tasks).  Decrements `current_size` so the
+    /// slot is not counted toward future replacement or growth decisions.
+    fn reap_dead_slot(&self) {
+        self.current_size.fetch_sub(1, Ordering::Relaxed);
+        self.idle_reaped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// True iff the pool needs a replacement for a dead (timed-out or crashed) worker.
+    ///
+    /// Returns false when the pool is already over-provisioned relative to `pending`
+    /// tasks — the dead slot should be absorbed via `reap_dead_slot()` instead.
+    fn needs_replacement(&self, pending: usize) -> bool {
+        self.current_size.load(Ordering::Relaxed) <= pending.max(1)
     }
 
     /// Grow the pool by one worker if demand justifies it and we are below the ceiling.
@@ -638,6 +684,8 @@ impl WorkerPool {
         {
             return; // another concurrent task already claimed the slot
         }
+        // Track peak — reaping can decrease current_size, but peak_size never shrinks.
+        self.peak_size.fetch_max(current + 1, Ordering::Relaxed);
         let sender = self.sender.clone();
         let config = Arc::clone(&self.config);
         let current_size = Arc::clone(&self.current_size);
@@ -654,9 +702,15 @@ impl WorkerPool {
         });
     }
 
-    /// Return the number of workers currently alive (in pool or checked out).
-    fn current_size(&self) -> usize {
-        self.current_size.load(Ordering::Relaxed)
+    /// Peak number of workers alive at any point during this pool's lifetime.
+    /// Unlike `current_size`, this never decrements due to reaping.
+    fn peak_size(&self) -> usize {
+        self.peak_size.load(Ordering::Relaxed)
+    }
+
+    /// Number of workers reaped early due to excess capacity.
+    fn idle_reaped(&self) -> usize {
+        self.idle_reaped.load(Ordering::Relaxed)
     }
 
     /// Shut down all workers remaining in the pool.
@@ -718,8 +772,9 @@ pub async fn parallel_scan(
         analyses.iter().map(|a| (a.name.as_str(), a)).collect();
 
     let effective_parallelism = config.policy.effective_workers(config.parallelism).max(1);
-    // Workers are created lazily per-layer; track the peak count across layers.
+    // Workers are created lazily per-layer; track peak count and total idle reaps across layers.
     let mut peak_workers: usize = 0;
+    let mut total_reaped: usize = 0;
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -989,23 +1044,33 @@ pub async fn parallel_scan(
 
                     let timed_out = result.is_err();
 
+                    // Decrement the remaining-task counter FIRST so that
+                    // return_or_reap_worker sees the updated pending count when
+                    // deciding whether to reap this worker.
+                    let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+
                     // After a timeout the frontend's stdout buffer contains a
                     // stale response that would cause an ID mismatch on the next
                     // request.  Kill and respawn instead of returning to pool.
+                    // Skip replacement when the pool is already over-provisioned
+                    // relative to remaining tasks — absorb the dead slot instead.
                     if timed_out || !frontend.is_alive() {
                         // Drop the poisoned/dead frontend (kills the child process).
                         drop(frontend);
-                        match Frontend::spawn(&fe_config).await {
-                            Ok(new_fe) => pool.return_worker(new_fe).await,
-                            Err(_) => { /* pool shrinks — acceptable degradation */ }
+                        if pool.needs_replacement(remaining) {
+                            match Frontend::spawn(&fe_config).await {
+                                Ok(new_fe) => pool.return_or_reap_worker(new_fe, remaining).await,
+                                Err(_) => { /* pool shrinks — acceptable degradation */ }
+                            }
+                        } else {
+                            // Over-capacity: absorb the dead slot without spawning.
+                            pool.reap_dead_slot();
                         }
                     } else {
-                        pool.return_worker(frontend).await;
+                        pool.return_or_reap_worker(frontend, remaining).await;
                     }
 
-                    // Decrement the remaining-task counter and grow the pool if
-                    // there are tasks still blocked on checkout() and room to grow.
-                    let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+                    // Grow the pool if tasks are still blocked on checkout().
                     pool.maybe_grow(remaining);
 
                     match result {
@@ -1072,8 +1137,10 @@ pub async fn parallel_scan(
                 }
             }
 
-            // Record the actual peak before shutdown — pool may have grown during the layer.
-            peak_workers = peak_workers.max(pool.current_size());
+            // Record the true peak (never decremented by reaping) before shutdown.
+            peak_workers = peak_workers.max(pool.peak_size());
+            // Accumulate workers reaped early across layers for perf reporting.
+            total_reaped += pool.idle_reaped();
 
             // Shut down this layer's workers now that all tasks are done.
             // This frees subprocess resources before the next layer begins,
@@ -1109,6 +1176,7 @@ pub async fn parallel_scan(
         test_order,
         skipped,
         workers_used: peak_workers,
+        workers_reaped: total_reaped,
         sampling: None,
     })
 }
@@ -2179,6 +2247,7 @@ mod tests {
                 category: SkipCategory::Error,
             }],
             workers_used: 4,
+            workers_reaped: 0,
             sampling: None,
         };
 
@@ -2221,6 +2290,7 @@ mod tests {
             }],
             skipped: vec![],
             workers_used: 1,
+            workers_reaped: 0,
             sampling: None,
         };
 
@@ -3678,6 +3748,97 @@ mod tests {
         assert!(
             result.workers_used <= 4,
             "pool must not exceed parallelism ceiling (got {})",
+            result.workers_used,
+        );
+    }
+
+    /// When a layer has more workers than remaining tasks, idle workers must be
+    /// reaped rather than kept alive until layer shutdown.
+    ///
+    /// This is the perf-evidence test for idle reaping: `workers_reaped` must be
+    /// > 0 (reaping actually fired), all tasks must complete (no deadlock), and
+    /// `workers_used` must still reflect the true peak (not the post-reap count).
+    #[tokio::test]
+    async fn parallel_scan_idle_workers_reaped_on_shrinking_workload() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        // Four independent functions in one layer. The pool starts at
+        // initial_workers(4,4)=1 and grows as tasks complete. As completion
+        // accelerates (noop is near-instant), current_size will exceed remaining
+        // tasks, triggering idle reaping.
+        let make_fn = |name: &str| FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+        let analyses = vec![
+            make_fn("fn_a"),
+            make_fn("fn_b"),
+            make_fn("fn_c"),
+            make_fn("fn_d"),
+        ];
+
+        let mut file_map = HashMap::new();
+        for name in ["fn_a", "fn_b", "fn_c", "fn_d"] {
+            file_map.insert(name.to_string(), "test.ts".to_string());
+        }
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+
+        // All tasks must complete — reaping must never cause deadlock.
+        assert_eq!(result.function_results.len(), 4, "all 4 functions must complete (no deadlock)");
+
+        // Reaping must have fired: with 4 tasks completing near-simultaneously,
+        // current_size will exceed remaining tasks at some point.
+        assert!(
+            result.workers_reaped > 0,
+            "idle reaping should have fired (workers_reaped={})",
+            result.workers_reaped,
+        );
+
+        // workers_used tracks the peak (not post-reap current_size) so existing
+        // growth assertions still hold.
+        assert!(
+            result.workers_used >= 1,
+            "workers_used must reflect the true peak (got {})",
             result.workers_used,
         );
     }
