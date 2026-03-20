@@ -300,6 +300,7 @@ impl ShrinkStats {
         self.paths_skipped_simple += other.paths_skipped_simple;
         self.paths_shrunk += other.paths_shrunk;
         self.total_shrink_attempts += other.total_shrink_attempts;
+        self.total_budget_assigned += other.total_budget_assigned;
     }
 }
 
@@ -569,18 +570,21 @@ mod tests {
             paths_skipped_simple: 1,
             paths_shrunk: 2,
             total_shrink_attempts: 10,
+            total_budget_assigned: 20,
         };
         let b = ShrinkStats {
             paths_considered: 5,
             paths_skipped_simple: 2,
             paths_shrunk: 3,
             total_shrink_attempts: 15,
+            total_budget_assigned: 30,
         };
         a.merge(&b);
         assert_eq!(a.paths_considered, 8);
         assert_eq!(a.paths_skipped_simple, 3);
         assert_eq!(a.paths_shrunk, 5);
         assert_eq!(a.total_shrink_attempts, 25);
+        assert_eq!(a.total_budget_assigned, 50);
     }
 
     #[test]
@@ -607,6 +611,7 @@ mod tests {
             paths_skipped_simple: 1,
             paths_shrunk: 2,
             total_shrink_attempts: 8,
+            total_budget_assigned: 16,
         };
         let line = format_shrink_stats_line(&stats);
         assert!(line.contains("8"), "expected attempt count in '{line}'");

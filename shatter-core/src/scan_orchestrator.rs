@@ -4707,6 +4707,7 @@ mod tests {
             boundary_results: vec![],
             shrunk_witnesses: Default::default(),
             mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
         };
         let analysis = make_analysis(func_name, vec![]);
         let mut analyze_out = crate::pipeline::analyze(&exploration, &analysis);
