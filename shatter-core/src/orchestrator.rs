@@ -2064,7 +2064,32 @@ pub async fn explore(
             }
         }
 
-        for (ph, (witness, witness_mocks)) in &path_witnesses {
+        // Selection policy: skip witnesses that are already minimal (complexity ≤
+        // SHRINK_SKIP_THRESHOLD), then process in descending complexity order so
+        // that the highest-value witnesses are shrunk first. Tie-break by ascending
+        // path hash for fully deterministic ordering independent of HashMap iteration.
+        let paths_considered = path_witnesses.len();
+        let mut to_shrink: Vec<(u64, Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>)> =
+            path_witnesses
+                .into_iter()
+                .filter(|(_, (inputs, _))| {
+                    crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
+                })
+                .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
+                .collect();
+        to_shrink.sort_by(|(ph_a, inputs_a, _), (ph_b, inputs_b, _)| {
+            let ca = crate::shrink::witness_complexity(inputs_a);
+            let cb = crate::shrink::witness_complexity(inputs_b);
+            cb.cmp(&ca).then(ph_a.cmp(ph_b))
+        });
+
+        let mut shrink_stats = crate::shrink::ShrinkStats {
+            paths_considered,
+            paths_skipped_simple: paths_considered - to_shrink.len(),
+            ..Default::default()
+        };
+
+        for (ph, witness, witness_mocks) in &to_shrink {
             let effective_mocks = if witness_mocks.is_empty() {
                 config.mocks.clone()
             } else {
@@ -2137,10 +2162,21 @@ pub async fn explore(
                 }
             }
 
+            shrink_stats.paths_shrunk += 1;
+            shrink_stats.total_shrink_attempts += attempts;
+
             if current != *witness {
                 shrunk_witnesses.insert(*ph, current);
             }
         }
+
+        tracing::debug!(
+            paths_considered = shrink_stats.paths_considered,
+            paths_skipped_simple = shrink_stats.paths_skipped_simple,
+            paths_shrunk = shrink_stats.paths_shrunk,
+            total_shrink_attempts = shrink_stats.total_shrink_attempts,
+            "shrink pass complete"
+        );
     }
 
     let unique_paths = covered_paths.len();

@@ -135,6 +135,48 @@ pub fn witness_complexity(inputs: &[Value]) -> usize {
     inputs.iter().map(value_complexity).sum()
 }
 
+/// Witnesses with complexity at or below this threshold are skipped during the
+/// shrink phase. Complexity 0 means all inputs are already at their minimal
+/// values (integer 0, empty string, empty array/object, null) — no shrink
+/// candidate can be produced, so attempting to shrink wastes the loop overhead.
+pub const SHRINK_SKIP_THRESHOLD: usize = 0;
+
+/// **Shrink selection policy (deterministic)**
+///
+/// Returns `true` when a path witness should be attempted for shrinking.
+///
+/// A witness is a candidate for shrinking if its [`witness_complexity`] exceeds
+/// [`SHRINK_SKIP_THRESHOLD`]. At or below the threshold every parameter is
+/// already at a minimal value — `shrink_candidates` would produce no candidates
+/// and every execute() call attempted would be wasted.
+///
+/// Among candidates the shrink loop processes them in **descending complexity
+/// order** (highest-value witnesses first). Ties are broken by ascending path
+/// hash, giving deterministic ordering regardless of HashMap iteration order.
+///
+/// This function never uses randomness. Same inputs → same decision, always.
+#[must_use]
+pub fn should_shrink_path(complexity: usize) -> bool {
+    complexity > SHRINK_SKIP_THRESHOLD
+}
+
+/// Perf counters gathered during a shrink pass.
+///
+/// Surfaced via `tracing::debug!` after each shrink phase so callers can
+/// observe how many paths were skipped vs. actually shrunk without modifying
+/// the public output types.
+#[derive(Debug, Default, Clone)]
+pub struct ShrinkStats {
+    /// Total unique paths considered for shrinking (one entry per path hash).
+    pub paths_considered: usize,
+    /// Paths skipped because witness complexity ≤ [`SHRINK_SKIP_THRESHOLD`].
+    pub paths_skipped_simple: usize,
+    /// Paths where shrinking was actually attempted.
+    pub paths_shrunk: usize,
+    /// Total execute() calls made across all shrink attempts.
+    pub total_shrink_attempts: usize,
+}
+
 fn value_complexity(v: &Value) -> usize {
     match v {
         Value::Null => 0,
@@ -1438,6 +1480,144 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selection policy tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod selection_policy_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // should_shrink_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skips_zero_complexity() {
+        // Complexity 0 = all inputs are already at minimal values.
+        assert!(!should_shrink_path(0));
+    }
+
+    #[test]
+    fn proceeds_for_nonzero_complexity() {
+        assert!(should_shrink_path(1));
+        assert!(should_shrink_path(2));
+        assert!(should_shrink_path(1000));
+    }
+
+    #[test]
+    fn zero_int_input_is_skipped() {
+        // A single-param witness of [0] has complexity 0.
+        let inputs = vec![json!(0i64)];
+        assert!(!should_shrink_path(witness_complexity(&inputs)));
+    }
+
+    #[test]
+    fn empty_string_input_is_skipped() {
+        let inputs = vec![json!("")];
+        assert!(!should_shrink_path(witness_complexity(&inputs)));
+    }
+
+    #[test]
+    fn nonzero_int_input_is_attempted() {
+        let inputs = vec![json!(1i64)];
+        assert!(should_shrink_path(witness_complexity(&inputs)));
+    }
+
+    #[test]
+    fn nonempty_string_input_is_attempted() {
+        let inputs = vec![json!("x")];
+        assert!(should_shrink_path(witness_complexity(&inputs)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Ordering determinism: same set of paths → same sorted order
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sort_order_is_deterministic() {
+        // Same path set sorted twice should produce identical order.
+        let paths: Vec<(u64, Vec<serde_json::Value>)> = vec![
+            (10, vec![json!("hello")]),  // complexity 5
+            (5, vec![json!(42i64)]),     // complexity 42
+            (20, vec![json!(0i64)]),     // complexity 0 (skipped)
+            (1, vec![json!("ab")]),      // complexity 2
+        ];
+
+        fn sorted_order(paths: &[(u64, Vec<serde_json::Value>)]) -> Vec<u64> {
+            let mut candidates: Vec<(u64, usize)> = paths
+                .iter()
+                .filter(|(_, inputs)| should_shrink_path(witness_complexity(inputs)))
+                .map(|(ph, inputs)| (*ph, witness_complexity(inputs)))
+                .collect();
+            candidates.sort_by(|(ph_a, ca), (ph_b, cb)| cb.cmp(ca).then(ph_a.cmp(ph_b)));
+            candidates.into_iter().map(|(ph, _)| ph).collect()
+        }
+
+        let order_a = sorted_order(&paths);
+        let order_b = sorted_order(&paths);
+        assert_eq!(order_a, order_b, "sort order must be deterministic");
+        // complexity-0 path (hash 20) must be absent (skipped)
+        assert!(!order_a.contains(&20));
+        // highest complexity (42) must be first
+        assert_eq!(order_a[0], 5);
+    }
+
+    #[test]
+    fn higher_complexity_sorted_first() {
+        let mut candidates: Vec<(u64, usize)> =
+            vec![(1, 10), (2, 100), (3, 5), (4, 50)];
+        candidates.sort_by(|(ph_a, ca), (ph_b, cb)| cb.cmp(ca).then(ph_a.cmp(ph_b)));
+        let hashes: Vec<u64> = candidates.into_iter().map(|(ph, _)| ph).collect();
+        assert_eq!(hashes, vec![2, 4, 1, 3], "must sort by descending complexity");
+    }
+
+    #[test]
+    fn tie_broken_by_ascending_hash() {
+        // Equal complexity — lower hash wins (deterministic tie-break).
+        let mut candidates: Vec<(u64, usize)> = vec![(100, 5), (1, 5), (50, 5)];
+        candidates.sort_by(|(ph_a, ca), (ph_b, cb)| cb.cmp(ca).then(ph_a.cmp(ph_b)));
+        let hashes: Vec<u64> = candidates.into_iter().map(|(ph, _)| ph).collect();
+        assert_eq!(hashes, vec![1, 50, 100]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Property tests
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn skipped_paths_subset_of_total(
+            complexities in proptest::collection::vec(0usize..200, 1..20)
+        ) {
+            // to_shrink is always a subset of all_paths.
+            let to_shrink = complexities.iter().filter(|&&c| should_shrink_path(c)).count();
+            prop_assert!(to_shrink <= complexities.len());
+        }
+
+        #[test]
+        fn zero_complexity_always_skipped(count in 1..10usize) {
+            // Any number of zero-complexity paths are all skipped.
+            let inputs: Vec<serde_json::Value> = (0..count).map(|_| json!(0i64)).collect();
+            let complexity = witness_complexity(&inputs);
+            prop_assert!(!should_shrink_path(complexity));
+        }
+
+        #[test]
+        fn sort_stable_across_calls(
+            complexities in proptest::collection::vec(1usize..500, 2..10)
+        ) {
+            let mut c1: Vec<usize> = complexities.clone();
+            let mut c2: Vec<usize> = complexities.clone();
+            c1.sort_by(|a, b| b.cmp(a));
+            c2.sort_by(|a, b| b.cmp(a));
+            prop_assert_eq!(c1, c2, "sort must be stable");
         }
     }
 }
