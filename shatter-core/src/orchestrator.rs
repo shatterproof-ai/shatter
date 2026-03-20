@@ -2075,6 +2075,7 @@ pub async fn explore(
             let mut attempts = 0usize;
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
+            let mut bulk_accepted = false;
             if attempts < config.shrink_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
@@ -2094,6 +2095,38 @@ pub async fn explore(
                     && hash_branch_path(&exec_res.branch_path) == *ph
                 {
                     current = bulk_trial;
+                    bulk_accepted = true;
+                }
+            }
+
+            // Phase 1.5: grouped fallback — when bulk was rejected and N >= 3, try
+            // consecutive groups of floor(N/2) parameters before the per-param loop.
+            // Costs ≈2 execute calls and shrinks multiple params per accepted trial.
+            let n = param_infos.len().min(current.len());
+            if !bulk_accepted && n >= 3 && attempts < config.shrink_budget {
+                let group_size = n / 2;
+                for trial in
+                    crate::shrink::grouped_shrink_candidates(&current, param_infos, group_size)
+                {
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                    attempts += 1;
+                    let resp = frontend
+                        .send(Command::Execute {
+                            function: function_name.to_string(),
+                            inputs: trial.clone(),
+                            mocks: effective_mocks.clone(),
+                            setup_context: setup_context.clone(),
+                            capture: false,
+                        })
+                        .await;
+                    if let Ok(resp) = resp
+                        && let ResponseResult::Execute(exec_res) = resp.result
+                        && hash_branch_path(&exec_res.branch_path) == *ph
+                    {
+                        current = trial;
+                    }
                 }
             }
 
