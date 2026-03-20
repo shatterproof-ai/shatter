@@ -209,7 +209,7 @@ describe("handleRequest", () => {
       await handleRequest(
         makeRequest({ command: "handshake", capabilities: ["analyze", "timing"] })
       );
-      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "branches.ts");
       const { response } = await handleRequest(
         makeRequest({ command: "analyze", file: fixtureFile })
       );
@@ -778,7 +778,7 @@ describe("handleRequest", () => {
     it("does not load executor, instrumentor, setup-loader, or wasm-generator after handshake+analyze", async () => {
       clearInstrumentedSources(); // reset lazy module caches
       await handleRequest(makeRequest({ command: "handshake", capabilities: ["analyze"] }));
-      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "branches.ts");
       await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
       const loaded = getLoadedModuleNames();
       expect(loaded).not.toContain("executor");
