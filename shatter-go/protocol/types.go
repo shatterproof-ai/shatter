@@ -74,6 +74,11 @@ type Request struct {
 	// Execute fields
 	Inputs       []json.RawMessage  `json:"inputs,omitempty"`
 	SetupContext *SetupContextStack `json:"setup_context,omitempty"`
+	// Capture controls whether side effects (console output, file writes, etc.) are
+	// collected. Nil or true means capture; false means skip for lower overhead.
+	// Non-capture outputs (branch_path, lines_executed, return_value, thrown_error)
+	// remain correct regardless of this setting.
+	Capture *bool `json:"capture,omitempty"`
 
 	// Setup/Teardown fields
 	Scope         string             `json:"scope,omitempty"`

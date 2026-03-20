@@ -949,6 +949,7 @@ pub async fn explore_function(
             setup_context.as_ref(),
             &config.loop_buckets,
             &mut obs_state,
+            config.capture_side_effects,
         )
         .instrument(tracing::info_span!("explore.execute_round_trip"))
         .await

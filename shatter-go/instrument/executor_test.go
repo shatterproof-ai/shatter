@@ -28,7 +28,7 @@ func add(a int, b int) int {
 	result, err := ExecuteFunction(src, "add", []json.RawMessage{
 		json.RawMessage("3"),
 		json.RawMessage("4"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -55,7 +55,7 @@ func greet(name string) string {
 `)
 	result, err := ExecuteFunction(src, "greet", []json.RawMessage{
 		json.RawMessage(`"world"`),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -85,7 +85,7 @@ func classify(x int) string {
 `)
 	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
 		json.RawMessage("5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -137,7 +137,7 @@ func classify(x int) string {
 `)
 	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
 		json.RawMessage("-1"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -173,7 +173,7 @@ func add(a int, b int) int {
 `)
 	_, err := ExecuteFunction(src, "add", []json.RawMessage{
 		json.RawMessage("3"),
-	})
+	}, true)
 	if err == nil {
 		t.Error("expected error for wrong argument count")
 	}
@@ -187,7 +187,7 @@ func add(a int, b int) int {
 	return a + b
 }
 `)
-	_, err := ExecuteFunction(src, "nonexistent", nil)
+	_, err := ExecuteFunction(src, "nonexistent", nil, true)
 	if err == nil {
 		t.Error("expected error for missing function")
 	}
@@ -205,7 +205,7 @@ func sayHello(name string) {
 `)
 	result, err := ExecuteFunction(src, "sayHello", []json.RawMessage{
 		json.RawMessage(`"world"`),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -229,7 +229,7 @@ func identity(x int) int {
 `)
 	result, err := ExecuteFunction(src, "identity", []json.RawMessage{
 		json.RawMessage("42"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -260,7 +260,7 @@ func boom(x int) int {
 `)
 	result, err := ExecuteFunction(src, "boom", []json.RawMessage{
 		json.RawMessage("1"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -283,7 +283,7 @@ func negate(b bool) bool {
 `)
 	result, err := ExecuteFunction(src, "negate", []json.RawMessage{
 		json.RawMessage("true"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -310,7 +310,7 @@ func double(x float64) float64 {
 `)
 	result, err := ExecuteFunction(src, "double", []json.RawMessage{
 		json.RawMessage("3.5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -338,7 +338,7 @@ func broken(x int) int {
 `)
 	_, err := ExecuteFunction(src, "broken", []json.RawMessage{
 		json.RawMessage("1"),
-	})
+	}, true)
 	// Should get an error (either parse or build failure)
 	if err == nil {
 		t.Error("expected error for code with syntax error")
@@ -362,7 +362,7 @@ func multiCheck(x int, y int) string {
 	result, err := ExecuteFunction(src, "multiCheck", []json.RawMessage{
 		json.RawMessage("5"),
 		json.RawMessage("10"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -563,7 +563,7 @@ func SumPoint(p Point) int {
 `)
 	result, err := ExecuteFunction(src, "SumPoint", []json.RawMessage{
 		json.RawMessage(`{"X": 3, "Y": 7}`),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -897,7 +897,7 @@ func main() {}
 `)
 	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
 		json.RawMessage("5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction failed on standalone file with main: %v", err)
 	}
@@ -921,7 +921,7 @@ func increment() int {
 	return Counter
 }
 `)
-	result, err := ExecuteFunction(src, "increment", []json.RawMessage{})
+	result, err := ExecuteFunction(src, "increment", []json.RawMessage{}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -961,7 +961,7 @@ func readOnly() int {
 	return Unchanged
 }
 `)
-	result, err := ExecuteFunction(src, "readOnly", []json.RawMessage{})
+	result, err := ExecuteFunction(src, "readOnly", []json.RawMessage{}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -985,7 +985,7 @@ func bumpUnexported() int {
 	return unexported
 }
 `)
-	result, err := ExecuteFunction(src, "bumpUnexported", []json.RawMessage{})
+	result, err := ExecuteFunction(src, "bumpUnexported", []json.RawMessage{}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -1011,7 +1011,7 @@ func bumpBoth() string {
 	return Y
 }
 `)
-	result, err := ExecuteFunction(src, "bumpBoth", []json.RawMessage{})
+	result, err := ExecuteFunction(src, "bumpBoth", []json.RawMessage{}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -1083,5 +1083,112 @@ func someFunc() {}
 	}
 	if names["someFunc"] {
 		t.Error("functions should not be detected")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Capture flag tests
+// ---------------------------------------------------------------------------
+
+// printingSource is a Go source with a function that writes to stdout.
+const printingSource = `package main
+
+import "fmt"
+
+func greetLoud(name string) string {
+	fmt.Println("Hello,", name)
+	return "done"
+}
+`
+
+func TestExecuteFunctionCaptureTrueCollectsSideEffects(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", printingSource)
+
+	result, err := ExecuteFunction(src, "greetLoud", []json.RawMessage{
+		json.RawMessage(`"world"`),
+	}, true)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+	if len(result.SideEffects) == 0 {
+		t.Error("expected side effects when capture=true, got none")
+	}
+	found := false
+	for _, se := range result.SideEffects {
+		if se.Kind == "console_output" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected console_output side effect, got: %+v", result.SideEffects)
+	}
+}
+
+func TestExecuteFunctionCaptureFalseEmptySideEffects(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", printingSource)
+
+	result, err := ExecuteFunction(src, "greetLoud", []json.RawMessage{
+		json.RawMessage(`"world"`),
+	}, false)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	if result.ThrownError != nil {
+		t.Fatalf("unexpected error: %+v", result.ThrownError)
+	}
+	if len(result.SideEffects) != 0 {
+		t.Errorf("expected empty side_effects when capture=false, got: %+v", result.SideEffects)
+	}
+	// Non-capture outputs must still be correct.
+	var retVal string
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != "done" {
+		t.Errorf("expected return value %q, got %q", "done", retVal)
+	}
+}
+
+func TestExecuteFunctionCaptureFalsePreservesReturnAndBranches(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+import "fmt"
+
+func classify(x int) string {
+	fmt.Println("classifying", x)
+	if x > 0 {
+		return "positive"
+	}
+	return "non-positive"
+}
+`)
+	result, err := ExecuteFunction(src, "classify", []json.RawMessage{
+		json.RawMessage("5"),
+	}, false)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	// Side effects suppressed.
+	if len(result.SideEffects) != 0 {
+		t.Errorf("expected empty side_effects when capture=false, got: %+v", result.SideEffects)
+	}
+	// Branch path still populated.
+	if len(result.BranchPath) == 0 {
+		t.Error("expected branch_path to be populated even when capture=false")
+	}
+	// Return value still correct.
+	var retVal string
+	if err := json.Unmarshal(result.ReturnValue, &retVal); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if retVal != "positive" {
+		t.Errorf("expected %q, got %q", "positive", retVal)
 	}
 }

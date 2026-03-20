@@ -186,7 +186,7 @@ func compoundAnd(a int, b int) string {
 	result, err := ExecuteFunction(src, "compoundAnd", []json.RawMessage{
 		json.RawMessage("5"),
 		json.RawMessage("5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -238,7 +238,7 @@ func compoundAnd(a int, b int) string {
 	result, err := ExecuteFunction(src, "compoundAnd", []json.RawMessage{
 		json.RawMessage("-1"),
 		json.RawMessage("5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -289,7 +289,7 @@ func compoundOr(x bool, y bool) string {
 	result, err := ExecuteFunction(src, "compoundOr", []json.RawMessage{
 		json.RawMessage("false"),
 		json.RawMessage("true"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -340,7 +340,7 @@ func compoundOr(x bool, y bool) string {
 	result, err := ExecuteFunction(src, "compoundOr", []json.RawMessage{
 		json.RawMessage("true"),
 		json.RawMessage("true"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}
@@ -383,7 +383,7 @@ func compoundAnd(a int, b int) string {
 	result, err := ExecuteFunction(src, "compoundAnd", []json.RawMessage{
 		json.RawMessage("5"),
 		json.RawMessage("5"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("ExecuteFunction: %v", err)
 	}

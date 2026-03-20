@@ -314,8 +314,10 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			DefaultBehavior:  m.DefaultBehavior,
 		})
 	}
+	// capture defaults to true when omitted (nil), matching protocol semantics.
+	capture := req.Capture == nil || *req.Capture
 	finishExecute := timing.Start("execute.total")
-	result, err := instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, execMocks)
+	result, err := instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
 	finishExecute()
 	if err != nil {
 		resp.Status = "error"

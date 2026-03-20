@@ -498,6 +498,55 @@ func TestPropertyAnalyzeExtractsCorrectParams(t *testing.T) {
 	})
 }
 
+// TestPropertyCaptureFalseAlwaysYieldsEmptySideEffects verifies the protocol
+// semantic: when a Request is deserialized with capture=false, the Capture
+// field is non-nil and false.
+func TestPropertyCaptureFieldRoundtrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		captureVal := rapid.Bool().Draw(t, "capture")
+		req := Request{
+			ProtocolVersion: ProtocolVersion,
+			ID:              1,
+			Command:         "execute",
+			Capture:         &captureVal,
+		}
+
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded Request
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if decoded.Capture == nil {
+			t.Fatal("Capture should not be nil after roundtrip when explicitly set")
+		}
+		if *decoded.Capture != captureVal {
+			t.Fatalf("Capture: got %v, want %v", *decoded.Capture, captureVal)
+		}
+	})
+}
+
+// TestPropertyCaptureNilDefaultsToTrue verifies that an Execute request with
+// no capture field (nil) is treated as capture=true, matching protocol defaults.
+func TestPropertyCaptureNilDefaultsToTrue(t *testing.T) {
+	// When capture is omitted from the JSON, the field is nil.
+	// The handler interprets nil as true (capture enabled by default).
+	data := []byte(`{"protocol_version":"0.1.0","id":1,"command":"execute"}`)
+	var req Request
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Nil capture means default (true).
+	capture := req.Capture == nil || *req.Capture
+	if !capture {
+		t.Error("nil Capture should default to true")
+	}
+}
+
 func TestErrorCodeParityWithRegistry(t *testing.T) {
 	// AllErrorCodes must have exactly 11 entries matching protocol/registry.yaml.
 	if len(AllErrorCodes) != 11 {

@@ -74,6 +74,11 @@ pub struct ObserveConfig {
     pub timeout: Option<Duration>,
     /// Skip the Instrument command (caller already instrumented).
     pub skip_instrument: bool,
+    /// When false, send `capture: false` in Execute commands — skips side-effect
+    /// collection (console output, file writes, etc.) for lower per-execute overhead.
+    /// Non-capture outputs (branch_path, lines_executed, return_value, thrown_error)
+    /// remain correct regardless of this setting.
+    pub capture_side_effects: bool,
 }
 
 impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
@@ -88,6 +93,7 @@ impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
             loop_buckets: ec.loop_buckets.clone(),
             timeout: ec.timeout_explore,
             skip_instrument: false,
+            capture_side_effects: ec.capture_side_effects,
         }
     }
 }
@@ -166,6 +172,7 @@ pub struct SingleObservation {
 ///
 /// The caller provides mutable references to its coverage sets; this function
 /// updates them in place and returns the classified observation.
+#[allow(clippy::too_many_arguments)]
 pub async fn observe_single(
     frontend: &mut Frontend,
     function_name: &str,
@@ -174,6 +181,7 @@ pub async fn observe_single(
     setup_context: Option<&SetupContextStack>,
     loop_buckets: &LoopBuckets,
     state: &mut ObserveState,
+    capture: bool,
 ) -> Result<SingleObservation, ObserveError> {
     let response = frontend
         .send(ProtoCommand::Execute {
@@ -181,7 +189,7 @@ pub async fn observe_single(
             inputs: inputs.to_vec(),
             mocks: mocks.to_vec(),
             setup_context: setup_context.cloned(),
-            capture: true,
+            capture,
         })
         .await?;
 
@@ -247,6 +255,7 @@ pub async fn observe_single(
 ///
 /// Each input vector is executed sequentially. Returns raw execution data,
 /// path hashes, line coverage, and discovery attribution.
+#[allow(clippy::too_many_arguments)]
 pub async fn observe_batch(
     frontend: &mut Frontend,
     function_name: &str,
@@ -255,6 +264,7 @@ pub async fn observe_batch(
     setup_context: Option<&SetupContextStack>,
     loop_buckets: &LoopBuckets,
     timeout: Option<Duration>,
+    capture: bool,
 ) -> Result<BatchObservation, ObserveError> {
     let mut state = ObserveState::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
@@ -276,6 +286,7 @@ pub async fn observe_batch(
             setup_context,
             loop_buckets,
             &mut state,
+            capture,
         )
         .await?;
 
@@ -393,6 +404,7 @@ pub async fn observe_function(
             setup_context.as_ref(),
             &config.loop_buckets,
             config.timeout,
+            config.capture_side_effects,
         )
         .await?
     };
@@ -462,6 +474,7 @@ async fn observe_batch_with_per_execution_setup(
             setup_context.as_ref(),
             &config.loop_buckets,
             &mut state,
+            config.capture_side_effects,
         )
         .await?;
 
@@ -628,6 +641,7 @@ mod tests {
         assert_eq!(observe_config.timeout, Some(Duration::from_secs(30)));
         assert_eq!(observe_config.project_root.as_deref(), Some("/project"));
         assert!(!observe_config.skip_instrument);
+        assert!(!observe_config.capture_side_effects);
     }
 
     #[test]
