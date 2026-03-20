@@ -810,11 +810,11 @@ pub(crate) async fn run_explore(
             total_covered,
             total_lines,
         );
-        if let Some(parent) = rf.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("failed to create directory for report file: {e}"))?;
-            }
+        if let Some(parent) = rf.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create directory for report file: {e}"))?;
         }
         std::fs::write(rf, html)
             .map_err(|e| format!("failed to write HTML report to {}: {e}", rf.display()))?;
