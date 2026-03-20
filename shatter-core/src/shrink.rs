@@ -213,6 +213,22 @@ pub fn witness_complexity(inputs: &[Value]) -> usize {
 /// candidate can be produced, so attempting to shrink wastes the loop overhead.
 pub const SHRINK_SKIP_THRESHOLD: usize = 0;
 
+/// Witnesses at or below this complexity are treated as trivial and receive
+/// only [`MIN_SHRINK_BUDGET`] attempts. Covers booleans, small integers (1–4),
+/// and very short strings (1–4 chars) — types where only a handful of shrink
+/// candidates exist regardless of budget.
+pub const SHRINK_TRIVIAL_THRESHOLD: usize = 4;
+
+/// Witnesses in the range `(SHRINK_TRIVIAL_THRESHOLD, SHRINK_MODERATE_THRESHOLD]`
+/// receive half the base budget. Covers moderate integers, medium strings, and
+/// small arrays/objects.
+pub const SHRINK_MODERATE_THRESHOLD: usize = 20;
+
+/// Minimum shrink budget for any witness that passes [`should_shrink_path`].
+/// Large enough for the bulk phase (1) + grouped phase (≈2) + at least one
+/// per-parameter attempt.
+pub const MIN_SHRINK_BUDGET: usize = 3;
+
 /// **Shrink selection policy (deterministic)**
 ///
 /// Returns `true` when a path witness should be attempted for shrinking.
@@ -232,6 +248,30 @@ pub fn should_shrink_path(complexity: usize) -> bool {
     complexity > SHRINK_SKIP_THRESHOLD
 }
 
+/// **Shrink budget policy (deterministic)**
+///
+/// Returns the maximum number of execute calls to spend shrinking a witness of
+/// the given `complexity`, given a `base_budget` from [`ExploreConfig`].
+///
+/// | Complexity range | Budget |
+/// |---|---|
+/// | ≤ [`SHRINK_TRIVIAL_THRESHOLD`] | [`MIN_SHRINK_BUDGET`] |
+/// | ≤ [`SHRINK_MODERATE_THRESHOLD`] | `base_budget / 2` (≥ `MIN_SHRINK_BUDGET`) |
+/// | > [`SHRINK_MODERATE_THRESHOLD`] | `base_budget` (full) |
+///
+/// The result is always in `[MIN_SHRINK_BUDGET.min(base_budget), base_budget]`.
+/// This function never uses randomness. Same inputs → same result, always.
+#[must_use]
+pub fn shrink_budget_for_witness(complexity: usize, base_budget: usize) -> usize {
+    if complexity <= SHRINK_TRIVIAL_THRESHOLD {
+        MIN_SHRINK_BUDGET.min(base_budget)
+    } else if complexity <= SHRINK_MODERATE_THRESHOLD {
+        (base_budget / 2).max(MIN_SHRINK_BUDGET).min(base_budget)
+    } else {
+        base_budget
+    }
+}
+
 /// Perf counters gathered during a shrink pass.
 ///
 /// Surfaced via `tracing::debug!` after each shrink phase so callers can
@@ -247,6 +287,9 @@ pub struct ShrinkStats {
     pub paths_shrunk: usize,
     /// Total execute() calls made across all shrink attempts.
     pub total_shrink_attempts: usize,
+    /// Sum of per-witness budgets assigned by [`shrink_budget_for_witness`].
+    /// Comparing this to `total_shrink_attempts` shows unused budget savings.
+    pub total_budget_assigned: usize,
 }
 
 fn value_complexity(v: &Value) -> usize {
@@ -2023,5 +2066,102 @@ mod selection_policy_tests {
             c2.sort_by(|a, b| b.cmp(a));
             prop_assert_eq!(c1, c2, "sort must be stable");
         }
+
+        // -----------------------------------------------------------------------
+        // shrink_budget_for_witness properties
+        // -----------------------------------------------------------------------
+
+        /// Budget is always within [MIN_SHRINK_BUDGET.min(base), base].
+        #[test]
+        fn budget_in_range(
+            complexity in 1usize..=2000,
+            base in 1usize..=200
+        ) {
+            let b = shrink_budget_for_witness(complexity, base);
+            let min = MIN_SHRINK_BUDGET.min(base);
+            prop_assert!(b >= min, "budget {b} below minimum {min}");
+            prop_assert!(b <= base, "budget {b} exceeds base {base}");
+        }
+
+        /// Budget is monotone non-decreasing in complexity (same base).
+        #[test]
+        fn budget_monotone_in_complexity(
+            c1 in 1usize..=1000,
+            c2 in 1usize..=1000,
+            base in 5usize..=100
+        ) {
+            let b1 = shrink_budget_for_witness(c1, base);
+            let b2 = shrink_budget_for_witness(c2, base);
+            if c1 <= c2 {
+                prop_assert!(b1 <= b2, "budget({c1})={b1} > budget({c2})={b2}");
+            }
+        }
+
+        /// Budget is deterministic: same inputs → same result.
+        #[test]
+        fn budget_deterministic(complexity in 1usize..=1000, base in 1usize..=100) {
+            let b1 = shrink_budget_for_witness(complexity, base);
+            let b2 = shrink_budget_for_witness(complexity, base);
+            prop_assert_eq!(b1, b2);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// shrink_budget_for_witness unit tests (concrete examples)
+// -----------------------------------------------------------------------
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn budget_trivial_complexity() {
+        // Complexity 1–4: trivial tier → MIN_SHRINK_BUDGET
+        for c in 1..=SHRINK_TRIVIAL_THRESHOLD {
+            assert_eq!(
+                shrink_budget_for_witness(c, 20),
+                MIN_SHRINK_BUDGET,
+                "complexity={c} should yield MIN_SHRINK_BUDGET"
+            );
+        }
+    }
+
+    #[test]
+    fn budget_at_trivial_boundary() {
+        assert_eq!(shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD, 20), MIN_SHRINK_BUDGET);
+        assert_eq!(shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD + 1, 20), 10);
+    }
+
+    #[test]
+    fn budget_moderate() {
+        // Complexity in (4, 20]: half base (min MIN_SHRINK_BUDGET)
+        assert_eq!(shrink_budget_for_witness(10, 20), 10);
+        assert_eq!(shrink_budget_for_witness(5, 20), 10);
+    }
+
+    #[test]
+    fn budget_at_moderate_boundary() {
+        assert_eq!(shrink_budget_for_witness(SHRINK_MODERATE_THRESHOLD, 20), 10);
+        assert_eq!(shrink_budget_for_witness(SHRINK_MODERATE_THRESHOLD + 1, 20), 20);
+    }
+
+    #[test]
+    fn budget_complex() {
+        // Complexity > 20: full base
+        assert_eq!(shrink_budget_for_witness(50, 20), 20);
+        assert_eq!(shrink_budget_for_witness(1000, 20), 20);
+    }
+
+    #[test]
+    fn budget_small_base_capped() {
+        // When base < MIN_SHRINK_BUDGET, cap at base
+        assert_eq!(shrink_budget_for_witness(1, 2), 2);
+        assert_eq!(shrink_budget_for_witness(100, 2), 2);
+    }
+
+    #[test]
+    fn budget_base_one() {
+        assert_eq!(shrink_budget_for_witness(1, 1), 1);
+        assert_eq!(shrink_budget_for_witness(100, 1), 1);
     }
 }
