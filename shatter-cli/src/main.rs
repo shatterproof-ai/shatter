@@ -147,11 +147,14 @@ async fn main() -> ExitCode {
             replay_recorded,
             no_replay,
             refine_budget,
+            shrink_budget,
+            no_shrink,
             mcdc,
             isolation,
             capture_side_effects,
             report_file,
         } => {
+            let shrink_budget = if no_shrink { 0 } else { shrink_budget };
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
                 // Safety: CLI is single-threaded at this point (before spawning frontends).
@@ -220,6 +223,7 @@ async fn main() -> ExitCode {
                 replay_recorded,
                 no_replay,
                 refine_budget,
+                shrink_budget,
                 mcdc,
                 isolation.into(),
                 capture_side_effects,

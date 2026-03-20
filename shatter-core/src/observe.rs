@@ -430,6 +430,7 @@ pub async fn observe_function(
         float_probe_results: vec![], boundary_results: vec![],
         shrunk_witnesses: std::collections::HashMap::new(),
         mcdc_summary: None,
+        shrink_stats: crate::shrink::ShrinkStats::default(),
     })
 }
 

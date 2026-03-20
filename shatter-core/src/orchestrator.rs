@@ -319,6 +319,8 @@ pub struct ExploreResult {
     pub mcdc_summary: Option<(usize, usize, usize)>,
     /// Number of times Z3 solving was successfully pipelined with the next observe.
     pub pipeline_overlaps: usize,
+    /// Aggregated shrink phase performance counters.
+    pub shrink_stats: crate::shrink::ShrinkStats,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -2046,6 +2048,7 @@ pub async fn explore(
     // For each unique path, try to shrink the witness to simpler inputs.
     let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
+    let mut shrink_stats = crate::shrink::ShrinkStats::default();
     if config.shrink_budget > 0 {
         // Collect the lowest-complexity witness per unique path.
         // Starting from the simplest witness reduces shrink iterations needed.
@@ -2083,7 +2086,7 @@ pub async fn explore(
             cb.cmp(&ca).then(ph_a.cmp(ph_b))
         });
 
-        let mut shrink_stats = crate::shrink::ShrinkStats {
+        shrink_stats = crate::shrink::ShrinkStats {
             paths_considered,
             paths_skipped_simple: paths_considered - to_shrink.len(),
             ..Default::default()
@@ -2241,6 +2244,7 @@ pub async fn explore(
         shrunk_witnesses,
         mcdc_summary,
         pipeline_overlaps,
+        shrink_stats,
     })
 }
 
