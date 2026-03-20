@@ -659,6 +659,12 @@ pub(crate) async fn run_scan(
                         Err(e) => log::error!("Failed to write markdown report: {e}"),
                     }
                 }
+                report::ReportFormat::Html => {
+                    match report::write_html_report(&scan_report, &report_dir) {
+                        Ok(path) => log::info!("Wrote HTML report to {}", path.display()),
+                        Err(e) => log::error!("Failed to write HTML report: {e}"),
+                    }
+                }
             }
 
             // Emit test files if --emit-tests was specified.

@@ -64,6 +64,7 @@ pub(crate) async fn run_explore(
     isolation: shatter_core::explorer::IsolationMode,
     capture_side_effects: bool,
     output_format: crate::args::OutputFormat,
+    report_file: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -113,6 +114,9 @@ pub(crate) async fn run_explore(
     let mut total_covered: usize = 0;
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
+
+    // Accumulate HTML fragments per function when --report-file is set.
+    let mut html_fragments: Vec<String> = Vec::new();
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
@@ -587,6 +591,16 @@ pub(crate) async fn run_explore(
                     total_covered += result.lines_covered;
                     total_lines += result.total_lines;
 
+                    // Accumulate HTML fragment for --report-file.
+                    if report_file.is_some() {
+                        let location =
+                            format!("{file_str}:{}-{}", func.start_line, func.end_line);
+                        html_fragments.push(shatter_core::report::render_explore_fn_html(
+                            &result,
+                            &location,
+                        ));
+                    }
+
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = {
                         let _pipeline_analyze_span = tracing::info_span!("pipeline.analyze").entered();
@@ -785,6 +799,26 @@ pub(crate) async fn run_explore(
                 )
             );
         }
+    }
+
+    // Write HTML report if --report-file was specified.
+    if let Some(rf) = report_file {
+        let html = shatter_core::report::wrap_explore_html(
+            &html_fragments,
+            total_function_count,
+            total_paths,
+            total_covered,
+            total_lines,
+        );
+        if let Some(parent) = rf.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create directory for report file: {e}"))?;
+            }
+        }
+        std::fs::write(rf, html)
+            .map_err(|e| format!("failed to write HTML report to {}: {e}", rf.display()))?;
+        log::info!("Wrote HTML report to {}", rf.display());
     }
 
     // Write collected file spec bundles to the output path as a single bundle.

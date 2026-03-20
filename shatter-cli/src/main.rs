@@ -150,6 +150,7 @@ async fn main() -> ExitCode {
             mcdc,
             isolation,
             capture_side_effects,
+            report_file,
         } => {
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -223,6 +224,7 @@ async fn main() -> ExitCode {
                 isolation.into(),
                 capture_side_effects,
                 cli.format,
+                report_file.as_deref(),
             )
             .await
         }
