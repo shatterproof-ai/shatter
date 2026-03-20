@@ -810,6 +810,26 @@ describe("handleRequest", () => {
       await handleRequest(makeRequest({ command: "instrument", file: fixtureFile, function: "add", mocks: [] }));
       expect(getLoadedModuleNames()).toContain("instrumentor");
     });
+
+    it("loads setupLoader only when setup is first called", async () => {
+      clearInstrumentedSources();
+      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
+      expect(getLoadedModuleNames()).not.toContain("setupLoader");
+      // After setup, setup-loader must be loaded
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      await handleRequest(makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" }));
+      expect(getLoadedModuleNames()).toContain("setupLoader");
+    });
+
+    it("loads setupLoader only when generate (non-wasm) is first called", async () => {
+      clearInstrumentedSources();
+      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
+      expect(getLoadedModuleNames()).not.toContain("setupLoader");
+      // After generate with a non-.wasm file, setup-loader must be loaded
+      const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
+      await handleRequest(makeRequest({ command: "generate", file: genFile, name: "User", kind: "type_name" }));
+      expect(getLoadedModuleNames()).toContain("setupLoader");
+    });
   });
 });
 
