@@ -95,6 +95,27 @@ Most branch types are universal. One is language-specific:
 
 ---
 
+## Side Effect Capabilities
+
+Side effects are optional observations emitted in the `side_effects` array of execute responses. Frontends differ in which kinds they capture and at what granularity.
+
+### Normalized kinds (same payload shape across all supporting frontends)
+
+| Kind | Payload fields | TypeScript | Go | Rust |
+|------|---------------|------------|----|------|
+| `global_state_change` | `variable`, `before`, `after` | ✅ | ✅ | ✅ |
+| `console_output` | `level`, `message` | ✅ | ✅ | ❌ |
+| `thrown_error` | `error_type`, `message`, `stack` | ✅ | ❌ | ❌ |
+
+All supported kinds use the field names above — no frontend-specific aliases.
+
+### Divergences in capture coverage
+
+- **`console_output` granularity**: TypeScript captures per-call via a proxy console (individual log levels); Go captures process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`); Rust does not capture console output at all. See divergence `side-effect-console-coverage`.
+- **`thrown_error` placement**: TypeScript emits thrown errors as a `thrown_error` side effect inside the `side_effects` array. Go and Rust report them in the top-level `thrown_error` response field instead. See divergence `side-effect-thrown-error-placement`.
+
+---
+
 ## Protocol Behaviors
 
 ### Execution Timeout
@@ -160,6 +181,34 @@ These are cross-frontend mismatches that are known, tracked, and explicitly acce
 **Status:** tracked
 
 **Resolution:** Implement the execute handler in `shatter-rust/src/handler.rs`. At that point also apply the stored exec timeout value.
+
+---
+
+### `side-effect-console-coverage`
+
+**Description:** All three frontends use the same `console_output` shape (`{ kind, level, message }`), but differ in what they capture. TypeScript intercepts each `console.*` call individually (per-call granularity, distinct log levels). Go captures process-level stdout/stderr as a single blob after the subprocess exits (all stdout becomes level `"log"`, all stderr becomes level `"error"`). Rust does not capture console output at all.
+
+**Affected frontends:** all
+
+**Affected commands:** execute (side_effects field)
+
+**Status:** tracked — shape is normalized; coverage granularity divergence is accepted
+
+**Resolution:** Improve Go to capture per-call console output; add console capture to the Rust frontend. Both require harness code injection changes.
+
+---
+
+### `side-effect-thrown-error-placement`
+
+**Description:** TypeScript emits thrown errors as a `{ kind: "thrown_error", error_type, message, stack }` entry inside the `side_effects` array. Go and Rust report thrown errors exclusively via the top-level `thrown_error` field in the execute response, not as a side effect entry.
+
+**Affected frontends:** go, rust
+
+**Affected commands:** execute (side_effects field)
+
+**Status:** tracked
+
+**Resolution:** Add `thrown_error` side effect emission to Go and Rust executors, mirroring the TypeScript behavior. The top-level field can be retained for backwards compatibility.
 
 ---
 

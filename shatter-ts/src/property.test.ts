@@ -226,6 +226,12 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
     message: arbShortString,
     stack: fc.option(arbShortString, { nil: null }),
   }),
+  fc.record({
+    kind: fc.constant("global_state_change" as const),
+    variable: arbIdent,
+    before: fc.jsonValue(),
+    after: fc.jsonValue(),
+  }),
 );
 
 const arbParamInfo: fc.Arbitrary<ParamInfo> = fc.record({
