@@ -5,10 +5,12 @@
  * The instrument handler stores instrumented source in memory so the
  * execute handler can use it for branch-recording execution.
  *
- * Heavy modules (executor, instrumentor, setup-loader, wasm-generator) are
- * loaded lazily on first use. Analyze-only sessions never pay the cost of
- * loading executor (~206ms), instrumentor (~185ms), setup-loader (~186ms),
- * or wasm-generator (~8ms).
+ * Heavy modules (analyzer, executor, instrumentor, setup-loader, wasm-generator)
+ * are loaded lazily on first use. Handshake-only sessions never pay the cost of
+ * loading any of these modules. Analyzer (~233ms, TypeScript compiler) is deferred
+ * until the first analyze command; executor (~206ms), instrumentor (~185ms),
+ * setup-loader (~186ms), and wasm-generator (~8ms) are deferred until their
+ * respective commands.
  */
 
 import * as fs from "node:fs";
@@ -21,7 +23,6 @@ import {
   type ErrorResponse,
   type SetupLevel,
 } from "./protocol.js";
-import { analyzeFile } from "./analyzer.js";
 import { TimingCollector } from "./timing.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
@@ -37,19 +38,26 @@ const SUPPORTED_CAPABILITIES = [
 // ---------------------------------------------------------------------------
 // Lazy module loaders
 //
-// Each heavy module is loaded on first use and cached. For analyze-only
-// sessions (handshake + analyze), none of these are ever loaded.
+// Each heavy module is loaded on first use and cached. Handshake requires
+// none of them — the first response is sent before any module load.
 // ---------------------------------------------------------------------------
 
+type AnalyzerMod = typeof import('./analyzer.js');
 type ExecutorMod = typeof import('./executor.js');
 type InstrumentorMod = typeof import('./instrumentor.js');
 type SetupLoaderMod = typeof import('./setup-loader.js');
 type WasmGeneratorMod = typeof import('./wasm-generator.js');
 
+let _analyzer: AnalyzerMod | null = null;
 let _executor: ExecutorMod | null = null;
 let _instrumentor: InstrumentorMod | null = null;
 let _setupLoader: SetupLoaderMod | null = null;
 let _wasmGenerator: WasmGeneratorMod | null = null;
+
+async function getAnalyzer(): Promise<AnalyzerMod> {
+  if (!_analyzer) _analyzer = await import('./analyzer.js');
+  return _analyzer;
+}
 
 async function getExecutor(): Promise<ExecutorMod> {
   if (!_executor) _executor = await import('./executor.js');
@@ -174,6 +182,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       lastAnalyzedFile = path.resolve(request.file);
       // Cache project_root for use by execute (deferred to avoid loading executor here).
       lastProjectRoot = request.project_root ?? undefined;
+      const { analyzeFile } = await getAnalyzer();
       const functions = timing
         ? timing.sync("analyze.total", () =>
           analyzeFile(request.file, request.function, request.project_root, timing))
