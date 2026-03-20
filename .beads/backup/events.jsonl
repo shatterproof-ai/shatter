@@ -1595,3 +1595,5 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-19T20:53:47Z","event_type":"closed","id":1714,"issue_id":"str-28ea.13","new_value":"Already implemented: setup-loader and wasm-generator are fully lazy-loaded via async getters (getSetupLoader/getWasmGenerator) in handlers.ts. No static runtime imports exist. Verified with npm test (2 pre-existing timing failures unrelated to this issue) and npm run build (passes).","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-19T20:54:18Z","event_type":"closed","id":1715,"issue_id":"str-28ea.13","new_value":"Closed","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-19T21:09:53Z","event_type":"closed","id":1716,"issue_id":"str-rqdr.2","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-19T21:19:07Z","event_type":"closed","id":1717,"issue_id":"str-28ea.7","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-19T21:39:28Z","event_type":"closed","id":1718,"issue_id":"str-l0oe.4","new_value":"Closed","old_value":""}
