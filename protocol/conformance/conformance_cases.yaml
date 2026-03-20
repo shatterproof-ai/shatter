@@ -13,6 +13,13 @@ known_drifts:
   - pattern: ".functions: missing in"
     reason: "Go handler includes extra 'functions' field in all responses"
 
+  # Side effect capture divergences across frontends.
+  # See protocol/parity-matrix.yaml side_effect_capabilities for the full matrix.
+  - pattern: "side_effects.*thrown_error"
+    reason: "Go does not yet capture thrown_error side effects; only TS emits this kind (see go-side-effects-partial)"
+  - pattern: "side_effects.*global_mutation"
+    reason: "Go does not yet capture global_mutation side effects; only TS emits this kind (see go-side-effects-partial)"
+
 frontends:
   noop:
     command: ["bash", "protocol/noop-frontend.sh"]

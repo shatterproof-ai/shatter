@@ -63,9 +63,9 @@
   ],
   "side_effects": [
     {
-      "kind": "console",
-      "channel": "log",
-      "args": ["Processing order for quantity:", 42]
+      "kind": "console_output",
+      "level": "log",
+      "message": "Processing order for quantity: 42"
     }
   ],
   "performance": {

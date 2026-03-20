@@ -1251,6 +1251,81 @@ func TestConvertSideEffectsEmpty(t *testing.T) {
 	}
 }
 
+func TestConvertSideEffectsAllKinds(t *testing.T) {
+	stack := "at foo:1"
+	value := "secret"
+	body := json.RawMessage(`{"x":1}`)
+	before := json.RawMessage(`0`)
+	after := json.RawMessage(`1`)
+
+	input := []instrument.SideEffect{
+		{Kind: "console_output", Level: "warn", Message: "watch out"},
+		{Kind: "file_write", Path: "/tmp/out.txt", Content: "data"},
+		{Kind: "network_request", Method: "POST", URL: "https://example.com", Body: &body},
+		{Kind: "environment_read", Variable: "HOME", Value: &value},
+		{Kind: "global_mutation", Name: "GlobalCounter"},
+		{Kind: "thrown_error", ErrorType: "TypeError", Message: "bad type", Stack: &stack},
+		{Kind: "global_state_change", Variable: "Counter", Before: &before, After: &after},
+	}
+	result := convertSideEffects(input)
+	if len(result) != 7 {
+		t.Fatalf("expected 7 side effects, got %d", len(result))
+	}
+
+	cases := []struct {
+		idx  int
+		kind string
+	}{
+		{0, "console_output"},
+		{1, "file_write"},
+		{2, "network_request"},
+		{3, "environment_read"},
+		{4, "global_mutation"},
+		{5, "thrown_error"},
+		{6, "global_state_change"},
+	}
+	for _, c := range cases {
+		if result[c.idx].Kind != c.kind {
+			t.Errorf("result[%d].Kind = %q, want %q", c.idx, result[c.idx].Kind, c.kind)
+		}
+		// Each entry must round-trip through JSON with correct "kind" field
+		data, err := json.Marshal(result[c.idx])
+		if err != nil {
+			t.Fatalf("marshal result[%d]: %v", c.idx, err)
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal result[%d]: %v", c.idx, err)
+		}
+		if m["kind"] != c.kind {
+			t.Errorf("result[%d] JSON kind = %q, want %q", c.idx, m["kind"], c.kind)
+		}
+	}
+
+	// Spot-check individual field mappings
+	if result[1].Path != "/tmp/out.txt" {
+		t.Errorf("file_write Path = %q, want %q", result[1].Path, "/tmp/out.txt")
+	}
+	if result[1].Content != "data" {
+		t.Errorf("file_write Content = %q, want %q", result[1].Content, "data")
+	}
+	if result[2].Method != "POST" {
+		t.Errorf("network_request Method = %q, want %q", result[2].Method, "POST")
+	}
+	if result[4].Name != "GlobalCounter" {
+		t.Errorf("global_mutation Name = %q, want %q", result[4].Name, "GlobalCounter")
+	}
+	if result[5].ErrorType != "TypeError" {
+		t.Errorf("thrown_error ErrorType = %q, want %q", result[5].ErrorType, "TypeError")
+	}
+	if result[5].Stack == nil || *result[5].Stack != "at foo:1" {
+		t.Errorf("thrown_error Stack = %v, want %q", result[5].Stack, "at foo:1")
+	}
+	if result[6].Variable != "Counter" {
+		t.Errorf("global_state_change Variable = %q, want %q", result[6].Variable, "Counter")
+	}
+}
+
 // convertBranchPath must always emit a non-nil constraint, even when
 // the Go instrumentor provides no symbolic constraint (ConstraintJSON == "").
 // Without this, Rust's serde rejects the response due to the missing field.

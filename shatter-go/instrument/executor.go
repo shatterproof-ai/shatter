@@ -83,10 +83,36 @@ func parseTimeoutEnv(key string) (time.Duration, bool) {
 }
 
 // SideEffect represents an observable side effect during execution.
+// Fields correspond 1:1 with the protocol.SideEffect wire format (all 7 kinds).
+// Only fields relevant to the specific Kind are populated.
 type SideEffect struct {
-	Kind     string           `json:"kind"`
-	Level    string           `json:"level,omitempty"`
-	Message  string           `json:"message,omitempty"`
+	// Shared
+	Kind string `json:"kind"`
+
+	// console_output
+	Level   string `json:"level,omitempty"`
+	Message string `json:"message,omitempty"`
+
+	// file_write
+	Path    string `json:"path,omitempty"`
+	Content string `json:"content,omitempty"`
+
+	// network_request
+	Method string           `json:"method,omitempty"`
+	URL    string           `json:"url,omitempty"`
+	Body   *json.RawMessage `json:"body,omitempty"`
+
+	// global_mutation
+	Name string `json:"name,omitempty"`
+
+	// thrown_error
+	ErrorType string  `json:"error_type,omitempty"`
+	Stack     *string `json:"stack,omitempty"`
+
+	// environment_read
+	Value *string `json:"value,omitempty"`
+
+	// global_state_change
 	Variable string           `json:"variable,omitempty"`
 	Before   *json.RawMessage `json:"before,omitempty"`
 	After    *json.RawMessage `json:"after,omitempty"`
