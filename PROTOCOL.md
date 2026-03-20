@@ -185,8 +185,22 @@ Run an instrumented function with specific inputs and mock configurations, colle
       "should_track_calls": true,
       "default_behavior": "repeat_last"
     }
-  ]
+  ],
+  "capture": true
 }
+```
+
+**`capture` field** (optional, default: `true`):
+
+Controls whether the frontend instruments side-effect channels (console output, global state changes, etc.) during this execution.
+
+- **`capture: true`** (or omitted) — full side-effect capture enabled. The `side_effects` array in the response will be populated. Adds per-call overhead for console and process interception.
+- **`capture: false`** — side-effect capture disabled. The `side_effects` array will be empty (`[]`). All other response fields (`branch_path`, `lines_executed`, `return_value`, `thrown_error`, `path_constraints`) remain fully populated and correct.
+
+The core sets `capture: false` by default during exploration to maximize throughput. Use the CLI `--capture-side-effects` flag to opt in:
+
+```
+shatter explore --capture-side-effects examples/typescript/src/
 ```
 
 **Response (normal return):**

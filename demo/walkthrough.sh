@@ -277,7 +277,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=50
+TOTAL=51
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -564,6 +564,11 @@ step 49 $TOTAL "HTML Explore Report" \
 step 50 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
     $SHATTER scan --report-format=html --output /tmp/shatter-scan-html examples/standalone/ts
+
+# Stage 51: Side-effect capture
+step 51 $TOTAL "Explore with Side-Effect Capture" \
+    "Opt in to rich side-effect recording (console output, global state changes). Disabled by default for throughput." \
+    $SHATTER explore --capture-side-effects "${EXAMPLES[0]}"
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then
