@@ -227,10 +227,26 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
     stack: fc.option(arbShortString, { nil: null }),
   }),
   fc.record({
+    kind: fc.constant("file_write" as const),
+    path: arbShortString,
+    content: arbShortString,
+  }),
+  fc.record({
+    kind: fc.constant("network_request" as const),
+    method: arbIdent,
+    url: arbShortString,
+    body: fc.option(fc.oneof(fc.integer(), fc.string({ maxLength: 10 })), { nil: null }),
+  }),
+  fc.record({
+    kind: fc.constant("environment_read" as const),
+    variable: arbIdent,
+    value: fc.option(arbShortString, { nil: null }),
+  }),
+  fc.record({
     kind: fc.constant("global_state_change" as const),
     variable: arbIdent,
-    before: fc.jsonValue(),
-    after: fc.jsonValue(),
+    before: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null)),
+    after: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null)),
   }),
 );
 
@@ -441,6 +457,55 @@ describe("property: protocol message round-trips", () => {
         },
       ),
     );
+  });
+});
+
+describe("property: SideEffect wire format", () => {
+  it("all 7 kinds survive JSON round-trip with correct 'kind' field", () => {
+    fc.assert(
+      fc.property(arbSideEffect, (effect) => {
+        const json = JSON.stringify(effect);
+        const decoded = JSON.parse(json) as SideEffect;
+        expect(decoded).toEqual(effect);
+        expect(decoded.kind).toBe(effect.kind);
+      }),
+    );
+  });
+
+  it("kind field is always present and non-empty in serialized output", () => {
+    fc.assert(
+      fc.property(arbSideEffect, (effect) => {
+        const parsed = JSON.parse(JSON.stringify(effect)) as Record<string, unknown>;
+        expect(typeof parsed["kind"]).toBe("string");
+        expect((parsed["kind"] as string).length).toBeGreaterThan(0);
+      }),
+    );
+  });
+
+  it("each kind only carries its own required fields", () => {
+    const consoleEffect: SideEffect = { kind: "console_output", level: "log", message: "hello" };
+    expect(JSON.parse(JSON.stringify(consoleEffect))).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "hello",
+    });
+
+    const fileEffect: SideEffect = { kind: "file_write", path: "/tmp/x", content: "data" };
+    const fileParsed = JSON.parse(JSON.stringify(fileEffect)) as Record<string, unknown>;
+    expect(fileParsed["kind"]).toBe("file_write");
+    expect(fileParsed["path"]).toBe("/tmp/x");
+
+    const stateEffect: SideEffect = {
+      kind: "global_state_change",
+      variable: "Count",
+      before: 0,
+      after: 1,
+    };
+    const stateParsed = JSON.parse(JSON.stringify(stateEffect)) as Record<string, unknown>;
+    expect(stateParsed["kind"]).toBe("global_state_change");
+    expect(stateParsed["variable"]).toBe("Count");
+    expect(stateParsed["before"]).toBe(0);
+    expect(stateParsed["after"]).toBe(1);
   });
 });
 

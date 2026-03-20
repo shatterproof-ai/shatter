@@ -455,6 +455,9 @@ func convertDiscoveredDeps(deps []instrument.DiscoveredDependency) []DiscoveredD
 }
 
 // convertSideEffects converts executor SideEffects to protocol format.
+// All seven canonical kinds are mapped: console_output, file_write,
+// network_request, environment_read, global_mutation, thrown_error,
+// global_state_change.
 func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 	if len(effects) == 0 {
 		return []SideEffect{}
@@ -462,12 +465,21 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 	result := make([]SideEffect, len(effects))
 	for i, e := range effects {
 		result[i] = SideEffect{
-			Kind:     e.Kind,
-			Level:    e.Level,
-			Message:  e.Message,
-			Variable: e.Variable,
-			Before:   (*json.RawMessage)(e.Before),
-			After:    (*json.RawMessage)(e.After),
+			Kind:      e.Kind,
+			Level:     e.Level,
+			Message:   e.Message,
+			Path:      e.Path,
+			Content:   e.Content,
+			Method:    e.Method,
+			URL:       e.URL,
+			Body:      e.Body,
+			Name:      e.Name,
+			ErrorType: e.ErrorType,
+			Stack:     e.Stack,
+			Value:     e.Value,
+			Variable:  e.Variable,
+			Before:    e.Before,
+			After:     e.After,
 		}
 	}
 	return result
