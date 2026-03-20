@@ -1015,6 +1015,7 @@ fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnaly
         boundary_results: merged_boundary,
         shrunk_witnesses: merged_shrunk,
         mcdc_summary,
+        shrink_stats: crate::shrink::ShrinkStats::default(),
     };
 
     let mut analyze_out = crate::pipeline::analyze(&merged_exploration, analysis);
