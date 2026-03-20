@@ -1680,23 +1680,31 @@ mod tests {
 
         proptest! {
             #[test]
-            fn grouped_candidate_not_more_complex(
+            fn grouped_candidates_only_change_params_in_group(
                 x in -500i64..500,
-                s in "[a-z]{0,10}",
+                s in "[a-z]{1,10}",  // non-empty so shrink always has a candidate
                 z in -500i64..500,
                 group_size in 1usize..4,
             ) {
+                // Each trial produced by grouped_shrink_candidates must only change
+                // parameters that fall inside the trial's group; params outside are
+                // identical to the original inputs.
                 let inputs = vec![json!(x), Value::String(s), json!(z)];
                 let params = vec![int_param("x"), str_param("s"), int_param("z")];
-                for trial in grouped_shrink_candidates(&inputs, &params, group_size) {
-                    let orig = witness_complexity(&inputs);
-                    let cand = witness_complexity(&trial);
-                    prop_assert!(
-                        cand <= orig,
-                        "grouped trial more complex than original: {} > {}",
-                        cand,
-                        orig
-                    );
+                let n = inputs.len();
+                let trials = grouped_shrink_candidates(&inputs, &params, group_size);
+                for (trial_idx, trial) in trials.iter().enumerate() {
+                    let group_start = trial_idx * group_size;
+                    let group_end = (group_start + group_size).min(n);
+                    for j in 0..n {
+                        if j < group_start || j >= group_end {
+                            prop_assert_eq!(
+                                &trial[j], &inputs[j],
+                                "param {} outside group [{},{}) must be unchanged in trial {}",
+                                j, group_start, group_end, trial_idx
+                            );
+                        }
+                    }
                 }
             }
 

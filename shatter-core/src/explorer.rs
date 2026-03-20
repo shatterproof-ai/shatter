@@ -1030,6 +1030,7 @@ pub async fn explore_function(
             let mut attempts = 0usize;
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
+            let mut bulk_accepted = false;
             if attempts < config.shrink_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
@@ -1050,6 +1051,41 @@ pub async fn explore_function(
                     && crate::orchestrator::hash_branch_path(&exec_res.branch_path) == *ph
                 {
                     current = bulk_trial;
+                    bulk_accepted = true;
+                }
+            }
+
+            // Phase 1.5: grouped fallback — when bulk was rejected and N >= 3, try
+            // consecutive groups of floor(N/2) parameters before the per-param loop.
+            // Costs ≈2 execute calls and shrinks multiple params per accepted trial.
+            let n = analysis.params.len().min(current.len());
+            if !bulk_accepted && n >= 3 && attempts < config.shrink_budget {
+                let group_size = n / 2;
+                for trial in crate::shrink::grouped_shrink_candidates(
+                    &current,
+                    &analysis.params,
+                    group_size,
+                ) {
+                    if attempts >= config.shrink_budget {
+                        break;
+                    }
+                    attempts += 1;
+                    let resp = frontend
+                        .send(ProtoCommand::Execute {
+                            function: analysis.name.clone(),
+                            inputs: trial.clone(),
+                            mocks: effective_mocks.clone(),
+                            setup_context: None,
+                            capture: false,
+                        })
+                        .instrument(tracing::info_span!("shrink.execute_round_trip"))
+                        .await;
+                    if let Ok(resp) = resp
+                        && let ResponseResult::Execute(exec_res) = resp.result
+                        && crate::orchestrator::hash_branch_path(&exec_res.branch_path) == *ph
+                    {
+                        current = trial;
+                    }
                 }
             }
 
