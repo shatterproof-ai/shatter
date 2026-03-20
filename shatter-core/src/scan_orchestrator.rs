@@ -726,6 +726,110 @@ impl WorkerPool {
     }
 }
 
+/// Execute a layer of function tasks in Function isolation mode.
+///
+/// Each function gets a dedicated fresh frontend process. Concurrency is capped
+/// by `max_concurrent` (from `--parallelism`). The process is killed when the
+/// function's exploration completes — it is never shared with other functions.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+async fn run_layer_function_mode(
+    fe_config: Arc<FrontendConfig>,
+    tasks: Vec<(
+        String,
+        FunctionAnalysis,
+        ExploreConfig,
+        Vec<MockUsage>,
+        HashSet<String>,
+        Option<String>,
+    )>,
+    max_concurrent: usize,
+    timeout: Duration,
+    cache: &Option<Arc<BehaviorMapCache>>,
+    behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
+    input_pool: &Arc<Mutex<InterestingPool>>,
+) -> (Vec<FunctionOutcome>, usize) {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let mut handles = Vec::new();
+
+    for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
+        let semaphore = Arc::clone(&semaphore);
+        let fe_config = Arc::clone(&fe_config);
+        let behavior_maps = Arc::clone(behavior_maps);
+        let input_pool = Arc::clone(input_pool);
+        let cache = cache.clone();
+
+        let handle = tokio::spawn(async move {
+            // Acquire a concurrency slot before spawning the frontend.
+            let _permit = semaphore.acquire().await.expect("semaphore is never closed");
+
+            let mut frontend = match Frontend::spawn(&fe_config).await {
+                Ok(fe) => fe,
+                Err(e) => {
+                    return FunctionOutcome::Error {
+                        function_name: func_name,
+                        error: e.to_string(),
+                    };
+                }
+            };
+
+            let result = tokio::time::timeout(
+                timeout,
+                explore_single_function(
+                    &mut frontend,
+                    &func_name,
+                    &analysis,
+                    &explore_config,
+                    &mocks_used,
+                    &callees,
+                    &behavior_maps,
+                    deep_fp,
+                    &input_pool,
+                ),
+            )
+            .await;
+
+            // Always shut down the dedicated frontend — never return to a pool.
+            let _ = frontend.shutdown().await;
+
+            match result {
+                Ok(Ok(func_result)) => {
+                    let mut maps = behavior_maps.lock().await;
+                    maps.insert(func_name.clone(), func_result.behavior_map.clone());
+                    drop(maps);
+                    if let Some(ref cache) = cache {
+                        let _ = cache.store(&func_result.behavior_map);
+                    }
+                    FunctionOutcome::Success(Box::new(func_result))
+                }
+                Ok(Err(e)) => FunctionOutcome::Error {
+                    function_name: func_name,
+                    error: e.to_string(),
+                },
+                Err(_) => FunctionOutcome::Timeout {
+                    function_name: func_name,
+                    limit: timeout,
+                },
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    let peak = max_concurrent.min(handles.len());
+    let mut outcomes = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match handle.await {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(e) => outcomes.push(FunctionOutcome::Error {
+                function_name: "(unknown)".into(),
+                error: format!("task join error: {e}"),
+            }),
+        }
+    }
+    (outcomes, peak)
+}
+
 /// Run a multi-function scan in dependency order with multi-process parallelism.
 ///
 /// Spawns `config.parallelism` frontend subprocesses and explores functions
@@ -996,115 +1100,170 @@ pub async fn parallel_scan(
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
         }
 
-        // Execute tasks in parallel across the worker pool.
-        // The pool is created lazily — only when there is real exploration work
-        // to do in this layer. Cache-hit layers skip pool creation entirely.
+        // Execute tasks in parallel, using either the shared WorkerPool (default)
+        // or per-function dedicated frontends (Function isolation mode).
+        // The pool/semaphore is created lazily — only when there is real
+        // exploration work to do in this layer. Cache-hit layers skip it.
         if !tasks.is_empty() {
             let fe_config = Arc::new(frontend_config.clone());
-            let pool = Arc::new(
-                WorkerPool::spawn_capped(Arc::clone(&fe_config), effective_parallelism, tasks.len())
-                    .await
-                    .map_err(ScanError::Frontend)?,
-            );
 
-            // Each task decrements this counter after returning its worker so that
-            // `maybe_grow` can detect tasks still blocked on `checkout()`.
-            let tasks_remaining = Arc::new(AtomicUsize::new(tasks.len()));
-
-            // Each task checks out a worker, explores, then returns the worker.
-            let mut handles = Vec::new();
-
-            for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
-                let pool = Arc::clone(&pool);
-                let behavior_maps = Arc::clone(&behavior_maps);
-                let input_pool = Arc::clone(&input_pool);
-                let timeout = config.timeout_per_fn;
-                let cache = config.cache.clone();
-                let fe_config = Arc::clone(&fe_config);
-                let tasks_remaining = Arc::clone(&tasks_remaining);
-
-                let handle = tokio::spawn(async move {
-                    let mut frontend = pool.checkout().await;
-
-                    let result = tokio::time::timeout(
-                        timeout,
-                        explore_single_function(
-                            &mut frontend,
-                            &func_name,
-                            &analysis,
-                            &explore_config,
-                            &mocks_used,
-                            &callees,
-                            &behavior_maps,
-                            deep_fp.clone(),
-                            &input_pool,
-                        ),
+            // Collect outcomes from either isolation path.
+            let layer_outcomes: Vec<FunctionOutcome> =
+                if config.isolation == IsolationMode::Function {
+                    // Function mode: each function gets a dedicated fresh frontend.
+                    // No shared pool — a Semaphore caps concurrency instead.
+                    let (outcomes, layer_peak) = run_layer_function_mode(
+                        Arc::clone(&fe_config),
+                        tasks,
+                        effective_parallelism,
+                        config.timeout_per_fn,
+                        &config.cache,
+                        &behavior_maps,
+                        &input_pool,
                     )
                     .await;
+                    peak_workers = peak_workers.max(layer_peak);
+                    outcomes
+                } else {
+                    // Default: shared WorkerPool — workers are reused across functions.
+                    let pool = Arc::new(
+                        WorkerPool::spawn_capped(
+                            Arc::clone(&fe_config),
+                            effective_parallelism,
+                            tasks.len(),
+                        )
+                        .await
+                        .map_err(ScanError::Frontend)?,
+                    );
 
-                    let timed_out = result.is_err();
+                    // Each task decrements this counter after returning its worker so that
+                    // `maybe_grow` can detect tasks still blocked on `checkout()`.
+                    let tasks_remaining = Arc::new(AtomicUsize::new(tasks.len()));
 
-                    // Decrement the remaining-task counter FIRST so that
-                    // return_or_reap_worker sees the updated pending count when
-                    // deciding whether to reap this worker.
-                    let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+                    // Each task checks out a worker, explores, then returns the worker.
+                    let mut handles = Vec::new();
 
-                    // After a timeout the frontend's stdout buffer contains a
-                    // stale response that would cause an ID mismatch on the next
-                    // request.  Kill and respawn instead of returning to pool.
-                    // Skip replacement when the pool is already over-provisioned
-                    // relative to remaining tasks — absorb the dead slot instead.
-                    if timed_out || !frontend.is_alive() {
-                        // Drop the poisoned/dead frontend (kills the child process).
-                        drop(frontend);
-                        if pool.needs_replacement(remaining) {
-                            match Frontend::spawn(&fe_config).await {
-                                Ok(new_fe) => pool.return_or_reap_worker(new_fe, remaining).await,
-                                Err(_) => { /* pool shrinks — acceptable degradation */ }
+                    for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in
+                        tasks
+                    {
+                        let pool = Arc::clone(&pool);
+                        let behavior_maps = Arc::clone(&behavior_maps);
+                        let input_pool = Arc::clone(&input_pool);
+                        let timeout = config.timeout_per_fn;
+                        let cache = config.cache.clone();
+                        let fe_config = Arc::clone(&fe_config);
+                        let tasks_remaining = Arc::clone(&tasks_remaining);
+
+                        let handle = tokio::spawn(async move {
+                            let mut frontend = pool.checkout().await;
+
+                            let result = tokio::time::timeout(
+                                timeout,
+                                explore_single_function(
+                                    &mut frontend,
+                                    &func_name,
+                                    &analysis,
+                                    &explore_config,
+                                    &mocks_used,
+                                    &callees,
+                                    &behavior_maps,
+                                    deep_fp.clone(),
+                                    &input_pool,
+                                ),
+                            )
+                            .await;
+
+                            let timed_out = result.is_err();
+
+                            // Decrement the remaining-task counter FIRST so that
+                            // return_or_reap_worker sees the updated pending count when
+                            // deciding whether to reap this worker.
+                            let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+
+                            // After a timeout the frontend's stdout buffer contains a
+                            // stale response that would cause an ID mismatch on the next
+                            // request.  Kill and respawn instead of returning to pool.
+                            // Skip replacement when the pool is already over-provisioned
+                            // relative to remaining tasks — absorb the dead slot instead.
+                            if timed_out || !frontend.is_alive() {
+                                // Drop the poisoned/dead frontend (kills the child process).
+                                drop(frontend);
+                                if pool.needs_replacement(remaining) {
+                                    match Frontend::spawn(&fe_config).await {
+                                        Ok(new_fe) => pool.return_or_reap_worker(new_fe, remaining).await,
+                                        Err(_) => { /* pool shrinks — acceptable degradation */ }
+                                    }
+                                } else {
+                                    // Over-capacity: absorb the dead slot without spawning.
+                                    pool.reap_dead_slot();
+                                }
+                            } else {
+                                pool.return_or_reap_worker(frontend, remaining).await;
                             }
-                        } else {
-                            // Over-capacity: absorb the dead slot without spawning.
-                            pool.reap_dead_slot();
-                        }
-                    } else {
-                        pool.return_or_reap_worker(frontend, remaining).await;
+
+                            // Grow the pool if tasks are still blocked on checkout().
+                            pool.maybe_grow(remaining);
+
+                            match result {
+                                Ok(Ok(func_result)) => {
+                                    // Store the behavior map for downstream functions.
+                                    let mut maps = behavior_maps.lock().await;
+                                    maps.insert(
+                                        func_name.clone(),
+                                        func_result.behavior_map.clone(),
+                                    );
+                                    drop(maps);
+
+                                    // Persist to disk cache for reuse across runs.
+                                    if let Some(ref cache) = cache {
+                                        let _ = cache.store(&func_result.behavior_map);
+                                    }
+
+                                    FunctionOutcome::Success(Box::new(func_result))
+                                }
+                                Ok(Err(e)) => FunctionOutcome::Error {
+                                    function_name: func_name,
+                                    error: e.to_string(),
+                                },
+                                Err(_) => FunctionOutcome::Timeout {
+                                    function_name: func_name,
+                                    limit: timeout,
+                                },
+                            }
+                        });
+
+                        handles.push(handle);
                     }
 
-                    // Grow the pool if tasks are still blocked on checkout().
-                    pool.maybe_grow(remaining);
-
-                    match result {
-                        Ok(Ok(func_result)) => {
-                            // Store the behavior map for downstream functions.
-                            let mut maps = behavior_maps.lock().await;
-                            maps.insert(func_name.clone(), func_result.behavior_map.clone());
-                            drop(maps);
-
-                            // Persist to disk cache for reuse across runs.
-                            if let Some(ref cache) = cache {
-                                let _ = cache.store(&func_result.behavior_map);
-                            }
-
-                            FunctionOutcome::Success(Box::new(func_result))
+                    let mut outcomes = Vec::with_capacity(handles.len());
+                    for handle in handles {
+                        match handle.await {
+                            Ok(outcome) => outcomes.push(outcome),
+                            Err(e) => outcomes.push(FunctionOutcome::Error {
+                                function_name: "(unknown)".into(),
+                                error: format!("task join error: {e}"),
+                            }),
                         }
-                        Ok(Err(e)) => FunctionOutcome::Error {
-                            function_name: func_name,
-                            error: e.to_string(),
-                        },
-                        Err(_) => FunctionOutcome::Timeout {
-                            function_name: func_name,
-                            limit: timeout,
-                        },
                     }
-                });
 
-                handles.push(handle);
-            }
+                    // Record the true peak (never decremented by reaping) before shutdown.
+                    peak_workers = peak_workers.max(pool.peak_size());
+                    // Accumulate workers reaped early across layers for perf reporting.
+                    total_reaped += pool.idle_reaped();
 
-            // Collect results from all tasks in this layer.
-            for handle in handles {
-                match handle.await {
-                    Ok(FunctionOutcome::Success(result)) => {
+                    // Shut down this layer's workers now that all tasks are done.
+                    // This frees subprocess resources before the next layer begins,
+                    // and ensures zero processes remain when the layer was a cache hit.
+                    if let Ok(p) = Arc::try_unwrap(pool) {
+                        p.shutdown().await;
+                    }
+                    outcomes
+                };
+
+            // Process outcomes from whichever path ran.
+            for outcome in layer_outcomes {
+                match outcome {
+                    FunctionOutcome::Success(result) => {
                         // Record deep FP for this function so downstream layers
                         // can incorporate it into their deep fingerprints.
                         if let Some(ref fp) = result.behavior_map.fingerprint {
@@ -1112,41 +1271,21 @@ pub async fn parallel_scan(
                         }
                         all_results.push(*result);
                     }
-                    Ok(FunctionOutcome::Timeout { function_name, limit }) => {
+                    FunctionOutcome::Timeout { function_name, limit } => {
                         skipped.push(SkippedFunction {
                             function_name,
                             reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
                             category: SkipCategory::Error,
                         });
                     }
-                    Ok(FunctionOutcome::Error { function_name, error }) => {
+                    FunctionOutcome::Error { function_name, error } => {
                         skipped.push(SkippedFunction {
                             function_name,
                             reason: format!("error: {error}"),
                             category: SkipCategory::Error,
                         });
                     }
-                    Err(e) => {
-                        // JoinError (task panicked or was cancelled)
-                        skipped.push(SkippedFunction {
-                            function_name: "(unknown)".into(),
-                            reason: format!("task join error: {e}"),
-                            category: SkipCategory::Error,
-                        });
-                    }
                 }
-            }
-
-            // Record the true peak (never decremented by reaping) before shutdown.
-            peak_workers = peak_workers.max(pool.peak_size());
-            // Accumulate workers reaped early across layers for perf reporting.
-            total_reaped += pool.idle_reaped();
-
-            // Shut down this layer's workers now that all tasks are done.
-            // This frees subprocess resources before the next layer begins,
-            // and ensures zero processes remain when the layer was a cache hit.
-            if let Ok(p) = Arc::try_unwrap(pool) {
-                p.shutdown().await;
             }
         }
 
@@ -3939,5 +4078,176 @@ mod tests {
     fn layer_parallel_policy_is_default() {
         use crate::scheduler_policy::SchedulerPolicy;
         assert_eq!(SchedulerPolicy::default(), SchedulerPolicy::LayerParallel);
+    }
+
+    // ── IsolationMode::Function tests ────────────────────────────────
+
+    /// Two independent functions with Function isolation must both be explored.
+    /// Each gets its own dedicated frontend; both complete successfully.
+    #[tokio::test]
+    async fn parallel_scan_function_isolation_explores_all_functions() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "fn_one".to_string(),
+                exported: true,
+                params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+            FunctionAnalysis {
+                name: "fn_two".to_string(),
+                exported: true,
+                params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fn_one".to_string(), "test.ts".to_string());
+        file_map.insert("fn_two".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::Function,
+            capture_side_effects: false,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan with Function isolation should succeed");
+
+        // Both independent functions must be explored.
+        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert!(result.skipped.is_empty(), "no functions should be skipped");
+    }
+
+    /// A dependency chain (caller → leaf) with Function isolation must explore
+    /// both functions in dependency order, with no errors.
+    #[tokio::test]
+    async fn parallel_scan_function_isolation_respects_dependency_order() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "leaf_fn".to_string(),
+                exported: true,
+                params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+            FunctionAnalysis {
+                name: "caller_fn".to_string(),
+                exported: true,
+                params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+                branches: vec![],
+                dependencies: vec![ExternalDependency {
+                    kind: DependencyKind::FunctionCall,
+                    symbol: "leaf_fn".to_string(),
+                    source_module: String::new(),
+                    return_type: TypeInfo::Unknown,
+                    param_types: vec![],
+                    call_sites: vec![],
+                }],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("leaf_fn".to_string(), "test.ts".to_string());
+        file_map.insert("caller_fn".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 2,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::Function,
+            capture_side_effects: false,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan with Function isolation should succeed");
+
+        // Both functions must be explored; no errors.
+        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert!(result.skipped.is_empty(), "no functions should be skipped");
+        // leaf_fn must be explored before caller_fn (dependency order).
+        assert_eq!(result.test_order[0], "leaf_fn");
+        assert_eq!(result.test_order[1], "caller_fn");
+        // caller_fn should have used leaf_fn as a mock.
+        let caller_result = result
+            .function_results
+            .iter()
+            .find(|r| r.function_name == "caller_fn")
+            .expect("caller_fn should be in results");
+        assert!(caller_result.mocks_used.iter().any(|m| m.name == "leaf_fn"));
     }
 }
