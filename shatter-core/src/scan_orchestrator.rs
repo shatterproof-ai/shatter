@@ -559,6 +559,10 @@ pub struct ParallelScanResult {
     pub sampling: Option<SamplingContext>,
 }
 
+/// Minimum number of idle workers to keep warm in the pool.
+/// Prevents reaping the last worker, ensuring fast checkout for the next task.
+const MIN_IDLE_WORKERS: usize = 1;
+
 /// A channel-based pool of frontend worker subprocesses with adaptive growth.
 ///
 /// Workers are checked out via `checkout()` and returned via `return_worker()`.
@@ -571,8 +575,8 @@ struct WorkerPool {
     max_workers: usize,
     /// Count of workers currently alive (checked out or in the channel).
     /// Decremented when a worker is reaped; incremented on growth.
-    current_size: Arc<AtomicUsize>,
-    /// Peak value of `current_size` ever observed. Never decrements (not affected
+    live_count: Arc<AtomicUsize>,
+    /// Peak value of `live_count` ever observed. Never decrements (not affected
     /// by reaping), so `workers_used` reflects the true high-water mark.
     peak_size: Arc<AtomicUsize>,
     /// Count of workers shut down early because queued work dropped below pool size.
@@ -596,15 +600,27 @@ impl WorkerPool {
     ///
     /// Starts with `initial_workers(max_workers, needed)` workers rather than the
     /// full `max_workers`, then grows on demand via [`maybe_grow`].
+    ///
+    /// If `prewarmed` is `Some`, the pre-spawned worker is deposited into the pool
+    /// and counted toward the initial batch, reducing the number of fresh spawns.
     async fn spawn_capped(
         config: Arc<FrontendConfig>,
         max_workers: usize,
         needed: usize,
+        prewarmed: Option<Frontend>,
     ) -> Result<Self, FrontendError> {
         let initial = initial_workers(max_workers, needed);
         // Channel capacity == max_workers so growth workers can always be deposited.
         let (sender, receiver) = tokio::sync::mpsc::channel(max_workers);
-        for _ in 0..initial {
+
+        // Deposit prewarmed worker first, then spawn the remaining initial workers.
+        let already = if let Some(fe) = prewarmed {
+            sender.send(fe).await.expect("channel has capacity for prewarmed worker");
+            1
+        } else {
+            0
+        };
+        for _ in already..initial {
             let frontend = Frontend::spawn(&config).await?;
             sender.send(frontend).await.expect("channel has capacity for initial workers");
         }
@@ -612,7 +628,7 @@ impl WorkerPool {
             sender,
             receiver: Mutex::new(receiver),
             max_workers,
-            current_size: Arc::new(AtomicUsize::new(initial)),
+            live_count: Arc::new(AtomicUsize::new(initial)),
             peak_size: Arc::new(AtomicUsize::new(initial)),
             idle_reaped: Arc::new(AtomicUsize::new(0)),
             config,
@@ -625,16 +641,16 @@ impl WorkerPool {
         rx.recv().await.expect("pool should not be empty")
     }
 
-    /// Return a worker to the pool, or reap it if more workers are alive than
-    /// tasks are pending.  Prevents excess workers from idling until layer shutdown.
+    /// Return a worker to the pool, or reap it if the pool exceeds the idle floor.
     ///
-    /// Keeps at least one worker alive (`pending.max(1)`) so tasks blocked on
-    /// `checkout()` can always make progress.  A CAS prevents two concurrent
-    /// returners from both deciding to reap the same slot.
+    /// The floor is `min(pending + MIN_IDLE_WORKERS, max_workers)`, keeping one
+    /// extra idle worker warm for fast checkout on the next task.  A CAS prevents
+    /// two concurrent returners from both deciding to reap the same slot.
     async fn return_or_reap_worker(&self, frontend: Frontend, pending: usize) {
-        let current = self.current_size.load(Ordering::Acquire);
-        if current > pending.max(1)
-            && self.current_size
+        let floor = (pending + MIN_IDLE_WORKERS).min(self.max_workers);
+        let current = self.live_count.load(Ordering::Acquire);
+        if current > floor
+            && self.live_count
                 .compare_exchange(current, current - 1, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
@@ -651,10 +667,10 @@ impl WorkerPool {
     /// Absorb a dead worker's capacity slot without spawning a replacement.
     ///
     /// Called when a crashed or timed-out worker leaves the pool over-provisioned
-    /// (more alive workers than pending tasks).  Decrements `current_size` so the
+    /// (more alive workers than pending tasks).  Decrements `live_count` so the
     /// slot is not counted toward future replacement or growth decisions.
     fn reap_dead_slot(&self) {
-        self.current_size.fetch_sub(1, Ordering::Relaxed);
+        self.live_count.fetch_sub(1, Ordering::Relaxed);
         self.idle_reaped.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -663,32 +679,32 @@ impl WorkerPool {
     /// Returns false when the pool is already over-provisioned relative to `pending`
     /// tasks — the dead slot should be absorbed via `reap_dead_slot()` instead.
     fn needs_replacement(&self, pending: usize) -> bool {
-        self.current_size.load(Ordering::Relaxed) <= pending.max(1)
+        self.live_count.load(Ordering::Relaxed) <= pending.max(1)
     }
 
     /// Grow the pool by one worker if demand justifies it and we are below the ceiling.
     ///
     /// `tasks_remaining` is the number of tasks that have not yet completed.  If that
-    /// exceeds `current_size`, tasks are blocked on `checkout()` and a new worker will
+    /// exceeds `live_count`, tasks are blocked on `checkout()` and a new worker will
     /// reduce their wait.  The CAS ensures at most one growth per available slot even
     /// when multiple tasks return concurrently.  The actual subprocess spawn runs in a
     /// detached task so the caller is not delayed.
     fn maybe_grow(&self, tasks_remaining: usize) {
-        let current = self.current_size.load(Ordering::Relaxed);
+        let current = self.live_count.load(Ordering::Relaxed);
         if tasks_remaining <= current || current >= self.max_workers {
             return;
         }
-        if self.current_size
+        if self.live_count
             .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
             return; // another concurrent task already claimed the slot
         }
-        // Track peak — reaping can decrease current_size, but peak_size never shrinks.
+        // Track peak — reaping can decrease live_count, but peak_size never shrinks.
         self.peak_size.fetch_max(current + 1, Ordering::Relaxed);
         let sender = self.sender.clone();
         let config = Arc::clone(&self.config);
-        let current_size = Arc::clone(&self.current_size);
+        let live_count = Arc::clone(&self.live_count);
         tokio::spawn(async move {
             match Frontend::spawn(&config).await {
                 Ok(fe) => {
@@ -696,14 +712,14 @@ impl WorkerPool {
                 }
                 Err(_) => {
                     // Release the claimed slot so future growth attempts can retry.
-                    current_size.fetch_sub(1, Ordering::Relaxed);
+                    live_count.fetch_sub(1, Ordering::Relaxed);
                 }
             }
         });
     }
 
     /// Peak number of workers alive at any point during this pool's lifetime.
-    /// Unlike `current_size`, this never decrements due to reaping.
+    /// Unlike `live_count`, this never decrements due to reaping.
     fn peak_size(&self) -> usize {
         self.peak_size.load(Ordering::Relaxed)
     }
@@ -839,6 +855,17 @@ pub async fn parallel_scan(
                 }
             }
             break;
+        }
+
+        // Speculatively pre-spawn one worker while we build the task list.
+        // The spawn runs concurrently with cache filtering, hiding its latency.
+        let fe_config_pre = Arc::new(frontend_config.clone());
+        let (prespawn_tx, prespawn_rx) = tokio::sync::oneshot::channel();
+        {
+            let cfg = Arc::clone(&fe_config_pre);
+            tokio::spawn(async move {
+                let _ = prespawn_tx.send(Frontend::spawn(&cfg).await);
+            });
         }
 
         // Build tasks for this layer: each function paired with its mocks.
@@ -996,13 +1023,21 @@ pub async fn parallel_scan(
             tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
         }
 
+        // Collect the speculative pre-spawn (already in-flight since before
+        // the task-building loop). If it succeeded, pass it to the pool;
+        // if tasks is empty, shut it down.
+        let prewarmed = match prespawn_rx.await {
+            Ok(Ok(fe)) => Some(fe),
+            _ => None,
+        };
+
         // Execute tasks in parallel across the worker pool.
         // The pool is created lazily — only when there is real exploration work
         // to do in this layer. Cache-hit layers skip pool creation entirely.
         if !tasks.is_empty() {
-            let fe_config = Arc::new(frontend_config.clone());
+            let fe_config = fe_config_pre;
             let pool = Arc::new(
-                WorkerPool::spawn_capped(Arc::clone(&fe_config), effective_parallelism, tasks.len())
+                WorkerPool::spawn_capped(Arc::clone(&fe_config), effective_parallelism, tasks.len(), prewarmed)
                     .await
                     .map_err(ScanError::Frontend)?,
             );
@@ -1147,6 +1182,14 @@ pub async fn parallel_scan(
             // and ensures zero processes remain when the layer was a cache hit.
             if let Ok(p) = Arc::try_unwrap(pool) {
                 p.shutdown().await;
+            }
+        } else {
+            // No tasks in this layer (all cache hits). Shut down the speculative
+            // pre-spawn — it was wasted, but rare on mixed workloads.
+            if let Some(fe) = prewarmed {
+                tokio::spawn(async move {
+                    let _ = fe.shutdown().await;
+                });
             }
         }
 
@@ -3739,7 +3782,7 @@ mod tests {
 
         assert_eq!(result.function_results.len(), 4, "all 4 functions must complete");
         // With 4 tasks and max=4 the pool starts at initial_workers(4,4)=1 and must
-        // grow as tasks complete.  After all 4 tasks run, current_size should be > 1.
+        // grow as tasks complete.  After all 4 tasks run, live_count should be > 1.
         assert!(
             result.workers_used > 1,
             "pool should have grown beyond initial 1 worker (got {})",
@@ -3772,7 +3815,7 @@ mod tests {
 
         // Four independent functions in one layer. The pool starts at
         // initial_workers(4,4)=1 and grows as tasks complete. As completion
-        // accelerates (noop is near-instant), current_size will exceed remaining
+        // accelerates (noop is near-instant), live_count will exceed remaining
         // tasks, triggering idle reaping.
         let make_fn = |name: &str| FunctionAnalysis {
             name: name.to_string(),
@@ -3827,14 +3870,14 @@ mod tests {
         assert_eq!(result.function_results.len(), 4, "all 4 functions must complete (no deadlock)");
 
         // Reaping must have fired: with 4 tasks completing near-simultaneously,
-        // current_size will exceed remaining tasks at some point.
+        // live_count will exceed remaining tasks at some point.
         assert!(
             result.workers_reaped > 0,
             "idle reaping should have fired (workers_reaped={})",
             result.workers_reaped,
         );
 
-        // workers_used tracks the peak (not post-reap current_size) so existing
+        // workers_used tracks the peak (not post-reap live_count) so existing
         // growth assertions still hold.
         assert!(
             result.workers_used >= 1,
@@ -3939,5 +3982,97 @@ mod tests {
     fn layer_parallel_policy_is_default() {
         use crate::scheduler_policy::SchedulerPolicy;
         assert_eq!(SchedulerPolicy::default(), SchedulerPolicy::LayerParallel);
+    }
+
+    // ── idle floor and speculative pre-spawn tests ─────────────────
+
+    /// `return_or_reap_worker` respects the MIN_IDLE_WORKERS floor: it should
+    /// not reap when live_count equals the floor, and should reap when above.
+    #[tokio::test]
+    async fn return_or_reap_respects_idle_floor() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let fe_config = Arc::new(fe_config);
+
+        // Create a pool with max_workers=3, needed=3.
+        // initial_workers(3,3) = 1 (quarter of 3 = max(0,1) = 1).
+        let pool = WorkerPool::spawn_capped(Arc::clone(&fe_config), 3, 3, None)
+            .await
+            .expect("pool should spawn");
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1);
+
+        // Manually grow to 3 by spawning workers and depositing them.
+        for _ in 0..2 {
+            let fe = Frontend::spawn(&fe_config).await.expect("spawn");
+            let _ = pool.sender.send(fe).await;
+            pool.live_count.fetch_add(1, Ordering::Relaxed);
+        }
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 3);
+
+        // Checkout a worker and return with pending=2.
+        // floor = min(2 + 1, 3) = 3. current=3 == floor → no reap.
+        let w = pool.checkout().await;
+        pool.return_or_reap_worker(w, 2).await;
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 3, "should not reap when at floor");
+        assert_eq!(pool.idle_reaped(), 0);
+
+        // Checkout and return with pending=1.
+        // floor = min(1 + 1, 3) = 2. current=3 > floor → should reap.
+        let w = pool.checkout().await;
+        pool.return_or_reap_worker(w, 1).await;
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 2, "should reap one worker when above floor");
+        assert_eq!(pool.idle_reaped(), 1);
+
+        // Checkout and return with pending=0.
+        // floor = min(0 + 1, 3) = 1. current=2 > floor → should reap.
+        let w = pool.checkout().await;
+        pool.return_or_reap_worker(w, 0).await;
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "should reap to floor");
+        assert_eq!(pool.idle_reaped(), 2);
+
+        // Checkout and return with pending=0 again.
+        // floor = 1. current=1 == floor → no reap.
+        let w = pool.checkout().await;
+        pool.return_or_reap_worker(w, 0).await;
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "should not reap below floor");
+        assert_eq!(pool.idle_reaped(), 2);
+
+        pool.shutdown().await;
+    }
+
+    /// A speculative pre-spawn is deposited into the pool as an initial worker.
+    #[tokio::test]
+    async fn speculative_prespawn_is_used() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let fe_config = Arc::new(fe_config);
+
+        // Pre-spawn a worker.
+        let prewarmed = Frontend::spawn(&fe_config).await.expect("spawn should succeed");
+
+        // Create pool with prewarmed worker, needing 1 worker, max 2.
+        let pool = WorkerPool::spawn_capped(Arc::clone(&fe_config), 2, 1, Some(prewarmed))
+            .await
+            .expect("pool should spawn");
+
+        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "pool should have 1 worker from prewarmed");
+
+        // Checkout should succeed without blocking indefinitely.
+        let worker = pool.checkout().await;
+        pool.return_or_reap_worker(worker, 1).await;
+
+        pool.shutdown().await;
     }
 }
