@@ -798,7 +798,7 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
+            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(),
         }
     }
 

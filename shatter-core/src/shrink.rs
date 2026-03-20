@@ -236,8 +236,9 @@ pub fn should_shrink_path(complexity: usize) -> bool {
 ///
 /// Surfaced via `tracing::debug!` after each shrink phase so callers can
 /// observe how many paths were skipped vs. actually shrunk without modifying
-/// the public output types.
-#[derive(Debug, Default, Clone)]
+/// the public output types. Also included in `ObservationOutput` and
+/// `ExploreResult` so CLI reports can display shrink throughput.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShrinkStats {
     /// Total unique paths considered for shrinking (one entry per path hash).
     pub paths_considered: usize,
@@ -247,6 +248,37 @@ pub struct ShrinkStats {
     pub paths_shrunk: usize,
     /// Total execute() calls made across all shrink attempts.
     pub total_shrink_attempts: usize,
+}
+
+impl ShrinkStats {
+    /// Merge `other` into `self` by summing all four counters.
+    pub fn merge(&mut self, other: &ShrinkStats) {
+        self.paths_considered += other.paths_considered;
+        self.paths_skipped_simple += other.paths_skipped_simple;
+        self.paths_shrunk += other.paths_shrunk;
+        self.total_shrink_attempts += other.total_shrink_attempts;
+    }
+}
+
+/// Format a one-line human-readable summary of shrink-phase statistics.
+///
+/// Returns an empty string when there is nothing to show (no paths were
+/// considered). Intended for inclusion in perf blocks of exploration reports.
+#[must_use]
+pub fn format_shrink_stats_line(stats: &ShrinkStats) -> String {
+    if stats.paths_considered == 0 {
+        return String::new();
+    }
+    if stats.total_shrink_attempts == 0 {
+        return "  Shrink: disabled (budget=0)\n".to_string();
+    }
+    format!(
+        "  Shrink: {} attempts · {}/{} paths shrunk · {} skipped (simple)\n",
+        stats.total_shrink_attempts,
+        stats.paths_shrunk,
+        stats.paths_considered,
+        stats.paths_skipped_simple,
+    )
 }
 
 fn value_complexity(v: &Value) -> usize {
@@ -482,6 +514,61 @@ fn shrink_union(value: &Value, variants: &[TypeInfo]) -> Vec<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // ShrinkStats
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shrink_stats_merge() {
+        let mut a = ShrinkStats {
+            paths_considered: 3,
+            paths_skipped_simple: 1,
+            paths_shrunk: 2,
+            total_shrink_attempts: 10,
+        };
+        let b = ShrinkStats {
+            paths_considered: 5,
+            paths_skipped_simple: 2,
+            paths_shrunk: 3,
+            total_shrink_attempts: 15,
+        };
+        a.merge(&b);
+        assert_eq!(a.paths_considered, 8);
+        assert_eq!(a.paths_skipped_simple, 3);
+        assert_eq!(a.paths_shrunk, 5);
+        assert_eq!(a.total_shrink_attempts, 25);
+    }
+
+    #[test]
+    fn format_shrink_stats_line_empty_when_no_paths() {
+        let stats = ShrinkStats::default();
+        assert_eq!(format_shrink_stats_line(&stats), "");
+    }
+
+    #[test]
+    fn format_shrink_stats_line_disabled() {
+        let stats = ShrinkStats {
+            paths_considered: 3,
+            total_shrink_attempts: 0,
+            ..Default::default()
+        };
+        let line = format_shrink_stats_line(&stats);
+        assert!(line.contains("disabled"), "expected 'disabled' in '{line}'");
+    }
+
+    #[test]
+    fn format_shrink_stats_line_with_attempts() {
+        let stats = ShrinkStats {
+            paths_considered: 4,
+            paths_skipped_simple: 1,
+            paths_shrunk: 2,
+            total_shrink_attempts: 8,
+        };
+        let line = format_shrink_stats_line(&stats);
+        assert!(line.contains("8"), "expected attempt count in '{line}'");
+        assert!(line.contains("2/4"), "expected shrunk/considered ratio in '{line}'");
+    }
 
     // -----------------------------------------------------------------------
     // Int

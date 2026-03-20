@@ -1226,7 +1226,7 @@ mod tests {
                 new_path_executions,
                 raw_results: vec![],
                 discoveries: vec![],
-                nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None,
+                nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(),
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -1872,6 +1872,7 @@ mod tests {
             test_order: vec![],
             skipped: vec![],
             workers_used: 1,
+            workers_reaped: 0,
             sampling: None,
         };
         // Add a skipped function with special chars in reason
@@ -1921,6 +1922,7 @@ mod tests {
             boundary_results: vec![],
             shrunk_witnesses: std::collections::HashMap::new(),
             mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
         };
         let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10");
         assert!(fragment.contains("myFunc"), "must contain function name");

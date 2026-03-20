@@ -374,6 +374,14 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 20)]
         refine_budget: usize,
 
+        /// Cap total shrink attempts per witness. Set to 0 to disable. Default: 20.
+        #[arg(long, default_value_t = 20)]
+        shrink_budget: usize,
+
+        /// Disable the shrink phase entirely (equivalent to --shrink-budget 0).
+        #[arg(long)]
+        no_shrink: bool,
+
         /// Enable MC/DC (Modified Condition/Decision Coverage) analysis.
         /// Decomposes compound boolean decisions into individual conditions
         /// and targets condition-independence witnesses. Implies increased

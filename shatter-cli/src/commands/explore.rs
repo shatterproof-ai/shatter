@@ -60,6 +60,7 @@ pub(crate) async fn run_explore(
     replay_recorded: bool,
     no_replay: bool,
     refine_budget: usize,
+    shrink_budget: usize,
     mcdc: bool,
     isolation: shatter_core::explorer::IsolationMode,
     capture_side_effects: bool,
@@ -452,7 +453,7 @@ pub(crate) async fn run_explore(
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                 meta_config: meta_config.clone(),
-                shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                shrink_budget,
                 isolation,
                 capture_side_effects,
             };
@@ -503,7 +504,7 @@ pub(crate) async fn run_explore(
                     meta_config: meta_config.clone(),
                     loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
-                    shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+                    shrink_budget,
                     mcdc,
                 };
 
