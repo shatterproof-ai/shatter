@@ -487,8 +487,8 @@ step 36 $TOTAL "Concolic String CLI Preview (Z3)" \
 
 # Stage 37: MC/DC coverage analysis
 step 37 $TOTAL "MC/DC Coverage Analysis" \
-    "Enable Modified Condition/Decision Coverage for compound boolean decisions" \
-    $SHATTER explore --mcdc "examples/standalone/ts/13-mcdc-compound.ts:compoundAnd"
+    "Modified Condition/Decision Coverage: independence pairs, short-circuit masking, and coverage % across AND/OR/three-way compound conditions" \
+    $SHATTER explore --mcdc examples/standalone/ts/13-mcdc-compound.ts
 
 # Stage 38: Spec output to file (--output)
 step 38 $TOTAL "Spec Output to File" \
