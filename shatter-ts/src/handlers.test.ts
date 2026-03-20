@@ -209,7 +209,7 @@ describe("handleRequest", () => {
       await handleRequest(
         makeRequest({ command: "handshake", capabilities: ["analyze", "timing"] })
       );
-      const fixtureFile = path.resolve(__dirname, "__fixtures__", "branches.ts");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
       const { response } = await handleRequest(
         makeRequest({ command: "analyze", file: fixtureFile })
       );
@@ -774,61 +774,42 @@ describe("handleRequest", () => {
     });
   });
 
-  describe("analyze-only startup", () => {
-    it("does not load executor, instrumentor, setup-loader, or wasm-generator after handshake+analyze", async () => {
-      clearInstrumentedSources(); // reset lazy module caches
+  describe("startup staging", () => {
+    it("handshake triggers background preloads; wasm-generator is excluded", async () => {
+      clearInstrumentedSources();
+      // Before handshake: nothing loaded.
+      expect(getLoadedModuleNames()).toHaveLength(0);
       await handleRequest(makeRequest({ command: "handshake", capabilities: ["analyze"] }));
-      const fixtureFile = path.resolve(__dirname, "__fixtures__", "branches.ts");
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+      // Analyze awaits the analyzer promise (~200ms), during which background
+      // preloads for executor/instrumentor/setup-loader also complete.
       await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
-      const loaded = getLoadedModuleNames();
-      expect(loaded).not.toContain("executor");
-      expect(loaded).not.toContain("instrumentor");
-      expect(loaded).not.toContain("setupLoader");
-      expect(loaded).not.toContain("wasmGenerator");
+      // wasm-generator is intentionally not preloaded (only needed for .wasm files).
+      expect(getLoadedModuleNames()).not.toContain("wasmGenerator");
     });
 
-    it("loads executor only when execute is first called", async () => {
+    it("execute works after preload-triggered loading", async () => {
       clearInstrumentedSources();
       await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
-      expect(getLoadedModuleNames()).not.toContain("executor");
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
       await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
-      expect(getLoadedModuleNames()).not.toContain("executor");
-      // After execute, executor must be loaded
-      await handleRequest(makeRequest({ command: "execute", function: "add", inputs: [{ kind: "number", value: 1 }, { kind: "number", value: 2 }] }));
+      const { response } = await handleRequest(
+        makeRequest({ command: "execute", function: "add", inputs: [{ kind: "number", value: 1 }, { kind: "number", value: 2 }] })
+      );
+      expect(response.status).toBe("execute");
       expect(getLoadedModuleNames()).toContain("executor");
     });
 
-    it("loads instrumentor only when instrument is first called", async () => {
+    it("instrument works after preload-triggered loading", async () => {
       clearInstrumentedSources();
       await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
-      expect(getLoadedModuleNames()).not.toContain("instrumentor");
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
       await handleRequest(makeRequest({ command: "analyze", file: fixtureFile }));
-      expect(getLoadedModuleNames()).not.toContain("instrumentor");
-      // After instrument, instrumentor must be loaded
-      await handleRequest(makeRequest({ command: "instrument", file: fixtureFile, function: "add", mocks: [] }));
+      const { response } = await handleRequest(
+        makeRequest({ command: "instrument", file: fixtureFile, function: "add", mocks: [] })
+      );
+      expect(response.status).toBe("instrument");
       expect(getLoadedModuleNames()).toContain("instrumentor");
-    });
-
-    it("loads setupLoader only when setup is first called", async () => {
-      clearInstrumentedSources();
-      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
-      expect(getLoadedModuleNames()).not.toContain("setupLoader");
-      // After setup, setup-loader must be loaded
-      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
-      await handleRequest(makeRequest({ command: "setup", file: setupFile, scope: "myFunc", level: "function" }));
-      expect(getLoadedModuleNames()).toContain("setupLoader");
-    });
-
-    it("loads setupLoader only when generate (non-wasm) is first called", async () => {
-      clearInstrumentedSources();
-      await handleRequest(makeRequest({ command: "handshake", capabilities: [] }));
-      expect(getLoadedModuleNames()).not.toContain("setupLoader");
-      // After generate with a non-.wasm file, setup-loader must be loaded
-      const genFile = path.resolve(__dirname, "__fixtures__", "generator-module.ts");
-      await handleRequest(makeRequest({ command: "generate", file: genFile, name: "User", kind: "type_name" }));
-      expect(getLoadedModuleNames()).toContain("setupLoader");
     });
   });
 });

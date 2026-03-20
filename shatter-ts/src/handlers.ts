@@ -5,12 +5,17 @@
  * The instrument handler stores instrumented source in memory so the
  * execute handler can use it for branch-recording execution.
  *
- * Heavy modules (analyzer, executor, instrumentor, setup-loader, wasm-generator)
- * are loaded lazily on first use. Handshake-only sessions never pay the cost of
- * loading any of these modules. Analyzer (~233ms, TypeScript compiler) is deferred
- * until the first analyze command; executor (~206ms), instrumentor (~185ms),
- * setup-loader (~186ms), and wasm-generator (~8ms) are deferred until their
- * respective commands.
+ * Startup staging: the frontend reaches handshake-ready state before any
+ * heavy module loads. After the handshake response is sent, all heavy modules
+ * begin loading concurrently in the background so they are warm by the time
+ * analyze/instrument/execute requests arrive.
+ *
+ * Heavy modules and their approximate cold-load costs:
+ *   analyzer      ~233ms  (TypeScript compiler via analyzer.ts static import)
+ *   executor      ~206ms  (TypeScript compiler + VM sandbox)
+ *   instrumentor  ~185ms  (TypeScript compiler + AST transforms)
+ *   setup-loader  ~186ms  (TypeScript compiler + module sandbox)
+ *   wasm-generator  ~8ms  (Extism WASM runtime — not preloaded, only for .wasm files)
  */
 
 import * as fs from "node:fs";
@@ -36,10 +41,17 @@ const SUPPORTED_CAPABILITIES = [
 ];
 
 // ---------------------------------------------------------------------------
-// Lazy module loaders
+// Lazy module loaders with background preloading
 //
-// Each heavy module is loaded on first use and cached. Handshake requires
-// none of them — the first response is sent before any module load.
+// Each heavy module is loaded on first use and cached. The handshake handler
+// triggers background preloading of all heavy modules so they are warm by the
+// time the first analyze/instrument/execute request arrives.
+//
+// Each module tracks two pieces of state:
+//   _xxxPromise — the in-flight import(); set immediately so concurrent callers
+//                 share the same load operation (no duplicate loads).
+//   _xxx        — the resolved module; set when the promise resolves so guards
+//                 like `if (_executor)` and getLoadedModuleNames() still work.
 // ---------------------------------------------------------------------------
 
 type AnalyzerMod = typeof import('./analyzer.js');
@@ -48,35 +60,55 @@ type InstrumentorMod = typeof import('./instrumentor.js');
 type SetupLoaderMod = typeof import('./setup-loader.js');
 type WasmGeneratorMod = typeof import('./wasm-generator.js');
 
+let _analyzerPromise: Promise<AnalyzerMod> | null = null;
 let _analyzer: AnalyzerMod | null = null;
+let _executorPromise: Promise<ExecutorMod> | null = null;
 let _executor: ExecutorMod | null = null;
+let _instrumentorPromise: Promise<InstrumentorMod> | null = null;
 let _instrumentor: InstrumentorMod | null = null;
+let _setupLoaderPromise: Promise<SetupLoaderMod> | null = null;
 let _setupLoader: SetupLoaderMod | null = null;
+let _wasmGeneratorPromise: Promise<WasmGeneratorMod> | null = null;
 let _wasmGenerator: WasmGeneratorMod | null = null;
 
-async function getAnalyzer(): Promise<AnalyzerMod> {
-  if (!_analyzer) _analyzer = await import('./analyzer.js');
-  return _analyzer;
+function getAnalyzer(): Promise<AnalyzerMod> {
+  if (!_analyzerPromise) _analyzerPromise = import('./analyzer.js').then(m => (_analyzer = m));
+  return _analyzerPromise;
 }
 
-async function getExecutor(): Promise<ExecutorMod> {
-  if (!_executor) _executor = await import('./executor.js');
-  return _executor;
+function getExecutor(): Promise<ExecutorMod> {
+  if (!_executorPromise) _executorPromise = import('./executor.js').then(m => (_executor = m));
+  return _executorPromise;
 }
 
-async function getInstrumentor(): Promise<InstrumentorMod> {
-  if (!_instrumentor) _instrumentor = await import('./instrumentor.js');
-  return _instrumentor;
+function getInstrumentor(): Promise<InstrumentorMod> {
+  if (!_instrumentorPromise) _instrumentorPromise = import('./instrumentor.js').then(m => (_instrumentor = m));
+  return _instrumentorPromise;
 }
 
-async function getSetupLoader(): Promise<SetupLoaderMod> {
-  if (!_setupLoader) _setupLoader = await import('./setup-loader.js');
-  return _setupLoader;
+function getSetupLoader(): Promise<SetupLoaderMod> {
+  if (!_setupLoaderPromise) _setupLoaderPromise = import('./setup-loader.js').then(m => (_setupLoader = m));
+  return _setupLoaderPromise;
 }
 
-async function getWasmGenerator(): Promise<WasmGeneratorMod> {
-  if (!_wasmGenerator) _wasmGenerator = await import('./wasm-generator.js');
-  return _wasmGenerator;
+function getWasmGenerator(): Promise<WasmGeneratorMod> {
+  if (!_wasmGeneratorPromise) _wasmGeneratorPromise = import('./wasm-generator.js').then(m => (_wasmGenerator = m));
+  return _wasmGeneratorPromise;
+}
+
+/**
+ * Start background loading of all heavy modules concurrently.
+ *
+ * Called after the handshake response is sent. Errors are intentionally
+ * swallowed here — if a module fails to load, the error will surface when
+ * the first request that needs it awaits getXxx().
+ */
+function preloadHeavyModules(): void {
+  void getAnalyzer();
+  void getExecutor();
+  void getInstrumentor();
+  void getSetupLoader();
+  // wasm-generator (~8ms) is only needed for .wasm generator files; skip preload.
 }
 
 // ---------------------------------------------------------------------------
@@ -158,15 +190,19 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
   switch (request.command) {
     case "handshake":
       timingEnabled = wantsTimingFromHandshake(request);
+      // Kick off background loading of heavy modules so they are warm by the
+      // time the first analyze/instrument/execute request arrives. The handshake
+      // response is returned immediately — preloads run concurrently.
+      preloadHeavyModules();
       return {
-        response: {
+        response: finalizeResponse({
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "handshake",
           frontend_version: PROTOCOL_VERSION,
           language: FRONTEND_LANGUAGE,
           capabilities: SUPPORTED_CAPABILITIES,
-        },
+        }, timingEnabled ? new TimingCollector() : undefined),
         shutdown: false,
       };
 
@@ -577,10 +613,11 @@ export function clearInstrumentedSources(): void {
   if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
-  _executor = null;
-  _instrumentor = null;
-  _setupLoader = null;
-  _wasmGenerator = null;
+  _analyzerPromise = null;  _analyzer = null;
+  _executorPromise = null;  _executor = null;
+  _instrumentorPromise = null;  _instrumentor = null;
+  _setupLoaderPromise = null;  _setupLoader = null;
+  _wasmGeneratorPromise = null;  _wasmGenerator = null;
 }
 
 /** Number of cached instrumented sources. Exposed for testing. */
@@ -594,11 +631,12 @@ export function setupContextsSize(): number {
 }
 
 /**
- * Names of heavy modules loaded so far this session.
- * Used in tests to verify analyze-only paths do not load executor/instrumentor/etc.
+ * Names of heavy modules whose promises have resolved this session.
+ * Used in tests to verify which modules have finished loading.
  */
 export function getLoadedModuleNames(): string[] {
   const loaded: string[] = [];
+  if (_analyzer) loaded.push("analyzer");
   if (_executor) loaded.push("executor");
   if (_instrumentor) loaded.push("instrumentor");
   if (_setupLoader) loaded.push("setupLoader");
