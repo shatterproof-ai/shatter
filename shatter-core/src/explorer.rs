@@ -629,6 +629,50 @@ pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, level: S
     }
 }
 
+/// Complexity score at which the full base shrink budget is granted.
+///
+/// A witness whose `witness_complexity + path_depth` equals or exceeds this
+/// value receives `base_budget` shrink attempts.  Below this threshold the
+/// budget is scaled down linearly, which avoids spending most of the shrink
+/// allowance on trivial witnesses that converge in one or two steps.
+const SHRINK_BUDGET_REFERENCE_COMPLEXITY: usize = 25;
+
+/// Compute the effective per-path shrink budget based on witness and path complexity.
+///
+/// # Policy
+///
+/// `effective = round(base_budget × score / SHRINK_BUDGET_REFERENCE_COMPLEXITY)`
+///
+/// where `score = witness_complexity + path_depth`.
+///
+/// The result is clamped to `[1, base_budget]` so the bulk-shrink phase (1
+/// execute call) always runs for non-trivial witnesses and the budget never
+/// exceeds what was configured.  `base_budget == 0` short-circuits to 0.
+///
+/// | score | budget (base=20) |
+/// |-------|-----------------|
+/// | 0–1   | 1 (minimum)     |
+/// | 5     | 4               |
+/// | 12    | 10              |
+/// | 25+   | 20 (full)       |
+///
+/// Deterministic: same inputs → same output, always.
+fn shrink_budget_for_path(
+    witness_complexity: usize,
+    path_depth: usize,
+    base_budget: usize,
+) -> usize {
+    if base_budget == 0 {
+        return 0;
+    }
+    let score = witness_complexity.saturating_add(path_depth);
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let effective =
+        (base_budget as f64 * score as f64 / SHRINK_BUDGET_REFERENCE_COMPLEXITY as f64).round()
+            as usize;
+    effective.max(1).min(base_budget)
+}
+
 /// Explore a single function by generating random inputs and executing them.
 ///
 /// When `setup_mgr` is provided, setup lifecycle is tracked through the
@@ -1005,18 +1049,20 @@ pub async fn explore_function(
     if config.shrink_budget > 0 {
         // Collect the lowest-complexity witness per unique path.
         // Starting from the simplest witness reduces shrink iterations needed.
+        // Also record path depth (branch_path.len()) for the per-path budget policy.
         let mut path_witnesses: std::collections::HashMap<
             u64,
-            (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>),
+            (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, usize),
         > = std::collections::HashMap::new();
         for (inputs, mocks, result) in &raw_results {
             let ph = crate::orchestrator::hash_branch_path(&result.branch_path);
             let complexity = crate::shrink::witness_complexity(inputs);
+            let depth = result.branch_path.len();
             let entry = path_witnesses
                 .entry(ph)
-                .or_insert_with(|| (inputs.clone(), mocks.clone()));
+                .or_insert_with(|| (inputs.clone(), mocks.clone(), depth));
             if complexity < crate::shrink::witness_complexity(&entry.0) {
-                *entry = (inputs.clone(), mocks.clone());
+                *entry = (inputs.clone(), mocks.clone(), depth);
             }
         }
 
@@ -1025,15 +1071,19 @@ pub async fn explore_function(
         // that the highest-value witnesses are shrunk first. Tie-break by ascending
         // path hash for fully deterministic ordering independent of HashMap iteration.
         let paths_considered = path_witnesses.len();
-        let mut to_shrink: Vec<(u64, Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>)> =
-            path_witnesses
-                .into_iter()
-                .filter(|(_, (inputs, _))| {
-                    crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
-                })
-                .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
-                .collect();
-        to_shrink.sort_by(|(ph_a, inputs_a, _), (ph_b, inputs_b, _)| {
+        let mut to_shrink: Vec<(
+            u64,
+            Vec<serde_json::Value>,
+            Vec<crate::protocol::MockConfig>,
+            usize,
+        )> = path_witnesses
+            .into_iter()
+            .filter(|(_, (inputs, _, _))| {
+                crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
+            })
+            .map(|(ph, (inputs, mocks, depth))| (ph, inputs, mocks, depth))
+            .collect();
+        to_shrink.sort_by(|(ph_a, inputs_a, _, _), (ph_b, inputs_b, _, _)| {
             let ca = crate::shrink::witness_complexity(inputs_a);
             let cb = crate::shrink::witness_complexity(inputs_b);
             cb.cmp(&ca).then(ph_a.cmp(ph_b))
@@ -1045,19 +1095,33 @@ pub async fn explore_function(
             ..Default::default()
         };
 
-        for (ph, witness, witness_mocks) in &to_shrink {
+        for (ph, witness, witness_mocks, path_depth) in &to_shrink {
             let effective_mocks = if witness_mocks.is_empty() {
                 config.mocks.clone()
             } else {
                 witness_mocks.clone()
             };
 
+            // Per-path budget: scale down for trivial witnesses to avoid
+            // spending most shrink capacity on inputs that converge quickly.
+            let wc = crate::shrink::witness_complexity(witness);
+            let path_budget =
+                shrink_budget_for_path(wc, *path_depth, config.shrink_budget);
+            tracing::trace!(
+                path_hash = ph,
+                witness_complexity = wc,
+                path_depth,
+                effective_budget = path_budget,
+                base_budget = config.shrink_budget,
+                "shrink budget allocated"
+            );
+
             let mut current = witness.clone();
             let mut attempts = 0usize;
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
             let mut bulk_accepted = false;
-            if attempts < config.shrink_budget
+            if attempts < path_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
             {
@@ -1117,13 +1181,13 @@ pub async fn explore_function(
 
             // Phase 2: one-at-a-time per-param loop.
             let mut progress = true;
-            while progress && attempts < config.shrink_budget {
+            while progress && attempts < path_budget {
                 progress = false;
                 for i in 0..analysis.params.len().min(current.len()) {
                     let candidates =
                         crate::shrink::shrink_candidates(&current[i], &analysis.params[i].typ);
                     for candidate in candidates {
-                        if attempts >= config.shrink_budget {
+                        if attempts >= path_budget {
                             break;
                         }
                         let mut trial = current.clone();
@@ -1150,7 +1214,7 @@ pub async fn explore_function(
                             break;
                         }
                     }
-                    if attempts >= config.shrink_budget {
+                    if attempts >= path_budget {
                         break;
                     }
                 }
@@ -1169,6 +1233,7 @@ pub async fn explore_function(
             paths_skipped_simple = shrink_stats.paths_skipped_simple,
             paths_shrunk = shrink_stats.paths_shrunk,
             total_shrink_attempts = shrink_stats.total_shrink_attempts,
+            base_budget = config.shrink_budget,
             "shrink pass complete"
         );
     }
@@ -2931,5 +2996,112 @@ mod tests {
             MockBehavior::RepeatLast,
             "Non-Passthrough behavior should not be overridden"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // shrink_budget_for_path tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shrink_budget_zero_base_returns_zero() {
+        assert_eq!(shrink_budget_for_path(100, 20, 0), 0);
+        assert_eq!(shrink_budget_for_path(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn shrink_budget_trivial_witness_less_than_complex() {
+        // A shallow path with low complexity should get fewer attempts than
+        // a deep path with high complexity.
+        let trivial = shrink_budget_for_path(2, 2, 20);   // score=4
+        let complex = shrink_budget_for_path(20, 10, 20); // score=30
+        assert!(
+            trivial < complex,
+            "trivial budget ({trivial}) should be less than complex budget ({complex})"
+        );
+    }
+
+    #[test]
+    fn shrink_budget_capped_at_base() {
+        // No path should ever receive more than base_budget.
+        assert_eq!(shrink_budget_for_path(1000, 500, 20), 20);
+        assert_eq!(shrink_budget_for_path(usize::MAX / 2, 0, 5), 5);
+    }
+
+    #[test]
+    fn shrink_budget_minimum_is_one_when_base_nonzero() {
+        // Even the tiniest score should yield at least 1 attempt so the
+        // bulk-shrink phase always runs.
+        assert!(shrink_budget_for_path(1, 0, 20) >= 1);
+        assert!(shrink_budget_for_path(0, 1, 20) >= 1);
+    }
+
+    #[test]
+    fn shrink_budget_full_at_reference_complexity() {
+        // At exactly the reference complexity the full base budget is granted.
+        assert_eq!(
+            shrink_budget_for_path(SHRINK_BUDGET_REFERENCE_COMPLEXITY, 0, 20),
+            20
+        );
+    }
+
+    #[test]
+    fn shrink_budget_total_reduced_for_trivial_paths() {
+        // Perf evidence: summing budgets for 5 trivial witnesses should be
+        // strictly less than for 5 complex witnesses with the same base.
+        let base = 20usize;
+        let trivial_total: usize = (0..5)
+            .map(|_| shrink_budget_for_path(1, 2, base))
+            .sum();
+        let complex_total: usize = (0..5)
+            .map(|_| shrink_budget_for_path(30, 15, base))
+            .sum();
+        assert!(
+            trivial_total < complex_total,
+            "total shrink budget for trivial witnesses ({trivial_total}) \
+             should be less than for complex witnesses ({complex_total})"
+        );
+    }
+
+    mod prop_shrink_budget {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn budget_never_exceeds_base(
+                wc in 0usize..10_000,
+                depth in 0usize..1_000,
+                base in 1usize..200,
+            ) {
+                let result = shrink_budget_for_path(wc, depth, base);
+                prop_assert!(result <= base, "result {result} exceeded base {base}");
+            }
+
+            #[test]
+            fn budget_at_least_one_when_base_nonzero(
+                wc in 0usize..10_000,
+                depth in 0usize..1_000,
+                base in 1usize..200,
+            ) {
+                let result = shrink_budget_for_path(wc, depth, base);
+                prop_assert!(result >= 1, "result {result} was zero with base {base}");
+            }
+
+            #[test]
+            fn budget_monotone_in_complexity(
+                wc_lo in 0usize..100,
+                extra in 1usize..200,
+                depth in 0usize..20,
+                base in 1usize..100,
+            ) {
+                let wc_hi = wc_lo.saturating_add(extra);
+                let lo = shrink_budget_for_path(wc_lo, depth, base);
+                let hi = shrink_budget_for_path(wc_hi, depth, base);
+                prop_assert!(
+                    hi >= lo,
+                    "higher complexity should yield >= budget: wc_lo={wc_lo} hi={wc_hi} lo={lo} hi={hi}"
+                );
+            }
+        }
     }
 }
