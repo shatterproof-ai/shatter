@@ -1046,7 +1046,7 @@ pub(crate) struct Target {
 }
 
 /// Supported language frontends.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Language {
     TypeScript,
     Go,
