@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -114,6 +114,27 @@ pub(crate) async fn run_explore(
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
 
+    // Spawn one frontend per language — reuse the session across same-language targets
+    // so the per-spawn handshake cost is paid only once per language, not once per target.
+    let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
+    let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
+    for lang in unique_langs {
+        let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
+        if mcdc {
+            config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
+        }
+        let frontend = Frontend::spawn(&config).await.map_err(|e| {
+            format!("failed to spawn {} frontend: {e}", lang.label())
+        })?;
+        log::debug!("Frontend connected (language={})", frontend.language().unwrap_or("unknown"));
+        frontends.insert(lang, frontend);
+    }
+    log::info!(
+        "Spawned {} frontend session(s) for {} target(s) (same-language session reuse)",
+        frontends.len(),
+        parsed.len(),
+    );
+
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target
@@ -131,21 +152,9 @@ pub(crate) async fn run_explore(
             target.language.label()
         );
 
-        let mut config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
-        if mcdc {
-            config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
-        }
-        let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!(
-                "failed to spawn {} frontend: {e}",
-                target.language.label()
-            )
-        })?;
-
-        log::debug!(
-            "Frontend connected (language={})",
-            frontend.language().unwrap_or("unknown")
-        );
+        let frontend = frontends
+            .get_mut(&target.language)
+            .expect("frontend must exist for target language — spawned above");
 
         // Analyze phase
         let analyze_response = frontend
@@ -171,12 +180,10 @@ pub(crate) async fn run_explore(
             }
             ResponseResult::Error { code, message, .. } => {
                 log::error!("Analyze error ({code:?}): {message}");
-                shutdown_frontend(frontend).await;
                 continue;
             }
             other => {
                 log::error!("Unexpected analyze response: {other:?}");
-                shutdown_frontend(frontend).await;
                 continue;
             }
         }
@@ -202,7 +209,6 @@ pub(crate) async fn run_explore(
                     );
                 }
             }
-            shutdown_frontend(frontend).await;
             continue;
         }
 
@@ -268,7 +274,6 @@ pub(crate) async fn run_explore(
                     println!("  {}", func.name);
                 }
             }
-            shutdown_frontend(frontend).await;
             continue;
         }
 
@@ -499,7 +504,7 @@ pub(crate) async fn run_explore(
                 };
 
                 match shatter_core::orchestrator::explore(
-                    &mut frontend,
+                    frontend,
                     &func.name,
                     seed_inputs,
                     user_inputs,
@@ -520,7 +525,7 @@ pub(crate) async fn run_explore(
                     }
                 }
             } else {
-                explorer::explore_function(&mut frontend, func, &explore_config, None)
+                explorer::explore_function(frontend, func, &explore_config, None)
                     .instrument(tracing::info_span!("explore.function"))
                     .await
             };
@@ -752,7 +757,13 @@ pub(crate) async fn run_explore(
             }
         }
 
-        shutdown_frontend(frontend).await;
+    }
+
+    // Shut down all frontend sessions now that all targets are complete.
+    for (_, frontend) in frontends {
+        if let Err(e) = frontend.shutdown().await {
+            log::warn!("frontend shutdown error: {e}");
+        }
     }
 
     // Print summary footer.
