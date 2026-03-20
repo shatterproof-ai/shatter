@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::batch_state::BatchState;
 use crate::coverage_metrics::CoverageMetrics;
+use crate::explorer::ObservationOutput;
 use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, ScanResult};
 
 // ---------------------------------------------------------------------------
@@ -407,6 +408,379 @@ pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<P
 }
 
 // ---------------------------------------------------------------------------
+// HTML report generation
+// ---------------------------------------------------------------------------
+
+/// HTML-escape a string for safe embedding in HTML content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Return a CSS class name for a coverage percentage.
+fn coverage_class(pct: f64) -> &'static str {
+    if pct >= 80.0 {
+        "cov-high"
+    } else if pct >= 50.0 {
+        "cov-mid"
+    } else {
+        "cov-low"
+    }
+}
+
+/// Inline CSS shared by all HTML reports.
+const HTML_CSS: &str = r#"
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       font-size: 14px; color: #1a1a2e; background: #f0f2f5; padding: 24px; }
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+h2 { font-size: 16px; font-weight: 600; margin: 24px 0 10px; color: #374151; }
+.subtitle { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
+.card { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.stat-row { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat { background: #fff; border-radius: 8px; padding: 14px 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08); min-width: 120px; }
+.stat-label { font-size: 11px; text-transform: uppercase; color: #9ca3af;
+              letter-spacing: 0.05em; margin-bottom: 4px; }
+.stat-value { font-size: 22px; font-weight: 700; color: #1a1a2e; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #e5e7eb;
+     font-size: 11px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em; }
+td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px;
+     vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #fafafa; }
+code { font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+       background: #f3f4f6; padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+.cov-bar-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.cov-bar { background: #e5e7eb; border-radius: 4px; height: 8px; width: 80px;
+           display: inline-block; overflow: hidden; }
+.cov-fill { height: 100%; border-radius: 4px; }
+.cov-high .cov-fill { background: #22c55e; }
+.cov-mid  .cov-fill { background: #f59e0b; }
+.cov-low  .cov-fill { background: #ef4444; }
+.pct { font-weight: 600; font-size: 13px; }
+.cov-high .pct { color: #16a34a; }
+.cov-mid  .pct  { color: #b45309; }
+.cov-low  .pct  { color: #dc2626; }
+details { background: #fff; border-radius: 8px; margin-bottom: 8px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+summary { cursor: pointer; padding: 14px 20px; font-weight: 600;
+          list-style: none; display: flex; align-items: center; gap: 10px;
+          user-select: none; }
+summary::-webkit-details-marker { display: none; }
+.summary-arrow { font-size: 10px; color: #9ca3af; transition: transform 0.15s;
+                 display: inline-block; }
+details[open] .summary-arrow { transform: rotate(90deg); }
+.fn-body { padding: 0 20px 16px; }
+.fn-meta { font-size: 12px; color: #6b7280; margin-bottom: 12px; }
+.outcome-return { color: #16a34a; font-weight: 500; }
+.outcome-throw  { color: #dc2626; font-weight: 500; }
+.outcome-void   { color: #6b7280; }
+.tag { display: inline-block; padding: 1px 7px; border-radius: 10px;
+       font-size: 11px; font-weight: 600; }
+.tag-new  { background: #dbeafe; color: #1d4ed8; }
+.tag-skip { background: #f3f4f6; color: #6b7280; }
+.skipped-list { list-style: none; }
+.skipped-list li { padding: 6px 0; border-bottom: 1px solid #f3f4f6;
+                   font-size: 13px; color: #6b7280; }
+.skipped-list li:last-child { border-bottom: none; }
+"#;
+
+/// Render a coverage bar widget as an HTML string.
+fn render_cov_bar(pct: f64) -> String {
+    let cls = coverage_class(pct);
+    let width = pct.clamp(0.0, 100.0) as u32;
+    format!(
+        r#"<span class="cov-bar-wrap {cls}"><span class="cov-bar"><span class="cov-fill" style="width:{width}%"></span></span><span class="pct">{pct:.0}%</span></span>"#
+    )
+}
+
+/// Render the HTML section for a single explored function.
+///
+/// Returns an HTML fragment (a `<details>` block) ready to embed in a full page.
+#[must_use]
+pub fn render_explore_fn_html(result: &ObservationOutput, location: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let cov_pct = if result.total_lines > 0 {
+        (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+    let cov_bar = render_cov_bar(cov_pct);
+    let fn_name = html_escape(&result.function_name);
+    let loc = html_escape(location);
+
+    let _ = write!(
+        out,
+        r#"<details><summary><span class="summary-arrow">&#9658;</span>{fn_name} &nbsp;{cov_bar}</summary>
+<div class="fn-body">
+<p class="fn-meta">{loc} &nbsp;&middot;&nbsp; {iters} iteration(s) &nbsp;&middot;&nbsp; {paths} path(s) &nbsp;&middot;&nbsp; {covered}/{total} lines</p>
+"#,
+        iters = result.iterations,
+        paths = result.unique_paths,
+        covered = result.lines_covered,
+        total = result.total_lines,
+    );
+
+    // Paths table
+    if !result.new_path_executions.is_empty() {
+        out.push_str(
+            r#"<table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
+"#,
+        );
+        for (i, exec) in result.new_path_executions.iter().enumerate() {
+            let inputs_str = exec
+                .inputs
+                .iter()
+                .map(|v| format!("<code>{}</code>", html_escape(&v.to_string())))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let outcome = if let Some(ref err) = exec.thrown_error {
+                format!(
+                    r#"<span class="outcome-throw">throws</span> <code>{}</code>"#,
+                    html_escape(err)
+                )
+            } else if let Some(ref val) = exec.return_value {
+                format!(
+                    r#"<span class="outcome-return">returns</span> <code>{}</code>"#,
+                    html_escape(&val.to_string())
+                )
+            } else {
+                r#"<span class="outcome-void">void</span>"#.to_string()
+            };
+
+            let _ = writeln!(
+                out,
+                r#"<tr><td>{n}</td><td>{inputs_str}</td><td>{outcome}</td></tr>"#,
+                n = i + 1,
+            );
+        }
+        out.push_str("</tbody></table>\n");
+    } else {
+        out.push_str(r#"<p style="color:#9ca3af;font-size:13px">No new paths recorded.</p>"#);
+        out.push('\n');
+    }
+
+    out.push_str("</div></details>\n");
+    out
+}
+
+/// Wrap exploration HTML fragments into a complete, self-contained HTML page.
+///
+/// `fragments` is a slice of `<details>` blocks produced by [`render_explore_fn_html`].
+#[must_use]
+pub fn wrap_explore_html(
+    fragments: &[String],
+    fn_count: usize,
+    total_paths: usize,
+    total_covered: usize,
+    total_lines: u32,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let cov_pct = if total_lines > 0 {
+        (total_covered as f64 / total_lines as f64 * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+    let cov_bar = render_cov_bar(cov_pct);
+
+    let _ = write!(
+        out,
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shatter Explore Report</title>
+<style>{css}</style>
+</head>
+<body>
+<h1>Shatter Explore Report</h1>
+<div class="stat-row">
+  <div class="stat"><div class="stat-label">Functions</div><div class="stat-value">{fn_count}</div></div>
+  <div class="stat"><div class="stat-label">Paths</div><div class="stat-value">{total_paths}</div></div>
+  <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{cov_bar}</div></div>
+</div>
+<h2>Functions</h2>
+"#,
+        css = HTML_CSS,
+    );
+
+    for fragment in fragments {
+        out.push_str(fragment);
+    }
+
+    out.push_str("</body>\n</html>\n");
+    out
+}
+
+/// Generate a self-contained HTML report for a [`ScanReport`].
+#[must_use]
+pub fn generate_html_scan_report(report: &ScanReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let overall_pct = report.codebase.overall_coverage;
+    let cov_bar = render_cov_bar(overall_pct);
+    let total_fn = report.codebase.total_functions;
+    let total_paths: usize = report.functions.iter().map(|f| f.branches_covered).sum();
+    let skipped = report.codebase.skipped_functions.len();
+
+    let _ = write!(
+        out,
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shatter Scan Report</title>
+<style>{css}</style>
+</head>
+<body>
+<h1>Shatter Scan Report</h1>
+<div class="stat-row">
+  <div class="stat"><div class="stat-label">Functions</div><div class="stat-value">{total_fn}</div></div>
+  <div class="stat"><div class="stat-label">Paths Found</div><div class="stat-value">{total_paths}</div></div>
+  <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{cov_bar}</div></div>
+  <div class="stat"><div class="stat-label">Skipped</div><div class="stat-value">{skipped}</div></div>
+</div>
+"#,
+        css = HTML_CSS,
+    );
+
+    // Summary table
+    out.push_str("<h2>Function Summary</h2>\n<div class=\"card\">\n<table>\n");
+    out.push_str(
+        "<thead><tr><th>Function</th><th>File</th><th>Paths</th><th>Coverage</th><th>Iterations</th></tr></thead>\n<tbody>\n",
+    );
+    for f in &report.functions {
+        let fn_name = html_escape(&f.function_name);
+        let file = html_escape(&f.file_path);
+        let bar = render_cov_bar(f.coverage_pct);
+        let _ = writeln!(
+            out,
+            r#"<tr><td><code>{fn_name}</code></td><td><code>{file}</code></td><td>{paths}</td><td>{bar}</td><td>{iters}</td></tr>"#,
+            paths = f.branches_covered,
+            iters = f.iterations,
+        );
+    }
+    out.push_str("</tbody>\n</table>\n</div>\n");
+
+    // Per-function details
+    out.push_str("<h2>Function Details</h2>\n");
+    for f in &report.functions {
+        let fn_name = html_escape(&f.function_name);
+        let file = html_escape(&f.file_path);
+        let bar = render_cov_bar(f.coverage_pct);
+
+        let _ = write!(
+            out,
+            r#"<details><summary><span class="summary-arrow">&#9658;</span>{fn_name} &nbsp;{bar}</summary>
+<div class="fn-body">
+<p class="fn-meta"><code>{file}</code> &nbsp;&middot;&nbsp; {iters} iteration(s) &nbsp;&middot;&nbsp; {paths} path(s) &nbsp;&middot;&nbsp; {covered}/{total} lines</p>
+"#,
+            iters = f.iterations,
+            paths = f.branches_covered,
+            covered = f.lines_covered,
+            total = f.total_lines,
+        );
+
+        if !f.discovered_inputs.is_empty() {
+            out.push_str(
+                "<table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>\n",
+            );
+            for (i, inp) in f.discovered_inputs.iter().enumerate() {
+                let inputs_str = inp
+                    .inputs
+                    .iter()
+                    .map(|v| format!("<code>{}</code>", html_escape(&v.to_string())))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let outcome = if let Some(ref err) = inp.thrown_error {
+                    format!(
+                        r#"<span class="outcome-throw">throws</span> <code>{}</code>"#,
+                        html_escape(err)
+                    )
+                } else if let Some(ref val) = inp.return_value {
+                    format!(
+                        r#"<span class="outcome-return">returns</span> <code>{}</code>"#,
+                        html_escape(&val.to_string())
+                    )
+                } else {
+                    r#"<span class="outcome-void">void</span>"#.to_string()
+                };
+                let _ = writeln!(
+                    out,
+                    "<tr><td>{n}</td><td>{inputs_str}</td><td>{outcome}</td></tr>",
+                    n = i + 1,
+                );
+            }
+            out.push_str("</tbody></table>\n");
+        } else {
+            out.push_str(
+                r#"<p style="color:#9ca3af;font-size:13px">No discovered inputs recorded.</p>"#,
+            );
+            out.push('\n');
+        }
+
+        if !f.mocks_used.is_empty() {
+            let mocks: Vec<String> = f.mocks_used.iter().map(|m| html_escape(m)).collect();
+            let _ = writeln!(
+                out,
+                r#"<p class="fn-meta" style="margin-top:8px">Mocks: {}</p>"#,
+                mocks.join(", ")
+            );
+        }
+
+        out.push_str("</div></details>\n");
+    }
+
+    // Skipped functions
+    if !report.codebase.skipped_functions.is_empty() {
+        out.push_str("<h2>Skipped Functions</h2>\n<div class=\"card\">\n<ul class=\"skipped-list\">\n");
+        for s in &report.codebase.skipped_functions {
+            let name = html_escape(&s.function_name);
+            let reason = html_escape(&s.reason);
+            let _ = writeln!(out, "<li><code>{name}</code> &mdash; {reason}</li>");
+        }
+        out.push_str("</ul>\n</div>\n");
+    }
+
+    out.push_str("</body>\n</html>\n");
+    out
+}
+
+/// Write a self-contained HTML scan report to a directory.
+///
+/// Creates the output directory if it does not exist. Writes to
+/// `<output_dir>/scan-report.html`.
+pub fn write_html_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+    std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
+        path: output_dir.to_path_buf(),
+        source: e,
+    })?;
+
+    let report_path = output_dir.join("scan-report.html");
+    let html = generate_html_scan_report(report);
+    std::fs::write(&report_path, html).map_err(|e| ReportError::Io {
+        path: report_path.clone(),
+        source: e,
+    })?;
+
+    Ok(report_path)
+}
+
+// ---------------------------------------------------------------------------
 // Markdown report generation
 // ---------------------------------------------------------------------------
 
@@ -761,6 +1135,8 @@ pub enum ReportFormat {
     Markdown,
     /// Both JSON and Markdown.
     Both,
+    /// Self-contained HTML report.
+    Html,
 }
 
 impl std::str::FromStr for ReportFormat {
@@ -771,8 +1147,9 @@ impl std::str::FromStr for ReportFormat {
             "json" => Ok(Self::Json),
             "markdown" | "md" => Ok(Self::Markdown),
             "both" => Ok(Self::Both),
+            "html" => Ok(Self::Html),
             _ => Err(format!(
-                "unknown report format '{s}': expected 'json', 'markdown', or 'both'"
+                "unknown report format '{s}': expected 'json', 'markdown', 'both', or 'html'"
             )),
         }
     }
@@ -1446,5 +1823,119 @@ mod tests {
         assert!(is_boundary_value(&[serde_json::json!([])]));
         assert!(!is_boundary_value(&[serde_json::json!(42)]));
         assert!(!is_boundary_value(&[serde_json::json!("hello")]));
+    }
+
+    // -----------------------------------------------------------------------
+    // HTML report tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn html_scan_report_is_valid_structure() {
+        let report = make_report_with_functions();
+        let html = generate_html_scan_report(&report);
+        assert!(html.starts_with("<!DOCTYPE html>"), "must start with doctype");
+        assert!(html.contains("<html"), "must have html tag");
+        assert!(html.contains("</html>"), "must close html tag");
+        assert!(html.contains("</body>"), "must close body tag");
+    }
+
+    #[test]
+    fn html_scan_report_contains_function_names() {
+        let report = make_report_with_functions();
+        let html = generate_html_scan_report(&report);
+        // make_report_with_functions produces functions named "leaf" and "caller"
+        assert!(html.contains("leaf"), "must contain function leaf");
+        assert!(html.contains("caller"), "must contain function caller");
+    }
+
+    #[test]
+    fn html_scan_report_contains_coverage_metrics() {
+        let report = make_report_with_functions();
+        let html = generate_html_scan_report(&report);
+        // Must show coverage bar (cov-bar class)
+        assert!(html.contains("cov-bar"), "must contain coverage bar");
+        // Must show some percentage
+        assert!(html.contains('%'), "must show percentage");
+    }
+
+    #[test]
+    fn html_scan_report_escapes_special_chars() {
+        let mut parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result(
+                "fn<test>&\"",
+                5,
+                2,
+                4,
+                10,
+                vec![],
+            )],
+            test_order: vec![],
+            skipped: vec![],
+            workers_used: 1,
+            sampling: None,
+        };
+        // Add a skipped function with special chars in reason
+        parallel_result.skipped.push(SkippedFunction {
+            function_name: "fn<skip>".to_string(),
+            reason: "param 'x' has opaque type net.Socket & <stuff>".to_string(),
+            category: crate::scan_orchestrator::SkipCategory::Expected,
+        });
+        let mut file_map = HashMap::new();
+        file_map.insert("fn<test>&\"".to_string(), "src/test.ts".to_string());
+        let report = generate_report(&parallel_result, &file_map, None);
+        let html = generate_html_scan_report(&report);
+
+        // Raw special chars must not appear unescaped in HTML
+        assert!(!html.contains("<test>"), "angle brackets must be escaped");
+        assert!(html.contains("&lt;test&gt;"), "must contain escaped form");
+        assert!(!html.contains("<skip>"), "skip reason must be escaped");
+    }
+
+    #[test]
+    fn html_report_format_from_str() {
+        assert_eq!("html".parse::<ReportFormat>().unwrap(), ReportFormat::Html);
+    }
+
+    #[test]
+    fn render_explore_fn_html_contains_function_name() {
+        use crate::explorer::{ExecutionSummary, ObservationOutput};
+
+        let result = ObservationOutput {
+            function_name: "myFunc".to_string(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 8,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![serde_json::json!(42)],
+                return_value: Some(serde_json::json!("ok")),
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+        };
+        let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10");
+        assert!(fragment.contains("myFunc"), "must contain function name");
+        assert!(fragment.contains("cov-bar"), "must contain coverage bar");
+        assert!(fragment.contains("<details>"), "must use details element");
+        assert!(fragment.contains("42"), "must show input value");
+    }
+
+    #[test]
+    fn wrap_explore_html_full_page() {
+        let fragments = vec!["<details>foo</details>".to_string()];
+        let html = wrap_explore_html(&fragments, 1, 3, 7, 10);
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("</html>"));
+        assert!(html.contains("<details>foo</details>"));
+        assert!(html.contains('%'), "must show coverage percentage");
     }
 }

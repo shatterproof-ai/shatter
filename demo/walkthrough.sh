@@ -277,7 +277,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=48
+TOTAL=50
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -554,6 +554,16 @@ step 47 $TOTAL "Analyze Observe Output" \
 step 48 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
     $SHATTER specify /tmp/shatter-observe.json
+
+# Stage 49: HTML explore report
+step 49 $TOTAL "HTML Explore Report" \
+    "Generate a self-contained HTML report for exploration results" \
+    $SHATTER explore --report-file /tmp/shatter-explore-report.html "${EXAMPLES[0]}"
+
+# Stage 50: HTML scan report
+step 50 $TOTAL "HTML Scan Report" \
+    "Generate a self-contained HTML scan report alongside JSON" \
+    $SHATTER scan --report-format=html --output /tmp/shatter-scan-html examples/standalone/ts
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then

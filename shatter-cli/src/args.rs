@@ -398,6 +398,11 @@ pub(crate) enum CliCommand {
         /// every execute call; enable only when you need the side-effect data.
         #[arg(long, default_value_t = false)]
         capture_side_effects: bool,
+
+        /// Write a self-contained HTML exploration report to this file.
+        /// When set, generates an HTML file with coverage and path details for all explored functions.
+        #[arg(long)]
+        report_file: Option<PathBuf>,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
