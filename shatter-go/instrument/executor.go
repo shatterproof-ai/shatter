@@ -187,12 +187,14 @@ func flattenMocks(mocks [][]MockConfig) []MockConfig {
 // generates a main harness that calls it with the given JSON inputs, compiles,
 // runs, and returns the collected results.
 // The mocks parameter provides mock configurations for external dependencies.
-func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, mocks ...[]MockConfig) (*ExecuteResult, error) {
-	return ExecuteFunctionWithTiming(sourcePath, funcName, inputs, nil, mocks...)
+// capture controls whether stdout/stderr side effects are collected.
+func ExecuteFunction(sourcePath, funcName string, inputs []json.RawMessage, capture bool, mocks ...[]MockConfig) (*ExecuteResult, error) {
+	return ExecuteFunctionWithTiming(sourcePath, funcName, inputs, nil, capture, mocks...)
 }
 
 // ExecuteFunctionWithTiming instruments and executes a Go function while recording timing phases when requested.
-func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMessage, timing *frontendtiming.Collector, mocks ...[]MockConfig) (*ExecuteResult, error) {
+// capture controls whether stdout/stderr side effects are collected.
+func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMessage, timing *frontendtiming.Collector, capture bool, mocks ...[]MockConfig) (*ExecuteResult, error) {
 	// Analyze the function to get parameter types and global variables.
 	finishAnalyze := timing.Start("execute.analyze")
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
@@ -306,16 +308,18 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 		Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
 	}
 
-	// Capture stdout/stderr as structured side effects.
-	if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
-		result.SideEffects = append(result.SideEffects, SideEffect{
-			Kind: "console_output", Level: "log", Message: s,
-		})
-	}
-	if s := strings.TrimSpace(stderrBuf.String()); s != "" {
-		result.SideEffects = append(result.SideEffects, SideEffect{
-			Kind: "console_output", Level: "error", Message: s,
-		})
+	// Capture stdout/stderr as structured side effects (only when capture=true).
+	if capture {
+		if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
+			result.SideEffects = append(result.SideEffects, SideEffect{
+				Kind: "console_output", Level: "log", Message: s,
+			})
+		}
+		if s := strings.TrimSpace(stderrBuf.String()); s != "" {
+			result.SideEffects = append(result.SideEffects, SideEffect{
+				Kind: "console_output", Level: "error", Message: s,
+			})
+		}
 	}
 
 	// Try to parse the shatter recording results
