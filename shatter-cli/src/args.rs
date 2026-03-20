@@ -717,6 +717,16 @@ pub(crate) enum CliCommand {
         /// every execute call; enable only when you need the side-effect data.
         #[arg(long, default_value_t = false)]
         capture_side_effects: bool,
+
+        /// Number of workers to assign per function in shared-pool mode (--isolation none).
+        ///
+        /// When > 1, each function is explored by this many workers simultaneously,
+        /// each with a different random seed derived from the base seed. The total
+        /// iteration budget is split evenly across workers so exploration effort stays
+        /// constant. Useful when the layer has fewer functions than `--parallelism`,
+        /// allowing idle workers to contribute to the same function. Default: 1.
+        #[arg(long, default_value_t = 1)]
+        workers_per_fn: usize,
     },
 
     /// Export generated tests from behavior maps produced by exploration.

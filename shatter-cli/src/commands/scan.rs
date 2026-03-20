@@ -61,6 +61,7 @@ pub(crate) async fn run_scan(
     scheduler_policy: shatter_core::scheduler_policy::SchedulerPolicy,
     isolation: shatter_core::explorer::IsolationMode,
     capture_side_effects: bool,
+    workers_per_fn: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -455,6 +456,7 @@ pub(crate) async fn run_scan(
             policy: scheduler_policy,
             isolation,
             capture_side_effects,
+            workers_per_fn,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -528,6 +530,7 @@ pub(crate) async fn run_scan(
         policy: scheduler_policy,
         isolation,
         capture_side_effects,
+        workers_per_fn,
     };
 
     let scan_start = Instant::now();

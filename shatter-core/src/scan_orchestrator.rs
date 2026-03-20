@@ -89,6 +89,15 @@ pub struct ScanConfig {
     /// When true, rich side-effect capture is enabled for all functions in
     /// this scan. Defaults to false for throughput.
     pub capture_side_effects: bool,
+    /// Number of workers to assign per function in `IsolationMode::None`.
+    ///
+    /// When > 1, each function in a layer is explored by this many parallel
+    /// workers simultaneously, each with a different random seed derived from
+    /// the base seed. Each worker receives `max_iterations / workers_per_fn`
+    /// iterations so the total budget stays constant. Results from all workers
+    /// are merged after the layer completes, with duplicate inputs deduplicated
+    /// by input hash. Default: 1 (one worker per function, backward compatible).
+    pub workers_per_fn: usize,
 }
 
 /// Context about sampling mode, for report headers.
@@ -735,14 +744,7 @@ impl WorkerPool {
 #[allow(clippy::type_complexity)]
 async fn run_layer_function_mode(
     fe_config: Arc<FrontendConfig>,
-    tasks: Vec<(
-        String,
-        FunctionAnalysis,
-        ExploreConfig,
-        Vec<MockUsage>,
-        HashSet<String>,
-        Option<String>,
-    )>,
+    tasks: Vec<ExploreTask>,
     max_concurrent: usize,
     timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
@@ -752,7 +754,7 @@ async fn run_layer_function_mode(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::new();
 
-    for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in tasks {
+    for ExploreTask { func_name, analysis, explore_config, mocks_used, callees, deep_fp } in tasks {
         let semaphore = Arc::clone(&semaphore);
         let fe_config = Arc::clone(&fe_config);
         let behavior_maps = Arc::clone(behavior_maps);
@@ -828,6 +830,189 @@ async fn run_layer_function_mode(
         }
     }
     (outcomes, peak)
+}
+
+/// Derive a deterministic seed for a worker replica.
+///
+/// When a base seed is set, XORs it with a mixing of the function index and
+/// replica index so that each replica explores a different region of the input
+/// space. When no base seed is set, returns `None` so each replica uses fresh
+/// entropy independently.
+fn derive_replica_seed(base: Option<u64>, fn_idx: usize, replica: usize) -> Option<u64> {
+    base.map(|s| {
+        s ^ ((fn_idx as u64).wrapping_mul(0x9e3779b97f4a7c15))
+            ^ (replica as u64).wrapping_mul(0x6c62272e07bb0142)
+    })
+}
+
+/// Internal task descriptor for a single-function exploration slot.
+///
+/// Carries all per-function data needed to dispatch one worker. When
+/// `workers_per_fn > 1`, a function may appear in multiple `ExploreTask`s
+/// with different seeds so that parallel workers explore different paths.
+struct ExploreTask {
+    func_name: String,
+    analysis: FunctionAnalysis,
+    explore_config: ExploreConfig,
+    mocks_used: Vec<MockUsage>,
+    callees: std::collections::HashSet<String>,
+    deep_fp: Option<String>,
+}
+
+/// Merge outcomes for replicas of the same function into one outcome per function.
+///
+/// When `workers_per_fn > 1`, multiple `FunctionOutcome::Success` entries may
+/// exist for the same function (one per worker). This function groups them,
+/// re-analyzes the merged raw results, and produces one merged `FunctionResult`
+/// per function. If any replica succeeded the function is considered successful;
+/// if all replicas failed, the first failure is kept.
+fn merge_replica_outcomes(
+    outcomes: Vec<FunctionOutcome>,
+    analysis_map: &HashMap<&str, &FunctionAnalysis>,
+) -> Vec<FunctionOutcome> {
+    // Partition by function name, preserving insertion order for determinism.
+    let mut by_name: HashMap<String, Vec<Box<FunctionResult>>> = HashMap::new();
+    let mut name_order: Vec<String> = Vec::new();
+    let mut errors: HashMap<String, FunctionOutcome> = HashMap::new();
+
+    for outcome in outcomes {
+        match outcome {
+            FunctionOutcome::Success(result) => {
+                let name = result.function_name.clone();
+                if !by_name.contains_key(&name) {
+                    name_order.push(name.clone());
+                }
+                by_name.entry(name).or_default().push(result);
+            }
+            FunctionOutcome::Timeout { ref function_name, .. }
+            | FunctionOutcome::Error { ref function_name, .. } => {
+                // Keep the first failure; success from another replica overrides it.
+                let name = function_name.clone();
+                errors.entry(name.clone()).or_insert(outcome);
+                if !name_order.contains(&name) {
+                    name_order.push(name);
+                }
+            }
+        }
+    }
+
+    name_order
+        .into_iter()
+        .map(|name| {
+            if let Some(replicas) = by_name.remove(&name) {
+                if replicas.len() == 1 {
+                    FunctionOutcome::Success(replicas.into_iter().next().unwrap())
+                } else {
+                    // Merge replicas.
+                    let analysis = match analysis_map.get(name.as_str()) {
+                        Some(a) => a,
+                        None => {
+                            // No analysis available: just keep the first replica.
+                            return FunctionOutcome::Success(replicas.into_iter().next().unwrap());
+                        }
+                    };
+                    let unboxed: Vec<FunctionResult> = replicas.into_iter().map(|r| *r).collect();
+                    FunctionOutcome::Success(Box::new(merge_replica_results(unboxed, analysis)))
+                }
+            } else {
+                // All replicas failed; return the stored error.
+                errors.remove(&name).unwrap_or(FunctionOutcome::Error {
+                    function_name: name,
+                    error: "all replicas failed".into(),
+                })
+            }
+        })
+        .collect()
+}
+
+/// Merge multiple per-replica `FunctionResult`s for the same function.
+///
+/// Concatenates `raw_results` from all replicas, then re-runs `pipeline::analyze`
+/// on the merged data to produce a single correct `BehaviorMap` and
+/// `CoverageMetrics`. Duplicate inputs are deduplicated by input hash inside
+/// `BehaviorMap::from_records`. The fingerprint is taken from the first replica
+/// (all replicas share the same source fingerprint).
+fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnalysis) -> FunctionResult {
+    use crate::explorer::ObservationOutput;
+
+    debug_assert!(!replicas.is_empty(), "merge_replica_results: replicas must not be empty");
+
+    let func_name = replicas[0].function_name.clone();
+    let fingerprint = replicas[0].behavior_map.fingerprint.clone();
+    let total_lines = replicas[0].exploration.total_lines;
+    let mocks_used = replicas[0].mocks_used.clone();
+    let behavior_coverage = replicas[0].behavior_coverage.clone();
+    let refactoring_recommendations = replicas[0].refactoring_recommendations.clone();
+
+    // Accumulate exploration data across replicas.
+    let mut merged_raw = Vec::new();
+    let mut merged_discoveries = Vec::new();
+    let mut merged_nondeterministic: Vec<crate::nondeterminism::NondeterministicField> = Vec::new();
+    let mut merged_float_probes = Vec::new();
+    let mut merged_boundary = Vec::new();
+    let mut merged_shrunk: std::collections::HashMap<u64, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    let mut merged_new_path_execs = Vec::new();
+    let mut total_iterations: u32 = 0;
+    let mut max_lines_covered: usize = 0;
+    let mut mcdc_summary: Option<(usize, usize, usize)> = None;
+
+    for replica in replicas {
+        let exp = replica.exploration;
+        merged_raw.extend(exp.raw_results);
+        merged_discoveries.extend(exp.discoveries);
+        merged_new_path_execs.extend(exp.new_path_executions);
+        for field in exp.nondeterministic_fields {
+            if !merged_nondeterministic.contains(&field) {
+                merged_nondeterministic.push(field);
+            }
+        }
+        merged_float_probes.extend(exp.float_probe_results);
+        merged_boundary.extend(exp.boundary_results);
+        for (k, v) in exp.shrunk_witnesses {
+            // First writer wins: keep whichever replica found it.
+            merged_shrunk.entry(k).or_insert(v);
+        }
+        total_iterations += exp.iterations;
+        max_lines_covered = max_lines_covered.max(exp.lines_covered);
+        if mcdc_summary.is_none() {
+            mcdc_summary = exp.mcdc_summary;
+        }
+    }
+
+    // Build a merged ObservationOutput and re-analyze it. pipeline::analyze
+    // handles input-hash deduplication inside BehaviorMap::from_records and
+    // uses analysis.branches.len() for accurate CoverageMetrics.total_branches.
+    let merged_exploration = ObservationOutput {
+        function_name: func_name.clone(),
+        iterations: total_iterations,
+        // unique_paths and lines_covered will be re-stated conservatively;
+        // the definitive coverage data comes from BehaviorMap + CoverageMetrics.
+        unique_paths: merged_new_path_execs.len(),
+        lines_covered: max_lines_covered,
+        total_lines,
+        new_path_executions: merged_new_path_execs,
+        raw_results: merged_raw,
+        discoveries: merged_discoveries,
+        nondeterministic_fields: merged_nondeterministic,
+        float_probe_results: merged_float_probes,
+        boundary_results: merged_boundary,
+        shrunk_witnesses: merged_shrunk,
+        mcdc_summary,
+    };
+
+    let mut analyze_out = crate::pipeline::analyze(&merged_exploration, analysis);
+    analyze_out.behavior_map.fingerprint = fingerprint;
+
+    FunctionResult {
+        function_name: func_name,
+        exploration: merged_exploration,
+        behavior_map: analyze_out.behavior_map,
+        behavior_coverage,
+        mocks_used,
+        coverage_metrics: analyze_out.coverage_metrics,
+        refactoring_recommendations,
+    }
 }
 
 /// Run a multi-function scan in dependency order with multi-process parallelism.
@@ -946,7 +1131,7 @@ pub async fn parallel_scan(
         }
 
         // Build tasks for this layer: each function paired with its mocks.
-        let mut tasks = Vec::new();
+        let mut tasks: Vec<ExploreTask> = Vec::new();
         // Track deep FPs computed in this layer (added after the layer completes).
         let mut layer_deep_fps: Vec<(String, String)> = Vec::new();
 
@@ -1097,7 +1282,14 @@ pub async fn parallel_scan(
                 capture_side_effects: config.capture_side_effects,
             };
 
-            tasks.push((func_name.clone(), analysis.clone(), explore_config, mocks_used, callees, current_deep_fp));
+            tasks.push(ExploreTask {
+                func_name: func_name.clone(),
+                analysis: analysis.clone(),
+                explore_config,
+                mocks_used,
+                callees,
+                deep_fp: current_deep_fp,
+            });
         }
 
         // Execute tasks in parallel, using either the shared WorkerPool (default)
@@ -1126,11 +1318,42 @@ pub async fn parallel_scan(
                     outcomes
                 } else {
                     // Default: shared WorkerPool — workers are reused across functions.
+                    //
+                    // When workers_per_fn > 1, expand each function into multiple tasks
+                    // with different seeds so parallel workers explore different paths.
+                    // The iteration budget is split evenly across replicas to keep the
+                    // total budget constant.
+                    let expanded_tasks: Vec<ExploreTask> = if config.workers_per_fn <= 1 {
+                        tasks
+                    } else {
+                        let wpf = config.workers_per_fn;
+                        let mut out = Vec::with_capacity(tasks.len() * wpf);
+                        for (fn_idx, task) in tasks.into_iter().enumerate() {
+                            let per_replica_iters =
+                                (task.explore_config.max_iterations / wpf as u32).max(1);
+                            for replica in 0..wpf {
+                                let mut replica_config = task.explore_config.clone();
+                                replica_config.seed =
+                                    derive_replica_seed(task.explore_config.seed, fn_idx, replica);
+                                replica_config.max_iterations = per_replica_iters;
+                                out.push(ExploreTask {
+                                    func_name: task.func_name.clone(),
+                                    analysis: task.analysis.clone(),
+                                    explore_config: replica_config,
+                                    mocks_used: task.mocks_used.clone(),
+                                    callees: task.callees.clone(),
+                                    deep_fp: task.deep_fp.clone(),
+                                });
+                            }
+                        }
+                        out
+                    };
+
                     let pool = Arc::new(
                         WorkerPool::spawn_capped(
                             Arc::clone(&fe_config),
                             effective_parallelism,
-                            tasks.len(),
+                            expanded_tasks.len(),
                         )
                         .await
                         .map_err(ScanError::Frontend)?,
@@ -1138,19 +1361,20 @@ pub async fn parallel_scan(
 
                     // Each task decrements this counter after returning its worker so that
                     // `maybe_grow` can detect tasks still blocked on `checkout()`.
-                    let tasks_remaining = Arc::new(AtomicUsize::new(tasks.len()));
+                    let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
 
                     // Each task checks out a worker, explores, then returns the worker.
+                    // Behavior map storage is deferred to after all handles join so that
+                    // replicas for the same function can be merged first.
                     let mut handles = Vec::new();
 
-                    for (func_name, analysis, explore_config, mocks_used, callees, deep_fp) in
-                        tasks
+                    for ExploreTask { func_name, analysis, explore_config, mocks_used, callees, deep_fp }
+                        in expanded_tasks
                     {
                         let pool = Arc::clone(&pool);
                         let behavior_maps = Arc::clone(&behavior_maps);
                         let input_pool = Arc::clone(&input_pool);
                         let timeout = config.timeout_per_fn;
-                        let cache = config.cache.clone();
                         let fe_config = Arc::clone(&fe_config);
                         let tasks_remaining = Arc::clone(&tasks_remaining);
 
@@ -1205,22 +1429,7 @@ pub async fn parallel_scan(
                             pool.maybe_grow(remaining);
 
                             match result {
-                                Ok(Ok(func_result)) => {
-                                    // Store the behavior map for downstream functions.
-                                    let mut maps = behavior_maps.lock().await;
-                                    maps.insert(
-                                        func_name.clone(),
-                                        func_result.behavior_map.clone(),
-                                    );
-                                    drop(maps);
-
-                                    // Persist to disk cache for reuse across runs.
-                                    if let Some(ref cache) = cache {
-                                        let _ = cache.store(&func_result.behavior_map);
-                                    }
-
-                                    FunctionOutcome::Success(Box::new(func_result))
-                                }
+                                Ok(Ok(func_result)) => FunctionOutcome::Success(Box::new(func_result)),
                                 Ok(Err(e)) => FunctionOutcome::Error {
                                     function_name: func_name,
                                     error: e.to_string(),
@@ -1235,14 +1444,44 @@ pub async fn parallel_scan(
                         handles.push(handle);
                     }
 
-                    let mut outcomes = Vec::with_capacity(handles.len());
+                    let mut raw_outcomes = Vec::with_capacity(handles.len());
                     for handle in handles {
                         match handle.await {
-                            Ok(outcome) => outcomes.push(outcome),
-                            Err(e) => outcomes.push(FunctionOutcome::Error {
+                            Ok(outcome) => raw_outcomes.push(outcome),
+                            Err(e) => raw_outcomes.push(FunctionOutcome::Error {
                                 function_name: "(unknown)".into(),
                                 error: format!("task join error: {e}"),
                             }),
+                        }
+                    }
+
+                    // Merge replicas for any function explored by multiple workers, then
+                    // store the final behavior maps and cache entries for all successes.
+                    let outcomes = if config.workers_per_fn > 1 {
+                        merge_replica_outcomes(raw_outcomes, &analysis_map)
+                    } else {
+                        raw_outcomes
+                    };
+
+                    // Store behavior maps for downstream layers and disk cache.
+                    // Doing this after the join (rather than inside each spawn) is safe
+                    // because same-layer functions have no cross-dependencies.
+                    {
+                        let mut maps = behavior_maps.lock().await;
+                        for outcome in &outcomes {
+                            if let FunctionOutcome::Success(result) = outcome {
+                                maps.insert(
+                                    result.function_name.clone(),
+                                    result.behavior_map.clone(),
+                                );
+                            }
+                        }
+                    }
+                    if let Some(ref cache) = config.cache {
+                        for outcome in &outcomes {
+                            if let FunctionOutcome::Success(result) = outcome {
+                                let _ = cache.store(&result.behavior_map);
+                            }
                         }
                     }
 
@@ -2520,6 +2759,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2596,6 +2836,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2666,6 +2907,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2753,6 +2995,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2850,6 +3093,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -2931,6 +3175,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -2986,6 +3231,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -3025,6 +3271,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -3054,6 +3301,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -3635,6 +3883,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -3732,6 +3981,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -3800,6 +4050,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3870,6 +4121,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3956,6 +4208,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4059,6 +4312,7 @@ mod tests {
             policy: SchedulerPolicy::Serial,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4147,6 +4401,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::Function,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4230,6 +4485,7 @@ mod tests {
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
             isolation: IsolationMode::Function,
             capture_side_effects: false,
+            workers_per_fn: 1,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4249,5 +4505,150 @@ mod tests {
             .find(|r| r.function_name == "caller_fn")
             .expect("caller_fn should be in results");
         assert!(caller_result.mocks_used.iter().any(|m| m.name == "leaf_fn"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Unit tests for derive_replica_seed and merge_replica_results
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn derive_replica_seed_deterministic() {
+        // Same inputs always produce the same seed.
+        assert_eq!(
+            derive_replica_seed(Some(42), 0, 0),
+            derive_replica_seed(Some(42), 0, 0)
+        );
+        assert_eq!(
+            derive_replica_seed(Some(42), 3, 1),
+            derive_replica_seed(Some(42), 3, 1)
+        );
+    }
+
+    #[test]
+    fn derive_replica_seed_none_stays_none() {
+        assert_eq!(derive_replica_seed(None, 0, 0), None);
+        assert_eq!(derive_replica_seed(None, 5, 3), None);
+    }
+
+    #[test]
+    fn derive_replica_seed_distinct_replicas() {
+        // Different replicas of the same function get different seeds.
+        let s0 = derive_replica_seed(Some(1), 0, 0);
+        let s1 = derive_replica_seed(Some(1), 0, 1);
+        let s2 = derive_replica_seed(Some(1), 0, 2);
+        assert_ne!(s0, s1);
+        assert_ne!(s0, s2);
+        assert_ne!(s1, s2);
+        // Different functions get different seeds even at replica 0.
+        let sf0 = derive_replica_seed(Some(1), 0, 0);
+        let sf1 = derive_replica_seed(Some(1), 1, 0);
+        assert_ne!(sf0, sf1);
+    }
+
+    /// Build a minimal `FunctionResult` with the given raw results for testing merge.
+    fn make_function_result(
+        func_name: &str,
+        raw_results: Vec<(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)>,
+    ) -> FunctionResult {
+        use crate::explorer::ObservationOutput;
+        let exploration = ObservationOutput {
+            function_name: func_name.to_string(),
+            iterations: raw_results.len() as u32,
+            unique_paths: raw_results.len(),
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results,
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: Default::default(),
+            mcdc_summary: None,
+        };
+        let analysis = make_analysis(func_name, vec![]);
+        let mut analyze_out = crate::pipeline::analyze(&exploration, &analysis);
+        analyze_out.behavior_map.fingerprint = None;
+        FunctionResult {
+            function_name: func_name.to_string(),
+            exploration,
+            behavior_map: analyze_out.behavior_map,
+            behavior_coverage: vec![],
+            mocks_used: vec![],
+            coverage_metrics: analyze_out.coverage_metrics,
+            refactoring_recommendations: vec![],
+        }
+    }
+
+    fn make_execute_result(branch_id: u32) -> ExecuteResult {
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        ExecuteResult {
+            branch_path: vec![BranchDecision {
+                branch_id,
+                line: 1,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
+            }],
+            scope_events: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            return_value: Some(serde_json::Value::Null),
+            thrown_error: None,
+            side_effects: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+        }
+    }
+
+    #[test]
+    fn merge_replica_results_single_passthrough() {
+        // A single-element merge should return an equivalent result.
+        let result = make_function_result("foo", vec![
+            (vec![], vec![], make_execute_result(1)),
+        ]);
+        let analysis = make_analysis("foo", vec![]);
+        let merged = merge_replica_results(vec![result], &analysis);
+        assert_eq!(merged.function_name, "foo");
+        assert_eq!(merged.behavior_map.behaviors.len(), 1);
+    }
+
+    #[test]
+    fn merge_replica_results_deduplicates_identical_inputs() {
+        // Two replicas both discover the same input: merged result should deduplicate.
+        let input_a = vec![serde_json::json!(1)];
+        let exec_a = make_execute_result(1);
+
+        let r1 = make_function_result("bar", vec![(input_a.clone(), vec![], exec_a.clone())]);
+        let r2 = make_function_result("bar", vec![(input_a.clone(), vec![], exec_a.clone())]);
+
+        let analysis = make_analysis("bar", vec![]);
+        let merged = merge_replica_results(vec![r1, r2], &analysis);
+
+        assert_eq!(merged.function_name, "bar");
+        // Same input hash → deduplicated to 1 behavior.
+        assert_eq!(merged.behavior_map.behaviors.len(), 1);
+        // iterations = sum of replicas
+        assert_eq!(merged.exploration.iterations, 2);
+    }
+
+    #[test]
+    fn merge_replica_results_combines_distinct_inputs() {
+        let input_a = vec![serde_json::json!(1)];
+        let input_b = vec![serde_json::json!(2)];
+
+        let r1 = make_function_result("baz", vec![(input_a, vec![], make_execute_result(1))]);
+        let r2 = make_function_result("baz", vec![(input_b, vec![], make_execute_result(2))]);
+
+        let analysis = make_analysis("baz", vec![]);
+        let merged = merge_replica_results(vec![r1, r2], &analysis);
+
+        assert_eq!(merged.function_name, "baz");
+        // Two distinct inputs → 2 behaviors in merged map.
+        assert_eq!(merged.behavior_map.behaviors.len(), 2);
+        assert_eq!(merged.exploration.iterations, 2);
     }
 }

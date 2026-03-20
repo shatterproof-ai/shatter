@@ -332,6 +332,7 @@ async fn main() -> ExitCode {
             scheduler_policy,
             isolation,
             capture_side_effects,
+            workers_per_fn,
         } => {
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
@@ -393,6 +394,7 @@ async fn main() -> ExitCode {
                 parsed_policy,
                 isolation.into(),
                 capture_side_effects,
+                workers_per_fn,
             )
             .await
         }
