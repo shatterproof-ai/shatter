@@ -8,14 +8,14 @@
   "properties": {
     "kind": {
       "type": "string",
-      "enum": ["console_output", "file_write", "network_request", "global_mutation"]
+      "enum": ["console_output", "file_write", "network_request", "global_mutation", "thrown_error", "global_state_change"]
     }
   },
   "oneOf": [
     {
       "properties": {
         "kind": { "const": "console_output" },
-        "level": { "type": "string", "description": "Log level (info, warn, error, etc.)." },
+        "level": { "type": "string", "description": "Log level (log, info, warn, error, debug, etc.)." },
         "message": { "type": "string", "description": "Log message." }
       },
       "required": ["kind", "level", "message"]
@@ -41,6 +41,24 @@
         "name": { "type": "string", "description": "Name of the mutated global." }
       },
       "required": ["kind", "name"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "thrown_error" },
+        "error_type": { "type": "string", "description": "Error class or type name." },
+        "message": { "type": "string", "description": "Error message." },
+        "stack": { "type": ["string", "null"], "description": "Stack trace, or null if unavailable." }
+      },
+      "required": ["kind", "error_type", "message", "stack"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "global_state_change" },
+        "variable": { "type": "string", "description": "Name of the global variable that changed." },
+        "before": { "description": "Serialized value before execution." },
+        "after": { "description": "Serialized value after execution." }
+      },
+      "required": ["kind", "variable", "before", "after"]
     }
   ]
 }

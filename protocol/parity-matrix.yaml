@@ -378,6 +378,48 @@ complex_type_capabilities:
 # status: accepted — intentional permanent divergence
 # status: resolved — no longer a divergence; remove entry when matrix is updated
 
+# --- Side effect capabilities ---
+#
+# Which side effect kinds each frontend captures in the execute response's
+# side_effects array. All supported kinds use the same field names (normalized).
+#
+# status: required   All frontends must capture this kind
+# status: optional   Frontends may capture this kind; coverage diverges
+
+side_effect_capabilities:
+  global_state_change:
+    status: required
+    notes: >
+      All frontends capture global/package/static mutable variable changes
+      using identical payload shape: { kind, variable, before, after }.
+    frontends:
+      typescript: supported
+      go: supported
+      rust: supported
+
+  console_output:
+    status: optional
+    notes: >
+      TypeScript and Go capture console/stdout output with shape { kind, level, message }.
+      Rust does not capture console output. Coverage granularity differs between TS
+      (per-call) and Go (process-level bulk); see allowed_divergences:
+      side-effect-console-coverage.
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+
+  thrown_error:
+    status: optional
+    notes: >
+      TypeScript emits thrown errors as a thrown_error side effect entry.
+      Go and Rust report via the top-level thrown_error response field instead.
+      See allowed_divergences: side-effect-thrown-error-placement.
+    frontends:
+      typescript: supported
+      go: not_supported
+      rust: not_supported
+
 allowed_divergences:
   - id: ts-missing-teardown
     description: >
@@ -402,3 +444,32 @@ allowed_divergences:
     resolution: >
       Expand the Rust executor to handle all input types that TS/Go handle,
       removing the NonExecutable early-exit path.
+
+  - id: side-effect-console-coverage
+    description: >
+      All frontends that capture console output use the same shape
+      { kind: "console_output", level, message }, but differ in granularity.
+      TypeScript intercepts each console.* call individually (per-call, distinct
+      log levels). Go captures process-level stdout/stderr bulk output after the
+      subprocess exits (all stdout → level "log", all stderr → level "error").
+      Rust does not capture console output at all.
+    affected_frontends: [go, rust]
+    affected_commands: [execute]
+    status: tracked
+    resolution: >
+      Improve Go to capture per-call console output via harness injection.
+      Add console capture to the Rust frontend harness.
+
+  - id: side-effect-thrown-error-placement
+    description: >
+      TypeScript emits thrown errors as a side effect entry with
+      { kind: "thrown_error", error_type, message, stack } inside the
+      side_effects array. Go and Rust report thrown errors exclusively via
+      the top-level thrown_error field in the execute response.
+    affected_frontends: [go, rust]
+    affected_commands: [execute]
+    status: tracked
+    resolution: >
+      Add thrown_error side effect emission to Go and Rust executors,
+      mirroring TypeScript behavior. The top-level field can be retained
+      for backwards compatibility.
