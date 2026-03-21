@@ -1,5 +1,6 @@
 pub(crate) mod analyze;
 pub(crate) mod build_frontend;
+pub(crate) mod cache;
 pub(crate) mod diff;
 pub(crate) mod explore;
 pub(crate) mod export;
