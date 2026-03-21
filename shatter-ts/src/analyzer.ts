@@ -989,15 +989,17 @@ function detectStaticOpacity(
     });
     if (hasNonMethodProperty) return null;
 
-    // getEffectiveImplementsTypeNodes is available at runtime but not in all type declaration
-    // versions; use a dynamic call to avoid compilation errors on older @types/typescript.
+    // getEffectiveImplementsTypeNodes is available at runtime but not in all TypeScript
+    // declaration versions; use a dynamic call to avoid compilation errors. If absent,
+    // skip the heuristic entirely — returning null is safe and avoids false positives.
     const getImplNodes = (ts as unknown as Record<string, unknown>)["getEffectiveImplementsTypeNodes"] as
       | ((node: ts.ClassDeclaration) => readonly ts.ExpressionWithTypeArguments[] | undefined)
       | undefined;
+    if (!getImplNodes) return null;
 
     const hasImplementor = sourceFile.statements.some((stmt) => {
       if (!ts.isClassDeclaration(stmt)) return false;
-      const implTypes = getImplNodes ? getImplNodes(stmt) : undefined;
+      const implTypes = getImplNodes(stmt);
       if (!implTypes) return false;
       return implTypes.some((impl: ts.ExpressionWithTypeArguments) => {
         const implSym = checker.getSymbolAtLocation(impl.expression);
@@ -1042,6 +1044,12 @@ function detectStaticOpacity(
   );
   if (allTransitive) return { reason: "transitively_opaque", label };
 
+  // NOTE: "no_constructor" is deliberately not produced here.
+  // A class with at least one public explicit constructor and no opaque args is freely
+  // constructible from outside (e.g. `new Foo(42)`). A "factory-less" heuristic
+  // (flag classes with no exported create*/new* function) was evaluated but proved too
+  // noisy — many plain data classes have public constructors and no factory, yet are
+  // trivially synthesizable. Rule 2 already covers the only reliable case (all ctors private).
   return null;
 }
 

@@ -160,7 +160,7 @@ impl TypeInfo {
         }
     }
 
-    /// Returns the label of the first `Opaque` variant found in this type tree,
+    /// Returns the first `Opaque` node found in this type tree as `(label, static_opacity)`,
     /// appending nesting segments to `path` as it descends.
     ///
     /// On success the caller's `path` will end with the full nesting segments
@@ -169,69 +169,9 @@ impl TypeInfo {
     ///
     /// The caller should seed `path` with a `PathSegment::Param` entry before
     /// calling so that the resulting path starts from the parameter root.
-    pub fn find_opaque_info(&self, path: &mut Vec<PathSegment>) -> Option<String> {
-        match self {
-            TypeInfo::Opaque { label, .. } => Some(label.clone()),
-            TypeInfo::Array { element } => {
-                path.push(PathSegment::ArrayElement);
-                if let Some(label) = element.find_opaque_info(path) {
-                    Some(label)
-                } else {
-                    path.pop();
-                    None
-                }
-            }
-            TypeInfo::Object { fields } => {
-                for (name, t) in fields {
-                    path.push(PathSegment::Field(name.clone()));
-                    if let Some(label) = t.find_opaque_info(path) {
-                        return Some(label);
-                    }
-                    path.pop();
-                }
-                None
-            }
-            TypeInfo::Union { variants } => {
-                for t in variants {
-                    path.push(PathSegment::UnionVariant);
-                    if let Some(label) = t.find_opaque_info(path) {
-                        return Some(label);
-                    }
-                    path.pop();
-                }
-                None
-            }
-            TypeInfo::Nullable { inner } => {
-                path.push(PathSegment::NullableInner);
-                if let Some(label) = inner.find_opaque_info(path) {
-                    Some(label)
-                } else {
-                    path.pop();
-                    None
-                }
-            }
-            TypeInfo::Complex { inner, .. } => {
-                if let Some(inner_type) = inner.as_deref() {
-                    path.push(PathSegment::ComplexInner);
-                    if let Some(label) = inner_type.find_opaque_info(path) {
-                        return Some(label);
-                    }
-                    path.pop();
-                }
-                None
-            }
-            TypeInfo::Int
-            | TypeInfo::Float
-            | TypeInfo::Str
-            | TypeInfo::Bool
-            | TypeInfo::Unknown => None,
-        }
-    }
-
-    /// Like [`find_opaque_info`] but also returns the static opacity reason if present.
     ///
-    /// Returns `Some((label, static_opacity))` for the first `Opaque` node found,
-    /// appending nesting segments to `path` as it descends.
+    /// To get only the label (ignoring static reason), use:
+    /// `find_opaque_node(path).map(|(label, _)| label)`
     pub fn find_opaque_node(
         &self,
         path: &mut Vec<PathSegment>,

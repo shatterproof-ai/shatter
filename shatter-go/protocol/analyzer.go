@@ -164,6 +164,12 @@ func detectStaticOpacity(named *types.Named, fc *fileContext) (string, bool) {
 		}
 	}
 	return "no_constructor", true
+
+	// NOTE: "transitively_opaque" is deliberately not implemented here.
+	// It would require resolving the first parameter type of New*/Create*/Open*
+	// functions and checking if that type is itself opaque — a recursive lookup
+	// that adds complexity for limited gain. It can be added in a future pass if
+	// real-world examples warrant it.
 }
 
 // AnalyzeFile parses a Go source file and returns analysis for all exported
