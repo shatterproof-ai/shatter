@@ -36,11 +36,12 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 	transformFile(fset, file, funcName)
 	finishTransform()
 
-	// Remove func main() from package main files: the harness main.go provides
+	// Rename func main() in package main files: the harness main.go provides
 	// the entry point, so a pre-existing func main() would cause a redeclaration
-	// error at build time.
+	// error at build time. Renaming (rather than removing) preserves imports
+	// that the original main may have used.
 	if packageName == "main" {
-		removeMainFunc(file)
+		renameMainFunc(file)
 	}
 
 	outputDir, err := os.MkdirTemp("", "shatter-instrument-*")
@@ -131,18 +132,16 @@ func copyModFiles(outputDir, srcDir string) error {
 	return nil
 }
 
-// removeMainFunc drops any top-level func main() declarations from the AST.
+// renameMainFunc renames func main() to avoid redeclaration with the harness,
+// while preserving imports that the original main may have used.
 // Used when instrumenting package main files: the harness main.go provides the
 // entry point, so keeping the original func main() would cause a redeclaration
 // error at build time.
-func removeMainFunc(file *ast.File) {
-	filtered := file.Decls[:0]
+func renameMainFunc(file *ast.File) {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if ok && fn.Name.Name == "main" && fn.Recv == nil {
-			continue
+			fn.Name.Name = "_shatter_original_main_"
 		}
-		filtered = append(filtered, decl)
 	}
-	file.Decls = filtered
 }

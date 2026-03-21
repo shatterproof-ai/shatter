@@ -155,6 +155,43 @@ func main() {
 	}
 }
 
+// TestInstrumentMainOnlyImportPreserved verifies that imports used only by
+// func main() are not orphaned when main is stripped during instrumentation.
+// Reproduces: walkthrough step 8 failure where "fmt" imported and not used.
+func TestInstrumentMainOnlyImportPreserved(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeTestSource(t, srcDir, "target.go", `package main
+
+import "fmt"
+
+func Add(a, b int) int {
+	if a > b {
+		return a + b
+	}
+	return b - a
+}
+
+func main() {
+	fmt.Println(Add(1, 2))
+}
+`)
+
+	funcName := "Add"
+	outputDir, err := InstrumentFile(src, &funcName, nil)
+	if err != nil {
+		t.Fatalf("InstrumentFile: %v", err)
+	}
+	defer os.RemoveAll(outputDir)
+
+	// go vet checks for unused imports — this must pass
+	cmd := exec.Command("go", "vet", "./...")
+	cmd.Dir = outputDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("instrumented code has unused imports: %v\n%s", err, out)
+	}
+}
+
 func TestInstrumentFileNotFound(t *testing.T) {
 	_, err := InstrumentFile("/nonexistent/file.go", nil, nil)
 	if err == nil {
