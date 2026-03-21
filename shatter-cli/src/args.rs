@@ -1086,7 +1086,6 @@ pub(crate) enum CliCommand {
         budget: Option<std::time::Duration>,
     },
 
-    /// Manage anonymous usage telemetry.
     /// Initialize a project for Shatter analysis.
     ///
     /// Creates .shatter/ directory structure and config.yaml with sensible defaults.
@@ -1098,6 +1097,7 @@ pub(crate) enum CliCommand {
         directory: Option<PathBuf>,
     },
 
+    /// Manage anonymous usage telemetry.
     Telemetry {
         #[command(subcommand)]
         action: TelemetryAction,
