@@ -412,7 +412,7 @@ pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<P
 // ---------------------------------------------------------------------------
 
 /// HTML-escape a string for safe embedding in HTML content.
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -504,72 +504,7 @@ fn render_cov_bar(pct: f64) -> String {
 /// Returns an HTML fragment (a `<details>` block) ready to embed in a full page.
 #[must_use]
 pub fn render_explore_fn_html(result: &ObservationOutput, location: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-
-    let cov_pct = if result.total_lines > 0 {
-        (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0)
-    } else {
-        0.0
-    };
-    let cov_bar = render_cov_bar(cov_pct);
-    let fn_name = html_escape(&result.function_name);
-    let loc = html_escape(location);
-
-    let _ = write!(
-        out,
-        r#"<details><summary><span class="summary-arrow">&#9658;</span>{fn_name} &nbsp;{cov_bar}</summary>
-<div class="fn-body">
-<p class="fn-meta">{loc} &nbsp;&middot;&nbsp; {iters} iteration(s) &nbsp;&middot;&nbsp; {paths} path(s) &nbsp;&middot;&nbsp; {covered}/{total} lines</p>
-"#,
-        iters = result.iterations,
-        paths = result.unique_paths,
-        covered = result.lines_covered,
-        total = result.total_lines,
-    );
-
-    // Paths table
-    if !result.new_path_executions.is_empty() {
-        out.push_str(
-            r#"<table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
-"#,
-        );
-        for (i, exec) in result.new_path_executions.iter().enumerate() {
-            let inputs_str = exec
-                .inputs
-                .iter()
-                .map(|v| format!("<code>{}</code>", html_escape(&v.to_string())))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            let outcome = if let Some(ref err) = exec.thrown_error {
-                format!(
-                    r#"<span class="outcome-throw">throws</span> <code>{}</code>"#,
-                    html_escape(err)
-                )
-            } else if let Some(ref val) = exec.return_value {
-                format!(
-                    r#"<span class="outcome-return">returns</span> <code>{}</code>"#,
-                    html_escape(&val.to_string())
-                )
-            } else {
-                r#"<span class="outcome-void">void</span>"#.to_string()
-            };
-
-            let _ = writeln!(
-                out,
-                r#"<tr><td>{n}</td><td>{inputs_str}</td><td>{outcome}</td></tr>"#,
-                n = i + 1,
-            );
-        }
-        out.push_str("</tbody></table>\n");
-    } else {
-        out.push_str(r#"<p style="color:#9ca3af;font-size:13px">No new paths recorded.</p>"#);
-        out.push('\n');
-    }
-
-    out.push_str("</div></details>\n");
-    out
+    crate::html_templates::render_explore_fn(result, location)
 }
 
 /// Wrap exploration HTML fragments into a complete, self-contained HTML page.
