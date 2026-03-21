@@ -1,20 +1,18 @@
-//! MiniJinja-based Markdown rendering for CLI output.
+//! Askama-based Markdown rendering for CLI output.
 //!
 //! View models convert domain types (`ObservationOutput`, `ParallelScanResult`)
-//! into serializable structs that templates render as Markdown for termimad.
+//! into structs that Askama templates render as Markdown for termimad.
 
-use serde::Serialize;
+use askama::Template;
 
 use shatter_core::explorer::ObservationOutput;
 use shatter_core::scan_orchestrator::{ParallelScanResult, SkipCategory};
 
-const EXPLORE_FN_TEMPLATE: &str = include_str!("../templates/explore_fn.md.j2");
-const SCAN_TEMPLATE: &str = include_str!("../templates/scan.md.j2");
-
 // ── View models ──────────────────────────────────────────────────────────────
 
 /// View model for a single function's exploration result.
-#[derive(Serialize)]
+#[derive(Template)]
+#[template(path = "explore_fn.md")]
 pub(crate) struct ExploreFnView {
     pub function_name: String,
     /// Formatted location suffix, e.g. " *(src/foo.ts:10-30)*", or empty.
@@ -27,7 +25,6 @@ pub(crate) struct ExploreFnView {
 }
 
 /// One explored execution path.
-#[derive(Serialize)]
 pub(crate) struct PathView {
     pub index: usize,
     /// Function call with inputs, e.g. "add(1, 2)".
@@ -37,7 +34,8 @@ pub(crate) struct PathView {
 }
 
 /// View model for a full parallel scan result.
-#[derive(Serialize)]
+#[derive(Template)]
+#[template(path = "scan.md")]
 pub(crate) struct ScanView {
     pub functions: Vec<FnScanView>,
     pub skipped_expected: Vec<SkippedView>,
@@ -49,7 +47,6 @@ pub(crate) struct ScanView {
 }
 
 /// Per-function summary row in a scan result.
-#[derive(Serialize)]
 pub(crate) struct FnScanView {
     pub function_name: String,
     pub unique_paths: usize,
@@ -58,7 +55,6 @@ pub(crate) struct FnScanView {
 }
 
 /// A function that was skipped during a scan.
-#[derive(Serialize)]
 pub(crate) struct SkippedView {
     pub function_name: String,
     pub reason: String,
@@ -189,23 +185,12 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
 
 /// Render an explore function view to a Markdown string.
 pub(crate) fn render_explore_fn(view: &ExploreFnView) -> String {
-    render_template("explore_fn", EXPLORE_FN_TEMPLATE, minijinja::context!(result => view))
+    view.render().unwrap_or_else(|e| format!("[render error: {e}]"))
 }
 
 /// Render a scan view to a Markdown string.
 pub(crate) fn render_scan(view: &ScanView) -> String {
-    render_template("scan", SCAN_TEMPLATE, minijinja::context!(result => view))
-}
-
-fn render_template(name: &str, source: &'static str, ctx: minijinja::Value) -> String {
-    let mut env = minijinja::Environment::new();
-    if let Err(e) = env.add_template(name, source) {
-        return format!("[template error: {e}]");
-    }
-    match env.get_template(name).and_then(|t| t.render(ctx)) {
-        Ok(s) => s,
-        Err(e) => format!("[render error: {e}]"),
-    }
+    view.render().unwrap_or_else(|e| format!("[render error: {e}]"))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

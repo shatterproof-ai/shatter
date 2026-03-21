@@ -18,5 +18,5 @@ log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 termimad = "0.34"
-minijinja = "2"
+askama = "0.15"
 tracing = "0.1"
