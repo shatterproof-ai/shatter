@@ -437,7 +437,7 @@ async fn main() -> ExitCode {
         CliCommand::Properties {
             targets,
             output,
-            format,
+            output_format,
             max_iterations,
             timeout,
             scope,
@@ -448,7 +448,7 @@ async fn main() -> ExitCode {
         } => {
             commands::properties::run_properties(
                 &targets,
-                &format,
+                &output_format,
                 output.as_deref(),
                 max_iterations,
                 timeout,

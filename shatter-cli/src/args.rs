@@ -809,7 +809,7 @@ pub(crate) enum CliCommand {
 
         /// Output format (currently only 'yaml' is supported).
         #[arg(long, default_value = "yaml")]
-        format: String,
+        output_format: String,
 
         /// Maximum exploration iterations per function.
         #[arg(long, default_value_t = 100)]
