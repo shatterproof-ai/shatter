@@ -77,6 +77,48 @@ pub enum ConfigError {
     InvalidStrategyWeights(String),
 }
 
+/// One entry in the `opaque_types` config list.
+///
+/// Supports both a bare type name (string shorthand) and an object form with
+/// an optional user-supplied reason:
+///
+/// ```yaml
+/// opaque_types:
+///   - DatabaseConnection          # bare string — falls back to "user-configured opaque type"
+///   - name: HttpClient
+///     reason: "requires live HTTP connection"
+/// ```
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CustomOpaqueType {
+    /// `- TypeName` (bare string shorthand)
+    Name(String),
+    /// `- name: TypeName\n  reason: "..."` (object form with optional reason)
+    Named {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+impl CustomOpaqueType {
+    /// Returns the type name to match against parameter `type_name` fields.
+    pub fn name(&self) -> &str {
+        match self {
+            CustomOpaqueType::Name(s) => s,
+            CustomOpaqueType::Named { name, .. } => name,
+        }
+    }
+
+    /// Returns the user-supplied reason text, if any.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            CustomOpaqueType::Name(_) => None,
+            CustomOpaqueType::Named { reason, .. } => reason.as_deref(),
+        }
+    }
+}
+
 /// Top-level `.shatter/config.yaml` structure.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct ShatterConfig {
@@ -89,8 +131,11 @@ pub struct ShatterConfig {
     pub functions: HashMap<String, FunctionConfig>,
 
     /// Additional type names to treat as opaque (unexecutable).
+    ///
+    /// Each entry is either a bare type name string or an object with `name` and
+    /// optional `reason` fields. See [`CustomOpaqueType`] for details.
     #[serde(default)]
-    pub opaque_types: Vec<String>,
+    pub opaque_types: Vec<CustomOpaqueType>,
 
     /// User-declared nondeterminism: confirmed and rejected field declarations.
     #[serde(default)]
@@ -572,10 +617,11 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
     }
 
-    let mut opaque_types = Vec::new();
+    let mut opaque_types: Vec<CustomOpaqueType> = Vec::new();
     for config in configs {
         for t in &config.opaque_types {
-            if !opaque_types.contains(t) {
+            // Deduplicate by name — nearest config wins on duplicates.
+            if !opaque_types.iter().any(|existing| existing.name() == t.name()) {
                 opaque_types.push(t.clone());
             }
         }
@@ -1685,10 +1731,42 @@ opaque_types:
 
         let config = parse_config(&config_path).unwrap();
         assert_eq!(config.opaque_types, vec![
-            "DatabasePool".to_string(),
-            "RedisClient".to_string(),
-            "KafkaProducer".to_string(),
+            CustomOpaqueType::Name("DatabasePool".to_string()),
+            CustomOpaqueType::Name("RedisClient".to_string()),
+            CustomOpaqueType::Name("KafkaProducer".to_string()),
         ]);
+    }
+
+    #[test]
+    fn parse_config_with_opaque_types_object_form() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+opaque_types:
+  - DatabaseConnection
+  - name: HttpClient
+    reason: "requires live HTTP connection"
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        assert_eq!(config.opaque_types, vec![
+            CustomOpaqueType::Name("DatabaseConnection".to_string()),
+            CustomOpaqueType::Named {
+                name: "HttpClient".to_string(),
+                reason: Some("requires live HTTP connection".to_string()),
+            },
+        ]);
+        assert_eq!(config.opaque_types[0].name(), "DatabaseConnection");
+        assert_eq!(config.opaque_types[0].reason(), None);
+        assert_eq!(config.opaque_types[1].name(), "HttpClient");
+        assert_eq!(
+            config.opaque_types[1].reason(),
+            Some("requires live HTTP connection")
+        );
     }
 
     #[test]
@@ -1704,19 +1782,25 @@ opaque_types:
     #[test]
     fn merge_configs_combines_opaque_types_and_deduplicates() {
         let near = ShatterConfig {
-            opaque_types: vec!["DatabasePool".to_string(), "RedisClient".to_string()],
+            opaque_types: vec![
+                CustomOpaqueType::Name("DatabasePool".to_string()),
+                CustomOpaqueType::Name("RedisClient".to_string()),
+            ],
             ..ShatterConfig::default()
         };
         let far = ShatterConfig {
-            opaque_types: vec!["RedisClient".to_string(), "KafkaProducer".to_string()],
+            opaque_types: vec![
+                CustomOpaqueType::Name("RedisClient".to_string()),
+                CustomOpaqueType::Name("KafkaProducer".to_string()),
+            ],
             ..ShatterConfig::default()
         };
 
         let merged = merge_configs(&[near, far]);
         assert_eq!(merged.opaque_types, vec![
-            "DatabasePool".to_string(),
-            "RedisClient".to_string(),
-            "KafkaProducer".to_string(),
+            CustomOpaqueType::Name("DatabasePool".to_string()),
+            CustomOpaqueType::Name("RedisClient".to_string()),
+            CustomOpaqueType::Name("KafkaProducer".to_string()),
         ]);
     }
 

@@ -2388,12 +2388,12 @@ mod tests {
             skipped_functions: vec![
                 SkippedFunction {
                     function_name: "handleRequest".into(),
-                    reason: "param \"socket\" has opaque type net.Socket".into(),
+                    reason: "param \"socket\" → net.Socket (network handle — requires live network binding)".into(),
                     category: SkipCategory::Expected,
                 },
                 SkippedFunction {
                     function_name: "processStream".into(),
-                    reason: "param \"input\" has opaque type stream.Readable".into(),
+                    reason: "param \"input\" → stream.Readable (I/O stream — wraps OS file descriptor or pipe)".into(),
                     category: SkipCategory::Expected,
                 },
             ],
@@ -2403,8 +2403,8 @@ mod tests {
         let report = format_scan_report(&result);
         assert!(report.contains("1 function(s) tested"));
         assert!(report.contains("Skipped (expected, 2):"));
-        assert!(report.contains("handleRequest: param \"socket\" has opaque type net.Socket"));
-        assert!(report.contains("processStream: param \"input\" has opaque type stream.Readable"));
+        assert!(report.contains("handleRequest: param \"socket\" → net.Socket (network handle"));
+        assert!(report.contains("processStream: param \"input\" → stream.Readable (I/O stream"));
         assert!(!report.contains("Errors ("));
     }
 
@@ -2437,7 +2437,7 @@ mod tests {
             skipped_functions: vec![
                 SkippedFunction {
                     function_name: "handleRequest".into(),
-                    reason: "param \"socket\" has opaque type net.Socket".into(),
+                    reason: "param \"socket\" → net.Socket (network handle — requires live network binding)".into(),
                     category: SkipCategory::Expected,
                 },
                 SkippedFunction {
@@ -2451,7 +2451,7 @@ mod tests {
 
         let report = format_scan_report(&result);
         assert!(report.contains("Skipped (expected, 1):"), "missing expected section: {report}");
-        assert!(report.contains("handleRequest: param \"socket\" has opaque type net.Socket"));
+        assert!(report.contains("handleRequest: param \"socket\" → net.Socket (network handle"));
         assert!(report.contains("Errors (1):"), "missing errors section: {report}");
         assert!(report.contains("authenticate: error: unexpected response from frontend"));
     }
@@ -3296,7 +3296,7 @@ mod tests {
 
         let skipped = vec![SkippedFunction {
             function_name: "broken".into(),
-            reason: "param \"sock\" has opaque type net.Socket".into(),
+            reason: "param \"sock\" → net.Socket (network handle — requires live network binding)".into(),
             category: SkipCategory::Expected,
         }];
 
@@ -3327,7 +3327,7 @@ mod tests {
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
 
         assert!(plan.contains("Skipped (unexecutable)"));
-        assert!(plan.contains("broken: param \"sock\" has opaque type net.Socket"));
+        assert!(plan.contains("broken: param \"sock\" → net.Socket (network handle"));
     }
 
     #[test]

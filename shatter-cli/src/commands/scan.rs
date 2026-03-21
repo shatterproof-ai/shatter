@@ -259,7 +259,7 @@ pub(crate) async fn run_scan(
         } else {
             let reason = reasons
                 .iter()
-                .map(|r| format!("param {:?} has opaque type {}", r.param_name, r.opaque_label))
+                .map(|r| r.format_human())
                 .collect::<Vec<_>>()
                 .join("; ");
             skipped_for_executability.push(SkippedFunction {
