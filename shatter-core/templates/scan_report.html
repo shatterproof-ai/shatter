@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shatter Scan Report</title>
+<style>
+{% include "includes/style.html" %}
+</style>
+</head>
+<body>
+<h1>Shatter Scan Report</h1>
+<div class="stat-row">
+  <div class="stat"><div class="stat-label">Functions</div><div class="stat-value">{{ total_fn }}</div></div>
+  <div class="stat"><div class="stat-label">Paths Found</div><div class="stat-value">{{ total_paths }}</div></div>
+  <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{{ overall_cov_bar_html|safe }}</div></div>
+  <div class="stat"><div class="stat-label">Skipped</div><div class="stat-value">{{ skipped_count }}</div></div>
+</div>
+<h2>Function Summary</h2>
+<div class="card">
+<table>
+<thead><tr><th>Function</th><th>File</th><th>Paths</th><th>Coverage</th><th>Iterations</th></tr></thead>
+<tbody>
+{%- for f in functions %}
+<tr><td><code>{{ f.fn_name|safe }}</code></td><td><code>{{ f.file_path|safe }}</code></td><td>{{ f.paths_count }}</td><td>{{ f.cov_bar_html|safe }}</td><td>{{ f.iterations }}</td></tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+<h2>Function Details</h2>
+{%- for f in functions %}
+<details><summary><span class="summary-arrow">&#9658;</span>{{ f.fn_name|safe }} &nbsp;{{ f.cov_bar_html|safe }}</summary>
+<div class="fn-body">
+<p class="fn-meta"><code>{{ f.file_path|safe }}</code> &nbsp;&middot;&nbsp; {{ f.iterations }} iteration(s) &nbsp;&middot;&nbsp; {{ f.paths_count }} path(s) &nbsp;&middot;&nbsp; {{ f.lines_covered }}/{{ f.total_lines }} lines</p>
+{%- if f.discovered_inputs.is_empty() %}
+<p style="color:#9ca3af;font-size:13px">No discovered inputs recorded.</p>
+{%- else %}
+<table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
+{%- for path in f.discovered_inputs %}
+<tr><td>{{ path.index }}</td><td>{{ path.inputs_html|safe }}</td><td>{{ path.outcome_html|safe }}</td></tr>
+{%- endfor %}
+</tbody></table>
+{%- endif %}
+{%- if let Some(mocks_html) = f.mocks_html %}
+<p class="fn-meta" style="margin-top:8px">Mocks: {{ mocks_html|safe }}</p>
+{%- endif %}
+</div></details>
+{%- endfor %}
+{%- if !skipped.is_empty() %}
+<h2>Skipped Functions</h2>
+<div class="card">
+<ul class="skipped-list">
+{%- for s in skipped %}
+<li><code>{{ s.fn_name|safe }}</code> &mdash; {{ s.reason|safe }}</li>
+{%- endfor %}
+</ul>
+</div>
+{%- endif %}
+</body>
+</html>

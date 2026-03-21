@@ -7,6 +7,7 @@
 use askama::Template;
 
 use crate::explorer::{ExecutionSummary, ObservationOutput};
+use crate::report::{DiscoveredInput, ScanReport};
 
 // ---------------------------------------------------------------------------
 // Re-export html_escape from report so we don't duplicate the logic.
@@ -171,4 +172,151 @@ pub fn render_explore_fn(result: &ObservationOutput, location: &str) -> String {
     };
 
     tmpl.render().expect("ExploreFnTemplate rendering failed")
+}
+
+// ---------------------------------------------------------------------------
+// Scan report view models
+// ---------------------------------------------------------------------------
+
+/// View model for a single function row and detail block in the scan report.
+pub(crate) struct ScanFnView {
+    /// HTML-escaped function name (rendered with `|safe` in the template).
+    pub fn_name: String,
+    /// HTML-escaped file path (rendered with `|safe` in the template).
+    pub file_path: String,
+    /// Number of unique paths discovered.
+    pub paths_count: usize,
+    /// Pre-rendered coverage bar HTML (HTML-safe).
+    pub cov_bar_html: String,
+    /// Number of exploration iterations.
+    pub iterations: u32,
+    /// Number of source lines covered.
+    pub lines_covered: usize,
+    /// Total source lines in the function.
+    pub total_lines: u32,
+    /// Per-path rows for the inputs table.
+    pub discovered_inputs: Vec<PathEntry>,
+    /// Pre-rendered mocks line (`Mocks: name1, name2`), or `None` if no mocks.
+    pub mocks_html: Option<String>,
+}
+
+/// View model for a skipped function entry.
+pub(crate) struct SkippedView {
+    /// HTML-escaped function name (rendered with `|safe` in the template).
+    pub fn_name: String,
+    /// HTML-escaped skip reason (rendered with `|safe` in the template).
+    pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
+// Scan report template
+// ---------------------------------------------------------------------------
+
+/// Askama template for the full scan report HTML page.
+#[derive(Template)]
+#[template(path = "scan_report.html")]
+pub(crate) struct ScanReportTemplate {
+    pub total_fn: usize,
+    pub total_paths: usize,
+    pub skipped_count: usize,
+    /// Pre-rendered overall coverage bar HTML (HTML-safe).
+    pub overall_cov_bar_html: String,
+    pub functions: Vec<ScanFnView>,
+    pub skipped: Vec<SkippedView>,
+}
+
+/// Build a `PathEntry` from a `DiscoveredInput`.
+fn format_discovered_input(inp: &DiscoveredInput) -> PathEntry {
+    // Re-use the same HTML helpers so output is identical to the old code.
+    PathEntry {
+        index: 0, // caller sets the 1-based index
+        inputs_html: inp
+            .inputs
+            .iter()
+            .map(|v| format!("<code>{}</code>", html_escape(&v.to_string())))
+            .collect::<Vec<_>>()
+            .join(", "),
+        outcome_html: if let Some(ref err) = inp.thrown_error {
+            format!(
+                r#"<span class="outcome-throw">throws</span> <code>{}</code>"#,
+                html_escape(err)
+            )
+        } else if let Some(ref val) = inp.return_value {
+            format!(
+                r#"<span class="outcome-return">returns</span> <code>{}</code>"#,
+                html_escape(&val.to_string())
+            )
+        } else {
+            r#"<span class="outcome-void">void</span>"#.to_string()
+        },
+    }
+}
+
+/// Render the full scan report HTML page from a `ScanReport`.
+///
+/// This is the Askama-backed implementation called by
+/// `report::generate_html_scan_report`.
+pub fn render_scan_report(report: &ScanReport) -> String {
+    let total_fn = report.codebase.total_functions;
+    let total_paths: usize = report.functions.iter().map(|f| f.branches_covered).sum();
+    let skipped_count = report.codebase.skipped_functions.len();
+    let overall_cov_bar_html = render_cov_bar(report.codebase.overall_coverage);
+
+    let functions: Vec<ScanFnView> = report
+        .functions
+        .iter()
+        .map(|f| {
+            let discovered_inputs: Vec<PathEntry> = f
+                .discovered_inputs
+                .iter()
+                .enumerate()
+                .map(|(i, inp)| {
+                    let mut entry = format_discovered_input(inp);
+                    entry.index = i + 1;
+                    entry
+                })
+                .collect();
+
+            let mocks_html = if f.mocks_used.is_empty() {
+                None
+            } else {
+                let escaped: Vec<String> =
+                    f.mocks_used.iter().map(|m| html_escape(m)).collect();
+                Some(escaped.join(", "))
+            };
+
+            ScanFnView {
+                fn_name: html_escape(&f.function_name),
+                file_path: html_escape(&f.file_path),
+                paths_count: f.branches_covered,
+                cov_bar_html: render_cov_bar(f.coverage_pct),
+                iterations: f.iterations,
+                lines_covered: f.lines_covered,
+                total_lines: f.total_lines,
+                discovered_inputs,
+                mocks_html,
+            }
+        })
+        .collect();
+
+    let skipped: Vec<SkippedView> = report
+        .codebase
+        .skipped_functions
+        .iter()
+        .map(|s| SkippedView {
+            fn_name: html_escape(&s.function_name),
+            reason: html_escape(&s.reason),
+        })
+        .collect();
+
+    let tmpl = ScanReportTemplate {
+        total_fn,
+        total_paths,
+        skipped_count,
+        overall_cov_bar_html,
+        functions,
+        skipped,
+    };
+
+    tmpl.render().expect("ScanReportTemplate rendering failed")
 }
