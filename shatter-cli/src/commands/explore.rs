@@ -740,10 +740,7 @@ pub(crate) async fn run_explore(
             );
             for (name, reasons) in &skipped_unexecutable {
                 for reason in reasons {
-                    log::info!(
-                        "  {name}: param {:?} has opaque type {}",
-                        reason.param_name, reason.opaque_label
-                    );
+                    log::info!("  {name}: {}", reason.format_human());
                 }
             }
         }

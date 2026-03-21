@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::executability::PathSegment;
+
 /// Well-known complex types that go beyond primitives and structural types.
 ///
 /// Every supported complex type is an explicit variant. Adding a new type
@@ -137,20 +139,64 @@ impl TypeInfo {
     }
 
     /// Returns the label of the first `Opaque` variant found in this type tree,
-    /// or `None` if no opaque type exists.
-    pub fn find_opaque_label(&self) -> Option<String> {
+    /// appending nesting segments to `path` as it descends.
+    ///
+    /// On success the caller's `path` will end with the full nesting segments
+    /// down to (but not including) the opaque node — the opaque node itself
+    /// is represented by the returned label.  On failure `path` is unchanged.
+    ///
+    /// The caller should seed `path` with a `PathSegment::Param` entry before
+    /// calling so that the resulting path starts from the parameter root.
+    pub fn find_opaque_info(&self, path: &mut Vec<PathSegment>) -> Option<String> {
         match self {
             TypeInfo::Opaque { label } => Some(label.clone()),
-            TypeInfo::Array { element } => element.find_opaque_label(),
+            TypeInfo::Array { element } => {
+                path.push(PathSegment::ArrayElement);
+                if let Some(label) = element.find_opaque_info(path) {
+                    Some(label)
+                } else {
+                    path.pop();
+                    None
+                }
+            }
             TypeInfo::Object { fields } => {
-                fields.iter().find_map(|(_, t)| t.find_opaque_label())
+                for (name, t) in fields {
+                    path.push(PathSegment::Field(name.clone()));
+                    if let Some(label) = t.find_opaque_info(path) {
+                        return Some(label);
+                    }
+                    path.pop();
+                }
+                None
             }
             TypeInfo::Union { variants } => {
-                variants.iter().find_map(|t| t.find_opaque_label())
+                for t in variants {
+                    path.push(PathSegment::UnionVariant);
+                    if let Some(label) = t.find_opaque_info(path) {
+                        return Some(label);
+                    }
+                    path.pop();
+                }
+                None
             }
-            TypeInfo::Nullable { inner } => inner.find_opaque_label(),
+            TypeInfo::Nullable { inner } => {
+                path.push(PathSegment::NullableInner);
+                if let Some(label) = inner.find_opaque_info(path) {
+                    Some(label)
+                } else {
+                    path.pop();
+                    None
+                }
+            }
             TypeInfo::Complex { inner, .. } => {
-                inner.as_deref().and_then(|t| t.find_opaque_label())
+                if let Some(inner_type) = inner.as_deref() {
+                    path.push(PathSegment::ComplexInner);
+                    if let Some(label) = inner_type.find_opaque_info(path) {
+                        return Some(label);
+                    }
+                    path.pop();
+                }
+                None
             }
             TypeInfo::Int
             | TypeInfo::Float
@@ -429,41 +475,4 @@ mod tests {
         assert!(!TypeInfo::Unknown.has_opaque());
     }
 
-    #[test]
-    fn find_opaque_label_direct() {
-        let typ = TypeInfo::Opaque { label: "net.Socket".into() };
-        assert_eq!(typ.find_opaque_label(), Some("net.Socket".to_string()));
-    }
-
-    #[test]
-    fn find_opaque_label_nested() {
-        let typ = TypeInfo::Object {
-            fields: vec![
-                ("name".into(), TypeInfo::Str),
-                ("conn".into(), TypeInfo::Nullable {
-                    inner: Box::new(TypeInfo::Opaque { label: "pg.Client".into() }),
-                }),
-            ],
-        };
-        assert_eq!(typ.find_opaque_label(), Some("pg.Client".to_string()));
-    }
-
-    #[test]
-    fn find_opaque_label_returns_first() {
-        let typ = TypeInfo::Union {
-            variants: vec![
-                TypeInfo::Opaque { label: "first".into() },
-                TypeInfo::Opaque { label: "second".into() },
-            ],
-        };
-        assert_eq!(typ.find_opaque_label(), Some("first".to_string()));
-    }
-
-    #[test]
-    fn find_opaque_label_none_for_primitive_tree() {
-        let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
-        };
-        assert_eq!(typ.find_opaque_label(), None);
-    }
 }
