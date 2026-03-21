@@ -286,7 +286,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=51
+TOTAL=52
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -578,6 +578,11 @@ step 50 $TOTAL "HTML Scan Report" \
 step 51 $TOTAL "Explore with Side-Effect Capture" \
     "Opt in to rich side-effect recording (console output, global state changes). Disabled by default for throughput." \
     $SHATTER explore --capture-side-effects "${EXAMPLES[0]}"
+
+# Stage 52: Properties export
+step 52 $TOTAL "Properties Export" \
+    "Discover and export behavioral properties and invariants as a YAML spec." \
+    $SHATTER properties "${EXAMPLES[0]}"
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then

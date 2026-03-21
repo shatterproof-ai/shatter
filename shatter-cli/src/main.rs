@@ -434,6 +434,34 @@ async fn main() -> ExitCode {
             )
             .await
         }
+        CliCommand::Properties {
+            targets,
+            output,
+            output_format,
+            max_iterations,
+            timeout,
+            scope,
+            request_timeout,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+        } => {
+            commands::properties::run_properties(
+                &targets,
+                &output_format,
+                output.as_deref(),
+                max_iterations,
+                timeout,
+                scope.as_deref(),
+                request_timeout,
+                exec_timeout,
+                build_timeout,
+                log_level,
+                memory_limit,
+                cli.project_dir.as_deref(),
+            )
+            .await
+        }
         CliCommand::Run {
             path,
             output_dir,
