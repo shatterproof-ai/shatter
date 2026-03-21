@@ -1,0 +1,13 @@
+<details><summary><span class="summary-arrow">&#9658;</span>{{ fn_name }} &nbsp;{{ cov_bar_html|safe }}</summary>
+<div class="fn-body">
+<p class="fn-meta">{{ location }} &nbsp;&middot;&nbsp; {{ iterations }} iteration(s) &nbsp;&middot;&nbsp; {{ unique_paths }} path(s) &nbsp;&middot;&nbsp; {{ lines_covered }}/{{ total_lines }} lines</p>
+{%- if paths.is_empty() %}
+<p style="color:#9ca3af;font-size:13px">No new paths recorded.</p>
+{%- else %}
+<table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
+{%- for path in paths %}
+<tr><td>{{ path.index }}</td><td>{{ path.inputs_html|safe }}</td><td>{{ path.outcome_html|safe }}</td></tr>
+{%- endfor %}
+</tbody></table>
+{%- endif %}
+</div></details>

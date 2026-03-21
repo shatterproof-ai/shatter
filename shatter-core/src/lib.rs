@@ -49,6 +49,7 @@ pub mod project;
 pub mod protocol;
 pub mod recorded_mocks;
 pub mod recursive;
+pub mod html_templates;
 pub mod report;
 pub mod report_style;
 pub mod revalidation;
