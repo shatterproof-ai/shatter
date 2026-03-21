@@ -619,7 +619,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Some("wasm") => {
                 match self
                     .wasm_cache
-                    .generate(path, &func_name, req.recipe.as_ref())
+                    .generate(path, func_name, req.recipe.as_ref())
                 {
                     Ok((value, generator_id, recipe)) => {
                         resp.status = "generate".to_string();
@@ -638,7 +638,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Some("rs") => {
                 if let Some(ref registry) = self.native_registry {
-                    match registry.generate(&func_name, req.recipe.clone()) {
+                    match registry.generate(func_name, req.recipe.clone()) {
                         Ok((value, generator_id, recipe)) => {
                             resp.status = "generate".to_string();
                             resp.value = Some(value);

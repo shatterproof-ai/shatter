@@ -96,7 +96,7 @@ pub fn analyze_source_with_timing(
         syn::parse_file(source).map_err(|e| AnalyzeError::ParseError(e.to_string()))?
     };
 
-    let results = if let Some(timing) = timing.as_deref_mut() {
+    let results = if let Some(timing) = timing.as_mut() {
         timing.record("analyze.walk", |_| {
             let structs = collect_struct_defs(&file);
             let enums = collect_enum_defs(&file);
