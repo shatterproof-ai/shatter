@@ -411,15 +411,6 @@ pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<P
 // HTML report generation
 // ---------------------------------------------------------------------------
 
-/// HTML-escape a string for safe embedding in HTML content.
-pub(crate) fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-
 /// Render the HTML section for a single explored function.
 ///
 /// Returns an HTML fragment (a `<details>` block) ready to embed in a full page.

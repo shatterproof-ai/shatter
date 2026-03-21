@@ -10,10 +10,16 @@ use crate::explorer::{ExecutionSummary, ObservationOutput};
 use crate::report::{DiscoveredInput, ScanReport};
 
 // ---------------------------------------------------------------------------
-// Re-export html_escape from report so we don't duplicate the logic.
+// HTML escaping
 // ---------------------------------------------------------------------------
 
-use crate::report::html_escape;
+/// HTML-escape a string for safe embedding in HTML content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
 
 // ---------------------------------------------------------------------------
 // Coverage helpers
