@@ -29,6 +29,19 @@ fn clap_error_kind_label(kind: clap::error::ErrorKind) -> &'static str {
     }
 }
 
+/// If `.shatter/` does not exist under `project_dir` (or the current directory),
+/// run `init` implicitly so first-time users get the config structure automatically.
+fn maybe_implicit_init(project_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
+    let base = project_dir.unwrap_or_else(|| std::path::Path::new("."));
+    let shatter_dir = base.join(".shatter");
+    if !shatter_dir.exists() {
+        eprintln!("No .shatter/ found — initializing project");
+        if let Err(e) = commands::init::run_init(project_dir, colors) {
+            eprintln!("Warning: implicit init failed: {e}");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = match Cli::try_parse_from(std::env::args_os()) {
@@ -154,6 +167,7 @@ async fn main() -> ExitCode {
             capture_side_effects,
             report_file,
         } => {
+            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
@@ -239,6 +253,7 @@ async fn main() -> ExitCode {
             spec_json,
             invariants,
         } => {
+            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             commands::analyze::run_analyze(
                 &input,
                 output.as_deref(),
@@ -340,6 +355,7 @@ async fn main() -> ExitCode {
             capture_side_effects,
             workers_per_fn,
         } => {
+            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
                     Ok(p) => p,
@@ -628,6 +644,9 @@ async fn main() -> ExitCode {
                 }
                 Err(e) => Err(e),
             }
+        }
+        CliCommand::Init { directory } => {
+            commands::init::run_init(directory.as_deref(), &colors)
         }
         CliCommand::Telemetry { action } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
