@@ -73,7 +73,7 @@ fn render_source_block(
         let lineno = start_line + i as u32;
         let cls = if covered.contains(&lineno) { "covered" } else { "uncovered" };
         html.push_str(&format!(
-            r#"<div class="src-line {cls}"><span class="src-ln {cls}">{lineno}</span><span class="src-text">{}</span></div>"#,
+            r#"<div class="src-line {cls}" data-line="{lineno}"><span class="src-ln {cls}">{lineno}</span><span class="src-text">{}</span></div>"#,
             html_escape(line_text)
         ));
     }
@@ -116,6 +116,9 @@ pub(crate) struct PathEntry {
     pub inputs_html: String,
     /// Pre-rendered outcome span (HTML-safe).
     pub outcome_html: String,
+    /// Comma-separated line numbers executed by this path (e.g. `"10,11,23"`).
+    /// Empty string when no line data is available.
+    pub lines_executed_csv: String,
 }
 
 /// Build the inputs HTML for a single `ExecutionSummary`.
@@ -231,6 +234,12 @@ pub fn render_explore_fn(
             index: i + 1,
             inputs_html: format_inputs(exec),
             outcome_html: format_outcome(exec),
+            lines_executed_csv: exec
+                .lines_executed
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
         })
         .collect();
 
@@ -336,6 +345,12 @@ fn format_discovered_input(inp: &DiscoveredInput) -> PathEntry {
         } else {
             r#"<span class="outcome-void">void</span>"#.to_string()
         },
+        lines_executed_csv: inp
+            .lines_executed
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     }
 }
 

@@ -16,5 +16,37 @@
   <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{{ cov_bar_html|safe }}</div></div>
 </div>
 <h2>Functions</h2>
-{% for f in fragments %}{{ f|safe }}{% endfor %}</body>
+{% for f in fragments %}{{ f|safe }}{% endfor %}
+<script>
+(function () {
+  function activatePath(row) {
+    var lines = (row.dataset.lines || '').split(',').filter(Boolean);
+    row.classList.add('selected-path');
+    lines.forEach(function (ln) {
+      var el = document.querySelector('.src-line[data-line="' + ln + '"]');
+      if (el) el.classList.add('active-path');
+    });
+    var first = document.querySelector('.src-line.active-path');
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function clearSelection() {
+    document.querySelectorAll('tr.selected-path').forEach(function (r) {
+      r.classList.remove('selected-path');
+    });
+    document.querySelectorAll('.src-line.active-path').forEach(function (el) {
+      el.classList.remove('active-path');
+    });
+  }
+
+  document.querySelectorAll('tr[data-path-index]').forEach(function (row) {
+    row.addEventListener('click', function () {
+      var isSelected = this.classList.contains('selected-path');
+      clearSelection();
+      if (!isSelected) activatePath(this);
+    });
+  });
+}());
+</script>
+</body>
 </html>
