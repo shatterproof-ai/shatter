@@ -1935,7 +1935,7 @@ fn format_type(ty: &TypeInfo) -> String {
                 .join(" | ")
         }
         TypeInfo::Complex { kind, .. } => format!("{kind:?}"),
-        TypeInfo::Opaque { label } => label.clone(),
+        TypeInfo::Opaque { label, .. } => label.clone(),
         TypeInfo::Unknown => "unknown".to_string(),
     }
 }

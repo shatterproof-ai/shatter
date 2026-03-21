@@ -811,3 +811,34 @@ func containsLitValue(lits []LiteralValue, val any) bool {
 	}
 	return false
 }
+
+// --- Static opacity heuristics ---
+
+func TestStaticOpacityHeuristics(t *testing.T) {
+	tests := []struct {
+		funcName   string
+		wantKind   string
+		wantReason string
+	}{
+		// InternalConn: all fields unexported, no factory → no_constructor
+		{"UseInternalConn", "opaque", "no_constructor"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.funcName, func(t *testing.T) {
+			fns, err := AnalyzeFile(testdataPath("static_opaque.go"), tc.funcName)
+			if err != nil {
+				t.Fatalf("AnalyzeFile: %v", err)
+			}
+			if len(fns) == 0 {
+				t.Fatal("no functions returned")
+			}
+			p := fns[0].Params[0]
+			if p.Type.Kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", p.Type.Kind, tc.wantKind)
+			}
+			if p.Type.StaticOpacity != tc.wantReason {
+				t.Errorf("static_opacity = %q, want %q", p.Type.StaticOpacity, tc.wantReason)
+			}
+		})
+	}
+}

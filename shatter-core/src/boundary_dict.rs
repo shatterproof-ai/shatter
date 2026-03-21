@@ -388,6 +388,7 @@ mod tests {
     fn opaque_type_returns_empty() {
         let entries = get_boundary_values(&TypeInfo::Opaque {
             label: "net.Socket".to_string(),
+            static_opacity: None,
         });
         assert!(entries.is_empty());
     }

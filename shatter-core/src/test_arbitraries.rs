@@ -335,7 +335,7 @@ pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
         Just(TypeInfo::Str),
         Just(TypeInfo::Bool),
         Just(TypeInfo::Unknown),
-        arb_ident().prop_map(|label| TypeInfo::Opaque { label }),
+        arb_ident().prop_map(|label| TypeInfo::Opaque { label, static_opacity: None }),
     ];
     if depth == 0 {
         leaf.boxed()
