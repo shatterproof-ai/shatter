@@ -248,6 +248,7 @@ mod tests {
             boundary_results: vec![],
             shrunk_witnesses: Default::default(),
             mcdc_summary: None,
+            shrink_stats: shatter_core::shrink::ShrinkStats::default(),
         }
     }
 
