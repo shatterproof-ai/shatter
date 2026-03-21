@@ -455,7 +455,7 @@ step 28 $TOTAL "Emit Tests from Scan" \
 # Stage 29: Markdown scan report
 step 29 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan --report-format=markdown examples/standalone/ts
+    $SHATTER scan -o /tmp/shatter-scan-report.md examples/standalone/ts
 
 # Stage 30: Scan dry-run
 step 30 $TOTAL "Scan Dry Run" \
@@ -567,12 +567,12 @@ step 48 $TOTAL "Specify from Observation" \
 # Stage 49: HTML explore report
 step 49 $TOTAL "HTML Explore Report" \
     "Generate a self-contained HTML report for exploration results" \
-    $SHATTER explore --report-file /tmp/shatter-explore-report.html "${EXAMPLES[0]}"
+    $SHATTER explore -o /tmp/shatter-explore-report.html "${EXAMPLES[0]}"
 
 # Stage 50: HTML scan report
 step 50 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
-    $SHATTER scan --report-format=html --output /tmp/shatter-scan-html examples/standalone/ts
+    $SHATTER scan -o /tmp/shatter-scan-report.html examples/standalone/ts
 
 # Stage 51: Side-effect capture
 step 51 $TOTAL "Explore with Side-Effect Capture" \

@@ -65,7 +65,9 @@ pub(crate) async fn run_explore(
     isolation: shatter_core::explorer::IsolationMode,
     capture_side_effects: bool,
     output_format: crate::args::OutputFormat,
-    report_file: Option<&Path>,
+    report_outputs: &[std::path::PathBuf],
+    stdout: bool,
+    format: crate::args::StdoutFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -137,8 +139,9 @@ pub(crate) async fn run_explore(
         parsed.len(),
     );
 
-    // Accumulate HTML fragments per function when --report-file is set.
+    // Accumulate HTML and markdown fragments for -o report files.
     let mut html_fragments: Vec<String> = Vec::new();
+    let mut md_fragments: Vec<String> = Vec::new();
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
@@ -597,8 +600,8 @@ pub(crate) async fn run_explore(
                     total_covered += result.lines_covered;
                     total_lines += result.total_lines;
 
-                    // Accumulate HTML fragment for --report-file.
-                    if report_file.is_some() {
+                    // Accumulate HTML/markdown fragments for -o report files.
+                    {
                         let location =
                             format!("{file_str}:{}-{}", func.start_line, func.end_line);
                         html_fragments.push(shatter_core::report::render_explore_fn_html(
@@ -643,7 +646,9 @@ pub(crate) async fn run_explore(
                                 let _report_span = tracing::info_span!("report.render").entered();
                                 explorer::format_exploration_report_verbose(&result)
                             };
-                            print!("{report}");
+                            if report_outputs.is_empty() || stdout {
+                                print!("{report}");
+                            }
                         } else if output_format == crate::args::OutputFormat::Md {
                             let location =
                                 format!("{file_str}:{}-{}", func.start_line, func.end_line);
@@ -659,7 +664,10 @@ pub(crate) async fn run_explore(
                                 let _report_span = tracing::info_span!("report.render").entered();
                                 crate::render::render_explore_fn(&view)
                             };
-                            print_markdown(&md, use_color);
+                            md_fragments.push(md.clone());
+                            if report_outputs.is_empty() || stdout {
+                                print_markdown(&md, use_color);
+                            }
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
@@ -672,15 +680,20 @@ pub(crate) async fn run_explore(
                                 let _report_span = tracing::info_span!("report.render").entered();
                                 explorer::format_exploration_report(&result, &report_opts)
                             };
-                            print!("{report}");
-                            if !mock_symbols.is_empty() {
-                                println!("  Mocks used: {}", mock_symbols.join(", "));
-                            }
-                            if use_concolic {
-                                println!("  Explorer: concolic (Z3-backed)");
+                            md_fragments.push(report.clone());
+                            if report_outputs.is_empty() || stdout {
+                                print!("{report}");
+                                if !mock_symbols.is_empty() {
+                                    println!("  Mocks used: {}", mock_symbols.join(", "));
+                                }
+                                if use_concolic {
+                                    println!("  Explorer: concolic (Z3-backed)");
+                                }
                             }
                         }
-                        println!();
+                        if report_outputs.is_empty() || stdout {
+                            println!();
+                        }
                     }
 
                     // Spec output: use eq classes from analyze stage
@@ -781,8 +794,8 @@ pub(crate) async fn run_explore(
         }
     }
 
-    // Print summary footer.
-    if header_printed && log::log_enabled!(log::Level::Info) {
+    // Print summary footer (only when streaming to stdout).
+    if header_printed && log::log_enabled!(log::Level::Info) && (report_outputs.is_empty() || stdout) {
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if total_lines > 0 {
                 let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
@@ -813,24 +826,78 @@ pub(crate) async fn run_explore(
         }
     }
 
-    // Write HTML report if --report-file was specified.
-    if let Some(rf) = report_file {
-        let html = shatter_core::report::wrap_explore_html(
-            &html_fragments,
-            total_function_count,
-            total_paths,
-            total_covered,
-            total_lines,
-        );
-        if let Some(parent) = rf.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create directory for report file: {e}"))?;
+    // Write exploration reports to -o files.
+    for path in report_outputs {
+        match crate::args::infer_output_format(path) {
+            Ok(crate::args::StdoutFormat::Html) => {
+                let html = shatter_core::report::wrap_explore_html(
+                    &html_fragments,
+                    total_function_count,
+                    total_paths,
+                    total_covered,
+                    total_lines,
+                );
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, html)
+                    .map_err(|e| format!("failed to write HTML report to '{}': {e}", path.display()))?;
+                log::info!("Wrote HTML report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Markdown) => {
+                let md = md_fragments.join("\n\n---\n\n");
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, &md)
+                    .map_err(|e| format!("failed to write markdown report to '{}': {e}", path.display()))?;
+                log::info!("Wrote markdown report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Text) => {
+                let md = md_fragments.join("\n\n---\n\n");
+                let text = shatter_core::report::strip_markdown_text(&md);
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, &text)
+                    .map_err(|e| format!("failed to write text report to '{}': {e}", path.display()))?;
+                log::info!("Wrote text report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Json) => {
+                // JSON output for explore writes spec bundle
+                log::warn!("JSON output for explore writes spec bundle; use --spec-out for explicit spec output");
+                if let Some(first_bundle) = file_spec_bundles.first() {
+                    shatter_core::spec::write_file_spec_bundle(first_bundle, path)
+                        .map_err(|e| format!("failed to write spec bundle to '{}': {e}", path.display()))?;
+                    log::info!("Wrote spec bundle to {}", path.display());
+                }
+            }
+            Err(e) => {
+                log::error!("{e}");
+            }
         }
-        std::fs::write(rf, html)
-            .map_err(|e| format!("failed to write HTML report to {}: {e}", rf.display()))?;
-        log::info!("Wrote HTML report to {}", rf.display());
+    }
+
+    // If files were written and --stdout was also requested, replay to stdout.
+    if !report_outputs.is_empty() && stdout {
+        let combined = md_fragments.join("\n\n---\n\n");
+        match format {
+            crate::args::StdoutFormat::Text => {
+                print!("{}", shatter_core::report::strip_markdown_text(&combined));
+            }
+            _ => {
+                print_markdown(&combined, use_color);
+            }
+        }
     }
 
     // Write collected file spec bundles to the output path as a single bundle.

@@ -42,6 +42,39 @@ pub(crate) enum OutputFormat {
     Plain,
 }
 
+/// Output format for report files and stdout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum StdoutFormat {
+    /// Markdown (default).
+    #[default]
+    Markdown,
+    /// JSON.
+    Json,
+    /// Self-contained HTML.
+    Html,
+    /// Plain text (markdown with formatting stripped).
+    Text,
+}
+
+/// Infer the output format from a file's extension.
+///
+/// Returns an error if the extension is unsupported or missing.
+pub(crate) fn infer_output_format(path: &std::path::Path) -> Result<StdoutFormat, String> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => Ok(StdoutFormat::Html),
+        Some("md") => Ok(StdoutFormat::Markdown),
+        Some("json") => Ok(StdoutFormat::Json),
+        Some("txt") => Ok(StdoutFormat::Text),
+        Some(ext) => Err(format!(
+            "unknown output format for extension '.{ext}' — supported: .html, .md, .json, .txt"
+        )),
+        None => Err(
+            "output file has no extension — use .html, .md, .json, or .txt to specify format"
+                .to_string(),
+        ),
+    }
+}
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
 #[command(name = "shatter", version, about)]
@@ -83,9 +116,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
     pub(crate) color: ColorMode,
 
-    /// Terminal output format: md (default, rendered via termimad) or plain (legacy ANSI).
-    #[arg(long, global = true, default_value = "md", value_name = "FORMAT")]
-    pub(crate) format: OutputFormat,
+    /// Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI).
+    #[arg(long = "render", global = true, default_value = "md", value_name = "MODE")]
+    pub(crate) render: OutputFormat,
 
     #[command(subcommand)]
     pub(crate) command: CliCommand,
@@ -247,8 +280,8 @@ pub(crate) enum CliCommand {
         config_path: Option<PathBuf>,
 
         /// Write per-file spec JSON to a file (implies --spec-json).
-        #[arg(long, short)]
-        output: Option<PathBuf>,
+        #[arg(long = "spec-out")]
+        spec_out: Option<PathBuf>,
 
         /// Output a behavioral specification (markdown by default, JSON with --spec-json).
         #[arg(long)]
@@ -407,10 +440,19 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = false)]
         capture_side_effects: bool,
 
-        /// Write a self-contained HTML exploration report to this file.
-        /// When set, generates an HTML file with coverage and path details for all explored functions.
+        /// Write exploration report to file; format inferred from extension (.html, .md, .json, .txt).
+        /// May be repeated to write multiple formats simultaneously.
+        #[arg(long = "output", short = 'o', value_name = "PATH")]
+        report_outputs: Vec<PathBuf>,
+
+        /// Write report to stdout in addition to any -o files.
+        /// When no -o flags are given, stdout is the default output.
         #[arg(long)]
-        report_file: Option<PathBuf>,
+        stdout: bool,
+
+        /// Format for stdout output. One of: markdown (default), json, html, text.
+        #[arg(long, default_value = "markdown")]
+        format: StdoutFormat,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -560,13 +602,19 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         mock_config: Option<PathBuf>,
 
-        /// Output directory for reports (default: ./shatter-report/).
-        #[arg(long, short)]
-        output: Option<PathBuf>,
+        /// Write report to file; format inferred from extension (.html, .md, .json, .txt).
+        /// May be repeated to write multiple formats simultaneously.
+        #[arg(long = "output", short = 'o', value_name = "PATH")]
+        outputs: Vec<PathBuf>,
 
-        /// Report format: json (default), markdown, or both.
-        #[arg(long = "report-format", default_value = "json")]
-        report_format: String,
+        /// Write report to stdout in addition to any -o files.
+        /// When no -o flags are given, stdout is the default output.
+        #[arg(long)]
+        stdout: bool,
+
+        /// Format for stdout output. One of: markdown (default), json, html, text.
+        #[arg(long, default_value = "markdown")]
+        format: StdoutFormat,
 
         /// Generate test files after scan. Framework: jest, vitest, or gotest.
         #[arg(long)]
@@ -759,9 +807,14 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value = ".")]
         module_path: String,
 
-        /// Write output to a file instead of stdout.
-        #[arg(long, short)]
-        output: Option<PathBuf>,
+        /// Write tests to file. May be repeated.
+        #[arg(long = "output", short = 'o', value_name = "FILE")]
+        outputs: Vec<PathBuf>,
+
+        /// Write tests to stdout in addition to any -o files.
+        /// When no -o flags are given, stdout is the default output.
+        #[arg(long)]
+        stdout: bool,
 
         /// Maximum number of iterations for the concolic loop.
         #[arg(long, default_value_t = 100)]
@@ -1785,17 +1838,17 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { output, .. } => {
-                assert_eq!(output, Some(PathBuf::from("/tmp/report")));
+            CliCommand::Scan { outputs, .. } => {
+                assert_eq!(outputs, vec![PathBuf::from("/tmp/report")]);
             }
             _ => panic!("expected Scan command"),
         }
 
-        // Default: no output
+        // Default: no outputs
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { output, .. } => {
-                assert!(output.is_none());
+            CliCommand::Scan { outputs, .. } => {
+                assert!(outputs.is_empty());
             }
             _ => panic!("expected Scan command"),
         }
@@ -1885,7 +1938,7 @@ mod tests {
                 targets,
                 framework,
                 module_path,
-                output,
+                outputs,
                 max_iterations,
                 timeout,
                 scope,
@@ -1895,7 +1948,7 @@ mod tests {
                 assert_eq!(targets, vec!["test.go:Add"]);
                 assert_eq!(framework, "gotest");
                 assert_eq!(module_path, "examples");
-                assert!(output.is_none());
+                assert!(outputs.is_empty());
                 assert_eq!(max_iterations, 100);
                 assert_eq!(timeout, 60);
                 assert!(scope.is_none());
@@ -1916,12 +1969,12 @@ mod tests {
             CliCommand::ExportTests {
                 framework,
                 module_path,
-                output,
+                outputs,
                 ..
             } => {
                 assert_eq!(framework, "jest");
                 assert_eq!(module_path, ".");
-                assert!(output.is_none());
+                assert!(outputs.is_empty());
             }
             _ => panic!("expected ExportTests command"),
         }
@@ -1937,8 +1990,8 @@ mod tests {
             "test.go:Add",
         ]);
         match cli.command {
-            CliCommand::ExportTests { output, .. } => {
-                assert_eq!(output, Some(PathBuf::from("tests/generated_test.go")));
+            CliCommand::ExportTests { outputs, .. } => {
+                assert_eq!(outputs, vec![PathBuf::from("tests/generated_test.go")]);
             }
             _ => panic!("expected ExportTests command"),
         }
@@ -2161,7 +2214,6 @@ mod tests {
             "shatter",
             "scan",
             "--progress",
-            "--report-format", "markdown",
             "--resume", "/tmp/state.json",
             "--mock-config", "/tmp/mocks.yaml",
             "src/",
@@ -2169,13 +2221,11 @@ mod tests {
         match cli.command {
             CliCommand::Scan {
                 progress,
-                report_format,
                 resume,
                 mock_config,
                 ..
             } => {
                 assert!(progress);
-                assert_eq!(report_format, "markdown");
                 assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
@@ -2247,27 +2297,27 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_explore_with_output_flag() {
+    fn cli_parses_explore_with_spec_out_flag() {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--output", "spec.json",
+            "--spec-out", "spec.json",
             "src/app.ts:foo",
         ]);
         match cli.command {
-            CliCommand::Explore { output, .. } => {
-                assert_eq!(output, Some(PathBuf::from("spec.json")));
+            CliCommand::Explore { spec_out, .. } => {
+                assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
             }
             _ => panic!("expected Explore command"),
         }
     }
 
     #[test]
-    fn cli_output_defaults_to_none() {
+    fn cli_spec_out_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
         match cli.command {
-            CliCommand::Explore { output, .. } => {
-                assert!(output.is_none());
+            CliCommand::Explore { spec_out, .. } => {
+                assert!(spec_out.is_none());
             }
             _ => panic!("expected Explore command"),
         }
@@ -2372,14 +2422,14 @@ mod tests {
             "shatter",
             "explore",
             "--dry-run",
-            "--output", "spec.json",
+            "--spec-out", "spec.json",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { clean, dry_run, output, .. } => {
+            CliCommand::Explore { clean, dry_run, spec_out, .. } => {
                 assert!(!clean);
                 assert!(dry_run);
-                assert_eq!(output, Some(PathBuf::from("spec.json")));
+                assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
             }
             _ => panic!("expected Explore command"),
         }
@@ -2614,5 +2664,44 @@ mod tests {
             }
             _ => panic!("expected Scan command"),
         }
+    }
+}
+
+#[cfg(test)]
+mod output_format_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_infer_html() {
+        assert_eq!(infer_output_format(Path::new("report.html")).unwrap(), StdoutFormat::Html);
+    }
+
+    #[test]
+    fn test_infer_markdown() {
+        assert_eq!(infer_output_format(Path::new("report.md")).unwrap(), StdoutFormat::Markdown);
+    }
+
+    #[test]
+    fn test_infer_json() {
+        assert_eq!(infer_output_format(Path::new("report.json")).unwrap(), StdoutFormat::Json);
+    }
+
+    #[test]
+    fn test_infer_text() {
+        assert_eq!(infer_output_format(Path::new("report.txt")).unwrap(), StdoutFormat::Text);
+    }
+
+    #[test]
+    fn test_infer_unknown_extension() {
+        let err = infer_output_format(Path::new("report.foo")).unwrap_err();
+        assert!(err.contains("unknown output format for extension '.foo'"));
+        assert!(err.contains(".html, .md, .json, .txt"));
+    }
+
+    #[test]
+    fn test_infer_no_extension() {
+        let err = infer_output_format(Path::new("report")).unwrap_err();
+        assert!(err.contains("no extension"));
     }
 }

@@ -20,7 +20,8 @@ pub(crate) async fn run_export_tests(
     targets: &[String],
     framework: &str,
     module_path: &str,
-    output_path: Option<&Path>,
+    outputs: &[std::path::PathBuf],
+    stdout: bool,
     max_iterations: u32,
     _timeout: u64,
     scope_path: Option<&Path>,
@@ -140,15 +141,14 @@ pub(crate) async fn run_export_tests(
         shutdown_frontend(frontend).await;
     }
 
-    match output_path {
-        Some(path) => {
-            std::fs::write(path, &all_output)
-                .map_err(|e| format!("failed to write to '{}': {e}", path.display()))?;
-            log::info!("Wrote tests to {}", path.display());
-        }
-        None => {
-            print!("{all_output}");
-        }
+    let has_files = !outputs.is_empty();
+    for path in outputs {
+        std::fs::write(path, &all_output)
+            .map_err(|e| format!("failed to write to '{}': {e}", path.display()))?;
+        log::info!("Wrote tests to {}", path.display());
+    }
+    if !has_files || stdout {
+        print!("{all_output}");
     }
 
     Ok(())

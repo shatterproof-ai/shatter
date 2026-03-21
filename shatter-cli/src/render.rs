@@ -247,6 +247,7 @@ mod tests {
             float_probe_results: vec![],
             boundary_results: vec![],
             shrunk_witnesses: Default::default(),
+            shrink_stats: Default::default(),
             mcdc_summary: None,
         }
     }
