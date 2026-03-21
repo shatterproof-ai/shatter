@@ -672,4 +672,33 @@ describe("analyzeFile", () => {
       expect(results[0]!.name).toBe("statusBadge");
     });
   });
+
+  describe("static opacity heuristics", () => {
+    const fixturePath = path.join(fixtures, "static-opaque-types.ts");
+
+    it("abstract class is detected as opaque with abstract_type reason", () => {
+      const results = analyzeFile(fixturePath, "handleAbstract");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toMatchObject({ kind: "opaque", static_opacity: "abstract_type" });
+    });
+
+    it("private constructor is detected as opaque with abstract_type reason", () => {
+      const results = analyzeFile(fixturePath, "handleSingleton");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", static_opacity: "abstract_type" });
+    });
+
+    it("method-only interface with no implementors is detected as opaque with no_implementors reason", () => {
+      const results = analyzeFile(fixturePath, "handleSource");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", static_opacity: "no_implementors" });
+    });
+
+    it("class whose constructor requires opaque arg is detected as transitively_opaque", () => {
+      const results = analyzeFile(fixturePath, "handleWrapper");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", static_opacity: "transitively_opaque" });
+    });
+  });
 });

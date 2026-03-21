@@ -29,7 +29,7 @@ use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 use crate::triage::{BranchPrediction, TriageDisableReason, TriageVerdict};
-use crate::types::{ComplexKind, ParamInfo, TypeInfo};
+use crate::types::{ComplexKind, ParamInfo, StaticOpacityReason, TypeInfo};
 
 // ---------------------------------------------------------------------------
 // Leaf strategies
@@ -335,7 +335,17 @@ pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
         Just(TypeInfo::Str),
         Just(TypeInfo::Bool),
         Just(TypeInfo::Unknown),
-        arb_ident().prop_map(|label| TypeInfo::Opaque { label }),
+        (
+            arb_ident(),
+            prop_oneof![
+                Just(None),
+                Just(Some(StaticOpacityReason::NoConstructor)),
+                Just(Some(StaticOpacityReason::TransitivelyOpaque)),
+                Just(Some(StaticOpacityReason::AbstractType)),
+                Just(Some(StaticOpacityReason::NoImplementors)),
+            ],
+        )
+            .prop_map(|(label, static_opacity)| TypeInfo::Opaque { label, static_opacity }),
     ];
     if depth == 0 {
         leaf.boxed()

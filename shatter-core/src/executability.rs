@@ -2,7 +2,7 @@
 //! making it unexecutable for automated testing.
 
 use crate::config::CustomOpaqueType;
-use crate::types::ParamInfo;
+use crate::types::{ParamInfo, StaticOpacityReason};
 use serde::{Deserialize, Serialize};
 
 /// Categorizes WHY a type is opaque — what kind of runtime resource it represents.
@@ -26,6 +26,14 @@ pub enum OpaqueCategory {
     UserConfigured,
     /// Opaque type that doesn't match any known category.
     Unknown,
+    /// No public constructor and no exported factory function.
+    NoConstructor,
+    /// All constructors require an already-opaque argument.
+    TransitivelyOpaque,
+    /// Abstract class or private/protected constructor — cannot be instantiated.
+    AbstractType,
+    /// Interface or abstract class with no concrete implementors in scope.
+    NoImplementors,
 }
 
 impl OpaqueCategory {
@@ -39,6 +47,10 @@ impl OpaqueCategory {
             OpaqueCategory::ProcessHandle => "process handle",
             OpaqueCategory::UserConfigured => "user-configured opaque type",
             OpaqueCategory::Unknown => "opaque type",
+            OpaqueCategory::NoConstructor => "type with no constructor",
+            OpaqueCategory::TransitivelyOpaque => "transitively opaque type",
+            OpaqueCategory::AbstractType => "abstract type",
+            OpaqueCategory::NoImplementors => "interface with no implementors",
         }
     }
 
@@ -52,6 +64,10 @@ impl OpaqueCategory {
             OpaqueCategory::ProcessHandle => "wraps OS process",
             OpaqueCategory::UserConfigured => "marked as non-synthesizable",
             OpaqueCategory::Unknown => "type cannot be automatically synthesized",
+            OpaqueCategory::NoConstructor => "has no exported constructor or factory function",
+            OpaqueCategory::TransitivelyOpaque => "constructor requires an opaque argument",
+            OpaqueCategory::AbstractType => "abstract class or private constructor cannot be instantiated",
+            OpaqueCategory::NoImplementors => "no concrete implementation visible in scope",
         }
     }
 }
@@ -213,6 +229,16 @@ impl SkipReason {
     }
 }
 
+/// Maps a [`StaticOpacityReason`] to the corresponding [`OpaqueCategory`].
+pub fn category_for_static_reason(reason: &StaticOpacityReason) -> OpaqueCategory {
+    match reason {
+        StaticOpacityReason::NoConstructor => OpaqueCategory::NoConstructor,
+        StaticOpacityReason::TransitivelyOpaque => OpaqueCategory::TransitivelyOpaque,
+        StaticOpacityReason::AbstractType => OpaqueCategory::AbstractType,
+        StaticOpacityReason::NoImplementors => OpaqueCategory::NoImplementors,
+    }
+}
+
 /// Checks each parameter for opaque types. Returns a `SkipReason` for every
 /// parameter whose type tree contains an `Opaque` node or whose `type_name`
 /// matches an entry in `custom_opaque_types`.
@@ -226,8 +252,11 @@ pub fn check_executability(
         .filter_map(|p| {
             // Check built-in opaque detection first.
             let mut path = vec![PathSegment::Param(p.name.clone())];
-            if let Some(label) = p.typ.find_opaque_info(&mut path) {
-                let category = category_for_label(&label);
+            if let Some((label, static_reason)) = p.typ.find_opaque_node(&mut path) {
+                let category = static_reason
+                    .as_ref()
+                    .map(category_for_static_reason)
+                    .unwrap_or_else(|| category_for_label(&label));
                 return Some(SkipReason {
                     param_name: p.name.clone(),
                     opaque_label: label,
@@ -297,6 +326,7 @@ mod tests {
             "conn",
             TypeInfo::Opaque {
                 label: "pg.Client".into(),
+                static_opacity: None,
             },
         )];
         let reasons = check_executability(&params, &[]);
@@ -318,6 +348,7 @@ mod tests {
             TypeInfo::Array {
                 element: Box::new(TypeInfo::Opaque {
                     label: "net.Socket".into(),
+                    static_opacity: None,
                 }),
             },
         )];
@@ -353,6 +384,7 @@ mod tests {
                 "db",
                 TypeInfo::Opaque {
                     label: "pg.Client".into(),
+                    static_opacity: None,
                 },
             ),
             param("name", TypeInfo::Str),
@@ -360,6 +392,7 @@ mod tests {
                 "stream",
                 TypeInfo::Opaque {
                     label: "fs.ReadStream".into(),
+                    static_opacity: None,
                 },
             ),
         ];
@@ -385,6 +418,7 @@ mod tests {
                             "handler".into(),
                             TypeInfo::Opaque {
                                 label: "http.Server".into(),
+                                static_opacity: None,
                             },
                         ),
                     ],
@@ -415,6 +449,7 @@ mod tests {
                     TypeInfo::Str,
                     TypeInfo::Opaque {
                         label: "stream.Readable".into(),
+                        static_opacity: None,
                     },
                 ],
             },
@@ -440,6 +475,7 @@ mod tests {
             TypeInfo::Nullable {
                 inner: Box::new(TypeInfo::Opaque {
                     label: "pg.Pool".into(),
+                    static_opacity: None,
                 }),
             },
         )];
@@ -466,6 +502,7 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 inner: Some(Box::new(TypeInfo::Opaque {
                     label: "channel".into(),
+                    static_opacity: None,
                 })),
             },
         )];
@@ -532,6 +569,7 @@ mod tests {
             name: "conn".into(),
             typ: TypeInfo::Opaque {
                 label: "pg.Client".into(),
+                static_opacity: None,
             },
             type_name: Some("DatabasePool".into()),
         }];
@@ -626,6 +664,72 @@ mod tests {
         assert_eq!(category_for_label("some.UnknownType"), OpaqueCategory::Unknown);
         assert_eq!(category_for_label("grpc.Client"), OpaqueCategory::Unknown);
         assert_eq!(category_for_label("channel"), OpaqueCategory::Unknown);
+    }
+
+    // ── category_for_static_reason tests ──
+
+    #[test]
+    fn category_for_static_reason_maps_all_variants() {
+        use crate::types::StaticOpacityReason;
+        assert_eq!(
+            category_for_static_reason(&StaticOpacityReason::NoConstructor),
+            OpaqueCategory::NoConstructor
+        );
+        assert_eq!(
+            category_for_static_reason(&StaticOpacityReason::TransitivelyOpaque),
+            OpaqueCategory::TransitivelyOpaque
+        );
+        assert_eq!(
+            category_for_static_reason(&StaticOpacityReason::AbstractType),
+            OpaqueCategory::AbstractType
+        );
+        assert_eq!(
+            category_for_static_reason(&StaticOpacityReason::NoImplementors),
+            OpaqueCategory::NoImplementors
+        );
+    }
+
+    #[test]
+    fn static_opacity_category_labels_and_reasons() {
+        assert_eq!(OpaqueCategory::NoConstructor.label(), "type with no constructor");
+        assert_eq!(OpaqueCategory::TransitivelyOpaque.label(), "transitively opaque type");
+        assert_eq!(OpaqueCategory::AbstractType.label(), "abstract type");
+        assert_eq!(OpaqueCategory::NoImplementors.label(), "interface with no implementors");
+
+        assert!(OpaqueCategory::NoConstructor.reason().contains("constructor"));
+        assert!(OpaqueCategory::TransitivelyOpaque.reason().contains("opaque"));
+        assert!(OpaqueCategory::AbstractType.reason().contains("abstract"));
+        assert!(OpaqueCategory::NoImplementors.reason().contains("concrete"));
+    }
+
+    #[test]
+    fn check_executability_uses_static_reason_when_present() {
+        use crate::types::StaticOpacityReason;
+        let params = vec![param(
+            "svc",
+            TypeInfo::Opaque {
+                label: "AbstractService".into(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].opaque_label, "AbstractService");
+        assert_eq!(reasons[0].category, OpaqueCategory::AbstractType);
+    }
+
+    #[test]
+    fn check_executability_falls_back_to_label_when_no_static_reason() {
+        let params = vec![param(
+            "conn",
+            TypeInfo::Opaque {
+                label: "pg.Client".into(),
+                static_opacity: None,
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].category, OpaqueCategory::DatabaseConnection);
     }
 
     // ── format_nesting_path tests ──

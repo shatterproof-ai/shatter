@@ -4,6 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::executability::PathSegment;
 
+/// Reason a type was detected as opaque via static analysis.
+///
+/// Complements the runtime opaque-type lookup tables with structural evidence
+/// that a type can never be constructed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticOpacityReason {
+    /// No public constructor and no exported create*/new*/open* factory function.
+    NoConstructor,
+    /// All constructors require an already-opaque argument.
+    TransitivelyOpaque,
+    /// Abstract class or private/protected constructor.
+    AbstractType,
+    /// Interface or abstract class with no concrete implementors in scope.
+    NoImplementors,
+}
+
 /// Well-known complex types that go beyond primitives and structural types.
 ///
 /// Every supported complex type is an explicit variant. Adding a new type
@@ -111,6 +128,11 @@ pub enum TypeInfo {
     /// known and constructible).
     Opaque {
         label: String,
+        /// Reason the type was detected as opaque via static analysis, if available.
+        /// Set by language frontends that perform structural inspection (e.g. abstract
+        /// class detection). Absent for types detected via the runtime opaque-type tables.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        static_opacity: Option<StaticOpacityReason>,
     },
     /// Type could not be determined statically.
     Unknown,
@@ -138,7 +160,7 @@ impl TypeInfo {
         }
     }
 
-    /// Returns the label of the first `Opaque` variant found in this type tree,
+    /// Returns the first `Opaque` node found in this type tree as `(label, static_opacity)`,
     /// appending nesting segments to `path` as it descends.
     ///
     /// On success the caller's `path` will end with the full nesting segments
@@ -147,13 +169,21 @@ impl TypeInfo {
     ///
     /// The caller should seed `path` with a `PathSegment::Param` entry before
     /// calling so that the resulting path starts from the parameter root.
-    pub fn find_opaque_info(&self, path: &mut Vec<PathSegment>) -> Option<String> {
+    ///
+    /// To get only the label (ignoring static reason), use:
+    /// `find_opaque_node(path).map(|(label, _)| label)`
+    pub fn find_opaque_node(
+        &self,
+        path: &mut Vec<PathSegment>,
+    ) -> Option<(String, Option<StaticOpacityReason>)> {
         match self {
-            TypeInfo::Opaque { label } => Some(label.clone()),
+            TypeInfo::Opaque { label, static_opacity } => {
+                Some((label.clone(), static_opacity.clone()))
+            }
             TypeInfo::Array { element } => {
                 path.push(PathSegment::ArrayElement);
-                if let Some(label) = element.find_opaque_info(path) {
-                    Some(label)
+                if let Some(result) = element.find_opaque_node(path) {
+                    Some(result)
                 } else {
                     path.pop();
                     None
@@ -162,8 +192,8 @@ impl TypeInfo {
             TypeInfo::Object { fields } => {
                 for (name, t) in fields {
                     path.push(PathSegment::Field(name.clone()));
-                    if let Some(label) = t.find_opaque_info(path) {
-                        return Some(label);
+                    if let Some(result) = t.find_opaque_node(path) {
+                        return Some(result);
                     }
                     path.pop();
                 }
@@ -172,8 +202,8 @@ impl TypeInfo {
             TypeInfo::Union { variants } => {
                 for t in variants {
                     path.push(PathSegment::UnionVariant);
-                    if let Some(label) = t.find_opaque_info(path) {
-                        return Some(label);
+                    if let Some(result) = t.find_opaque_node(path) {
+                        return Some(result);
                     }
                     path.pop();
                 }
@@ -181,8 +211,8 @@ impl TypeInfo {
             }
             TypeInfo::Nullable { inner } => {
                 path.push(PathSegment::NullableInner);
-                if let Some(label) = inner.find_opaque_info(path) {
-                    Some(label)
+                if let Some(result) = inner.find_opaque_node(path) {
+                    Some(result)
                 } else {
                     path.pop();
                     None
@@ -191,8 +221,8 @@ impl TypeInfo {
             TypeInfo::Complex { inner, .. } => {
                 if let Some(inner_type) = inner.as_deref() {
                     path.push(PathSegment::ComplexInner);
-                    if let Some(label) = inner_type.find_opaque_info(path) {
-                        return Some(label);
+                    if let Some(result) = inner_type.find_opaque_node(path) {
+                        return Some(result);
                     }
                     path.pop();
                 }
@@ -415,18 +445,39 @@ mod tests {
     fn opaque_round_trips() {
         round_trip(&TypeInfo::Opaque {
             label: "net.Socket".to_string(),
+            static_opacity: None,
+        });
+    }
+
+    #[test]
+    fn opaque_with_static_opacity_round_trips() {
+        round_trip(&TypeInfo::Opaque {
+            label: "AbstractService".to_string(),
+            static_opacity: Some(StaticOpacityReason::AbstractType),
+        });
+        round_trip(&TypeInfo::Opaque {
+            label: "DataSource".to_string(),
+            static_opacity: Some(StaticOpacityReason::NoImplementors),
+        });
+        round_trip(&TypeInfo::Opaque {
+            label: "InternalHandle".to_string(),
+            static_opacity: Some(StaticOpacityReason::NoConstructor),
+        });
+        round_trip(&TypeInfo::Opaque {
+            label: "SocketWrapper".to_string(),
+            static_opacity: Some(StaticOpacityReason::TransitivelyOpaque),
         });
     }
 
     #[test]
     fn has_opaque_direct() {
-        assert!(TypeInfo::Opaque { label: "net.Socket".into() }.has_opaque());
+        assert!(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None }.has_opaque());
     }
 
     #[test]
     fn has_opaque_nested_in_array() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Opaque { label: "net.Socket".into() }),
+            element: Box::new(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None }),
         };
         assert!(typ.has_opaque());
     }
@@ -435,7 +486,7 @@ mod tests {
     fn has_opaque_nested_in_object() {
         let typ = TypeInfo::Object {
             fields: vec![
-                ("conn".into(), TypeInfo::Opaque { label: "pg.Client".into() }),
+                ("conn".into(), TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None }),
                 ("name".into(), TypeInfo::Str),
             ],
         };
@@ -445,7 +496,7 @@ mod tests {
     #[test]
     fn has_opaque_nested_in_nullable() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Opaque { label: "channel".into() }),
+            inner: Box::new(TypeInfo::Opaque { label: "channel".into(), static_opacity: None }),
         };
         assert!(typ.has_opaque());
     }
@@ -473,6 +524,71 @@ mod tests {
         assert!(!TypeInfo::Str.has_opaque());
         assert!(!TypeInfo::Bool.has_opaque());
         assert!(!TypeInfo::Unknown.has_opaque());
+    }
+
+    // ── find_opaque_node tests ──
+
+    #[test]
+    fn find_opaque_node_returns_label_and_none_for_plain_opaque() {
+        let typ = TypeInfo::Opaque {
+            label: "net.Socket".into(),
+            static_opacity: None,
+        };
+        let mut path = vec![PathSegment::Param("sock".into())];
+        let result = typ.find_opaque_node(&mut path);
+        assert_eq!(result, Some(("net.Socket".to_string(), None)));
+        assert_eq!(path, vec![PathSegment::Param("sock".into())]);
+    }
+
+    #[test]
+    fn find_opaque_node_returns_static_reason_when_present() {
+        let typ = TypeInfo::Opaque {
+            label: "AbstractService".into(),
+            static_opacity: Some(StaticOpacityReason::AbstractType),
+        };
+        let mut path = vec![PathSegment::Param("svc".into())];
+        let result = typ.find_opaque_node(&mut path);
+        assert_eq!(
+            result,
+            Some(("AbstractService".to_string(), Some(StaticOpacityReason::AbstractType)))
+        );
+    }
+
+    #[test]
+    fn find_opaque_node_traverses_nested_object() {
+        let typ = TypeInfo::Object {
+            fields: vec![
+                ("name".into(), TypeInfo::Str),
+                (
+                    "svc".into(),
+                    TypeInfo::Opaque {
+                        label: "DataSource".into(),
+                        static_opacity: Some(StaticOpacityReason::NoImplementors),
+                    },
+                ),
+            ],
+        };
+        let mut path = vec![PathSegment::Param("cfg".into())];
+        let result = typ.find_opaque_node(&mut path);
+        assert_eq!(
+            result,
+            Some(("DataSource".to_string(), Some(StaticOpacityReason::NoImplementors)))
+        );
+        assert_eq!(
+            path,
+            vec![
+                PathSegment::Param("cfg".into()),
+                PathSegment::Field("svc".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_opaque_node_returns_none_for_primitives() {
+        let mut path = vec![PathSegment::Param("x".into())];
+        assert!(TypeInfo::Int.find_opaque_node(&mut path).is_none());
+        assert!(TypeInfo::Str.find_opaque_node(&mut path).is_none());
+        assert_eq!(path.len(), 1, "path should be unmodified on no-match");
     }
 
 }

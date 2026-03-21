@@ -288,6 +288,13 @@ export type ComplexKind =
   | "money" | "sem_ver" | "email" | "mime_type" | "color" | "geo_point" | "locale"
   | "rune" | "go_byte";
 
+/** Reason a type was detected as opaque via static analysis. */
+export type StaticOpacityReason =
+  | "no_constructor"
+  | "transitively_opaque"
+  | "abstract_type"
+  | "no_implementors";
+
 export type TypeInfo =
   | { kind: "int" }
   | { kind: "float" }
@@ -299,7 +306,7 @@ export type TypeInfo =
   | { kind: "union"; variants: TypeInfo[] }
   | { kind: "nullable"; inner: TypeInfo }
   | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo }
-  | { kind: "opaque"; label: string };
+  | { kind: "opaque"; label: string; static_opacity?: StaticOpacityReason };
 
 export interface BranchInfo {
   id: number;

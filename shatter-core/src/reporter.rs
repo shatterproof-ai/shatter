@@ -332,7 +332,7 @@ fn format_type(typ: &TypeInfo) -> String {
                 base
             }
         }
-        TypeInfo::Opaque { label } => format!("opaque({label})"),
+        TypeInfo::Opaque { label, .. } => format!("opaque({label})"),
         TypeInfo::Unknown => "unknown".to_string(),
     }
 }
@@ -883,7 +883,7 @@ mod tests {
         );
         assert_eq!(format_type(&TypeInfo::Object { fields: vec![] }), "object");
         assert_eq!(
-            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string() }),
+            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string(), static_opacity: None }),
             "opaque(net.Socket)"
         );
     }

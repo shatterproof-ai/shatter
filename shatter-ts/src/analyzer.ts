@@ -19,6 +19,7 @@ import type {
   ExternalDependency,
   DependencyKind,
   LiteralValue,
+  StaticOpacityReason,
 } from "./protocol.js";
 import type { TimingCollector } from "./timing.js";
 
@@ -187,7 +188,7 @@ function analyzeFunctionDeclaration(
   if (!node.name) return null;
 
   const name = node.name.text;
-  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -222,7 +223,7 @@ function analyzeArrowFunction(
   sourceFile: ts.SourceFile,
   exported: boolean,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -257,7 +258,7 @@ function analyzeFunctionDeclarationUnnamed(
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -292,7 +293,7 @@ function analyzeFunctionExpression(
   sourceFile: ts.SourceFile,
   exported: boolean,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker));
+  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -346,14 +347,18 @@ function collectCommonJsExports(sourceFile: ts.SourceFile): Set<string> {
   return names;
 }
 
-function analyzeParameter(param: ts.ParameterDeclaration, checker: ts.TypeChecker): ParamInfo {
+function analyzeParameter(
+  param: ts.ParameterDeclaration,
+  checker: ts.TypeChecker,
+  sourceFile?: ts.SourceFile,
+): ParamInfo {
   const name = ts.isIdentifier(param.name) ? param.name.text : param.name.getText();
   const symbol = checker.getSymbolAtLocation(param.name);
   const paramType = symbol
     ? checker.getTypeOfSymbolAtLocation(symbol, param)
     : checker.getTypeAtLocation(param);
 
-  let typ = convertType(paramType, checker);
+  let typ = convertType(paramType, checker, sourceFile ?? null);
 
   // If the parameter has a ? token and the type isn't already nullable, wrap it
   if (param.questionToken && typ.kind !== "nullable") {
@@ -365,11 +370,18 @@ function analyzeParameter(param: ts.ParameterDeclaration, checker: ts.TypeChecke
 
 /**
  * Convert a TypeScript compiler type to our protocol TypeInfo.
+ *
+ * Pass `sourceFile` to enable static analysis heuristics for user-defined
+ * types (abstract classes, interfaces with no implementors, etc.).
  */
-export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
+export function convertType(
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  sourceFile?: ts.SourceFile | null,
+): TypeInfo {
   // Handle union types first (before flag checks, since unions have compound flags)
   if (type.isUnion()) {
-    return convertUnionType(type, checker);
+    return convertUnionType(type, checker, sourceFile);
   }
 
   const flags = type.getFlags();
@@ -402,7 +414,7 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
   if (checker.isArrayType(type)) {
     const typeArgs = (type as ts.TypeReference).typeArguments;
     const element = typeArgs?.[0]
-      ? convertType(typeArgs[0], checker)
+      ? convertType(typeArgs[0], checker, sourceFile)
       : { kind: "unknown" as const };
     return { kind: "array", element };
   }
@@ -428,8 +440,17 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
         return { kind: "complex", complex_kind: complexKind };
       }
     }
+
+    // Static analysis heuristics for user-defined types
+    if (sourceFile) {
+      const staticResult = detectStaticOpacity(type as ts.ObjectType, checker, sourceFile);
+      if (staticResult) {
+        return { kind: "opaque", label: staticResult.label, static_opacity: staticResult.reason };
+      }
+    }
+
     // Generic object types (interfaces, type literals, classes)
-    return convertObjectType(type as ts.ObjectType, checker);
+    return convertObjectType(type as ts.ObjectType, checker, sourceFile);
   }
 
   // ESSymbol / UniqueESSymbol
@@ -440,7 +461,11 @@ export function convertType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
   return { kind: "unknown" };
 }
 
-function convertUnionType(type: ts.UnionType, checker: ts.TypeChecker): TypeInfo {
+function convertUnionType(
+  type: ts.UnionType,
+  checker: ts.TypeChecker,
+  sourceFile?: ts.SourceFile | null,
+): TypeInfo {
   const variants = type.types;
 
   // Check for nullable pattern: T | null or T | undefined
@@ -454,10 +479,10 @@ function convertUnionType(type: ts.UnionType, checker: ts.TypeChecker): TypeInfo
   if (nullishVariants.length > 0 && nonNullVariants.length > 0) {
     const inner =
       nonNullVariants.length === 1
-        ? convertType(nonNullVariants[0]!, checker)
+        ? convertType(nonNullVariants[0]!, checker, sourceFile)
         : {
             kind: "union" as const,
-            variants: nonNullVariants.map((v) => convertType(v, checker)),
+            variants: nonNullVariants.map((v) => convertType(v, checker, sourceFile)),
           };
     return { kind: "nullable", inner };
   }
@@ -471,7 +496,7 @@ function convertUnionType(type: ts.UnionType, checker: ts.TypeChecker): TypeInfo
   }
 
   // Regular union
-  const converted = variants.map((v) => convertType(v, checker));
+  const converted = variants.map((v) => convertType(v, checker, sourceFile));
   return { kind: "union", variants: converted };
 }
 
@@ -889,7 +914,150 @@ function complexKindFromSymbol(name: string): ComplexKind | null {
 // Object type conversion
 // ---------------------------------------------------------------------------
 
-function convertObjectType(type: ts.ObjectType, checker: ts.TypeChecker): TypeInfo {
+/**
+ * Detects if a TypeScript class or interface type is opaque via static analysis.
+ * Returns a reason and label if detected, or null.
+ *
+ * Heuristics (first match wins):
+ * 1. Abstract class → "abstract_type"
+ * 2. All constructors are private/protected → "abstract_type"
+ * 3. Interface with no concrete implementors in sourceFile → "no_implementors"
+ * 4. Class with public ctor but no exported factory (createX, newX, openX) → "no_constructor"
+ * 5. All public constructors require an opaque argument → "transitively_opaque"
+ *
+ * Only analyzes types declared in the current source file to avoid false
+ * positives on types from other modules.
+ */
+function detectStaticOpacity(
+  type: ts.ObjectType,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile,
+): { reason: StaticOpacityReason; label: string } | null {
+  const sym = type.getSymbol();
+  if (!sym) return null;
+  const decls = sym.getDeclarations() ?? [];
+  if (decls.length === 0) return null;
+
+  // Only analyze types declared in the current source file
+  const mainDecl = decls[0]!;
+  if (mainDecl.getSourceFile() !== sourceFile) return null;
+
+  const typeName = sym.getName();
+  const label = typeName;
+
+  // 1. Abstract class
+  if (
+    decls.some(
+      (d) =>
+        ts.isClassDeclaration(d) &&
+        ts.getModifiers(d)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword),
+    )
+  ) {
+    return { reason: "abstract_type", label };
+  }
+
+  // 2. All constructors are private/protected
+  const classDecl = decls.find((d): d is ts.ClassDeclaration => ts.isClassDeclaration(d));
+  if (classDecl) {
+    const ctors = classDecl.members.filter(
+      (m): m is ts.ConstructorDeclaration => ts.isConstructorDeclaration(m),
+    );
+    if (ctors.length > 0) {
+      const allNonPublic = ctors.every((ctor) =>
+        ts.getModifiers(ctor)?.some(
+          (m) =>
+            m.kind === ts.SyntaxKind.PrivateKeyword ||
+            m.kind === ts.SyntaxKind.ProtectedKeyword,
+        ),
+      );
+      if (allNonPublic) return { reason: "abstract_type", label };
+    }
+  }
+
+  // 3. Interface with no concrete implementors in file.
+  //    Only applies to "service" interfaces (all members are method signatures).
+  //    Data/shape interfaces (with non-method properties) can be satisfied by plain
+  //    object literals and are therefore constructible — do not flag them.
+  const isInterface = decls.some((d) => ts.isInterfaceDeclaration(d));
+  if (isInterface) {
+    const props = type.getProperties();
+    // If the interface has any non-method property, it is a data-shape interface
+    // that can be satisfied with a plain object literal — not opaque.
+    const hasNonMethodProperty = props.some((prop) => {
+      const propType = checker.getTypeOfSymbol(prop);
+      return propType.getCallSignatures().length === 0;
+    });
+    if (hasNonMethodProperty) return null;
+
+    // getEffectiveImplementsTypeNodes is available at runtime but not in all TypeScript
+    // declaration versions; use a dynamic call to avoid compilation errors. If absent,
+    // skip the heuristic entirely — returning null is safe and avoids false positives.
+    const getImplNodes = (ts as unknown as Record<string, unknown>)["getEffectiveImplementsTypeNodes"] as
+      | ((node: ts.ClassDeclaration) => readonly ts.ExpressionWithTypeArguments[] | undefined)
+      | undefined;
+    if (!getImplNodes) return null;
+
+    const hasImplementor = sourceFile.statements.some((stmt) => {
+      if (!ts.isClassDeclaration(stmt)) return false;
+      const implTypes = getImplNodes(stmt);
+      if (!implTypes) return false;
+      return implTypes.some((impl: ts.ExpressionWithTypeArguments) => {
+        const implSym = checker.getSymbolAtLocation(impl.expression);
+        return implSym === sym || implSym?.name === typeName;
+      });
+    });
+    if (!hasImplementor) return { reason: "no_implementors", label };
+    return null;
+  }
+
+  // 4 (transitively_opaque) only applies to classes
+  if (!classDecl) return null;
+
+  const ctors = classDecl.members.filter(
+    (m): m is ts.ConstructorDeclaration => ts.isConstructorDeclaration(m),
+  );
+
+  const publicCtors = ctors.filter(
+    (ctor) =>
+      !ts.getModifiers(ctor)?.some(
+        (m) =>
+          m.kind === ts.SyntaxKind.PrivateKeyword ||
+          m.kind === ts.SyntaxKind.ProtectedKeyword,
+      ),
+  );
+
+  // Only classes with at least one explicit public constructor are candidates.
+  // Classes with an implicit default constructor are freely constructible.
+  if (ctors.length === 0) return null;
+  if (publicCtors.length === 0) return null; // already caught by rule 2
+
+  // 4. Check transitively opaque: all public ctors have ≥1 opaque param.
+  //    We do NOT flag classes whose public constructors only take primitive args
+  //    because those are freely constructible (e.g. class Foo { constructor(n: number) {} }).
+  const allTransitive = publicCtors.every((ctor) =>
+    ctor.parameters.some((param) => {
+      const paramType = checker.getTypeAtLocation(param);
+      // Pass null as sourceFile to avoid infinite recursion
+      const converted = convertType(paramType, checker, null);
+      return converted.kind === "opaque";
+    }),
+  );
+  if (allTransitive) return { reason: "transitively_opaque", label };
+
+  // NOTE: "no_constructor" is deliberately not produced here.
+  // A class with at least one public explicit constructor and no opaque args is freely
+  // constructible from outside (e.g. `new Foo(42)`). A "factory-less" heuristic
+  // (flag classes with no exported create*/new* function) was evaluated but proved too
+  // noisy — many plain data classes have public constructors and no factory, yet are
+  // trivially synthesizable. Rule 2 already covers the only reliable case (all ctors private).
+  return null;
+}
+
+function convertObjectType(
+  type: ts.ObjectType,
+  checker: ts.TypeChecker,
+  sourceFile?: ts.SourceFile | null,
+): TypeInfo {
   // Skip callable signatures (function types)
   const callSignatures = type.getCallSignatures();
   if (callSignatures.length > 0) {
@@ -916,6 +1084,8 @@ function convertObjectType(type: ts.ObjectType, checker: ts.TypeChecker): TypeIn
       return [prop.name, { kind: "unknown" as const }];
     }
 
+    // Do not pass sourceFile into field types to avoid false positives on
+    // fields whose types happen to match heuristic patterns out of context.
     const converted = convertType(propType, checker);
     const fieldType =
       isOptional && converted.kind !== "nullable"

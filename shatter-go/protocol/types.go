@@ -166,14 +166,15 @@ func (f *ObjectField) UnmarshalJSON(data []byte) error {
 
 // TypeInfo represents a type in the Shatter type system.
 type TypeInfo struct {
-	Kind        string                 `json:"kind"`
-	Label       string                 `json:"label,omitempty"`        // opaque
-	Element     *TypeInfo              `json:"element,omitempty"`      // array
-	Fields      []ObjectField          `json:"fields,omitempty"`       // object
-	Variants    []TypeInfo             `json:"variants,omitempty"`     // union
-	Inner       *TypeInfo              `json:"inner,omitempty"`        // nullable, complex wrapper
-	ComplexKind string                 `json:"complex_kind,omitempty"` // complex
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`     // complex
+	Kind          string                 `json:"kind"`
+	Label         string                 `json:"label,omitempty"`          // opaque
+	StaticOpacity string                 `json:"static_opacity,omitempty"` // static analysis opacity reason
+	Element       *TypeInfo              `json:"element,omitempty"`        // array
+	Fields        []ObjectField          `json:"fields,omitempty"`         // object
+	Variants      []TypeInfo             `json:"variants,omitempty"`       // union
+	Inner         *TypeInfo              `json:"inner,omitempty"`          // nullable, complex wrapper
+	ComplexKind   string                 `json:"complex_kind,omitempty"`   // complex
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`       // complex
 }
 
 // ParamInfo describes a function parameter.

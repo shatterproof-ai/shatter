@@ -847,6 +847,7 @@ mod tests {
     fn shrink_opaque_returns_empty() {
         let typ = TypeInfo::Opaque {
             label: "net.Socket".into(),
+            static_opacity: None,
         };
         let candidates = shrink_candidates(&json!(null), &typ);
         assert!(candidates.is_empty());

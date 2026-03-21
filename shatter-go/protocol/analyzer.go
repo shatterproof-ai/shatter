@@ -14,6 +14,164 @@ import (
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
+// fileContext carries file-level metadata needed for static opacity heuristics.
+type fileContext struct {
+	// exportedFuncNames is the set of all exported top-level function names in the file.
+	exportedFuncNames map[string]bool
+	// implementors maps interface type names to the struct names that implement them.
+	implementors map[string][]string
+	// pkgPath is the import path of the package being analyzed.
+	pkgPath string
+}
+
+// buildFileContext scans an *ast.File and type-checked *types.Info to populate
+// a fileContext with exported function names and interface implementors.
+func buildFileContext(file *ast.File, info *types.Info) *fileContext {
+	fc := &fileContext{
+		exportedFuncNames: make(map[string]bool),
+		implementors:      make(map[string][]string),
+		pkgPath:           file.Name.Name,
+	}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if ast.IsExported(d.Name.Name) {
+				fc.exportedFuncNames[d.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				if _, ok := ts.Type.(*ast.StructType); !ok {
+					continue
+				}
+				if !ast.IsExported(ts.Name.Name) {
+					continue
+				}
+				// Check if this struct implements any exported interfaces in the file
+				structObj, ok := info.Defs[ts.Name]
+				if !ok {
+					continue
+				}
+				structType, ok := structObj.Type().(*types.Named)
+				if !ok {
+					continue
+				}
+				// Scan all interface declarations in the file
+				for _, decl2 := range file.Decls {
+					gd2, ok := decl2.(*ast.GenDecl)
+					if !ok {
+						continue
+					}
+					for _, spec2 := range gd2.Specs {
+						ts2, ok := spec2.(*ast.TypeSpec)
+						if !ok {
+							continue
+						}
+						if _, ok := ts2.Type.(*ast.InterfaceType); !ok {
+							continue
+						}
+						ifaceObj, ok := info.Defs[ts2.Name]
+						if !ok {
+							continue
+						}
+						ifaceNamed, ok := ifaceObj.Type().(*types.Named)
+						if !ok {
+							continue
+						}
+						iface, ok := ifaceNamed.Underlying().(*types.Interface)
+						if !ok {
+							continue
+						}
+						// Check both pointer and value receiver
+						if types.Implements(structType, iface) ||
+							types.Implements(types.NewPointer(structType), iface) {
+							fc.implementors[ts2.Name.Name] = append(
+								fc.implementors[ts2.Name.Name], ts.Name.Name,
+							)
+						}
+					}
+				}
+			}
+		}
+	}
+	return fc
+}
+
+// detectStaticOpacity applies static analysis heuristics to detect opaque types
+// in the analyzed package. Only named types from the package itself are checked
+// (external package types are handled by isOpaqueGoType).
+//
+// Returns the static_opacity reason string and true if detected, or ("", false).
+//
+// NOTE: Go's type system makes all structs constructible via struct literals,
+// so no_constructor is only applied to types with unexported fields AND no
+// exported factory function. Interfaces are not currently flagged to avoid
+// false positives with service/data interface ambiguity.
+func detectStaticOpacity(named *types.Named, fc *fileContext) (string, bool) {
+	if fc == nil {
+		return "", false
+	}
+	obj := named.Obj()
+	// Only analyze types from the current package
+	pkg := obj.Pkg()
+	if pkg == nil || pkg.Name() != fc.pkgPath {
+		return "", false
+	}
+
+	// Do not apply heuristics to interfaces — Go interfaces are always satisfied
+	// by struct literals or zero values (via interface{}), and the existing
+	// protocol treats interface params as "unknown". Flagging them as opaque
+	// would break existing tests and semantics.
+	if types.IsInterface(named) {
+		return "", false
+	}
+
+	// no_constructor: struct whose underlying type has ALL unexported fields AND no
+	// New*/Create*/Open* exported factory function. All-unexported fields means
+	// the zero value or struct literal cannot be meaningfully used from outside
+	// the package (the fields can't be read or written).
+	typeName := obj.Name()
+	underlying, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return "", false
+	}
+	if underlying.NumFields() == 0 {
+		return "", false
+	}
+	allUnexported := true
+	for i := 0; i < underlying.NumFields(); i++ {
+		if underlying.Field(i).Exported() {
+			allUnexported = false
+			break
+		}
+	}
+	if !allUnexported {
+		return "", false
+	}
+
+	newFuncs := []string{
+		"New" + typeName,
+		"Create" + typeName,
+		"Open" + typeName,
+	}
+	for _, fn := range newFuncs {
+		if fc.exportedFuncNames[fn] {
+			return "", false
+		}
+	}
+	return "no_constructor", true
+
+	// NOTE: "transitively_opaque" is deliberately not implemented here.
+	// It would require resolving the first parameter type of New*/Create*/Open*
+	// functions and checking if that type is itself opaque — a recursive lookup
+	// that adds complexity for limited gain. It can be added in a future pass if
+	// real-world examples warrant it.
+}
+
 // AnalyzeFile parses a Go source file and returns analysis for all exported
 // functions, or a single function if functionName is non-empty.
 func AnalyzeFile(filePath string, functionName string) ([]FunctionAnalysis, error) {
@@ -34,6 +192,8 @@ func AnalyzeFileWithTiming(filePath string, functionName string, timing *fronten
 	info := typeCheck(fset, file)
 	finishTypeCheck()
 
+	fc := buildFileContext(file, info)
+
 	var results []FunctionAnalysis
 	finishWalk := timing.Start("analyze.walk")
 	for _, decl := range file.Decls {
@@ -44,7 +204,7 @@ func AnalyzeFileWithTiming(filePath string, functionName string, timing *fronten
 		if functionName != "" && fn.Name.Name != functionName {
 			continue
 		}
-		analysis := analyzeFunc(fset, fn, info, file)
+		analysis := analyzeFuncWithContext(fset, fn, info, file, fc)
 		results = append(results, analysis)
 	}
 	finishWalk()
@@ -73,7 +233,11 @@ func typeCheck(fset *token.FileSet, file *ast.File) *types.Info {
 }
 
 func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, file *ast.File) FunctionAnalysis {
-	params := extractParams(fn, info)
+	return analyzeFuncWithContext(fset, fn, info, file, nil)
+}
+
+func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, file *ast.File, fc *fileContext) FunctionAnalysis {
+	params := extractParamsWithContext(fn, info, fc)
 	returnType := extractReturnType(fn, info)
 	paramNames := paramNameSet(params)
 	branches := extractBranches(fset, fn.Body, paramNames)
@@ -107,12 +271,16 @@ func paramNameSet(params []ParamInfo) map[string]bool {
 // --- Parameter and Return Type Extraction ---
 
 func extractParams(fn *ast.FuncDecl, info *types.Info) []ParamInfo {
+	return extractParamsWithContext(fn, info, nil)
+}
+
+func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContext) []ParamInfo {
 	if fn.Type.Params == nil {
 		return []ParamInfo{}
 	}
 	var params []ParamInfo
 	for _, field := range fn.Type.Params.List {
-		ti := goTypeFromExpr(field.Type, info)
+		ti := goTypeFromExprWithContext(field.Type, info, fc)
 		for _, name := range field.Names {
 			params = append(params, ParamInfo{
 				Name: name.Name,
@@ -161,8 +329,12 @@ func extractReturnType(fn *ast.FuncDecl, info *types.Info) TypeInfo {
 // --- Go Type → TypeInfo ---
 
 func goTypeFromExpr(expr ast.Expr, info *types.Info) TypeInfo {
+	return goTypeFromExprWithContext(expr, info, nil)
+}
+
+func goTypeFromExprWithContext(expr ast.Expr, info *types.Info, fc *fileContext) TypeInfo {
 	if tv, ok := info.Types[expr]; ok {
-		return goTypeToTypeInfo(tv.Type)
+		return goTypeToTypeInfoWithContext(tv.Type, fc)
 	}
 	// Fallback: infer from AST when type checker didn't resolve
 	return typeInfoFromAST(expr)
@@ -202,6 +374,10 @@ func isOpaqueGoType(t types.Type) (string, bool) {
 }
 
 func goTypeToTypeInfo(t types.Type) TypeInfo {
+	return goTypeToTypeInfoWithContext(t, nil)
+}
+
+func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
 	// Check for opaque resource types (channels, sockets, file handles, etc.)
 	if label, ok := isOpaqueGoType(t); ok {
 		return TypeInfo{Kind: "opaque", Label: label}
@@ -226,21 +402,36 @@ func goTypeToTypeInfo(t types.Type) TypeInfo {
 			}
 		}
 	}
+	// Static analysis heuristics for named types from the analyzed package
+	if fc != nil {
+		if named, ok := t.(*types.Named); ok {
+			if reason, detected := detectStaticOpacity(named, fc); detected {
+				pkg := named.Obj().Pkg()
+				var label string
+				if pkg != nil {
+					label = pkg.Name() + "." + named.Obj().Name()
+				} else {
+					label = named.Obj().Name()
+				}
+				return TypeInfo{Kind: "opaque", Label: label, StaticOpacity: reason}
+			}
+		}
+	}
 	switch typ := t.Underlying().(type) {
 	case *types.Basic:
 		return basicTypeInfo(typ)
 	case *types.Slice:
-		elem := goTypeToTypeInfo(typ.Elem())
+		elem := goTypeToTypeInfoWithContext(typ.Elem(), fc)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Array:
-		elem := goTypeToTypeInfo(typ.Elem())
+		elem := goTypeToTypeInfoWithContext(typ.Elem(), fc)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Map:
 		return mapTypeInfo(typ)
 	case *types.Struct:
 		return structTypeInfo(typ)
 	case *types.Pointer:
-		inner := goTypeToTypeInfo(typ.Elem())
+		inner := goTypeToTypeInfoWithContext(typ.Elem(), fc)
 		return TypeInfo{Kind: "nullable", Inner: &inner}
 	case *types.Chan:
 		return TypeInfo{Kind: "opaque", Label: "chan " + typ.Elem().String()}
