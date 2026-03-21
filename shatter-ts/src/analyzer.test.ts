@@ -99,6 +99,40 @@ describe("analyzeFile", () => {
         fields: [["name", { kind: "str" }], ["count", { kind: "float" }]],
       });
     });
+
+    it("treats optional callback fields as nullable(unknown) and required string fields normally", () => {
+      // str-49k: functions with callback-typed options should not produce only TypeError paths.
+      // The optional `transform` field must become nullable(unknown) so input_gen can omit it;
+      // the required `prefix` field must keep its concrete str type.
+      const results = analyzeFile(
+        path.join(fixtures, "callback-options.ts"),
+        "process",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      // param 0: input — plain string
+      expect(fn.params[0]!.type).toEqual({ kind: "str" });
+      // param 1: options object — transform optional callable → nullable(unknown), prefix → str
+      expect(fn.params[1]!.type).toEqual({
+        kind: "object",
+        fields: [
+          ["transform", { kind: "nullable", inner: { kind: "unknown" } }],
+          ["prefix", { kind: "str" }],
+        ],
+      });
+    });
+
+    it("keeps pure function parameters as unknown (regression guard for early-return path)", () => {
+      // The early return in convertObjectType for pure callable types must stay intact.
+      const results = analyzeFile(
+        path.join(fixtures, "callback-options.ts"),
+        "applyFn",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({ kind: "unknown" });
+      expect(fn.params[1]!.type).toEqual({ kind: "float" });
+    });
   });
 
   describe("union and nullable types", () => {
