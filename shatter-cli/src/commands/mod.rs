@@ -3,6 +3,7 @@ pub(crate) mod build_frontend;
 pub(crate) mod diff;
 pub(crate) mod explore;
 pub(crate) mod export;
+pub(crate) mod init;
 pub(crate) mod observe;
 pub(crate) mod revalidate;
 pub(crate) mod run;

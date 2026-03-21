@@ -1041,6 +1041,17 @@ pub(crate) enum CliCommand {
     },
 
     /// Manage anonymous usage telemetry.
+    /// Initialize a project for Shatter analysis.
+    ///
+    /// Creates .shatter/ directory structure and config.yaml with sensible defaults.
+    /// Safe to run on an already-initialized project (idempotent).
+    #[command(name = "init")]
+    Init {
+        /// Directory to initialize (default: auto-detected project root).
+        #[arg(short, long)]
+        directory: Option<PathBuf>,
+    },
+
     Telemetry {
         #[command(subcommand)]
         action: TelemetryAction,
