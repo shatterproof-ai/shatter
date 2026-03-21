@@ -32,6 +32,9 @@
 <details><summary><span class="summary-arrow">&#9658;</span>{{ f.fn_name|safe }} &nbsp;{{ f.cov_bar_html|safe }}</summary>
 <div class="fn-body">
 <p class="fn-meta"><code>{{ f.file_path|safe }}</code> &nbsp;&middot;&nbsp; {{ f.iterations }} iteration(s) &nbsp;&middot;&nbsp; {{ f.paths_count }} path(s) &nbsp;&middot;&nbsp; {{ f.lines_covered }}/{{ f.total_lines }} lines</p>
+{%- if let Some(src_html) = f.source_code_html %}
+<div class="src-block">{{ src_html|safe }}</div>
+{%- endif %}
 {%- if f.discovered_inputs.is_empty() %}
 <p style="color:#9ca3af;font-size:13px">No discovered inputs recorded.</p>
 {%- else %}

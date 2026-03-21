@@ -663,7 +663,7 @@ pub(crate) async fn run_scan(
                     }
                 }
                 report::ReportFormat::Html => {
-                    match report::write_html_report(&scan_report, &report_dir) {
+                    match report::write_html_report(&scan_report, &report_dir, project_root_str.as_deref().map(std::path::Path::new)) {
                         Ok(path) => log::info!("Wrote HTML report to {}", path.display()),
                         Err(e) => log::error!("Failed to write HTML report: {e}"),
                     }

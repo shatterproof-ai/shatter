@@ -4,6 +4,9 @@
 //! template rendering layer. All HTML-unsafe values are escaped here before
 //! being handed to templates as pre-rendered fragments (marked `|safe`).
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use askama::Template;
 
 use crate::explorer::{ExecutionSummary, ObservationOutput};
@@ -19,6 +22,62 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+// ---------------------------------------------------------------------------
+// Source code display helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a location string of the form `"path/to/file.ts:10-30"` into its
+/// components. Returns `None` if the string does not match the expected format.
+fn parse_location(location: &str) -> Option<(&str, u32, u32)> {
+    let (path, range) = location.rsplit_once(':')?;
+    let (start, end) = range.split_once('-')?;
+    let start_line: u32 = start.parse().ok()?;
+    let end_line: u32 = end.parse().ok()?;
+    Some((path, start_line, end_line))
+}
+
+/// Build an HTML fragment of annotated source lines for embedding in a
+/// `.src-block` div. Each line gets a `covered` or `uncovered` CSS class.
+///
+/// Returns `None` when the file cannot be read or the line range is invalid.
+fn render_source_block(
+    file_path: &str,
+    project_root: Option<&Path>,
+    start_line: u32,
+    end_line: u32,
+    covered: &HashSet<u32>,
+) -> Option<String> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+
+    let resolved = if let Some(root) = project_root {
+        root.join(file_path)
+    } else {
+        std::path::PathBuf::from(file_path)
+    };
+
+    let contents = std::fs::read_to_string(&resolved).ok()?;
+    let all_lines: Vec<&str> = contents.lines().collect();
+
+    let start_idx = (start_line as usize).saturating_sub(1);
+    let end_idx = (end_line as usize).min(all_lines.len());
+    if start_idx >= all_lines.len() {
+        return None;
+    }
+
+    let mut html = String::new();
+    for (i, line_text) in all_lines[start_idx..end_idx].iter().enumerate() {
+        let lineno = start_line + i as u32;
+        let cls = if covered.contains(&lineno) { "covered" } else { "uncovered" };
+        html.push_str(&format!(
+            r#"<div class="src-line {cls}"><span class="src-ln {cls}">{lineno}</span><span class="src-text">{}</span></div>"#,
+            html_escape(line_text)
+        ));
+    }
+    Some(html)
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +160,8 @@ pub(crate) struct ExploreFnTemplate<'a> {
     pub lines_covered: usize,
     pub total_lines: u32,
     pub paths: Vec<PathEntry>,
+    /// Pre-rendered source code block HTML, or `None` if source is unavailable.
+    pub source_code_html: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +208,15 @@ pub fn render_explore_page(
 
 /// Render the HTML `<details>` fragment for a single explored function.
 ///
+/// `project_root` is used to resolve relative file paths in `location`.
+/// Passing `None` falls back to treating `file_path` as an absolute path.
+///
 /// This is the Askama-backed implementation called by `report::render_explore_fn_html`.
-pub fn render_explore_fn(result: &ObservationOutput, location: &str) -> String {
+pub fn render_explore_fn(
+    result: &ObservationOutput,
+    location: &str,
+    project_root: Option<&Path>,
+) -> String {
     let cov_pct = if result.total_lines > 0 {
         (result.lines_covered as f64 / result.total_lines as f64 * 100.0).min(100.0)
     } else {
@@ -166,6 +234,16 @@ pub fn render_explore_fn(result: &ObservationOutput, location: &str) -> String {
         })
         .collect();
 
+    // Build source block: parse location, aggregate covered lines, render.
+    let source_code_html = parse_location(location).and_then(|(file_path, start_line, end_line)| {
+        let covered: HashSet<u32> = result
+            .new_path_executions
+            .iter()
+            .flat_map(|exec| exec.lines_executed.iter().copied())
+            .collect();
+        render_source_block(file_path, project_root, start_line, end_line, &covered)
+    });
+
     let tmpl = ExploreFnTemplate {
         fn_name: &result.function_name,
         location,
@@ -175,6 +253,7 @@ pub fn render_explore_fn(result: &ObservationOutput, location: &str) -> String {
         lines_covered: result.lines_covered,
         total_lines: result.total_lines,
         paths,
+        source_code_html,
     };
 
     tmpl.render().expect("ExploreFnTemplate rendering failed")
@@ -204,6 +283,8 @@ pub(crate) struct ScanFnView {
     pub discovered_inputs: Vec<PathEntry>,
     /// Pre-rendered mocks line (`Mocks: name1, name2`), or `None` if no mocks.
     pub mocks_html: Option<String>,
+    /// Pre-rendered source code block HTML, or `None` if source is unavailable.
+    pub source_code_html: Option<String>,
 }
 
 /// View model for a skipped function entry.
@@ -260,9 +341,12 @@ fn format_discovered_input(inp: &DiscoveredInput) -> PathEntry {
 
 /// Render the full scan report HTML page from a `ScanReport`.
 ///
+/// `project_root` is used to resolve relative file paths when reading source
+/// files. Passing `None` treats file paths as absolute.
+///
 /// This is the Askama-backed implementation called by
 /// `report::generate_html_scan_report`.
-pub fn render_scan_report(report: &ScanReport) -> String {
+pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> String {
     let total_fn = report.codebase.total_functions;
     let total_paths: usize = report.functions.iter().map(|f| f.branches_covered).sum();
     let skipped_count = report.codebase.skipped_functions.len();
@@ -291,6 +375,20 @@ pub fn render_scan_report(report: &ScanReport) -> String {
                 Some(escaped.join(", "))
             };
 
+            // Aggregate all covered lines across every discovered input.
+            let covered: HashSet<u32> = f
+                .discovered_inputs
+                .iter()
+                .flat_map(|inp| inp.lines_executed.iter().copied())
+                .collect();
+
+            // Infer start_line from the minimum covered line number (the
+            // function's first line is always executed when it is called).
+            let source_code_html = covered.iter().copied().min().and_then(|start_line| {
+                let end_line = start_line + f.total_lines.saturating_sub(1);
+                render_source_block(&f.file_path, project_root, start_line, end_line, &covered)
+            });
+
             ScanFnView {
                 fn_name: html_escape(&f.function_name),
                 file_path: html_escape(&f.file_path),
@@ -301,6 +399,7 @@ pub fn render_scan_report(report: &ScanReport) -> String {
                 total_lines: f.total_lines,
                 discovered_inputs,
                 mocks_html,
+                source_code_html,
             }
         })
         .collect();

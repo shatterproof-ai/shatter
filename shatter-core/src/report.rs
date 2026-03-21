@@ -413,10 +413,17 @@ pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<P
 
 /// Render the HTML section for a single explored function.
 ///
+/// `project_root` is used to resolve relative source file paths so the source
+/// code block can be populated. Pass `None` to skip source code display.
+///
 /// Returns an HTML fragment (a `<details>` block) ready to embed in a full page.
 #[must_use]
-pub fn render_explore_fn_html(result: &ObservationOutput, location: &str) -> String {
-    crate::html_templates::render_explore_fn(result, location)
+pub fn render_explore_fn_html(
+    result: &ObservationOutput,
+    location: &str,
+    project_root: Option<&std::path::Path>,
+) -> String {
+    crate::html_templates::render_explore_fn(result, location, project_root)
 }
 
 /// Wrap exploration HTML fragments into a complete, self-contained HTML page.
@@ -440,23 +447,36 @@ pub fn wrap_explore_html(
 }
 
 /// Generate a self-contained HTML report for a [`ScanReport`].
+///
+/// `project_root` is used to resolve relative source file paths for the source
+/// code display. Pass `None` to skip source code display.
 #[must_use]
-pub fn generate_html_scan_report(report: &ScanReport) -> String {
-    crate::html_templates::render_scan_report(report)
+pub fn generate_html_scan_report(
+    report: &ScanReport,
+    project_root: Option<&Path>,
+) -> String {
+    crate::html_templates::render_scan_report(report, project_root)
 }
 
 /// Write a self-contained HTML scan report to a directory.
 ///
 /// Creates the output directory if it does not exist. Writes to
 /// `<output_dir>/scan-report.html`.
-pub fn write_html_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+///
+/// `project_root` is forwarded to [`generate_html_scan_report`] for source
+/// code display. Pass `None` to skip source code display.
+pub fn write_html_report(
+    report: &ScanReport,
+    output_dir: &Path,
+    project_root: Option<&Path>,
+) -> Result<PathBuf, ReportError> {
     std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
         path: output_dir.to_path_buf(),
         source: e,
     })?;
 
     let report_path = output_dir.join("scan-report.html");
-    let html = generate_html_scan_report(report);
+    let html = generate_html_scan_report(report, project_root);
     std::fs::write(&report_path, html).map_err(|e| ReportError::Io {
         path: report_path.clone(),
         source: e,
@@ -1517,7 +1537,7 @@ mod tests {
     #[test]
     fn html_scan_report_is_valid_structure() {
         let report = make_report_with_functions();
-        let html = generate_html_scan_report(&report);
+        let html = generate_html_scan_report(&report, None);
         assert!(html.starts_with("<!DOCTYPE html>"), "must start with doctype");
         assert!(html.contains("<html"), "must have html tag");
         assert!(html.contains("</html>"), "must close html tag");
@@ -1527,7 +1547,7 @@ mod tests {
     #[test]
     fn html_scan_report_contains_function_names() {
         let report = make_report_with_functions();
-        let html = generate_html_scan_report(&report);
+        let html = generate_html_scan_report(&report, None);
         // make_report_with_functions produces functions named "leaf" and "caller"
         assert!(html.contains("leaf"), "must contain function leaf");
         assert!(html.contains("caller"), "must contain function caller");
@@ -1536,7 +1556,7 @@ mod tests {
     #[test]
     fn html_scan_report_contains_coverage_metrics() {
         let report = make_report_with_functions();
-        let html = generate_html_scan_report(&report);
+        let html = generate_html_scan_report(&report, None);
         // Must show coverage bar (cov-bar class)
         assert!(html.contains("cov-bar"), "must contain coverage bar");
         // Must show some percentage
@@ -1569,7 +1589,7 @@ mod tests {
         let mut file_map = HashMap::new();
         file_map.insert("fn<test>&\"".to_string(), "src/test.ts".to_string());
         let report = generate_report(&parallel_result, &file_map, None);
-        let html = generate_html_scan_report(&report);
+        let html = generate_html_scan_report(&report, None);
 
         // Raw special chars must not appear unescaped in HTML
         assert!(!html.contains("<test>"), "angle brackets must be escaped");
@@ -1609,7 +1629,7 @@ mod tests {
             mcdc_summary: None,
             shrink_stats: crate::shrink::ShrinkStats::default(),
         };
-        let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10");
+        let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
         assert!(fragment.contains("myFunc"), "must contain function name");
         assert!(fragment.contains("cov-bar"), "must contain coverage bar");
         assert!(fragment.contains("<details>"), "must use details element");

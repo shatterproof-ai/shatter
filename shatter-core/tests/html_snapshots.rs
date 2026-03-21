@@ -228,7 +228,8 @@ fn snapshot_explore_fn_html() {
     use shatter_core::report::render_explore_fn_html;
 
     let result = make_observation_output();
-    let html = render_explore_fn_html(&result, "src/foo.ts:1-10");
+    // No project_root: source block is skipped gracefully.
+    let html = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
 
     assert!(!html.is_empty(), "render_explore_fn_html must not return empty string");
     assert_snapshot(&snapshot_path("explore_fn.html"), &html);
@@ -240,7 +241,7 @@ fn snapshot_explore_page_html() {
     let result = make_observation_output();
     let fragment = {
         use shatter_core::report::render_explore_fn_html;
-        render_explore_fn_html(&result, "src/foo.ts:1-10")
+        render_explore_fn_html(&result, "src/foo.ts:1-10", None)
     };
 
     let html = wrap_explore_html(&[fragment], 1, 2, 5, 8);
@@ -254,9 +255,41 @@ fn snapshot_explore_page_html() {
 #[test]
 fn snapshot_scan_report_html() {
     let report = make_scan_report();
-    let html = generate_html_scan_report(&report);
+    // No project_root: source block is skipped gracefully.
+    let html = generate_html_scan_report(&report, None);
 
     assert!(!html.is_empty(), "generate_html_scan_report must not return empty string");
     assert!(html.starts_with("<!DOCTYPE html>"), "must be a full HTML page");
     assert_snapshot(&snapshot_path("scan_report.html"), &html);
+}
+
+/// Source code block appears when a readable source file and valid location are provided.
+#[test]
+fn source_block_rendered_when_project_root_provided() {
+    use shatter_core::report::render_explore_fn_html;
+
+    // Write a temporary source file with 5 lines.
+    let dir = std::env::temp_dir().join("shatter_html_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("target.ts"),
+        "function add(a, b) {\n  if (a < 0) {\n    return 0;\n  }\n  return a + b;\n}\n",
+    )
+    .unwrap();
+
+    let mut result = make_observation_output();
+    // Use line numbers matching the 5-line file (1-based).
+    result.new_path_executions[0].lines_executed = vec![1, 2, 5];
+    result.new_path_executions[1].lines_executed = vec![1, 2, 3];
+
+    let location = "src/target.ts:1-5";
+    let html = render_explore_fn_html(&result, location, Some(&dir));
+
+    assert!(html.contains("src-block"), "source block div must appear");
+    assert!(html.contains("src-line covered"), "covered lines must appear");
+    assert!(html.contains("src-line uncovered"), "uncovered lines must appear");
+    assert!(html.contains("return a + b"), "source text must appear");
+    assert!(html.contains("&lt;"), "source text must be HTML-escaped");
 }
