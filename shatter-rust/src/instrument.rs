@@ -101,7 +101,7 @@ pub fn instrument_source_with_timing(
         parse_file(source).map_err(|e| InstrumentError::ParseError(e.to_string()))?
     };
 
-    let (output, branch_count) = if let Some(timing) = timing.as_deref_mut() {
+    let (output, branch_count) = if let Some(timing) = timing.as_mut() {
         timing.record("instrument.transform", |_| {
             let mut visitor = Instrumentor::new(function_name);
             visitor.visit_file_mut(&mut syntax);
