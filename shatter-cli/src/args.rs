@@ -620,6 +620,11 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         emit_tests: Option<String>,
 
+        /// Output directory for generated test files (used with --emit-tests).
+        /// Defaults to the current directory if not specified.
+        #[arg(long)]
+        tests_dir: Option<PathBuf>,
+
         /// Show what would be scanned without executing.
         #[arg(long)]
         dry_run: bool,

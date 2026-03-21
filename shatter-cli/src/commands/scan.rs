@@ -45,6 +45,7 @@ pub(crate) async fn run_scan(
     format: crate::args::StdoutFormat,
     progress: bool,
     emit_tests: Option<&str>,
+    tests_dir: Option<&Path>,
     dry_run: bool,
     resume: Option<&Path>,
     mock_config: Option<&Path>,
@@ -683,15 +684,11 @@ pub(crate) async fn run_scan(
 
             // Emit test files if --emit-tests was specified.
             if let Some(framework) = emit_tests {
-                // Use first output file's parent dir, or cwd, for emitted test files.
-                let tests_dir = outputs
-                    .first()
-                    .and_then(|p| p.parent())
-                    .filter(|p| !p.as_os_str().is_empty())
+                let resolved_tests_dir = tests_dir
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("."));
 
-                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &tests_dir) {
+                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &resolved_tests_dir) {
                     log::error!("Failed to emit test files: {e}");
                 }
             }
