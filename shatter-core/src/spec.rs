@@ -563,6 +563,18 @@ pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde
     serde_json::to_string_pretty(bundles)
 }
 
+/// Format the spec as machine-readable YAML.
+///
+/// Returns a `Result` because serialization can theoretically fail.
+pub fn format_spec_yaml(spec: &FunctionSpec) -> Result<String, serde_yaml::Error> {
+    serde_yaml::to_string(spec)
+}
+
+/// Format a collection of per-file spec bundles as machine-readable YAML.
+pub fn format_file_spec_yaml(bundles: &[FileSpecBundle]) -> Result<String, serde_yaml::Error> {
+    serde_yaml::to_string(bundles)
+}
+
 /// Write a [`FileSpecBundle`] to disk using atomic write (temp file + rename).
 ///
 /// Creates parent directories if they don't exist. Writes to a `.json.tmp`

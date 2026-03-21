@@ -4,6 +4,7 @@ pub(crate) mod diff;
 pub(crate) mod explore;
 pub(crate) mod export;
 pub(crate) mod observe;
+pub(crate) mod properties;
 pub(crate) mod revalidate;
 pub(crate) mod run;
 pub(crate) mod scan;

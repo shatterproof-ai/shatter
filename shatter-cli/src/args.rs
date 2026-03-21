@@ -794,6 +794,52 @@ pub(crate) enum CliCommand {
         memory_limit: Option<u64>,
     },
 
+    /// Discover and export behavioral properties and invariants as a YAML spec.
+    ///
+    /// Runs analysis and exploration on the given targets to discover invariants,
+    /// then outputs the behavioral spec enriched with property descriptions.
+    Properties {
+        /// Target files or functions (e.g. src/math.ts or src/math.ts:add).
+        #[arg(required = true)]
+        targets: Vec<String>,
+
+        /// Write output to FILE instead of stdout.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Output format (currently only 'yaml' is supported).
+        #[arg(long, default_value = "yaml")]
+        format: String,
+
+        /// Maximum exploration iterations per function.
+        #[arg(long, default_value_t = 100)]
+        max_iterations: u32,
+
+        /// Overall timeout in seconds.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+
+        /// Path to a scope configuration YAML file.
+        #[arg(long)]
+        scope: Option<PathBuf>,
+
+        /// Per-request timeout in seconds (how long to wait for a single frontend response).
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation in the frontend.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds for compiling instrumented code in the frontend.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+
+        /// Memory limit in MB for the frontend process.
+        #[arg(long)]
+        memory_limit: Option<u64>,
+    },
+
     /// Discover, analyze, and explore an entire repository in one shot.
     ///
     /// Accepts a local directory path, discovers all supported source files,
