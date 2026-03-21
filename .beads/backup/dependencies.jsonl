@@ -355,6 +355,7 @@
 {"created_at":"2026-03-20T21:07:50Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-heiu","issue_id":"str-9iq8","type":"blocks"}
 {"created_at":"2026-03-04T15:03:50Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-5jx8","issue_id":"str-9k6s","type":"blocks"}
 {"created_at":"2026-03-04T15:04:12Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-7stb","issue_id":"str-9k6s","type":"parent-child"}
+{"created_at":"2026-03-21T08:21:54Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-28ea.10","issue_id":"str-9u7n","type":"discovered-from"}
 {"created_at":"2026-02-26T21:22:39Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-7vs","issue_id":"str-9w8","type":"blocks"}
 {"created_at":"2026-03-01T22:36:32Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-mgi","issue_id":"str-a7s","type":"blocks"}
 {"created_at":"2026-03-03T17:07:41Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-62wg","issue_id":"str-am8f","type":"blocks"}

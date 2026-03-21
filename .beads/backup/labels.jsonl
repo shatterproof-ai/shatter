@@ -438,6 +438,10 @@
 {"issue_id":"str-9iq8","label":"report"}
 {"issue_id":"str-9iq8","label":"rust"}
 {"issue_id":"str-9pjd","label":"docs"}
+{"issue_id":"str-9u7n","label":"frontend"}
+{"issue_id":"str-9u7n","label":"go"}
+{"issue_id":"str-9u7n","label":"perf"}
+{"issue_id":"str-9u7n","label":"rust"}
 {"issue_id":"str-b431","label":"go"}
 {"issue_id":"str-b431","label":"protocol"}
 {"issue_id":"str-b431","label":"ts"}
