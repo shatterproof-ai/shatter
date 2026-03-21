@@ -51,8 +51,12 @@ if [[ -t 1 ]]; then
     YELLOW=$'\033[33m'
     RED=$'\033[31m'
     RESET=$'\033[0m'
+    # Force color in shatter commands — stdout goes through tee for error
+    # capture, which breaks TTY detection in the child process.
+    SHATTER_COLOR="always"
 else
     BOLD="" DIM="" GREEN="" CYAN="" YELLOW="" RED="" RESET=""
+    SHATTER_COLOR="never"
 fi
 
 if [[ -n "${SHATTER_BIN:-}" ]]; then
@@ -134,6 +138,11 @@ run_cmd() {
     local wants_timing=false
     local latest_timing_file=""
     local cmd=("$@")
+    # Inject --color flag so termimad renders markdown even though stdout is
+    # piped through tee (which hides the real TTY from the child process).
+    if [[ ${#cmd[@]} -ge 2 && "${cmd[0]}" == "$SHATTER" ]]; then
+        cmd=("$SHATTER" --color "$SHATTER_COLOR" "${cmd[@]:1}")
+    fi
     if [[ -n "$TIMING_DIR" && ${#cmd[@]} -ge 2 && "${cmd[0]}" == "$SHATTER" ]]; then
         mkdir -p "$TIMING_DIR"
         cmd=("$SHATTER" --timing summary --timing-format json --timing-output-dir "$TIMING_DIR" "${cmd[@]:1}")
