@@ -518,44 +518,13 @@ pub fn wrap_explore_html(
     total_covered: usize,
     total_lines: u32,
 ) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-
-    let cov_pct = if total_lines > 0 {
-        (total_covered as f64 / total_lines as f64 * 100.0).min(100.0)
-    } else {
-        0.0
-    };
-    let cov_bar = render_cov_bar(cov_pct);
-
-    let _ = write!(
-        out,
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shatter Explore Report</title>
-<style>{css}</style>
-</head>
-<body>
-<h1>Shatter Explore Report</h1>
-<div class="stat-row">
-  <div class="stat"><div class="stat-label">Functions</div><div class="stat-value">{fn_count}</div></div>
-  <div class="stat"><div class="stat-label">Paths</div><div class="stat-value">{total_paths}</div></div>
-  <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{cov_bar}</div></div>
-</div>
-<h2>Functions</h2>
-"#,
-        css = HTML_CSS,
-    );
-
-    for fragment in fragments {
-        out.push_str(fragment);
-    }
-
-    out.push_str("</body>\n</html>\n");
-    out
+    crate::html_templates::render_explore_page(
+        fragments,
+        fn_count,
+        total_paths,
+        total_covered,
+        total_lines,
+    )
 }
 
 /// Generate a self-contained HTML report for a [`ScanReport`].

@@ -96,6 +96,48 @@ pub(crate) struct ExploreFnTemplate<'a> {
     pub paths: Vec<PathEntry>,
 }
 
+// ---------------------------------------------------------------------------
+// Explore page template
+// ---------------------------------------------------------------------------
+
+/// Askama template for the full explore report HTML page.
+#[derive(Template)]
+#[template(path = "explore_page.html")]
+pub(crate) struct ExplorePageTemplate<'a> {
+    pub fn_count: usize,
+    pub total_paths: usize,
+    /// Pre-rendered coverage bar HTML (HTML-safe).
+    pub cov_bar_html: String,
+    /// Pre-rendered `<details>` fragments (HTML-safe).
+    pub fragments: &'a [String],
+}
+
+/// Render a full explore report HTML page from fragments and summary stats.
+///
+/// This is the Askama-backed implementation called by `report::wrap_explore_html`.
+pub fn render_explore_page(
+    fragments: &[String],
+    fn_count: usize,
+    total_paths: usize,
+    total_covered: usize,
+    total_lines: u32,
+) -> String {
+    let cov_pct = if total_lines > 0 {
+        (total_covered as f64 / total_lines as f64 * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+
+    let tmpl = ExplorePageTemplate {
+        fn_count,
+        total_paths,
+        cov_bar_html: render_cov_bar(cov_pct),
+        fragments,
+    };
+
+    tmpl.render().expect("ExplorePageTemplate rendering failed")
+}
+
 /// Render the HTML `<details>` fragment for a single explored function.
 ///
 /// This is the Askama-backed implementation called by `report::render_explore_fn_html`.
