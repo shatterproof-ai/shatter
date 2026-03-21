@@ -607,6 +607,7 @@ pub(crate) async fn run_explore(
                         html_fragments.push(shatter_core::report::render_explore_fn_html(
                             &result,
                             &location,
+                            project_root_str.as_deref().map(std::path::Path::new),
                         ));
                     }
 

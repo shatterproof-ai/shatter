@@ -54,3 +54,14 @@ details[open] .summary-arrow { transform: rotate(90deg); }
 .skipped-list li { padding: 6px 0; border-bottom: 1px solid #f3f4f6;
                    font-size: 13px; color: #6b7280; }
 .skipped-list li:last-child { border-bottom: none; }
+.src-block { margin: 12px 0; border-radius: 6px; overflow: hidden;
+             border: 1px solid #e5e7eb;
+             font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
+.src-line { display: flex; }
+.src-line.covered { background: #f0fdf4; }
+.src-line.uncovered { background: #fff; }
+.src-ln { min-width: 40px; padding: 1px 8px; color: #9ca3af; text-align: right;
+          border-right: 1px solid #e5e7eb; user-select: none; flex-shrink: 0; }
+.src-ln.covered { color: #16a34a; }
+.src-ln.uncovered { color: #d1d5db; }
+.src-text { padding: 1px 8px 1px 12px; white-space: pre; flex: 1; overflow-x: auto; }

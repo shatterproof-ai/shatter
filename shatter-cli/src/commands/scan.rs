@@ -648,7 +648,7 @@ pub(crate) async fn run_scan(
                             }
                         }
                     }
-                    Ok(crate::args::StdoutFormat::Html) => report::generate_html_scan_report(&scan_report),
+                    Ok(crate::args::StdoutFormat::Html) => report::generate_html_scan_report(&scan_report, project_root_str.as_deref().map(std::path::Path::new)),
                     Ok(crate::args::StdoutFormat::Text) => report::format_text_report(&scan_report),
                     Err(e) => {
                         log::error!("{e}");
@@ -676,7 +676,7 @@ pub(crate) async fn run_scan(
                         serde_json::to_string_pretty(&scan_report)
                             .unwrap_or_else(|e| format!("{{\"error\": \"failed to serialize report: {e}\"}}"))
                     }
-                    crate::args::StdoutFormat::Html => report::generate_html_scan_report(&scan_report),
+                    crate::args::StdoutFormat::Html => report::generate_html_scan_report(&scan_report, project_root_str.as_deref().map(std::path::Path::new)),
                     crate::args::StdoutFormat::Text => report::format_text_report(&scan_report),
                 };
                 print_markdown(&content, use_color);
