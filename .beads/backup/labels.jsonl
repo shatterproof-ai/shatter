@@ -516,6 +516,9 @@
 {"issue_id":"str-fyu8","label":"cli"}
 {"issue_id":"str-fyu8","label":"walkthrough"}
 {"issue_id":"str-h3zb","label":"docs"}
+{"issue_id":"str-heiu","label":"core"}
+{"issue_id":"str-heiu","label":"report"}
+{"issue_id":"str-heiu","label":"rust"}
 {"issue_id":"str-iitm","label":"build"}
 {"issue_id":"str-iitm","label":"infra"}
 {"issue_id":"str-in8d","label":"loop-analysis"}
