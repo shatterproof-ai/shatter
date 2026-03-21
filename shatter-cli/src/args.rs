@@ -1102,6 +1102,12 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         action: TelemetryAction,
     },
+
+    /// Manage the on-disk shatter cache.
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
 }
 
 /// Sub-subcommands for `shatter telemetry`.
@@ -1115,6 +1121,23 @@ pub(crate) enum TelemetryAction {
     On,
     /// Regenerate the anonymous ID.
     ResetId,
+}
+
+/// Sub-subcommands for `shatter cache`.
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum CacheAction {
+    /// Clear cached analysis and/or exploration results.
+    ///
+    /// Clears both analysis cache and results cache when no flags are given.
+    Clear {
+        /// Clear only the analysis cache (`.shatter/cache/analysis/`).
+        #[arg(long)]
+        analysis: bool,
+
+        /// Clear only the results cache (`.shatter/cache/`).
+        #[arg(long)]
+        results: bool,
+    },
 }
 
 /// A parsed target: `<file>:<function>` for a single function, or `<file>` for all.

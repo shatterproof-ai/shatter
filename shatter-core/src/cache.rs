@@ -197,6 +197,21 @@ impl BehaviorMapCache {
         Ok(maps)
     }
 
+    /// Remove all cached behavior map and spec entries.
+    ///
+    /// Returns `(file_count, bytes_freed)` describing what was removed.
+    /// Returns `(0, 0)` if the cache directory does not exist.
+    pub fn clear(&self) -> Result<(u64, u64), CacheError> {
+        if !self.cache_dir.exists() {
+            return Ok((0, 0));
+        }
+        let (file_count, bytes) =
+            crate::analysis_cache::count_dir_contents(&self.cache_dir)?;
+        fs::remove_dir_all(&self.cache_dir)?;
+        fs::create_dir_all(&self.cache_dir)?;
+        Ok((file_count, bytes))
+    }
+
     /// Default cache directory relative to a project root: `<project_root>/.shatter/cache/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
         project_root.join(".shatter").join("cache")

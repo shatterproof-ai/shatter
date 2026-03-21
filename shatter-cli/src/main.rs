@@ -659,6 +659,22 @@ async fn main() -> ExitCode {
                 }
             };
         }
+        CliCommand::Cache { action } => {
+            let dm = cmd_start.elapsed().as_millis() as u64;
+            let result = std::env::current_dir()
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+                .and_then(|project_root| {
+                    commands::cache::run_cache_clear_from_action(&action, &project_root)
+                });
+            return match result {
+                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    queue_command_error_event(&subcommand_name, &*e);
+                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+                }
+            };
+        }
     };
 
     let duration_ms = cmd_start.elapsed().as_millis() as u64;

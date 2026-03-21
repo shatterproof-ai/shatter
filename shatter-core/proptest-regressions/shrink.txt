@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 69c45c7550ed4f6a8ae9c7c812caab2551718d7639feea65c1230ca9ddfa7e2f # shrinks to x = 0, s = "", z = 0, group_size = 1
+cc e14071fe18073de3e9cbfda0d0a4ad517823c34df3f37b13b8314a81a8c72931 # shrinks to x = 0, s = ""

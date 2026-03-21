@@ -286,7 +286,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=52
+TOTAL=53
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -588,6 +588,11 @@ step 52 $TOTAL "Explore with Side-Effect Capture" \
 step 52 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
+
+# Stage 53: Cache clear
+step 53 $TOTAL "Cache Clear" \
+    "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
+    $SHATTER cache clear
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then

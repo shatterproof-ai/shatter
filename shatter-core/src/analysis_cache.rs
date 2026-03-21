@@ -114,12 +114,17 @@ impl AnalysisCache {
     }
 
     /// Remove all cached analysis entries.
-    pub fn clear(&self) -> Result<(), CacheError> {
-        if self.cache_dir.exists() {
-            fs::remove_dir_all(&self.cache_dir)?;
-            fs::create_dir_all(&self.cache_dir)?;
+    ///
+    /// Returns `(file_count, bytes_freed)` describing what was removed.
+    /// Returns `(0, 0)` if the cache directory does not exist.
+    pub fn clear(&self) -> Result<(u64, u64), CacheError> {
+        if !self.cache_dir.exists() {
+            return Ok((0, 0));
         }
-        Ok(())
+        let (file_count, bytes) = count_dir_contents(&self.cache_dir)?;
+        fs::remove_dir_all(&self.cache_dir)?;
+        fs::create_dir_all(&self.cache_dir)?;
+        Ok((file_count, bytes))
     }
 
     /// Default analysis cache directory: `<project_root>/.shatter/cache/analysis/`.
@@ -139,6 +144,31 @@ impl AnalysisCache {
         let hash = hex_sha256(path_str.as_bytes());
         self.cache_dir.join(format!("{hash}.json"))
     }
+}
+
+/// Walk a directory tree and count all files and their total size in bytes.
+///
+/// Returns `(file_count, total_bytes)`. Ignores unreadable entries.
+pub(crate) fn count_dir_contents(dir: &std::path::Path) -> Result<(u64, u64), CacheError> {
+    let mut file_count: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                file_count += 1;
+                total_bytes += fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    Ok((file_count, total_bytes))
 }
 
 /// Compute hex-encoded SHA-256 of a byte slice.
@@ -316,7 +346,8 @@ mod tests {
         assert!(cache.lookup(&src1).unwrap().is_some());
         assert!(cache.lookup(&src2).unwrap().is_some());
 
-        cache.clear().unwrap();
+        let (file_count, _bytes) = cache.clear().unwrap();
+        assert_eq!(file_count, 2);
 
         assert!(cache.lookup(&src1).unwrap().is_none());
         assert!(cache.lookup(&src2).unwrap().is_none());
