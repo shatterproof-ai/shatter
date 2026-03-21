@@ -454,13 +454,13 @@ step 28 $TOTAL "Explore Without Boundary Values" \
 # Stage 28: Emit tests from scan
 step 29 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
-    $SHATTER scan --emit-tests jest --output /tmp/shatter-demo-tests \
+    $SHATTER scan --emit-tests jest --tests-dir /tmp/shatter-demo-tests \
     examples/standalone/ts
 
 # Stage 29: Markdown scan report
 step 30 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan --report-format=markdown examples/standalone/ts
+    $SHATTER scan -o /tmp/shatter-scan-report.md examples/standalone/ts
 
 # Stage 30: Scan dry-run
 step 31 $TOTAL "Scan Dry Run" \
@@ -572,12 +572,12 @@ step 49 $TOTAL "Specify from Observation" \
 # Stage 49: HTML explore report
 step 50 $TOTAL "HTML Explore Report" \
     "Generate a self-contained HTML report for exploration results" \
-    $SHATTER explore --report-file /tmp/shatter-explore-report.html "${EXAMPLES[0]}"
+    $SHATTER explore -o /tmp/shatter-explore-report.html "${EXAMPLES[0]}"
 
 # Stage 50: HTML scan report
 step 51 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
-    $SHATTER scan --report-format=html --output /tmp/shatter-scan-html examples/standalone/ts
+    $SHATTER scan -o /tmp/shatter-scan-report.html examples/standalone/ts
 
 # Stage 51: Side-effect capture
 step 52 $TOTAL "Explore with Side-Effect Capture" \
@@ -593,6 +593,7 @@ step 52 $TOTAL "Properties Export" \
 step 53 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
+
 
 # ─── Error Summary ────────────────────────────────────────────────────
 if [[ -s "$ERROR_LOG" ]]; then

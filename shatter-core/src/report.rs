@@ -485,6 +485,46 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
     out
 }
 
+/// Format a [`ScanReport`] as plain text (markdown with formatting stripped).
+#[must_use]
+pub fn format_text_report(report: &ScanReport) -> String {
+    let md = format_markdown_report(report);
+    strip_markdown_text(&md)
+}
+
+/// Strip markdown formatting syntax, returning plain text.
+///
+/// Removes heading markers, bold/italic markers, inline code backticks,
+/// table separator lines, and table cell delimiters.
+pub fn strip_markdown_text(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    for line in md.lines() {
+        // Strip heading markers
+        let line = line.trim_start_matches('#').trim_start();
+        // Strip bold/italic markers
+        let line = line.replace("**", "").replace('*', "");
+        // Strip inline code backticks
+        let line = line.replace('`', "");
+        // Skip table separator lines (e.g. |---|---|)
+        if line.chars().all(|c| matches!(c, '-' | '|' | ' ' | ':')) && line.contains('|') {
+            continue;
+        }
+        // Strip table cell delimiters: | col | col | → col  col
+        let line = if line.contains('|') {
+            line.split('|')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("  ")
+        } else {
+            line.to_string()
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
 fn write_md_header(out: &mut String, report: &ScanReport) {
     let _ = writeln!(out, "# Shatter Scan Report\n");
 

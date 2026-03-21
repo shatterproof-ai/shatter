@@ -371,7 +371,7 @@ step 28 $TOTAL "Emit Tests from Scan" \
 # Stage 29: Markdown scan report
 step 29 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    scan --format=markdown examples/standalone/ts
+    scan -o /tmp/shatter-scan-report.md examples/standalone/ts
 
 # Stage 30: Scan dry-run
 step 30 $TOTAL "Scan Dry Run" \

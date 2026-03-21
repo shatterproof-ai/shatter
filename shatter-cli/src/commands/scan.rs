@@ -40,10 +40,12 @@ pub(crate) async fn run_scan(
     parallelism: usize,
     timeout_per_fn: u64,
     timeout_explore: Option<f64>,
-    output_dir: Option<&Path>,
-    report_format_str: &str,
+    outputs: &[std::path::PathBuf],
+    stdout: bool,
+    format: crate::args::StdoutFormat,
     progress: bool,
     emit_tests: Option<&str>,
+    tests_dir: Option<&Path>,
     dry_run: bool,
     resume: Option<&Path>,
     mock_config: Option<&Path>,
@@ -70,10 +72,6 @@ pub(crate) async fn run_scan(
     } else {
         Some(std::path::PathBuf::from(directory).join(seeds_dir).join("pool.json"))
     };
-    let report_format: report::ReportFormat = report_format_str
-        .parse()
-        .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
-
     // Validate --emit-tests framework early.
     if let Some(framework) = emit_tests
         && framework != "jest" && framework != "vitest" && framework != "gotest"
@@ -578,6 +576,7 @@ pub(crate) async fn run_scan(
 
             // Record batch state and print cumulative progress.
             let batch_state = if let Some(batch_idx) = effective_batch_index {
+
                 let batch_state_path = PathBuf::from(directory)
                     .join(".shatter")
                     .join("batch-state.json");
@@ -630,53 +629,66 @@ pub(crate) async fn run_scan(
                 None
             };
 
-            let report_dir = output_dir
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("./shatter-report/"));
             let scan_report = report::generate_report(
                 &result,
                 &scan_config.file_map,
                 batch_state.as_ref(),
             );
 
-            match report_format {
-                report::ReportFormat::Json => {
-                    match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => log::info!("Wrote JSON report to {}", path.display()),
-                        Err(e) => log::error!("Failed to write JSON report: {e}"),
+            // Write to each -o file (format inferred from extension).
+            for path in outputs {
+                let content = match crate::args::infer_output_format(path) {
+                    Ok(crate::args::StdoutFormat::Markdown) => report::format_markdown_report(&scan_report),
+                    Ok(crate::args::StdoutFormat::Json) => {
+                        match serde_json::to_string_pretty(&scan_report) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log::error!("failed to serialize report: {e}");
+                                continue;
+                            }
+                        }
                     }
+                    Ok(crate::args::StdoutFormat::Html) => report::generate_html_scan_report(&scan_report),
+                    Ok(crate::args::StdoutFormat::Text) => report::format_text_report(&scan_report),
+                    Err(e) => {
+                        log::error!("{e}");
+                        continue;
+                    }
+                };
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    log::error!("failed to create output directory: {e}");
+                    continue;
                 }
-                report::ReportFormat::Markdown => {
-                    match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => log::info!("Wrote markdown report to {}", path.display()),
-                        Err(e) => log::error!("Failed to write markdown report: {e}"),
-                    }
+                match std::fs::write(path, &content) {
+                    Ok(()) => log::info!("Wrote report to {}", path.display()),
+                    Err(e) => log::error!("failed to write report to '{}': {e}", path.display()),
                 }
-                report::ReportFormat::Both => {
-                    match report::write_report(&scan_report, &report_dir) {
-                        Ok(path) => log::info!("Wrote JSON report to {}", path.display()),
-                        Err(e) => log::error!("Failed to write JSON report: {e}"),
+            }
+
+            // Write to stdout if no files given, or if --stdout is explicit.
+            if outputs.is_empty() || stdout {
+                let content = match format {
+                    crate::args::StdoutFormat::Markdown => report::format_markdown_report(&scan_report),
+                    crate::args::StdoutFormat::Json => {
+                        serde_json::to_string_pretty(&scan_report)
+                            .unwrap_or_else(|e| format!("{{\"error\": \"failed to serialize report: {e}\"}}"))
                     }
-                    match report::write_markdown_report(&scan_report, &report_dir) {
-                        Ok(path) => log::info!("Wrote markdown report to {}", path.display()),
-                        Err(e) => log::error!("Failed to write markdown report: {e}"),
-                    }
-                }
-                report::ReportFormat::Html => {
-                    match report::write_html_report(&scan_report, &report_dir) {
-                        Ok(path) => log::info!("Wrote HTML report to {}", path.display()),
-                        Err(e) => log::error!("Failed to write HTML report: {e}"),
-                    }
-                }
+                    crate::args::StdoutFormat::Html => report::generate_html_scan_report(&scan_report),
+                    crate::args::StdoutFormat::Text => report::format_text_report(&scan_report),
+                };
+                print_markdown(&content, use_color);
             }
 
             // Emit test files if --emit-tests was specified.
             if let Some(framework) = emit_tests {
-                let tests_dir = output_dir
+                let resolved_tests_dir = tests_dir
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| report_dir.clone());
+                    .unwrap_or_else(|| PathBuf::from("."));
 
-                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &tests_dir) {
+                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &resolved_tests_dir) {
                     log::error!("Failed to emit test files: {e}");
                 }
             }
