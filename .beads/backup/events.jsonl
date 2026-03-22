@@ -1690,3 +1690,8 @@
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-21T11:40:19Z","event_type":"closed","id":1809,"issue_id":"str-io5d","new_value":"Closed","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-21T20:16:55Z","event_type":"closed","id":1810,"issue_id":"str-rkvw","new_value":"Closed","old_value":""}
 {"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-21T21:01:18Z","event_type":"closed","id":1811,"issue_id":"str-lfn0","new_value":"Closed","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-22T09:59:44Z","event_type":"created","id":1812,"issue_id":"str-pf51","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-22T09:59:44Z","event_type":"label_added","id":1813,"issue_id":"str-pf51","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: perf","created_at":"2026-03-22T09:59:44Z","event_type":"label_added","id":1814,"issue_id":"str-pf51","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: rust","created_at":"2026-03-22T09:59:44Z","event_type":"label_added","id":1815,"issue_id":"str-pf51","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: go","created_at":"2026-03-22T09:59:44Z","event_type":"label_added","id":1816,"issue_id":"str-pf51","new_value":null,"old_value":null}
