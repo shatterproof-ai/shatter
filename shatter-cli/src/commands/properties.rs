@@ -123,6 +123,8 @@ pub(crate) async fn run_properties(
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: shatter_core::explorer::IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         };
 
         // Explore each function and build specs enriched with invariants

@@ -145,6 +145,15 @@ pub struct ExploreConfig {
     /// global state changes, etc.) per execution. Defaults to false for
     /// throughput — capture adds overhead on every execute call.
     pub capture_side_effects: bool,
+    /// Shared budget surplus for dynamic reallocation within a scan layer.
+    /// When `Some`, the explorer can claim additional iterations from the
+    /// surplus when its initial budget is exhausted but it's still finding
+    /// new paths. When `None` (default), the initial `max_iterations` is a
+    /// hard cap.
+    pub budget_surplus: Option<std::sync::Arc<crate::scan_orchestrator::BudgetSurplus>>,
+    /// Policy for claiming surplus budget. Only used when `budget_surplus` is
+    /// `Some`. Controls the minimum hit rate and maximum claim fraction.
+    pub claim_policy: crate::scan_orchestrator::ClaimPolicy,
 }
 
 /// Summary of a single function execution during exploration.
@@ -860,8 +869,46 @@ pub async fn explore_function(
     let mut pool_iter = config.pool_seeds.iter().take(pool_budget).cloned().peekable();
 
     let explore_start = Instant::now();
+    let mut effective_budget = config.max_iterations;
+    // Track recent path discoveries for surplus claim decisions.
+    // Ring buffer: true = new path, false = duplicate.
+    let claim_window = config.claim_policy.window as usize;
+    let mut recent_hits: Vec<bool> = Vec::with_capacity(claim_window);
 
-    for _ in 0..config.max_iterations {
+    loop {
+        if iterations >= effective_budget {
+            // Initial budget exhausted — try to claim surplus if still productive.
+            if let Some(ref surplus) = config.budget_surplus {
+                let recent_new = recent_hits
+                    .iter()
+                    .rev()
+                    .take(claim_window)
+                    .filter(|&&hit| hit)
+                    .count() as u32;
+                if config.claim_policy.should_claim(recent_new) {
+                    let chunk = (config.max_iterations / 4).max(1);
+                    let max_claimable = config.claim_policy.max_claimable(surplus.available());
+                    let requested = chunk.min(max_claimable);
+                    let claimed = surplus.try_claim(requested, 1);
+                    if claimed > 0 {
+                        effective_budget += claimed;
+                        log::debug!(
+                            "{}: claimed {} surplus iterations (budget now {})",
+                            analysis.name,
+                            claimed,
+                            effective_budget
+                        );
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
         if let Some(timeout) = config.timeout_explore
             && explore_start.elapsed() >= timeout
         {
@@ -984,6 +1031,14 @@ pub async fn explore_function(
         }
         if let Some(summary) = obs.execution_summary {
             new_path_executions.push(summary);
+        }
+
+        // Track recent path discovery rate for surplus claim decisions.
+        if config.budget_surplus.is_some() {
+            if recent_hits.len() >= claim_window && claim_window > 0 {
+                recent_hits.remove(0);
+            }
+            recent_hits.push(obs.is_new_path);
         }
 
         raw_results.push((inputs, iteration_mocks, obs.exec_result));
@@ -2314,6 +2369,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");
@@ -2342,6 +2399,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_function setup should succeed");
@@ -2370,6 +2429,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("per_execution setup should succeed");
@@ -2397,6 +2458,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed without setup capability");
@@ -2428,6 +2491,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("generators should succeed");
@@ -2455,6 +2520,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("no generators should succeed");
@@ -2481,6 +2548,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
@@ -2510,6 +2579,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
@@ -2551,6 +2622,8 @@ mod tests {
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("should succeed with noop frontend");

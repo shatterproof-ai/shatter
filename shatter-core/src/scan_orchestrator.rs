@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,114 @@ use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
+
+/// Shared budget surplus within a topological layer.
+///
+/// Functions that terminate early (worklist exhausted, coverage plateau, full
+/// branch coverage) donate their unused execution budget here. Functions still
+/// discovering new paths can claim from the surplus when their initial budget
+/// runs out.
+///
+/// Each layer gets a fresh `BudgetSurplus` — budget from layer N does not carry
+/// over to layer N+1.
+#[derive(Debug)]
+pub struct BudgetSurplus {
+    /// Remaining surplus executions available for claiming.
+    available: AtomicU32,
+}
+
+impl Default for BudgetSurplus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BudgetSurplus {
+    /// Create a new empty surplus (used at the start of each layer).
+    pub fn new() -> Self {
+        Self {
+            available: AtomicU32::new(0),
+        }
+    }
+
+    /// Donate unused budget to the shared surplus.
+    pub fn donate(&self, amount: u32) {
+        if amount > 0 {
+            self.available.fetch_add(amount, Ordering::Release);
+        }
+    }
+
+    /// Try to claim up to `requested` executions from the surplus.
+    ///
+    /// Returns the number actually claimed (may be less than requested if the
+    /// surplus is partially depleted, or 0 if less than `min_claim` is
+    /// available).
+    pub fn try_claim(&self, requested: u32, min_claim: u32) -> u32 {
+        let mut current = self.available.load(Ordering::Acquire);
+        loop {
+            if current < min_claim {
+                return 0;
+            }
+            let to_claim = current.min(requested);
+            match self.available.compare_exchange_weak(
+                current,
+                current - to_claim,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return to_claim,
+                Err(updated) => current = updated,
+            }
+        }
+    }
+
+    /// Current surplus available (for diagnostics/testing).
+    pub fn available(&self) -> u32 {
+        self.available.load(Ordering::Acquire)
+    }
+}
+
+/// Policy governing when a function may claim surplus budget.
+#[derive(Debug, Clone)]
+pub struct ClaimPolicy {
+    /// Minimum hit rate (new paths / last N executions) to qualify for claiming.
+    pub min_hit_rate: f64,
+    /// Window size for measuring recent hit rate.
+    pub window: u32,
+    /// Maximum fraction of total surplus a single function can claim at once.
+    pub max_claim_fraction: f64,
+}
+
+impl Default for ClaimPolicy {
+    fn default() -> Self {
+        Self {
+            min_hit_rate: 0.1,
+            window: 10,
+            max_claim_fraction: 0.5,
+        }
+    }
+}
+
+impl ClaimPolicy {
+    /// Determine whether a function should be allowed to claim surplus budget,
+    /// based on its recent exploration productivity.
+    ///
+    /// `recent_new_paths` is the number of new paths discovered in the last
+    /// `window` executions.
+    pub fn should_claim(&self, recent_new_paths: u32) -> bool {
+        if self.window == 0 {
+            return false;
+        }
+        let hit_rate = recent_new_paths as f64 / self.window as f64;
+        hit_rate >= self.min_hit_rate
+    }
+
+    /// Compute the maximum number of executions this function should claim,
+    /// given the current surplus.
+    pub fn max_claimable(&self, surplus_available: u32) -> u32 {
+        (surplus_available as f64 * self.max_claim_fraction).floor() as u32
+    }
+}
 
 /// Configuration for a scan run.
 #[derive(Debug, Clone)]
@@ -474,6 +582,8 @@ pub async fn scan(
             shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: config.isolation,
             capture_side_effects: config.capture_side_effects,
+            budget_surplus: None,
+            claim_policy: ClaimPolicy::default(),
         };
 
         let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
@@ -1162,6 +1272,8 @@ pub async fn parallel_scan(
         let mut tasks: Vec<ExploreTask> = Vec::new();
         // Track deep FPs computed in this layer (added after the layer completes).
         let mut layer_deep_fps: Vec<(String, String)> = Vec::new();
+        // Per-layer budget surplus: resets at each layer boundary.
+        let layer_surplus = Arc::new(BudgetSurplus::new());
 
         for func_name in layer {
             test_order.push(func_name.clone());
@@ -1308,6 +1420,8 @@ pub async fn parallel_scan(
                 shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation: config.isolation,
                 capture_side_effects: config.capture_side_effects,
+                budget_surplus: Some(Arc::clone(&layer_surplus)),
+                claim_policy: ClaimPolicy::default(),
             };
 
             tasks.push(ExploreTask {
@@ -1679,6 +1793,19 @@ async fn explore_single_function(
     input_pool: &Mutex<InterestingPool>,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
+
+    // Donate unused budget to the layer surplus so other functions can use it.
+    if let Some(ref surplus) = explore_config.budget_surplus {
+        let allocated = explore_config.max_iterations;
+        let used = exploration.iterations;
+        let unused = allocated.saturating_sub(used);
+        if unused > 0 {
+            surplus.donate(unused);
+            log::debug!(
+                "{func_name}: donated {unused} unused iterations to surplus (used {used}/{allocated})"
+            );
+        }
+    }
 
     // Harvest interesting inputs into the cross-function pool.
     {
@@ -4793,5 +4920,186 @@ mod tests {
         // Two distinct inputs → 2 behaviors in merged map.
         assert_eq!(merged.behavior_map.behaviors.len(), 2);
         assert_eq!(merged.exploration.iterations, 2);
+    }
+
+    // --- BudgetSurplus unit tests ---
+
+    #[test]
+    fn budget_surplus_donate_and_claim() {
+        let surplus = BudgetSurplus::new();
+        assert_eq!(surplus.available(), 0);
+
+        surplus.donate(50);
+        assert_eq!(surplus.available(), 50);
+
+        let claimed = surplus.try_claim(30, 1);
+        assert_eq!(claimed, 30);
+        assert_eq!(surplus.available(), 20);
+    }
+
+    #[test]
+    fn budget_surplus_claim_limited_by_available() {
+        let surplus = BudgetSurplus::new();
+        surplus.donate(10);
+
+        let claimed = surplus.try_claim(100, 1);
+        assert_eq!(claimed, 10);
+        assert_eq!(surplus.available(), 0);
+    }
+
+    #[test]
+    fn budget_surplus_claim_zero_when_below_min() {
+        let surplus = BudgetSurplus::new();
+        surplus.donate(3);
+
+        // min_claim is 5, but only 3 available → returns 0.
+        let claimed = surplus.try_claim(10, 5);
+        assert_eq!(claimed, 0);
+        assert_eq!(surplus.available(), 3);
+    }
+
+    #[test]
+    fn budget_surplus_multiple_donations() {
+        let surplus = BudgetSurplus::new();
+        surplus.donate(10);
+        surplus.donate(20);
+        surplus.donate(30);
+        assert_eq!(surplus.available(), 60);
+    }
+
+    #[test]
+    fn budget_surplus_donate_zero_is_noop() {
+        let surplus = BudgetSurplus::new();
+        surplus.donate(0);
+        assert_eq!(surplus.available(), 0);
+    }
+
+    #[test]
+    fn claim_policy_rejects_stalled_function() {
+        let policy = ClaimPolicy::default(); // min_hit_rate = 0.1, window = 10
+        // 0 new paths in 10 executions → hit rate 0.0 < 0.1
+        assert!(!policy.should_claim(0));
+    }
+
+    #[test]
+    fn claim_policy_accepts_productive_function() {
+        let policy = ClaimPolicy::default();
+        // 2 new paths in 10 executions → hit rate 0.2 >= 0.1
+        assert!(policy.should_claim(2));
+    }
+
+    #[test]
+    fn claim_policy_boundary_hit_rate() {
+        let policy = ClaimPolicy::default();
+        // 1 new path in 10 executions → hit rate 0.1 >= 0.1 (exactly at threshold)
+        assert!(policy.should_claim(1));
+    }
+
+    #[test]
+    fn claim_policy_max_claimable_caps_at_fraction() {
+        let policy = ClaimPolicy {
+            max_claim_fraction: 0.5,
+            ..ClaimPolicy::default()
+        };
+        assert_eq!(policy.max_claimable(100), 50);
+        assert_eq!(policy.max_claimable(0), 0);
+        assert_eq!(policy.max_claimable(1), 0); // floor(0.5) = 0
+    }
+
+    #[test]
+    fn claim_policy_zero_window_always_rejects() {
+        let policy = ClaimPolicy {
+            window: 0,
+            ..ClaimPolicy::default()
+        };
+        assert!(!policy.should_claim(5));
+    }
+
+    #[test]
+    fn budget_surplus_layer_boundary_reset() {
+        // Each layer creates a new BudgetSurplus — verify they're independent.
+        let layer0 = BudgetSurplus::new();
+        layer0.donate(100);
+
+        let layer1 = BudgetSurplus::new();
+        assert_eq!(layer1.available(), 0);
+        // layer0's surplus is not visible to layer1.
+        assert_eq!(layer0.available(), 100);
+    }
+
+    // --- BudgetSurplus property tests ---
+
+    mod budget_surplus_props {
+        use super::*;
+        use proptest::prelude::*;
+        use std::sync::Arc;
+
+        proptest! {
+            #[test]
+            fn surplus_conservation(
+                donations in proptest::collection::vec(0u32..1000, 1..20),
+                claims in proptest::collection::vec((1u32..500, 1u32..10), 1..20),
+            ) {
+                let surplus = BudgetSurplus::new();
+                let total_donated: u64 = donations.iter().map(|&d| d as u64).sum();
+
+                for d in &donations {
+                    surplus.donate(*d);
+                }
+
+                let mut total_claimed: u64 = 0;
+                for (requested, min_claim) in &claims {
+                    let claimed = surplus.try_claim(*requested, *min_claim);
+                    total_claimed += claimed as u64;
+                }
+
+                // Total claimed never exceeds total donated.
+                prop_assert!(total_claimed <= total_donated);
+                // Remaining + claimed = donated.
+                prop_assert_eq!(surplus.available() as u64 + total_claimed, total_donated);
+            }
+
+            #[test]
+            fn concurrent_claims_never_exceed_donated(
+                donated in 10u32..10000,
+                num_claimers in 2usize..8,
+            ) {
+                let surplus = Arc::new(BudgetSurplus::new());
+                surplus.donate(donated);
+
+                let mut handles = Vec::new();
+                for _ in 0..num_claimers {
+                    let s = Arc::clone(&surplus);
+                    handles.push(std::thread::spawn(move || {
+                        let mut total = 0u64;
+                        // Each thread claims in small chunks until exhausted.
+                        loop {
+                            let claimed = s.try_claim(10, 1);
+                            if claimed == 0 {
+                                break;
+                            }
+                            total += claimed as u64;
+                        }
+                        total
+                    }));
+                }
+
+                let total_claimed: u64 = handles.into_iter().map(|h| h.join().unwrap()).sum();
+                prop_assert_eq!(total_claimed, donated as u64);
+                prop_assert_eq!(surplus.available(), 0);
+            }
+
+            #[test]
+            fn claim_policy_monotonic_hit_rate(
+                low_hits in 0u32..5,
+                high_hits in 5u32..20,
+            ) {
+                let policy = ClaimPolicy::default();
+                // If low hits qualifies, high hits must also qualify.
+                if policy.should_claim(low_hits) {
+                    prop_assert!(policy.should_claim(high_hits));
+                }
+            }
+        }
     }
 }
