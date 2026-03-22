@@ -4,6 +4,7 @@
 //! `shatter_rust_runtime`, compiles to a binary in a temp directory, runs it,
 //! and parses the JSON `ExecuteResult` from stdout.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -188,14 +189,34 @@ struct FnSignature {
     param_names: Vec<String>,
     param_types: Vec<String>,
     return_type: Option<String>,
+    /// True if the function has type parameters (e.g. `fn foo<T>(...)`).
+    has_generics: bool,
+    /// Names of type parameters for error messages (e.g. `["T", "U"]`).
+    generic_names: Vec<String>,
 }
 
-/// Extract parameter info from a Rust source file for a specific function.
-fn extract_fn_signature(source: &str, function_name: &str) -> Result<FnSignature, ExecuteError> {
+/// File-level context needed for bin_only compatibility analysis.
+struct FnContext {
+    sig: FnSignature,
+    /// Names of structs, enums, and type aliases defined at the top level of the file.
+    local_type_names: HashSet<String>,
+    /// True if the file has `use` items referencing `super::` or `crate::` paths.
+    has_module_path_uses: bool,
+}
+
+/// Extract function signature and file-level context from a Rust source file.
+///
+/// Parses the source once and returns both the function signature and the file-level
+/// metadata needed for compatibility checking, avoiding a redundant parse.
+fn extract_fn_context(source: &str, function_name: &str) -> Result<FnContext, ExecuteError> {
     use quote::ToTokens;
 
     let file = syn::parse_file(source)
         .map_err(|e| ExecuteError::InstrumentError(format!("parse error: {e}")))?;
+
+    // Collect file-level metadata for compatibility analysis.
+    let local_type_names = collect_local_type_names(&file);
+    let has_module_path_uses = has_module_path_uses(&file);
 
     for item in &file.items {
         if let syn::Item::Fn(item_fn) = item
@@ -218,10 +239,31 @@ fn extract_fn_signature(source: &str, function_name: &str) -> Result<FnSignature
                 syn::ReturnType::Type(_, ty) => Some(ty.to_token_stream().to_string()),
             };
 
-            return Ok(FnSignature {
-                param_names,
-                param_types,
-                return_type,
+            let generic_names: Vec<String> = item_fn
+                .sig
+                .generics
+                .params
+                .iter()
+                .filter_map(|p| {
+                    if let syn::GenericParam::Type(tp) = p {
+                        Some(tp.ident.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let has_generics = !generic_names.is_empty();
+
+            return Ok(FnContext {
+                sig: FnSignature {
+                    param_names,
+                    param_types,
+                    return_type,
+                    has_generics,
+                    generic_names,
+                },
+                local_type_names,
+                has_module_path_uses,
             });
         }
     }
@@ -229,6 +271,175 @@ fn extract_fn_signature(source: &str, function_name: &str) -> Result<FnSignature
     Err(ExecuteError::InstrumentError(format!(
         "function not found: {function_name}"
     )))
+}
+
+/// Collect names of structs, enums, and type aliases defined at the top level.
+fn collect_local_type_names(file: &syn::File) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for item in &file.items {
+        match item {
+            syn::Item::Struct(s) => {
+                names.insert(s.ident.to_string());
+            }
+            syn::Item::Enum(e) => {
+                names.insert(e.ident.to_string());
+            }
+            syn::Item::Type(t) => {
+                names.insert(t.ident.to_string());
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Check whether the file has `use` items referencing module-local paths
+/// (`super::`, `crate::`) that won't resolve in an isolated harness.
+fn has_module_path_uses(file: &syn::File) -> bool {
+    use quote::ToTokens;
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            let path_str = u.tree.to_token_stream().to_string();
+            if path_str.starts_with("super ::") || path_str.starts_with("crate ::") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Known primitive and standard library types that are available in an isolated harness
+/// (only `serde` + `serde_json` + `shatter-rust-runtime` as dependencies).
+fn is_primitive_or_std_type(name: &str) -> bool {
+    matches!(
+        name,
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "String"
+            | "str"
+            | "Vec"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
+            | "Option"
+            | "Result"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "PhantomData"
+            | "Duration"
+            | "PathBuf"
+            | "OsString"
+            | "()"
+    )
+}
+
+/// Extract the root type name from a type string, stripping references, wrappers, etc.
+///
+/// Examples: `"&str"` → `"str"`, `"Vec<MyStruct>"` → `"Vec"`,
+/// `"&mut HashMap<String, i32>"` → `"HashMap"`, `"Box<dyn Foo>"` → `"Box"`.
+fn extract_root_type_name(ty: &str) -> &str {
+    let s = ty.trim();
+    // Strip leading `&`, `&mut`, lifetime refs
+    let s = s.strip_prefix("&mut ").unwrap_or(s);
+    let s = s.strip_prefix('&').unwrap_or(s);
+    let s = s.trim();
+    // Strip lifetime like `'static ` or `'a `
+    let s = if s.starts_with('\'') {
+        s.find(' ').map_or(s, |i| &s[i + 1..])
+    } else {
+        s
+    };
+    let s = s.trim();
+    // Take up to first `<` or space (get the root name only)
+    let end = s
+        .find(['<', ' '])
+        .unwrap_or(s.len());
+    let root = &s[..end];
+    if root.is_empty() { s } else { root }
+}
+
+/// Check whether a function can execute in bin_only harness mode.
+///
+/// Collects all incompatibilities and returns a single `NonExecutable` error
+/// listing every problem and suggesting `crate_bridge` as an alternative.
+fn check_bin_only_compatibility(
+    function_name: &str,
+    ctx: &FnContext,
+) -> Result<(), ExecuteError> {
+    let mut issues: Vec<String> = Vec::new();
+
+    // 1. Generic type parameters — harness can't pick concrete types.
+    if ctx.sig.has_generics {
+        issues.push(format!(
+            "generic type parameters [{}]: harness cannot instantiate concrete types",
+            ctx.sig.generic_names.join(", ")
+        ));
+    }
+
+    // 2. Trait object parameters — can't be deserialized from JSON.
+    for (name, ty) in ctx.sig.param_names.iter().zip(ctx.sig.param_types.iter()) {
+        if is_trait_object_type(ty) {
+            issues.push(format!(
+                "parameter `{name}` has trait object type `{ty}`: cannot be deserialized from JSON"
+            ));
+        }
+    }
+
+    // 3. External crate types — not available in isolated harness.
+    for (name, ty) in ctx.sig.param_names.iter().zip(ctx.sig.param_types.iter()) {
+        // Skip trait objects (already reported above).
+        if is_trait_object_type(ty) {
+            continue;
+        }
+        let root = extract_root_type_name(ty);
+        if !root.is_empty()
+            && !is_primitive_or_std_type(root)
+            && !ctx.local_type_names.contains(root)
+            // Tuple types like `(i32, i32)` start with `(`
+            && !root.starts_with('(')
+            // Array/slice types like `[u8 ; 4]`
+            && !root.starts_with('[')
+        {
+            if ctx.has_module_path_uses {
+                issues.push(format!(
+                    "parameter `{name}` uses type `{root}` imported via module path: \
+                     won't resolve in isolated harness"
+                ));
+            } else {
+                issues.push(format!(
+                    "parameter `{name}` uses external type `{root}`: \
+                     not available in isolated harness (only serde + serde_json)"
+                ));
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        return Ok(());
+    }
+
+    let mut msg = format!("bin_only harness incompatible with `{function_name}`:\n");
+    for issue in &issues {
+        msg.push_str(&format!("  - {issue}\n"));
+    }
+    msg.push_str("\nHint: use crate_bridge mode to execute within the original crate context");
+
+    Err(ExecuteError::NonExecutable(msg))
 }
 
 /// Generate a Cargo.toml for the temp project.
@@ -534,27 +745,22 @@ pub fn execute_function_with_timing(
             .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?
     };
 
-    // Extract function signature for harness generation
-    let sig = if let Some(timing) = timing.as_deref_mut() {
+    // Extract function signature and file-level context for compatibility checking.
+    let ctx = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.extract_signature", |_| {
-            extract_fn_signature(&source, function_name)
+            extract_fn_context(&source, function_name)
         })?
     } else {
-        extract_fn_signature(&source, function_name)?
+        extract_fn_context(&source, function_name)?
     };
+    let sig = &ctx.sig;
 
     // Extract mutable static items for global state change detection.
     // Parsed from the original source (before instrumentation) so syn sees clean code.
     let static_mut_names = extract_static_mut_items(&source);
 
-    // Reject trait object parameters — they cannot be deserialized from JSON.
-    for (name, ty) in sig.param_names.iter().zip(sig.param_types.iter()) {
-        if is_trait_object_type(ty) {
-            return Err(ExecuteError::NonExecutable(format!(
-                "parameter `{name}` has trait object type `{ty}` which cannot be deserialized"
-            )));
-        }
-    }
+    // Check bin_only compatibility — reject functions that would cause opaque build failures.
+    check_bin_only_compatibility(function_name, &ctx)?;
 
     if inputs.len() != sig.param_names.len() {
         return Err(ExecuteError::InstrumentError(format!(
@@ -825,37 +1031,61 @@ mod tests {
     }
 
     #[test]
-    fn extract_fn_signature_simple() {
+    fn extract_fn_context_simple() {
         let source = "fn classify_number(n: i32) -> &'static str { \"\" }";
-        let sig = extract_fn_signature(source, "classify_number").unwrap();
-        assert_eq!(sig.param_names, vec!["n"]);
-        assert_eq!(sig.param_types, vec!["i32"]);
-        assert!(sig.return_type.is_some());
+        let ctx = extract_fn_context(source, "classify_number").unwrap();
+        assert_eq!(ctx.sig.param_names, vec!["n"]);
+        assert_eq!(ctx.sig.param_types, vec!["i32"]);
+        assert!(ctx.sig.return_type.is_some());
+        assert!(!ctx.sig.has_generics);
     }
 
     #[test]
-    fn extract_fn_signature_multiple_params() {
+    fn extract_fn_context_multiple_params() {
         let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
-        let sig = extract_fn_signature(source, "add").unwrap();
-        assert_eq!(sig.param_names, vec!["a", "b"]);
-        assert_eq!(sig.param_types, vec!["i32", "i32"]);
-        assert_eq!(sig.return_type.as_deref(), Some("i32"));
+        let ctx = extract_fn_context(source, "add").unwrap();
+        assert_eq!(ctx.sig.param_names, vec!["a", "b"]);
+        assert_eq!(ctx.sig.param_types, vec!["i32", "i32"]);
+        assert_eq!(ctx.sig.return_type.as_deref(), Some("i32"));
     }
 
     #[test]
-    fn extract_fn_signature_no_return() {
+    fn extract_fn_context_no_return() {
         let source = "fn noop() {}";
-        let sig = extract_fn_signature(source, "noop").unwrap();
-        assert!(sig.param_names.is_empty());
-        assert!(sig.param_types.is_empty());
-        assert!(sig.return_type.is_none());
+        let ctx = extract_fn_context(source, "noop").unwrap();
+        assert!(ctx.sig.param_names.is_empty());
+        assert!(ctx.sig.param_types.is_empty());
+        assert!(ctx.sig.return_type.is_none());
     }
 
     #[test]
-    fn extract_fn_signature_not_found() {
+    fn extract_fn_context_not_found() {
         let source = "fn other() {}";
-        let result = extract_fn_signature(source, "missing");
+        let result = extract_fn_context(source, "missing");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_fn_context_detects_generics() {
+        let source = "fn identity<T: Clone>(x: T) -> T { x }";
+        let ctx = extract_fn_context(source, "identity").unwrap();
+        assert!(ctx.sig.has_generics);
+        assert_eq!(ctx.sig.generic_names, vec!["T"]);
+    }
+
+    #[test]
+    fn extract_fn_context_collects_local_types() {
+        let source = "struct Point { x: f64, y: f64 }\nenum Color { Red, Blue }\nfn origin() -> Point { Point { x: 0.0, y: 0.0 } }";
+        let ctx = extract_fn_context(source, "origin").unwrap();
+        assert!(ctx.local_type_names.contains("Point"));
+        assert!(ctx.local_type_names.contains("Color"));
+    }
+
+    #[test]
+    fn extract_fn_context_detects_module_path_uses() {
+        let source = "use crate::config::Config;\nfn init(c: Config) {}";
+        let ctx = extract_fn_context(source, "init").unwrap();
+        assert!(ctx.has_module_path_uses);
     }
 
     #[test]
@@ -1020,6 +1250,17 @@ fn main() {
     }
 
     #[test]
+    fn extract_root_type_name_strips_wrappers() {
+        assert_eq!(extract_root_type_name("i32"), "i32");
+        assert_eq!(extract_root_type_name("&str"), "str");
+        assert_eq!(extract_root_type_name("&mut String"), "String");
+        assert_eq!(extract_root_type_name("Vec<i32>"), "Vec");
+        assert_eq!(extract_root_type_name("HashMap<String, i32>"), "HashMap");
+        assert_eq!(extract_root_type_name("Box<dyn Foo>"), "Box");
+        assert_eq!(extract_root_type_name("& 'static str"), "str");
+    }
+
+    #[test]
     fn is_trait_object_detects_dyn_ref() {
         assert!(is_trait_object_type("& dyn DataStore"));
         assert!(is_trait_object_type("&dyn DataStore"));
@@ -1063,6 +1304,152 @@ fn main() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ─── bin_only compatibility check tests ───────────────────────────────────
+
+    #[test]
+    fn compat_generic_params_detected() {
+        let source = "fn identity<T: Clone>(x: T) -> T { x }";
+        let ctx = extract_fn_context(source, "identity").unwrap();
+        let err = check_bin_only_compatibility("identity", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("generic type parameters [T]"),
+            "expected generic params message, got: {msg}"
+        );
+        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+    }
+
+    #[test]
+    fn compat_trait_object_detected() {
+        let source = "trait Db { fn get(&self) -> i32; }\nfn query(db: &dyn Db) -> i32 { db.get() }";
+        let ctx = extract_fn_context(source, "query").unwrap();
+        let err = check_bin_only_compatibility("query", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("trait object"),
+            "expected trait object message, got: {msg}"
+        );
+        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+    }
+
+    #[test]
+    fn compat_external_type_detected() {
+        let source = "fn process(conn: PgConnection) -> bool { true }";
+        let ctx = extract_fn_context(source, "process").unwrap();
+        let err = check_bin_only_compatibility("process", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("external type") && msg.contains("PgConnection"),
+            "expected external type message, got: {msg}"
+        );
+        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+    }
+
+    #[test]
+    fn compat_module_path_import_detected() {
+        let source = "use crate::config::Config;\nfn init(c: Config) {}";
+        let ctx = extract_fn_context(source, "init").unwrap();
+        let err = check_bin_only_compatibility("init", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("module path") && msg.contains("Config"),
+            "expected module path message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn compat_multiple_issues_listed() {
+        let source = "fn dispatch<T>(db: &dyn std::any::Any, val: T) {}";
+        let ctx = extract_fn_context(source, "dispatch").unwrap();
+        let err = check_bin_only_compatibility("dispatch", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("generic type parameters"), "should list generics: {msg}");
+        assert!(msg.contains("trait object"), "should list trait object: {msg}");
+    }
+
+    #[test]
+    fn compat_primitives_pass() {
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let ctx = extract_fn_context(source, "add").unwrap();
+        assert!(check_bin_only_compatibility("add", &ctx).is_ok());
+    }
+
+    #[test]
+    fn compat_std_types_pass() {
+        let source = "use std::collections::HashMap;\nfn f(v: Vec<String>, m: HashMap<String, i32>) -> Option<bool> { None }";
+        let ctx = extract_fn_context(source, "f").unwrap();
+        assert!(check_bin_only_compatibility("f", &ctx).is_ok());
+    }
+
+    #[test]
+    fn compat_local_struct_passes() {
+        let source = "struct Point { x: f64, y: f64 }\nfn origin() -> Point { Point { x: 0.0, y: 0.0 } }";
+        let ctx = extract_fn_context(source, "origin").unwrap();
+        assert!(check_bin_only_compatibility("origin", &ctx).is_ok());
+    }
+
+    #[test]
+    fn compat_local_struct_param_passes() {
+        let source = "struct Config { debug: bool }\nfn setup(c: Config) -> bool { c.debug }";
+        let ctx = extract_fn_context(source, "setup").unwrap();
+        assert!(check_bin_only_compatibility("setup", &ctx).is_ok());
+    }
+
+    #[test]
+    fn compat_ref_params_pass() {
+        let source = "fn greet(name: &str) -> String { format!(\"hi {name}\") }";
+        let ctx = extract_fn_context(source, "greet").unwrap();
+        assert!(check_bin_only_compatibility("greet", &ctx).is_ok());
+    }
+
+    #[test]
+    fn execute_generic_fn_returns_non_executable() {
+        let dir = std::env::temp_dir().join("shatter-test-exec-generic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.rs");
+        std::fs::write(&file, "fn identity<T: Clone>(x: T) -> T { x.clone() }").unwrap();
+
+        let result = execute_function(
+            &file.to_string_lossy(),
+            "identity",
+            &[serde_json::json!(42)],
+            &[],
+            5000,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExecuteError::NonExecutable(_)),
+            "expected NonExecutable, got: {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_external_type_returns_non_executable() {
+        let dir = std::env::temp_dir().join("shatter-test-exec-exttype");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.rs");
+        std::fs::write(&file, "fn process(conn: PgConnection) -> bool { true }").unwrap();
+
+        let result = execute_function(
+            &file.to_string_lossy(),
+            "process",
+            &[serde_json::json!(null)],
+            &[],
+            5000,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExecuteError::NonExecutable(_)),
+            "expected NonExecutable, got: {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── end compatibility check tests ──────────────────────────────────────────
 
     /// Bug: `&[&str]` parameter causes compilation error because
     /// `owned_type_for_ref` doesn't handle reference slices.
