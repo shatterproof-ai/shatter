@@ -234,7 +234,6 @@ mod tests {
             shrunk_witnesses: Default::default(),
             shrink_stats: Default::default(),
             mcdc_summary: None,
-            shrink_stats: Default::default(),
         }
     }
 

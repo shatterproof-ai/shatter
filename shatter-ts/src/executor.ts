@@ -68,6 +68,24 @@ export function getExecTimeoutMs(): number {
   return DEFAULT_EXEC_TIMEOUT_MS;
 }
 
+/**
+ * Read SHATTER_HARNESS_CACHE env var.
+ * Returns undefined if unset or empty.
+ */
+export function getHarnessCacheDir(): string | undefined {
+  const raw = process.env["SHATTER_HARNESS_CACHE"];
+  return raw && raw.length > 0 ? raw : undefined;
+}
+
+/**
+ * Read SHATTER_HARNESS_SCRATCH env var.
+ * Returns undefined if unset or empty.
+ */
+export function getHarnessScratchDir(): string | undefined {
+  const raw = process.env["SHATTER_HARNESS_SCRATCH"];
+  return raw && raw.length > 0 ? raw : undefined;
+}
+
 /** Module names that spawn subprocesses — require() calls to these are flagged. */
 const SUBPROCESS_MODULES = new Set([
   "child_process", "node:child_process",

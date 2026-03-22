@@ -82,6 +82,18 @@ func parseTimeoutEnv(key string) (time.Duration, bool) {
 	return d, true
 }
 
+// harnessCacheDir returns the harness cache directory from SHATTER_HARNESS_CACHE
+// env var. Returns empty string if unset or empty.
+func harnessCacheDir() string {
+	return os.Getenv("SHATTER_HARNESS_CACHE")
+}
+
+// harnessScratchDir returns the harness scratch directory from SHATTER_HARNESS_SCRATCH
+// env var. Returns empty string if unset or empty.
+func harnessScratchDir() string {
+	return os.Getenv("SHATTER_HARNESS_SCRATCH")
+}
+
 // SideEffect represents an observable side effect during execution.
 // Fields correspond 1:1 with the protocol.SideEffect wire format (all 7 kinds).
 // Only fields relevant to the specific Kind are populated.
