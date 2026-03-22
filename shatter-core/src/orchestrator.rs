@@ -321,6 +321,9 @@ pub struct ExploreResult {
     pub pipeline_overlaps: usize,
     /// Aggregated shrink phase performance counters.
     pub shrink_stats: crate::shrink::ShrinkStats,
+    /// Frontiers abandoned due to stall detection: (branch_id, final_stall_count).
+    /// Used for diagnostics and budget reallocation (str-6aq.1).
+    pub abandoned_frontiers: Vec<(u32, u32)>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -1259,7 +1262,7 @@ fn solve_and_generate(
             .iter()
             .filter(|f| {
                 f.stall_count >= drilling::DRILL_STALL_THRESHOLD
-                    && f.stall_count < crate::frontier::DEFAULT_MAX_STALL
+                    && f.stall_count < crate::frontier::FRONTIER_STALL_THRESHOLD
             })
             .cloned()
             .collect();
@@ -1485,6 +1488,7 @@ pub async fn explore(
     let mut fuzz_generated: usize = 0;
     let mut boundary_generated: usize = 0;
     let mut drill_generated: usize = 0;
+    let mut abandoned_frontiers: Vec<(u32, u32)> = Vec::new();
     let mut termination_reason = TerminationReason::WorklistExhausted;
     let mut seen_branch_sides: HashSet<(u32, bool)> = HashSet::new();
     let mut frontier_set = FrontierSet::new();
@@ -1759,10 +1763,10 @@ pub async fn explore(
                 target_branches.remove(&decision.branch_id);
             } else {
                 target_branches.insert(decision.branch_id);
-                let prev_stall = frontier_set
-                    .iter()
-                    .find(|f| f.branch_id == decision.branch_id)
-                    .map_or(0, |f| f.stall_count);
+                // Reset stall count to 0: this frontier just produced a new
+                // path, so it's not stalled. Preserving the old stall_count
+                // would unfairly penalize frontiers that make intermittent
+                // progress.
                 let blocking =
                     drilling::identify_blocking_params(&decision.constraint, param_infos);
                 let depth =
@@ -1776,7 +1780,7 @@ pub async fn explore(
                     depth,
                     blocking_params: blocking,
                     best_prefix: obs.inputs.clone(),
-                    stall_count: prev_stall,
+                    stall_count: 0,
                     rarity_boost,
                 });
             }
@@ -2020,6 +2024,22 @@ pub async fn explore(
             worklist.push(candidate);
         }
 
+        // Abandon frontiers that have exceeded the stall threshold.
+        {
+            let newly_abandoned = frontier_set.abandon_stalled(crate::frontier::FRONTIER_STALL_THRESHOLD);
+            for f in &newly_abandoned {
+                tracing::info!(
+                    branch_id = f.branch_id,
+                    stall_count = f.stall_count,
+                    depth = f.depth,
+                    "Abandoning stalled frontier after {} failed attempts",
+                    f.stall_count,
+                );
+                target_branches.remove(&f.branch_id);
+                abandoned_frontiers.push((f.branch_id, f.stall_count));
+            }
+        }
+
         // Queue the speculatively-observed lookahead entry for the next iteration.
         if let Some(pair) = pending_lookahead {
             pending_obs.push_back(pair);
@@ -2245,6 +2265,7 @@ pub async fn explore(
         mcdc_summary,
         pipeline_overlaps,
         shrink_stats,
+        abandoned_frontiers,
     })
 }
 

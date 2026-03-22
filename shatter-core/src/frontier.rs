@@ -8,10 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Stall count threshold after which a frontier is considered deeply stalled.
-/// Consumers can use this to deprioritize or abandon frontiers that aren't
-/// making progress despite repeated attempts.
-pub const DEFAULT_MAX_STALL: u32 = 10;
+/// Stall count threshold after which a frontier is abandoned.
+///
+/// When a frontier accumulates this many consecutive failed solve/drill attempts
+/// without discovering a new path, it is removed from the active worklist.
+/// The value 10 balances thoroughness (giving Z3 and drilling enough attempts
+/// to find a solution) against efficiency (not wasting budget on contradictory
+/// or unsolvable constraints). Empirically, frontiers that don't yield progress
+/// within 10 attempts rarely do so with more.
+pub const FRONTIER_STALL_THRESHOLD: u32 = 10;
 
 /// A single exploration frontier — a branch reached but not yet solved.
 ///
@@ -106,6 +111,39 @@ impl FrontierSet {
 
     pub fn is_empty(&self) -> bool {
         self.frontiers.is_empty()
+    }
+
+    /// Reset the stall count to zero for the frontier with the given `branch_id`.
+    /// Returns `true` if the frontier was found and reset.
+    ///
+    /// Call this when a new path is discovered through a frontier that was
+    /// previously stalling — the progress proves it wasn't truly stuck.
+    pub fn reset_stall(&mut self, branch_id: u32) -> bool {
+        if let Some(f) = self.frontiers.iter_mut().find(|f| f.branch_id == branch_id) {
+            f.stall_count = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove and return all frontiers with `stall_count >= threshold`.
+    ///
+    /// These frontiers have failed to produce new paths over many consecutive
+    /// iterations and are considered abandoned. The returned vec can be used
+    /// for diagnostics and budget reallocation.
+    pub fn abandon_stalled(&mut self, threshold: u32) -> Vec<Frontier> {
+        let mut abandoned = Vec::new();
+        let mut i = 0;
+        while i < self.frontiers.len() {
+            if self.frontiers[i].stall_count >= threshold {
+                abandoned.push(self.frontiers.swap_remove(i));
+                // Don't increment i — swap_remove moved the last element here
+            } else {
+                i += 1;
+            }
+        }
+        abandoned
     }
 
     /// Iterate over all frontiers in arbitrary order.
@@ -338,5 +376,175 @@ mod tests {
 
         let f = set.pop_highest_priority().unwrap();
         assert_eq!(f.branch_id, 2, "lower stall count wins when rarity is equal");
+    }
+
+    #[test]
+    fn reset_stall_resets_count() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 3, 7));
+        assert!(set.reset_stall(1));
+        assert_eq!(set.peek().unwrap().stall_count, 0);
+    }
+
+    #[test]
+    fn reset_stall_missing_returns_false() {
+        let mut set = FrontierSet::new();
+        assert!(!set.reset_stall(99));
+    }
+
+    #[test]
+    fn abandon_stalled_empty_set() {
+        let mut set = FrontierSet::new();
+        let abandoned = set.abandon_stalled(5);
+        assert!(abandoned.is_empty());
+    }
+
+    #[test]
+    fn abandon_stalled_none_above_threshold() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 0, 2));
+        set.insert(make_frontier(2, 1, 4));
+        let abandoned = set.abandon_stalled(5);
+        assert!(abandoned.is_empty());
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn abandon_stalled_removes_correct_frontiers() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 0, 3));  // below threshold
+        set.insert(make_frontier(2, 1, 10)); // at threshold
+        set.insert(make_frontier(3, 2, 15)); // above threshold
+
+        let abandoned = set.abandon_stalled(10);
+        assert_eq!(abandoned.len(), 2);
+        let abandoned_ids: Vec<u32> = abandoned.iter().map(|f| f.branch_id).collect();
+        assert!(abandoned_ids.contains(&2));
+        assert!(abandoned_ids.contains(&3));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.peek().unwrap().branch_id, 1);
+    }
+
+    #[test]
+    fn abandon_stalled_preserves_frontier_data() {
+        let mut set = FrontierSet::new();
+        set.insert(Frontier {
+            branch_id: 1,
+            depth: 5,
+            blocking_params: vec![0, 2],
+            best_prefix: vec![serde_json::json!(42)],
+            stall_count: 10,
+            rarity_boost: 0.7,
+        });
+
+        let abandoned = set.abandon_stalled(10);
+        assert_eq!(abandoned.len(), 1);
+        let f = &abandoned[0];
+        assert_eq!(f.branch_id, 1);
+        assert_eq!(f.depth, 5);
+        assert_eq!(f.blocking_params, vec![0, 2]);
+        assert_eq!(f.stall_count, 10);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_frontier() -> impl Strategy<Value = Frontier> {
+        (
+            0..1000u32,
+            0..20u32,
+            prop::collection::vec(0..10usize, 0..5),
+            0..50u32,
+            0.0..=1.0f64,
+        )
+            .prop_map(|(branch_id, depth, blocking_params, stall_count, rarity_boost)| {
+                Frontier {
+                    branch_id,
+                    depth,
+                    blocking_params,
+                    best_prefix: vec![],
+                    stall_count,
+                    rarity_boost,
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn abandon_stalled_removes_only_above_threshold(
+            frontiers in prop::collection::vec(arb_frontier(), 0..20),
+            threshold in 1..30u32,
+        ) {
+            let mut set = FrontierSet::new();
+            for f in frontiers {
+                set.insert(f);
+            }
+            let original_len = set.len();
+            let abandoned = set.abandon_stalled(threshold);
+
+            // All abandoned frontiers must have stall_count >= threshold
+            for f in &abandoned {
+                prop_assert!(f.stall_count >= threshold,
+                    "abandoned frontier {} has stall_count {} < threshold {}",
+                    f.branch_id, f.stall_count, threshold);
+            }
+
+            // No remaining frontier should have stall_count >= threshold
+            for f in set.iter() {
+                prop_assert!(f.stall_count < threshold,
+                    "remaining frontier {} has stall_count {} >= threshold {}",
+                    f.branch_id, f.stall_count, threshold);
+            }
+
+            // Counts must add up
+            prop_assert_eq!(set.len() + abandoned.len(), original_len);
+        }
+
+        #[test]
+        fn reset_stall_sets_to_zero(
+            branch_id in 0..100u32,
+            initial_stall in 0..1000u32,
+        ) {
+            let mut set = FrontierSet::new();
+            set.insert(Frontier {
+                branch_id,
+                depth: 0,
+                blocking_params: vec![],
+                best_prefix: vec![],
+                stall_count: initial_stall,
+                rarity_boost: 0.0,
+            });
+            set.reset_stall(branch_id);
+            let f = set.peek().unwrap();
+            prop_assert_eq!(f.stall_count, 0);
+        }
+
+        #[test]
+        fn stall_increment_then_abandon_at_threshold(
+            threshold in 1..20u32,
+        ) {
+            let mut set = FrontierSet::new();
+            set.insert(Frontier {
+                branch_id: 1,
+                depth: 0,
+                blocking_params: vec![],
+                best_prefix: vec![],
+                stall_count: 0,
+                rarity_boost: 0.0,
+            });
+
+            // Increment stall count up to threshold
+            for _ in 0..threshold {
+                set.increment_stall(1);
+            }
+
+            let abandoned = set.abandon_stalled(threshold);
+            prop_assert_eq!(abandoned.len(), 1);
+            prop_assert_eq!(abandoned[0].stall_count, threshold);
+            prop_assert!(set.is_empty());
+        }
     }
 }
