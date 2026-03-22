@@ -624,6 +624,9 @@
 {"created_at":"2026-03-22T10:02:38Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.3","type":"parent-child"}
 {"created_at":"2026-03-22T10:05:19Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.4","type":"parent-child"}
 {"created_at":"2026-03-22T10:17:52Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.5","type":"parent-child"}
+{"created_at":"2026-03-22T10:24:13Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.6","type":"parent-child"}
+{"created_at":"2026-03-22T10:26:16Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.7","type":"parent-child"}
+{"created_at":"2026-03-22T11:23:23Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-pf51","issue_id":"str-pf51.8","type":"parent-child"}
 {"created_at":"2026-03-04T22:50:41Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-bx3k","issue_id":"str-ph9p","type":"parent-child"}
 {"created_at":"2026-02-26T21:46:42Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-dts","issue_id":"str-php","type":"blocks"}
 {"created_at":"2026-03-15T16:01:47Z","created_by":"Ketan Gangatirkar","depends_on_id":"str-3knm","issue_id":"str-prv4","type":"blocked-by"}
