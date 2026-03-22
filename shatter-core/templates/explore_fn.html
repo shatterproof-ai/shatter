@@ -9,7 +9,7 @@
 {%- else %}
 <table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
 {%- for path in paths %}
-<tr><td>{{ path.index }}</td><td>{{ path.inputs_html|safe }}</td><td>{{ path.outcome_html|safe }}</td></tr>
+<tr data-path-index="{{ path.index }}" data-lines="{{ path.lines_executed_csv }}"><td>{{ path.index }}</td><td>{{ path.inputs_html|safe }}</td><td>{{ path.outcome_html|safe }}</td></tr>
 {%- endfor %}
 </tbody></table>
 {%- endif %}

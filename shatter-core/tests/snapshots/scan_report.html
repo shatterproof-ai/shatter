@@ -72,6 +72,11 @@ details[open] .summary-arrow { transform: rotate(90deg); }
 .src-ln.covered { color: #16a34a; }
 .src-ln.uncovered { color: #d1d5db; }
 .src-text { padding: 1px 8px 1px 12px; white-space: pre; flex: 1; overflow-x: auto; }
+.src-line.active-path { background: #fef3c7 !important; outline: 1px solid #f59e0b; }
+.src-line.active-path .src-ln { color: #92400e; }
+tr[data-path-index] { cursor: pointer; }
+tr[data-path-index]:hover td { background: #f9fafb; }
+tr.selected-path td { background: #fef9c3; }
 </style>
 </head>
 <body>
@@ -97,19 +102,50 @@ details[open] .summary-arrow { transform: rotate(90deg); }
 <div class="fn-body">
 <p class="fn-meta"><code>src/math.ts</code> &nbsp;&middot;&nbsp; 10 iteration(s) &nbsp;&middot;&nbsp; 2 path(s) &nbsp;&middot;&nbsp; 5/10 lines</p>
 <table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
-<tr><td>1</td><td><code>0</code></td><td><span class="outcome-return">returns</span> <code>0</code></td></tr>
-<tr><td>2</td><td><code>1</code></td><td><span class="outcome-return">returns</span> <code>10</code></td></tr>
+<tr data-path-index="1" data-lines="1,2,3"><td>1</td><td><code>0</code></td><td><span class="outcome-return">returns</span> <code>0</code></td></tr>
+<tr data-path-index="2" data-lines="1,2,3"><td>2</td><td><code>1</code></td><td><span class="outcome-return">returns</span> <code>10</code></td></tr>
 </tbody></table>
 </div></details>
 <details><summary><span class="summary-arrow">&#9658;</span>caller &nbsp;<span class="cov-bar-wrap cov-high"><span class="cov-bar"><span class="cov-fill" style="width:80%"></span></span><span class="pct">80%</span></span></summary>
 <div class="fn-body">
 <p class="fn-meta"><code>src/app.ts</code> &nbsp;&middot;&nbsp; 20 iteration(s) &nbsp;&middot;&nbsp; 3 path(s) &nbsp;&middot;&nbsp; 8/10 lines</p>
 <table><thead><tr><th>#</th><th>Inputs</th><th>Outcome</th></tr></thead><tbody>
-<tr><td>1</td><td><code>0</code></td><td><span class="outcome-return">returns</span> <code>0</code></td></tr>
-<tr><td>2</td><td><code>1</code></td><td><span class="outcome-return">returns</span> <code>10</code></td></tr>
-<tr><td>3</td><td><code>2</code></td><td><span class="outcome-return">returns</span> <code>20</code></td></tr>
+<tr data-path-index="1" data-lines="1,2,3"><td>1</td><td><code>0</code></td><td><span class="outcome-return">returns</span> <code>0</code></td></tr>
+<tr data-path-index="2" data-lines="1,2,3"><td>2</td><td><code>1</code></td><td><span class="outcome-return">returns</span> <code>10</code></td></tr>
+<tr data-path-index="3" data-lines="1,2,3"><td>3</td><td><code>2</code></td><td><span class="outcome-return">returns</span> <code>20</code></td></tr>
 </tbody></table>
 <p class="fn-meta" style="margin-top:8px">Mocks: leaf</p>
 </div></details>
+<script>
+(function () {
+  function activatePath(row) {
+    var lines = (row.dataset.lines || '').split(',').filter(Boolean);
+    row.classList.add('selected-path');
+    lines.forEach(function (ln) {
+      var el = document.querySelector('.src-line[data-line="' + ln + '"]');
+      if (el) el.classList.add('active-path');
+    });
+    var first = document.querySelector('.src-line.active-path');
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function clearSelection() {
+    document.querySelectorAll('tr.selected-path').forEach(function (r) {
+      r.classList.remove('selected-path');
+    });
+    document.querySelectorAll('.src-line.active-path').forEach(function (el) {
+      el.classList.remove('active-path');
+    });
+  }
+
+  document.querySelectorAll('tr[data-path-index]').forEach(function (row) {
+    row.addEventListener('click', function () {
+      var isSelected = this.classList.contains('selected-path');
+      clearSelection();
+      if (!isSelected) activatePath(this);
+    });
+  });
+}());
+</script>
 </body>
 </html>

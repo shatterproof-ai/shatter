@@ -65,3 +65,8 @@ details[open] .summary-arrow { transform: rotate(90deg); }
 .src-ln.covered { color: #16a34a; }
 .src-ln.uncovered { color: #d1d5db; }
 .src-text { padding: 1px 8px 1px 12px; white-space: pre; flex: 1; overflow-x: auto; }
+.src-line.active-path { background: #fef3c7 !important; outline: 1px solid #f59e0b; }
+.src-line.active-path .src-ln { color: #92400e; }
+tr[data-path-index] { cursor: pointer; }
+tr[data-path-index]:hover td { background: #f9fafb; }
+tr.selected-path td { background: #fef9c3; }
