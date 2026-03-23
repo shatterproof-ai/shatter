@@ -234,6 +234,8 @@ mod tests {
             shrunk_witnesses: Default::default(),
             shrink_stats: Default::default(),
             mcdc_summary: None,
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
         }
     }
 

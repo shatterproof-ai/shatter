@@ -120,7 +120,7 @@ fn make_observation_output() -> ObservationOutput {
         shrunk_witnesses: std::collections::HashMap::new(),
         mcdc_summary: None,
         shrink_stats: ShrinkStats::default(),
-        abandoned_frontiers: vec![],
+        abandoned_frontiers: vec![], opaque_suggestions: vec![],
     }
 }
 
@@ -177,7 +177,7 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
                 shrunk_witnesses: std::collections::HashMap::new(),
                 mcdc_summary: None,
                 shrink_stats: ShrinkStats::default(),
-                abandoned_frontiers: vec![],
+                abandoned_frontiers: vec![], opaque_suggestions: vec![],
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),

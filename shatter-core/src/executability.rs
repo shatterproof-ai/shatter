@@ -1,8 +1,10 @@
 //! Checks whether a function's parameters contain opaque types,
 //! making it unexecutable for automated testing.
 
+use std::collections::HashMap;
+
 use crate::config::CustomOpaqueType;
-use crate::types::{ParamInfo, StaticOpacityReason};
+use crate::types::{ParamInfo, StaticOpacityReason, TypeInfo};
 use serde::{Deserialize, Serialize};
 
 /// Categorizes WHY a type is opaque — what kind of runtime resource it represents.
@@ -280,6 +282,100 @@ pub fn check_executability(
             None
         })
         .collect()
+}
+
+/// Minimum number of failed Z3 solve attempts for a parameter before it is
+/// suggested as an opaque type candidate.
+pub const OPAQUE_SUGGEST_THRESHOLD: usize = 3;
+
+/// Why a parameter is being suggested as an opaque type candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpaqueSuggestionReason {
+    /// The parameter has `TypeInfo::Unknown` with a known source type name —
+    /// the frontend recognised the type name but could not analyse its structure.
+    UnknownType,
+    /// The parameter appeared in at least [`OPAQUE_SUGGEST_THRESHOLD`] constraints
+    /// that Z3 could not solve (Unsat or solver error).
+    FrequentSolveFailure,
+}
+
+/// A suggestion to mark a parameter's type as opaque in `.shatter/config.yaml`.
+///
+/// Generated after exploration when a parameter's type repeatedly caused solver
+/// failures or was not structurally analysable by the frontend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpaqueSuggestion {
+    /// Name of the parameter (e.g. `"hash"`, `"config"`).
+    pub param_name: String,
+    /// Original source type name from the frontend, if known (e.g. `"HashResult"`).
+    pub type_name: Option<String>,
+    /// Number of Z3 solve failures this parameter was involved in.
+    pub failed_solve_count: usize,
+    /// Primary reason for the suggestion.
+    pub reason: OpaqueSuggestionReason,
+}
+
+/// Builds a list of opaque type suggestions from parameter type info and per-parameter
+/// Z3 failure counts collected during exploration.
+///
+/// Two signals are used:
+/// - **Type signal**: parameters whose [`TypeInfo`] is [`TypeInfo::Unknown`] and that
+///   have a known `type_name` are immediately suggested — the frontend knows the name
+///   but cannot inspect the structure.
+/// - **Failure signal**: parameters that appeared in at least [`OPAQUE_SUGGEST_THRESHOLD`]
+///   unsolvable Z3 constraints are suggested as [`OpaqueSuggestionReason::FrequentSolveFailure`].
+///
+/// Parameters already detected as opaque by [`check_executability`] are excluded —
+/// they are handled at the pre-execution skip stage, not here.
+pub fn build_opaque_suggestions(
+    param_infos: &[ParamInfo],
+    fail_counts: &HashMap<String, usize>,
+) -> Vec<OpaqueSuggestion> {
+    let mut suggestions: Vec<OpaqueSuggestion> = param_infos
+        .iter()
+        .filter_map(|p| {
+            // Skip params already flagged as opaque (Opaque node in type tree).
+            if p.typ.has_opaque() {
+                return None;
+            }
+            let failed_solve_count = fail_counts.get(&p.name).copied().unwrap_or(0);
+            // Signal 1: TypeInfo::Unknown with a known source type name.
+            if matches!(p.typ, TypeInfo::Unknown) && p.type_name.is_some() {
+                return Some(OpaqueSuggestion {
+                    param_name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    failed_solve_count,
+                    reason: OpaqueSuggestionReason::UnknownType,
+                });
+            }
+            // Signal 2: parameter appeared in many unsolvable Z3 constraints.
+            if failed_solve_count >= OPAQUE_SUGGEST_THRESHOLD {
+                return Some(OpaqueSuggestion {
+                    param_name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    failed_solve_count,
+                    reason: OpaqueSuggestionReason::FrequentSolveFailure,
+                });
+            }
+            None
+        })
+        .collect();
+
+    // Stable ordering: UnknownType before FrequentSolveFailure, then by param name.
+    suggestions.sort_by(|a, b| {
+        let reason_ord = match (&a.reason, &b.reason) {
+            (OpaqueSuggestionReason::UnknownType, OpaqueSuggestionReason::FrequentSolveFailure) => {
+                std::cmp::Ordering::Less
+            }
+            (OpaqueSuggestionReason::FrequentSolveFailure, OpaqueSuggestionReason::UnknownType) => {
+                std::cmp::Ordering::Greater
+            }
+            _ => std::cmp::Ordering::Equal,
+        };
+        reason_ord.then_with(|| a.param_name.cmp(&b.param_name))
+    });
+    suggestions
 }
 
 #[cfg(test)]
@@ -843,5 +939,98 @@ mod tests {
             reason.format_human(),
             r#"param "pool" → DatabasePool (user-configured opaque type — marked as non-synthesizable)"#
         );
+    }
+
+    // ── build_opaque_suggestions tests ──
+
+    #[test]
+    fn unknown_type_with_type_name_produces_suggestion() {
+        let params = vec![param_with_type_name("hash", TypeInfo::Unknown, "HashResult")];
+        let suggestions = build_opaque_suggestions(&params, &HashMap::new());
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].param_name, "hash");
+        assert_eq!(suggestions[0].type_name, Some("HashResult".into()));
+        assert_eq!(suggestions[0].failed_solve_count, 0);
+        assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::UnknownType);
+    }
+
+    #[test]
+    fn unknown_type_without_type_name_no_suggestion() {
+        // TypeInfo::Unknown but no type_name — can't suggest a meaningful opaque entry.
+        let params = vec![param("x", TypeInfo::Unknown)];
+        let suggestions = build_opaque_suggestions(&params, &HashMap::new());
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn frequent_solve_failure_at_threshold_produces_suggestion() {
+        let params = vec![param("val", TypeInfo::Str)];
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("val".into(), OPAQUE_SUGGEST_THRESHOLD);
+        let suggestions = build_opaque_suggestions(&params, &fail_counts);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].param_name, "val");
+        assert_eq!(suggestions[0].failed_solve_count, OPAQUE_SUGGEST_THRESHOLD);
+        assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::FrequentSolveFailure);
+    }
+
+    #[test]
+    fn below_threshold_no_suggestion() {
+        let params = vec![param("val", TypeInfo::Str)];
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("val".into(), OPAQUE_SUGGEST_THRESHOLD - 1);
+        let suggestions = build_opaque_suggestions(&params, &fail_counts);
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn known_opaque_type_excluded_from_suggestions() {
+        // A param with TypeInfo::Opaque is already handled by check_executability,
+        // not by suggestions.
+        let params = vec![param(
+            "conn",
+            TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None },
+        )];
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("conn".into(), OPAQUE_SUGGEST_THRESHOLD + 5);
+        let suggestions = build_opaque_suggestions(&params, &fail_counts);
+        assert!(suggestions.is_empty(), "known-opaque params should not generate suggestions");
+    }
+
+    #[test]
+    fn suggestions_ordered_unknown_type_before_frequent_failure() {
+        let params = vec![
+            param("b_str", TypeInfo::Str),
+            param_with_type_name("a_hash", TypeInfo::Unknown, "HashResult"),
+        ];
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("b_str".into(), OPAQUE_SUGGEST_THRESHOLD);
+        let suggestions = build_opaque_suggestions(&params, &fail_counts);
+        assert_eq!(suggestions.len(), 2);
+        assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::UnknownType);
+        assert_eq!(suggestions[1].reason, OpaqueSuggestionReason::FrequentSolveFailure);
+    }
+
+    #[test]
+    fn fail_count_carried_into_unknown_type_suggestion() {
+        let params = vec![param_with_type_name("hash", TypeInfo::Unknown, "Digest")];
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("hash".into(), 7);
+        let suggestions = build_opaque_suggestions(&params, &fail_counts);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].failed_solve_count, 7);
+        // Still UnknownType because TypeInfo::Unknown takes precedence.
+        assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::UnknownType);
+    }
+
+    #[test]
+    fn primitives_with_no_failures_produce_no_suggestions() {
+        let params = vec![
+            param("x", TypeInfo::Int),
+            param("y", TypeInfo::Float),
+            param("s", TypeInfo::Str),
+            param("b", TypeInfo::Bool),
+        ];
+        assert!(build_opaque_suggestions(&params, &HashMap::new()).is_empty());
     }
 }
