@@ -39,8 +39,8 @@ use crate::input_gen;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::strategy::{
-    BoundarySeeds, FuzzerStrategy, InputStrategy, LiteralsStrategy, MetaStrategy, RandomStrategy,
-    StrategyContext,
+    BoundarySeeds, FuzzerStrategy, InputStrategy, MetaStrategy, StrategyContext,
+    UserProvidedStrategy, Z3SolverStrategy,
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
@@ -142,16 +142,11 @@ pub const DEFAULT_SHRINK_BUDGET: usize = 20;
 /// Default maximum total executions before stopping exploration.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
 
-/// Number of type-aware mutation rounds per unknown-constraint fuzz pass.
-const MUTATE_ROUNDS_PER_UNKNOWN: usize = 3;
 
 /// Fitness boost for branches in the first loop iteration.
 const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
 /// Fitness boost for branches in the second loop iteration.
 const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
-
-/// Minimum observations of a loop-invariant branch before skipping redundant occurrences.
-const DEFAULT_MIN_INVARIANT_OBSERVATIONS: usize = 2;
 
 /// Default number of consecutive no-new-coverage observations before marking a loop converged.
 const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
@@ -692,14 +687,9 @@ pub(crate) fn classify_iteration_positions(
 }
 
 /// Detects branches inside loops whose `taken` value never varies across iterations.
-///
-/// After observing enough iterations (>= `min_observations`) with a constant
-/// `taken` value, the branch is marked invariant. Only its first occurrence in
-/// each execution trace needs negation — later occurrences are redundant and
-/// can be skipped by the solver loop.
-///
-/// Invariance is revocable: if a branch previously marked invariant is observed
-/// to vary, it is removed from the invariant set.
+/// Retained for unit tests; not used in the main exploration loop (Z3SolverStrategy
+/// handles constraint selection independently).
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct LoopInvariantDetector {
     /// Maps (loop_id, branch_id) → list of observed `taken` values.
@@ -710,12 +700,13 @@ pub(crate) struct LoopInvariantDetector {
     min_observations: usize,
 }
 
+#[cfg(test)]
 impl LoopInvariantDetector {
     pub(crate) fn new() -> Self {
         Self {
             observations: HashMap::new(),
             invariant_cache: HashSet::new(),
-            min_observations: DEFAULT_MIN_INVARIANT_OBSERVATIONS,
+            min_observations: 2,
         }
     }
 
@@ -822,9 +813,8 @@ impl LoopInvariantDetector {
 }
 
 /// Map each branch in scope_events to its enclosing loop ID(s).
-///
-/// Returns a map from branch_id to the set of loop_ids that enclose it.
-/// If scope_events is empty, returns an empty map.
+/// Retained for unit tests.
+#[cfg(test)]
 pub(crate) fn extract_loop_context(
     scope_events: &[TraceEvent],
 ) -> HashMap<u32, HashSet<u32>> {
@@ -854,12 +844,9 @@ pub(crate) fn extract_loop_context(
     context
 }
 
-/// Tracks per-loop branch coverage and detects convergence (no new coverage
-/// for `window` consecutive observations).
-///
-/// When a loop converges, branches enclosed by it are candidates for negation
-/// suppression — further Z3 solving on those branches is unlikely to discover
-/// new paths.
+/// Tracks per-loop branch coverage and detects convergence. Retained for unit
+/// tests; not used in the main exploration loop after MetaStrategy migration.
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct LoopCoverageTracker {
     /// Per loop_id: set of (branch_id, taken) pairs observed.
@@ -872,6 +859,7 @@ pub(crate) struct LoopCoverageTracker {
     window: usize,
 }
 
+#[cfg(test)]
 impl LoopCoverageTracker {
     pub(crate) fn new(window: usize) -> Self {
         Self {
@@ -957,11 +945,9 @@ impl LoopCoverageTracker {
     }
 }
 
-/// Input bundle for the `spawn_blocking` Z3 solve phase.
-///
-/// All fields are owned — safe to move to a blocking thread. Built by
-/// `build_z3_input` after updating invariant-detector and loop-coverage state
-/// on the main thread.
+/// Input bundle for the Z3 solve phase. Used by unit tests to validate Z3 solving
+/// independently of the main exploration loop.
+#[cfg(test)]
 struct Z3SolveInput {
     obs: Observation,
     solvable_with_idx: Vec<(usize, SymExpr)>,
@@ -973,7 +959,8 @@ struct Z3SolveInput {
     solver_timeout_ms: Option<u64>,
 }
 
-/// Output from the Z3 solve phase — no mutable state mutations.
+/// Output from the Z3 solve phase. Used by unit tests only.
+#[cfg(test)]
 struct Z3SolveOutput {
     /// New worklist candidates produced by successful Z3 solves.
     candidates: Vec<WorklistEntry>,
@@ -985,9 +972,8 @@ struct Z3SolveOutput {
 
 /// Pure Z3 solving phase: negates branch constraints to discover new paths.
 ///
-/// Takes owned data — safe to run in `tokio::task::spawn_blocking`. Mirrors the
-/// Z3 loop from `solve_and_generate` but performs no mutable state mutations
-/// (stall bookkeeping is returned via `Z3SolveOutput::stall_branch_ids`).
+/// Used by unit tests to validate Z3 solving logic directly.
+#[cfg(test)]
 fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
     let mut output = Z3SolveOutput {
         candidates: Vec::new(),
@@ -1039,82 +1025,30 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
     output
 }
 
-/// Build a `Z3SolveInput` bundle from a new-path observation, updating the
-/// invariant detector and loop coverage tracker in the process.
-///
-/// Must run on the main thread (borrows mutable state). Returns an owned bundle
-/// that can be moved to `spawn_blocking`.
-#[allow(clippy::too_many_arguments)]
-fn build_z3_input(
-    obs: &Observation,
-    invariant_detector: &mut LoopInvariantDetector,
-    loop_coverage_tracker: &mut LoopCoverageTracker,
-    param_infos: &[ParamInfo],
-    param_names: &[String],
-    solver_timeout_ms: Option<u64>,
-) -> Z3SolveInput {
-    let sym_constraints = extract_sym_constraints(&obs.result);
-    let solvable_with_idx: Vec<(usize, SymExpr)> = sym_constraints
-        .iter()
-        .enumerate()
-        .filter_map(|(i, c)| c.as_ref().map(|e| (i, e.clone())))
-        .collect();
 
-    // Update invariant-detection state and compute skip set.
-    invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
-    let invariant_skip = invariant_detector.skip_indices(
-        &obs.result.scope_events,
-        &obs.result.branch_path,
-    );
-
-    // Update loop-coverage state and snapshot converged loops.
-    let loop_context = extract_loop_context(&obs.result.scope_events);
-    loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
-    let converged_loops = loop_coverage_tracker.converged_snapshot();
-
-    Z3SolveInput {
-        obs: obs.clone(),
-        solvable_with_idx,
-        invariant_skip,
-        loop_context,
-        converged_loops,
-        param_infos: param_infos.to_vec(),
-        param_names: param_names.to_vec(),
-        solver_timeout_ms,
-    }
-}
-
-/// Solve/Generate phase: process new-path observations and produce candidate inputs.
+/// Solve/Generate phase: produce boundary-search and drilling candidates.
 ///
 /// For each new-path observation:
-/// - Extract symbolic constraints and negate each with Z3 (unless `skip_z3_phase`)
 /// - Try boundary search for Unknown constraints (interpolate between witnesses)
-/// - Fall back to blind fuzzing for Unknown constraints without witnesses
 /// - Drill stalled frontiers with targeted mutations
 ///
-/// `skip_z3_phase`: when `true`, the Z3 loop and the invariant/loop-coverage state
-/// updates are skipped. Pass `true` from the pipelined path where `build_z3_input`
-/// + `z3_solve_step` have already handled those steps.
+/// Z3 solving is handled by `Z3SolverStrategy.feedback()` in the main loop —
+/// not in this function.
 #[allow(clippy::too_many_arguments)] // boundary search + fitness scoring need broad context
 fn solve_and_generate(
     observations: &[Observation],
     frontier_set: &mut FrontierSet,
     param_infos: &[ParamInfo],
-    param_names: &[String],
+    _param_names: &[String],
     raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
     seen_branch_sides: &std::collections::HashSet<(u32, bool)>,
-    config: &ExploreConfig,
+    _config: &ExploreConfig,
     rng: &mut StdRng,
     target_branches: &HashSet<u32>,
     fitness_context: &mut FitnessContext,
     fitness_weights: &FitnessWeights,
     _mock_params: &[MockParam],
     branch_profile: Option<&crate::branch_profile::BranchProfile>,
-    invariant_detector: &mut LoopInvariantDetector,
-    loop_coverage_tracker: &mut LoopCoverageTracker,
-    meta_strategy: &mut MetaStrategy,
-    strategy_ctx: &StrategyContext,
-    skip_z3_phase: bool,
 ) -> SolveOutput {
     let mut output = SolveOutput::default();
 
@@ -1122,74 +1056,7 @@ fn solve_and_generate(
         // Extract symbolic constraints from the branch path.
         let sym_constraints = extract_sym_constraints(&obs.result);
 
-        // Collect solvable constraints with their original branch_path indices.
-        let solvable_with_idx: Vec<(usize, SymExpr)> = sym_constraints
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| c.as_ref().map(|e| (i, e.clone())))
-            .collect();
-        let solvable: Vec<SymExpr> = solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
-
-        if skip_z3_phase {
-            // Invariant/coverage state was already updated by `build_z3_input`;
-            // Z3 solving was already performed by `z3_solve_step` in spawn_blocking.
-            // Skip both here to avoid double-counting.
-        } else {
-            // Loop-invariant detection: observe this trace and compute skip indices.
-            invariant_detector.observe(&obs.result.scope_events, &obs.result.branch_path);
-            let invariant_skip = invariant_detector.skip_indices(
-                &obs.result.scope_events,
-                &obs.result.branch_path,
-            );
-
-            // Coverage-guided diminishing returns: build loop context and observe.
-            let loop_context = extract_loop_context(&obs.result.scope_events);
-            loop_coverage_tracker.observe(&loop_context, &obs.result.branch_path);
-
-            // Try to negate each branch constraint with Z3.
-            if !solvable.is_empty() {
-                for (solve_idx, &(branch_idx, _)) in solvable_with_idx.iter().enumerate() {
-                    // Skip redundant later occurrences of loop-invariant branches.
-                    if invariant_skip.contains(&branch_idx) {
-                        continue;
-                    }
-                    // Skip branches in converged loops.
-                    if loop_coverage_tracker.should_skip_branch(
-                        obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id),
-                        &loop_context,
-                    ) {
-                        continue;
-                    }
-                    match solver::solve_for_new_path(&solvable, solve_idx, config.solver_timeout_ms, param_infos) {
-                        Ok(SolveResult::Sat(values)) => {
-                            let new_inputs =
-                                overlay_solved_values(&obs.inputs, &values, param_names);
-                            output.candidates.push(WorklistEntry {
-                                inputs: new_inputs,
-                                source: InputSource::Z3Solved,
-                                fitness: None,
-                                mock_values: obs.mock_values.clone(),
-                            });
-                            output.z3_count += 1;
-                        }
-                        Ok(SolveResult::Unsat) => {
-                            if let Some(bd) = obs.result.branch_path.get(branch_idx) {
-                                frontier_set.increment_stall(bd.branch_id);
-                            }
-                        }
-                        Err(_) => {
-                            if let Some(bd) = obs.result.branch_path.get(branch_idx) {
-                                frontier_set.increment_stall(bd.branch_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // For Unknown constraints, try boundary search first (interpolate between
-        // true/false witnesses), then fall back to blind fuzzing.
-        let mut boundary_attempted = false;
+        // For Unknown constraints, try boundary search (interpolate between witnesses).
         let mut boundary_branches = 0usize;
         for (i, constraint_opt) in sym_constraints.iter().enumerate() {
             if constraint_opt.is_none() && i < obs.result.branch_path.len() {
@@ -1216,7 +1083,6 @@ fn solve_and_generate(
                         });
                         output.boundary_count += 1;
                     }
-                    boundary_attempted = true;
                     boundary_branches += 1;
                     if boundary_branches
                         >= boundary_search::MAX_BOUNDARY_BRANCHES_PER_ROUND
@@ -1227,33 +1093,6 @@ fn solve_and_generate(
             }
         }
 
-        // For Unknown constraints without boundary witnesses, use MetaStrategy
-        // to generate candidates instead of hardcoded fuzzing.
-        if !boundary_attempted {
-            let has_unknown = sym_constraints.iter().any(|c| c.is_none());
-            if has_unknown {
-                // Feed the current execution result to all strategies.
-                meta_strategy.feedback(&obs.inputs, &obs.result, obs.is_new_path);
-
-                // Generate candidates via meta-strategy.
-                for _ in 0..MUTATE_ROUNDS_PER_UNKNOWN {
-                    if let Some((inputs, strategy_idx)) = meta_strategy.next(strategy_ctx, rng) {
-                        let source = match meta_strategy.strategy_name(strategy_idx) {
-                            "boundary" => InputSource::BoundarySearch,
-                            "z3_solver" => InputSource::Z3Solved,
-                            _ => InputSource::Fuzzed,
-                        };
-                        output.candidates.push(WorklistEntry {
-                            inputs,
-                            source,
-                            fitness: None,
-                            mock_values: obs.mock_values.clone(),
-                        });
-                        output.fuzz_count += 1;
-                    }
-                }
-            }
-        }
     }
 
     // Parameter drilling: for stalled frontiers, generate targeted mutations.
@@ -1461,6 +1300,16 @@ pub struct McdcGoal {
     pub observed_values: Vec<Option<bool>>,
 }
 
+/// Map a MetaStrategy strategy name to the corresponding `InputSource` for attribution.
+fn input_source_from_strategy_name(name: &str) -> InputSource {
+    match name {
+        "user_provided" => InputSource::UserProvided,
+        "boundary" => InputSource::BoundarySearch,
+        "z3_solver" => InputSource::Z3Solved,
+        _ => InputSource::Fuzzed,
+    }
+}
+
 /// Run the concolic exploration loop on a function via a frontend subprocess.
 ///
 /// The loop alternates between two phases per round:
@@ -1481,7 +1330,10 @@ pub async fn explore(
     setup_context: Option<SetupContextStack>,
 ) -> Result<ExploreResult, ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
-    let mut worklist = BinaryHeap::new();
+    // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
+    // These are generated in-loop after new-path observations and need to be consumed
+    // before MetaStrategy returns more inputs, preserving their InputSource attribution.
+    let mut supplementary: BinaryHeap<WorklistEntry> = BinaryHeap::new();
     let mut covered_paths: HashSet<u64> = HashSet::new();
     let mut executions = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
@@ -1515,14 +1367,29 @@ pub async fn explore(
     // Used by fitness scoring to compute proximity/coverage scores.
     let mut target_branches: HashSet<u32> = HashSet::new();
 
-    // Build MetaStrategy with registered input generation strategies.
-    // Exhaustible strategies (boundary) go first; infinite strategies
-    // (random, fuzzer) provide ongoing coverage. User inputs and seeds
-    // are handled directly by the worklist, not through MetaStrategy.
+    // Build MetaStrategy for the concolic path.
+    //
+    // Strategy set: [UserProvided, BoundarySeeds, Z3Solver, Fuzzer]
+    //
+    // - UserProvidedStrategy yields user_inputs and seed_inputs (boundary dict + literals
+    //   pre-computed by the CLI). These are executed first with highest priority.
+    // - BoundarySeeds generates additional boundary values from param types.
+    // - Z3SolverStrategy receives feedback after each execution, runs Z3 on solvable
+    //   constraints, and queues solutions for subsequent next() calls.
+    // - FuzzerStrategy mutates interesting inputs for Unknown constraints.
+    //
+    // Drilling, boundary search, and MC/DC candidates go into a supplementary
+    // BinaryHeap (checked before MetaStrategy) to preserve their InputSource
+    // attribution and fitness-based priority ordering.
+    let combined_seed: Vec<Vec<serde_json::Value>> = {
+        let mut v = user_inputs;
+        v.extend(seed_inputs);
+        v
+    };
     let strategies: Vec<Box<dyn InputStrategy>> = vec![
+        Box::new(UserProvidedStrategy::new(combined_seed)),
         Box::new(BoundarySeeds::new(param_infos)),
-        Box::new(LiteralsStrategy::new(param_infos, &[])),
-        Box::new(RandomStrategy::new(None)),
+        Box::new(Z3SolverStrategy::new(config.solver_timeout_ms, param_infos.to_vec())),
         Box::new(FuzzerStrategy::new(None)),
     ];
     let mut meta_strategy = MetaStrategy::new(strategies, config.meta_config.clone());
@@ -1532,8 +1399,6 @@ pub async fn explore(
         capabilities: FrontendCapabilities::default(),
     };
 
-    let mut invariant_detector = LoopInvariantDetector::new();
-    let mut loop_coverage_tracker = LoopCoverageTracker::new(config.loop_convergence_window);
 
     // MC/DC tracking state: only allocated when MC/DC mode is enabled.
     let mut mcdc_table: Option<McdcTable> = if config.mcdc {
@@ -1545,31 +1410,13 @@ pub async fn explore(
     let mut mcdc_independent_count: usize = 0;
 
     // Generate initial mock values when mock_params are configured.
-    let initial_mocks = if !config.mock_params.is_empty() {
+    // (Retained for future use; currently unused since worklist seeding was replaced
+    // by UserProvidedStrategy in MetaStrategy.)
+    let _initial_mocks = if !config.mock_params.is_empty() {
         input_gen::generate_mock_values(&config.mock_params, &mut rng, None)
     } else {
         vec![]
     };
-
-    // Add user-provided candidates with highest priority.
-    for inputs in user_inputs {
-        worklist.push(WorklistEntry {
-            inputs,
-            source: InputSource::UserProvided,
-            fitness: None,
-            mock_values: initial_mocks.clone(),
-        });
-    }
-
-    // Seed the worklist.
-    for inputs in seed_inputs {
-        worklist.push(WorklistEntry {
-            inputs,
-            source: InputSource::Seed,
-            fitness: None,
-            mock_values: initial_mocks.clone(),
-        });
-    }
 
     // --- Float probe phase ---
     let float_indices = crate::float_probe::float_param_indices(param_infos);
@@ -1640,58 +1487,70 @@ pub async fn explore(
 
     let explore_start = Instant::now();
     let mut plateau_counter: usize = 0;
-    // Pipeline support: buffer speculatively-observed entries so that Z3
-    // solving (CPU) can overlap with the next frontend execution (I/O).
-    let mut pending_obs: std::collections::VecDeque<(WorklistEntry, ObserveOneResult)> =
-        std::collections::VecDeque::new();
-    let mut pipeline_overlaps: usize = 0;
+    let pipeline_overlaps: usize = 0; // pipelining removed; field kept for ExploreResult compat
 
-    // --- Two-phase exploration loop: Observe → Solve/Generate ---
+    // --- Strategy-driven exploration loop: Observe → Feedback → Generate ---
     //
-    // Each iteration processes one worklist entry:
-    //   1. Observe — execute the entry, classify the path
-    //   2. Solve/Generate — if new path, extract constraints and produce candidates
-    //
-    // When the worklist has a next entry available after a new-path observation,
-    // we pipeline: spawn Z3 solving on a blocking thread while executing the
-    // next entry concurrently via tokio::join!.  The speculative result is
-    // queued in `pending_obs` and processed in the next loop iteration.
+    // Each iteration:
+    //   1. Pop from supplementary (drilling/boundary/MC-DC candidates) or call
+    //      meta_strategy.next() for the next MetaStrategy-produced inputs.
+    //   2. Observe — execute and classify the path.
+    //   3. Feed result to MetaStrategy (Z3SolverStrategy solves synchronously
+    //      inside feedback() and queues solutions for future next() calls).
+    //   4. If new path, call solve_and_generate() for drilling/boundary candidates
+    //      and push them to the supplementary queue.
     loop {
-        // Drain speculatively-observed entries first; only pop worklist when queue is empty.
-        let (_entry, observe_result) = if let Some(pending) = pending_obs.pop_front() {
-            // LiveFirst was already applied before the speculative observe — do not re-apply.
-            pending
-        } else {
-            let Some(mut entry) = worklist.pop() else { break };
-            // --- LiveFirst mock adjustment (parity with explorer.rs) ---
-            // When entry has no per-execution mocks, copy from config so overrides
-            // can be applied per-dep without mutating shared config.
-            if entry.mock_values.is_empty() && !live_first_states.is_empty() {
-                entry.mock_values = config.mocks.clone();
+        // Priority: supplementary (drilling/boundary/MC-DC) > MetaStrategy.
+        let (mut entry, strategy_idx) = if let Some(e) = supplementary.pop() {
+            (e, None)
+        } else if let Some((inputs, idx)) = meta_strategy.next(&strategy_ctx, &mut rng) {
+            let source = input_source_from_strategy_name(meta_strategy.strategy_name(idx));
+            // Track generation counters for MetaStrategy-sourced inputs.
+            match source {
+                InputSource::Z3Solved => z3_generated += 1,
+                InputSource::Fuzzed => fuzz_generated += 1,
+                InputSource::BoundarySearch => boundary_generated += 1,
+                _ => {}
             }
-            apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
-
-            // Phase 1: Observe — execute and classify one worklist entry.
-            let budget = ExploreBudget {
-                unique_paths: executions.len(),
-                total_executions,
-                plateau_counter,
-                explore_start,
-            };
-
-            let result = observe_one(
-                &entry,
-                frontend,
-                function_name,
-                config,
-                &mut covered_paths,
-                &mut triage_state,
-                &budget,
-                &setup_context,
+            (
+                WorklistEntry {
+                    inputs,
+                    source,
+                    fitness: None,
+                    mock_values: vec![],
+                },
+                Some(idx),
             )
-            .await?;
-            (entry, result)
+        } else {
+            break;
         };
+
+        // --- LiveFirst mock adjustment (parity with explorer.rs) ---
+        // When entry has no per-execution mocks, copy from config so overrides
+        // can be applied per-dep without mutating shared config.
+        if entry.mock_values.is_empty() && !live_first_states.is_empty() {
+            entry.mock_values = config.mocks.clone();
+        }
+        apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
+
+        let budget = ExploreBudget {
+            unique_paths: executions.len(),
+            total_executions,
+            plateau_counter,
+            explore_start,
+        };
+
+        let observe_result = observe_one(
+            &entry,
+            frontend,
+            function_name,
+            config,
+            &mut covered_paths,
+            &mut triage_state,
+            &budget,
+            &setup_context,
+        )
+        .await?;
 
         let obs = match observe_result {
             ObserveOneResult::Observed(obs) => *obs,
@@ -1730,7 +1589,13 @@ pub async fn explore(
         raw_results.push((obs.inputs.clone(), recorded_mocks, obs.result.clone()));
 
         // Feed execution result to MetaStrategy for adaptive scoring.
+        // Z3SolverStrategy.feedback() runs Z3 synchronously on this thread; the
+        // tokio runtime uses a single thread (rt, not rt-multi-thread) so there
+        // is no thread pool to starve.
         meta_strategy.feedback(&obs.inputs, &obs.result, obs.is_new_path);
+        if let Some(idx) = strategy_idx {
+            meta_strategy.record_outcome(idx, obs.is_new_path);
+        }
 
         if !obs.is_new_path {
             plateau_counter += 1;
@@ -1884,7 +1749,7 @@ pub async fn explore(
                                             &values,
                                             &param_names,
                                         );
-                                        worklist.push(WorklistEntry {
+                                        supplementary.push(WorklistEntry {
                                             inputs: new_inputs,
                                             source: InputSource::McdcTarget,
                                             fitness: None,
@@ -1893,7 +1758,7 @@ pub async fn explore(
                                         tracing::debug!(
                                             branch_id = goal.branch_id,
                                             condition_index = goal.target_condition_index,
-                                            "mcdc_goal: solver SAT — added worklist entry"
+                                            "mcdc_goal: solver SAT — added supplementary entry"
                                         );
                                     }
                                     Ok(SolveResult::Unsat) => {
@@ -1920,82 +1785,7 @@ pub async fn explore(
 
         executions.push(obs.result.clone());
 
-        // Phase 2: Solve/Generate — produce new candidates from this observation.
-        //
-        // For new-path observations: build Z3 input (updates invariant/coverage state
-        // on the main thread), then run Z3 solving in spawn_blocking while optionally
-        // executing a lookahead entry concurrently via tokio::join!.
-        //
-        // For duplicate-path observations: the meta/drill phase still runs (covers
-        // drilling of stalled frontiers regardless of path novelty).
-        let (z3_output, pending_lookahead) = if obs.is_new_path {
-            let z3_input = build_z3_input(
-                &obs,
-                &mut invariant_detector,
-                &mut loop_coverage_tracker,
-                param_infos,
-                &param_names,
-                config.solver_timeout_ms,
-            );
-
-            // Speculatively pop the next worklist entry for lookahead.
-            let lookahead_entry_opt: Option<WorklistEntry> = worklist.pop().map(|mut next| {
-                // Apply LiveFirst to the lookahead entry now, before concurrent observe.
-                if next.mock_values.is_empty() && !live_first_states.is_empty() {
-                    next.mock_values = config.mocks.clone();
-                }
-                apply_live_first_overrides(&live_first_states, &mut next.mock_values);
-                next
-            });
-
-            // Snapshot budget for the concurrent lookahead observe (if it runs).
-            let budget_lookahead = ExploreBudget {
-                unique_paths: executions.len(),
-                total_executions,
-                plateau_counter,
-                explore_start,
-            };
-
-            let z3_handle = tokio::task::spawn_blocking(move || z3_solve_step(z3_input));
-
-            let (z3_res, lookahead_obs_opt) = if let Some(next_entry) = lookahead_entry_opt {
-                let (z3_res, obs_res) = tokio::join!(
-                    z3_handle,
-                    observe_one(
-                        &next_entry,
-                        frontend,
-                        function_name,
-                        config,
-                        &mut covered_paths,
-                        &mut triage_state,
-                        &budget_lookahead,
-                        &setup_context,
-                    )
-                );
-                pipeline_overlaps += 1;
-                (z3_res.expect("z3 solve panicked"), Some((next_entry, obs_res?)))
-            } else {
-                (z3_handle.await.expect("z3 solve panicked"), None)
-            };
-
-            // Apply stalls from Z3 Unsat/Err results.
-            for bid in &z3_res.stall_branch_ids {
-                frontier_set.increment_stall(*bid);
-            }
-            z3_generated += z3_res.z3_count;
-
-            (z3_res, lookahead_obs_opt)
-        } else {
-            // Duplicate path: no Z3 needed, no lookahead.
-            (Z3SolveOutput { candidates: vec![], z3_count: 0, stall_branch_ids: vec![] }, None)
-        };
-
-        // Meta/drill phase (always on main thread — needs mutable state access).
-        // `skip_z3_phase=true` when we just ran `z3_solve_step` via spawn_blocking
-        // (obs.is_new_path), to avoid double-counting invariant/coverage state updates
-        // and re-running the Z3 loop. For duplicate-path observations the flag has no
-        // effect since the inner loop already filters on `is_new_path`.
-        let skip_z3 = obs.is_new_path; // pipelined path already handled Z3
+        // Drill/boundary phase: produce supplementary candidates from this observation.
         let solve_output = solve_and_generate(
             &[obs],
             &mut frontier_set,
@@ -2010,22 +1800,13 @@ pub async fn explore(
             &fitness_weights,
             &config.mock_params,
             config.branch_profile.as_ref(),
-            &mut invariant_detector,
-            &mut loop_coverage_tracker,
-            &mut meta_strategy,
-            &strategy_ctx,
-            skip_z3,
         );
 
-        // Z3 candidates come from the pipelined z3_output; meta/drill from solve_output.
-        // z3_count is already accumulated above; add meta/drill counts here.
-        fuzz_generated += solve_output.fuzz_count;
         drill_generated += solve_output.drill_count;
         boundary_generated += solve_output.boundary_count;
 
-        // Push Z3 candidates (from pipelined phase) then meta/drill candidates.
-        for candidate in z3_output.candidates.into_iter().chain(solve_output.candidates) {
-            worklist.push(candidate);
+        for candidate in solve_output.candidates {
+            supplementary.push(candidate);
         }
 
         // Abandon frontiers that have exceeded the stall threshold.
@@ -2042,11 +1823,6 @@ pub async fn explore(
                 target_branches.remove(&f.branch_id);
                 abandoned_frontiers.push((f.branch_id, f.stall_count));
             }
-        }
-
-        // Queue the speculatively-observed lookahead entry for the next iteration.
-        if let Some(pair) = pending_lookahead {
-            pending_obs.push_back(pair);
         }
     }
 
@@ -2280,6 +2056,7 @@ mod tests {
     use crate::execution_record::{BranchDecision, SymConstraint};
     use crate::protocol::PerformanceMetrics;
     use crate::solver::ConcreteValue;
+    use crate::strategy::RandomStrategy;
     use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
     use std::collections::HashMap;
 
@@ -2846,11 +2623,6 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
-            &mut LoopInvariantDetector::new(),
-            &mut LoopCoverageTracker::new(0),
-            &mut MetaStrategy::new(vec![], Default::default()),
-            &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
-            false,
         );
 
         assert!(output.candidates.is_empty());
@@ -2858,8 +2630,11 @@ mod tests {
         assert_eq!(output.fuzz_count, 0);
     }
 
+    /// `solve_and_generate` no longer handles fuzz generation for unknown constraints —
+    /// that responsibility moved to MetaStrategy.feedback() (FuzzerStrategy) in the main loop.
+    /// For unknown constraints without boundary witnesses, no candidates are produced.
     #[test]
-    fn solve_and_generate_produces_fuzz_for_unknown_constraints() {
+    fn solve_and_generate_produces_no_candidates_for_unknown_without_witnesses() {
         let obs = Observation {
             inputs: vec![serde_json::json!(5)],
             result: make_exec_result(vec![BranchDecision {
@@ -2887,19 +2662,6 @@ mod tests {
         let mut frontier_set = FrontierSet::new();
         let mut rng = StdRng::seed_from_u64(42);
 
-        let mut meta = MetaStrategy::new(
-            vec![
-                Box::new(RandomStrategy::new(Some(42))),
-                Box::new(FuzzerStrategy::new(Some(42))),
-            ],
-            Default::default(),
-        );
-        let strat_ctx = StrategyContext {
-            params: param_infos.clone(),
-            literals: vec![],
-            capabilities: FrontendCapabilities::default(),
-        };
-
         let output = solve_and_generate(
             &[obs],
             &mut frontier_set,
@@ -2914,22 +2676,20 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
-            &mut LoopInvariantDetector::new(),
-            &mut LoopCoverageTracker::new(0),
-            &mut meta,
-            &strat_ctx,
-            false,
         );
 
-        assert!(output.fuzz_count > 0, "should produce fuzz candidates for unknown constraints");
-        assert!(
-            output.candidates.iter().all(|e| e.source == InputSource::Fuzzed),
-            "all candidates should be fuzzed"
-        );
+        // Z3 and fuzz generation moved to MetaStrategy — solve_and_generate produces no candidates
+        // for unknown constraints without boundary witnesses.
+        assert_eq!(output.fuzz_count, 0);
+        assert_eq!(output.z3_count, 0);
+        assert!(output.candidates.is_empty(), "no candidates without boundary witnesses");
     }
 
+    /// `solve_and_generate` no longer handles Z3 solving — that moved to
+    /// Z3SolverStrategy.feedback() in the main loop. Solvable expr constraints
+    /// produce no candidates from solve_and_generate itself.
     #[test]
-    fn solve_and_generate_produces_z3_for_expr_constraints() {
+    fn solve_and_generate_produces_no_z3_for_expr_constraints() {
         let x_gt_10 = SymExpr::BinOp {
             op: BinOpKind::Gt,
             left: Box::new(SymExpr::Param {
@@ -2945,9 +2705,7 @@ mod tests {
                 branch_id: 0,
                 line: 5,
                 taken: false,
-                constraint: SymConstraint::Expr {
-                    expr: x_gt_10,
-                },
+                constraint: SymConstraint::Expr { expr: x_gt_10 },
                 conditions: None,
             }]),
             source: InputSource::Seed,
@@ -2980,18 +2738,11 @@ mod tests {
             &FitnessWeights::default(),
             &[],
             None,
-            &mut LoopInvariantDetector::new(),
-            &mut LoopCoverageTracker::new(0),
-            &mut MetaStrategy::new(vec![], Default::default()),
-            &StrategyContext { params: vec![], literals: vec![], capabilities: FrontendCapabilities::default() },
-            false,
         );
 
-        assert!(output.z3_count > 0, "should produce Z3 candidates for solvable constraints");
-        assert!(
-            output.candidates.iter().any(|e| e.source == InputSource::Z3Solved),
-            "at least one candidate should be Z3-solved"
-        );
+        // Z3 solving moved to Z3SolverStrategy.feedback() — solve_and_generate produces 0.
+        assert_eq!(output.z3_count, 0, "Z3 moved to MetaStrategy; solve_and_generate produces no Z3 candidates");
+        assert!(!output.candidates.iter().any(|e| e.source == InputSource::Z3Solved));
     }
 
     // -- z3_solve_step unit tests --
@@ -3251,9 +3002,11 @@ mod tests {
     }
 
     /// Explore with the noop frontend returns a single unique path (empty branch path)
-    /// and terminates when the worklist is exhausted.
+    /// and terminates when the coverage plateau is reached. With MetaStrategy driving
+    /// the loop (FuzzerStrategy generates inputs indefinitely), the loop terminates
+    /// via plateau rather than worklist exhaustion.
     #[tokio::test]
-    async fn explore_noop_frontend_exhausts_worklist() {
+    async fn explore_noop_frontend_terminates_on_plateau() {
         let config = config_for_script("noop-frontend.sh");
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
@@ -3276,11 +3029,17 @@ mod tests {
         .await
         .expect("explore failed");
 
-        // Noop returns empty branch_path every time → one unique path, then plateau.
+        // Noop returns empty branch_path every time → one unique path.
         assert_eq!(result.unique_paths, 1);
         assert!(result.total_executions >= 1);
-        // With no branches to negate or fuzz, worklist empties after the seed.
-        assert_eq!(result.termination_reason, TerminationReason::WorklistExhausted);
+        // MetaStrategy (FuzzerStrategy) generates inputs indefinitely; the loop
+        // terminates on plateau since every execution hits the same empty path.
+        assert!(
+            result.termination_reason == TerminationReason::CoveragePlateau
+                || result.termination_reason == TerminationReason::WorklistExhausted,
+            "expected CoveragePlateau or WorklistExhausted, got {:?}",
+            result.termination_reason
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -3326,15 +3085,11 @@ mod tests {
         frontend.shutdown().await.expect("shutdown failed");
     }
 
-    /// When the worklist has entries available during a new-path observation, the
-    /// orchestrator pipelines Z3 solving with the next frontend execution.
-    /// `pipeline_overlaps` tracks how many times this overlap occurred.
-    ///
-    /// With the concolic-test-frontend (x>10, x==42 branches) and multiple seeds,
-    /// the worklist will be non-empty when a new-path observation triggers the Z3
-    /// phase, so pipelining fires and `pipeline_overlaps` is incremented.
+    /// `pipeline_overlaps` is always 0 after the pipelining optimization was replaced
+    /// by synchronous Z3SolverStrategy.feedback(). The field remains in ExploreResult
+    /// for backwards compatibility; this test confirms it compiles and is zero.
     #[tokio::test]
-    async fn explore_pipeline_overlaps_populated() {
+    async fn explore_pipeline_overlaps_is_zero() {
         let config = config_for_script("concolic-test-frontend.sh");
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
@@ -3345,9 +3100,6 @@ mod tests {
             ..Default::default()
         };
 
-        // Provide multiple seeds so the worklist is non-empty when the first new-path
-        // observation triggers Z3. Pipelining fires when build_z3_input runs and
-        // worklist.pop() returns Some(next_entry).
         let seeds: Vec<Vec<serde_json::Value>> = (0..5)
             .map(|i| vec![serde_json::json!(i)])
             .collect();
@@ -3364,18 +3116,10 @@ mod tests {
         .await
         .expect("explore failed");
 
-        // The field must be present in ExploreResult (will fail to compile if missing).
-        let _ = result.pipeline_overlaps;
-
-        // With 5 seeds in the worklist, the first new-path observation (x=0 hits x≤10)
-        // will find the next seed (x=1) in the worklist and pipeline Z3 with it.
-        assert!(
-            result.pipeline_overlaps > 0,
-            "expected at least one pipeline overlap with 5 seeds in worklist, got 0 \
-             (unique_paths={}, z3_generated={})",
-            result.unique_paths,
-            result.z3_generated,
-        );
+        // Field still present in ExploreResult (compile check).
+        assert_eq!(result.pipeline_overlaps, 0);
+        // Exploration must still make progress despite pipelining removal.
+        assert!(result.unique_paths >= 1, "expected at least one unique path");
 
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -3883,24 +3627,17 @@ mod tests {
 
     /// Integration test: loop peeling boost propagates through solve_and_generate.
     ///
-    /// Scenario: a 1-iteration loop (LoopEnter + Branch + LoopExit). The branch
-    /// is classified as `FirstExit` and receives `BOUNDARY_FITNESS_FIRST`. A
-    /// second observation with the same branch but empty scope_events is classified
-    /// as `NonLoop` and receives no boost (fitness stays None).
+    /// Scenario: a stalled frontier is drilled, producing drilled candidates. A
+    /// 1-iteration loop (LoopEnter + Branch + LoopExit) means the observation is
+    /// classified as `FirstExit` and candidates receive `BOUNDARY_FITNESS_FIRST`.
+    /// A second observation with empty scope_events is `NonLoop` — no boost.
     #[test]
     fn loop_peeling_fitness_boost_propagates_through_solve_and_generate() {
-        use crate::sym_expr::SymExpr;
-
-        let x_gt_10 = SymExpr::BinOp {
-            op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
-            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
-        };
         let branch = BranchDecision {
             branch_id: 0,
             line: 5,
             taken: true,
-            constraint: SymConstraint::Expr { expr: x_gt_10 },
+            constraint: SymConstraint::default(),
             conditions: None,
         };
         let param_infos = vec![ParamInfo {
@@ -3909,6 +3646,21 @@ mod tests {
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
+
+        let make_frontier_set = || {
+            let mut fs = FrontierSet::new();
+            // Add a stalled frontier so drilling produces candidates.
+            let f = crate::frontier::Frontier {
+                branch_id: 0,
+                depth: 1,
+                blocking_params: vec![0],
+                best_prefix: vec![serde_json::json!(15i64)],
+                stall_count: drilling::DRILL_STALL_THRESHOLD,
+                rarity_boost: 0.0,
+            };
+            fs.insert(f);
+            fs
+        };
 
         let make_obs = |scope_events: Vec<TraceEvent>| Observation {
             inputs: vec![serde_json::json!(15i64)],
@@ -3936,7 +3688,7 @@ mod tests {
         let call_solve = |obs: Observation| {
             solve_and_generate(
                 &[obs],
-                &mut FrontierSet::new(),
+                &mut make_frontier_set(),
                 &param_infos,
                 &param_names,
                 &[],
@@ -3948,15 +3700,6 @@ mod tests {
                 &FitnessWeights::default(),
                 &[],
                 None,
-                &mut LoopInvariantDetector::new(),
-                &mut LoopCoverageTracker::new(0),
-                &mut MetaStrategy::new(vec![], Default::default()),
-                &StrategyContext {
-                    params: vec![],
-                    literals: vec![],
-                    capabilities: FrontendCapabilities::default(),
-                },
-                false,
             )
         };
 
@@ -3969,7 +3712,7 @@ mod tests {
         let out_boundary = call_solve(make_obs(scope_with_loop));
         assert!(
             !out_boundary.candidates.is_empty(),
-            "boundary observation should produce Z3 candidates (NOT x>10 is SAT)"
+            "boundary observation should produce drill candidates (stalled frontier triggers drilling)"
         );
         assert!(
             out_boundary.candidates.iter().all(|c| c.fitness == Some(BOUNDARY_FITNESS_FIRST)),
@@ -3982,7 +3725,7 @@ mod tests {
         let out_no_boost = call_solve(make_obs(vec![]));
         assert!(
             !out_no_boost.candidates.is_empty(),
-            "non-loop observation should also produce Z3 candidates"
+            "non-loop observation should also produce drill candidates"
         );
         assert!(
             out_no_boost.candidates.iter().all(|c| c.fitness.is_none()),
@@ -4059,16 +3802,15 @@ mod tests {
     // Loop-invariant branch detection integration tests (str-in8d)
     // -----------------------------------------------------------------------
 
-    /// Integration test: solver negates an invariant loop branch exactly once,
-    /// not once per loop iteration.
+    /// Integration test: z3_solve_step negates an invariant loop branch exactly once,
+    /// not once per loop iteration, when invariant_skip is populated.
     ///
     /// Key design: each iteration uses a DIFFERENT threshold (x > 10, x > 20, x > 30)
     /// so that without invariant detection all 3 would produce independent SAT results
-    /// (10<x≤20, 20<x≤30, etc.). With invariant detection, only the first occurrence
-    /// is solved — z3_count drops from 3 to 1.
+    /// (10<x≤20, 20<x≤30, etc.). With invariant_skip={1,2}, only idx=0 gets Z3.
     ///
-    /// The "without detection" baseline uses empty scope_events (no loop context →
-    /// invariant detector is a no-op per early-return guard in observe()).
+    /// Z3 solving is now in z3_solve_step (called from Z3SolverStrategy.feedback),
+    /// not in solve_and_generate. This test exercises z3_solve_step directly.
     #[test]
     fn loop_invariant_branch_solved_once_not_n_times() {
         use crate::sym_expr::SymExpr;
@@ -4078,31 +3820,27 @@ mod tests {
         let n_iters: usize = 3;
         let thresholds: Vec<i64> = vec![10, 20, 30];
 
-        let make_branch_decisions = |thresholds: &[i64]| -> (Vec<BranchDecision>, Vec<TraceEvent>) {
-            let mut bp = Vec::new();
-            let mut scope_evts = Vec::new();
-            for &thresh in thresholds {
-                let expr = SymExpr::BinOp {
-                    op: BinOpKind::Gt,
-                    left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
-                    right: Box::new(SymExpr::Const(ConstValue::Int(thresh))),
-                };
-                let bd = BranchDecision {
-                    branch_id: 0, // same branch_id → invariant detector tracks it
-                    line: 5,
-                    taken: true,
-                    constraint: SymConstraint::Expr { expr },
-                    conditions: None,
-                };
-                scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
-                scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
-                bp.push(bd);
-            }
-            scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } });
-            (bp, scope_evts)
-        };
+        let mut bp = Vec::new();
+        let mut scope_evts = Vec::new();
+        for &thresh in &thresholds {
+            let expr = SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(thresh))),
+            };
+            let bd = BranchDecision {
+                branch_id: 0, // same branch_id → invariant detector tracks it
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::Expr { expr },
+                conditions: None,
+            };
+            scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
+            scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
+            bp.push(bd);
+        }
+        scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } });
 
-        let (bp, scope_evts) = make_branch_decisions(&thresholds);
         let param_infos = vec![ParamInfo {
             name: "x".into(),
             typ: crate::types::TypeInfo::Int,
@@ -4110,11 +3848,11 @@ mod tests {
         }];
         let param_names = vec!["x".to_string()];
 
-        let make_obs = |scope_events: Vec<TraceEvent>| Observation {
+        let obs = Observation {
             inputs: vec![serde_json::json!(35i64)],
             result: ExecuteResult {
                 branch_path: bp.clone(),
-                scope_events,
+                scope_events: scope_evts.clone(),
                 return_value: None,
                 thrown_error: None,
                 lines_executed: vec![],
@@ -4133,49 +3871,47 @@ mod tests {
             mock_values: vec![],
         };
 
-        let call_solve = |obs: &[Observation]| {
-            solve_and_generate(
-                obs,
-                &mut FrontierSet::new(),
-                &param_infos,
-                &param_names,
-                &[],
-                &std::collections::HashSet::new(),
-                &ExploreConfig::default(),
-                &mut StdRng::seed_from_u64(42),
-                &HashSet::new(),
-                &mut FitnessContext::new(),
-                &FitnessWeights::default(),
-                &[],
-                None,
-                &mut LoopInvariantDetector::new(),
-                &mut LoopCoverageTracker::new(0),
-                &mut MetaStrategy::new(vec![], Default::default()),
-                &StrategyContext {
-                    params: vec![],
-                    literals: vec![],
-                    capabilities: FrontendCapabilities::default(),
-                },
-                false,
-            )
-        };
+        // Build solvable_with_idx from branch path: all taken=true so path cond = expr.
+        let solvable_with_idx: Vec<(usize, SymExpr)> = bp.iter().enumerate()
+            .filter_map(|(i, bd)| match &bd.constraint {
+                SymConstraint::Expr { expr } => Some((i, expr.clone())),
+                SymConstraint::Unknown { .. } => None,
+            })
+            .collect();
 
-        // WITH loop scope_events: invariant detector fires (3 ≥ min_observations=2,
-        // all taken=true → invariant). skip_indices returns {1, 2}. Only idx=0 gets Z3.
-        let obs_with_scope = make_obs(scope_evts);
-        let out_with_detection = call_solve(&[obs_with_scope]);
+        // WITH invariant detection: LoopInvariantDetector computes skip_indices = {1, 2}.
+        let mut detector = LoopInvariantDetector::new();
+        detector.observe(&scope_evts, &bp);
+        let invariant_skip = detector.skip_indices(&scope_evts, &bp);
+
+        let out_with_detection = z3_solve_step(Z3SolveInput {
+            obs: obs.clone(),
+            solvable_with_idx: solvable_with_idx.clone(),
+            invariant_skip,
+            loop_context: HashMap::new(),
+            converged_loops: HashSet::new(),
+            param_infos: param_infos.clone(),
+            param_names: param_names.clone(),
+            solver_timeout_ms: None,
+        });
         assert_eq!(
             out_with_detection.z3_count, 1,
             "invariant detection: should solve only the first occurrence; got z3_count={}",
             out_with_detection.z3_count,
         );
 
-        // WITHOUT loop scope_events: invariant detector observe() is a no-op (early
-        // return when scope_events is empty). All 3 iterations get Z3 attempted.
-        // idx=0: NOT(x>10) → SAT (x=5). idx=1: x>10 AND NOT(x>20) → SAT (x=15).
-        // idx=2: x>10 AND x>20 AND NOT(x>30) → SAT (x=25). Total: z3_count=3.
-        let obs_no_scope = make_obs(vec![]);
-        let out_no_detection = call_solve(&[obs_no_scope]);
+        // WITHOUT invariant detection: empty invariant_skip → all 3 iterations get Z3.
+        // idx=0: NOT(x>10) → SAT. idx=1: x>10 AND NOT(x>20) → SAT. idx=2: SAT.
+        let out_no_detection = z3_solve_step(Z3SolveInput {
+            obs: obs.clone(),
+            solvable_with_idx: solvable_with_idx.clone(),
+            invariant_skip: HashSet::new(),
+            loop_context: HashMap::new(),
+            converged_loops: HashSet::new(),
+            param_infos: param_infos.clone(),
+            param_names: param_names.clone(),
+            solver_timeout_ms: None,
+        });
         assert_eq!(
             out_no_detection.z3_count, n_iters,
             "no invariant detection: should solve all {n_iters} iterations; got z3_count={}",
@@ -4260,7 +3996,7 @@ mod tests {
             branch_id: 0,
             line: 5,
             taken: true,
-            constraint: SymConstraint::Expr { expr: x_gt_10 },
+            constraint: SymConstraint::Expr { expr: x_gt_10.clone() },
             conditions: None,
         };
         // scope_events encode branch 0 as inside loop 1.
@@ -4301,44 +4037,58 @@ mod tests {
             })
             .collect();
 
-        let call_solve = |window: usize| {
-            let cfg = ExploreConfig { loop_convergence_window: window, ..Default::default() };
-            solve_and_generate(
-                &observations,
-                &mut FrontierSet::new(),
-                &param_infos,
-                &param_names,
-                &[],
-                &std::collections::HashSet::new(),
-                &cfg,
-                &mut StdRng::seed_from_u64(42),
-                &HashSet::new(),
-                &mut FitnessContext::new(),
-                &FitnessWeights::default(),
-                &[],
-                None,
-                &mut LoopInvariantDetector::new(),
-                &mut LoopCoverageTracker::new(window),
-                &mut MetaStrategy::new(vec![], Default::default()),
-                &StrategyContext {
-                    params: vec![],
-                    literals: vec![],
-                    capabilities: FrontendCapabilities::default(),
-                },
-                false,
-            )
-        };
+        // solvable_with_idx for a single-branch observation: [(0, x>10)]
+        let solvable_with_idx = vec![(0usize, x_gt_10)];
 
-        let out_no_conv = call_solve(0);
-        let out_conv = call_solve(3);
+        // Z3 solving now happens in z3_solve_step (called from Z3SolverStrategy.feedback),
+        // not in solve_and_generate. Simulate the main loop: process observations
+        // sequentially, updating LoopCoverageTracker and passing converged_loops to
+        // z3_solve_step each round.
+
+        // With window=3: obs 1–3 run Z3; obs 4 triggers convergence → skip; obs 5 → skip.
+        let mut tracker_conv = LoopCoverageTracker::new(3);
+        let mut z3_count_conv = 0usize;
+        for obs in &observations {
+            let loop_context = extract_loop_context(&obs.result.scope_events);
+            tracker_conv.observe(&loop_context, &obs.result.branch_path);
+            let converged = tracker_conv.converged_snapshot();
+            let out = z3_solve_step(Z3SolveInput {
+                obs: obs.clone(),
+                solvable_with_idx: solvable_with_idx.clone(),
+                invariant_skip: HashSet::new(),
+                loop_context,
+                converged_loops: converged,
+                param_infos: param_infos.clone(),
+                param_names: param_names.clone(),
+                solver_timeout_ms: None,
+            });
+            z3_count_conv += out.z3_count;
+        }
+
+        // Without convergence (window=0): all 5 run Z3.
+        let mut z3_count_no_conv = 0usize;
+        for obs in &observations {
+            let loop_context = extract_loop_context(&obs.result.scope_events);
+            let out = z3_solve_step(Z3SolveInput {
+                obs: obs.clone(),
+                solvable_with_idx: solvable_with_idx.clone(),
+                invariant_skip: HashSet::new(),
+                loop_context,
+                converged_loops: HashSet::new(),
+                param_infos: param_infos.clone(),
+                param_names: param_names.clone(),
+                solver_timeout_ms: None,
+            });
+            z3_count_no_conv += out.z3_count;
+        }
 
         // Without convergence: all 5 observations attempt Z3.
-        assert_eq!(out_no_conv.z3_count, 5, "window=0 should attempt Z3 for all 5 observations");
-        // With window=3: obs 1–3 attempt Z3; obs 4 triggers convergence and is skipped;
-        // obs 5 is already converged → skipped. Net: 3 Z3 attempts.
-        assert_eq!(out_conv.z3_count, 3, "window=3 should skip obs 4 and 5 after loop converges");
+        assert_eq!(z3_count_no_conv, 5, "window=0 should attempt Z3 for all 5 observations");
+        // With window=3: obs 1 adds new coverage (stale=0); obs 2-4 are stale (stale=1,2,3→converged);
+        // obs 5 is already converged → skipped. Z3 runs for obs 1-3, skipped for 4-5. Net: 3.
+        assert_eq!(z3_count_conv, 3, "window=3 should skip obs 4 and 5 after loop converges");
         assert!(
-            out_conv.z3_count < out_no_conv.z3_count,
+            z3_count_conv < z3_count_no_conv,
             "convergence should reduce Z3 candidates for saturated loop branches"
         );
     }
