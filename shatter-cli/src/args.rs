@@ -275,6 +275,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
         #[arg(long = "config")]
         config_path: Option<PathBuf>,
@@ -512,6 +517,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 60)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Write ObserveStageOutput JSON to this file. If omitted, writes to stdout.
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
@@ -691,6 +701,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Enable the genetic algorithm explorer.
         #[arg(long)]
         genetic: bool,
@@ -847,6 +862,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
@@ -893,6 +913,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
@@ -937,6 +962,11 @@ pub(crate) enum CliCommand {
         /// Default: 30s.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
+
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
 
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
@@ -1056,6 +1086,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
+
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
@@ -1095,6 +1130,11 @@ pub(crate) enum CliCommand {
         /// Build timeout in seconds for compiling instrumented code.
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
+
+        /// Compile harnesses in release mode (optimized but slower compilation).
+        /// Default is debug mode for faster compilation.
+        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+        release: bool,
 
         /// Memory limit in MB for the frontend process.
         #[arg(long)]

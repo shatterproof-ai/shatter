@@ -28,6 +28,7 @@ pub(crate) async fn run_properties(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
     _log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
@@ -74,6 +75,7 @@ pub(crate) async fn run_properties(
             memory_limit,
             None,
             false,
+            release,
         )?;
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())

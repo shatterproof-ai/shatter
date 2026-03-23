@@ -34,6 +34,7 @@ pub(crate) async fn run_explore(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
     timing_enabled: bool,
     inputs_path: Option<&Path>,
     config_path: Option<&Path>,
@@ -123,7 +124,7 @@ pub(crate) async fn run_explore(
     let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
     let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
     for lang in unique_langs {
-        let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled)?;
+        let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled, release)?;
         if mcdc {
             config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
         }

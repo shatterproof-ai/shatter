@@ -37,6 +37,7 @@ pub(crate) async fn run_scan(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
     parallelism: usize,
     timeout_per_fn: u64,
     timeout_explore: Option<f64>,
@@ -182,7 +183,7 @@ pub(crate) async fn run_scan(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false)?;
+        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -489,7 +490,7 @@ pub(crate) async fn run_scan(
     let first_lang = needed_langs.iter().next().copied().unwrap();
     let cli_lang = discovery_lang_to_cli_lang(first_lang)
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false)?;
+    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {

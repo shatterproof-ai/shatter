@@ -95,6 +95,7 @@ pub(crate) fn frontend_config(
     memory_limit: Option<u64>,
     shatter_dir: Option<&Path>,
     timing_enabled: bool,
+    release: bool,
 ) -> Result<FrontendConfig, String> {
     let (command, mut args) = match language {
         Language::TypeScript => {
@@ -148,7 +149,7 @@ pub(crate) fn frontend_config(
     let mut config = FrontendConfig::new(command);
     config.args = args;
     config.request_timeout = timeout;
-    apply_frontend_env(&mut config, log_level, exec_timeout, build_timeout);
+    apply_frontend_env(&mut config, log_level, exec_timeout, build_timeout, release);
     if timing_enabled {
         config.capabilities.push("timing".to_string());
     }
@@ -179,6 +180,7 @@ pub(crate) fn apply_frontend_env(
     log_level: LogLevel,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
 ) {
     config.env_vars.push((
         LogLevel::ENV_VAR.to_string(),
@@ -192,6 +194,12 @@ pub(crate) fn apply_frontend_env(
         "SHATTER_BUILD_TIMEOUT".to_string(),
         build_timeout.to_string(),
     ));
+    if release {
+        config.env_vars.push((
+            "SHATTER_HARNESS_RELEASE".to_string(),
+            "1".to_string(),
+        ));
+    }
 }
 
 /// For each function's external dependencies that are NOT in the current file,
@@ -391,6 +399,7 @@ mod cli_parity_tests {
             LogLevel::Info,
             CLI_EXEC_TIMEOUT_DEFAULT_SECS,
             CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+            false,
         );
         let keys: std::collections::HashSet<&str> =
             config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
@@ -413,6 +422,7 @@ mod cli_parity_tests {
             LogLevel::Info,
             CLI_EXEC_TIMEOUT_DEFAULT_SECS,
             CLI_BUILD_TIMEOUT_DEFAULT_SECS,
+            false,
         );
         let env_map: std::collections::HashMap<&str, &str> =
             config.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -495,6 +505,7 @@ mod cli_parity_tests {
                 None,
                 None,
                 false,
+                false,
             )
             .unwrap_or_else(|e| panic!("frontend_config({lang:?}) failed: {e}"));
 
@@ -536,7 +547,7 @@ mod tests {
     #[test]
     fn frontend_config_passes_timeout_env_vars() {
         let mut config = FrontendConfig::new(PathBuf::from("dummy"));
-        apply_frontend_env(&mut config, LogLevel::Info, 20, 45);
+        apply_frontend_env(&mut config, LogLevel::Info, 20, 45, false);
         let env_map: std::collections::HashMap<_, _> = config.env_vars.iter().cloned().collect();
         assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
         assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
@@ -544,7 +555,7 @@ mod tests {
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None, false).unwrap();
+        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None, false, false).unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
         assert_eq!(config.request_timeout, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT);
         // First arg suppresses Node warnings, second is the extracted bundle
@@ -559,7 +570,7 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None, false).unwrap();
+        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None, false, false).unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
@@ -581,6 +592,7 @@ mod tests {
             None,
             None,
             true,
+            false,
         )
         .unwrap();
         assert!(config.capabilities.iter().any(|cap| cap == "timing"));
