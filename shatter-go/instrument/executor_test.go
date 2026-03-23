@@ -269,8 +269,10 @@ func boom(x int) int {
 	if result.ThrownError == nil {
 		t.Fatal("expected error for panicking function")
 	}
-	if result.ThrownError.ErrorType != "runtime_error" {
-		t.Errorf("expected error_type runtime_error, got %q", result.ThrownError.ErrorType)
+	// The loop harness catches panics and reports them as "panic" (more precise than
+	// the old "runtime_error" which was inferred from non-zero exit status).
+	if result.ThrownError.ErrorType != "panic" {
+		t.Errorf("expected error_type panic, got %q", result.ThrownError.ErrorType)
 	}
 }
 
@@ -494,7 +496,7 @@ func TestGenerateMockFileContainsMockFunctions(t *testing.T) {
 		},
 	}
 
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	// Should contain a mock function for fs.readFile
 	if !contains(source, "ShatterMock_fs_readFile") {
@@ -512,8 +514,8 @@ func TestGenerateMockFileContainsMockFunctions(t *testing.T) {
 	}
 
 	// Should contain the dump function
-	if !contains(source, "shatterDumpMockCalls") {
-		t.Error("expected shatterDumpMockCalls function")
+	if !contains(source, "shatterGetAndResetMockCalls") {
+		t.Error("expected shatterGetAndResetMockCalls function")
 	}
 }
 
@@ -627,7 +629,7 @@ func TestGenerateMockFileThrowError(t *testing.T) {
 		},
 	}
 
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	if !contains(source, "ShatterMock_db_query") {
 		t.Error("expected ShatterMock_db_query in generated source")
@@ -656,7 +658,7 @@ func TestGenerateMockFileThrowErrorNoTrackCalls(t *testing.T) {
 		},
 	}
 
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	if !contains(source, "panic(msg)") {
 		t.Error("expected panic in throw_error mock")
@@ -783,7 +785,7 @@ func TestGenerateMockFileThrowErrorGeneratesErrVariant(t *testing.T) {
 		},
 	}
 
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	// Panic variant
 	if !contains(source, "func ShatterMock_db_query(args ...any) any") {
@@ -810,7 +812,7 @@ func TestGenerateMockFileErrVariantImportsFmt(t *testing.T) {
 			DefaultBehavior: BehaviorThrowError,
 		},
 	}
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 	if !contains(source, `"fmt"`) {
 		t.Error("expected fmt import for throw_error mocks")
 	}
@@ -822,7 +824,7 @@ func TestGenerateMockFileErrVariantImportsFmt(t *testing.T) {
 			DefaultBehavior: BehaviorRepeatLast,
 		},
 	}
-	source2 := generateMockFile(mocks2, "/tmp/calls.json")
+	source2 := generateLoopMockFile(mocks2)
 	if contains(source2, `"fmt"`) {
 		t.Error("fmt import should only appear for throw_error mocks")
 	}
@@ -836,7 +838,7 @@ func TestGenerateMockFileCycleBehavior(t *testing.T) {
 			DefaultBehavior: BehaviorCycle,
 		},
 	}
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	// Cycle behavior uses modulo indexing
 	if !contains(source, "idx % len(retvals)") {
@@ -858,7 +860,7 @@ func TestGenerateMockFileErrVariantTracksCalls(t *testing.T) {
 			DefaultBehavior:  BehaviorThrowError,
 		},
 	}
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	// Count occurrences of shatterRecordMockCall — should appear in both variants.
 	count := 0
@@ -880,7 +882,7 @@ func TestGenerateMockFileErrVariantNoTrackCalls(t *testing.T) {
 			DefaultBehavior: BehaviorThrowError,
 		},
 	}
-	source := generateMockFile(mocks, "/tmp/calls.json")
+	source := generateLoopMockFile(mocks)
 
 	if contains(source, `shatterRecordMockCall("api.fetch"`) {
 		t.Error("should not track calls when ShouldTrackCalls is false")
@@ -904,8 +906,8 @@ func TestGenerateMockFilePerExecutionVariation(t *testing.T) {
 		},
 	}
 
-	source1 := generateMockFile(mocks1, "/tmp/calls.json")
-	source2 := generateMockFile(mocks2, "/tmp/calls.json")
+	source1 := generateLoopMockFile(mocks1)
+	source2 := generateLoopMockFile(mocks2)
 
 	// The generated sources should differ because return values differ.
 	if source1 == source2 {
@@ -1338,4 +1340,172 @@ func add(a, b int) int { return a + b }
 	if got != 7 {
 		t.Errorf("expected 7, got %d", got)
 	}
+}
+
+// --- Persistent subprocess tests ---
+
+// TestPersistentHarnessReusesSameSubprocess verifies that two sequential calls to the
+// same function reuse the cached harness rather than recompiling.
+func TestPersistentHarnessReusesSameSubprocess(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func double(n int) int {
+	return n * 2
+}
+`)
+	// First call — cold path: compiles and spawns harness.
+	result1, err := ExecuteFunction(src, "double", []json.RawMessage{json.RawMessage("5")}, false)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	var v1 int
+	if err := json.Unmarshal(result1.ReturnValue, &v1); err != nil {
+		t.Fatalf("unmarshal result1: %v", err)
+	}
+	if v1 != 10 {
+		t.Errorf("first call: expected 10, got %d", v1)
+	}
+
+	// Retrieve the harness from cache and record its pid.
+	id := harnessID{sourcePath: src, funcName: "double", mocksHash: ""}
+	h1 := getHarness(id)
+	if h1 == nil {
+		t.Fatal("expected harness in cache after first call")
+	}
+	pid1 := h1.cmd.Process.Pid
+
+	// Second call — warm path: reuses existing subprocess.
+	result2, err := ExecuteFunction(src, "double", []json.RawMessage{json.RawMessage("7")}, false)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	var v2 int
+	if err := json.Unmarshal(result2.ReturnValue, &v2); err != nil {
+		t.Fatalf("unmarshal result2: %v", err)
+	}
+	if v2 != 14 {
+		t.Errorf("second call: expected 14, got %d", v2)
+	}
+
+	h2 := getHarness(id)
+	if h2 == nil {
+		t.Fatal("expected harness in cache after second call")
+	}
+	if h2.cmd.Process.Pid != pid1 {
+		t.Errorf("second call spawned a new subprocess (pid %d → %d), expected reuse", pid1, h2.cmd.Process.Pid)
+	}
+
+	// Cleanup
+	CloseAllHarnesses()
+}
+
+// TestPersistentHarnessResultsDoNotAccumulate verifies that branch recordings from
+// one iteration do not bleed into the next (state is reset between calls).
+func TestPersistentHarnessResultsDoNotAccumulate(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func classify(n int) string {
+	if n > 0 {
+		return "positive"
+	}
+	return "non-positive"
+}
+`)
+	// Call once with a positive value (true branch taken).
+	r1, err := ExecuteFunction(src, "classify", []json.RawMessage{json.RawMessage("5")}, false)
+	if err != nil {
+		t.Fatalf("call 1: %v", err)
+	}
+	branches1 := len(r1.BranchPath)
+
+	// Call again with negative value (false branch taken).
+	r2, err := ExecuteFunction(src, "classify", []json.RawMessage{json.RawMessage("-3")}, false)
+	if err != nil {
+		t.Fatalf("call 2: %v", err)
+	}
+	branches2 := len(r2.BranchPath)
+
+	// Each call should record exactly 1 branch decision, not 2 accumulated.
+	if branches1 != 1 {
+		t.Errorf("call 1: expected 1 branch decision, got %d", branches1)
+	}
+	if branches2 != 1 {
+		t.Errorf("call 2: expected 1 branch decision, got %d", branches2)
+	}
+
+	// Branch decisions should differ between calls.
+	if branches1 > 0 && branches2 > 0 {
+		if r1.BranchPath[0].Taken == r2.BranchPath[0].Taken {
+			t.Errorf("expected different branch outcomes for n=5 and n=-3")
+		}
+	}
+
+	CloseAllHarnesses()
+}
+
+// TestCloseAllHarnesses verifies that CloseAllHarnesses terminates subprocesses and
+// clears the cache.
+func TestCloseAllHarnesses(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func inc(n int) int { return n + 1 }
+`)
+	if _, err := ExecuteFunction(src, "inc", []json.RawMessage{json.RawMessage("1")}, false); err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	id := harnessID{sourcePath: src, funcName: "inc", mocksHash: ""}
+	if getHarness(id) == nil {
+		t.Fatal("expected harness in cache")
+	}
+
+	CloseAllHarnesses()
+
+	if getHarness(id) != nil {
+		t.Error("expected cache empty after CloseAllHarnesses")
+	}
+}
+
+// TestPersistentHarnessCrashRecovery verifies that after a harness crash the next
+// call recompiles and succeeds.
+func TestPersistentHarnessCrashRecovery(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func inc(n int) int { return n + 1 }
+`)
+	// First call succeeds.
+	if _, err := ExecuteFunction(src, "inc", []json.RawMessage{json.RawMessage("1")}, false); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	// Simulate crash by killing the subprocess's stdin (causes EOF in harness loop).
+	id := harnessID{sourcePath: src, funcName: "inc", mocksHash: ""}
+	h := getHarness(id)
+	if h == nil {
+		t.Fatal("expected harness in cache")
+	}
+	h.stdin.Close() // sends EOF → harness exits
+	// Give it a moment to exit
+	time.Sleep(50 * time.Millisecond)
+
+	// Manually remove the dead entry so the next call re-spawns.
+	removeHarness(id)
+
+	// Second call should recompile and succeed.
+	result, err := ExecuteFunction(src, "inc", []json.RawMessage{json.RawMessage("41")}, false)
+	if err != nil {
+		t.Fatalf("recovery call: %v", err)
+	}
+	var v int
+	if err := json.Unmarshal(result.ReturnValue, &v); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v != 42 {
+		t.Errorf("expected 42, got %d", v)
+	}
+
+	CloseAllHarnesses()
 }

@@ -602,13 +602,15 @@ func add(a int, b int) int {
 	}
 
 	phases := timingPhaseNames(responses[1])
+	// The persistent-subprocess path emits these phases on the first (cold) call.
+	// File-parsing phases (execute.parse_perf, execute.parse_results, etc.) no longer
+	// exist; results stream back over stdout rather than being written to temp files.
 	for _, want := range []string{
 		"execute.total",
 		"execute.analyze",
 		"execute.instrument",
 		"execute.build",
 		"execute.run",
-		"execute.parse_perf",
 		"serialize.response",
 	} {
 		if !phases[want] {

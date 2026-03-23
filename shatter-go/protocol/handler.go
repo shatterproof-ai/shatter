@@ -626,6 +626,7 @@ func (h *Handler) Registry() *generators.Registry {
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
+	instrument.CloseAllHarnesses()
 	h.registry.Close()
 	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"

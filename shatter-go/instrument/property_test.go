@@ -164,7 +164,7 @@ func TestPropertyThrowErrorMockContainsPanic(t *testing.T) {
 				DefaultBehavior: BehaviorThrowError,
 			},
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		if !contains(source, "panic(msg)") {
 			t.Fatalf("throw_error mock for %q missing panic(msg)", symbol)
 		}
@@ -240,7 +240,7 @@ func TestPropertyMockFileAlwaysStartsWithPackageMain(t *testing.T) {
 		for i := range mocks {
 			mocks[i] = genMockConfig(t)
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		if !contains(source, "package main") {
 			t.Fatal("generated mock file must start with package main")
 		}
@@ -256,7 +256,7 @@ func TestPropertyPassthroughProducesNoMockFunction(t *testing.T) {
 				DefaultBehavior: BehaviorPassthrough,
 			},
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		safeName := sanitizeMockName(symbol)
 		if contains(source, "ShatterMock_"+safeName) {
 			t.Fatalf("passthrough mock for %q should not generate ShatterMock_ function", symbol)
@@ -274,7 +274,7 @@ func TestPropertyThrowErrorProducesBothVariants(t *testing.T) {
 				DefaultBehavior: BehaviorThrowError,
 			},
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		safeName := sanitizeMockName(symbol)
 
 		if !contains(source, "func ShatterMock_"+safeName+"(args ...any) any") {
@@ -301,7 +301,7 @@ func TestPropertyCallTrackingConditional(t *testing.T) {
 				DefaultBehavior:  behavior,
 			},
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		hasTracking := contains(source, fmt.Sprintf(`shatterRecordMockCall(%q`, symbol))
 
 		if track && !hasTracking {
