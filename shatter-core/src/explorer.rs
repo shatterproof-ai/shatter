@@ -20,10 +20,14 @@ use crate::coverage_metrics::DiscoveryMethod;
 use crate::mock_value_space::{LiveCallOutcome, LiveFirstState, classify_connection_failure};
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
-    generate_inputs_with_custom, generate_mock_values, generate_random_inputs,
-    literals_to_candidate_inputs, prefetch_custom_values, PrefetchedValues, ValueSource,
+    generate_inputs_with_custom, generate_mock_values,
+    prefetch_custom_values, PrefetchedValues, ValueSource,
 };
 use crate::orchestrator::FrontendCapabilities;
+use crate::strategy::{
+    BoundarySeeds, InputStrategy, LiteralsStrategy, MetaStrategy, PoolSeedsStrategy,
+    RandomStrategy, StrategyContext, UserProvidedStrategy,
+};
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
     SetupContextEntry, SetupContextStack,
@@ -625,6 +629,19 @@ pub(crate) async fn send_setup(
     }
 }
 
+/// Map a strategy name to a discovery attribution method.
+///
+/// Strategies that know they produced inputs from a specific semantic source
+/// (user-provided, boundary values) get precise attribution. All other strategies
+/// (literals, pool seeds, random, fuzzer) are attributed as `Random`.
+fn explorer_discovery_method(strategy_name: &str) -> DiscoveryMethod {
+    match strategy_name {
+        "user_provided" => DiscoveryMethod::UserProvided,
+        "boundary" => DiscoveryMethod::BoundarySearch,
+        _ => DiscoveryMethod::Random,
+    }
+}
+
 /// Send a Teardown command to the frontend.
 pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, level: SetupLevel) -> Result<(), ExploreError> {
     let response = frontend
@@ -840,38 +857,41 @@ pub async fn explore_function(
         }
     }
 
-    let float_bias = crate::float_probe::build_bias_map(&float_probe_results);
-    let has_integer_treating = float_bias
-        .values()
-        .any(|c| *c == crate::float_probe::FloatClassification::IntegerTreating);
-
-    // --- User-provided candidate inputs (highest priority, no budget cap) ---
-    let mut user_iter = config.user_seeds.iter().cloned().peekable();
-
-    // --- Literal-derived seed inputs ---
-    // Execute extracted literals first to cover magic-value branches before random exploration.
-    let literal_candidates = literals_to_candidate_inputs(&analysis.params, &analysis.literals);
-    let literal_budget = literal_candidates
-        .len()
-        .min(config.max_iterations as usize / 2);
-    let mut literal_iter = literal_candidates.into_iter().take(literal_budget).peekable();
-
-    // --- Candidate inputs (from --inputs or .shatter/ config) ---
-    // Priority above pool seeds, below literal seeds.
-    let candidate_budget = config
-        .candidate_inputs
-        .len()
-        .min(config.max_iterations as usize / 3);
-    let mut candidate_iter = config.candidate_inputs.iter().take(candidate_budget).cloned().peekable();
-
-    // --- Pool-derived seed inputs ---
-    // Cross-function interesting values, injected after literals but before random generation.
-    let pool_budget = config
-        .pool_seeds
-        .len()
-        .min(config.max_iterations as usize / 4);
-    let mut pool_iter = config.pool_seeds.iter().take(pool_budget).cloned().peekable();
-
+    // --- MetaStrategy construction ---
+    // Replaces the previous hardcoded iterator chain (user → literals → candidates → pool →
+    // random). MetaStrategy handles all input generation; custom generators (which require an
+    // async frontend round-trip) remain a fallback path outside the strategy.
+    //
+    // Strategy set for the random path:
+    //   [UserProvided, Literals, PoolSeeds, BoundarySeeds, Random]
+    //
+    // user_seeds and candidate_inputs are combined into a single UserProvidedStrategy since
+    // they share the same semantics (pre-specified inputs executed with highest priority).
+    // When custom generators are enabled, RandomStrategy is excluded so that MetaStrategy
+    // exhausts after finite seeds; the custom generator then serves as the infinite fallback.
+    let combined_user: Vec<Vec<serde_json::Value>> = {
+        let mut v: Vec<Vec<serde_json::Value>> = config.user_seeds.clone();
+        v.extend(config.candidate_inputs.iter().cloned());
+        v
+    };
+    let mut strategy_vec: Vec<Box<dyn InputStrategy>> = vec![
+        Box::new(UserProvidedStrategy::new(combined_user)),
+        Box::new(LiteralsStrategy::new(&analysis.params, &analysis.literals)),
+        Box::new(PoolSeedsStrategy::new(config.pool_seeds.clone())),
+        Box::new(BoundarySeeds::new(&analysis.params)),
+    ];
+    if !use_generators {
+        // When no custom generators, RandomStrategy is the infinite fallback within MetaStrategy.
+        // When custom generators are active, they serve as the infinite fallback instead
+        // (they require an async frontend round-trip and cannot be a standard strategy).
+        strategy_vec.push(Box::new(RandomStrategy::new(None)));
+    }
+    let mut meta_strategy = MetaStrategy::new(strategy_vec, config.meta_config.clone());
+    let strategy_ctx = StrategyContext {
+        params: analysis.params.clone(),
+        literals: analysis.literals.clone(),
+        capabilities: config.capabilities.clone(),
+    };
     let explore_start = Instant::now();
     let mut effective_budget = config.max_iterations;
     // Track recent path discoveries for surplus claim decisions.
@@ -949,34 +969,28 @@ pub async fn explore_function(
         }
 
         // --- Input generation ---
-        // Priority: user seeds → literals → candidate inputs → pool seeds → custom generators → random.
-        let inputs = {
+        // Poll MetaStrategy for the next candidate inputs. When MetaStrategy is
+        // exhausted (only possible when custom generators are enabled and all finite
+        // strategies have been drained), fall back to the custom generator path.
+        // Returns (inputs, strategy_idx): strategy_idx is None for custom-generator fallback.
+        let (inputs, strategy_idx) = {
             let _input_gen_span = tracing::info_span!("input_gen").entered();
-            if let Some(user_inputs) = user_iter.next() {
-                user_inputs
-            } else if let Some(lit_inputs) = literal_iter.next() {
-                lit_inputs
-            } else if let Some(cand_inputs) = candidate_iter.next() {
-                cand_inputs
-            } else if let Some(pool_inputs) = pool_iter.next() {
-                pool_inputs
-            } else if use_generators {
-                generate_inputs_with_custom(
-                    &analysis.params,
-                    &config.value_sources,
-                    &mut prefetched,
-                    &mut rng,
-                    Some(&config.capabilities),
-                )
-            } else if has_integer_treating {
-                crate::input_gen::generate_random_inputs_with_float_bias(
-                    &analysis.params,
-                    &float_bias,
-                    &mut rng,
-                    None,
-                )
-            } else {
-                generate_random_inputs(&analysis.params, &mut rng, None)
+            match meta_strategy.next(&strategy_ctx, &mut rng) {
+                Some((v, idx)) => (v, Some(idx)),
+                None if use_generators => {
+                    // Custom generators require an async frontend round-trip; they cannot
+                    // be a standard InputStrategy, so they serve as the infinite fallback
+                    // when MetaStrategy (finite strategies only) is exhausted.
+                    let v = generate_inputs_with_custom(
+                        &analysis.params,
+                        &config.value_sources,
+                        &mut prefetched,
+                        &mut rng,
+                        Some(&config.capabilities),
+                    );
+                    (v, None)
+                }
+                None => break,
             }
         };
 
@@ -1020,6 +1034,15 @@ pub async fn explore_function(
         // per-dep states accordingly.
         update_live_first_states(&obs.exec_result, &mut live_first_states);
 
+        // --- MetaStrategy feedback and outcome recording ---
+        // Fan out the execution result to all strategies for adaptive scoring.
+        // record_outcome updates the sliding window for the strategy that produced
+        // these inputs, enabling adaptive reallocation.
+        meta_strategy.feedback(&inputs, &obs.exec_result, obs.is_new_path);
+        if let Some(idx) = strategy_idx {
+            meta_strategy.record_outcome(idx, obs.is_new_path);
+        }
+
         // --- Per-execution teardown ---
         if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
             send_teardown(frontend, &analysis.name, config.setup_level)
@@ -1030,8 +1053,12 @@ pub async fn explore_function(
             }
         }
 
+        // Attribute discovery to the strategy that produced the inputs.
+        let discovery_method = strategy_idx
+            .map(|idx| explorer_discovery_method(meta_strategy.strategy_name(idx)))
+            .unwrap_or(DiscoveryMethod::Random);
         for branch_id in &obs.new_branch_ids {
-            discoveries.push((*branch_id, DiscoveryMethod::Random));
+            discoveries.push((*branch_id, discovery_method));
         }
         if let Some(summary) = obs.execution_summary {
             new_path_executions.push(summary);
@@ -2570,8 +2597,13 @@ mod tests {
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("user seeds should succeed");
         assert_eq!(result.iterations, 5);
-        // The first execution should use the user-provided seed value.
-        assert_eq!(result.raw_results[0].0, user_seed_value);
+        // The user-provided seed should appear in raw_results within the budget.
+        // MetaStrategy uses adaptive selection so ordering is not guaranteed, but
+        // UserProvidedStrategy has exactly 1 input and MUST be drained within budget.
+        let found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == user_seed_value);
+        assert!(found, "user seed {:?} should be executed within the budget; got {:?}",
+            user_seed_value,
+            result.raw_results.iter().map(|(i, _, _)| i).collect::<Vec<_>>());
         frontend.shutdown().await.expect("shutdown failed");
     }
 
@@ -2600,17 +2632,14 @@ mod tests {
         };
         let result = explore_function(&mut frontend, &analysis, &config, None)
             .await.expect("candidate inputs should succeed");
-        // Literal-derived inputs come first (from stub_analysis literals),
-        // then candidate_inputs, then pool_seeds.
-        // Find the candidate value in raw_results — it should appear before pool value.
-        let candidate_pos = result.raw_results.iter().position(|(inputs, _mocks, _)| *inputs == candidate_value);
-        let pool_pos = result.raw_results.iter().position(|(inputs, _mocks, _)| *inputs == pool_value);
-        assert!(candidate_pos.is_some(), "candidate input should be executed");
-        assert!(pool_pos.is_some(), "pool seed should be executed");
-        assert!(
-            candidate_pos.unwrap() < pool_pos.unwrap(),
-            "candidate inputs should be consumed before pool seeds"
-        );
+        // Both candidate_inputs and pool_seeds should be executed within the budget.
+        // MetaStrategy uses adaptive selection so strict ordering is not guaranteed;
+        // both UserProvidedStrategy (candidate) and PoolSeedsStrategy (pool) are finite
+        // and MUST each be drained within the 10-iteration budget.
+        let candidate_found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == candidate_value);
+        let pool_found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == pool_value);
+        assert!(candidate_found, "candidate input should be executed");
+        assert!(pool_found, "pool seed should be executed");
         frontend.shutdown().await.expect("shutdown failed");
     }
 
@@ -2625,7 +2654,7 @@ mod tests {
         let analysis = stub_analysis();
         let non_boundary_seed = vec![serde_json::json!(42)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 1, seed: Some(99), mocks: vec![],
+            file: "test.ts".into(), max_iterations: 2, seed: Some(99), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
@@ -2635,7 +2664,12 @@ mod tests {
             project_root: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            // Non-adaptive (round-robin) to ensure UserProvidedStrategy is drained
+            // deterministically within 2 iterations. harvest_from_exploration filters
+            // paths with count > DEFAULT_RARITY_THRESHOLD (2), so we must keep
+            // iterations ≤ DEFAULT_RARITY_THRESHOLD to avoid filtering all results.
+            meta_config: crate::strategy::MetaConfig { adaptive: false, ..Default::default() },
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,

@@ -119,6 +119,11 @@
             "branch_id": 0,
             "function": "safeDivide",
             "severity": "handled_error"
+          },
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
@@ -134,6 +139,11 @@
             "branch_id": 0,
             "function": "safeDivide",
             "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
@@ -652,6 +662,36 @@
           "kind": "float"
         },
         "value": -6.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 59.36960968314429
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -975.5294086611232
       }
     ],
     "{\"kind\":\"int\"}": [
@@ -661,6 +701,16 @@
             "branch_id": 0,
             "function": "classify_number",
             "severity": "rare_path"
+          },
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          },
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
@@ -669,6 +719,36 @@
           "kind": "int"
         },
         "value": -46
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 786
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -276
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [

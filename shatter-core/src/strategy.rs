@@ -71,6 +71,17 @@ pub trait InputStrategy: Send {
     fn estimated_size(&self) -> Option<u64> {
         None
     }
+
+    /// Whether this strategy is finite — permanently exhausted once `next()` returns `None`.
+    ///
+    /// Returns `true` for bounded strategies (user-provided, boundary seeds, literals, pool).
+    /// Returns `false` for reactive strategies (Z3 solver, fuzzer) that produce outputs only
+    /// after receiving feedback: they may return `None` now but produce inputs after a
+    /// subsequent `feedback()` call. The [`MetaStrategy`] uses this to avoid permanently
+    /// marking reactive strategies as exhausted when they temporarily have nothing queued.
+    fn is_finite(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,9 +360,16 @@ impl MetaStrategy {
     }
 
     /// Fan out execution feedback to all registered strategies.
+    ///
+    /// Feedback is sent to all non-exhausted strategies AND to any reactive
+    /// (non-finite) strategies even if they were skipped earlier — they may
+    /// use feedback to queue new candidates for future `next()` calls.
     pub fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, was_new_path: bool) {
         for state in &mut self.states {
-            if !state.exhausted {
+            // Always deliver feedback to reactive strategies (Z3 solver, fuzzer):
+            // they need it to queue solutions even if currently empty.
+            // Skip only finite strategies that are truly exhausted.
+            if !state.exhausted || !state.strategy.is_finite() {
                 state.strategy.feedback(inputs, result, was_new_path);
             }
         }
@@ -386,8 +404,12 @@ impl MetaStrategy {
         self.states.iter().all(|s| s.exhausted)
     }
 
-    /// Try to get the next candidate from a specific strategy, marking it
-    /// exhausted if it returns None.
+    /// Try to get the next candidate from a specific strategy.
+    ///
+    /// Finite strategies (user-provided, boundary seeds, etc.) are marked exhausted
+    /// when they return `None` — they will never produce more inputs. Reactive
+    /// strategies (Z3 solver, fuzzer) are NOT marked exhausted; they may return
+    /// `None` now but produce inputs after a subsequent `feedback()` call.
     fn try_next(&mut self, idx: usize, ctx: &StrategyContext) -> Option<Vec<Value>> {
         let state = &mut self.states[idx];
         if state.exhausted {
@@ -399,7 +421,11 @@ impl MetaStrategy {
                 Some(inputs)
             }
             None => {
-                state.exhausted = true;
+                // Only permanently exhaust finite strategies. Reactive strategies
+                // (Z3 solver, fuzzer) can produce inputs after future feedback calls.
+                if state.strategy.is_finite() {
+                    state.exhausted = true;
+                }
                 None
             }
         }
@@ -410,11 +436,13 @@ impl MetaStrategy {
     fn next_static(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
         let weights = self.config.static_weights.clone()?;
 
-        // Build weight vector for non-exhausted strategies.
+        // Track strategies that returned None this call (temporarily empty reactive
+        // strategies or exhausted finite ones) to avoid infinite loops.
+        let mut skipped_this_call = std::collections::HashSet::new();
         loop {
             let mut candidates: Vec<(usize, f64)> = Vec::new();
             for (idx, state) in self.states.iter().enumerate() {
-                if state.exhausted {
+                if state.exhausted || skipped_this_call.contains(&idx) {
                     continue;
                 }
                 let weight = weights
@@ -433,16 +461,20 @@ impl MetaStrategy {
             if let Some(inputs) = self.try_next(idx, ctx) {
                 return Some((inputs, idx));
             }
-            // Strategy exhausted on this call; loop to rebuild candidates.
+            // Strategy returned None; skip it for the rest of this call.
+            skipped_this_call.insert(idx);
         }
     }
 
     fn next_adaptive(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+        // Track strategies that returned None this call (temporarily empty reactive
+        // strategies or exhausted finite ones) to avoid infinite loops.
+        let mut skipped_this_call = std::collections::HashSet::new();
         loop {
             let scores = self.compute_scores();
             let candidates: Vec<(usize, f64)> = scores
                 .into_iter()
-                .filter(|(idx, _)| !self.states[*idx].exhausted)
+                .filter(|(idx, _)| !self.states[*idx].exhausted && !skipped_this_call.contains(idx))
                 .collect();
 
             if candidates.is_empty() {
@@ -453,7 +485,8 @@ impl MetaStrategy {
             if let Some(inputs) = self.try_next(idx, ctx) {
                 return Some((inputs, idx));
             }
-            // Strategy exhausted; loop to recompute.
+            // Strategy returned None; skip it for the rest of this call.
+            skipped_this_call.insert(idx);
         }
     }
 
@@ -696,6 +729,10 @@ impl InputStrategy for FuzzerStrategy {
     fn name(&self) -> &str {
         "fuzzer"
     }
+
+    fn is_finite(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +817,10 @@ impl InputStrategy for Z3SolverStrategy {
 
     fn name(&self) -> &str {
         Z3_SOLVER_STRATEGY_NAME
+    }
+
+    fn is_finite(&self) -> bool {
+        false
     }
 }
 

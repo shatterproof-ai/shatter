@@ -137,9 +137,11 @@ pub fn bulk_shrink_candidate(inputs: &[Value], param_infos: &[ParamInfo]) -> Opt
     let mut trial = inputs.to_vec();
     let mut any_changed = false;
     for i in 0..param_infos.len().min(inputs.len()) {
+        let orig_complexity = value_complexity(&inputs[i]);
         let candidates = shrink_candidates(&inputs[i], &param_infos[i].typ);
-        if let Some(first) = candidates.into_iter().next() {
-            trial[i] = first;
+        // Only replace if the candidate is strictly simpler than the original.
+        if let Some(simpler) = candidates.into_iter().find(|c| value_complexity(c) < orig_complexity) {
+            trial[i] = simpler;
             any_changed = true;
         }
     }
