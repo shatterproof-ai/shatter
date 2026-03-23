@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { isDeepStrictEqual } from "node:util";
+
 import { reconstructValue } from "./reconstruct.js";
 import type {
   ExecuteResponse,
@@ -1051,13 +1051,18 @@ export async function executeInstrumented(
   // Resolve the function from the module exports
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
 
-  // Snapshot module-level variables before execution
+  // Snapshot module-level variables before execution (JSON strings, not deep clones)
   const exportKeys = Object.keys(finalExports.exports).filter(
     (k) => typeof finalExports.exports[k] !== "function",
   );
-  const beforeSnapshot = new Map<string, unknown>();
+  const beforeSnapshot = new Map<string, string | undefined>();
   for (const key of exportKeys) {
-    beforeSnapshot.set(key, structuredClone(finalExports.exports[key]));
+    try {
+      beforeSnapshot.set(key, JSON.stringify(finalExports.exports[key]));
+    } catch {
+      // Non-serializable (circular refs, etc.) — skip comparison for this export
+      beforeSnapshot.set(key, undefined);
+    }
   }
 
   const fn = finalExports.exports[functionName];
@@ -1099,14 +1104,20 @@ export async function executeInstrumented(
   // Detect module-level variable changes after execution
   if (capture) {
     for (const key of exportKeys) {
-      const before = beforeSnapshot.get(key);
-      const after = finalExports.exports[key];
-      if (!isDeepStrictEqual(before, after)) {
+      const beforeJson = beforeSnapshot.get(key);
+      if (beforeJson === undefined) continue; // non-serializable — skip
+      let afterJson: string | undefined;
+      try {
+        afterJson = JSON.stringify(finalExports.exports[key]);
+      } catch {
+        continue; // became non-serializable
+      }
+      if (beforeJson !== afterJson) {
         sideEffects.push({
           kind: "global_state_change",
           variable: key,
-          before,
-          after,
+          before: JSON.parse(beforeJson),
+          after: finalExports.exports[key],
         });
       }
     }
