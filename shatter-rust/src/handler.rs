@@ -52,7 +52,6 @@ fn exec_timeout_from_env() -> u64 {
 
 /// Read the harness cache directory from `SHATTER_HARNESS_CACHE` env var.
 /// Returns `None` if unset or empty.
-#[cfg(test)]
 fn harness_cache_from_env() -> Option<String> {
     std::env::var("SHATTER_HARNESS_CACHE")
         .ok()
@@ -61,7 +60,6 @@ fn harness_cache_from_env() -> Option<String> {
 
 /// Read the harness scratch directory from `SHATTER_HARNESS_SCRATCH` env var.
 /// Returns `None` if unset or empty.
-#[cfg(test)]
 fn harness_scratch_from_env() -> Option<String> {
     std::env::var("SHATTER_HARNESS_SCRATCH")
         .ok()
@@ -77,29 +75,30 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     Ok(out_path.to_string_lossy().into_owned())
 }
 
-/// Processes protocol requests from stdin and writes responses to stdout.
-/// Lifecycle manager for persistent harness subprocesses.
+/// Lifecycle manager for compiled Rust harness subprocesses.
 ///
-/// Keeps compiled harness processes alive across multiple execute calls so they
-/// can be reused without recompilation. Currently a skeleton — actual harness
-/// compilation and execution are implemented once the Rust execute handler is
-/// complete. The struct is wired into `Handler` and its `close_all()` method is
-/// called on shutdown so resources are released correctly when that work lands.
+/// Keeps one running harness process per unique (file, function, mocks) triple.
+/// `close_all()` is called on shutdown to kill subprocesses and clean up harness directories.
 pub struct PersistentHarnessManager {
-    /// Placeholder for the process map (source_path + func_name → subprocess).
-    /// Will hold `HashMap<HarnessKey, ChildProcess>` once execute is implemented.
-    _placeholder: (),
+    /// The harness subprocess cache. Interior-mutable so `handle_execute` keeps `&self`.
+    pub cache: crate::executor::HarnessCache,
 }
 
 impl PersistentHarnessManager {
     pub fn new() -> Self {
-        Self { _placeholder: () }
+        Self {
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 
-    /// Terminates all cached harness subprocesses and frees their resources.
-    /// Called from the shutdown handler to ensure clean process teardown.
+    /// Terminates all cached harness subprocesses and removes their build directories.
     pub fn close_all(&mut self) {
-        // No-op until execute is implemented and harness processes are spawned.
+        let mut map = self.cache.lock().unwrap();
+        for (_, mut h) in map.drain() {
+            let _ = h.child.kill();
+            let _ = h.child.wait();
+            let _ = std::fs::remove_dir_all(&h.harness_dir);
+        }
     }
 }
 
@@ -477,6 +476,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     &req.mocks,
                     self.exec_timeout_ms,
                     Some(timing),
+                    &self.harness_manager.cache,
                 )
             })
         } else {
@@ -486,6 +486,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 &req.inputs,
                 &req.mocks,
                 self.exec_timeout_ms,
+                &self.harness_manager.cache,
             )
         };
 
@@ -1073,9 +1074,8 @@ mod tests {
             "execute.read_source",
             "execute.extract_signature",
             "execute.instrument",
+            "execute.generate_harness",
             "execute.build",
-            "execute.run",
-            "execute.parse_result",
             "serialize.response",
         ] {
             assert!(phases.contains(expected), "missing timing phase {expected}");
