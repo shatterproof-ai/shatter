@@ -367,11 +367,33 @@ fn main() {{
     std::fs::write(src_dir.join("main.rs"), &main_rs)
         .map_err(|e| format!("failed to write main.rs: {e}"))?;
 
-    // Build
+    // Build: run cargo check first for fast validation, then full build
     let release = std::env::var("SHATTER_HARNESS_RELEASE")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let skip_check = std::env::var("SHATTER_SKIP_CHECK")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !skip_check {
+        let mut check_args = vec!["check"];
+        if release {
+            check_args.push("--release");
+        }
+        let check_output = std::process::Command::new("cargo")
+            .args(&check_args)
+            .current_dir(build_dir)
+            .output()
+            .map_err(|e| format!("failed to run `cargo check`: {e}"))?;
+
+        if !check_output.status.success() {
+            let stderr = String::from_utf8_lossy(&check_output.stderr);
+            return Err(format!("cargo check failed:\n{stderr}"));
+        }
+    }
+
     let mut cargo_args = vec!["build"];
     if release {
         cargo_args.push("--release");
