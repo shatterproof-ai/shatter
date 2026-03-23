@@ -111,6 +111,16 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub(crate) project_dir: Option<std::path::PathBuf>,
 
+    /// Override config values using dotted-path key=value pairs (repeatable).
+    ///
+    /// Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+    ///
+    /// Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML
+    /// scalars (integers, floats, booleans, strings). Precedence: above any
+    /// `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+    #[arg(long = "set", global = true, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub(crate) set_overrides: Vec<String>,
+
     /// When to use terminal colors: always, auto (default), or never.
     /// Respects the NO_COLOR environment variable (auto treats it as never).
     #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
@@ -2789,6 +2799,32 @@ mod tests {
             }
             _ => panic!("expected Scan command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_set_overrides_repeatable() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--set",
+            "defaults.max_iterations=200",
+            "--set",
+            "defaults.exploration.adaptive=false",
+            "target.ts:fn",
+        ]);
+        assert_eq!(
+            cli.set_overrides,
+            vec![
+                "defaults.max_iterations=200".to_string(),
+                "defaults.exploration.adaptive=false".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_set_overrides_empty_by_default() {
+        let cli = Cli::parse_from(["shatter", "explore", "target.ts:fn"]);
+        assert!(cli.set_overrides.is_empty());
     }
 }
 

@@ -56,6 +56,7 @@ pub(crate) async fn run_explore(
     seeds_dir: &Path,
     no_seeds: bool,
     record: bool,
+    set_overrides: &[String],
     meta_config: &shatter_core::strategy::MetaConfig,
     observe_output: Option<&Path>,
     replay_recorded: bool,
@@ -352,6 +353,7 @@ pub(crate) async fn run_explore(
                 inputs_path,
                 max_iterations,
                 timeout,
+                set_overrides,
             )
             .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
 

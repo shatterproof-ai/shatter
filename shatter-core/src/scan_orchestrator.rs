@@ -2284,6 +2284,7 @@ fn load_config_candidate_inputs(
         None,
         max_iterations,
         timeout_secs,
+        &[],
     ) {
         Ok(resolved) if !resolved.candidate_inputs.is_empty() => {
             log::debug!(
