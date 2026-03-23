@@ -7,6 +7,8 @@ import {
   clearCompiledScriptCache,
   deleteCompiledScriptEntry,
   getExecTimeoutMs,
+  getHarnessCacheDir,
+  getHarnessScratchDir,
   isMcdcEnabled,
   DEFAULT_EXEC_TIMEOUT_MS,
   truncateMessage,
@@ -399,6 +401,60 @@ describe("getExecTimeoutMs", () => {
   it("ignores negative values and returns default", () => {
     process.env["SHATTER_EXEC_TIMEOUT"] = "-5";
     expect(getExecTimeoutMs()).toBe(DEFAULT_EXEC_TIMEOUT_MS);
+  });
+});
+
+describe("getHarnessCacheDir", () => {
+  const original = process.env["SHATTER_HARNESS_CACHE"];
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env["SHATTER_HARNESS_CACHE"];
+    } else {
+      process.env["SHATTER_HARNESS_CACHE"] = original;
+    }
+  });
+
+  it("returns value when set", () => {
+    process.env["SHATTER_HARNESS_CACHE"] = "/tmp/cache";
+    expect(getHarnessCacheDir()).toBe("/tmp/cache");
+  });
+
+  it("returns undefined when unset", () => {
+    delete process.env["SHATTER_HARNESS_CACHE"];
+    expect(getHarnessCacheDir()).toBeUndefined();
+  });
+
+  it("returns undefined when empty", () => {
+    process.env["SHATTER_HARNESS_CACHE"] = "";
+    expect(getHarnessCacheDir()).toBeUndefined();
+  });
+});
+
+describe("getHarnessScratchDir", () => {
+  const original = process.env["SHATTER_HARNESS_SCRATCH"];
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env["SHATTER_HARNESS_SCRATCH"];
+    } else {
+      process.env["SHATTER_HARNESS_SCRATCH"] = original;
+    }
+  });
+
+  it("returns value when set", () => {
+    process.env["SHATTER_HARNESS_SCRATCH"] = "/tmp/scratch";
+    expect(getHarnessScratchDir()).toBe("/tmp/scratch");
+  });
+
+  it("returns undefined when unset", () => {
+    delete process.env["SHATTER_HARNESS_SCRATCH"];
+    expect(getHarnessScratchDir()).toBeUndefined();
+  });
+
+  it("returns undefined when empty", () => {
+    process.env["SHATTER_HARNESS_SCRATCH"] = "";
+    expect(getHarnessScratchDir()).toBeUndefined();
   });
 });
 

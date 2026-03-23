@@ -154,6 +154,16 @@ pub(crate) fn frontend_config(
     Ok(config)
 }
 
+/// Apply harness storage environment variables to a frontend config.
+pub(crate) fn apply_storage_env(
+    config: &mut FrontendConfig,
+    storage: &shatter_core::harness_storage::HarnessStorage,
+) {
+    for (key, value) in storage.env_vars() {
+        config.env_vars.push((key, value));
+    }
+}
+
 /// Apply standard environment variables to a frontend config.
 pub(crate) fn apply_frontend_env(
     config: &mut FrontendConfig,
@@ -487,6 +497,25 @@ mod cli_parity_tests {
                     "frontend_config({lang:?}) must propagate governed env var {var}"
                 );
             }
+        }
+    }
+
+    /// `apply_storage_env` must set all three storage env vars.
+    #[test]
+    fn apply_storage_env_sets_all_storage_vars() {
+        use shatter_core::harness_storage::{
+            HarnessStorage, ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH,
+        };
+        let storage = HarnessStorage::for_project(Path::new("/tmp/test"));
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_storage_env(&mut config, &storage);
+        let keys: std::collections::HashSet<&str> =
+            config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        for var in [ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, ENV_ARTIFACT_DIR] {
+            assert!(
+                keys.contains(var),
+                "apply_storage_env must set {var}"
+            );
         }
     }
 }

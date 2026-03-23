@@ -419,6 +419,32 @@ func TestExecTimeoutIgnoresNegative(t *testing.T) {
 	}
 }
 
+func TestHarnessCacheDirFromEnv(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_CACHE", "/tmp/test-cache")
+	if got := harnessCacheDir(); got != "/tmp/test-cache" {
+		t.Errorf("expected /tmp/test-cache, got %v", got)
+	}
+}
+
+func TestHarnessCacheDirUnset(t *testing.T) {
+	if got := harnessCacheDir(); got != "" {
+		t.Errorf("expected empty string when unset, got %v", got)
+	}
+}
+
+func TestHarnessScratchDirFromEnv(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_SCRATCH", "/tmp/test-scratch")
+	if got := harnessScratchDir(); got != "/tmp/test-scratch" {
+		t.Errorf("expected /tmp/test-scratch, got %v", got)
+	}
+}
+
+func TestHarnessScratchDirUnset(t *testing.T) {
+	if got := harnessScratchDir(); got != "" {
+		t.Errorf("expected empty string when unset, got %v", got)
+	}
+}
+
 func TestSanitizeMockName(t *testing.T) {
 	tests := []struct {
 		input string

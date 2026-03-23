@@ -49,6 +49,22 @@ fn exec_timeout_from_env() -> u64 {
     }
 }
 
+/// Read the harness cache directory from `SHATTER_HARNESS_CACHE` env var.
+/// Returns `None` if unset or empty.
+fn harness_cache_from_env() -> Option<String> {
+    std::env::var("SHATTER_HARNESS_CACHE")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Read the harness scratch directory from `SHATTER_HARNESS_SCRATCH` env var.
+/// Returns `None` if unset or empty.
+fn harness_scratch_from_env() -> Option<String> {
+    std::env::var("SHATTER_HARNESS_SCRATCH")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
 /// Write instrumented source to a temp directory and return the output path.
 fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     let dir = std::env::temp_dir().join(format!("shatter-instrument-{}", std::process::id()));
@@ -67,6 +83,12 @@ pub struct Handler<R, W, L> {
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
     native_registry: Option<NativeRegistry>,
+    /// Harness cache directory from `SHATTER_HARNESS_CACHE` (unused until execute is implemented).
+    #[allow(dead_code)]
+    harness_cache_dir: Option<String>,
+    /// Harness scratch directory from `SHATTER_HARNESS_SCRATCH` (unused until execute is implemented).
+    #[allow(dead_code)]
+    harness_scratch_dir: Option<String>,
     /// Remembered from the most recent Analyze or Instrument request so Execute
     /// can fall back when the core omits the file field (which it always does).
     last_file: Option<String>,
@@ -81,6 +103,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
+            harness_cache_dir: harness_cache_from_env(),
+            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
@@ -101,6 +125,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
+            harness_cache_dir: harness_cache_from_env(),
+            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: Some(registry),
             last_file: None,
@@ -117,6 +143,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: level,
             exec_timeout_ms: exec_timeout_from_env(),
+            harness_cache_dir: harness_cache_from_env(),
+            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
@@ -1433,6 +1461,37 @@ mod tests {
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
         assert_eq!(result, DEFAULT_EXEC_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn harness_cache_from_env_reads_var() {
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "/tmp/cache") };
+        let result = harness_cache_from_env();
+        unsafe { std::env::remove_var("SHATTER_HARNESS_CACHE") };
+        assert_eq!(result, Some("/tmp/cache".to_string()));
+    }
+
+    #[test]
+    fn harness_cache_from_env_empty_returns_none() {
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+        let result = harness_cache_from_env();
+        unsafe { std::env::remove_var("SHATTER_HARNESS_CACHE") };
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn harness_scratch_from_env_reads_var() {
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "/tmp/scratch") };
+        let result = harness_scratch_from_env();
+        unsafe { std::env::remove_var("SHATTER_HARNESS_SCRATCH") };
+        assert_eq!(result, Some("/tmp/scratch".to_string()));
+    }
+
+    #[test]
+    fn harness_scratch_from_env_unset_returns_none() {
+        unsafe { std::env::remove_var("SHATTER_HARNESS_SCRATCH") };
+        let result = harness_scratch_from_env();
+        assert_eq!(result, None);
     }
 
     #[test]
