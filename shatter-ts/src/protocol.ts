@@ -295,6 +295,12 @@ export type StaticOpacityReason =
   | "abstract_type"
   | "no_implementors";
 
+/** Reason a type was detected as potentially opaque via medium-confidence static analysis. */
+export type MediumOpacityReason =
+  | "infrastructure_package"
+  | "closeable_interface"
+  | "native_handle_field";
+
 export type TypeInfo =
   | { kind: "int" }
   | { kind: "float" }
@@ -306,7 +312,7 @@ export type TypeInfo =
   | { kind: "union"; variants: TypeInfo[] }
   | { kind: "nullable"; inner: TypeInfo }
   | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo }
-  | { kind: "opaque"; label: string; static_opacity?: StaticOpacityReason };
+  | { kind: "opaque"; label: string; static_opacity?: StaticOpacityReason; medium_opacity?: MediumOpacityReason };
 
 export interface BranchInfo {
   id: number;

@@ -701,4 +701,35 @@ describe("analyzeFile", () => {
       expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", static_opacity: "transitively_opaque" });
     });
   });
+
+  describe("medium-confidence opacity heuristics", () => {
+    const fixturePath = path.join(fixtures, "medium-opaque-types.ts");
+
+    it("class with close() method is detected as opaque with closeable_interface reason", () => {
+      const results = analyzeFile(fixturePath, "handleResource");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toMatchObject({ kind: "opaque", medium_opacity: "closeable_interface" });
+      expect((fn.params[0]!.type as { static_opacity?: string }).static_opacity).toBeUndefined();
+    });
+
+    it("class with fd field is detected as opaque with native_handle_field reason", () => {
+      const results = analyzeFile(fixturePath, "handleFd");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", medium_opacity: "native_handle_field" });
+    });
+
+    it("class with handle field is detected as opaque with native_handle_field reason", () => {
+      const results = analyzeFile(fixturePath, "handleOs");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.params[0]!.type).toMatchObject({ kind: "opaque", medium_opacity: "native_handle_field" });
+    });
+
+    it("plain data class without close or handle fields is NOT detected as opaque", () => {
+      const results = analyzeFile(fixturePath, "handleSafe");
+      expect(results).toHaveLength(1);
+      const paramType = results[0]!.params[0]!.type;
+      expect(paramType.kind).not.toBe("opaque");
+    });
+  });
 });

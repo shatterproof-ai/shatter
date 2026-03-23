@@ -20,6 +20,7 @@ import type {
   DependencyKind,
   LiteralValue,
   StaticOpacityReason,
+  MediumOpacityReason,
 } from "./protocol.js";
 import type { TimingCollector } from "./timing.js";
 
@@ -449,6 +450,12 @@ export function convertType(
       }
     }
 
+    // Medium-confidence opaque detection: infra npm packages, closeable types, native handles
+    const mediumResult = detectMediumOpacity(type as ts.ObjectType, checker, sourceFile ?? null);
+    if (mediumResult) {
+      return { kind: "opaque", label: mediumResult.label, medium_opacity: mediumResult.reason };
+    }
+
     // Generic object types (interfaces, type literals, classes)
     return convertObjectType(type as ts.ObjectType, checker, sourceFile);
   }
@@ -871,6 +878,96 @@ function isOpaqueType(type: ts.Type, checker: ts.TypeChecker): string | null {
     // Fallback: if it's from @types/node but we can't determine the exact module,
     // use the first candidate module
     return `${candidateModules[0]}.${name}`;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Medium-confidence opaque type heuristics
+// ---------------------------------------------------------------------------
+
+/** npm package names whose types are medium-confidence opaque infrastructure resources. */
+const INFRA_NPM_PACKAGES: ReadonlySet<string> = new Set([
+  "pg", "redis", "ioredis", "mongoose", "typeorm", "knex",
+  "sequelize", "nodemailer", "prisma", "mysql2", "mysql",
+  "mssql", "cassandra-driver", "couchbase",
+]);
+
+/** npm scoped package prefixes for medium-confidence infra detection. */
+const INFRA_NPM_PREFIXES: readonly string[] = ["@aws-sdk/", "@google-cloud/", "@azure/"];
+
+/**
+ * Detects medium-confidence signals that a type may be an opaque infrastructure resource.
+ * Returns a reason and label if detected, or null.
+ *
+ * These signals are suggestive but not definitive — a single medium-confidence signal
+ * should not alone produce a high-confidence opaque suggestion.
+ *
+ * Heuristics (first match wins):
+ * 1. Type declared in a known infrastructure npm package → "infrastructure_package"
+ * 2. Type has close()/dispose()/destroy() method → "closeable_interface"
+ * 3. Type has field named fd/handle/fileDescriptor → "native_handle_field"
+ *
+ * Heuristics 2 and 3 only apply to types declared in the current source file.
+ */
+function detectMediumOpacity(
+  type: ts.ObjectType,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile | null,
+): { reason: MediumOpacityReason; label: string } | null {
+  const sym = type.getSymbol();
+  if (!sym) return null;
+  const decls = sym.getDeclarations() ?? [];
+  if (decls.length === 0) return null;
+
+  const typeName = sym.getName();
+  const mainDecl = decls[0]!;
+  const declFile = mainDecl.getSourceFile().fileName;
+
+  // Heuristic 1: Type from a known infrastructure npm package.
+  // Applies to external types (node_modules) regardless of sourceFile.
+  const nodeModulesIdx = declFile.lastIndexOf("node_modules/");
+  if (nodeModulesIdx !== -1) {
+    const afterNodeModules = declFile.substring(nodeModulesIdx + "node_modules/".length);
+    let pkgName: string;
+    if (afterNodeModules.startsWith("@")) {
+      const parts = afterNodeModules.split("/");
+      pkgName = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : afterNodeModules;
+    } else {
+      const slash = afterNodeModules.indexOf("/");
+      pkgName = slash === -1 ? afterNodeModules : afterNodeModules.substring(0, slash);
+    }
+    if (INFRA_NPM_PACKAGES.has(pkgName)) {
+      return { reason: "infrastructure_package", label: `${pkgName}.${typeName}` };
+    }
+    for (const prefix of INFRA_NPM_PREFIXES) {
+      if (pkgName.startsWith(prefix) || afterNodeModules.startsWith(prefix)) {
+        return { reason: "infrastructure_package", label: `${pkgName}.${typeName}` };
+      }
+    }
+  }
+
+  // Heuristics 2 & 3: only apply to types in the current source file
+  if (!sourceFile || mainDecl.getSourceFile() !== sourceFile) return null;
+
+  // Heuristic 2: has close()/dispose()/destroy() method
+  const props = type.getProperties();
+  const hasCleanupMethod = props.some((prop) => {
+    const name = prop.getName();
+    if (!["close", "dispose", "destroy"].includes(name)) return false;
+    const propType = checker.getTypeOfSymbol(prop);
+    return propType.getCallSignatures().length > 0;
+  });
+  if (hasCleanupMethod) {
+    return { reason: "closeable_interface", label: typeName };
+  }
+
+  // Heuristic 3: has field named fd/handle/fileDescriptor
+  const HANDLE_FIELD_NAMES = new Set(["fd", "_fd", "handle", "_handle", "fileDescriptor", "FileDescriptor"]);
+  const hasHandleField = props.some((prop) => HANDLE_FIELD_NAMES.has(prop.getName()));
+  if (hasHandleField) {
+    return { reason: "native_handle_field", label: typeName };
   }
 
   return null;

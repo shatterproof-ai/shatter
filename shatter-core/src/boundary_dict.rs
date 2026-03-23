@@ -389,6 +389,7 @@ mod tests {
         let entries = get_boundary_values(&TypeInfo::Opaque {
             label: "net.Socket".to_string(),
             static_opacity: None,
+            medium_opacity: None,
         });
         assert!(entries.is_empty());
     }

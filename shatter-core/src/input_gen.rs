@@ -2444,6 +2444,7 @@ mod tests {
         let typ = TypeInfo::Opaque {
             label: "net.Socket".to_string(),
             static_opacity: None,
+            medium_opacity: None,
         };
         let val = generate_random_value(&typ, &mut rng, None);
         assert!(val.is_null(), "expected null for opaque type, got {val}");
@@ -2980,7 +2981,7 @@ mod tests {
     fn mutate_value_opaque_returns_unchanged() {
         let mut rng = seeded_rng();
         let val = json!(null);
-        let typ = TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None };
+        let typ = TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None };
         assert_eq!(mutate_value(&val, &typ, &[], &mut rng), val);
     }
 
