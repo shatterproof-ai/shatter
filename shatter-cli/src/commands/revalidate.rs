@@ -40,7 +40,7 @@ pub(crate) async fn run_revalidate(
 
     // Spawn a frontend to analyze and replay inputs.
     let req_timeout = Duration::from_secs(request_timeout);
-    let config = frontend_config(
+    let mut config = frontend_config(
         target.language,
         req_timeout,
         log_level,
@@ -51,6 +51,7 @@ pub(crate) async fn run_revalidate(
         false,
         release,
     )?;
+    apply_project_storage(&mut config, project_root_str.as_deref());
     let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
         format!("failed to spawn {} frontend: {e}", target.language.label())
     })?;

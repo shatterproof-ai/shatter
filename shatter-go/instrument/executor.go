@@ -94,6 +94,48 @@ func harnessScratchDir() string {
 	return os.Getenv("SHATTER_HARNESS_SCRATCH")
 }
 
+// isStandaloneGoFile reports whether sourcePath has no parent Go module.
+// A file is standalone when no go.mod is found by walking up from its directory
+// to the filesystem root — meaning the minimal fallback module would be used.
+func isStandaloneGoFile(sourcePath string) bool {
+	dir := filepath.Dir(sourcePath)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return true
+}
+
+// standaloneGoBuildCacheDir returns the Go build cache path for standalone
+// harness builds. Uses SHATTER_HARNESS_CACHE/go/standalone/build-cache when
+// the cache env var is set. Returns empty string when no cache is configured.
+func standaloneGoBuildCacheDir() string {
+	if cache := harnessCacheDir(); cache != "" {
+		return filepath.Join(cache, "go", "standalone", "build-cache")
+	}
+	return ""
+}
+
+// makeStandaloneScratchDir creates a per-request scratch directory for standalone
+// Go execution. Uses SHATTER_HARNESS_SCRATCH when set; falls back to os.MkdirTemp.
+// The caller is responsible for removing the directory when done.
+func makeStandaloneScratchDir() (string, error) {
+	if scratch := harnessScratchDir(); scratch != "" {
+		dir := filepath.Join(scratch, fmt.Sprintf("go-%d-%d", os.Getpid(), time.Now().UnixMicro()))
+		if err := os.MkdirAll(dir, 0755); err == nil {
+			return dir, nil
+		}
+		// Fall through to MkdirTemp if scratch creation fails.
+	}
+	return os.MkdirTemp("", "shatter-instrument-*")
+}
+
 // SideEffect represents an observable side effect during execution.
 // Fields correspond 1:1 with the protocol.SideEffect wire format (all 7 kinds).
 // Only fields relevant to the specific Kind are populated.
@@ -251,14 +293,28 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 		return nil, fmt.Errorf("expected %d inputs for %s, got %d", len(params), funcName, len(inputs))
 	}
 
-	// Instrument the file
+	// Prepare the output directory.
+	// Standalone files (no parent go.mod) use a per-request scratch dir so that
+	// ephemeral build state is properly lifecycle-separated from tool-owned cache.
+	// Files with a parent module fall back to MkdirTemp (semantic mode is future work).
+	var outputDir string
+	if isStandaloneGoFile(sourcePath) {
+		outputDir, err = makeStandaloneScratchDir()
+	} else {
+		outputDir, err = os.MkdirTemp("", "shatter-instrument-*")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("creating output dir: %w", err)
+	}
+	defer os.RemoveAll(outputDir)
+
+	// Instrument the file into the prepared directory.
 	finishInstrument := timing.Start("execute.instrument")
-	outputDir, err := InstrumentFileWithTiming(sourcePath, &funcName, nil, timing)
+	err = InstrumentFileToDir(sourcePath, outputDir, &funcName, nil, timing)
 	finishInstrument()
 	if err != nil {
 		return nil, fmt.Errorf("instrumenting: %w", err)
 	}
-	defer os.RemoveAll(outputDir)
 
 	// Rewrite all Go files in the output dir to package main so the harness can call them.
 	finishRewrite := timing.Start("execute.rewrite_package")
@@ -315,6 +371,13 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 	finishBuild := timing.Start("execute.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
+	// Use a project-scoped build cache for standalone files so compiled objects
+	// persist across requests and survive OS temp cleanup.
+	if isStandaloneGoFile(sourcePath) {
+		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
+			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
+		}
+	}
 	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
 		finishBuild()
 		return nil, fmt.Errorf("build failed: %w\n%s", err, buildOut)

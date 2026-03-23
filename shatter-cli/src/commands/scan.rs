@@ -183,7 +183,8 @@ pub(crate) async fn run_scan(
     for lang in &needed_langs {
         let cli_lang = discovery_lang_to_cli_lang(*lang)
             .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+        let mut config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+        apply_project_storage(&mut config, project_root_str.as_deref());
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {lang:?} frontend: {e}")
         })?;
@@ -490,7 +491,8 @@ pub(crate) async fn run_scan(
     let first_lang = needed_langs.iter().next().copied().unwrap();
     let cli_lang = discovery_lang_to_cli_lang(first_lang)
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+    let mut fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+    apply_project_storage(&mut fe_config, project_root_str.as_deref());
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {

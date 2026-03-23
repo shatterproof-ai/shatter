@@ -119,12 +119,17 @@ pub(crate) async fn run_explore(
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
 
+    // Resolve project root once for harness storage env propagation.
+    // Explicit --project-dir wins; otherwise auto-detect from the first target.
+    let storage_project_root = resolve_project_root(project_dir, &parsed[0].file);
+
     // Spawn one frontend per language — reuse the session across same-language targets
     // so the per-spawn handshake cost is paid only once per language, not once per target.
     let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
     let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
     for lang in unique_langs {
         let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled, release)?;
+        apply_project_storage(&mut config, storage_project_root.as_deref());
         if mcdc {
             config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
         }

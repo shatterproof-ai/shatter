@@ -66,7 +66,7 @@ pub(crate) async fn run_properties(
 
         log::info!("Exploring {file_str}:{func_display} for property export...");
 
-        let config = frontend_config(
+        let mut config = frontend_config(
             target.language,
             req_timeout,
             LogLevel::Warn,
@@ -77,6 +77,7 @@ pub(crate) async fn run_properties(
             false,
             release,
         )?;
+        apply_project_storage(&mut config, project_root_str.as_deref());
         let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", target.language.label())
         })?;
