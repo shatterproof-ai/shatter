@@ -14,6 +14,7 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
     let ts_dir = manifest_dir.join("..").join("shatter-ts");
 
     let bundle_src = ts_dir.join("dist").join("bundle.js");
+    let worker_bundle_src = ts_dir.join("dist").join("worker-bundle.js");
 
     // Re-run if any TS source files change
     println!("cargo:rerun-if-changed={}", ts_dir.join("src").display());
@@ -32,14 +33,22 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
         "esbuild bundle not found at {}",
         bundle_src.display()
     );
+    assert!(
+        worker_bundle_src.exists(),
+        "esbuild worker bundle not found at {}",
+        worker_bundle_src.display()
+    );
 
     // Compute hash for cache-busting at runtime
     let bundle_bytes = std::fs::read(&bundle_src).expect("failed to read bundle.js");
     let hash = sha256_hex(&bundle_bytes);
 
-    // Copy bundle into OUT_DIR so include_bytes! can reference it
+    // Copy bundles into OUT_DIR so include_bytes! can reference them
     let out_bundle = out_dir.join("frontend-bundle.js");
     std::fs::copy(&bundle_src, &out_bundle).expect("failed to copy bundle to OUT_DIR");
+
+    let out_worker = out_dir.join("frontend-worker-bundle.js");
+    std::fs::copy(&worker_bundle_src, &out_worker).expect("failed to copy worker bundle to OUT_DIR");
 
     println!("cargo:rustc-env=FRONTEND_BUNDLE_HASH={hash}");
 }

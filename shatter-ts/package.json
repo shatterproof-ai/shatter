@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node22 --outfile=dist/bundle.js",
+    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node22 --outfile=dist/bundle.js && esbuild src/worker.ts --bundle --platform=node --target=node22 --outfile=dist/worker-bundle.js",
     "start": "node dist/main.js",
     "test": "jest"
   },

@@ -54,6 +54,23 @@ export class TimingCollector {
     };
   }
 
+  /**
+   * Merge externally-collected timing phases (e.g. from a worker thread)
+   * into this collector. Phases with matching paths are aggregated.
+   */
+  mergePhases(phases: readonly import("./protocol.js").TimingPhaseSummary[]): void {
+    for (const phase of phases) {
+      const existing = this.phases.get(phase.phase_path);
+      if (existing) {
+        existing.total_ms += phase.total_ms;
+        existing.self_ms += phase.self_ms;
+        existing.count += phase.count;
+      } else {
+        this.phases.set(phase.phase_path, { ...phase });
+      }
+    }
+  }
+
   private finish(phase: ActivePhase): void {
     const finished = this.active.pop();
     if (finished !== phase) {
