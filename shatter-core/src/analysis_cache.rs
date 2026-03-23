@@ -127,12 +127,9 @@ impl AnalysisCache {
         Ok((file_count, bytes))
     }
 
-    /// Default analysis cache directory: `<project_root>/.shatter/cache/analysis/`.
+    /// Default analysis cache directory: `<project_root>/.shatter-cache/analysis/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
-        project_root
-            .join(".shatter")
-            .join("cache")
-            .join("analysis")
+        project_root.join(".shatter-cache").join("analysis")
     }
 
     /// Compute the cache file path for a given source file path.
@@ -370,7 +367,7 @@ mod tests {
         let dir = AnalysisCache::default_dir(root);
         assert_eq!(
             dir,
-            PathBuf::from("/home/user/project/.shatter/cache/analysis")
+            PathBuf::from("/home/user/project/.shatter-cache/analysis")
         );
     }
 

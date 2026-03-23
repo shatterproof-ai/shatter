@@ -371,14 +371,22 @@ pub(crate) async fn run_explore(
             } else {
                 // Check for recorded mock fixtures to seed from prior --record runs.
                 let recorded_configs = if !no_replay {
-                    let shatter_dir = std::path::Path::new(".shatter");
-                    let should_replay = replay_recorded || shatter_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir();
+                    let artifacts_dir = std::path::Path::new("shatter-artifacts");
+                    let legacy_dir = std::path::Path::new(".shatter");
+                    let should_replay = replay_recorded
+                        || artifacts_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir()
+                        || legacy_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir();
                     if should_replay {
+                        // Check new location first, then fall back to legacy .shatter/
                         if let Some(mock_path) = shatter_core::recorded_mocks::find_recorded_mocks(
-                            shatter_dir,
+                            artifacts_dir,
                             &file_str,
                             &func.name,
-                        ) {
+                        ).or_else(|| shatter_core::recorded_mocks::find_recorded_mocks(
+                            legacy_dir,
+                            &file_str,
+                            &func.name,
+                        )) {
                             match shatter_core::recorded_mocks::load_recorded_mocks(&mock_path) {
                                 Ok(mock_file) => {
                                     let configs = shatter_core::recorded_mocks::recorded_mocks_to_mock_configs(&mock_file);
@@ -576,10 +584,10 @@ pub(crate) async fn run_explore(
                                 &file_str,
                                 behaviors,
                             );
-                            let shatter_dir = std::path::Path::new(".shatter");
+                            let artifacts_dir = std::path::Path::new("shatter-artifacts");
                             match shatter_core::recorded_mocks::save_recorded_mocks(
                                 &mock_file,
-                                shatter_dir,
+                                artifacts_dir,
                             ) {
                                 Ok(path) => log::info!(
                                     "Recorded {} dep(s) for {} -> {}",

@@ -90,7 +90,7 @@ Source code → Analyze → Explore → Cluster → Report
 | `--timeout SECS` | 60 | Overall timeout for the exploration |
 | `--analyze-only` | false | Only analyze, skip exploration |
 | `--show-clusters` | false | Display behavior clusters in output |
-| `--cache-dir PATH` | `.shatter/cache/` | Directory for behavior map caching |
+| `--cache-dir PATH` | `.shatter-cache/behavior-maps/` | Directory for behavior map caching |
 | `--no-cache` | false | Disable caching entirely |
 | `--request-timeout SECS` | 30 | Per-request timeout for frontend communication |
 | `--exec-timeout SECS` | 10 | Per-execution timeout in the frontend |

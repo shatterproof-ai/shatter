@@ -138,11 +138,18 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# Shatter runtime state (machine-specific)
+# Shatter user config — only seeds are committed
 **/.shatter/*
 !**/.shatter/seeds/
 !**/.shatter/seeds/*.json
 **/.shatter/seeds/*.lock
+
+# Shatter tool cache (all ephemeral)
+.shatter-cache/
+
+# Shatter preserved artifacts (gitignored by default)
+shatter-artifacts/
+
 # Shatter generated reports
 shatter-report/
 
@@ -151,7 +158,6 @@ shatter-report/
 
 # External profiling artifacts
 perf/results/
-.shatter/perf-runs/
 
 # Dolt database files (added by bd init)
 .dolt/

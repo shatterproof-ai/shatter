@@ -15,7 +15,7 @@ pub(crate) fn run_test(
     use_color: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let project_root = std::env::current_dir()?;
-    let shatter_dir = project_root.join(".shatter");
+    let shatter_dir = project_root.join(".shatter-cache");
 
     // --- Tier mode: run predefined tier commands ---
     if let Some(tier_str) = &tier {

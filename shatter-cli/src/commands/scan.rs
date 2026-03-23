@@ -578,7 +578,7 @@ pub(crate) async fn run_scan(
             let batch_state = if let Some(batch_idx) = effective_batch_index {
 
                 let batch_state_path = PathBuf::from(directory)
-                    .join(".shatter")
+                    .join(".shatter-cache")
                     .join("batch-state.json");
 
                 let file_paths: Vec<&str> = scan_config

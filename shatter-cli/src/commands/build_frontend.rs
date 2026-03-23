@@ -29,7 +29,7 @@ pub(crate) fn run_build_frontend(
 
     let out_dir = output_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| shatter_dir.join("bin"));
+        .unwrap_or_else(|| PathBuf::from(".shatter-cache").join("bin"));
 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("failed to create output dir: {e}"))?;
