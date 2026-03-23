@@ -236,6 +236,7 @@ async fn main() -> ExitCode {
                 &seeds_dir,
                 no_seeds,
                 record,
+                &cli.set_overrides,
                 &meta_config,
                 observe_output.as_deref(),
                 replay_recorded,

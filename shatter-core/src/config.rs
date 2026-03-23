@@ -75,6 +75,12 @@ pub enum ConfigError {
 
     #[error("invalid strategy weights: {0}")]
     InvalidStrategyWeights(String),
+
+    #[error("invalid --set override '{pair}': {reason}")]
+    InvalidSetOverride { pair: String, reason: String },
+
+    #[error("--set override produced invalid config: {source}")]
+    SetOverrideDeserialize { source: serde_yaml::Error },
 }
 
 /// One entry in the `opaque_types` config list.
@@ -484,6 +490,70 @@ struct DiscoveredConfig {
     config: ShatterConfig,
 }
 
+/// Build a synthetic [`ShatterConfig`] from `--set key=value` pairs.
+///
+/// Each pair must be `key=value` where `key` is a dotted YAML path matching
+/// the `ShatterConfig` structure (e.g. `defaults.max_iterations`,
+/// `defaults.exploration.adaptive`). Values are parsed as YAML scalars so
+/// integers, floats, booleans, and strings all work naturally.
+///
+/// The returned config is intended to be prepended to the list of discovered
+/// configs before calling [`merge_configs`], giving `--set` overrides the
+/// highest YAML-layer priority.
+pub fn parse_set_overrides(set_pairs: &[String]) -> Result<ShatterConfig, ConfigError> {
+    if set_pairs.is_empty() {
+        return Ok(ShatterConfig::default());
+    }
+    let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    for pair in set_pairs {
+        let (key, val_str) = pair.split_once('=').ok_or_else(|| ConfigError::InvalidSetOverride {
+            pair: pair.clone(),
+            reason: "missing '=' separator".to_string(),
+        })?;
+        let segments: Vec<&str> = key.split('.').collect();
+        if segments.iter().any(|s| s.is_empty()) {
+            return Err(ConfigError::InvalidSetOverride {
+                pair: pair.clone(),
+                reason: "empty path segment in key".to_string(),
+            });
+        }
+        let val: serde_yaml::Value =
+            serde_yaml::from_str(val_str).map_err(|e| ConfigError::InvalidSetOverride {
+                pair: pair.clone(),
+                reason: format!("invalid YAML value: {e}"),
+            })?;
+        set_dotted_path(&mut root, &segments, val).map_err(|reason| {
+            ConfigError::InvalidSetOverride { pair: pair.clone(), reason }
+        })?;
+    }
+    serde_yaml::from_value(root).map_err(|e| ConfigError::SetOverrideDeserialize { source: e })
+}
+
+/// Navigate `root` (a YAML mapping) along `path`, creating intermediate
+/// mappings as needed, and set the leaf to `val`.
+fn set_dotted_path(
+    root: &mut serde_yaml::Value,
+    path: &[&str],
+    val: serde_yaml::Value,
+) -> Result<(), String> {
+    let mut current = root;
+    for &segment in &path[..path.len() - 1] {
+        let key = serde_yaml::Value::String(segment.to_string());
+        let mapping = current
+            .as_mapping_mut()
+            .ok_or_else(|| format!("path segment '{segment}' is not a mapping"))?;
+        current = mapping
+            .entry(key)
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    }
+    let leaf = serde_yaml::Value::String(path.last().unwrap().to_string());
+    current
+        .as_mapping_mut()
+        .ok_or_else(|| "leaf parent is not a mapping".to_string())?
+        .insert(leaf, val);
+    Ok(())
+}
+
 /// Parse a `.shatter/config.yaml` file.
 pub fn parse_config(path: &Path) -> Result<ShatterConfig, ConfigError> {
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
@@ -778,15 +848,24 @@ fn resolve_from_merged(
 ///
 /// `shatter_dir` is the `.shatter/` directory used to resolve relative input paths.
 /// If `explicit_inputs` is provided (from `--inputs` CLI flag), it takes precedence.
+///
+/// `set_overrides` contains `key=value` pairs from the CLI `--set` flag. They are
+/// applied as the highest-priority YAML layer (above any `.shatter/config.yaml` files)
+/// but below dedicated CLI flag defaults (`cli_max_iterations`, `cli_timeout`).
 pub fn resolve_function_config_with_inputs(
     function_id: &str,
     start_dir: &Path,
     explicit_inputs: Option<&Path>,
     cli_max_iterations: u32,
     cli_timeout: u64,
+    set_overrides: &[String],
 ) -> Result<ResolvedFunctionConfig, ConfigError> {
     let discovered = discover_configs_with_paths(start_dir)?;
-    let configs: Vec<ShatterConfig> = discovered.iter().map(|d| d.config.clone()).collect();
+    let mut configs: Vec<ShatterConfig> = discovered.iter().map(|d| d.config.clone()).collect();
+    if !set_overrides.is_empty() {
+        let set_config = parse_set_overrides(set_overrides)?;
+        configs.insert(0, set_config);
+    }
     let merged = merge_configs(&configs);
 
     let mut resolved = resolve_from_merged(function_id, &merged, cli_max_iterations, cli_timeout)?;
@@ -1276,6 +1355,7 @@ functions:
             None,
             50,
             30,
+            &[],
         )
         .unwrap();
 
@@ -1314,6 +1394,7 @@ functions:
             Some(&explicit_path),
             50,
             30,
+            &[],
         )
         .unwrap();
 
@@ -1592,6 +1673,7 @@ functions:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -1625,6 +1707,7 @@ defaults:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -1663,6 +1746,7 @@ functions:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -1692,6 +1776,7 @@ functions:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -2081,6 +2166,7 @@ defaults:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -2113,6 +2199,7 @@ defaults:
             None,
             100,
             60,
+            &[],
         )
         .unwrap();
 
@@ -2404,5 +2491,86 @@ defaults:
     fn parse_strategy_weights_rejects_empty() {
         let result = ExplorationConfig::parse_strategy_weights("");
         assert!(result.is_err());
+    }
+
+    // --- parse_set_overrides tests ---
+
+    #[test]
+    fn parse_set_overrides_empty_returns_default() {
+        let result = parse_set_overrides(&[]).unwrap();
+        assert_eq!(result, ShatterConfig::default());
+    }
+
+    #[test]
+    fn parse_set_overrides_scalar_types() {
+        let pairs = vec![
+            "defaults.max_iterations=200".to_string(),
+            "defaults.timeout=60".to_string(),
+            "defaults.exploration.adaptive=false".to_string(),
+            "defaults.exploration.strategy_floor=0.1".to_string(),
+        ];
+        let result = parse_set_overrides(&pairs).unwrap();
+        assert_eq!(result.defaults.max_iterations, Some(200));
+        assert_eq!(result.defaults.timeout, Some(60));
+        let exp = result.defaults.exploration.unwrap();
+        assert!(!exp.adaptive);
+        assert!((exp.strategy_floor - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_set_overrides_missing_equals_returns_error() {
+        let result = parse_set_overrides(&["defaults.max_iterations".to_string()]);
+        assert!(matches!(result, Err(ConfigError::InvalidSetOverride { .. })));
+    }
+
+    #[test]
+    fn parse_set_overrides_empty_segment_returns_error() {
+        let result = parse_set_overrides(&["defaults..max_iterations=200".to_string()]);
+        assert!(matches!(result, Err(ConfigError::InvalidSetOverride { .. })));
+    }
+
+    #[test]
+    fn parse_set_overrides_precedence_over_yaml() {
+        // --set config at index 0 should win over discovered YAML config at index 1.
+        let yaml_config = ShatterConfig {
+            defaults: DefaultsConfig {
+                max_iterations: Some(100),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let set_config = parse_set_overrides(&["defaults.max_iterations=200".to_string()]).unwrap();
+        // Prepend set_config as highest-priority layer.
+        let merged = merge_configs(&[set_config, yaml_config]);
+        assert_eq!(merged.defaults.max_iterations, Some(200));
+    }
+
+    #[test]
+    fn parse_set_overrides_unknown_field_is_ignored_by_serde() {
+        // serde_yaml uses `deny_unknown_fields` by default only if annotated; ShatterConfig
+        // derives Deserialize without it, so unknown keys are silently ignored.
+        // This verifies no panic occurs on unknown keys.
+        let result = parse_set_overrides(&["unknown.field=42".to_string()]);
+        // May succeed (ignored) or fail at deserialize — either is acceptable, but no panic.
+        let _ = result;
+    }
+
+}
+
+#[cfg(test)]
+mod config_proptests {
+    use proptest::prelude::*;
+
+    use super::parse_set_overrides;
+
+    proptest! {
+        #[test]
+        fn parse_set_overrides_never_panics(pairs in proptest::collection::vec(
+            "[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*=[a-z0-9]+",
+            0..8,
+        )) {
+            // Must not panic — only Ok or Err.
+            let _ = parse_set_overrides(&pairs);
+        }
     }
 }
