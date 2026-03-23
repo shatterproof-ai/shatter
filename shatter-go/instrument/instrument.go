@@ -22,13 +22,31 @@ func InstrumentFile(sourcePath string, funcName *string, projectRoot *string) (s
 }
 
 // InstrumentFileWithTiming instruments a Go source file and records stable phase timings when requested.
+// Creates a new temporary directory for the output. To instrument into an existing directory,
+// use InstrumentFileToDir.
 func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *string, timing *frontendtiming.Collector) (string, error) {
+	outputDir, err := os.MkdirTemp("", "shatter-instrument-*")
+	if err != nil {
+		return "", fmt.Errorf("creating temp dir: %w", err)
+	}
+	if err := InstrumentFileToDir(sourcePath, outputDir, funcName, projectRoot, timing); err != nil {
+		_ = os.RemoveAll(outputDir)
+		return "", err
+	}
+	return outputDir, nil
+}
+
+// InstrumentFileToDir instruments a Go source file, writing the output into outputDir.
+// The caller is responsible for creating outputDir and cleaning it up.
+// If funcName is non-nil, only that function is instrumented. When projectRoot is non-nil,
+// go.mod and go.sum are copied from that directory instead of walking up from the source file.
+func InstrumentFileToDir(sourcePath, outputDir string, funcName *string, projectRoot *string, timing *frontendtiming.Collector) error {
 	fset := token.NewFileSet()
 	finishParse := timing.Start("instrument.parse")
 	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
 	finishParse()
 	if err != nil {
-		return "", fmt.Errorf("parsing %s: %w", sourcePath, err)
+		return fmt.Errorf("parsing %s: %w", sourcePath, err)
 	}
 
 	packageName := file.Name.Name
@@ -44,11 +62,6 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 		renameMainFunc(file)
 	}
 
-	outputDir, err := os.MkdirTemp("", "shatter-instrument-*")
-	if err != nil {
-		return "", fmt.Errorf("creating temp dir: %w", err)
-	}
-
 	// Write transformed source
 	sourceName := filepath.Base(sourcePath)
 	outPath := filepath.Join(outputDir, sourceName)
@@ -56,13 +69,13 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 	outFile, err := os.Create(outPath)
 	if err != nil {
 		finishWriteSource()
-		return "", fmt.Errorf("creating output file: %w", err)
+		return fmt.Errorf("creating output file: %w", err)
 	}
 	defer outFile.Close()
 
 	if err := printer.Fprint(outFile, fset, file); err != nil {
 		finishWriteSource()
-		return "", fmt.Errorf("printing transformed AST: %w", err)
+		return fmt.Errorf("printing transformed AST: %w", err)
 	}
 	finishWriteSource()
 
@@ -72,7 +85,7 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 	finishWriteRecorder := timing.Start("instrument.write_recorder")
 	if err := os.WriteFile(recorderPath, []byte(recorderSource), 0644); err != nil {
 		finishWriteRecorder()
-		return "", fmt.Errorf("writing recorder: %w", err)
+		return fmt.Errorf("writing recorder: %w", err)
 	}
 	finishWriteRecorder()
 
@@ -80,11 +93,11 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 	finishWriteGoMod := timing.Start("instrument.write_go_mod")
 	if err := writeGoMod(outputDir, sourcePath, projectRoot); err != nil {
 		finishWriteGoMod()
-		return "", fmt.Errorf("writing go.mod: %w", err)
+		return fmt.Errorf("writing go.mod: %w", err)
 	}
 	finishWriteGoMod()
 
-	return outputDir, nil
+	return nil
 }
 
 // writeGoMod copies go.mod and go.sum from the project root (if provided),

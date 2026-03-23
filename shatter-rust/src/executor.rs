@@ -164,6 +164,54 @@ fn harness_release_mode() -> bool {
         .unwrap_or(false)
 }
 
+/// Read the harness cache root from `SHATTER_HARNESS_CACHE`.
+/// Returns `None` if unset or empty.
+fn harness_cache_root() -> Option<PathBuf> {
+    std::env::var("SHATTER_HARNESS_CACHE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Read the harness scratch root from `SHATTER_HARNESS_SCRATCH`.
+/// Returns `None` if unset or empty.
+fn harness_scratch_root() -> Option<PathBuf> {
+    std::env::var("SHATTER_HARNESS_SCRATCH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Create a per-request scratch directory for standalone harness execution.
+///
+/// Uses `SHATTER_HARNESS_SCRATCH/rust-<pid>-<id>/` when the env var is set,
+/// falling back to a raw temp directory. The caller is responsible for
+/// removing the directory after the request completes.
+fn make_request_scratch() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "rust-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    harness_scratch_root()
+        .map(|s| s.join(&id))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-exec-{id}")))
+}
+
+/// Return the shared `CARGO_TARGET_DIR` for standalone harness builds.
+///
+/// Placing the target directory inside `SHATTER_HARNESS_CACHE` allows compiled
+/// dependency artifacts to persist across requests, so only the changed harness
+/// source (`main.rs`) needs to be recompiled each time.
+///
+/// Returns `None` when no cache root is configured; callers fall back to a
+/// per-request target directory inside scratch.
+fn standalone_target_dir() -> Option<PathBuf> {
+    harness_cache_root().map(|c| c.join("rust").join("standalone").join("target"))
+}
+
 /// Locate the shatter-rust-runtime crate by walking up from the shatter-rust binary.
 fn find_runtime_crate_path() -> Result<PathBuf, ExecuteError> {
     // Try SHATTER_RUNTIME_PATH env var first (for testing and deployment).
@@ -842,34 +890,42 @@ pub fn execute_function_with_timing(
         )?
     };
 
-    // Create temp directory with unique name
-    let temp_dir = std::env::temp_dir().join(format!(
-        "shatter-exec-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    ));
+    // Create per-request scratch directory for project source files.
+    // Standalone Rust harnesses (bin-only compatible, no crate context) use
+    // SHATTER_HARNESS_SCRATCH when available so ephemeral state has proper
+    // lifecycle semantics and is not conflated with the reusable build cache.
+    let scratch_dir = make_request_scratch();
+
+    // The CARGO_TARGET_DIR for compiled dependency artifacts.
+    // When SHATTER_HARNESS_CACHE is set, compiled deps persist across requests
+    // (only the harness main.rs changes per request). Falls back to
+    // scratch-local target when no cache is configured.
+    let target_dir = standalone_target_dir()
+        .unwrap_or_else(|| scratch_dir.join("target"));
+
     if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.write_project", |_| {
-            std::fs::create_dir_all(temp_dir.join("src"))
+            std::fs::create_dir_all(scratch_dir.join("src"))
         })?;
     } else {
-        std::fs::create_dir_all(temp_dir.join("src"))?;
+        std::fs::create_dir_all(scratch_dir.join("src"))?;
+    }
+    // Ensure cache target parent exists when using a cache-based target dir.
+    if let Some(parent) = target_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
-    // Write project files
+    // Write project files to scratch
     let cargo_toml = generate_cargo_toml(&runtime_path);
     if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.write_project", |_| {
-            std::fs::write(temp_dir.join("Cargo.toml"), &cargo_toml)?;
-            std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
+            std::fs::write(scratch_dir.join("Cargo.toml"), &cargo_toml)?;
+            std::fs::write(scratch_dir.join("src/main.rs"), &harness)?;
             Ok::<_, io::Error>(())
         })?;
     } else {
-        std::fs::write(temp_dir.join("Cargo.toml"), cargo_toml)?;
-        std::fs::write(temp_dir.join("src/main.rs"), &harness)?;
+        std::fs::write(scratch_dir.join("Cargo.toml"), &cargo_toml)?;
+        std::fs::write(scratch_dir.join("src/main.rs"), &harness)?;
     }
 
     // Compile
@@ -890,22 +946,22 @@ pub fn execute_function_with_timing(
         timing.record("execute.build", |_| {
             Command::new("cargo")
                 .args(&args)
-                .current_dir(&temp_dir)
-                .env("CARGO_TARGET_DIR", temp_dir.join("target"))
+                .current_dir(&scratch_dir)
+                .env("CARGO_TARGET_DIR", &target_dir)
                 .output()
                 .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
         })?
     } else {
         Command::new("cargo")
             .args(&cargo_args)
-            .current_dir(&temp_dir)
-            .env("CARGO_TARGET_DIR", temp_dir.join("target"))
+            .current_dir(&scratch_dir)
+            .env("CARGO_TARGET_DIR", &target_dir)
             .output()
             .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
     };
 
     if build_start.elapsed() > build_timeout {
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
         return Err(ExecuteError::CompilationFailed(
             "build timed out".to_string(),
         ));
@@ -913,21 +969,21 @@ pub fn execute_function_with_timing(
 
     if !build_output.status.success() {
         let stderr = String::from_utf8_lossy(&build_output.stderr);
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
         return Err(ExecuteError::CompilationFailed(stderr.into_owned()));
     }
 
-    // Find the compiled binary
+    // Find the compiled binary (in target_dir, not scratch_dir)
     let binary_name = if cfg!(windows) {
         "shatter-exec-temp.exe"
     } else {
         "shatter-exec-temp"
     };
     let profile_dir = if release { "release" } else { "debug" };
-    let binary_path = temp_dir.join("target").join(profile_dir).join(binary_name);
+    let binary_path = target_dir.join(profile_dir).join(binary_name);
 
     if !binary_path.exists() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
         return Err(ExecuteError::CompilationFailed(
             "compiled binary not found".to_string(),
         ));
@@ -939,26 +995,26 @@ pub fn execute_function_with_timing(
     let run_output = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.run", |_| {
             Command::new(&binary_path)
-                .current_dir(&temp_dir)
+                .current_dir(&scratch_dir)
                 .output()
                 .map_err(|e| {
-                    let _ = std::fs::remove_dir_all(&temp_dir);
+                    let _ = std::fs::remove_dir_all(&scratch_dir);
                     ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
                 })
         })?
     } else {
         Command::new(&binary_path)
-            .current_dir(&temp_dir)
+            .current_dir(&scratch_dir)
             .output()
             .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&temp_dir);
+                let _ = std::fs::remove_dir_all(&scratch_dir);
                 ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
             })?
     };
     let wall_time_ms = run_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Clean up temp dir
-    let _ = std::fs::remove_dir_all(&temp_dir);
+    // Clean up per-request scratch; cache target_dir persists for dep reuse.
+    let _ = std::fs::remove_dir_all(&scratch_dir);
 
     // Check for timeout
     if run_start.elapsed() > exec_timeout {
@@ -1633,5 +1689,72 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             harness.contains("side_effects"),
             "side_effects entry must still be present\n\nharness:\n{harness}"
         );
+    }
+
+    // --- Standalone harness fallback tests ---
+
+    #[test]
+    fn standalone_target_dir_uses_cache_env() {
+        // When SHATTER_HARNESS_CACHE is set, standalone_target_dir returns a path inside it.
+        let cache_root = std::env::temp_dir().join("shatter-test-cache-root");
+        let cache_str = cache_root.to_string_lossy().into_owned();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
+
+        let target = standalone_target_dir();
+        assert!(target.is_some(), "expected Some when SHATTER_HARNESS_CACHE is set");
+        let target = target.unwrap();
+        assert!(
+            target.starts_with(&cache_root),
+            "target dir {target:?} should be under cache root {cache_str}"
+        );
+        assert!(
+            target.ends_with("rust/standalone/target"),
+            "target dir should end with rust/standalone/target, got {target:?}"
+        );
+
+        // Restore: set to empty so harness_cache_root() returns None
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+    }
+
+    #[test]
+    fn standalone_target_dir_none_when_unset() {
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+        assert!(standalone_target_dir().is_none());
+    }
+
+    #[test]
+    fn make_request_scratch_uses_scratch_env() {
+        // When SHATTER_HARNESS_SCRATCH is set, make_request_scratch returns a path inside it.
+        let scratch_root = std::env::temp_dir().join("shatter-test-scratch-root");
+        let scratch_str = scratch_root.to_string_lossy().into_owned();
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", &scratch_str) };
+
+        let scratch = make_request_scratch();
+        assert!(
+            scratch.starts_with(&scratch_root),
+            "scratch dir {scratch:?} should be under scratch root {scratch_str}"
+        );
+
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
+    }
+
+    #[test]
+    fn make_request_scratch_fallback_to_temp() {
+        // When SHATTER_HARNESS_SCRATCH is empty/unset, make_request_scratch returns a temp-based path.
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
+        let scratch = make_request_scratch();
+        // Should not panic; path should contain "shatter-exec-"
+        assert!(
+            scratch.to_string_lossy().contains("shatter-exec-"),
+            "fallback scratch should contain 'shatter-exec-', got: {scratch:?}"
+        );
+    }
+
+    #[test]
+    fn make_request_scratch_unique_per_call() {
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
+        let a = make_request_scratch();
+        let b = make_request_scratch();
+        assert_ne!(a, b, "each call should produce a distinct scratch path");
     }
 }

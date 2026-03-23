@@ -8,7 +8,7 @@ use shatter_core::pipeline::{self, ObserveStageOutput};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 
 use crate::args::parse_target;
-use crate::helpers::{frontend_config, resolve_project_root, shutdown_frontend};
+use crate::helpers::{apply_project_storage, frontend_config, resolve_project_root, shutdown_frontend};
 
 /// Run the observe command: spawn a frontend, analyze the target function, explore it,
 /// and write the resulting ObserveStageOutput JSON to a file or stdout.
@@ -41,7 +41,7 @@ pub(crate) async fn run_observe(
     let req_timeout = Duration::from_secs(request_timeout);
     let _wall_timeout = Duration::from_secs(timeout);
 
-    let config = frontend_config(
+    let mut config = frontend_config(
         parsed.language,
         req_timeout,
         log_level,
@@ -52,6 +52,7 @@ pub(crate) async fn run_observe(
         false,
         release,
     )?;
+    apply_project_storage(&mut config, project_root_str.as_deref());
 
     let mut frontend = Frontend::spawn(&config)
         .await

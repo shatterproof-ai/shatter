@@ -49,8 +49,10 @@ fn exec_timeout_from_env() -> u64 {
     }
 }
 
+
 /// Read the harness cache directory from `SHATTER_HARNESS_CACHE` env var.
 /// Returns `None` if unset or empty.
+#[cfg(test)]
 fn harness_cache_from_env() -> Option<String> {
     std::env::var("SHATTER_HARNESS_CACHE")
         .ok()
@@ -59,6 +61,7 @@ fn harness_cache_from_env() -> Option<String> {
 
 /// Read the harness scratch directory from `SHATTER_HARNESS_SCRATCH` env var.
 /// Returns `None` if unset or empty.
+#[cfg(test)]
 fn harness_scratch_from_env() -> Option<String> {
     std::env::var("SHATTER_HARNESS_SCRATCH")
         .ok()
@@ -83,12 +86,6 @@ pub struct Handler<R, W, L> {
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
     native_registry: Option<NativeRegistry>,
-    /// Harness cache directory from `SHATTER_HARNESS_CACHE` (unused until execute is implemented).
-    #[allow(dead_code)]
-    harness_cache_dir: Option<String>,
-    /// Harness scratch directory from `SHATTER_HARNESS_SCRATCH` (unused until execute is implemented).
-    #[allow(dead_code)]
-    harness_scratch_dir: Option<String>,
     /// Remembered from the most recent Analyze or Instrument request so Execute
     /// can fall back when the core omits the file field (which it always does).
     last_file: Option<String>,
@@ -103,8 +100,6 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
-            harness_cache_dir: harness_cache_from_env(),
-            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
@@ -125,8 +120,6 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: FrontendLogLevel::from_env(),
             exec_timeout_ms: exec_timeout_from_env(),
-            harness_cache_dir: harness_cache_from_env(),
-            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: Some(registry),
             last_file: None,
@@ -143,8 +136,6 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             log,
             log_level: level,
             exec_timeout_ms: exec_timeout_from_env(),
-            harness_cache_dir: harness_cache_from_env(),
-            harness_scratch_dir: harness_scratch_from_env(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,

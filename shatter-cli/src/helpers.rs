@@ -174,6 +174,19 @@ pub(crate) fn apply_storage_env(
     }
 }
 
+/// Apply project-scoped harness storage env vars to a frontend config.
+///
+/// When `project_root` is `Some`, creates a [`HarnessStorage`] with
+/// project-scoped cache and artifact directories.  When `None`, the storage
+/// roots fall back to temp-based paths (no durable cache).
+pub(crate) fn apply_project_storage(config: &mut FrontendConfig, project_root: Option<&str>) {
+    if let Some(root) = project_root {
+        let storage =
+            shatter_core::harness_storage::HarnessStorage::for_project(Path::new(root));
+        apply_storage_env(config, &storage);
+    }
+}
+
 /// Apply standard environment variables to a frontend config.
 pub(crate) fn apply_frontend_env(
     config: &mut FrontendConfig,
@@ -537,6 +550,28 @@ mod cli_parity_tests {
                 "apply_storage_env must set {var}"
             );
         }
+    }
+
+    /// `apply_project_storage` sets storage vars when a project root is provided.
+    #[test]
+    fn apply_project_storage_with_root() {
+        use shatter_core::harness_storage::{ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH};
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_project_storage(&mut config, Some("/tmp/project"));
+        let keys: std::collections::HashSet<&str> =
+            config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        for var in [ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, ENV_ARTIFACT_DIR] {
+            assert!(keys.contains(var), "apply_project_storage must set {var}");
+        }
+    }
+
+    /// `apply_project_storage` is a no-op when project root is None.
+    #[test]
+    fn apply_project_storage_without_root() {
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        let before = config.env_vars.len();
+        apply_project_storage(&mut config, None);
+        assert_eq!(config.env_vars.len(), before, "no vars should be added when project_root is None");
     }
 }
 

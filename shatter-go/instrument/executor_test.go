@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -442,6 +443,20 @@ func TestHarnessScratchDirFromEnv(t *testing.T) {
 func TestHarnessScratchDirUnset(t *testing.T) {
 	if got := harnessScratchDir(); got != "" {
 		t.Errorf("expected empty string when unset, got %v", got)
+	}
+}
+
+func TestStandaloneGoBuildCacheDirFromEnv(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_CACHE", "/tmp/test-cache")
+	want := filepath.Join("/tmp/test-cache", "go", "standalone", "build-cache")
+	if got := standaloneGoBuildCacheDir(); got != want {
+		t.Errorf("standaloneGoBuildCacheDir() = %q, want %q", got, want)
+	}
+}
+
+func TestStandaloneGoBuildCacheDirUnset(t *testing.T) {
+	if got := standaloneGoBuildCacheDir(); got != "" {
+		t.Errorf("standaloneGoBuildCacheDir() = %q, want empty string", got)
 	}
 }
 
@@ -1216,5 +1231,111 @@ func classify(x int) string {
 	}
 	if retVal != "positive" {
 		t.Errorf("expected %q, got %q", "positive", retVal)
+	}
+}
+
+// --- Standalone harness fallback tests ---
+
+// TestIsStandaloneGoFile verifies that isStandaloneGoFile correctly detects
+// whether a source file has a parent go.mod.
+func TestIsStandaloneGoFile(t *testing.T) {
+	// File in a bare temp dir — no go.mod anywhere up the tree.
+	bareDir := t.TempDir()
+	bareFile := filepath.Join(bareDir, "target.go")
+	if err := os.WriteFile(bareFile, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !isStandaloneGoFile(bareFile) {
+		t.Error("expected isStandaloneGoFile=true for file with no parent go.mod")
+	}
+
+	// File in a dir that has a go.mod.
+	modDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example\n\ngo 1.23\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	modFile := filepath.Join(modDir, "target.go")
+	if err := os.WriteFile(modFile, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if isStandaloneGoFile(modFile) {
+		t.Error("expected isStandaloneGoFile=false for file whose directory contains go.mod")
+	}
+
+	// File in a subdirectory of a dir that has a go.mod (parent module).
+	subDir := filepath.Join(modDir, "sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subFile := filepath.Join(subDir, "target.go")
+	if err := os.WriteFile(subFile, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if isStandaloneGoFile(subFile) {
+		t.Error("expected isStandaloneGoFile=false for file whose parent dir contains go.mod")
+	}
+}
+
+// TestMakeStandaloneScratchDirUsesScratchEnv verifies that makeStandaloneScratchDir
+// creates a subdirectory inside SHATTER_HARNESS_SCRATCH when that env var is set.
+func TestMakeStandaloneScratchDirUsesScratchEnv(t *testing.T) {
+	scratchBase := t.TempDir()
+	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
+
+	dir, err := makeStandaloneScratchDir()
+	if err != nil {
+		t.Fatalf("makeStandaloneScratchDir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if !strings.HasPrefix(dir, scratchBase) {
+		t.Errorf("expected scratch dir %q to be under %q", dir, scratchBase)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("scratch dir %q was not created: %v", dir, err)
+	}
+}
+
+// TestMakeStandaloneScratchDirFallbackToTemp verifies that makeStandaloneScratchDir
+// falls back to os.MkdirTemp when SHATTER_HARNESS_SCRATCH is not set.
+func TestMakeStandaloneScratchDirFallbackToTemp(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_SCRATCH", "")
+
+	dir, err := makeStandaloneScratchDir()
+	if err != nil {
+		t.Fatalf("makeStandaloneScratchDir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("fallback dir %q was not created: %v", dir, err)
+	}
+}
+
+// TestExecuteFunctionStandaloneUsesConfiguredScratch verifies that a standalone
+// execution (file with no go.mod parent) succeeds when SHATTER_HARNESS_SCRATCH is set.
+func TestExecuteFunctionStandaloneUsesConfiguredScratch(t *testing.T) {
+	scratchBase := t.TempDir()
+	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
+
+	// Source file with no go.mod parent — standalone.
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+func add(a, b int) int { return a + b }
+`)
+	result, err := ExecuteFunction(src, "add", []json.RawMessage{
+		json.RawMessage("3"),
+		json.RawMessage("4"),
+	}, false)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	var got int
+	if err := json.Unmarshal(result.ReturnValue, &got); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if got != 7 {
+		t.Errorf("expected 7, got %d", got)
 	}
 }
