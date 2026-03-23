@@ -12,6 +12,7 @@ issue-prefix: str
 # without manually running 'bd dolt start' first.
 dolt:
   auto-start: true
+  idle-timeout: 0
 
 # Enable JSON output by default
 # json: false
