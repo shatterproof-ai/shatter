@@ -29,6 +29,7 @@ import {
   type SetupLevel,
 } from "./protocol.js";
 import { TimingCollector } from "./timing.js";
+import { InstrumentationWorker } from "./instrumentation-worker.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
 
@@ -54,36 +55,20 @@ const SUPPORTED_CAPABILITIES = [
 //                 like `if (_executor)` and getLoadedModuleNames() still work.
 // ---------------------------------------------------------------------------
 
-type AnalyzerMod = typeof import('./analyzer.js');
 type ExecutorMod = typeof import('./executor.js');
-type InstrumentorMod = typeof import('./instrumentor.js');
 type SetupLoaderMod = typeof import('./setup-loader.js');
 type WasmGeneratorMod = typeof import('./wasm-generator.js');
 
-let _analyzerPromise: Promise<AnalyzerMod> | null = null;
-let _analyzer: AnalyzerMod | null = null;
 let _executorPromise: Promise<ExecutorMod> | null = null;
 let _executor: ExecutorMod | null = null;
-let _instrumentorPromise: Promise<InstrumentorMod> | null = null;
-let _instrumentor: InstrumentorMod | null = null;
 let _setupLoaderPromise: Promise<SetupLoaderMod> | null = null;
 let _setupLoader: SetupLoaderMod | null = null;
 let _wasmGeneratorPromise: Promise<WasmGeneratorMod> | null = null;
 let _wasmGenerator: WasmGeneratorMod | null = null;
 
-function getAnalyzer(): Promise<AnalyzerMod> {
-  if (!_analyzerPromise) _analyzerPromise = import('./analyzer.js').then(m => (_analyzer = m));
-  return _analyzerPromise;
-}
-
 function getExecutor(): Promise<ExecutorMod> {
   if (!_executorPromise) _executorPromise = import('./executor.js').then(m => (_executor = m));
   return _executorPromise;
-}
-
-function getInstrumentor(): Promise<InstrumentorMod> {
-  if (!_instrumentorPromise) _instrumentorPromise = import('./instrumentor.js').then(m => (_instrumentor = m));
-  return _instrumentorPromise;
 }
 
 function getSetupLoader(): Promise<SetupLoaderMod> {
@@ -97,16 +82,36 @@ function getWasmGenerator(): Promise<WasmGeneratorMod> {
 }
 
 /**
- * Start background loading of all heavy modules concurrently.
+ * Worker thread for CPU-bound analyze and instrument operations.
+ * Created on handshake; the worker eagerly imports analyzer and instrumentor.
+ */
+let _worker: InstrumentationWorker | null = null;
+
+/** Path override for the worker script, used in tests. */
+let _workerPath: string | undefined;
+
+/** Set a custom worker script path. Exposed for testing. */
+export function setWorkerPath(workerPath: string): void {
+  _workerPath = workerPath;
+}
+
+function getWorker(): InstrumentationWorker {
+  if (!_worker) {
+    _worker = new InstrumentationWorker(_workerPath);
+  }
+  return _worker;
+}
+
+/**
+ * Start background loading of heavy modules concurrently.
  *
- * Called after the handshake response is sent. Errors are intentionally
- * swallowed here — if a module fails to load, the error will surface when
- * the first request that needs it awaits getXxx().
+ * Called after the handshake response is sent. The worker thread is started
+ * to eagerly load analyzer and instrumentor. Executor and setup-loader
+ * continue to lazy-load on the main thread.
  */
 function preloadHeavyModules(): void {
-  void getAnalyzer();
+  getWorker(); // starts worker thread, which eagerly imports analyzer + instrumentor
   void getExecutor();
-  void getInstrumentor();
   void getSetupLoader();
   // wasm-generator (~8ms) is only needed for .wasm generator files; skip preload.
 }
@@ -218,11 +223,16 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       lastAnalyzedFile = path.resolve(request.file);
       // Cache project_root for use by execute (deferred to avoid loading executor here).
       lastProjectRoot = request.project_root ?? undefined;
-      const { analyzeFile } = await getAnalyzer();
-      const functions = timing
-        ? timing.sync("analyze.total", () =>
-          analyzeFile(request.file, request.function, request.project_root, timing))
-        : analyzeFile(request.file, request.function, request.project_root);
+      const worker = getWorker();
+      const analyzeResult = await worker.analyze(
+        request.file,
+        request.function ?? null,
+        request.project_root ?? null,
+      );
+      if (timing && analyzeResult.timingPhases) {
+        timing.mergePhases(analyzeResult.timingPhases);
+      }
+      const functions = analyzeResult.functions;
 
       if (request.function != null && functions.length === 0) {
         return {
@@ -255,12 +265,18 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       }
 
-      const { instrumentFunction } = await getInstrumentor();
+      const worker = getWorker();
       const source = fs.readFileSync(request.file, "utf-8");
-      const result = timing
-        ? timing.sync("instrument.total", () =>
-          instrumentFunction(source, request.function, request.file, request.mocks ?? [], timing))
-        : instrumentFunction(source, request.function, request.file, request.mocks ?? []);
+      const instrumentResult = await worker.instrument(
+        source,
+        request.function,
+        request.file,
+        request.mocks ?? [],
+      );
+      if (timing && instrumentResult.timingPhases) {
+        timing.mergePhases(instrumentResult.timingPhases);
+      }
+      const result = instrumentResult.result;
 
       if ("error" in result) {
         return {
@@ -505,6 +521,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         _executor.clearCompiledScriptCache();
         _executor.clearModuleCache();
       }
+      if (_worker) {
+        await _worker.terminate();
+        _worker = null;
+      }
       return {
         response: {
           protocol_version: PROTOCOL_VERSION,
@@ -613,11 +633,19 @@ export function clearInstrumentedSources(): void {
   if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
-  _analyzerPromise = null;  _analyzer = null;
+  // Worker is kept alive across clears — it's stateless (no caches to reset).
+  // Only shutdown and terminateWorker() destroy it.
   _executorPromise = null;  _executor = null;
-  _instrumentorPromise = null;  _instrumentor = null;
   _setupLoaderPromise = null;  _setupLoader = null;
   _wasmGeneratorPromise = null;  _wasmGenerator = null;
+}
+
+/** Terminate the worker thread. Exposed for test cleanup (afterAll). */
+export async function terminateWorker(): Promise<void> {
+  if (_worker) {
+    await _worker.terminate();
+    _worker = null;
+  }
 }
 
 /** Number of cached instrumented sources. Exposed for testing. */
@@ -636,9 +664,8 @@ export function setupContextsSize(): number {
  */
 export function getLoadedModuleNames(): string[] {
   const loaded: string[] = [];
-  if (_analyzer) loaded.push("analyzer");
+  if (_worker) loaded.push("analyzer", "instrumentor"); // loaded eagerly in worker thread
   if (_executor) loaded.push("executor");
-  if (_instrumentor) loaded.push("instrumentor");
   if (_setupLoader) loaded.push("setupLoader");
   if (_wasmGenerator) loaded.push("wasmGenerator");
   return loaded;

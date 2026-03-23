@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames } from "./handlers.js";
+import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker } from "./handlers.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
@@ -127,6 +127,30 @@ describe("parseRequest", () => {
 });
 
 describe("handleRequest", () => {
+  beforeAll(async () => {
+    // Worker threads need compiled JS; point to the dist/ output.
+    setWorkerPath(path.resolve(__dirname, "..", "dist", "worker.js"));
+    // Warm up: handshake creates the worker, then an analyze call forces the
+    // worker to fully load the TypeScript compiler (~2-3s cold start).
+    const fixtureFile = path.resolve(__dirname, "__fixtures__", "simple.ts");
+    await handleRequest({
+      protocol_version: PROTOCOL_VERSION,
+      id: 0,
+      command: "handshake",
+      capabilities: [],
+    } as Request);
+    await handleRequest({
+      protocol_version: PROTOCOL_VERSION,
+      id: 0,
+      command: "analyze",
+      file: fixtureFile,
+    } as Request);
+  }, 30000);
+
+  afterAll(async () => {
+    await terminateWorker();
+  });
+
   beforeEach(() => {
     clearInstrumentedSources();
     clearModuleCache();
@@ -776,6 +800,7 @@ describe("handleRequest", () => {
 
   describe("startup staging", () => {
     it("handshake triggers background preloads; wasm-generator is excluded", async () => {
+      await terminateWorker();
       clearInstrumentedSources();
       // Before handshake: nothing loaded.
       expect(getLoadedModuleNames()).toHaveLength(0);

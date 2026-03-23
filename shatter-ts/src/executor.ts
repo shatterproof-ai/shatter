@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as vm from "node:vm";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import { isDeepStrictEqual } from "node:util";
 import { reconstructValue } from "./reconstruct.js";
 import type {
   ExecuteResponse,
@@ -1082,7 +1083,7 @@ export async function executeInstrumented(
     for (const key of exportKeys) {
       const before = beforeSnapshot.get(key);
       const after = finalExports.exports[key];
-      if (JSON.stringify(before) !== JSON.stringify(after)) {
+      if (!isDeepStrictEqual(before, after)) {
         sideEffects.push({
           kind: "global_state_change",
           variable: key,
