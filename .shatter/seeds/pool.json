@@ -692,6 +692,36 @@
           "kind": "float"
         },
         "value": -975.5294086611232
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 70.51183576093808
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -95.20789425568351
       }
     ],
     "{\"kind\":\"int\"}": [
