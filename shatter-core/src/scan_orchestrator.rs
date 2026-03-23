@@ -1189,9 +1189,14 @@ pub async fn parallel_scan(
         analyses.iter().map(|a| (a.name.as_str(), a)).collect();
 
     let effective_parallelism = config.policy.effective_workers(config.parallelism).max(1);
-    // Workers are created lazily per-layer; track peak count and total idle reaps across layers.
+    // Persistent pool reused across layers; track peak count and total idle reaps.
     let mut peak_workers: usize = 0;
     let mut total_reaped: usize = 0;
+    // Warm frontend pool that persists across topological layers, avoiding
+    // repeated spawn+handshake overhead. Created lazily on the first layer
+    // with real work; grown/reaped dynamically by WorkerPool internals.
+    let mut persistent_pool: Option<Arc<WorkerPool>> = None;
+    let fe_config_persistent = Arc::new(frontend_config.clone());
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -1258,16 +1263,19 @@ pub async fn parallel_scan(
             break;
         }
 
-        // Speculatively pre-spawn one worker while we build the task list.
-        // The spawn runs concurrently with cache filtering, hiding its latency.
-        let fe_config_pre = Arc::new(frontend_config.clone());
-        let (prespawn_tx, prespawn_rx) = tokio::sync::oneshot::channel();
-        {
-            let cfg = Arc::clone(&fe_config_pre);
+        // Speculatively pre-spawn one worker while we build the task list,
+        // but only when the persistent pool doesn't exist yet (subsequent
+        // layers already have warm workers in the pool).
+        let prespawn_rx = if persistent_pool.is_none() {
+            let (prespawn_tx, rx) = tokio::sync::oneshot::channel();
+            let cfg = Arc::clone(&fe_config_persistent);
             tokio::spawn(async move {
                 let _ = prespawn_tx.send(Frontend::spawn(&cfg).await);
             });
-        }
+            Some(rx)
+        } else {
+            None
+        };
 
         // Build tasks for this layer: each function paired with its mocks.
         let mut tasks: Vec<ExploreTask> = Vec::new();
@@ -1435,20 +1443,22 @@ pub async fn parallel_scan(
             });
         }
 
-        // Collect the speculative pre-spawn (already in-flight since before
-        // the task-building loop). If it succeeded, pass it to the pool;
-        // if tasks is empty, shut it down.
-        let prewarmed = match prespawn_rx.await {
-            Ok(Ok(fe)) => Some(fe),
-            _ => None,
+        // Collect the speculative pre-spawn (only in-flight when pool didn't
+        // exist yet). If it succeeded, pass it to the new pool.
+        let prewarmed = if let Some(rx) = prespawn_rx {
+            match rx.await {
+                Ok(Ok(fe)) => Some(fe),
+                _ => None,
+            }
+        } else {
+            None
         };
 
         // Execute tasks in parallel, using either the shared WorkerPool (default)
         // or per-function dedicated frontends (Function isolation mode).
-        // The pool/semaphore is created lazily — only when there is real
-        // exploration work to do in this layer. Cache-hit layers skip it.
+        // The pool is created lazily on the first layer with work and persists
+        // across subsequent layers, keeping frontend subprocesses warm.
         if !tasks.is_empty() {
-            let fe_config = fe_config_pre;
 
             // Collect outcomes from either isolation path.
             let layer_outcomes: Vec<FunctionOutcome> =
@@ -1461,7 +1471,7 @@ pub async fn parallel_scan(
                     // Each function gets a dedicated fresh frontend.
                     // No shared pool — a Semaphore caps concurrency instead.
                     let (outcomes, layer_peak) = run_layer_function_mode(
-                        Arc::clone(&fe_config),
+                        Arc::clone(&fe_config_persistent),
                         tasks,
                         effective_parallelism,
                         config.timeout_per_fn,
@@ -1504,17 +1514,24 @@ pub async fn parallel_scan(
                         out
                     };
 
-                    // Pass the speculative pre-spawn if available.
-                    let pool = Arc::new(
-                        WorkerPool::spawn_capped(
-                            Arc::clone(&fe_config),
-                            effective_parallelism,
-                            expanded_tasks.len(),
-                            prewarmed,
-                        )
-                        .await
-                        .map_err(ScanError::Frontend)?,
-                    );
+                    // Reuse the persistent pool if it exists; otherwise create it
+                    // with the speculative pre-spawn from this first layer.
+                    let pool = if let Some(ref existing) = persistent_pool {
+                        Arc::clone(existing)
+                    } else {
+                        let new_pool = Arc::new(
+                            WorkerPool::spawn_capped(
+                                Arc::clone(&fe_config_persistent),
+                                effective_parallelism,
+                                expanded_tasks.len(),
+                                prewarmed,
+                            )
+                            .await
+                            .map_err(ScanError::Frontend)?,
+                        );
+                        persistent_pool = Some(Arc::clone(&new_pool));
+                        new_pool
+                    };
 
                     // Each task decrements this counter after returning its worker so that
                     // `maybe_grow` can detect tasks still blocked on `checkout()`.
@@ -1532,7 +1549,7 @@ pub async fn parallel_scan(
                         let behavior_maps = Arc::clone(&behavior_maps);
                         let input_pool = Arc::clone(&input_pool);
                         let timeout = config.timeout_per_fn;
-                        let fe_config = Arc::clone(&fe_config);
+                        let fe_config = Arc::clone(&fe_config_persistent);
                         let tasks_remaining = Arc::clone(&tasks_remaining);
 
                         let handle = tokio::spawn(async move {
@@ -1642,17 +1659,8 @@ pub async fn parallel_scan(
                         }
                     }
 
-                    // Record the true peak (never decremented by reaping) before shutdown.
-                    peak_workers = peak_workers.max(pool.peak_size());
-                    // Accumulate workers reaped early across layers for perf reporting.
-                    total_reaped += pool.idle_reaped();
-
-                    // Shut down this layer's workers now that all tasks are done.
-                    // This frees subprocess resources before the next layer begins,
-                    // and ensures zero processes remain when the layer was a cache hit.
-                    if let Ok(p) = Arc::try_unwrap(pool) {
-                        p.shutdown().await;
-                    }
+                    // Pool persists across layers — no per-layer shutdown.
+                    // Workers will be reaped or reused as the next layer demands.
                     outcomes
                 };
 
@@ -1685,7 +1693,8 @@ pub async fn parallel_scan(
             }
         } else {
             // No tasks in this layer (all cache hits). Shut down the speculative
-            // pre-spawn — it was wasted, but rare on mixed workloads.
+            // pre-spawn if one was created (only on the first layer before the
+            // persistent pool exists).
             if let Some(fe) = prewarmed {
                 tokio::spawn(async move {
                     let _ = fe.shutdown().await;
@@ -1703,6 +1712,15 @@ pub async fn parallel_scan(
         checkpoint.layer_index = layer_idx;
         if let Some(ref path) = config.resume_path {
             let _ = checkpoint.save(path);
+        }
+    }
+
+    // Shut down the persistent worker pool now that all layers are done.
+    if let Some(pool) = persistent_pool {
+        peak_workers = peak_workers.max(pool.peak_size());
+        total_reaped += pool.idle_reaped();
+        if let Ok(p) = Arc::try_unwrap(pool) {
+            p.shutdown().await;
         }
     }
 
@@ -4410,6 +4428,218 @@ mod tests {
             result.workers_used >= 1,
             "workers_used must reflect the true peak (got {})",
             result.workers_used,
+        );
+    }
+
+    // ── Persistent pool cross-layer tests ────────────────────────────
+
+    /// A 3-function chain forces 3 topological layers (A → B → C).
+    /// The persistent pool must survive all layer transitions — if it were
+    /// accidentally shut down between layers, checkout() would deadlock.
+    #[tokio::test]
+    async fn parallel_scan_pool_persists_across_layers() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let make_fn = |name: &str, deps: Vec<&str>| FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: deps
+                .into_iter()
+                .map(|d| ExternalDependency {
+                    kind: DependencyKind::FunctionCall,
+                    symbol: d.to_string(),
+                    source_module: String::new(),
+                    return_type: TypeInfo::Unknown,
+                    param_types: vec![],
+                    call_sites: vec![],
+                })
+                .collect(),
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+
+        // leaf_a → mid → root: three distinct topological layers.
+        let analyses = vec![
+            make_fn("leaf_a", vec![]),
+            make_fn("mid", vec!["leaf_a"]),
+            make_fn("root", vec!["mid"]),
+        ];
+
+        let mut file_map = HashMap::new();
+        for name in ["leaf_a", "mid", "root"] {
+            file_map.insert(name.to_string(), "test.ts".to_string());
+        }
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 2,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed across 3 layers");
+
+        // All 3 functions must complete — deadlock would prevent this.
+        assert_eq!(result.function_results.len(), 3, "all 3 functions must complete");
+        assert!(result.skipped.is_empty(), "no functions should be skipped");
+
+        // Each layer has 1 task → pool is capped at 1 per layer.
+        // With the persistent pool the same 1 worker is reused for all 3 layers.
+        assert_eq!(result.workers_used, 1, "single worker reused across all 3 layers");
+
+        // Dependency order: leaf_a < mid < root.
+        let order = &result.test_order;
+        let pos = |name: &str| order.iter().position(|n| n == name).unwrap();
+        assert!(pos("leaf_a") < pos("mid"), "leaf_a must come before mid");
+        assert!(pos("mid") < pos("root"), "mid must come before root");
+    }
+
+    /// Four independent leaf functions followed by one root that depends on all
+    /// four forces the pool to grow during layer 0 (4 tasks, parallelism 4) and
+    /// then shrink for layer 1 (1 task). The persistent pool must handle the
+    /// size transition correctly: reapers should drain the excess workers rather
+    /// than crashing or deadlocking.
+    #[tokio::test]
+    async fn parallel_scan_pool_reuses_workers_across_shrinking_layers() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let make_leaf = |name: &str| FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        };
+
+        let leaf_names = ["leaf_a", "leaf_b", "leaf_c", "leaf_d"];
+        let mut analyses: Vec<FunctionAnalysis> =
+            leaf_names.iter().map(|n| make_leaf(n)).collect();
+
+        // root depends on all 4 leaves → placed in layer 1.
+        analyses.push(FunctionAnalysis {
+            name: "root".to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            branches: vec![],
+            dependencies: leaf_names
+                .iter()
+                .map(|d| ExternalDependency {
+                    kind: DependencyKind::FunctionCall,
+                    symbol: d.to_string(),
+                    source_module: String::new(),
+                    return_type: TypeInfo::Unknown,
+                    param_types: vec![],
+                    call_sites: vec![],
+                })
+                .collect(),
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+        });
+
+        let mut file_map = HashMap::new();
+        for name in leaf_names.iter().chain(["root"].iter()) {
+            file_map.insert(name.to_string(), "test.ts".to_string());
+        }
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(42),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed with shrinking layer transition");
+
+        // All 5 functions (4 leaves + root) must complete — no deadlock.
+        assert_eq!(result.function_results.len(), 5, "all 5 functions must complete");
+        assert!(result.skipped.is_empty(), "no functions should be skipped");
+
+        // root must come after all leaves.
+        let order = &result.test_order;
+        let root_pos = order.iter().position(|n| n == "root").unwrap();
+        for leaf in &leaf_names {
+            let leaf_pos = order.iter().position(|n| n == *leaf).unwrap();
+            assert!(leaf_pos < root_pos, "{leaf} must be explored before root");
+        }
+
+        // Layer 0 had 4 tasks with parallelism 4: pool started at
+        // initial_workers(4,4)=1 and grew as tasks were dispatched.
+        assert!(
+            result.workers_used >= 2,
+            "pool should have grown to ≥2 workers during layer 0 (got {})",
+            result.workers_used,
+        );
+
+        // As layer 0 tasks completed rapidly (noop), live_count exceeded
+        // remaining+MIN_IDLE, triggering idle reaping. The persistent pool
+        // accumulates the reap count across both layers.
+        assert!(
+            result.workers_reaped > 0,
+            "idle workers should have been reaped during layer 0→1 transition (got {})",
+            result.workers_reaped,
         );
     }
 
