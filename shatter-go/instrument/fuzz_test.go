@@ -99,7 +99,7 @@ func FuzzExecTimeoutDuration(f *testing.F) {
 	})
 }
 
-// FuzzGenerateMockFile verifies that generateMockFile never panics for
+// FuzzGenerateLoopMockFile verifies that generateLoopMockFile never panics for
 // arbitrary MockConfig JSON and always produces valid Go source starting
 // with "package main".
 func FuzzGenerateMockFile(f *testing.F) {
@@ -120,7 +120,7 @@ func FuzzGenerateMockFile(f *testing.F) {
 		if err := json.Unmarshal([]byte(data), &mocks); err != nil {
 			return // skip inputs that don't parse as MockConfig slice
 		}
-		source := generateMockFile(mocks, "/tmp/calls.json")
+		source := generateLoopMockFile(mocks)
 		if !strings.HasPrefix(source, "package main") {
 			t.Errorf("generated source does not start with 'package main': %s", source[:min(80, len(source))])
 		}

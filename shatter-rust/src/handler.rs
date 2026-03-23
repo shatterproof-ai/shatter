@@ -75,6 +75,37 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
 }
 
 /// Processes protocol requests from stdin and writes responses to stdout.
+/// Lifecycle manager for persistent harness subprocesses.
+///
+/// Keeps compiled harness processes alive across multiple execute calls so they
+/// can be reused without recompilation. Currently a skeleton — actual harness
+/// compilation and execution are implemented once the Rust execute handler is
+/// complete. The struct is wired into `Handler` and its `close_all()` method is
+/// called on shutdown so resources are released correctly when that work lands.
+pub struct PersistentHarnessManager {
+    /// Placeholder for the process map (source_path + func_name → subprocess).
+    /// Will hold `HashMap<HarnessKey, ChildProcess>` once execute is implemented.
+    _placeholder: (),
+}
+
+impl PersistentHarnessManager {
+    pub fn new() -> Self {
+        Self { _placeholder: () }
+    }
+
+    /// Terminates all cached harness subprocesses and frees their resources.
+    /// Called from the shutdown handler to ensure clean process teardown.
+    pub fn close_all(&mut self) {
+        // No-op until execute is implemented and harness processes are spawned.
+    }
+}
+
+impl Default for PersistentHarnessManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Handler<R, W, L> {
     reader: BufReader<R>,
     writer: W,
@@ -83,6 +114,8 @@ pub struct Handler<R, W, L> {
     exec_timeout_ms: u64,
     wasm_cache: WasmCache,
     native_registry: Option<NativeRegistry>,
+    /// Persistent harness subprocess manager. close_all() is called on shutdown.
+    harness_manager: PersistentHarnessManager,
     /// Harness cache directory from `SHATTER_HARNESS_CACHE` (unused until execute is implemented).
     #[allow(dead_code)]
     harness_cache_dir: Option<String>,
@@ -105,6 +138,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             harness_cache_dir: harness_cache_from_env(),
             harness_scratch_dir: harness_scratch_from_env(),
+            harness_manager: PersistentHarnessManager::new(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
@@ -127,6 +161,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             harness_cache_dir: harness_cache_from_env(),
             harness_scratch_dir: harness_scratch_from_env(),
+            harness_manager: PersistentHarnessManager::new(),
             wasm_cache: WasmCache::new(),
             native_registry: Some(registry),
             last_file: None,
@@ -145,6 +180,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             exec_timeout_ms: exec_timeout_from_env(),
             harness_cache_dir: harness_cache_from_env(),
             harness_scratch_dir: harness_scratch_from_env(),
+            harness_manager: PersistentHarnessManager::new(),
             wasm_cache: WasmCache::new(),
             native_registry: None,
             last_file: None,
@@ -699,7 +735,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_shutdown(&self, mut resp: Response) -> Response {
+    fn handle_shutdown(&mut self, mut resp: Response) -> Response {
+        self.harness_manager.close_all();
         resp.status = "shutdown_ack".to_string();
         resp
     }

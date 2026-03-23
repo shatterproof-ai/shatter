@@ -211,5 +211,37 @@ func __shatter_dump_results(path string) error {
 	}
 	return os.WriteFile(path, data, 0644)
 }
+
+// __shatter_reset clears all recorded data, ready for a new iteration.
+func __shatter_reset() {
+	__shatter_mu.Lock()
+	__shatter_lines = __shatter_lines[:0]
+	__shatter_branches = __shatter_branches[:0]
+	__shatter_trace = __shatter_trace[:0]
+	__shatter_mu.Unlock()
+}
+
+// __shatter_collect_results returns the current recorded results without
+// clearing state. Callers should invoke __shatter_reset() before the next
+// iteration so recordings do not accumulate across calls.
+func __shatter_collect_results() __shatterResults {
+	__shatter_mu.Lock()
+	defer __shatter_mu.Unlock()
+	results := __shatterResults{
+		LinesExecuted: __shatter_lines,
+		BranchPath:    __shatter_branches,
+		ScopeEvents:   __shatter_trace,
+	}
+	if results.LinesExecuted == nil {
+		results.LinesExecuted = []int{}
+	}
+	if results.BranchPath == nil {
+		results.BranchPath = []__shatterBranchDecision{}
+	}
+	if results.ScopeEvents == nil {
+		results.ScopeEvents = []__shatterTraceEvent{}
+	}
+	return results
+}
 `, packageName)
 }
