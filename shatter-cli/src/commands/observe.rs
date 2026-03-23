@@ -21,6 +21,7 @@ pub(crate) async fn run_observe(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
     output_path: Option<&Path>,
     log_level: LogLevel,
     memory_limit: Option<u64>,
@@ -49,6 +50,7 @@ pub(crate) async fn run_observe(
         memory_limit,
         None,
         false,
+        release,
     )?;
 
     let mut frontend = Frontend::spawn(&config)

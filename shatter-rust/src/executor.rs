@@ -155,6 +155,15 @@ pub struct ExecuteResult {
 
 const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 30;
 
+/// Check if harness should be compiled in release mode.
+/// Reads `SHATTER_HARNESS_RELEASE` env var — `"1"` or `"true"` (case-insensitive) enables release.
+fn harness_release_mode() -> bool {
+    std::env::var("SHATTER_HARNESS_RELEASE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Locate the shatter-rust-runtime crate by walking up from the shatter-rust binary.
 fn find_runtime_crate_path() -> Result<PathBuf, ExecuteError> {
     // Try SHATTER_RUNTIME_PATH env var first (for testing and deployment).
@@ -871,10 +880,16 @@ pub fn execute_function_with_timing(
         .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
     let build_timeout = Duration::from_secs(build_timeout_secs);
     let build_start = Instant::now();
+    let release = harness_release_mode();
+    let mut cargo_args = vec!["build"];
+    if release {
+        cargo_args.push("--release");
+    }
     let build_output = if let Some(timing) = timing.as_deref_mut() {
+        let args = cargo_args.clone();
         timing.record("execute.build", |_| {
             Command::new("cargo")
-                .args(["build", "--release"])
+                .args(&args)
                 .current_dir(&temp_dir)
                 .env("CARGO_TARGET_DIR", temp_dir.join("target"))
                 .output()
@@ -882,7 +897,7 @@ pub fn execute_function_with_timing(
         })?
     } else {
         Command::new("cargo")
-            .args(["build", "--release"])
+            .args(&cargo_args)
             .current_dir(&temp_dir)
             .env("CARGO_TARGET_DIR", temp_dir.join("target"))
             .output()
@@ -908,7 +923,8 @@ pub fn execute_function_with_timing(
     } else {
         "shatter-exec-temp"
     };
-    let binary_path = temp_dir.join("target/release").join(binary_name);
+    let profile_dir = if release { "release" } else { "debug" };
+    let binary_path = temp_dir.join("target").join(profile_dir).join(binary_name);
 
     if !binary_path.exists() {
         let _ = std::fs::remove_dir_all(&temp_dir);

@@ -200,16 +200,18 @@ func main() {{
     run_go_cmd(build_dir, &["mod", "tidy"])?;
 
     // Build the binary
+    let release = std::env::var("SHATTER_HARNESS_RELEASE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let output_str = output_binary.display().to_string();
+    let mut go_args = vec!["build", "-o", &output_str];
+    if release {
+        go_args.extend(["-trimpath", "-ldflags", "-w -s"]);
+    }
+    go_args.push(".");
     let output = std::process::Command::new("go")
-        .args([
-            "build",
-            "-o",
-            &output_binary.display().to_string(),
-            "-trimpath",
-            "-ldflags",
-            "-w -s",
-            ".",
-        ])
+        .args(&go_args)
         .current_dir(build_dir)
         .output()
         .map_err(|e| format!("failed to run `go build`: {e}"))?;
@@ -366,8 +368,16 @@ fn main() {{
         .map_err(|e| format!("failed to write main.rs: {e}"))?;
 
     // Build
+    let release = std::env::var("SHATTER_HARNESS_RELEASE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let mut cargo_args = vec!["build"];
+    if release {
+        cargo_args.push("--release");
+    }
     let output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
+        .args(&cargo_args)
         .current_dir(build_dir)
         .output()
         .map_err(|e| format!("failed to run `cargo build`: {e}"))?;
@@ -378,9 +388,10 @@ fn main() {{
     }
 
     // Copy the built binary to the output directory
+    let profile_dir = if release { "release" } else { "debug" };
     let built = build_dir
         .join("target")
-        .join("release")
+        .join(profile_dir)
         .join("shatter-rust-custom");
     std::fs::copy(&built, &output_binary)
         .map_err(|e| format!("failed to copy binary: {e}"))?;

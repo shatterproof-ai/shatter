@@ -20,6 +20,7 @@ pub(crate) async fn run_stale(
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
+    release: bool,
     memory_limit: Option<u64>,
     log_level: LogLevel,
     project_dir: Option<&Path>,
@@ -31,7 +32,7 @@ pub(crate) async fn run_stale(
     let project_root_str = resolve_project_root(project_dir, &target.file);
 
     let req_timeout = Duration::from_secs(request_timeout);
-    let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false)?;
+    let config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
     let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
         format!("failed to spawn {} frontend: {e}", target.language.label())
     })?;
