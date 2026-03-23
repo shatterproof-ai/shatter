@@ -115,11 +115,19 @@ func isStandaloneGoFile(sourcePath string) bool {
 // standaloneGoBuildCacheDir returns the Go build cache path for standalone
 // harness builds. Uses SHATTER_HARNESS_CACHE/go/standalone/build-cache when
 // the cache env var is set. Returns empty string when no cache is configured.
+// The returned path is always absolute (Go requires GOCACHE to be absolute).
 func standaloneGoBuildCacheDir() string {
-	if cache := harnessCacheDir(); cache != "" {
-		return filepath.Join(cache, "go", "standalone", "build-cache")
+	cache := harnessCacheDir()
+	if cache == "" {
+		return ""
 	}
-	return ""
+	p := filepath.Join(cache, "go", "standalone", "build-cache")
+	if !filepath.IsAbs(p) {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+	}
+	return p
 }
 
 // makeStandaloneScratchDir creates a per-request scratch directory for standalone
