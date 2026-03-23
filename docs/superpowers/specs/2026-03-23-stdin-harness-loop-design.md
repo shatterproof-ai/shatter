@@ -143,9 +143,9 @@ func main() {
 ## Binary Caching
 
 ### Cache key
-`sha256(original_source_content) + "_" + function_name`
+`sha256(original_source_content) + "_" + sha256(mocks_json) + "_" + sanitized_function_name`
 
-The original (pre-instrumentation) source file is used as the hash input, not the instrumented output. This is simpler (the file is available before any processing) and effectively equivalent since instrumentation is deterministic. The tradeoff: a shatter version bump that changes instrumentation output will reuse a stale binary until the source file changes. This is acceptable for now.
+Mocks are included because different mock configurations produce different harness binaries (mock return values are baked in at compile time). The original (pre-instrumentation) source file is used for the source hash. `sanitized_function_name` replaces non-alphanumeric/non-underscore characters to keep the path safe. The tradeoff: a shatter version bump that changes instrumentation output will reuse a stale binary until the source file changes. This is acceptable for now.
 
 ### Cache location
 Both frontends resolve the cache root as:
