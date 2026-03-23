@@ -4,13 +4,17 @@ use std::path::{Path, PathBuf};
 /// The esbuild-bundled TypeScript frontend, embedded at compile time.
 const BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-bundle.js"));
 
+/// The esbuild-bundled worker thread, embedded at compile time.
+const WORKER_BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-worker-bundle.js"));
+
 /// SHA-256 hash of the bundle, used for cache-busting.
 const BUNDLE_HASH: &str = env!("FRONTEND_BUNDLE_HASH");
 
 /// Ensure the embedded TS frontend bundle is extracted to disk, returning its path.
 ///
 /// The bundle is written to `~/.cache/shatter/frontend-<hash>.js`. If the file
-/// already exists (matching hash), extraction is skipped.
+/// already exists (matching hash), extraction is skipped. The worker bundle is
+/// extracted alongside as `worker.js` so the main bundle can find it via __dirname.
 pub fn ensure_extracted() -> Result<PathBuf, String> {
     let cache_dir = cache_dir()?;
     extract_to(&cache_dir)
@@ -20,27 +24,41 @@ pub fn ensure_extracted() -> Result<PathBuf, String> {
 fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     let bundle_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js"));
 
-    if bundle_path.exists() {
-        return Ok(bundle_path);
+    if !bundle_path.exists() {
+        fs::create_dir_all(cache_dir)
+            .map_err(|e| format!("failed to create cache directory {}: {e}", cache_dir.display()))?;
+
+        // Write atomically: write to a temp file then rename to avoid partial reads
+        let tmp_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js.tmp"));
+        fs::write(&tmp_path, BUNDLE)
+            .map_err(|e| format!("failed to write frontend bundle: {e}"))?;
+        fs::rename(&tmp_path, &bundle_path).map_err(|e| {
+            format!(
+                "failed to rename {} -> {}: {e}",
+                tmp_path.display(),
+                bundle_path.display()
+            )
+        })?;
+
+        // Clean up old bundles (different hash)
+        cleanup_old_bundles(cache_dir, &bundle_path);
     }
 
-    fs::create_dir_all(cache_dir)
-        .map_err(|e| format!("failed to create cache directory {}: {e}", cache_dir.display()))?;
-
-    // Write atomically: write to a temp file then rename to avoid partial reads
-    let tmp_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js.tmp"));
-    fs::write(&tmp_path, BUNDLE)
-        .map_err(|e| format!("failed to write frontend bundle: {e}"))?;
-    fs::rename(&tmp_path, &bundle_path).map_err(|e| {
-        format!(
-            "failed to rename {} -> {}: {e}",
-            tmp_path.display(),
-            bundle_path.display()
-        )
-    })?;
-
-    // Clean up old bundles (different hash)
-    cleanup_old_bundles(cache_dir, &bundle_path);
+    // Extract worker bundle alongside the main bundle. The main bundle's
+    // InstrumentationWorker resolves worker.js relative to __dirname.
+    let worker_path = cache_dir.join("worker.js");
+    if !worker_path.exists() {
+        let tmp_worker = cache_dir.join("worker.js.tmp");
+        fs::write(&tmp_worker, WORKER_BUNDLE)
+            .map_err(|e| format!("failed to write worker bundle: {e}"))?;
+        fs::rename(&tmp_worker, &worker_path).map_err(|e| {
+            format!(
+                "failed to rename {} -> {}: {e}",
+                tmp_worker.display(),
+                worker_path.display()
+            )
+        })?;
+    }
 
     Ok(bundle_path)
 }
