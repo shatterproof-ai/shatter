@@ -248,6 +248,8 @@ pub(crate) async fn run_run(
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation: shatter_core::explorer::IsolationMode::None,
                 capture_side_effects: false,
+                budget_surplus: None,
+                claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
                 };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config, None).await {

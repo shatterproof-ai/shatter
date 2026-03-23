@@ -634,6 +634,8 @@ mod tests {
             shrink_budget: 0,
             isolation: crate::explorer::IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
 
         let observe_config = ObserveConfig::from(&explore_config);

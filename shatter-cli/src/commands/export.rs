@@ -113,6 +113,8 @@ pub(crate) async fn run_export_tests(
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: shatter_core::explorer::IsolationMode::None,
             capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         };
 
         for func in &functions {

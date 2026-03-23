@@ -459,6 +459,8 @@ pub(crate) async fn run_explore(
                 shrink_budget,
                 isolation,
                 capture_side_effects,
+                budget_surplus: None,
+                claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
             };
 
             if !resolved.candidate_inputs.is_empty() {

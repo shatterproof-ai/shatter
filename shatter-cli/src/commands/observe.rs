@@ -156,6 +156,8 @@ pub(crate) async fn run_observe(
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation: shatter_core::explorer::IsolationMode::None,
                 capture_side_effects: false,
+                budget_surplus: None,
+                claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
             };
             explorer::explore_function(&mut frontend, &func, &explore_config, None).await
         };
