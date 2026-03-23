@@ -249,7 +249,7 @@ pub(crate) enum CliCommand {
         show_clusters: bool,
 
         /// Directory for caching behavior maps across runs.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<PathBuf>,
 
@@ -382,7 +382,7 @@ pub(crate) enum CliCommand {
         fail_on_setup_error: bool,
 
         /// Record external dependency I/O (passthrough mode). Saves observed
-        /// call data to .shatter/recorded-mocks/ as seed fixtures for future runs.
+        /// call data to shatter-artifacts/recorded-mocks/ as seed fixtures for future runs.
         #[arg(long)]
         record: bool,
 
@@ -391,7 +391,7 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         observe_output: Option<PathBuf>,
 
-        /// Replay previously recorded mock fixtures from .shatter/recorded-mocks/.
+        /// Replay previously recorded mock fixtures from shatter-artifacts/recorded-mocks/.
         /// When set, auto-detects recorded mocks for each file+function pair and
         /// uses observed return values as seed mock configs.
         #[arg(long)]
@@ -669,7 +669,7 @@ pub(crate) enum CliCommand {
         timeout_explore: Option<f64>,
 
         /// Directory for caching behavior maps across runs.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<PathBuf>,
 
@@ -987,7 +987,7 @@ pub(crate) enum CliCommand {
     ///
     /// Reads generator paths from `.shatter/config.yaml`, compiles a custom
     /// frontend binary that includes native generator functions, and writes
-    /// it to `.shatter/bin/`.
+    /// it to `.shatter-cache/bin/`.
     #[command(name = "build-frontend")]
     BuildFrontend {
         /// Target language: "go" or "rust".
@@ -998,7 +998,7 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Output directory (default: `.shatter/bin/`).
+        /// Output directory (default: `.shatter-cache/bin/`).
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
@@ -1080,7 +1080,7 @@ pub(crate) enum CliCommand {
         source: String,
 
         /// Cache directory for loading behavior maps.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter/cache/`.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<PathBuf>,
 
@@ -1188,11 +1188,11 @@ pub(crate) enum CacheAction {
     ///
     /// Clears both analysis cache and results cache when no flags are given.
     Clear {
-        /// Clear only the analysis cache (`.shatter/cache/analysis/`).
+        /// Clear only the analysis cache (`.shatter-cache/analysis/`).
         #[arg(long)]
         analysis: bool,
 
-        /// Clear only the results cache (`.shatter/cache/`).
+        /// Clear only the results cache (`.shatter-cache/behavior-maps/`).
         #[arg(long)]
         results: bool,
     },

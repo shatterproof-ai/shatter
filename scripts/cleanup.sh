@@ -200,16 +200,25 @@ if [ "$DO_TMP" = true ]; then
     fi
   done
 
-  # Shatter .shatter/cache dirs in examples (runtime artifacts, not seeds)
-  for cache_dir in "$PROJECT_ROOT"/examples/*/.shatter/cache \
-                   "$PROJECT_ROOT"/examples/*/src/.shatter/cache; do
+  # Shatter cache dirs in examples (runtime artifacts, not seeds)
+  for cache_dir in "$PROJECT_ROOT"/examples/*/.shatter-cache \
+                   "$PROJECT_ROOT"/examples/*/src/.shatter-cache; do
     if [ -d "$cache_dir" ]; then
       remove "$cache_dir" "$(echo "$cache_dir" | sed "s|$PROJECT_ROOT/||")"
     fi
   done
 
-  # Top-level .shatter/cache
-  remove "$PROJECT_ROOT/.shatter/cache" ".shatter/cache"
+  # Top-level .shatter-cache
+  remove "$PROJECT_ROOT/.shatter-cache" ".shatter-cache"
+
+  # Legacy .shatter/cache (from before lifecycle split)
+  for cache_dir in "$PROJECT_ROOT"/examples/*/.shatter/cache \
+                   "$PROJECT_ROOT"/examples/*/src/.shatter/cache \
+                   "$PROJECT_ROOT/.shatter/cache"; do
+    if [ -d "$cache_dir" ]; then
+      remove "$cache_dir" "$(echo "$cache_dir" | sed "s|$PROJECT_ROOT/||") (legacy)"
+    fi
+  done
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

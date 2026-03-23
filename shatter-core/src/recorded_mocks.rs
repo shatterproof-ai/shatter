@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::execution_record::ExternalCall;
 use crate::protocol::{ExternalDependency, ExecuteResult, MockBehavior, MockConfig};
 
-/// Subdirectory within `.shatter/` for recorded mock fixtures.
+/// Subdirectory within `shatter-artifacts/` for recorded mock fixtures.
+///
+/// Legacy location was `.shatter/recorded-mocks/`; callers should check both.
 pub const RECORDED_MOCKS_DIR: &str = "recorded-mocks";
 
 // ---------------------------------------------------------------------------
@@ -203,7 +205,7 @@ pub fn recorded_mock_path(shatter_dir: &Path, file: &str, function: &str) -> Pat
         .join(format!("{function}.yaml"))
 }
 
-/// Save a recorded mock file to `.shatter/recorded-mocks/`.
+/// Save a recorded mock file to `<base_dir>/recorded-mocks/`.
 pub fn save_recorded_mocks(
     mock_file: &RecordedMockFile,
     shatter_dir: &Path,

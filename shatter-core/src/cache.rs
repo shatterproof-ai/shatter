@@ -212,9 +212,9 @@ impl BehaviorMapCache {
         Ok((file_count, bytes))
     }
 
-    /// Default cache directory relative to a project root: `<project_root>/.shatter/cache/`.
+    /// Default cache directory relative to a project root: `<project_root>/.shatter-cache/behavior-maps/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
-        project_root.join(".shatter").join("cache")
+        project_root.join(".shatter-cache").join("behavior-maps")
     }
 
     fn path_for(&self, function_id: &str) -> PathBuf {
@@ -300,7 +300,7 @@ impl SpecCache {
 
     /// Default spec cache directory (same as behavior map cache).
     pub fn default_dir(project_root: &Path) -> PathBuf {
-        project_root.join(".shatter").join("cache")
+        project_root.join(".shatter-cache").join("behavior-maps")
     }
 
     fn path_for(&self, function_id: &str) -> PathBuf {
@@ -486,7 +486,7 @@ mod tests {
     fn default_dir_is_relative_to_project_root() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = BehaviorMapCache::default_dir(dir.path());
-        assert_eq!(cache_dir, dir.path().join(".shatter").join("cache"));
+        assert_eq!(cache_dir, dir.path().join(".shatter-cache").join("behavior-maps"));
     }
 
     #[test]

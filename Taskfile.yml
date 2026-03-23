@@ -389,9 +389,9 @@ tasks:
       - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
   perf-isolation:
-    desc: Run the isolation mode corpus (set RESULTS_DIR, default .shatter/perf-runs/isolation)
+    desc: Run the isolation mode corpus (set RESULTS_DIR, default .shatter-cache/perf-runs/isolation)
     vars:
-      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter/perf-runs/isolation"}}'
+      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter-cache/perf-runs/isolation"}}'
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
@@ -399,9 +399,9 @@ tasks:
       - python3 scripts/perf_runner.py run --filter 'isolation-' --results-dir "{{.RESULTS_DIR}}"
 
   perf-isolation-report:
-    desc: Generate cross-mode isolation comparison report (set RESULTS_DIR, default .shatter/perf-runs/isolation)
+    desc: Generate cross-mode isolation comparison report (set RESULTS_DIR, default .shatter-cache/perf-runs/isolation)
     vars:
-      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter/perf-runs/isolation"}}'
+      RESULTS_DIR: '{{.RESULTS_DIR | default ".shatter-cache/perf-runs/isolation"}}'
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"

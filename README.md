@@ -88,7 +88,7 @@ shatter explore [OPTIONS] <TARGETS>...
 | `--scope PATH` | -- | Path to a `shatter.scope.yaml` file |
 | `--config PATH` | -- | Path to `.shatter/config.yaml` |
 | `--inputs PATH` | -- | Path to a candidate inputs JSON file |
-| `--cache-dir DIR` | `.shatter/cache/` | Directory for caching behavior maps |
+| `--cache-dir DIR` | `.shatter-cache/behavior-maps/` | Directory for caching behavior maps |
 | `--no-cache` | -- | Disable behavior map caching |
 | `--no-boundary-values` | -- | Disable built-in boundary values as seeds |
 | `--seeds-dir DIR` | `.shatter/seeds` | Directory for cross-function seed pool |
@@ -146,7 +146,7 @@ shatter scan [OPTIONS] <DIRECTORY>
 | `--seed N` | -- | Seed for deterministic core sample selection |
 | `--batch RANGE` | -- | Progressive batch index (`"0"`, `"next"`, `"0-2"`). Requires `--core-sample` |
 | `--stratum RANGE` | -- | Call graph layer filter (`"0"` = leaves, `"0..3"`, `"-2..-0"`) |
-| `--cache-dir DIR` | `.shatter/cache/` | Behavior map cache directory |
+| `--cache-dir DIR` | `.shatter-cache/behavior-maps/` | Behavior map cache directory |
 | `--no-cache` | -- | Disable caching |
 | `--genetic` | -- | Enable the genetic algorithm explorer |
 | `--solver-timeout SECS` | -- | Z3 solver timeout per query |
@@ -258,7 +258,7 @@ shatter spec-diff old-spec.json new-spec.json
 
 ### `shatter build-frontend`
 
-Build a custom frontend binary with user-provided native generators. Reads generator paths from `.shatter/config.yaml`, compiles a custom frontend, and writes it to `.shatter/bin/`.
+Build a custom frontend binary with user-provided native generators. Reads generator paths from `.shatter/config.yaml`, compiles a custom frontend, and writes it to `.shatter-cache/bin/`.
 
 ```
 shatter build-frontend [OPTIONS] <LANGUAGE>
@@ -268,7 +268,7 @@ shatter build-frontend [OPTIONS] <LANGUAGE>
 |------|---------|-------------|
 | `<LANGUAGE>` | -- | Target language: `go` or `rust` |
 | `--config PATH` | -- | Path to the `.shatter/` directory (auto-discovers if omitted) |
-| `-o, --output DIR` | `.shatter/bin/` | Output directory for the built binary |
+| `-o, --output DIR` | `.shatter-cache/bin/` | Output directory for the built binary |
 
 Run `shatter build-frontend --help` for the complete option list.
 
@@ -312,7 +312,7 @@ shatter revalidate [OPTIONS] <SOURCE>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--cache-dir DIR` | `.shatter/cache/` | Cache directory for loading behavior maps |
+| `--cache-dir DIR` | `.shatter-cache/behavior-maps/` | Cache directory for loading behavior maps |
 | `--format FMT` | text | Output format: `text` or `json` |
 | `--request-timeout SECS` | 30 | Per-request frontend timeout |
 | `--exec-timeout SECS` | 10 | Per-invocation timeout |

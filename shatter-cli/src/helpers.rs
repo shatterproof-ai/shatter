@@ -62,9 +62,18 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
     }
 }
 
-/// Check for a custom-built frontend binary at `.shatter/bin/shatter-{lang}-custom`.
+/// Check for a custom-built frontend binary at `.shatter-cache/bin/shatter-{lang}-custom`.
+///
+/// Also checks legacy `.shatter/bin/` for backward compatibility.
 pub(crate) fn find_custom_binary(shatter_dir: Option<&Path>, lang: &str) -> Option<PathBuf> {
-    let bin = shatter_dir?.join("bin").join(format!("shatter-{lang}-custom"));
+    let binary_name = format!("shatter-{lang}-custom");
+    // Check new location: .shatter-cache/bin/
+    let cache_bin = PathBuf::from(".shatter-cache").join("bin").join(&binary_name);
+    if cache_bin.is_file() {
+        return Some(cache_bin);
+    }
+    // Fall back to legacy .shatter/bin/
+    let bin = shatter_dir?.join("bin").join(&binary_name);
     bin.is_file().then_some(bin)
 }
 
