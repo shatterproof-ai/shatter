@@ -32,7 +32,7 @@ use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
 use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
-use crate::frontier::{Frontier, FrontierSet};
+use crate::frontier::{Frontier, FrontierSet, frontier_score};
 use crate::frontend::{Frontend, FrontendError};
 use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
@@ -1266,7 +1266,11 @@ fn solve_and_generate(
             })
             .cloned()
             .collect();
-        stalled.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.stall_count.cmp(&b.stall_count)));
+        stalled.sort_by(|a, b| {
+            frontier_score(b)
+                .partial_cmp(&frontier_score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         stalled.truncate(drilling::MAX_FRONTIERS_PER_ROUND);
 
         for frontier in &stalled {

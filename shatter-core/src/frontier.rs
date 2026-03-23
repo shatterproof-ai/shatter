@@ -4,7 +4,8 @@
 //! concolic execution. Each frontier tracks which parameters block progress
 //! and how many consecutive attempts have failed to make progress (stall count).
 //! The `FrontierSet` maintains a collection of frontiers per function,
-//! serving them in priority order: lower depth first, then lower stall count.
+//! serving them in score order: deeper, less-stalled, constraint-rich frontiers
+//! are explored first.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,49 @@ use serde::{Deserialize, Serialize};
 /// or unsolvable constraints). Empirically, frontiers that don't yield progress
 /// within 10 attempts rarely do so with more.
 pub const FRONTIER_STALL_THRESHOLD: u32 = 10;
+
+/// Weight for depth component in frontier scoring. Deeper branches are harder
+/// to reach via random exploration, so the concolic engine should prioritize them.
+const DEPTH_WEIGHT: f64 = 1.0;
+
+/// Weight for stall penalty. A fully-fresh frontier (stall_count=0) gets the
+/// full bonus; as stall_count approaches FRONTIER_STALL_THRESHOLD the bonus
+/// decays to zero. Value of 2.0 means the stall component ranges [0.0, 2.0].
+const STALL_DECAY: f64 = 2.0;
+
+/// Fixed boost for frontiers where the blocking parameter has a known symbolic
+/// constraint (`blocking_params` is non-empty). Solver-guided search on these
+/// frontiers is significantly more efficient than blind mutations, so the
+/// boost is the largest single weight.
+const CONSTRAINT_BOOST: f64 = 3.0;
+
+/// Weight for the profile-guided rarity boost (0.0–1.0). Rare branches are
+/// less likely to be discovered by random exploration, so they deserve a
+/// secondary boost. Lower than CONSTRAINT_BOOST because rarity alone doesn't
+/// guarantee solver tractability.
+const RARITY_WEIGHT: f64 = 1.5;
+
+/// Compute the priority score for a frontier. Higher score = higher priority.
+///
+/// ```text
+/// score = DEPTH_WEIGHT * depth
+///       + STALL_DECAY * (1.0 - stall_count / FRONTIER_STALL_THRESHOLD).clamp(0)
+///       + CONSTRAINT_BOOST * (1 if blocking_params non-empty, else 0)
+///       + RARITY_WEIGHT * rarity_boost
+/// ```
+pub fn frontier_score(f: &Frontier) -> f64 {
+    let depth_component = DEPTH_WEIGHT * f.depth as f64;
+    let stall_ratio = f.stall_count as f64 / FRONTIER_STALL_THRESHOLD as f64;
+    let stall_component = STALL_DECAY * (1.0 - stall_ratio).max(0.0);
+    let constraint_component = if f.blocking_params.is_empty() {
+        0.0
+    } else {
+        CONSTRAINT_BOOST
+    };
+    let rarity_component = RARITY_WEIGHT * f.rarity_boost;
+
+    depth_component + stall_component + constraint_component + rarity_component
+}
 
 /// A single exploration frontier — a branch reached but not yet solved.
 ///
@@ -42,12 +86,11 @@ pub struct Frontier {
     pub rarity_boost: f64,
 }
 
-/// Priority-ordered collection of frontiers for a single function.
+/// Score-ordered collection of frontiers for a single function.
 ///
-/// Frontiers are served lowest-depth first (shallowest branches are explored
-/// before deeper ones), with stall count as a tiebreaker (less-stalled
-/// frontiers are preferred). The set is typically small (< 100 entries),
-/// so linear scans are acceptable.
+/// Frontiers are served by [`frontier_score`]: deeper, less-stalled, and
+/// constraint-rich frontiers are explored first. The set is typically small
+/// (< 100 entries), so linear scans are acceptable.
 #[derive(Debug, Clone, Default)]
 pub struct FrontierSet {
     frontiers: Vec<Frontier>,
@@ -65,8 +108,7 @@ impl FrontierSet {
         self.frontiers.push(frontier);
     }
 
-    /// Remove and return the highest-priority frontier (lowest depth, then
-    /// lowest stall count).
+    /// Remove and return the highest-scoring frontier.
     pub fn pop_highest_priority(&mut self) -> Option<Frontier> {
         if self.frontiers.is_empty() {
             return None;
@@ -151,27 +193,20 @@ impl FrontierSet {
         self.frontiers.iter()
     }
 
-    /// Index of the highest-priority frontier.
+    /// Index of the highest-scoring frontier.
     /// Caller must ensure `self.frontiers` is non-empty.
     fn best_index(&self) -> usize {
         self.frontiers
             .iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| frontier_priority(a, b))
+            .max_by(|(_, a), (_, b)| {
+                frontier_score(a)
+                    .partial_cmp(&frontier_score(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|(i, _)| i)
             .expect("best_index called on non-empty FrontierSet")
     }
-}
-
-/// Compare two frontiers for priority ordering.
-///
-/// Lower depth wins first. Then higher rarity_boost wins (rare branches
-/// get explored sooner). Finally lower stall count breaks ties.
-fn frontier_priority(a: &Frontier, b: &Frontier) -> std::cmp::Ordering {
-    a.depth
-        .cmp(&b.depth)
-        .then(b.rarity_boost.partial_cmp(&a.rarity_boost).unwrap_or(std::cmp::Ordering::Equal))
-        .then(a.stall_count.cmp(&b.stall_count))
 }
 
 #[cfg(test)]
@@ -221,25 +256,29 @@ mod tests {
     }
 
     #[test]
-    fn priority_lower_depth_first() {
+    fn priority_deeper_first() {
         let mut set = FrontierSet::new();
         set.insert(make_frontier(1, 5, 0));
         set.insert(make_frontier(2, 2, 0));
         set.insert(make_frontier(3, 8, 0));
 
         let f = set.pop_highest_priority().unwrap();
-        assert_eq!(f.branch_id, 2, "shallowest branch should be popped first");
+        assert_eq!(f.branch_id, 3, "deepest branch should be popped first");
 
         let f = set.pop_highest_priority().unwrap();
         assert_eq!(f.branch_id, 1);
 
         let f = set.pop_highest_priority().unwrap();
-        assert_eq!(f.branch_id, 3);
+        assert_eq!(f.branch_id, 2);
     }
 
     #[test]
-    fn priority_stall_count_breaks_ties() {
+    fn stall_count_breaks_ties_at_equal_depth() {
         let mut set = FrontierSet::new();
+        // All depth=3, scores differ only by stall component:
+        // stall=1: 3.0 + 2.0*(1-0.1) = 4.8
+        // stall=3: 3.0 + 2.0*(1-0.3) = 4.4
+        // stall=5: 3.0 + 2.0*(1-0.5) = 4.0
         set.insert(make_frontier(1, 3, 5));
         set.insert(make_frontier(2, 3, 1));
         set.insert(make_frontier(3, 3, 3));
@@ -359,13 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn depth_still_wins_over_rarity_boost() {
+    fn depth_dominates_rarity() {
         let mut set = FrontierSet::new();
-        set.insert(make_frontier_with_rarity(1, 5, 0, 1.0)); // deep but very rare
-        set.insert(make_frontier_with_rarity(2, 1, 0, 0.1)); // shallow but common
+        // depth=5, rarity=0.0: score = 5.0 + 2.0 + 0.0 + 0.0 = 7.0
+        set.insert(make_frontier_with_rarity(1, 5, 0, 0.0));
+        // depth=1, rarity=1.0: score = 1.0 + 2.0 + 0.0 + 1.5 = 4.5
+        set.insert(make_frontier_with_rarity(2, 1, 0, 1.0));
 
         let f = set.pop_highest_priority().unwrap();
-        assert_eq!(f.branch_id, 2, "shallower depth should win even with lower rarity");
+        assert_eq!(f.branch_id, 1, "deeper branch wins even with lower rarity");
     }
 
     #[test]
@@ -444,6 +485,81 @@ mod tests {
         assert_eq!(f.depth, 5);
         assert_eq!(f.blocking_params, vec![0, 2]);
         assert_eq!(f.stall_count, 10);
+    }
+
+    #[test]
+    fn constraint_boost_raises_priority() {
+        let mut set = FrontierSet::new();
+        // Same depth, stall, rarity — only blocking_params differs
+        set.insert(Frontier {
+            branch_id: 1,
+            depth: 3,
+            blocking_params: vec![], // no constraint info
+            best_prefix: vec![],
+            stall_count: 0,
+            rarity_boost: 0.0,
+        });
+        set.insert(Frontier {
+            branch_id: 2,
+            depth: 3,
+            blocking_params: vec![0], // has constraint info
+            best_prefix: vec![],
+            stall_count: 0,
+            rarity_boost: 0.0,
+        });
+
+        let f = set.pop_highest_priority().unwrap();
+        assert_eq!(f.branch_id, 2, "constrained frontier should pop first");
+    }
+
+    #[test]
+    fn score_monotonicity_depth() {
+        // Higher depth = higher score, all else equal
+        let shallow = make_frontier(1, 2, 0);
+        let deep = make_frontier(2, 10, 0);
+        assert!(
+            frontier_score(&deep) > frontier_score(&shallow),
+            "deeper frontier should score higher"
+        );
+    }
+
+    #[test]
+    fn score_clamps_at_threshold() {
+        // stall_count at/above threshold: stall component should be 0, not negative
+        let at_threshold = make_frontier(1, 3, FRONTIER_STALL_THRESHOLD);
+        let above_threshold = make_frontier(2, 3, FRONTIER_STALL_THRESHOLD + 5);
+
+        let score_at = frontier_score(&at_threshold);
+        let score_above = frontier_score(&above_threshold);
+
+        // Both should have stall component = 0, so equal scores
+        assert!(
+            (score_at - score_above).abs() < f64::EPSILON,
+            "stall component should clamp at 0"
+        );
+    }
+
+    #[test]
+    fn score_components_documented() {
+        // Verify the scoring formula matches documented weights
+        let f = Frontier {
+            branch_id: 1,
+            depth: 5,
+            blocking_params: vec![0],
+            best_prefix: vec![],
+            stall_count: 2,
+            rarity_boost: 0.6,
+        };
+        let score = frontier_score(&f);
+        // depth: 1.0 * 5 = 5.0
+        // stall: 2.0 * (1.0 - 2/10) = 2.0 * 0.8 = 1.6
+        // constraint: 3.0 (non-empty blocking_params)
+        // rarity: 1.5 * 0.6 = 0.9
+        let expected = 5.0 + 1.6 + 3.0 + 0.9;
+        assert!(
+            (score - expected).abs() < f64::EPSILON,
+            "score {score} != expected {expected}"
+        );
     }
 }
 
@@ -545,6 +661,77 @@ mod proptests {
             prop_assert_eq!(abandoned.len(), 1);
             prop_assert_eq!(abandoned[0].stall_count, threshold);
             prop_assert!(set.is_empty());
+        }
+
+        #[test]
+        fn score_is_finite(f in arb_frontier()) {
+            let score = frontier_score(&f);
+            prop_assert!(score.is_finite(), "score must be finite, got {}", score);
+        }
+
+        #[test]
+        fn deeper_frontier_scores_higher_all_else_equal(
+            depth_a in 0..20u32,
+            depth_b in 0..20u32,
+            stall in 0..10u32,
+            blocking_params in prop::collection::vec(0..10usize, 0..5),
+            rarity in 0.0..=1.0f64,
+        ) {
+            let fa = Frontier {
+                branch_id: 1, depth: depth_a, stall_count: stall,
+                blocking_params: blocking_params.clone(), best_prefix: vec![],
+                rarity_boost: rarity,
+            };
+            let fb = Frontier {
+                branch_id: 2, depth: depth_b, stall_count: stall,
+                blocking_params, best_prefix: vec![],
+                rarity_boost: rarity,
+            };
+            if depth_a > depth_b {
+                prop_assert!(frontier_score(&fa) > frontier_score(&fb));
+            } else if depth_a < depth_b {
+                prop_assert!(frontier_score(&fa) < frontier_score(&fb));
+            } else {
+                prop_assert!((frontier_score(&fa) - frontier_score(&fb)).abs() < f64::EPSILON);
+            }
+        }
+
+        #[test]
+        fn pop_returns_max_score(
+            frontiers in prop::collection::vec(arb_frontier(), 1..20),
+        ) {
+            let mut set = FrontierSet::new();
+            for f in frontiers {
+                set.insert(f);
+            }
+            let popped = set.pop_highest_priority().unwrap();
+            let popped_score = frontier_score(&popped);
+            for remaining in set.iter() {
+                prop_assert!(
+                    popped_score >= frontier_score(remaining) - f64::EPSILON,
+                    "popped score {} < remaining score {}",
+                    popped_score, frontier_score(remaining)
+                );
+            }
+        }
+
+        #[test]
+        fn constraint_boost_is_positive(
+            depth in 0..20u32,
+            stall in 0..10u32,
+            rarity in 0.0..=1.0f64,
+        ) {
+            let without = Frontier {
+                branch_id: 1, depth, stall_count: stall,
+                blocking_params: vec![], best_prefix: vec![],
+                rarity_boost: rarity,
+            };
+            let with = Frontier {
+                branch_id: 2, depth, stall_count: stall,
+                blocking_params: vec![0], best_prefix: vec![],
+                rarity_boost: rarity,
+            };
+            prop_assert!(frontier_score(&with) > frontier_score(&without));
         }
     }
 }
