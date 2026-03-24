@@ -1100,7 +1100,7 @@ mod tests {
         // not by suggestions.
         let params = vec![param(
             "conn",
-            TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None },
+            TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None, medium_opacity: None },
         )];
         let mut fail_counts = HashMap::new();
         fail_counts.insert("conn".into(), OPAQUE_SUGGEST_THRESHOLD + 5);
