@@ -409,6 +409,10 @@ func isOpaqueGoType(t types.Type) (string, bool) {
 //
 // Does not re-check types already covered by isOpaqueGoType (high-confidence).
 //
+// Medium-confidence signal: type is returned as kind:"opaque" with medium_opacity set,
+// but check_executability in the Rust core does NOT skip based on this alone.
+// This is advisory metadata for learning mode — see executability.rs for skip policy.
+//
 // Heuristics:
 //  1. InfrastructurePackage: import path starts with a known infra prefix
 //  2. CloseableInterface: type has a Close() method with no params and one return value

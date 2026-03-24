@@ -276,6 +276,18 @@ pub fn check_executability(
             // Check built-in opaque detection first.
             let mut path = vec![PathSegment::Param(p.name.clone())];
             if let Some((label, static_reason, medium_reason)) = p.typ.find_opaque_node(&mut path) {
+                // Medium-confidence opaque types (medium_opacity set, no static_opacity, label not in
+                // high-confidence table) are intentionally NOT added to skip reasons. They serve as
+                // advisory signals for learning mode (str-gtrv) — a single medium-confidence signal is
+                // insufficient to skip a function, since the type may still be constructible (e.g., not
+                // every type from a `pg`/`redis` package is an opaque connection; `close()` alone is too
+                // broad because many closeable types can be synthesized). Learning mode reads `medium_opacity`
+                // from TypeInfo in analyze responses and surfaces suggestions when solver failures occur.
+                let high_confidence_label = category_for_label(&label) != OpaqueCategory::Unknown;
+                if medium_reason.is_some() && static_reason.is_none() && !high_confidence_label {
+                    // Only medium_opacity is set — advisory signal, not a skip trigger.
+                    return None;
+                }
                 let category = if let Some(ref sr) = static_reason {
                     category_for_static_reason(sr)
                 } else if let Some(ref mr) = medium_reason {
@@ -1131,5 +1143,77 @@ mod tests {
             param("b", TypeInfo::Bool),
         ];
         assert!(build_opaque_suggestions(&params, &HashMap::new()).is_empty());
+    }
+
+    // ── medium-confidence advisory-only tests ──
+
+    #[test]
+    fn medium_only_unknown_label_does_not_produce_skip_reason() {
+        // A type with ONLY medium_opacity set and a label not in the high-confidence table
+        // must NOT produce a SkipReason — it is advisory only.
+        use crate::types::MediumOpacityReason;
+        let params = vec![param(
+            "client",
+            TypeInfo::Opaque {
+                label: "redis.Client".into(), // not in category_for_label table → Unknown
+                static_opacity: None,
+                medium_opacity: Some(MediumOpacityReason::InfrastructurePackage),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert!(
+            reasons.is_empty(),
+            "medium-confidence-only opaque type should not produce a SkipReason"
+        );
+    }
+
+    #[test]
+    fn medium_only_closeable_unknown_label_does_not_produce_skip_reason() {
+        use crate::types::MediumOpacityReason;
+        let params = vec![param(
+            "closer",
+            TypeInfo::Opaque {
+                label: "mylib.Client".into(), // not in high-confidence table
+                static_opacity: None,
+                medium_opacity: Some(MediumOpacityReason::CloseableInterface),
+            },
+        )];
+        assert!(check_executability(&params, &[]).is_empty());
+    }
+
+    #[test]
+    fn static_opacity_with_medium_still_produces_skip_reason() {
+        // When static_opacity is also set, skip reason IS produced even if label is unknown.
+        use crate::types::{MediumOpacityReason, StaticOpacityReason};
+        let params = vec![param(
+            "svc",
+            TypeInfo::Opaque {
+                label: "mylib.AbstractService".into(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
+                medium_opacity: Some(MediumOpacityReason::CloseableInterface),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].category, OpaqueCategory::AbstractType);
+    }
+
+    #[test]
+    fn high_confidence_label_with_medium_still_produces_skip_reason() {
+        // Label IS in high-confidence table (pg.Client → DatabaseConnection).
+        // Even with only medium_opacity set, the high-confidence label triggers skip.
+        use crate::types::MediumOpacityReason;
+        let params = vec![param(
+            "client",
+            TypeInfo::Opaque {
+                label: "pg.Client".into(),
+                static_opacity: None,
+                medium_opacity: Some(MediumOpacityReason::InfrastructurePackage),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        // category comes from medium_opacity since static_opacity is None
+        assert_eq!(reasons[0].category, OpaqueCategory::InfrastructurePackage);
     }
 }

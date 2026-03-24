@@ -901,6 +901,10 @@ const INFRA_NPM_PREFIXES: readonly string[] = ["@aws-sdk/", "@google-cloud/", "@
  * Detects medium-confidence signals that a type may be an opaque infrastructure resource.
  * Returns a reason and label if detected, or null.
  *
+ * Medium-confidence signal: type is returned as kind:"opaque" with medium_opacity set,
+ * but check_executability in the Rust core does NOT skip based on this alone.
+ * This is advisory metadata for learning mode — see executability.rs for skip policy.
+ *
  * These signals are suggestive but not definitive — a single medium-confidence signal
  * should not alone produce a high-confidence opaque suggestion.
  *

@@ -587,3 +587,22 @@ allowed_divergences:
     resolution: >
       Implement full Rust execute handler (see rust-execute-partial);
       side effect capture follows from that work.
+
+  - id: medium-opacity-analyze-partial
+    description: >
+      The `medium_opacity` field on TypeInfo opaque variants is an optional advisory
+      field added in str-gvde. TypeScript and Go frontends emit it when medium-confidence
+      heuristics fire (infrastructure package prefix, closeable interface, native handle
+      field). The Rust frontend analyze handler is a stub and does not yet perform
+      static analysis, so it never emits `medium_opacity`.
+      The field is intentionally non-skip-causing in the Rust core: check_executability
+      only produces SkipReason for high-confidence opaque types (static_opacity set, or
+      label in the known high-confidence lookup table). medium_opacity alone is advisory
+      metadata reserved for learning mode (str-gtrv).
+    affected_frontends: [rust]
+    affected_commands: [analyze]
+    status: accepted
+    resolution: >
+      Intentional permanent divergence for the Rust frontend analyze stub.
+      When/if the Rust frontend gains full static analysis, it should emit
+      medium_opacity following the same heuristics as TypeScript and Go.
