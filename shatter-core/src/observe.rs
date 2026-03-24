@@ -431,7 +431,7 @@ pub async fn observe_function(
         shrunk_witnesses: std::collections::HashMap::new(),
         mcdc_summary: None,
         shrink_stats: crate::shrink::ShrinkStats::default(),
-        abandoned_frontiers: vec![],
+        abandoned_frontiers: vec![], opaque_suggestions: vec![],
     })
 }
 

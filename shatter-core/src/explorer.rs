@@ -224,6 +224,10 @@ pub struct ObservationOutput {
     /// Always empty for the random explorer (which doesn't use frontiers).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub abandoned_frontiers: Vec<(u32, u32)>,
+    /// Parameters suggested as opaque type candidates based on exploration results.
+    /// Populated when parameters have unknown types or caused repeated solver failures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opaque_suggestions: Vec<crate::executability::OpaqueSuggestion>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -1269,6 +1273,10 @@ pub async fn explore_function(
         );
     }
 
+    let opaque_suggestions = crate::executability::build_opaque_suggestions(
+        &analysis.params,
+        &std::collections::HashMap::new(),
+    );
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations,
@@ -1285,6 +1293,7 @@ pub async fn explore_function(
         mcdc_summary: None,
         shrink_stats,
         abandoned_frontiers: vec![],
+        opaque_suggestions,
     })
 }
 
@@ -1442,6 +1451,43 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
             "  {dim}Abandoned frontiers: {} (branch IDs: {}){reset}\n",
             result.abandoned_frontiers.len(),
             ids.join(", "),
+            dim = s.dim,
+            reset = s.reset,
+        ));
+    }
+
+    if !result.opaque_suggestions.is_empty() {
+        out.push_str(&format!(
+            "  {yellow}Suggestions:{reset}\n",
+            yellow = s.yellow,
+            reset = s.reset,
+        ));
+        for suggestion in &result.opaque_suggestions {
+            use crate::executability::OpaqueSuggestionReason;
+            let type_hint = suggestion.type_name.as_deref().unwrap_or("unknown type");
+            let detail = match suggestion.reason {
+                OpaqueSuggestionReason::UnknownType => format!(
+                    "{type_hint} \u{2014} unanalysed type; solver cannot inspect its structure"
+                ),
+                OpaqueSuggestionReason::FrequentSolveFailure => format!(
+                    "{type_hint} \u{2014} appeared in {} unsolvable constraints",
+                    suggestion.failed_solve_count
+                ),
+            };
+            out.push_str(&format!(
+                "  {yellow}\u{26a0}{reset} Consider marking '{param}' opaque: {detail}\n",
+                yellow = s.yellow,
+                reset = s.reset,
+                param = suggestion.param_name,
+            ));
+        }
+        let config_hint = result
+            .opaque_suggestions
+            .first()
+            .and_then(|s| s.type_name.as_deref())
+            .unwrap_or("TypeName");
+        out.push_str(&format!(
+            "  {dim}  Add to .shatter/config.yaml: opaque_types: [\"{config_hint}\"]{reset}\n",
             dim = s.dim,
             reset = s.reset,
         ));
@@ -2159,7 +2205,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -2180,7 +2226,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -2199,7 +2245,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -2210,7 +2256,7 @@ mod tests {
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
             function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
@@ -2225,7 +2271,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -2249,7 +2295,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -2280,7 +2326,7 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -2778,7 +2824,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -2824,7 +2870,7 @@ mod tests {
             raw_results: vec![(vec![], vec![], result)],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -2877,7 +2923,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let profile = collect_branch_profile(&obs);
 

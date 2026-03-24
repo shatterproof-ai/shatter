@@ -1126,7 +1126,7 @@ fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnaly
         shrunk_witnesses: merged_shrunk,
         mcdc_summary,
         shrink_stats: crate::shrink::ShrinkStats::default(),
-        abandoned_frontiers: vec![],
+        abandoned_frontiers: vec![], opaque_suggestions: vec![],
     };
 
     let mut analyze_out = crate::pipeline::analyze(&merged_exploration, analysis);
@@ -2418,7 +2418,7 @@ mod tests {
                         lines_covered: 3,
                         total_lines: 5,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -2440,7 +2440,7 @@ mod tests {
                         lines_covered: 8,
                         total_lines: 10,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -2483,7 +2483,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -2519,7 +2519,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -2568,7 +2568,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -2616,7 +2616,7 @@ mod tests {
                     lines_covered: 1,
                     total_lines: 1,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -2653,7 +2653,7 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -2697,7 +2697,7 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -2803,7 +2803,7 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -2850,7 +2850,7 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![],
+                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -5067,7 +5067,7 @@ mod tests {
             shrunk_witnesses: Default::default(),
             mcdc_summary: None,
             shrink_stats: crate::shrink::ShrinkStats::default(),
-            abandoned_frontiers: vec![],
+            abandoned_frontiers: vec![], opaque_suggestions: vec![],
         };
         let analysis = make_analysis(func_name, vec![]);
         let mut analyze_out = crate::pipeline::analyze(&exploration, &analysis);
