@@ -1,13 +1,16 @@
-//! Execute instrumented Rust code via subprocess compilation.
+//! Execute instrumented Rust code via persistent harness subprocess.
 //!
 //! Instruments the target function, generates a `main()` harness that links
-//! `shatter_rust_runtime`, compiles to a binary in a temp directory, runs it,
-//! and parses the JSON `ExecuteResult` from stdout.
+//! `shatter_rust_runtime`, compiles it once per unique (file, function, mocks) triple,
+//! then keeps the subprocess alive to accept repeated JSON-over-stdin execute requests.
+//! Only the first call for a given function triggers `cargo build`; subsequent calls
+//! with different inputs reuse the running subprocess and skip recompilation.
 
-use std::collections::HashSet;
-use std::io;
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -134,6 +137,97 @@ impl From<io::Error> for ExecuteError {
     }
 }
 
+/// Cache key for a compiled harness subprocess.
+///
+/// Two executions share a harness when they target the same function in the same
+/// source file with identical mocks. Different mocks require a separate compiled
+/// binary because mocks are baked into the harness source at compile time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HarnessKey {
+    file_path: String,
+    function_name: String,
+    /// FNV-like hash of the serialized mocks array. Different mocks → different binary.
+    mocks_hash: u64,
+}
+
+/// A compiled, running harness subprocess ready to accept execute requests via stdin.
+pub struct PersistentHarness {
+    /// The subprocess handle (used to kill on timeout/cleanup).
+    pub child: std::process::Child,
+    /// Write end of the subprocess's stdin pipe.
+    stdin: std::process::ChildStdin,
+    /// Channel receiving JSON response lines from the reader thread.
+    response_rx: mpsc::Receiver<String>,
+    /// Harness build directory (kept alive; binary lives here).
+    pub harness_dir: PathBuf,
+}
+
+impl PersistentHarness {
+    /// Send `inputs` to the subprocess and wait for a JSON response, with timeout.
+    ///
+    /// On timeout, kills the subprocess and returns a timeout `ExecuteResult`.
+    /// On subprocess crash (channel disconnected), returns `OutputParseError`.
+    fn execute(&mut self, inputs: &[Value], timeout_ms: u64) -> Result<ExecuteResult, ExecuteError> {
+        // Serialize request as {"inputs":[...]} newline
+        let req = serde_json::json!({"inputs": inputs});
+        let mut req_bytes = serde_json::to_vec(&req)
+            .map_err(|e| ExecuteError::IoError(io::Error::other(e.to_string())))?;
+        req_bytes.push(b'\n');
+        self.stdin.write_all(&req_bytes)?;
+        self.stdin.flush()?;
+
+        // Wait for a response line with timeout
+        let timeout = Duration::from_millis(timeout_ms);
+        match self.response_rx.recv_timeout(timeout) {
+            Ok(line) => serde_json::from_str(&line).map_err(|e| {
+                ExecuteError::OutputParseError(format!(
+                    "failed to parse execute result: {e}\nline: {line}"
+                ))
+            }),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                Ok(ExecuteResult {
+                    return_value: None,
+                    thrown_error: Some(serde_json::json!({
+                        "error_type": "timeout",
+                        "message": format!("execution timed out after {timeout_ms}ms"),
+                    })),
+                    branch_path: vec![],
+                    lines_executed: vec![],
+                    calls_to_external: vec![],
+                    path_constraints: vec![],
+                    side_effects: vec![],
+                    performance: serde_json::json!({
+                        "wall_time_ms": timeout_ms as f64,
+                        "cpu_time_us": 0,
+                        "heap_used_bytes": 0,
+                        "heap_allocated_bytes": 0,
+                    }),
+                })
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ExecuteError::OutputParseError(
+                "harness subprocess terminated unexpectedly".to_string(),
+            )),
+        }
+    }
+}
+
+/// Shared in-process cache of compiled harness subprocesses.
+///
+/// Keyed by `HarnessKey`; a `Mutex` provides interior mutability so
+/// `handle_execute` can hold `&self` while mutating the cache.
+pub type HarnessCache = Mutex<HashMap<HarnessKey, PersistentHarness>>;
+
+/// Compute a stable u64 hash of the mocks array by hashing its JSON representation.
+fn mocks_hash(mocks: &[Value]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let s = serde_json::to_string(mocks).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 /// Result of executing an instrumented function. Uses `serde_json::Value`
 /// for fields to stay wire-compatible without duplicating runtime types.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -175,6 +269,7 @@ fn harness_cache_root() -> Option<PathBuf> {
 
 /// Read the harness scratch root from `SHATTER_HARNESS_SCRATCH`.
 /// Returns `None` if unset or empty.
+#[cfg(test)]
 fn harness_scratch_root() -> Option<PathBuf> {
     std::env::var("SHATTER_HARNESS_SCRATCH")
         .ok()
@@ -187,6 +282,7 @@ fn harness_scratch_root() -> Option<PathBuf> {
 /// Uses `SHATTER_HARNESS_SCRATCH/rust-<pid>-<id>/` when the env var is set,
 /// falling back to a raw temp directory. The caller is responsible for
 /// removing the directory after the request completes.
+#[cfg(test)]
 fn make_request_scratch() -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -198,6 +294,24 @@ fn make_request_scratch() -> PathBuf {
     harness_scratch_root()
         .map(|s| s.join(&id))
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-exec-{id}")))
+}
+
+/// Create a unique persistent directory for a compiled harness binary.
+///
+/// Unlike `make_request_scratch`, this directory is NOT cleaned up after each
+/// request — the compiled binary must remain accessible for the lifetime of the
+/// persistent subprocess. Cleanup happens in `PersistentHarnessManager::close_all()`.
+fn make_harness_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "rust-harness-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    harness_cache_root()
+        .map(|c| c.join("rust").join("harnesses").join(&id))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-harness-{id}")))
 }
 
 /// Return the shared `CARGO_TARGET_DIR` for standalone harness builds.
@@ -572,36 +686,34 @@ fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
 /// Wraps instrumented source in `mod user_code` to avoid name collisions
 /// (e.g. duplicate `fn main()` when the source file has its own `main`).
 ///
+/// The generated harness runs a persistent loop, reading one JSON request per
+/// line from stdin and writing one JSON response per line to stdout, allowing
+/// it to serve multiple execute calls without recompilation.
+///
 /// `static_mut_names` lists the names of `static mut` items in the source.
 /// The harness snapshots each before and after the function call and emits
 /// `global_state_change` side effects for any whose serialized value differs.
 /// Variables that fail `serde_json::to_value` (e.g. non-Serialize types) are
 /// silently skipped — execution is never blocked by unserializable statics.
-#[allow(clippy::too_many_arguments)] // all args are distinct harness parameters; a wrapper struct would be overkill
 fn generate_harness(
     instrumented_source: &str,
     function_name: &str,
     param_names: &[String],
     param_types: &[String],
     return_type: Option<&str>,
-    inputs_json: &str,
     mocks_json: &str,
     static_mut_names: &[String],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
-    let mut h = String::with_capacity(4096);
+    let mut h = String::with_capacity(8192);
 
+    h.push_str("#![allow(unused_imports)]\n");
+    h.push_str("use std::io::BufRead;\n");
     h.push_str("use serde_json::Value;\n\n");
     h.push_str(&module_block);
     h.push_str("\n\nfn main() {\n");
 
-    // Parse inputs
-    h.push_str(&format!("    let inputs_json = r#\"{}\"#;\n", inputs_json));
-    h.push_str(
-        "    let inputs: Vec<Value> = serde_json::from_str(inputs_json).unwrap_or_default();\n\n",
-    );
-
-    // Parse and register mocks
+    // Register mocks once at startup (baked in, same for all calls to this harness).
     h.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
     h.push_str(
         "    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n",
@@ -615,23 +727,37 @@ fn generate_harness(
     h.push_str("        }\n");
     h.push_str("    }\n\n");
 
-    // Reset runtime state
-    h.push_str("    shatter_rust_runtime::reset();\n\n");
+    // Main request loop: read one JSON line per call, write one JSON line response.
+    h.push_str("    let stdin = std::io::stdin();\n");
+    h.push_str("    let mut reader = std::io::BufReader::new(stdin.lock());\n");
+    h.push_str("    loop {\n");
+    h.push_str("        let mut line = String::new();\n");
+    h.push_str("        match reader.read_line(&mut line) {\n");
+    h.push_str("            Ok(0) | Err(_) => break,\n");
+    h.push_str("            Ok(_) => {}\n");
+    h.push_str("        }\n");
+    h.push_str("        let line = line.trim();\n");
+    h.push_str("        if line.is_empty() { continue; }\n");
+    h.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
+    h.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n\n");
+
+    // Reset runtime state (branch recorder, etc.) — keeps mock registrations.
+    h.push_str("        shatter_rust_runtime::reset();\n\n");
 
     // Snapshot mutable globals before execution.
     // Each `static mut` is read with `unsafe` and serialized to JSON.
     // Variables whose type does not implement Serialize produce `None` and are skipped.
     if !static_mut_names.is_empty() {
-        h.push_str("    // Snapshot mutable static variables before execution\n");
+        h.push_str("        // Snapshot mutable static variables before execution\n");
         for name in static_mut_names {
             h.push_str(&format!(
-                "    let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+                "        let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
             ));
         }
         h.push('\n');
     }
 
-    // Deserialize each input parameter.
+    // Deserialize each input parameter from the request's inputs array.
     // Reference types like `&str` can't be deserialized directly — deserialize
     // to the owned type (e.g. `String`) and borrow in the function call.
     // Slice references like `&[&str]` need a two-step conversion:
@@ -640,25 +766,23 @@ fn generate_harness(
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
         if let Some(mapping) = owned_type_for_ref(ty) {
             h.push_str(&format!(
-                "    let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                "        let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
                 mapping.deser_type
             ));
             if mapping.needs_slice_conversion {
-                // Convert Vec<String> → Vec<&str> for the function call
                 h.push_str(&format!(
-                    "    let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
+                    "        let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
                 ));
             }
         } else {
             h.push_str(&format!(
-                "    let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                "        let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
             ));
         }
     }
     h.push('\n');
 
-    // Build the argument list — reference params use `&name_owned`,
-    // slice reference params use `&name_refs`
+    // Build the argument list
     let arg_list: Vec<String> = param_names
         .iter()
         .zip(param_types.iter())
@@ -678,103 +802,222 @@ fn generate_harness(
     let args = arg_list.join(", ");
 
     // Call the function inside catch_unwind, measuring time
-    h.push_str("    let start = std::time::Instant::now();\n");
-    h.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str(&format!("        user_code::{function_name}({args})\n"));
-    h.push_str("    }));\n");
-    h.push_str("    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n\n");
+    h.push_str("        let start = std::time::Instant::now();\n");
+    h.push_str("        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+    h.push_str(&format!("            user_code::{function_name}({args})\n"));
+    h.push_str("        }));\n");
+    h.push_str("        let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n\n");
 
     // Flush runtime results
-    h.push_str("    let runtime_json = shatter_rust_runtime::flush_results();\n");
+    h.push_str("        let runtime_json = shatter_rust_runtime::flush_results();\n");
     h.push_str(
-        "    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n",
+        "        let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n",
     );
-    h.push_str("    let obj = exec_result.as_object_mut().unwrap();\n\n");
+    h.push_str("        let obj = exec_result.as_object_mut().unwrap();\n\n");
 
     // Set return_value or thrown_error
-    h.push_str("    match result {\n");
+    h.push_str("        match result {\n");
     if return_type.is_some() {
-        h.push_str("        Ok(ret_val) => {\n");
+        h.push_str("            Ok(ret_val) => {\n");
         h.push_str(
-            "            obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null));\n",
+            "                obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null));\n",
         );
-        h.push_str("        }\n");
+        h.push_str("            }\n");
     } else {
-        h.push_str("        Ok(()) => {\n");
-        h.push_str("            obj.insert(\"return_value\".into(), Value::Null);\n");
-        h.push_str("        }\n");
+        h.push_str("            Ok(()) => {\n");
+        h.push_str("                obj.insert(\"return_value\".into(), Value::Null);\n");
+        h.push_str("            }\n");
     }
-    h.push_str("        Err(panic_info) => {\n");
-    h.push_str("            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {\n");
-    h.push_str("                s.to_string()\n");
-    h.push_str("            } else if let Some(s) = panic_info.downcast_ref::<String>() {\n");
-    h.push_str("                s.clone()\n");
-    h.push_str("            } else {\n");
-    h.push_str("                format!(\"{:?}\", panic_info)\n");
-    h.push_str("            };\n");
-    h.push_str("            obj.insert(\"thrown_error\".into(), serde_json::json!({\n");
-    h.push_str("                \"error_type\": \"runtime_error\",\n");
-    h.push_str("                \"message\": msg,\n");
-    h.push_str("            }));\n");
-    h.push_str("        }\n");
-    h.push_str("    }\n\n");
+    h.push_str("            Err(panic_info) => {\n");
+    h.push_str("                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {\n");
+    h.push_str("                    s.to_string()\n");
+    h.push_str("                } else if let Some(s) = panic_info.downcast_ref::<String>() {\n");
+    h.push_str("                    s.clone()\n");
+    h.push_str("                } else {\n");
+    h.push_str("                    format!(\"{:?}\", panic_info)\n");
+    h.push_str("                };\n");
+    h.push_str("                obj.insert(\"thrown_error\".into(), serde_json::json!({\n");
+    h.push_str("                    \"error_type\": \"runtime_error\",\n");
+    h.push_str("                    \"message\": msg,\n");
+    h.push_str("                }));\n");
+    h.push_str("            }\n");
+    h.push_str("        }\n\n");
 
     // Set performance metrics
-    h.push_str("    obj.insert(\"performance\".into(), serde_json::json!({\n");
-    h.push_str("        \"wall_time_ms\": wall_time_ms,\n");
-    h.push_str("        \"cpu_time_us\": 0,\n");
-    h.push_str("        \"heap_used_bytes\": 0,\n");
-    h.push_str("        \"heap_allocated_bytes\": 0,\n");
-    h.push_str("    }));\n\n");
+    h.push_str("        obj.insert(\"performance\".into(), serde_json::json!({\n");
+    h.push_str("            \"wall_time_ms\": wall_time_ms,\n");
+    h.push_str("            \"cpu_time_us\": 0,\n");
+    h.push_str("            \"heap_used_bytes\": 0,\n");
+    h.push_str("            \"heap_allocated_bytes\": 0,\n");
+    h.push_str("        }));\n\n");
 
     // Detect global state changes by comparing before/after snapshots of mutable statics.
     // Changes are appended to the side_effects array in the execution result.
     if !static_mut_names.is_empty() {
-        h.push_str("    // Detect mutable static changes and emit global_state_change side effects\n");
-        h.push_str("    let mut __global_side_effects: Vec<serde_json::Value> = Vec::new();\n");
+        h.push_str("        // Detect mutable static changes and emit global_state_change side effects\n");
+        h.push_str("        let mut __global_side_effects: Vec<serde_json::Value> = Vec::new();\n");
         for name in static_mut_names {
             h.push_str(&format!(
-                "    let __after_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+                "        let __after_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
             ));
             h.push_str(&format!(
-                "    if let (Some(__b), Some(__a)) = (__before_{name}, __after_{name}) {{\n"
+                "        if let (Some(__b), Some(__a)) = (__before_{name}, __after_{name}) {{\n"
             ));
-            h.push_str("        if __b != __a {\n");
+            h.push_str("            if __b != __a {\n");
             h.push_str(&format!(
-                "            __global_side_effects.push(serde_json::json!({{\"kind\":\"global_state_change\",\"variable\":\"{name}\",\"before\":__b,\"after\":__a}}));\n"
+                "                __global_side_effects.push(serde_json::json!({{\"kind\":\"global_state_change\",\"variable\":\"{name}\",\"before\":__b,\"after\":__a}}));\n"
             ));
+            h.push_str("            }\n");
             h.push_str("        }\n");
-            h.push_str("    }\n");
         }
         h.push_str(
-            "    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n",
+            "        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n",
         );
         h.push_str(
-            "    if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_side_effects); }\n\n",
+            "        if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_side_effects); }\n\n",
         );
     } else {
-        h.push_str("    obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n\n");
+        h.push_str("        obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n\n");
     }
 
-    // Print the result JSON to stdout
-    h.push_str("    println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
+    // Write result to stdout and flush
+    h.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
+    h.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
+    h.push_str("    } // end loop\n");
     h.push_str("}\n");
 
     Ok(h)
 }
 
-/// Execute an instrumented Rust function by compiling and running a temp project.
+/// Compile the harness source and spawn it as a persistent subprocess.
 ///
-/// Returns the parsed `ExecuteResult` on success. Compilation and runtime errors
-/// are reported as `ExecuteError` variants that the handler maps to protocol responses.
+/// The compiled binary lives in `harness_dir`. A reader thread is spawned
+/// to forward response lines from the subprocess stdout to a channel, so
+/// `PersistentHarness::execute()` can use `recv_timeout` for deadline control.
+fn build_and_spawn_harness(
+    harness_source: &str,
+    harness_dir: &Path,
+    runtime_path: &Path,
+    timing: Option<&mut TimingCollector>,
+) -> Result<PersistentHarness, ExecuteError> {
+    let src_dir = harness_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+
+    let cargo_toml = generate_cargo_toml(runtime_path);
+    std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
+    std::fs::write(src_dir.join("main.rs"), harness_source)?;
+
+    // Compile
+    let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
+    let build_timeout = Duration::from_secs(build_timeout_secs);
+
+    let release = harness_release_mode();
+    let mut cargo_args = vec!["build"];
+    if release {
+        cargo_args.push("--release");
+    }
+
+    // Use a persistent target dir for dep caching, shared across harnesses.
+    let target_dir = standalone_target_dir()
+        .unwrap_or_else(|| harness_dir.join("target"));
+    if let Some(parent) = target_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let build_start = Instant::now();
+    let build_output = if let Some(t) = timing {
+        t.record("execute.build", |_| {
+            Command::new("cargo")
+                .args(&cargo_args)
+                .current_dir(harness_dir)
+                .env("CARGO_TARGET_DIR", &target_dir)
+                .output()
+                .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+        })?
+    } else {
+        Command::new("cargo")
+            .args(&cargo_args)
+            .current_dir(harness_dir)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .output()
+            .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
+    };
+
+    if build_start.elapsed() > build_timeout {
+        return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+    }
+    if !build_output.status.success() {
+        return Err(ExecuteError::CompilationFailed(
+            String::from_utf8_lossy(&build_output.stderr).into_owned(),
+        ));
+    }
+
+    // Locate binary
+    let binary_name = if cfg!(windows) { "shatter-exec-temp.exe" } else { "shatter-exec-temp" };
+    let profile_dir = if release { "release" } else { "debug" };
+    let binary_path = target_dir.join(profile_dir).join(binary_name);
+    if !binary_path.exists() {
+        return Err(ExecuteError::CompilationFailed("compiled binary not found".to_string()));
+    }
+
+    // Spawn the subprocess with stdin/stdout pipes
+    let mut child = Command::new(&binary_path)
+        .current_dir(harness_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(ExecuteError::IoError)?;
+
+    let stdin = child.stdin.take().ok_or_else(|| {
+        ExecuteError::IoError(io::Error::other("no stdin pipe"))
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ExecuteError::IoError(io::Error::other("no stdout pipe"))
+    })?;
+
+    // Reader thread: forwards JSON response lines from subprocess stdout to a channel.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if !l.is_empty() => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(PersistentHarness {
+        child,
+        stdin,
+        response_rx: rx,
+        harness_dir: harness_dir.to_path_buf(),
+    })
+}
+
+/// Execute an instrumented Rust function via a persistent harness subprocess.
+///
+/// On the first call for a given (file, function, mocks) triple, compiles the
+/// harness and spawns the subprocess. Subsequent calls reuse the cached process.
 pub fn execute_function(
     file_path: &str,
     function_name: &str,
     inputs: &[Value],
     mocks: &[Value],
     timeout_ms: u64,
+    cache: &HarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
-    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None)
+    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None, cache)
 }
 
 pub fn execute_function_with_timing(
@@ -784,14 +1027,34 @@ pub fn execute_function_with_timing(
     mocks: &[Value],
     timeout_ms: u64,
     mut timing: Option<&mut TimingCollector>,
+    cache: &HarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
-        return Err(ExecuteError::FileError(format!(
-            "file not found: {file_path}"
-        )));
+        return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
     }
 
+    // Compute cache key before doing any expensive work.
+    let key = HarnessKey {
+        file_path: file_path.to_string(),
+        function_name: function_name.to_string(),
+        mocks_hash: mocks_hash(mocks),
+    };
+
+    // Fast path: harness already compiled and running.
+    {
+        let mut map = cache.lock().unwrap();
+        if let Some(harness) = map.get_mut(&key) {
+            let result = harness.execute(inputs, timeout_ms)?;
+            // If the harness timed out it killed itself; remove from cache.
+            if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+                map.remove(&key);
+            }
+            return Ok(result);
+        }
+    }
+
+    // Slow path: first call for this (file, function, mocks) — compile and spawn.
     let source = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.read_source", |_| {
             std::fs::read_to_string(path)
@@ -802,21 +1065,13 @@ pub fn execute_function_with_timing(
             .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?
     };
 
-    // Extract function signature and file-level context for compatibility checking.
     let ctx = if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.extract_signature", |_| {
-            extract_fn_context(&source, function_name)
-        })?
+        timing.record("execute.extract_signature", |_| extract_fn_context(&source, function_name))?
     } else {
         extract_fn_context(&source, function_name)?
     };
     let sig = &ctx.sig;
-
-    // Extract mutable static items for global state change detection.
-    // Parsed from the original source (before instrumentation) so syn sees clean code.
     let static_mut_names = extract_static_mut_items(&source);
-
-    // Check bin_only compatibility — reject functions that would cause opaque build failures.
     check_bin_only_compatibility(function_name, &ctx)?;
 
     if inputs.len() != sig.param_names.len() {
@@ -827,7 +1082,6 @@ pub fn execute_function_with_timing(
         )));
     }
 
-    // Instrument the source targeting the specific function
     let instr_result = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.instrument", |timing| {
             instrument::instrument_source_with_timing(&source, Some(function_name), Some(timing))
@@ -838,33 +1092,13 @@ pub fn execute_function_with_timing(
             .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?
     };
 
-    // Find the runtime crate
     let runtime_path = find_runtime_crate_path()?;
 
-    // Serialize inputs and mocks for embedding
-    let (inputs_json, mocks_json) = if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.serialize_inputs", |_| {
-            let inputs_json = serde_json::to_string(inputs).map_err(|e| {
-                ExecuteError::InstrumentError(format!("cannot serialize inputs: {e}"))
-            })?;
-            let mocks_json = serde_json::to_string(mocks).map_err(|e| {
-                ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-            })?;
-            Ok::<_, ExecuteError>((inputs_json, mocks_json))
-        })?
-    } else {
-        (
-            serde_json::to_string(inputs).map_err(|e| {
-                ExecuteError::InstrumentError(format!("cannot serialize inputs: {e}"))
-            })?,
-            serde_json::to_string(mocks).map_err(|e| {
-                ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-            })?,
-        )
-    };
+    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+    })?;
 
-    // Generate the harness
-    let harness = if let Some(timing) = timing.as_deref_mut() {
+    let harness_source = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.generate_harness", |_| {
             generate_harness(
                 &instr_result.source,
@@ -872,7 +1106,6 @@ pub fn execute_function_with_timing(
                 &sig.param_names,
                 &sig.param_types,
                 sig.return_type.as_deref(),
-                &inputs_json,
                 &mocks_json,
                 &static_mut_names,
             )
@@ -884,206 +1117,35 @@ pub fn execute_function_with_timing(
             &sig.param_names,
             &sig.param_types,
             sig.return_type.as_deref(),
-            &inputs_json,
             &mocks_json,
             &static_mut_names,
         )?
     };
 
-    // Create per-request scratch directory for project source files.
-    // Standalone Rust harnesses (bin-only compatible, no crate context) use
-    // SHATTER_HARNESS_SCRATCH when available so ephemeral state has proper
-    // lifecycle semantics and is not conflated with the reusable build cache.
-    let scratch_dir = make_request_scratch();
+    let harness_dir = make_harness_dir();
+    std::fs::create_dir_all(&harness_dir)?;
 
-    // The CARGO_TARGET_DIR for compiled dependency artifacts.
-    // When SHATTER_HARNESS_CACHE is set, compiled deps persist across requests
-    // (only the harness main.rs changes per request). Falls back to
-    // scratch-local target when no cache is configured.
-    let target_dir = standalone_target_dir()
-        .unwrap_or_else(|| scratch_dir.join("target"));
-
-    if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.write_project", |_| {
-            std::fs::create_dir_all(scratch_dir.join("src"))
-        })?;
-    } else {
-        std::fs::create_dir_all(scratch_dir.join("src"))?;
-    }
-    // Ensure cache target parent exists when using a cache-based target dir.
-    if let Some(parent) = target_dir.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    // Write project files to scratch
-    let cargo_toml = generate_cargo_toml(&runtime_path);
-    if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.write_project", |_| {
-            std::fs::write(scratch_dir.join("Cargo.toml"), &cargo_toml)?;
-            std::fs::write(scratch_dir.join("src/main.rs"), &harness)?;
-            Ok::<_, io::Error>(())
-        })?;
-    } else {
-        std::fs::write(scratch_dir.join("Cargo.toml"), &cargo_toml)?;
-        std::fs::write(scratch_dir.join("src/main.rs"), &harness)?;
-    }
-
-    // Compile
-    let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
-    let build_timeout = Duration::from_secs(build_timeout_secs);
-    let build_start = Instant::now();
-    let release = harness_release_mode();
-    let mut cargo_args = vec!["build"];
-    if release {
-        cargo_args.push("--release");
-    }
-    let build_output = if let Some(timing) = timing.as_deref_mut() {
-        let args = cargo_args.clone();
-        timing.record("execute.build", |_| {
-            Command::new("cargo")
-                .args(&args)
-                .current_dir(&scratch_dir)
-                .env("CARGO_TARGET_DIR", &target_dir)
-                .output()
-                .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+    let mut harness = if let Some(timing) = timing {
+        timing.record("execute.build", |timing| {
+            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, Some(timing))
         })?
     } else {
-        Command::new("cargo")
-            .args(&cargo_args)
-            .current_dir(&scratch_dir)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .output()
-            .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
+        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, None)?
     };
 
-    if build_start.elapsed() > build_timeout {
-        let _ = std::fs::remove_dir_all(&scratch_dir);
-        return Err(ExecuteError::CompilationFailed(
-            "build timed out".to_string(),
-        ));
-    }
+    // Execute the first call
+    let result = harness.execute(inputs, timeout_ms)?;
 
-    if !build_output.status.success() {
-        let stderr = String::from_utf8_lossy(&build_output.stderr);
-        let _ = std::fs::remove_dir_all(&scratch_dir);
-        return Err(ExecuteError::CompilationFailed(stderr.into_owned()));
-    }
-
-    // Find the compiled binary (in target_dir, not scratch_dir)
-    let binary_name = if cfg!(windows) {
-        "shatter-exec-temp.exe"
+    // Cache the harness unless it timed out (killed itself).
+    let timed_out = result.thrown_error.as_ref()
+        .and_then(|e| e.get("error_type"))
+        .and_then(|v| v.as_str()) == Some("timeout");
+    if !timed_out {
+        cache.lock().unwrap().insert(key, harness);
     } else {
-        "shatter-exec-temp"
-    };
-    let profile_dir = if release { "release" } else { "debug" };
-    let binary_path = target_dir.join(profile_dir).join(binary_name);
-
-    if !binary_path.exists() {
-        let _ = std::fs::remove_dir_all(&scratch_dir);
-        return Err(ExecuteError::CompilationFailed(
-            "compiled binary not found".to_string(),
-        ));
+        // Harness was killed by timeout; clean up its directory.
+        let _ = std::fs::remove_dir_all(&harness_dir);
     }
-
-    // Run the binary with timeout
-    let exec_timeout = Duration::from_millis(timeout_ms);
-    let run_start = Instant::now();
-    let run_output = if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.run", |_| {
-            Command::new(&binary_path)
-                .current_dir(&scratch_dir)
-                .output()
-                .map_err(|e| {
-                    let _ = std::fs::remove_dir_all(&scratch_dir);
-                    ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
-                })
-        })?
-    } else {
-        Command::new(&binary_path)
-            .current_dir(&scratch_dir)
-            .output()
-            .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&scratch_dir);
-                ExecuteError::OutputParseError(format!("failed to run binary: {e}"))
-            })?
-    };
-    let wall_time_ms = run_start.elapsed().as_secs_f64() * 1000.0;
-
-    // Clean up per-request scratch; cache target_dir persists for dep reuse.
-    let _ = std::fs::remove_dir_all(&scratch_dir);
-
-    // Check for timeout
-    if run_start.elapsed() > exec_timeout {
-        return Ok(ExecuteResult {
-            return_value: None,
-            thrown_error: Some(serde_json::json!({
-                "error_type": "timeout",
-                "message": format!("execution timed out after {}ms", timeout_ms),
-            })),
-            branch_path: vec![],
-            lines_executed: vec![],
-            calls_to_external: vec![],
-            path_constraints: vec![],
-            side_effects: vec![],
-            performance: serde_json::json!({
-                "wall_time_ms": wall_time_ms,
-                "cpu_time_us": 0,
-                "heap_used_bytes": 0,
-                "heap_allocated_bytes": 0,
-            }),
-        });
-    }
-
-    // Parse stdout
-    let stdout = String::from_utf8_lossy(&run_output.stdout);
-    let stderr_str = String::from_utf8_lossy(&run_output.stderr);
-
-    // Check for runtime crash (non-zero exit without output)
-    if !run_output.status.success() && stdout.trim().is_empty() {
-        return Ok(ExecuteResult {
-            return_value: None,
-            thrown_error: Some(serde_json::json!({
-                "error_type": "runtime_error",
-                "message": if stderr_str.is_empty() {
-                    format!("process exited with {}", run_output.status)
-                } else {
-                    stderr_str.into_owned()
-                },
-            })),
-            branch_path: vec![],
-            lines_executed: vec![],
-            calls_to_external: vec![],
-            path_constraints: vec![],
-            side_effects: vec![],
-            performance: serde_json::json!({
-                "wall_time_ms": wall_time_ms,
-                "cpu_time_us": 0,
-                "heap_used_bytes": 0,
-                "heap_allocated_bytes": 0,
-            }),
-        });
-    }
-
-    // Parse the JSON output from stdout
-    let result: ExecuteResult = if let Some(timing) = timing.as_mut() {
-        timing.record("execute.parse_result", |_| {
-            serde_json::from_str(stdout.trim()).map_err(|e| {
-                ExecuteError::OutputParseError(format!(
-                    "failed to parse execute result: {e}\nstdout: {stdout}\nstderr: {stderr_str}"
-                ))
-            })
-        })?
-    } else {
-        serde_json::from_str(stdout.trim()).map_err(|e| {
-            ExecuteError::OutputParseError(format!(
-                "failed to parse execute result: {e}\nstdout: {stdout}\nstderr: {stderr_str}"
-            ))
-        })?
-    };
 
     Ok(result)
 }
@@ -1175,7 +1237,6 @@ mod tests {
             &["n".to_string()],
             &["i32".to_string()],
             Some("& 'static str"),
-            "[42]",
             "[]",
             &[],
         )
@@ -1185,13 +1246,16 @@ mod tests {
         assert!(harness.contains("catch_unwind"));
         assert!(harness.contains("flush_results"));
         assert!(harness.contains("shatter_rust_runtime::reset()"));
+        assert!(harness.contains("loop"));
+        assert!(harness.contains("read_line"));
     }
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", "[]", &[]).unwrap();
+        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[]).unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
+        assert!(harness.contains("loop"));
     }
 
     /// Reproduction test for str-cfhk: source with `fn main()` must not
@@ -1213,7 +1277,6 @@ fn main() {
             &["n".to_string()],
             &["i32".to_string()],
             Some("& 'static str"),
-            "[42]",
             "[]",
             &[],
         )
@@ -1238,6 +1301,7 @@ fn main() {
             top_level_mains, 1,
             "expected exactly 1 top-level fn main(), found {top_level_mains}\n\nharness:\n{harness}"
         );
+        assert!(harness.contains("loop"));
     }
 
     #[test]
@@ -1269,7 +1333,6 @@ fn main() {
             &["name".to_string()],
             &["& str".to_string()],
             Some("String"),
-            r#"["world"]"#,
             "[]",
             &[],
         )
@@ -1294,7 +1357,8 @@ fn main() {
 
     #[test]
     fn execute_nonexistent_file_returns_error() {
-        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000);
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, &cache);
         assert!(result.is_err());
         if let Err(ExecuteError::FileError(msg)) = result {
             assert!(msg.contains("not found"));
@@ -1310,12 +1374,14 @@ fn main() {
         let file = dir.join("test.rs");
         std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
 
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "add",
             &[serde_json::json!(1)], // only 1 input, needs 2
             &[],
             5000,
+            &cache,
         );
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1361,12 +1427,14 @@ fn main() {
         )
         .unwrap();
 
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "query",
             &[serde_json::json!(null)],
             &[],
             5000,
+            &cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1482,12 +1550,14 @@ fn main() {
         let file = dir.join("test.rs");
         std::fs::write(&file, "fn identity<T: Clone>(x: T) -> T { x.clone() }").unwrap();
 
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "identity",
             &[serde_json::json!(42)],
             &[],
             5000,
+            &cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1505,12 +1575,14 @@ fn main() {
         let file = dir.join("test.rs");
         std::fs::write(&file, "fn process(conn: PgConnection) -> bool { true }").unwrap();
 
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "process",
             &[serde_json::json!(null)],
             &[],
             5000,
+            &cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1536,7 +1608,6 @@ fn main() {
             &["header".to_string(), "supported".to_string()],
             &["& str".to_string(), "& [& str]".to_string()],
             Some("String"),
-            r#"["en", ["en", "fr"]]"#,
             "[]",
             &[],
         )
@@ -1634,7 +1705,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             Some("i32"),
             "[]",
-            "[]",
             &["COUNTER".to_string()],
         )
         .unwrap();
@@ -1669,7 +1739,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &["a".to_string(), "b".to_string()],
             &["i32".to_string(), "i32".to_string()],
             Some("i32"),
-            "[1, 2]",
             "[]",
             &[],
         )
