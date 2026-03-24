@@ -82,12 +82,15 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
 pub struct PersistentHarnessManager {
     /// The harness subprocess cache. Interior-mutable so `handle_execute` keeps `&self`.
     pub cache: crate::executor::HarnessCache,
+    /// Cache for crate-backed dispatch harnesses (one per file, keyed by source hash + mocks).
+    pub crate_cache: crate::executor::CrateHarnessCache,
 }
 
 impl PersistentHarnessManager {
     pub fn new() -> Self {
         Self {
             cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            crate_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -98,6 +101,13 @@ impl PersistentHarnessManager {
             let _ = h.child.kill();
             let _ = h.child.wait();
             let _ = std::fs::remove_dir_all(&h.harness_dir);
+        }
+        // Crate-backed harnesses: kill subprocesses but preserve harness dirs (stable cache).
+        let mut crate_map = self.crate_cache.lock().unwrap();
+        for (_, mut entry) in crate_map.drain() {
+            let _ = entry.harness.child.kill();
+            let _ = entry.harness.child.wait();
+            // Do NOT remove harness_dir — it contains the stable compiled binary.
         }
     }
 }
@@ -477,6 +487,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     self.exec_timeout_ms,
                     Some(timing),
                     &self.harness_manager.cache,
+                    &self.harness_manager.crate_cache,
                 )
             })
         } else {
@@ -487,6 +498,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 &req.mocks,
                 self.exec_timeout_ms,
                 &self.harness_manager.cache,
+                &self.harness_manager.crate_cache,
             )
         };
 
