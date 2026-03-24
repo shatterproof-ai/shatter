@@ -459,6 +459,8 @@
 {"issue_id":"str-cs2h","label":"build"}
 {"issue_id":"str-cs2h","label":"infra"}
 {"issue_id":"str-e127","label":"rust-frontend"}
+{"issue_id":"str-e6ce","label":"frontend"}
+{"issue_id":"str-e6ce","label":"go"}
 {"issue_id":"str-ed38","label":"devx"}
 {"issue_id":"str-ed38","label":"quality"}
 {"issue_id":"str-ed38.1","label":"devx"}

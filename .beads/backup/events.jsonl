@@ -1764,3 +1764,6 @@
 {"actor":"Ketan Gangatirkar","comment":"Added label: perf","created_at":"2026-03-24T18:08:31Z","event_type":"label_added","id":1883,"issue_id":"str-4gsu","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: go","created_at":"2026-03-24T18:08:31Z","event_type":"label_added","id":1884,"issue_id":"str-4gsu","new_value":null,"old_value":null}
 {"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-24T18:08:31Z","event_type":"label_added","id":1885,"issue_id":"str-4gsu","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":null,"created_at":"2026-03-24T18:40:27Z","event_type":"created","id":1886,"issue_id":"str-e6ce","new_value":"","old_value":""}
+{"actor":"Ketan Gangatirkar","comment":"Added label: go","created_at":"2026-03-24T18:40:27Z","event_type":"label_added","id":1887,"issue_id":"str-e6ce","new_value":null,"old_value":null}
+{"actor":"Ketan Gangatirkar","comment":"Added label: frontend","created_at":"2026-03-24T18:40:27Z","event_type":"label_added","id":1888,"issue_id":"str-e6ce","new_value":null,"old_value":null}
