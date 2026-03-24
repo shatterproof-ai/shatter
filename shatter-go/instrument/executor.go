@@ -150,6 +150,79 @@ func makeStandaloneScratchDir() (string, error) {
 	return os.MkdirTemp("", "shatter-instrument-*")
 }
 
+// moduleHarnessHash returns a short deterministic identifier for a module-backed
+// harness keyed by source path, function name, and mock configuration. Used to
+// create stable scratch subdirectory names under SHATTER_HARNESS_SCRATCH.
+func moduleHarnessHash(sourcePath, funcName, mocksHash string) string {
+	input := sourcePath + "\x00" + funcName + "\x00" + mocksHash
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:8]) // 16 hex chars
+}
+
+// makeModuleScratchDir creates a stable scratch directory for a module-backed
+// harness build, keyed by hash. Uses SHATTER_HARNESS_SCRATCH/go/module/<hash>
+// when set; falls back to os.MkdirTemp otherwise.
+func makeModuleScratchDir(hash string) (string, error) {
+	if scratch := harnessScratchDir(); scratch != "" {
+		dir := filepath.Join(scratch, "go", "module", hash)
+		if err := os.MkdirAll(dir, 0755); err == nil {
+			return dir, nil
+		}
+		// Fall through to MkdirTemp if scratch creation fails.
+	}
+	return os.MkdirTemp("", "shatter-instrument-*")
+}
+
+// moduleGoBuildCacheDir returns the Go build cache path for module-backed harness
+// builds. Uses SHATTER_HARNESS_CACHE/go/module/build-cache when the cache env var
+// is set. Returns empty string when no cache is configured.
+// The returned path is always absolute (Go requires GOCACHE to be absolute).
+func moduleGoBuildCacheDir() string {
+	cache := harnessCacheDir()
+	if cache == "" {
+		return ""
+	}
+	p := filepath.Join(cache, "go", "module", "build-cache")
+	if !filepath.IsAbs(p) {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+	}
+	return p
+}
+
+// copySiblingGoFiles copies all non-test .go files from the source file's
+// package directory into destDir, skipping the source file itself and any
+// files that already exist in destDir. This makes unexported symbols from
+// sibling files available to the harness build without re-instrumenting them.
+func copySiblingGoFiles(sourcePath, destDir string) error {
+	srcDir := filepath.Dir(sourcePath)
+	srcBase := filepath.Base(sourcePath)
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".go" ||
+			name == srcBase || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		dst := filepath.Join(destDir, name)
+		if _, err := os.Stat(dst); err == nil {
+			continue // already present (e.g. recorder file with same name)
+		}
+		data, err := os.ReadFile(filepath.Join(srcDir, name))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SideEffect represents an observable side effect during execution.
 // Fields correspond 1:1 with the protocol.SideEffect wire format (all 7 kinds).
 // Only fields relevant to the specific Kind are populated.
@@ -445,12 +518,16 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 	// Prepare the output directory.
 	// Standalone files (no parent go.mod) use a per-request scratch dir so that
 	// ephemeral build state is properly lifecycle-separated from tool-owned cache.
-	// Files with a parent module fall back to MkdirTemp (semantic mode is future work).
+	// Module-backed files use a semantic harness: a stable scratch dir keyed on
+	// (sourcePath, funcName, mocks) under SHATTER_HARNESS_SCRATCH, with sibling
+	// files copied for package-private access and GOCACHE pointed at
+	// SHATTER_HARNESS_CACHE/go/module/build-cache.
 	var outputDir string
 	if isStandaloneGoFile(sourcePath) {
 		outputDir, err = makeStandaloneScratchDir()
 	} else {
-		outputDir, err = os.MkdirTemp("", "shatter-instrument-*")
+		hash := moduleHarnessHash(sourcePath, funcName, computeMocksHash(activeMocks))
+		outputDir, err = makeModuleScratchDir(hash)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("creating output dir: %w", err)
@@ -463,6 +540,16 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 	finishInstrument()
 	if err != nil {
 		return nil, fmt.Errorf("instrumenting: %w", err)
+	}
+
+	// For module-backed files, copy unexported sibling helpers so the harness build
+	// can access package-private symbols. Non-fatal: if sibling copying fails we
+	// attempt the build anyway (it will fail at compile time if symbols are missing).
+	if !isStandaloneGoFile(sourcePath) {
+		if sibErr := copySiblingGoFiles(sourcePath, outputDir); sibErr != nil {
+			// Log as warning; a build failure will surface the real problem.
+			fmt.Fprintf(os.Stderr, "[shatter-go] warning: copying sibling Go files: %v\n", sibErr)
+		}
 	}
 
 	finishRewrite := timing.Start("execute.rewrite_package")
@@ -505,10 +592,15 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 	finishBuild := timing.Start("execute.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
-	// Use a project-scoped build cache for standalone files so compiled objects
-	// persist across requests and survive OS temp cleanup.
+	// Use a project-scoped build cache so compiled objects persist across requests
+	// and survive OS temp cleanup. Standalone and module-backed files use separate
+	// cache subdirectories to avoid any cross-contamination.
 	if isStandaloneGoFile(sourcePath) {
 		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
+			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
+		}
+	} else {
+		if gocache := moduleGoBuildCacheDir(); gocache != "" {
 			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
 		}
 	}
