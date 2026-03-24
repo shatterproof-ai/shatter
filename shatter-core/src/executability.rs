@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::config::CustomOpaqueType;
-use crate::types::{ParamInfo, StaticOpacityReason, TypeInfo};
+use crate::types::{MediumOpacityReason, ParamInfo, StaticOpacityReason, TypeInfo};
 use serde::{Deserialize, Serialize};
 
 /// Categorizes WHY a type is opaque — what kind of runtime resource it represents.
@@ -36,6 +36,12 @@ pub enum OpaqueCategory {
     AbstractType,
     /// Interface or abstract class with no concrete implementors in scope.
     NoImplementors,
+    /// Type from a known infrastructure package prefix (medium confidence).
+    InfrastructurePackage,
+    /// Type implements a close or dispose interface (medium confidence).
+    CloseableResource,
+    /// Type contains OS handle fields (medium confidence).
+    NativeHandle,
 }
 
 impl OpaqueCategory {
@@ -53,6 +59,9 @@ impl OpaqueCategory {
             OpaqueCategory::TransitivelyOpaque => "transitively opaque type",
             OpaqueCategory::AbstractType => "abstract type",
             OpaqueCategory::NoImplementors => "interface with no implementors",
+            OpaqueCategory::InfrastructurePackage => "infrastructure package",
+            OpaqueCategory::CloseableResource => "closeable resource",
+            OpaqueCategory::NativeHandle => "native handle",
         }
     }
 
@@ -70,6 +79,9 @@ impl OpaqueCategory {
             OpaqueCategory::TransitivelyOpaque => "constructor requires an opaque argument",
             OpaqueCategory::AbstractType => "abstract class or private constructor cannot be instantiated",
             OpaqueCategory::NoImplementors => "no concrete implementation visible in scope",
+            OpaqueCategory::InfrastructurePackage => "comes from a known infrastructure package",
+            OpaqueCategory::CloseableResource => "implements a close or dispose interface",
+            OpaqueCategory::NativeHandle => "contains an OS handle field",
         }
     }
 }
@@ -241,6 +253,15 @@ pub fn category_for_static_reason(reason: &StaticOpacityReason) -> OpaqueCategor
     }
 }
 
+/// Maps a [`MediumOpacityReason`] to the corresponding [`OpaqueCategory`].
+pub fn category_for_medium_reason(reason: &MediumOpacityReason) -> OpaqueCategory {
+    match reason {
+        MediumOpacityReason::InfrastructurePackage => OpaqueCategory::InfrastructurePackage,
+        MediumOpacityReason::CloseableInterface => OpaqueCategory::CloseableResource,
+        MediumOpacityReason::NativeHandleField => OpaqueCategory::NativeHandle,
+    }
+}
+
 /// Checks each parameter for opaque types. Returns a `SkipReason` for every
 /// parameter whose type tree contains an `Opaque` node or whose `type_name`
 /// matches an entry in `custom_opaque_types`.
@@ -254,11 +275,14 @@ pub fn check_executability(
         .filter_map(|p| {
             // Check built-in opaque detection first.
             let mut path = vec![PathSegment::Param(p.name.clone())];
-            if let Some((label, static_reason)) = p.typ.find_opaque_node(&mut path) {
-                let category = static_reason
-                    .as_ref()
-                    .map(category_for_static_reason)
-                    .unwrap_or_else(|| category_for_label(&label));
+            if let Some((label, static_reason, medium_reason)) = p.typ.find_opaque_node(&mut path) {
+                let category = if let Some(ref sr) = static_reason {
+                    category_for_static_reason(sr)
+                } else if let Some(ref mr) = medium_reason {
+                    category_for_medium_reason(mr)
+                } else {
+                    category_for_label(&label)
+                };
                 return Some(SkipReason {
                     param_name: p.name.clone(),
                     opaque_label: label,
@@ -423,6 +447,7 @@ mod tests {
             TypeInfo::Opaque {
                 label: "pg.Client".into(),
                 static_opacity: None,
+                medium_opacity: None,
             },
         )];
         let reasons = check_executability(&params, &[]);
@@ -445,6 +470,7 @@ mod tests {
                 element: Box::new(TypeInfo::Opaque {
                     label: "net.Socket".into(),
                     static_opacity: None,
+                    medium_opacity: None,
                 }),
             },
         )];
@@ -481,6 +507,7 @@ mod tests {
                 TypeInfo::Opaque {
                     label: "pg.Client".into(),
                     static_opacity: None,
+                    medium_opacity: None,
                 },
             ),
             param("name", TypeInfo::Str),
@@ -489,6 +516,7 @@ mod tests {
                 TypeInfo::Opaque {
                     label: "fs.ReadStream".into(),
                     static_opacity: None,
+                    medium_opacity: None,
                 },
             ),
         ];
@@ -515,6 +543,7 @@ mod tests {
                             TypeInfo::Opaque {
                                 label: "http.Server".into(),
                                 static_opacity: None,
+                                medium_opacity: None,
                             },
                         ),
                     ],
@@ -546,6 +575,7 @@ mod tests {
                     TypeInfo::Opaque {
                         label: "stream.Readable".into(),
                         static_opacity: None,
+                        medium_opacity: None,
                     },
                 ],
             },
@@ -572,6 +602,7 @@ mod tests {
                 inner: Box::new(TypeInfo::Opaque {
                     label: "pg.Pool".into(),
                     static_opacity: None,
+                    medium_opacity: None,
                 }),
             },
         )];
@@ -599,6 +630,7 @@ mod tests {
                 inner: Some(Box::new(TypeInfo::Opaque {
                     label: "channel".into(),
                     static_opacity: None,
+                    medium_opacity: None,
                 })),
             },
         )];
@@ -666,6 +698,7 @@ mod tests {
             typ: TypeInfo::Opaque {
                 label: "pg.Client".into(),
                 static_opacity: None,
+                medium_opacity: None,
             },
             type_name: Some("DatabasePool".into()),
         }];
@@ -798,6 +831,70 @@ mod tests {
         assert!(OpaqueCategory::NoImplementors.reason().contains("concrete"));
     }
 
+    // ── category_for_medium_reason tests ──
+
+    #[test]
+    fn category_for_medium_reason_maps_all_variants() {
+        use crate::types::MediumOpacityReason;
+        assert_eq!(
+            category_for_medium_reason(&MediumOpacityReason::InfrastructurePackage),
+            OpaqueCategory::InfrastructurePackage
+        );
+        assert_eq!(
+            category_for_medium_reason(&MediumOpacityReason::CloseableInterface),
+            OpaqueCategory::CloseableResource
+        );
+        assert_eq!(
+            category_for_medium_reason(&MediumOpacityReason::NativeHandleField),
+            OpaqueCategory::NativeHandle
+        );
+    }
+
+    #[test]
+    fn medium_opacity_category_labels_and_reasons() {
+        assert_eq!(OpaqueCategory::InfrastructurePackage.label(), "infrastructure package");
+        assert_eq!(OpaqueCategory::CloseableResource.label(), "closeable resource");
+        assert_eq!(OpaqueCategory::NativeHandle.label(), "native handle");
+
+        assert!(OpaqueCategory::InfrastructurePackage.reason().contains("infrastructure"));
+        assert!(OpaqueCategory::CloseableResource.reason().contains("close"));
+        assert!(OpaqueCategory::NativeHandle.reason().contains("OS handle"));
+    }
+
+    #[test]
+    fn check_executability_uses_medium_reason_when_present() {
+        use crate::types::MediumOpacityReason;
+        let params = vec![param(
+            "client",
+            TypeInfo::Opaque {
+                label: "pg.Client".into(),
+                static_opacity: None,
+                medium_opacity: Some(MediumOpacityReason::InfrastructurePackage),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].opaque_label, "pg.Client");
+        assert_eq!(reasons[0].category, OpaqueCategory::InfrastructurePackage);
+    }
+
+    #[test]
+    fn check_executability_static_reason_takes_priority_over_medium() {
+        use crate::types::{MediumOpacityReason, StaticOpacityReason};
+        let params = vec![param(
+            "svc",
+            TypeInfo::Opaque {
+                label: "SomeService".into(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
+                medium_opacity: Some(MediumOpacityReason::CloseableInterface),
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        // static_opacity takes priority over medium_opacity
+        assert_eq!(reasons[0].category, OpaqueCategory::AbstractType);
+    }
+
     #[test]
     fn check_executability_uses_static_reason_when_present() {
         use crate::types::StaticOpacityReason;
@@ -806,6 +903,7 @@ mod tests {
             TypeInfo::Opaque {
                 label: "AbstractService".into(),
                 static_opacity: Some(StaticOpacityReason::AbstractType),
+                medium_opacity: None,
             },
         )];
         let reasons = check_executability(&params, &[]);
@@ -821,6 +919,7 @@ mod tests {
             TypeInfo::Opaque {
                 label: "pg.Client".into(),
                 static_opacity: None,
+                medium_opacity: None,
             },
         )];
         let reasons = check_executability(&params, &[]);

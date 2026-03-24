@@ -21,6 +21,22 @@ pub enum StaticOpacityReason {
     NoImplementors,
 }
 
+/// Reason a type was detected as potentially opaque via medium-confidence static analysis.
+///
+/// Unlike [`StaticOpacityReason`], these signals are suggestive but not definitive.
+/// They serve as supporting evidence in learning mode and should not alone trigger
+/// high-confidence opaque suggestions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediumOpacityReason {
+    /// Type comes from a known infrastructure package prefix (DB clients, cloud SDKs, etc.)
+    InfrastructurePackage,
+    /// Type implements a close/dispose/cleanup interface (io.Closer, Disposable, etc.)
+    CloseableInterface,
+    /// Type contains fields suggesting OS handles (fd, handle, FileDescriptor, unsafe.Pointer)
+    NativeHandleField,
+}
+
 /// Well-known complex types that go beyond primitives and structural types.
 ///
 /// Every supported complex type is an explicit variant. Adding a new type
@@ -133,6 +149,13 @@ pub enum TypeInfo {
         /// class detection). Absent for types detected via the runtime opaque-type tables.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         static_opacity: Option<StaticOpacityReason>,
+        /// Medium-confidence opacity signal, if available.
+        /// Set when a type shows suggestive (but not definitive) signals of being an
+        /// opaque infrastructure resource (e.g. known infra package prefix, closeable
+        /// interface, native handle field). Absent when not detected or when
+        /// `static_opacity` is already set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        medium_opacity: Option<MediumOpacityReason>,
     },
     /// Type could not be determined statically.
     Unknown,
@@ -160,8 +183,9 @@ impl TypeInfo {
         }
     }
 
-    /// Returns the first `Opaque` node found in this type tree as `(label, static_opacity)`,
-    /// appending nesting segments to `path` as it descends.
+    /// Returns the first `Opaque` node found in this type tree as
+    /// `(label, static_opacity, medium_opacity)`, appending nesting segments to
+    /// `path` as it descends.
     ///
     /// On success the caller's `path` will end with the full nesting segments
     /// down to (but not including) the opaque node — the opaque node itself
@@ -170,15 +194,15 @@ impl TypeInfo {
     /// The caller should seed `path` with a `PathSegment::Param` entry before
     /// calling so that the resulting path starts from the parameter root.
     ///
-    /// To get only the label (ignoring static reason), use:
-    /// `find_opaque_node(path).map(|(label, _)| label)`
+    /// To get only the label (ignoring opacity reasons), use:
+    /// `find_opaque_node(path).map(|(label, ..)| label)`
     pub fn find_opaque_node(
         &self,
         path: &mut Vec<PathSegment>,
-    ) -> Option<(String, Option<StaticOpacityReason>)> {
+    ) -> Option<(String, Option<StaticOpacityReason>, Option<MediumOpacityReason>)> {
         match self {
-            TypeInfo::Opaque { label, static_opacity } => {
-                Some((label.clone(), static_opacity.clone()))
+            TypeInfo::Opaque { label, static_opacity, medium_opacity } => {
+                Some((label.clone(), static_opacity.clone(), medium_opacity.clone()))
             }
             TypeInfo::Array { element } => {
                 path.push(PathSegment::ArrayElement);
@@ -446,6 +470,7 @@ mod tests {
         round_trip(&TypeInfo::Opaque {
             label: "net.Socket".to_string(),
             static_opacity: None,
+            medium_opacity: None,
         });
     }
 
@@ -454,30 +479,54 @@ mod tests {
         round_trip(&TypeInfo::Opaque {
             label: "AbstractService".to_string(),
             static_opacity: Some(StaticOpacityReason::AbstractType),
+            medium_opacity: None,
         });
         round_trip(&TypeInfo::Opaque {
             label: "DataSource".to_string(),
             static_opacity: Some(StaticOpacityReason::NoImplementors),
+            medium_opacity: None,
         });
         round_trip(&TypeInfo::Opaque {
             label: "InternalHandle".to_string(),
             static_opacity: Some(StaticOpacityReason::NoConstructor),
+            medium_opacity: None,
         });
         round_trip(&TypeInfo::Opaque {
             label: "SocketWrapper".to_string(),
             static_opacity: Some(StaticOpacityReason::TransitivelyOpaque),
+            medium_opacity: None,
+        });
+    }
+
+    #[test]
+    fn opaque_with_medium_opacity_round_trips() {
+        use super::MediumOpacityReason;
+        round_trip(&TypeInfo::Opaque {
+            label: "pg.Client".to_string(),
+            static_opacity: None,
+            medium_opacity: Some(MediumOpacityReason::InfrastructurePackage),
+        });
+        round_trip(&TypeInfo::Opaque {
+            label: "MyResource".to_string(),
+            static_opacity: None,
+            medium_opacity: Some(MediumOpacityReason::CloseableInterface),
+        });
+        round_trip(&TypeInfo::Opaque {
+            label: "FdHandle".to_string(),
+            static_opacity: None,
+            medium_opacity: Some(MediumOpacityReason::NativeHandleField),
         });
     }
 
     #[test]
     fn has_opaque_direct() {
-        assert!(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None }.has_opaque());
+        assert!(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None }.has_opaque());
     }
 
     #[test]
     fn has_opaque_nested_in_array() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None }),
+            element: Box::new(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None }),
         };
         assert!(typ.has_opaque());
     }
@@ -486,7 +535,7 @@ mod tests {
     fn has_opaque_nested_in_object() {
         let typ = TypeInfo::Object {
             fields: vec![
-                ("conn".into(), TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None }),
+                ("conn".into(), TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None, medium_opacity: None }),
                 ("name".into(), TypeInfo::Str),
             ],
         };
@@ -496,7 +545,7 @@ mod tests {
     #[test]
     fn has_opaque_nested_in_nullable() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Opaque { label: "channel".into(), static_opacity: None }),
+            inner: Box::new(TypeInfo::Opaque { label: "channel".into(), static_opacity: None, medium_opacity: None }),
         };
         assert!(typ.has_opaque());
     }
@@ -533,10 +582,11 @@ mod tests {
         let typ = TypeInfo::Opaque {
             label: "net.Socket".into(),
             static_opacity: None,
+            medium_opacity: None,
         };
         let mut path = vec![PathSegment::Param("sock".into())];
         let result = typ.find_opaque_node(&mut path);
-        assert_eq!(result, Some(("net.Socket".to_string(), None)));
+        assert_eq!(result, Some(("net.Socket".to_string(), None, None)));
         assert_eq!(path, vec![PathSegment::Param("sock".into())]);
     }
 
@@ -545,12 +595,28 @@ mod tests {
         let typ = TypeInfo::Opaque {
             label: "AbstractService".into(),
             static_opacity: Some(StaticOpacityReason::AbstractType),
+            medium_opacity: None,
         };
         let mut path = vec![PathSegment::Param("svc".into())];
         let result = typ.find_opaque_node(&mut path);
         assert_eq!(
             result,
-            Some(("AbstractService".to_string(), Some(StaticOpacityReason::AbstractType)))
+            Some(("AbstractService".to_string(), Some(StaticOpacityReason::AbstractType), None))
+        );
+    }
+
+    #[test]
+    fn find_opaque_node_returns_medium_reason_when_present() {
+        let typ = TypeInfo::Opaque {
+            label: "redis.Client".into(),
+            static_opacity: None,
+            medium_opacity: Some(MediumOpacityReason::InfrastructurePackage),
+        };
+        let mut path = vec![PathSegment::Param("cache".into())];
+        let result = typ.find_opaque_node(&mut path);
+        assert_eq!(
+            result,
+            Some(("redis.Client".to_string(), None, Some(MediumOpacityReason::InfrastructurePackage)))
         );
     }
 
@@ -564,6 +630,7 @@ mod tests {
                     TypeInfo::Opaque {
                         label: "DataSource".into(),
                         static_opacity: Some(StaticOpacityReason::NoImplementors),
+                        medium_opacity: None,
                     },
                 ),
             ],
@@ -572,7 +639,7 @@ mod tests {
         let result = typ.find_opaque_node(&mut path);
         assert_eq!(
             result,
-            Some(("DataSource".to_string(), Some(StaticOpacityReason::NoImplementors)))
+            Some(("DataSource".to_string(), Some(StaticOpacityReason::NoImplementors), None))
         );
         assert_eq!(
             path,

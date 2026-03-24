@@ -340,6 +340,36 @@ func goTypeFromExprWithContext(expr ast.Expr, info *types.Info, fc *fileContext)
 	return typeInfoFromAST(expr)
 }
 
+// infraGoPackagePrefixes lists Go import path prefixes whose types are
+// medium-confidence opaque (almost always hold external resources such as
+// database connections, cloud clients, or message queues).
+//
+// Types from these prefixes that are not already in opaqueGoTypes are detected
+// as medium-confidence opaque via isMediumOpaqueGoType.
+var infraGoPackagePrefixes = []string{
+	"cloud.google.com/go",
+	"github.com/go-redis/",
+	"github.com/jackc/pgx",
+	"github.com/aws/aws-sdk-go",
+	"go.mongodb.org/mongo-driver",
+	"github.com/elastic/go-elasticsearch",
+	"github.com/streadway/amqp",
+	"github.com/nats-io/nats.go",
+	"go.etcd.io/etcd/client",
+	"github.com/segmentio/kafka-go",
+	"github.com/confluentinc/confluent-kafka-go",
+}
+
+// nativeHandleFieldNames contains struct field names that suggest an OS handle.
+var nativeHandleFieldNames = map[string]bool{
+	"fd":             true,
+	"Fd":             true,
+	"handle":         true,
+	"Handle":         true,
+	"fileDescriptor": true,
+	"FileDescriptor": true,
+}
+
 // opaqueGoTypes maps package paths to sets of type names that represent
 // runtime resources (sockets, file handles, database connections, etc.).
 var opaqueGoTypes = map[string]map[string]bool{
@@ -373,6 +403,111 @@ func isOpaqueGoType(t types.Type) (string, bool) {
 	return "", false
 }
 
+// isMediumOpaqueGoType checks whether t shows medium-confidence signals of being
+// an opaque infrastructure resource type. Returns the label, reason string, and true
+// if detected; or ("", "", false).
+//
+// Does not re-check types already covered by isOpaqueGoType (high-confidence).
+//
+// Heuristics:
+//  1. InfrastructurePackage: import path starts with a known infra prefix
+//  2. CloseableInterface: type has a Close() method with no params and one return value
+//  3. NativeHandleField: struct fields named fd/handle/FileDescriptor
+func isMediumOpaqueGoType(t types.Type) (string, string, bool) {
+	named, ok := t.(*types.Named)
+	if !ok {
+		return "", "", false
+	}
+	obj := named.Obj()
+	pkg := obj.Pkg()
+	if pkg == nil {
+		return "", "", false
+	}
+	pkgPath := pkg.Path()
+	label := pkg.Name() + "." + obj.Name()
+
+	// Heuristic 1: infrastructure package prefix
+	for _, prefix := range infraGoPackagePrefixes {
+		if strings.HasPrefix(pkgPath, prefix) {
+			return label, "infrastructure_package", true
+		}
+	}
+
+	// Heuristic 2: has Close() error method (io.Closer-like)
+	if hasCloseMethod(named) {
+		return label, "closeable_interface", true
+	}
+
+	// Heuristic 3: struct with native handle fields
+	if hasNativeHandleField(named) {
+		return label, "native_handle_field", true
+	}
+
+	return "", "", false
+}
+
+// hasCloseMethod reports whether the named type (or its pointer) has an exported
+// Close method with no parameters and a single return value.
+//
+// Methods with pointer receivers (e.g. func (m *T) Close() error) are associated
+// with the pointer type in Go's type system, so both the value type and its pointer
+// are checked.
+func hasCloseMethod(named *types.Named) bool {
+	// Check value-receiver methods
+	for i := 0; i < named.NumMethods(); i++ {
+		m := named.Method(i)
+		if m.Name() != "Close" {
+			continue
+		}
+		sig, ok := m.Type().(*types.Signature)
+		if !ok {
+			continue
+		}
+		if sig.Params().Len() == 0 && sig.Results().Len() == 1 {
+			return true
+		}
+	}
+	// Check pointer-receiver methods via the pointer type's method set
+	ptrType := types.NewPointer(named)
+	ms := types.NewMethodSet(ptrType)
+	for i := 0; i < ms.Len(); i++ {
+		sel := ms.At(i)
+		if sel.Obj().Name() != "Close" {
+			continue
+		}
+		sig, ok := sel.Type().(*types.Signature)
+		if !ok {
+			continue
+		}
+		if sig.Params().Len() == 0 && sig.Results().Len() == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNativeHandleField reports whether the named type's underlying struct has
+// a field whose name suggests an OS handle (fd, handle, FileDescriptor) or
+// whose type is unsafe.Pointer or uintptr.
+func hasNativeHandleField(named *types.Named) bool {
+	underlying, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := 0; i < underlying.NumFields(); i++ {
+		field := underlying.Field(i)
+		if nativeHandleFieldNames[field.Name()] {
+			return true
+		}
+		// Check for unsafe.Pointer or uintptr field type
+		switch field.Type().String() {
+		case "unsafe.Pointer", "uintptr":
+			return true
+		}
+	}
+	return false
+}
+
 func goTypeToTypeInfo(t types.Type) TypeInfo {
 	return goTypeToTypeInfoWithContext(t, nil)
 }
@@ -403,6 +538,7 @@ func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
 		}
 	}
 	// Static analysis heuristics for named types from the analyzed package
+	// (checked before medium-confidence heuristics — higher confidence takes priority)
 	if fc != nil {
 		if named, ok := t.(*types.Named); ok {
 			if reason, detected := detectStaticOpacity(named, fc); detected {
@@ -415,6 +551,16 @@ func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
 				}
 				return TypeInfo{Kind: "opaque", Label: label, StaticOpacity: reason}
 			}
+		}
+	}
+	// Medium-confidence opaque detection: infra package prefix, Closeable, native handles.
+	// Checked after static analysis so that high-confidence detection takes priority.
+	if label, reason, ok := isMediumOpaqueGoType(t); ok {
+		return TypeInfo{Kind: "opaque", Label: label, MediumOpacity: reason}
+	}
+	if ptr, ok := t.(*types.Pointer); ok {
+		if label, reason, ok := isMediumOpaqueGoType(ptr.Elem()); ok {
+			return TypeInfo{Kind: "opaque", Label: label, MediumOpacity: reason}
 		}
 	}
 	switch typ := t.Underlying().(type) {

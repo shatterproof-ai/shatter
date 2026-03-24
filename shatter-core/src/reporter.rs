@@ -883,7 +883,7 @@ mod tests {
         );
         assert_eq!(format_type(&TypeInfo::Object { fields: vec![] }), "object");
         assert_eq!(
-            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string(), static_opacity: None }),
+            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string(), static_opacity: None, medium_opacity: None }),
             "opaque(net.Socket)"
         );
     }

@@ -842,3 +842,52 @@ func TestStaticOpacityHeuristics(t *testing.T) {
 		})
 	}
 }
+
+// --- Medium-confidence opacity heuristics ---
+
+func TestMediumOpacityHeuristics(t *testing.T) {
+	// NOTE: Heuristic 1 (InfrastructurePackage) requires external packages from
+	// known import path prefixes. Since single-file analysis only resolves types
+	// available via importer.Default() in the current environment, this heuristic
+	// is tested at the unit level via isMediumOpaqueGoType, not via file analysis.
+	// Heuristics 2 and 3 operate on types declared in the analyzed file itself.
+
+	fns, err := AnalyzeFile(testdataPath("medium_opaque.go"), "UseMediumOpaqueTypes")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(fns) == 0 {
+		t.Fatal("no functions returned")
+	}
+	fn := fns[0]
+	if len(fn.Params) != 3 {
+		t.Fatalf("expected 3 params, got %d", len(fn.Params))
+	}
+
+	// Param a: MediumOpaque1 has Close() error → closeable_interface
+	pa := fn.Params[0]
+	if pa.Type.Kind != "opaque" {
+		t.Errorf("param a: kind = %q, want opaque", pa.Type.Kind)
+	}
+	if pa.Type.MediumOpacity != "closeable_interface" {
+		t.Errorf("param a: medium_opacity = %q, want closeable_interface", pa.Type.MediumOpacity)
+	}
+	if pa.Type.StaticOpacity != "" {
+		t.Errorf("param a: static_opacity should be empty, got %q", pa.Type.StaticOpacity)
+	}
+
+	// Param b: MediumOpaque2 has fd field → native_handle_field
+	pb := fn.Params[1]
+	if pb.Type.Kind != "opaque" {
+		t.Errorf("param b: kind = %q, want opaque", pb.Type.Kind)
+	}
+	if pb.Type.MediumOpacity != "native_handle_field" {
+		t.Errorf("param b: medium_opacity = %q, want native_handle_field", pb.Type.MediumOpacity)
+	}
+
+	// Param c: SafeType has exported fields, no close method, no handle fields → not opaque
+	pc := fn.Params[2]
+	if pc.Type.Kind == "opaque" {
+		t.Errorf("param c (SafeType): expected non-opaque kind, got opaque with medium_opacity=%q", pc.Type.MediumOpacity)
+	}
+}
