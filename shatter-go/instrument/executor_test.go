@@ -1509,3 +1509,218 @@ func inc(n int) int { return n + 1 }
 
 	CloseAllHarnesses()
 }
+
+// --- Module-backed semantic harness tests ---
+
+// TestModuleHarnessHashDeterministic verifies that moduleHarnessHash returns the
+// same value for identical inputs and different values for different inputs.
+func TestModuleHarnessHashDeterministic(t *testing.T) {
+	h1 := moduleHarnessHash("/path/to/pkg.go", "MyFunc", "")
+	h2 := moduleHarnessHash("/path/to/pkg.go", "MyFunc", "")
+	if h1 != h2 {
+		t.Errorf("expected identical hashes for same inputs, got %q vs %q", h1, h2)
+	}
+
+	h3 := moduleHarnessHash("/path/to/other.go", "MyFunc", "")
+	if h1 == h3 {
+		t.Errorf("expected different hashes for different source paths, both got %q", h1)
+	}
+
+	h4 := moduleHarnessHash("/path/to/pkg.go", "OtherFunc", "")
+	if h1 == h4 {
+		t.Errorf("expected different hashes for different func names, both got %q", h1)
+	}
+
+	h5 := moduleHarnessHash("/path/to/pkg.go", "MyFunc", "abc123")
+	if h1 == h5 {
+		t.Errorf("expected different hashes for different mocks hashes, both got %q", h1)
+	}
+
+	if len(h1) != 16 {
+		t.Errorf("expected 16-char hash, got %d chars: %q", len(h1), h1)
+	}
+}
+
+// TestMakeModuleScratchDirUsesScratchEnv verifies that makeModuleScratchDir
+// creates a subdirectory inside SHATTER_HARNESS_SCRATCH when that env var is set.
+func TestMakeModuleScratchDirUsesScratchEnv(t *testing.T) {
+	scratchBase := t.TempDir()
+	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
+
+	hash := "deadbeef12345678"
+	dir, err := makeModuleScratchDir(hash)
+	if err != nil {
+		t.Fatalf("makeModuleScratchDir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if !strings.HasPrefix(dir, scratchBase) {
+		t.Errorf("expected scratch dir %q to be under %q", dir, scratchBase)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("scratch dir %q was not created: %v", dir, err)
+	}
+	if !strings.Contains(dir, hash) {
+		t.Errorf("expected scratch dir %q to contain hash %q", dir, hash)
+	}
+}
+
+// TestMakeModuleScratchDirFallbackToTemp verifies that makeModuleScratchDir
+// falls back to os.MkdirTemp when SHATTER_HARNESS_SCRATCH is not set.
+func TestMakeModuleScratchDirFallbackToTemp(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_SCRATCH", "")
+
+	dir, err := makeModuleScratchDir("somehash")
+	if err != nil {
+		t.Fatalf("makeModuleScratchDir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("fallback dir %q was not created: %v", dir, err)
+	}
+}
+
+// TestModuleGoBuildCacheDir verifies that moduleGoBuildCacheDir returns a path
+// under SHATTER_HARNESS_CACHE/go/module/build-cache when the env var is set.
+func TestModuleGoBuildCacheDir(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_CACHE", "/tmp/test-cache")
+	got := moduleGoBuildCacheDir()
+	if got == "" {
+		t.Fatal("expected non-empty path")
+	}
+	if !strings.Contains(got, "go") || !strings.Contains(got, "module") || !strings.Contains(got, "build-cache") {
+		t.Errorf("expected path to contain go/module/build-cache, got %q", got)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("expected absolute path, got %q", got)
+	}
+}
+
+// TestModuleGoBuildCacheDirEmpty verifies that moduleGoBuildCacheDir returns
+// empty string when SHATTER_HARNESS_CACHE is not set.
+func TestModuleGoBuildCacheDirEmpty(t *testing.T) {
+	t.Setenv("SHATTER_HARNESS_CACHE", "")
+	if got := moduleGoBuildCacheDir(); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// TestCopySiblingGoFiles verifies that copySiblingGoFiles copies sibling .go
+// files while skipping the source file itself, test files, and existing files.
+func TestCopySiblingGoFiles(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	writeFile := func(dir, name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatalf("writeFile %s: %v", name, err)
+		}
+		return p
+	}
+
+	// Source file — should NOT be copied.
+	sourcePath := writeFile(srcDir, "target.go", "package mypkg\nfunc Target() {}")
+	// Sibling file — SHOULD be copied.
+	writeFile(srcDir, "helper.go", "package mypkg\nfunc helper() {}")
+	// Test file — should NOT be copied.
+	writeFile(srcDir, "helper_test.go", "package mypkg\nimport \"testing\"\nfunc TestHelper(t *testing.T) {}")
+	// Pre-existing file in destDir — should NOT be overwritten.
+	writeFile(destDir, "existing.go", "original content")
+	writeFile(srcDir, "existing.go", "new content")
+
+	if err := copySiblingGoFiles(sourcePath, destDir); err != nil {
+		t.Fatalf("copySiblingGoFiles: %v", err)
+	}
+
+	// helper.go should be present.
+	helperDest := filepath.Join(destDir, "helper.go")
+	if _, err := os.Stat(helperDest); err != nil {
+		t.Errorf("expected helper.go to be copied: %v", err)
+	}
+
+	// target.go should NOT be copied (it's the source file).
+	if _, err := os.Stat(filepath.Join(destDir, "target.go")); err == nil {
+		t.Error("target.go should not have been copied to destDir")
+	}
+
+	// helper_test.go should NOT be copied.
+	if _, err := os.Stat(filepath.Join(destDir, "helper_test.go")); err == nil {
+		t.Error("helper_test.go should not have been copied")
+	}
+
+	// existing.go should retain original content (not overwritten).
+	data, err := os.ReadFile(filepath.Join(destDir, "existing.go"))
+	if err != nil {
+		t.Fatalf("reading existing.go: %v", err)
+	}
+	if string(data) != "original content" {
+		t.Errorf("existing.go should not be overwritten, got %q", string(data))
+	}
+}
+
+// TestExecuteFunctionModuleBackedWithSiblingHelper is an integration test verifying
+// that the semantic harness can execute a function that uses an unexported helper
+// defined in a sibling file of the same package (module-backed project).
+func TestExecuteFunctionModuleBackedWithSiblingHelper(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	scratchBase := t.TempDir()
+	cacheBase := t.TempDir()
+	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
+	t.Setenv("SHATTER_HARNESS_CACHE", cacheBase)
+	t.Cleanup(CloseAllHarnesses)
+
+	// Create a module-backed project directory.
+	pkgDir := filepath.Join(t.TempDir(), "mypkg")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatalf("mkdir pkgDir: %v", err)
+	}
+
+	// go.mod makes this a module-backed file.
+	gomod := "module testmodule\n\ngo 1.23\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "go.mod"), []byte(gomod), 0644); err != nil {
+		t.Fatalf("writing go.mod: %v", err)
+	}
+
+	// Sibling file with an unexported helper.
+	sibling := "package mypkg\n\nfunc privateMultiply(a, b int) int {\n\treturn a * b\n}\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "helper.go"), []byte(sibling), 0644); err != nil {
+		t.Fatalf("writing helper.go: %v", err)
+	}
+
+	// Target file whose function uses the unexported helper.
+	target := "package mypkg\n\nfunc Compute(a, b int) int {\n\treturn privateMultiply(a, b)\n}\n"
+	targetPath := filepath.Join(pkgDir, "compute.go")
+	if err := os.WriteFile(targetPath, []byte(target), 0644); err != nil {
+		t.Fatalf("writing compute.go: %v", err)
+	}
+
+	result, err := ExecuteFunction(targetPath, "Compute", []json.RawMessage{
+		json.RawMessage("2"),
+		json.RawMessage("5"),
+	}, false)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	var got int
+	if err := json.Unmarshal(result.ReturnValue, &got); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if got != 10 {
+		t.Errorf("expected 10 (2*5), got %d", got)
+	}
+
+	// Verify scratch dir was created under SHATTER_HARNESS_SCRATCH/go/module/.
+	moduleDir := filepath.Join(scratchBase, "go", "module")
+	entries, err := os.ReadDir(moduleDir)
+	if err != nil {
+		t.Fatalf("reading module scratch dir %q: %v", moduleDir, err)
+	}
+	if len(entries) == 0 {
+		t.Error("expected at least one hash subdir under go/module/")
+	}
+}
