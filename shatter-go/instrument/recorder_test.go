@@ -32,6 +32,7 @@ func TestGeneratedRecorderContainsRequiredFunctions(t *testing.T) {
 		"__shatter_record_branch",
 		"__shatter_record_scope",
 		"__shatter_dump_results",
+		"__shatter_get_results",
 	} {
 		if !strings.Contains(src, "func "+fn) {
 			t.Errorf("recorder missing function %s", fn)

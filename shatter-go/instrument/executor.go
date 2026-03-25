@@ -1198,8 +1198,9 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	}
 
 	b.WriteString("\t\t_enc.Encode(_resp)\n") //nolint:errcheck
-	b.WriteString("\t}\n") // end for _sc.Scan()
-	b.WriteString("}\n")   // end main()
+	b.WriteString("\t}\n")          // end for _sc.Scan()
+	b.WriteString("\tos.Exit(1)\n") // EOF exit code convention: 1 = clean termination
+	b.WriteString("}\n")            // end main()
 
 	return b.String(), nil
 }
@@ -1225,6 +1226,7 @@ func generateLoopMockFile(mocks []MockConfig) string {
 		b.WriteString("\t\"fmt\"\n")
 	}
 	b.WriteString("\t\"sync\"\n")
+	b.WriteString("\t\"sync/atomic\"\n")
 	b.WriteString(")\n\n")
 
 	b.WriteString("type shatterMockCall struct {\n")
@@ -1254,7 +1256,7 @@ func generateLoopMockFile(mocks []MockConfig) string {
 	// call list so each loop iteration starts from a clean state.
 	b.WriteString("func shatterResetMockCounters() {\n")
 	for i := range mocks {
-		b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx = 0\n", i))
+		b.WriteString(fmt.Sprintf("\tatomic.StoreInt64(&shatterMock%d_callIdx, 0)\n", i))
 	}
 	b.WriteString("\tshatterMockCallsMu.Lock()\n")
 	b.WriteString("\tshatterMockCalls = shatterMockCalls[:0]\n")
@@ -1296,16 +1298,15 @@ func generateLoopMockFile(mocks []MockConfig) string {
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn result\n")
 		b.WriteString("}()\n")
-		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int\n\n", i))
+		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int64\n\n", i))
 
 		if mock.DefaultBehavior == BehaviorThrowError {
 			b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
 			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+			b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
 			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
 			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
 			b.WriteString("\tif idx < len(retvals) {\n")
 			b.WriteString("\t\tvar obj map[string]any\n")
@@ -1323,11 +1324,10 @@ func generateLoopMockFile(mocks []MockConfig) string {
 
 			b.WriteString(fmt.Sprintf("func ShatterMockErr_%s(args ...any) (any, error) {\n", safeName))
 			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+			b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
 			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
 			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
 			b.WriteString("\tif idx < len(retvals) {\n")
 			b.WriteString("\t\tvar obj map[string]any\n")
@@ -1347,7 +1347,7 @@ func generateLoopMockFile(mocks []MockConfig) string {
 
 		b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
 		b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-		b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
+		b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
 		if mock.DefaultBehavior == BehaviorRepeatLast || mock.DefaultBehavior == "" {
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
@@ -1357,7 +1357,6 @@ func generateLoopMockFile(mocks []MockConfig) string {
 			b.WriteString("\t\tidx = idx % len(retvals)\n")
 			b.WriteString("\t}\n")
 		}
-		b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
 		b.WriteString("\tvar retVal any\n")
 		b.WriteString("\tif idx < len(retvals) {\n")
 		b.WriteString("\t\tjson.Unmarshal(retvals[idx], &retVal)\n")

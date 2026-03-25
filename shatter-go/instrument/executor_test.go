@@ -921,6 +921,40 @@ func TestGenerateMockFilePerExecutionVariation(t *testing.T) {
 	}
 }
 
+func TestGenerateLoopMockFileUsesAtomicCounters(t *testing.T) {
+	mocks := []MockConfig{
+		{
+			Symbol:          "db.query",
+			ReturnValues:    []any{"result"},
+			DefaultBehavior: BehaviorRepeatLast,
+		},
+	}
+	source := generateLoopMockFile(mocks)
+
+	if !contains(source, `"sync/atomic"`) {
+		t.Error("expected sync/atomic import in generated mock file")
+	}
+	if !contains(source, "var shatterMock0_callIdx int64") {
+		t.Error("expected int64 type for mock call index")
+	}
+	if !contains(source, "atomic.StoreInt64(&shatterMock0_callIdx, 0)") {
+		t.Error("expected atomic.StoreInt64 in shatterResetMockCounters")
+	}
+	if !contains(source, "atomic.AddInt64(&shatterMock0_callIdx, 1)") {
+		t.Error("expected atomic.AddInt64 in mock function body")
+	}
+}
+
+func TestGenerateLoopHarnessContainsEOFExit(t *testing.T) {
+	src, err := generateLoopHarness("myFunc", []paramInfo{{Name: "x", GoType: "int"}}, returnTypeInfo{Count: 1, Types: []string{"int"}}, nil, false)
+	if err != nil {
+		t.Fatalf("generateLoopHarness failed: %v", err)
+	}
+	if !contains(src, "os.Exit(1)") {
+		t.Error("expected os.Exit(1) after scan loop for EOF exit convention")
+	}
+}
+
 // TestExecuteFunctionStandaloneFileWithMain verifies that a source file containing
 // a func main() can be executed — the instrumentation must strip the existing main
 // to avoid a redeclaration conflict with the harness main.go.

@@ -243,5 +243,27 @@ func __shatter_collect_results() __shatterResults {
 	}
 	return results
 }
+
+// __shatter_get_results serializes the current recorded results to JSON bytes
+// without clearing state. Useful for sending results over stdio.
+func __shatter_get_results() ([]byte, error) {
+	__shatter_mu.Lock()
+	results := __shatterResults{
+		LinesExecuted: __shatter_lines,
+		BranchPath:    __shatter_branches,
+		ScopeEvents:   __shatter_trace,
+	}
+	if results.LinesExecuted == nil {
+		results.LinesExecuted = []int{}
+	}
+	if results.BranchPath == nil {
+		results.BranchPath = []__shatterBranchDecision{}
+	}
+	if results.ScopeEvents == nil {
+		results.ScopeEvents = []__shatterTraceEvent{}
+	}
+	__shatter_mu.Unlock()
+	return json.Marshal(results)
+}
 `, packageName)
 }
