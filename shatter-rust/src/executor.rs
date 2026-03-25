@@ -489,6 +489,66 @@ fn standalone_target_dir() -> Option<PathBuf> {
     harness_cache_root().map(|c| c.join("rust").join("standalone").join("target"))
 }
 
+/// Check if `cargo check` should be skipped before build.
+/// Reads `SHATTER_SKIP_CHECK` env var — `"1"` or `"true"` (case-insensitive) skips check.
+fn skip_cargo_check() -> bool {
+    std::env::var("SHATTER_SKIP_CHECK")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Run `cargo check` for fast type/borrow validation before a full build.
+///
+/// Catches errors ~3x faster than `cargo build` by skipping codegen and linking.
+/// Shares the same `CARGO_TARGET_DIR` so check metadata is reused by the subsequent build.
+/// Set `SHATTER_SKIP_CHECK=1` to bypass the check step.
+fn cargo_check_before_build(
+    working_dir: &Path,
+    target_dir: &Path,
+    release: bool,
+    timing: Option<&mut TimingCollector>,
+) -> Result<(), ExecuteError> {
+    if skip_cargo_check() {
+        return Ok(());
+    }
+
+    let mut check_args = vec!["check"];
+    if release {
+        check_args.push("--release");
+    }
+
+    let check_output = if let Some(t) = timing {
+        let args = check_args.clone();
+        t.record("execute.check", |_| {
+            Command::new("cargo")
+                .args(&args)
+                .current_dir(working_dir)
+                .env("CARGO_TARGET_DIR", target_dir)
+                .output()
+                .map_err(|e| {
+                    ExecuteError::CompilationFailed(format!("failed to run cargo check: {e}"))
+                })
+        })?
+    } else {
+        Command::new("cargo")
+            .args(&check_args)
+            .current_dir(working_dir)
+            .env("CARGO_TARGET_DIR", target_dir)
+            .output()
+            .map_err(|e| {
+                ExecuteError::CompilationFailed(format!("failed to run cargo check: {e}"))
+            })?
+    };
+
+    if !check_output.status.success() {
+        let stderr = String::from_utf8_lossy(&check_output.stderr);
+        return Err(ExecuteError::CompilationFailed(stderr.into_owned()));
+    }
+
+    Ok(())
+}
+
 /// Locate the shatter-rust-runtime crate by walking up from the shatter-rust binary.
 fn find_runtime_crate_path() -> Result<PathBuf, ExecuteError> {
     // Try SHATTER_RUNTIME_PATH env var first (for testing and deployment).
@@ -1309,7 +1369,7 @@ fn build_and_spawn_harness(
     harness_source: &str,
     harness_dir: &Path,
     runtime_path: &Path,
-    timing: Option<&mut TimingCollector>,
+    mut timing: Option<&mut TimingCollector>,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
@@ -1338,6 +1398,14 @@ fn build_and_spawn_harness(
     if let Some(parent) = target_dir.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+
+    // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+    cargo_check_before_build(
+        harness_dir,
+        &target_dir,
+        release,
+        timing.as_deref_mut(),
+    )?;
 
     let build_start = Instant::now();
     let build_output = if let Some(t) = timing {
@@ -1425,7 +1493,7 @@ fn build_and_spawn_crate_harness(
     harness_source: &str,
     cargo_toml_content: &str,
     harness_dir: &Path,
-    timing: Option<&mut TimingCollector>,
+    mut timing: Option<&mut TimingCollector>,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
@@ -1447,6 +1515,14 @@ fn build_and_spawn_crate_harness(
     if !already_built {
         std::fs::write(harness_dir.join("Cargo.toml"), cargo_toml_content)?;
         std::fs::write(&main_rs_path, harness_source)?;
+
+        // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+        cargo_check_before_build(
+            harness_dir,
+            &target_dir,
+            release,
+            timing.as_deref_mut(),
+        )?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
             .ok()
@@ -2812,5 +2888,32 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             other => panic!("expected NonExecutable error, got: {other:?}"),
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // cargo check helpers
+    // -------------------------------------------------------------------------
+
+    /// Tests skip_cargo_check env var parsing.
+    /// Single test to avoid parallel env var mutation races.
+    #[test]
+    fn skip_cargo_check_env_parsing() {
+        // SAFETY: test-only env mutation; single test avoids parallel races.
+        unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
+        assert!(!skip_cargo_check(), "default should be false");
+
+        unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "1") };
+        assert!(skip_cargo_check(), "'1' should enable skip");
+
+        unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "true") };
+        assert!(skip_cargo_check(), "'true' should enable skip");
+
+        unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "TRUE") };
+        assert!(skip_cargo_check(), "'TRUE' should enable skip");
+
+        unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "0") };
+        assert!(!skip_cargo_check(), "'0' should not enable skip");
+
+        unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
     }
 }
