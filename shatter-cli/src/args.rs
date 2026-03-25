@@ -553,8 +553,13 @@ pub(crate) enum CliCommand {
         analyze_file: Option<PathBuf>,
 
         /// Output spec as JSON instead of markdown.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "yaml")]
         json: bool,
+
+        /// Output spec as YAML with human-friendly property descriptions instead of markdown.
+        /// Invariants are rendered as `property:` descriptions (requires --invariants to populate them).
+        #[arg(long, conflicts_with = "json")]
+        yaml: bool,
 
         /// Detect and include function-wide invariants.
         #[arg(long)]

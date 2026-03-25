@@ -563,16 +563,106 @@ pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde
     serde_json::to_string_pretty(bundles)
 }
 
-/// Format the spec as machine-readable YAML.
-///
-/// Returns a `Result` because serialization can theoretically fail.
-pub fn format_spec_yaml(spec: &FunctionSpec) -> Result<String, serde_yaml::Error> {
-    serde_yaml::to_string(spec)
+// ---------------------------------------------------------------------------
+// YAML output views — convert ClassifiedInvariant → SpecInvariant
+//
+// These private structs mirror FunctionSpec / SpecClass / FileSpecBundle but
+// use Vec<SpecInvariant> for the invariants fields so that YAML output shows
+// human-friendly property descriptions instead of raw ClassifiedInvariant data.
+// They are Serialize-only (no Deserialize) — the JSON / binary representations
+// of FunctionSpec are unchanged.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SpecClassYaml<'a> {
+    label: &'a str,
+    branch_path: &'a BranchPath,
+    preconditions: &'a Vec<Precondition>,
+    postcondition: &'a Postcondition,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    side_effects: &'a Vec<SideEffect>,
+    examples: &'a Vec<ConcreteExample>,
+    sample_count: usize,
+    precondition_provenance: Provenance,
+    postcondition_provenance: Provenance,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invariants: Vec<SpecInvariant>,
 }
 
-/// Format a collection of per-file spec bundles as machine-readable YAML.
+#[derive(Serialize)]
+struct FunctionSpecYaml<'a> {
+    function_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: &'a Option<String>,
+    classes: Vec<SpecClassYaml<'a>>,
+    iterations: u32,
+    lines_covered: usize,
+    total_lines: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invariants: Vec<SpecInvariant>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: &'a Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    nondeterministic_fields: &'a Vec<crate::nondeterminism::NondeterministicField>,
+}
+
+#[derive(Serialize)]
+struct FileSpecBundleYaml<'a> {
+    file: &'a str,
+    functions: Vec<FunctionSpecYaml<'a>>,
+}
+
+fn to_spec_class_yaml(c: &SpecClass) -> SpecClassYaml<'_> {
+    SpecClassYaml {
+        label: &c.label,
+        branch_path: &c.branch_path,
+        preconditions: &c.preconditions,
+        postcondition: &c.postcondition,
+        side_effects: &c.side_effects,
+        examples: &c.examples,
+        sample_count: c.sample_count,
+        precondition_provenance: c.precondition_provenance,
+        postcondition_provenance: c.postcondition_provenance,
+        invariants: c.invariants.iter().map(SpecInvariant::from).collect(),
+    }
+}
+
+fn to_function_spec_yaml(s: &FunctionSpec) -> FunctionSpecYaml<'_> {
+    FunctionSpecYaml {
+        function_name: &s.function_name,
+        location: &s.location,
+        classes: s.classes.iter().map(to_spec_class_yaml).collect(),
+        iterations: s.iterations,
+        lines_covered: s.lines_covered,
+        total_lines: s.total_lines,
+        invariants: s.invariants.iter().map(SpecInvariant::from).collect(),
+        fingerprint: &s.fingerprint,
+        nondeterministic_fields: &s.nondeterministic_fields,
+    }
+}
+
+/// Format the spec as YAML with human-friendly property descriptions.
+///
+/// Invariants are rendered as [`SpecInvariant`] (with `property:`, `kind:`,
+/// and `confidence:` fields) rather than raw [`ClassifiedInvariant`] data.
+/// The invariants section is omitted when no invariants are present.
+pub fn format_spec_yaml(spec: &FunctionSpec) -> Result<String, serde_yaml::Error> {
+    serde_yaml::to_string(&to_function_spec_yaml(spec))
+}
+
+/// Format a collection of per-file spec bundles as YAML with human-friendly property descriptions.
+///
+/// Same invariant conversion as [`format_spec_yaml`] — each function's invariants
+/// appear as `SpecInvariant` property descriptions.
 pub fn format_file_spec_yaml(bundles: &[FileSpecBundle]) -> Result<String, serde_yaml::Error> {
-    serde_yaml::to_string(bundles)
+    let views: Vec<FileSpecBundleYaml<'_>> = bundles
+        .iter()
+        .map(|b| FileSpecBundleYaml {
+            file: &b.file,
+            functions: b.functions.iter().map(to_function_spec_yaml).collect(),
+        })
+        .collect();
+    serde_yaml::to_string(&views)
 }
 
 /// Write a [`FileSpecBundle`] to disk using atomic write (temp file + rename).
@@ -2014,6 +2104,116 @@ mod tests {
         let json = serde_json::to_string(&si).expect("json serialize");
         let deserialized: SpecInvariant = serde_json::from_str(&json).expect("json deserialize");
         assert_eq!(si, deserialized);
+    }
+
+    // ── format_spec_yaml invariant output ────────────────────────────────
+
+    #[test]
+    fn yaml_invariants_use_property_field() {
+        use crate::invariants::{
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
+        };
+
+        let ci = ClassifiedInvariant {
+            invariant: Invariant {
+                description: "x > 0".to_string(),
+                target: InvariantTarget::Input,
+                kind: InvariantKind::NumericComparison {
+                    path: vec!["x".to_string()],
+                    op: ComparisonOp::Gt,
+                    value: 0.0,
+                },
+            },
+            target: InvariantTarget::Input,
+            label: "input.x is always positive".to_string(),
+            confidence: 1.0,
+            satisfied_count: 5,
+            total_count: 5,
+        };
+
+        let mut spec = FunctionSpec {
+            function_name: "myFn".to_string(),
+            location: None,
+            classes: vec![],
+            iterations: 10,
+            lines_covered: 3,
+            total_lines: 3,
+            invariants: vec![ci],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        // Populate a per-class invariant too
+        spec.classes.push(SpecClass {
+            label: "Class 1 — returns true".to_string(),
+            branch_path: crate::equivalence::BranchPath(vec![]),
+            preconditions: vec![],
+            postcondition: Postcondition::ReturnsVoid,
+            side_effects: vec![],
+            examples: vec![],
+            sample_count: 5,
+            precondition_provenance: Provenance::Observed,
+            postcondition_provenance: Provenance::Observed,
+            invariants: vec![ClassifiedInvariant {
+                invariant: Invariant {
+                    description: "output is not null".to_string(),
+                    target: InvariantTarget::Output,
+                    kind: InvariantKind::NotNull { path: vec![] },
+                },
+                target: InvariantTarget::Output,
+                label: "output is not null".to_string(),
+                confidence: 0.9,
+                satisfied_count: 5,
+                total_count: 5,
+            }],
+        });
+
+        let yaml = format_spec_yaml(&spec).expect("yaml serialization should succeed");
+
+        // Must contain property: field (SpecInvariant format)
+        assert!(
+            yaml.contains("property:"),
+            "YAML should contain 'property:' key, got:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("input.x is always positive"),
+            "YAML should contain the invariant label, got:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("output is not null"),
+            "YAML should contain per-class invariant label, got:\n{yaml}"
+        );
+
+        // Must NOT contain raw ClassifiedInvariant fields
+        assert!(
+            !yaml.contains("satisfied_count"),
+            "YAML should not contain raw 'satisfied_count' field, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("total_count"),
+            "YAML should not contain raw 'total_count' field, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn yaml_invariants_absent_when_empty() {
+        let spec = FunctionSpec {
+            function_name: "myFn".to_string(),
+            location: None,
+            classes: vec![],
+            iterations: 5,
+            lines_covered: 2,
+            total_lines: 4,
+            invariants: vec![],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+
+        let yaml = format_spec_yaml(&spec).expect("yaml serialization should succeed");
+
+        assert!(
+            !yaml.contains("invariants:"),
+            "YAML should not contain 'invariants:' key when invariants are empty, got:\n{yaml}"
+        );
     }
 
     // ── Property-based tests ─────────────────────────────────────────────
