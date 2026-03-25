@@ -471,6 +471,9 @@
 {"issue_id":"str-bwx6","label":"testing"}
 {"issue_id":"str-ciib","label":"build"}
 {"issue_id":"str-ciib","label":"infra"}
+{"issue_id":"str-cogj","label":"cli"}
+{"issue_id":"str-cogj","label":"core"}
+{"issue_id":"str-cogj","label":"go"}
 {"issue_id":"str-cs2h","label":"build"}
 {"issue_id":"str-cs2h","label":"infra"}
 {"issue_id":"str-e127","label":"rust-frontend"}
