@@ -1474,6 +1474,7 @@ pub struct McdcGoal {
 /// `seed_inputs` provides initial input sets to begin exploration.
 /// `user_inputs` provides user-provided candidate inputs (highest priority).
 /// `param_infos` provides parameter metadata including names and types.
+#[allow(clippy::too_many_arguments)]
 pub async fn explore(
     frontend: &mut Frontend,
     function_name: &str,
