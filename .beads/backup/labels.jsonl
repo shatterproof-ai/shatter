@@ -608,6 +608,8 @@
 {"issue_id":"str-o650","label":"go"}
 {"issue_id":"str-o650","label":"perf"}
 {"issue_id":"str-o650","label":"rust"}
+{"issue_id":"str-ostm","label":"frontend"}
+{"issue_id":"str-ostm","label":"rust"}
 {"issue_id":"str-pf51","label":"frontend"}
 {"issue_id":"str-pf51","label":"go"}
 {"issue_id":"str-pf51","label":"perf"}
