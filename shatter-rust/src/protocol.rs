@@ -780,6 +780,7 @@ mod tests {
             performance: None,
             code: None,
             message: None,
+            prepare_id: None,
         };
         round_trip(&resp);
     }
@@ -812,6 +813,7 @@ mod tests {
             performance: None,
             code: None,
             message: None,
+            prepare_id: None,
         };
         round_trip(&resp);
     }
@@ -844,6 +846,7 @@ mod tests {
             performance: None,
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
+            prepare_id: None,
         };
         round_trip(&resp);
     }
@@ -876,6 +879,7 @@ mod tests {
             performance: None,
             code: None,
             message: None,
+            prepare_id: None,
         };
         round_trip(&resp);
     }
