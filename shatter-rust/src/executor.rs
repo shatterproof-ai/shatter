@@ -150,6 +150,30 @@ pub struct HarnessKey {
     mocks_hash: u64,
 }
 
+/// Signature data for a single compatible function used in dispatch harness generation.
+struct CompatFn {
+    name: String,
+    param_names: Vec<String>,
+    param_types: Vec<String>,
+    return_type: Option<String>,
+}
+
+/// Cache key for a crate-backed file-level dispatch harness.
+/// One harness per (file, source_hash, mocks) — handles all compatible functions via dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CrateHarnessKey {
+    file_path: String,
+    source_hash: u64,
+    mocks_hash: u64,
+}
+
+pub struct CrateHarnessEntry {
+    pub harness: PersistentHarness,
+    compatible_functions: HashSet<String>,
+}
+
+pub type CrateHarnessCache = Mutex<HashMap<CrateHarnessKey, CrateHarnessEntry>>;
+
 /// A compiled, running harness subprocess ready to accept execute requests via stdin.
 pub struct PersistentHarness {
     /// The subprocess handle (used to kill on timeout/cleanup).
@@ -211,6 +235,56 @@ impl PersistentHarness {
             )),
         }
     }
+
+    /// Send `function_name` + `inputs` to a dispatch harness and wait for a JSON response.
+    /// Protocol: {"function": "name", "inputs": [...]} → same response format as execute().
+    fn execute_dispatch(
+        &mut self,
+        function_name: &str,
+        inputs: &[Value],
+        timeout_ms: u64,
+    ) -> Result<ExecuteResult, ExecuteError> {
+        let req = serde_json::json!({"function": function_name, "inputs": inputs});
+        let mut req_bytes = serde_json::to_vec(&req)
+            .map_err(|e| ExecuteError::IoError(io::Error::other(e.to_string())))?;
+        req_bytes.push(b'\n');
+        self.stdin.write_all(&req_bytes)?;
+        self.stdin.flush()?;
+
+        let timeout = Duration::from_millis(timeout_ms);
+        match self.response_rx.recv_timeout(timeout) {
+            Ok(line) => serde_json::from_str(&line).map_err(|e| {
+                ExecuteError::OutputParseError(format!(
+                    "failed to parse execute result: {e}\nline: {line}"
+                ))
+            }),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                Ok(ExecuteResult {
+                    return_value: None,
+                    thrown_error: Some(serde_json::json!({
+                        "error_type": "timeout",
+                        "message": format!("execution timed out after {timeout_ms}ms"),
+                    })),
+                    branch_path: vec![],
+                    lines_executed: vec![],
+                    calls_to_external: vec![],
+                    path_constraints: vec![],
+                    side_effects: vec![],
+                    performance: serde_json::json!({
+                        "wall_time_ms": timeout_ms as f64,
+                        "cpu_time_us": 0,
+                        "heap_used_bytes": 0,
+                        "heap_allocated_bytes": 0,
+                    }),
+                })
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ExecuteError::OutputParseError(
+                "harness subprocess terminated unexpectedly".to_string(),
+            )),
+        }
+    }
 }
 
 /// Shared in-process cache of compiled harness subprocesses.
@@ -226,6 +300,95 @@ fn mocks_hash(mocks: &[Value]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+/// Hash the source content for stable binary cache invalidation.
+fn source_hash(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut h);
+    h.finish()
+}
+
+/// Walk up from `file_path` to find the nearest directory containing a
+/// `Cargo.toml` with a `[package]` section (not just a workspace root).
+/// Returns `None` for standalone files or workspace-root-only manifests.
+fn find_crate_root(file_path: &str) -> Option<PathBuf> {
+    let mut dir = PathBuf::from(file_path);
+    dir.pop();
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let is_crate = std::fs::read_to_string(&cargo_toml)
+                .ok()
+                .map(|c| c.contains("[package]"))
+                .unwrap_or(false);
+            return if is_crate { Some(dir) } else { None };
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Content-addressed stable directory for a crate-backed dispatch harness.
+/// The directory path is deterministic: same file+source+mocks → same path.
+fn stable_crate_harness_dir(file_path: &str, src_hash: u64, mocks_hash: u64) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut h);
+    src_hash.hash(&mut h);
+    mocks_hash.hash(&mut h);
+    let key = h.finish();
+    harness_cache_root()
+        .map(|c| c.join("rust").join("bin-only").join(format!("{key:016x}")))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-bin-only-{key:016x}")))
+}
+
+/// Extract the `[dependencies]` section lines from a Cargo.toml file.
+/// Returns the raw lines (not including the `[dependencies]` header) ready to
+/// append to a generated Cargo.toml.
+fn extract_dependencies_section(cargo_toml: &str) -> String {
+    let mut in_deps = false;
+    let mut result = String::new();
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[dependencies]" {
+            in_deps = true;
+            continue;
+        }
+        if in_deps {
+            if trimmed.starts_with('[') {
+                break;
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                result.push_str(line);
+                result.push('\n');
+            }
+        }
+    }
+    result
+}
+
+/// Generate a Cargo.toml that includes `shatter-rust-runtime` + serde + serde_json
+/// PLUS all deps from the user's crate, so the instrumented source can reference
+/// external types (e.g. `regex::Regex`) that are available in the user's crate.
+fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path) -> String {
+    let forwarded = extract_dependencies_section(user_cargo_toml);
+    let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
+    format!(
+        r#"[package]
+name = "shatter-exec-temp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
+shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
+{forwarded}
+"#
+    )
 }
 
 /// Result of executing an instrumented function. Uses `serde_json::Value`
@@ -444,6 +607,73 @@ fn extract_fn_context(source: &str, function_name: &str) -> Result<FnContext, Ex
     )))
 }
 
+/// Extract `FnContext` for every top-level `fn` item in the source file.
+/// Functions that fail signature extraction are silently skipped (non-blocking).
+fn extract_all_fn_contexts(source: &str) -> Vec<(String, FnContext)> {
+    use quote::ToTokens;
+
+    let file = match syn::parse_file(source) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let local_type_names = collect_local_type_names(&file);
+    let has_module_path_uses = has_module_path_uses(&file);
+
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let item_fn = match item {
+                syn::Item::Fn(f) => f,
+                _ => return None,
+            };
+            let function_name = item_fn.sig.ident.to_string();
+
+            let mut param_names = Vec::new();
+            let mut param_types = Vec::new();
+            for arg in &item_fn.sig.inputs {
+                if let syn::FnArg::Typed(pt) = arg {
+                    param_names.push(pt.pat.to_token_stream().to_string());
+                    param_types.push(pt.ty.to_token_stream().to_string());
+                }
+            }
+            let return_type = match &item_fn.sig.output {
+                syn::ReturnType::Default => None,
+                syn::ReturnType::Type(_, ty) => Some(ty.to_token_stream().to_string()),
+            };
+            let generic_names: Vec<String> = item_fn
+                .sig
+                .generics
+                .params
+                .iter()
+                .filter_map(|p| {
+                    if let syn::GenericParam::Type(tp) = p {
+                        Some(tp.ident.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let has_generics = !generic_names.is_empty();
+
+            Some((
+                function_name,
+                FnContext {
+                    sig: FnSignature {
+                        param_names,
+                        param_types,
+                        return_type,
+                        has_generics,
+                        generic_names,
+                    },
+                    local_type_names: local_type_names.clone(),
+                    has_module_path_uses,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Collect names of structs, enums, and type aliases defined at the top level.
 fn collect_local_type_names(file: &syn::File) -> HashSet<String> {
     let mut names = HashSet::new();
@@ -548,9 +778,13 @@ fn extract_root_type_name(ty: &str) -> &str {
 ///
 /// Collects all incompatibilities and returns a single `NonExecutable` error
 /// listing every problem and suggesting `crate_bridge` as an alternative.
+///
+/// `crate_backed` — when `true`, the harness forwards the user crate's dependencies,
+/// so external crate types resolve. The external-type check (issue #3) is skipped.
 fn check_bin_only_compatibility(
     function_name: &str,
     ctx: &FnContext,
+    crate_backed: bool,
 ) -> Result<(), ExecuteError> {
     let mut issues: Vec<String> = Vec::new();
 
@@ -572,30 +806,33 @@ fn check_bin_only_compatibility(
     }
 
     // 3. External crate types — not available in isolated harness.
-    for (name, ty) in ctx.sig.param_names.iter().zip(ctx.sig.param_types.iter()) {
-        // Skip trait objects (already reported above).
-        if is_trait_object_type(ty) {
-            continue;
-        }
-        let root = extract_root_type_name(ty);
-        if !root.is_empty()
-            && !is_primitive_or_std_type(root)
-            && !ctx.local_type_names.contains(root)
-            // Tuple types like `(i32, i32)` start with `(`
-            && !root.starts_with('(')
-            // Array/slice types like `[u8 ; 4]`
-            && !root.starts_with('[')
-        {
-            if ctx.has_module_path_uses {
-                issues.push(format!(
-                    "parameter `{name}` uses type `{root}` imported via module path: \
-                     won't resolve in isolated harness"
-                ));
-            } else {
-                issues.push(format!(
-                    "parameter `{name}` uses external type `{root}`: \
-                     not available in isolated harness (only serde + serde_json)"
-                ));
+    // Skipped for crate-backed mode because user deps are forwarded.
+    if !crate_backed {
+        for (name, ty) in ctx.sig.param_names.iter().zip(ctx.sig.param_types.iter()) {
+            // Skip trait objects (already reported above).
+            if is_trait_object_type(ty) {
+                continue;
+            }
+            let root = extract_root_type_name(ty);
+            if !root.is_empty()
+                && !is_primitive_or_std_type(root)
+                && !ctx.local_type_names.contains(root)
+                // Tuple types like `(i32, i32)` start with `(`
+                && !root.starts_with('(')
+                // Array/slice types like `[u8 ; 4]`
+                && !root.starts_with('[')
+            {
+                if ctx.has_module_path_uses {
+                    issues.push(format!(
+                        "parameter `{name}` uses type `{root}` imported via module path: \
+                         won't resolve in isolated harness"
+                    ));
+                } else {
+                    issues.push(format!(
+                        "parameter `{name}` uses external type `{root}`: \
+                         not available in isolated harness (only serde + serde_json)"
+                    ));
+                }
             }
         }
     }
@@ -889,6 +1126,180 @@ fn generate_harness(
     Ok(h)
 }
 
+/// Generate a multi-function dispatch harness for crate-backed execution.
+///
+/// The harness reads `{"function": "name", "inputs": [...]}` from stdin and
+/// dispatches to the corresponding function via a `match` arm. All compatible
+/// functions from the file are included.
+///
+/// `fns` is a slice of `CompatFn` descriptors for all compatible functions.
+fn generate_dispatch_harness(
+    instrumented_source: &str,
+    fns: &[CompatFn],
+    mocks_json: &str,
+    static_mut_names: &[String],
+) -> Result<String, ExecuteError> {
+    let module_block = wrap_in_module(instrumented_source)?;
+    let mut h = String::with_capacity(16384);
+
+    h.push_str("#![allow(unused_imports)]\n");
+    h.push_str("use std::io::BufRead;\n");
+    h.push_str("use serde_json::Value;\n\n");
+    h.push_str(&module_block);
+    h.push_str("\n\nfn main() {\n");
+
+    // Register mocks once at startup (baked in, same for all calls to this harness).
+    h.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
+    h.push_str("    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n");
+    h.push_str("    for mock in &mocks {\n");
+    h.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
+    h.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
+    h.push_str("            mock.get(\"return_values\").and_then(|v| v.as_array()),\n");
+    h.push_str("        ) {\n");
+    h.push_str("            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n");
+    h.push_str("        }\n");
+    h.push_str("    }\n\n");
+
+    // Main request loop.
+    h.push_str("    let stdin = std::io::stdin();\n");
+    h.push_str("    let mut reader = std::io::BufReader::new(stdin.lock());\n");
+    h.push_str("    loop {\n");
+    h.push_str("        let mut line = String::new();\n");
+    h.push_str("        match reader.read_line(&mut line) {\n");
+    h.push_str("            Ok(0) | Err(_) => break,\n");
+    h.push_str("            Ok(_) => {}\n");
+    h.push_str("        }\n");
+    h.push_str("        let line = line.trim();\n");
+    h.push_str("        if line.is_empty() { continue; }\n");
+    h.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
+    h.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
+    h.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n\n");
+
+    // Reset runtime state and snapshot mutable globals before dispatch.
+    h.push_str("        shatter_rust_runtime::reset();\n\n");
+    if !static_mut_names.is_empty() {
+        h.push_str("        // Snapshot mutable static variables before execution\n");
+        for name in static_mut_names {
+            h.push_str(&format!(
+                "        let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+            ));
+        }
+        h.push('\n');
+    }
+
+    // Build the dispatch match.
+    h.push_str("        let exec_result: Value = match function_name {\n");
+    for fn_info in fns {
+        let fn_name = &fn_info.name;
+        let param_names = &fn_info.param_names;
+        let param_types = &fn_info.param_types;
+        let return_type = &fn_info.return_type;
+        h.push_str(&format!("            {:?} => {{\n", fn_name.as_str()));
+        // Deserialize each parameter.
+        for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
+            let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
+            if let Some(mapping) = owned_type_for_ref(ty) {
+                h.push_str(&format!(
+                    "                let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                    mapping.deser_type
+                ));
+                if mapping.needs_slice_conversion {
+                    h.push_str(&format!(
+                        "                let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
+                    ));
+                }
+            } else {
+                h.push_str(&format!(
+                    "                let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                ));
+            }
+        }
+        // Build argument list.
+        let arg_list: Vec<String> = param_names
+            .iter()
+            .zip(param_types.iter())
+            .map(|(n, ty)| {
+                let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
+                if let Some(mapping) = owned_type_for_ref(ty) {
+                    if mapping.needs_slice_conversion {
+                        format!("&{clean}_refs")
+                    } else {
+                        format!("&{clean}_owned")
+                    }
+                } else {
+                    clean.to_string()
+                }
+            })
+            .collect();
+        let args = arg_list.join(", ");
+        // Call + timing.
+        h.push_str("                let start = std::time::Instant::now();\n");
+        h.push_str("                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+        h.push_str(&format!("                    user_code::{fn_name}({args})\n"));
+        h.push_str("                }));\n");
+        h.push_str("                let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n");
+        // Flush runtime results.
+        h.push_str("                let runtime_json = shatter_rust_runtime::flush_results();\n");
+        h.push_str("                let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
+        h.push_str("                let obj = exec_result.as_object_mut().unwrap();\n");
+        // Return value or panic.
+        h.push_str("                match result {\n");
+        if return_type.is_some() {
+            h.push_str("                    Ok(ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null)); }\n");
+        } else {
+            h.push_str("                    Ok(()) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
+        }
+        h.push_str("                    Err(panic_info) => {\n");
+        h.push_str("                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
+        h.push_str("                        obj.insert(\"thrown_error\".into(), serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg}));\n");
+        h.push_str("                    }\n");
+        h.push_str("                }\n");
+        // Performance.
+        h.push_str("                obj.insert(\"performance\".into(), serde_json::json!({\"wall_time_ms\": wall_time_ms, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}));\n");
+        h.push_str("                obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
+        h.push_str("                exec_result\n");
+        h.push_str("            }\n");
+    }
+    // Unknown function fallback.
+    h.push_str("            unknown => {\n");
+    h.push_str("                serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"not_supported\", \"message\": format!(\"function not in dispatch table: {}\", unknown)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}})\n");
+    h.push_str("            }\n");
+    h.push_str("        };\n\n");
+
+    // Static snapshots after + side effects.
+    if !static_mut_names.is_empty() {
+        h.push_str("        // Detect mutable static changes and emit global_state_change side effects\n");
+        h.push_str("        let mut __global_side_effects: Vec<serde_json::Value> = Vec::new();\n");
+        h.push_str("        let mut exec_result = exec_result;\n");
+        h.push_str("        let obj = exec_result.as_object_mut().unwrap();\n");
+        for name in static_mut_names {
+            h.push_str(&format!(
+                "        let __after_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
+            ));
+            h.push_str(&format!(
+                "        if let (Some(__b), Some(__a)) = (__before_{name}, __after_{name}) {{\n"
+            ));
+            h.push_str("            if __b != __a {\n");
+            h.push_str(&format!(
+                "                __global_side_effects.push(serde_json::json!({{\"kind\":\"global_state_change\",\"variable\":\"{name}\",\"before\":__b,\"after\":__a}}));\n"
+            ));
+            h.push_str("            }\n");
+            h.push_str("        }\n");
+        }
+        h.push_str("        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
+        h.push_str("        if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_side_effects); }\n");
+        h.push_str("        drop(obj);\n");
+        h.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
+    } else {
+        h.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
+    }
+    h.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
+    h.push_str("    } // end loop\n");
+    h.push_str("}\n");
+
+    Ok(h)
+}
+
 /// Compile the harness source and spawn it as a persistent subprocess.
 ///
 /// The compiled binary lives in `harness_dir`. A reader thread is spawned
@@ -1005,6 +1416,267 @@ fn build_and_spawn_harness(
     })
 }
 
+/// Compile a crate-backed dispatch harness and spawn it as a persistent subprocess.
+///
+/// Unlike `build_and_spawn_harness()`, this:
+/// - Uses a per-harness target dir at `harness_dir/target/` for stable binary storage
+/// - Skips `cargo build` if the binary exists and `src/main.rs` content is unchanged
+fn build_and_spawn_crate_harness(
+    harness_source: &str,
+    cargo_toml_content: &str,
+    harness_dir: &Path,
+    timing: Option<&mut TimingCollector>,
+) -> Result<PersistentHarness, ExecuteError> {
+    let src_dir = harness_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+
+    let release = harness_release_mode();
+    let profile_dir = if release { "release" } else { "debug" };
+    let binary_name = if cfg!(windows) { "shatter-exec-temp.exe" } else { "shatter-exec-temp" };
+    let target_dir = harness_dir.join("target");
+    let binary_path = target_dir.join(profile_dir).join(binary_name);
+
+    // Skip recompile if binary exists and harness source is unchanged.
+    let main_rs_path = src_dir.join("main.rs");
+    let already_built = binary_path.exists()
+        && std::fs::read_to_string(&main_rs_path)
+            .ok()
+            .as_deref()
+            == Some(harness_source);
+
+    if !already_built {
+        std::fs::write(harness_dir.join("Cargo.toml"), cargo_toml_content)?;
+        std::fs::write(&main_rs_path, harness_source)?;
+
+        let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
+        let build_timeout = Duration::from_secs(build_timeout_secs);
+
+        let mut cargo_args = vec!["build"];
+        if release {
+            cargo_args.push("--release");
+        }
+
+        let build_start = Instant::now();
+        let build_output = if let Some(t) = timing {
+            t.record("execute.build", |_| {
+                Command::new("cargo")
+                    .args(&cargo_args)
+                    .current_dir(harness_dir)
+                    .env("CARGO_TARGET_DIR", &target_dir)
+                    .output()
+                    .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+            })?
+        } else {
+            Command::new("cargo")
+                .args(&cargo_args)
+                .current_dir(harness_dir)
+                .env("CARGO_TARGET_DIR", &target_dir)
+                .output()
+                .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
+        };
+
+        if build_start.elapsed() > build_timeout {
+            return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+        }
+        if !build_output.status.success() {
+            return Err(ExecuteError::CompilationFailed(
+                String::from_utf8_lossy(&build_output.stderr).into_owned(),
+            ));
+        }
+    }
+
+    if !binary_path.exists() {
+        return Err(ExecuteError::CompilationFailed("compiled binary not found".to_string()));
+    }
+
+    let mut child = Command::new(&binary_path)
+        .current_dir(harness_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(ExecuteError::IoError)?;
+
+    let stdin = child.stdin.take().ok_or_else(|| {
+        ExecuteError::IoError(io::Error::other("no stdin pipe"))
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ExecuteError::IoError(io::Error::other("no stdout pipe"))
+    })?;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if !l.is_empty() => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(PersistentHarness {
+        child,
+        stdin,
+        response_rx: rx,
+        harness_dir: harness_dir.to_path_buf(),
+    })
+}
+
+/// Execute a function from a crate-backed Rust file using the stable bin-only dispatch harness.
+///
+/// One harness handles all compatible functions in the file; different inputs for the same
+/// function reuse the running subprocess without recompilation. The compiled binary is stored
+/// at a stable content-addressed path and reused across process restarts.
+#[allow(clippy::too_many_arguments)]
+fn execute_function_crate_backed(
+    file_path: &str,
+    function_name: &str,
+    inputs: &[Value],
+    mocks: &[Value],
+    timeout_ms: u64,
+    mut timing: Option<&mut TimingCollector>,
+    crate_cache: &CrateHarnessCache,
+    crate_root: &Path,
+) -> Result<ExecuteResult, ExecuteError> {
+    let source = std::fs::read_to_string(file_path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+    let src_hash = source_hash(&source);
+    let mh = mocks_hash(mocks);
+
+    let key = CrateHarnessKey {
+        file_path: file_path.to_string(),
+        source_hash: src_hash,
+        mocks_hash: mh,
+    };
+
+    // Fast path: dispatch harness running, function in dispatch table.
+    {
+        let mut map = crate_cache.lock().unwrap();
+        if let Some(entry) = map.get_mut(&key) {
+            if entry.compatible_functions.contains(function_name) {
+                let result = entry.harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+                if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+                    map.remove(&key);
+                }
+                return Ok(result);
+            }
+            // Function exists in cache but not in dispatch table → not executable in bin_only mode.
+            return Err(ExecuteError::NonExecutable(format!(
+                "function `{function_name}` is not compatible with bin_only harness mode\n\nHint: use crate_bridge mode to execute within the original crate context"
+            )));
+        }
+    }
+
+    // Slow path: compile a new dispatch harness for this file.
+    let all_fn_ctxs = extract_all_fn_contexts(&source);
+    let static_mut_names = extract_static_mut_items(&source);
+
+    // Check which functions are compatible with crate-backed bin_only mode.
+    let compatible_fns: Vec<CompatFn> = all_fn_ctxs
+        .iter()
+        .filter_map(|(name, ctx)| {
+            if check_bin_only_compatibility(name, ctx, true).is_ok() {
+                Some(CompatFn {
+                    name: name.clone(),
+                    param_names: ctx.sig.param_names.clone(),
+                    param_types: ctx.sig.param_types.clone(),
+                    return_type: ctx.sig.return_type.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !compatible_fns.iter().any(|f| f.name == function_name) {
+        // Give a precise error by extracting the specific incompatibilities.
+        if let Some((_, ctx)) = all_fn_ctxs.iter().find(|(n, _)| n == function_name) {
+            check_bin_only_compatibility(function_name, ctx, true)?; // will return Err
+        }
+        return Err(ExecuteError::NonExecutable(format!(
+            "function `{function_name}` not found or not compatible with bin_only harness mode"
+        )));
+    }
+
+    let expected_inputs = compatible_fns.iter()
+        .find(|f| f.name == function_name)
+        .map(|f| f.param_names.len())
+        .unwrap_or(0);
+    if inputs.len() != expected_inputs {
+        return Err(ExecuteError::InstrumentError(format!(
+            "expected {expected_inputs} inputs for {function_name}, got {}",
+            inputs.len()
+        )));
+    }
+
+    let instr_result = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.instrument", |timing| {
+            instrument::instrument_source_with_timing(&source, None, Some(timing))
+                .map_err(|e| ExecuteError::InstrumentError(e.to_string()))
+        })?
+    } else {
+        instrument::instrument_source(&source, None)
+            .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?
+    };
+
+    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+    })?;
+
+    let harness_source = generate_dispatch_harness(
+        &instr_result.source,
+        &compatible_fns,
+        &mocks_json,
+        &static_mut_names,
+    )?;
+
+    let user_cargo_toml_path = crate_root.join("Cargo.toml");
+    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
+        .unwrap_or_default();
+
+    let runtime_path = find_runtime_crate_path()?;
+    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path);
+
+    let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh);
+    std::fs::create_dir_all(&harness_dir)?;
+
+    let mut harness = if let Some(timing) = timing {
+        timing.record("execute.build", |timing| {
+            build_and_spawn_crate_harness(&harness_source, &cargo_toml_content, &harness_dir, Some(timing))
+        })?
+    } else {
+        build_and_spawn_crate_harness(&harness_source, &cargo_toml_content, &harness_dir, None)?
+    };
+
+    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+
+    let timed_out = result.thrown_error.as_ref()
+        .and_then(|e| e.get("error_type"))
+        .and_then(|v| v.as_str()) == Some("timeout");
+
+    if !timed_out {
+        let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
+        crate_cache.lock().unwrap().insert(key, CrateHarnessEntry {
+            harness,
+            compatible_functions: compatible_set,
+        });
+    } else {
+        let _ = std::fs::remove_dir_all(&harness_dir);
+    }
+
+    Ok(result)
+}
+
 /// Execute an instrumented Rust function via a persistent harness subprocess.
 ///
 /// On the first call for a given (file, function, mocks) triple, compiles the
@@ -1016,10 +1688,12 @@ pub fn execute_function(
     mocks: &[Value],
     timeout_ms: u64,
     cache: &HarnessCache,
+    crate_cache: &CrateHarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
-    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None, cache)
+    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None, cache, crate_cache)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_function_with_timing(
     file_path: &str,
     function_name: &str,
@@ -1028,10 +1702,25 @@ pub fn execute_function_with_timing(
     timeout_ms: u64,
     mut timing: Option<&mut TimingCollector>,
     cache: &HarnessCache,
+    crate_cache: &CrateHarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
         return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+    }
+
+    // Route crate-backed files to the stable bin-only dispatch harness path.
+    if let Some(crate_root) = find_crate_root(file_path) {
+        return execute_function_crate_backed(
+            file_path,
+            function_name,
+            inputs,
+            mocks,
+            timeout_ms,
+            timing,
+            crate_cache,
+            &crate_root,
+        );
     }
 
     // Compute cache key before doing any expensive work.
@@ -1072,7 +1761,7 @@ pub fn execute_function_with_timing(
     };
     let sig = &ctx.sig;
     let static_mut_names = extract_static_mut_items(&source);
-    check_bin_only_compatibility(function_name, &ctx)?;
+    check_bin_only_compatibility(function_name, &ctx, false)?;
 
     if inputs.len() != sig.param_names.len() {
         return Err(ExecuteError::InstrumentError(format!(
@@ -1358,7 +2047,8 @@ fn main() {
     #[test]
     fn execute_nonexistent_file_returns_error() {
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
-        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, &cache);
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, &cache, &crate_cache);
         assert!(result.is_err());
         if let Err(ExecuteError::FileError(msg)) = result {
             assert!(msg.contains("not found"));
@@ -1375,6 +2065,7 @@ fn main() {
         std::fs::write(&file, "fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "add",
@@ -1382,6 +2073,7 @@ fn main() {
             &[],
             5000,
             &cache,
+            &crate_cache,
         );
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1428,6 +2120,7 @@ fn main() {
         .unwrap();
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "query",
@@ -1435,6 +2128,7 @@ fn main() {
             &[],
             5000,
             &cache,
+            &crate_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1451,7 +2145,7 @@ fn main() {
     fn compat_generic_params_detected() {
         let source = "fn identity<T: Clone>(x: T) -> T { x }";
         let ctx = extract_fn_context(source, "identity").unwrap();
-        let err = check_bin_only_compatibility("identity", &ctx).unwrap_err();
+        let err = check_bin_only_compatibility("identity", &ctx, false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("generic type parameters [T]"),
@@ -1464,7 +2158,7 @@ fn main() {
     fn compat_trait_object_detected() {
         let source = "trait Db { fn get(&self) -> i32; }\nfn query(db: &dyn Db) -> i32 { db.get() }";
         let ctx = extract_fn_context(source, "query").unwrap();
-        let err = check_bin_only_compatibility("query", &ctx).unwrap_err();
+        let err = check_bin_only_compatibility("query", &ctx, false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("trait object"),
@@ -1477,7 +2171,7 @@ fn main() {
     fn compat_external_type_detected() {
         let source = "fn process(conn: PgConnection) -> bool { true }";
         let ctx = extract_fn_context(source, "process").unwrap();
-        let err = check_bin_only_compatibility("process", &ctx).unwrap_err();
+        let err = check_bin_only_compatibility("process", &ctx, false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("external type") && msg.contains("PgConnection"),
@@ -1490,7 +2184,7 @@ fn main() {
     fn compat_module_path_import_detected() {
         let source = "use crate::config::Config;\nfn init(c: Config) {}";
         let ctx = extract_fn_context(source, "init").unwrap();
-        let err = check_bin_only_compatibility("init", &ctx).unwrap_err();
+        let err = check_bin_only_compatibility("init", &ctx, false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("module path") && msg.contains("Config"),
@@ -1502,7 +2196,7 @@ fn main() {
     fn compat_multiple_issues_listed() {
         let source = "fn dispatch<T>(db: &dyn std::any::Any, val: T) {}";
         let ctx = extract_fn_context(source, "dispatch").unwrap();
-        let err = check_bin_only_compatibility("dispatch", &ctx).unwrap_err();
+        let err = check_bin_only_compatibility("dispatch", &ctx, false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("generic type parameters"), "should list generics: {msg}");
         assert!(msg.contains("trait object"), "should list trait object: {msg}");
@@ -1512,35 +2206,35 @@ fn main() {
     fn compat_primitives_pass() {
         let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
         let ctx = extract_fn_context(source, "add").unwrap();
-        assert!(check_bin_only_compatibility("add", &ctx).is_ok());
+        assert!(check_bin_only_compatibility("add", &ctx, false).is_ok());
     }
 
     #[test]
     fn compat_std_types_pass() {
         let source = "use std::collections::HashMap;\nfn f(v: Vec<String>, m: HashMap<String, i32>) -> Option<bool> { None }";
         let ctx = extract_fn_context(source, "f").unwrap();
-        assert!(check_bin_only_compatibility("f", &ctx).is_ok());
+        assert!(check_bin_only_compatibility("f", &ctx, false).is_ok());
     }
 
     #[test]
     fn compat_local_struct_passes() {
         let source = "struct Point { x: f64, y: f64 }\nfn origin() -> Point { Point { x: 0.0, y: 0.0 } }";
         let ctx = extract_fn_context(source, "origin").unwrap();
-        assert!(check_bin_only_compatibility("origin", &ctx).is_ok());
+        assert!(check_bin_only_compatibility("origin", &ctx, false).is_ok());
     }
 
     #[test]
     fn compat_local_struct_param_passes() {
         let source = "struct Config { debug: bool }\nfn setup(c: Config) -> bool { c.debug }";
         let ctx = extract_fn_context(source, "setup").unwrap();
-        assert!(check_bin_only_compatibility("setup", &ctx).is_ok());
+        assert!(check_bin_only_compatibility("setup", &ctx, false).is_ok());
     }
 
     #[test]
     fn compat_ref_params_pass() {
         let source = "fn greet(name: &str) -> String { format!(\"hi {name}\") }";
         let ctx = extract_fn_context(source, "greet").unwrap();
-        assert!(check_bin_only_compatibility("greet", &ctx).is_ok());
+        assert!(check_bin_only_compatibility("greet", &ctx, false).is_ok());
     }
 
     #[test]
@@ -1551,6 +2245,7 @@ fn main() {
         std::fs::write(&file, "fn identity<T: Clone>(x: T) -> T { x.clone() }").unwrap();
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "identity",
@@ -1558,6 +2253,7 @@ fn main() {
             &[],
             5000,
             &cache,
+            &crate_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1576,6 +2272,7 @@ fn main() {
         std::fs::write(&file, "fn process(conn: PgConnection) -> bool { true }").unwrap();
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "process",
@@ -1583,6 +2280,7 @@ fn main() {
             &[],
             5000,
             &cache,
+            &crate_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1765,11 +2463,15 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn standalone_target_dir_uses_cache_env() {
         // When SHATTER_HARNESS_CACHE is set, standalone_target_dir returns a path inside it.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         let cache_root = std::env::temp_dir().join("shatter-test-cache-root");
         let cache_str = cache_root.to_string_lossy().into_owned();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
 
         let target = standalone_target_dir();
+        // Restore before assertions so the var is cleared even on panic.
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
         assert!(target.is_some(), "expected Some when SHATTER_HARNESS_CACHE is set");
         let target = target.unwrap();
         assert!(
@@ -1780,13 +2482,11 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             target.ends_with("rust/standalone/target"),
             "target dir should end with rust/standalone/target, got {target:?}"
         );
-
-        // Restore: set to empty so harness_cache_root() returns None
-        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
     }
 
     #[test]
     fn standalone_target_dir_none_when_unset() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
         assert!(standalone_target_dir().is_none());
     }
@@ -1794,22 +2494,24 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn make_request_scratch_uses_scratch_env() {
         // When SHATTER_HARNESS_SCRATCH is set, make_request_scratch returns a path inside it.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         let scratch_root = std::env::temp_dir().join("shatter-test-scratch-root");
         let scratch_str = scratch_root.to_string_lossy().into_owned();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", &scratch_str) };
 
         let scratch = make_request_scratch();
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
+
         assert!(
             scratch.starts_with(&scratch_root),
             "scratch dir {scratch:?} should be under scratch root {scratch_str}"
         );
-
-        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
     }
 
     #[test]
     fn make_request_scratch_fallback_to_temp() {
         // When SHATTER_HARNESS_SCRATCH is empty/unset, make_request_scratch returns a temp-based path.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
         let scratch = make_request_scratch();
         // Should not panic; path should contain "shatter-exec-"
@@ -1821,9 +2523,294 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
     #[test]
     fn make_request_scratch_unique_per_call() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
         let a = make_request_scratch();
         let b = make_request_scratch();
         assert_ne!(a, b, "each call should produce a distinct scratch path");
+    }
+
+    // ─── crate-backed harness helper tests ───────────────────────────────────
+
+    #[test]
+    fn find_crate_root_none_for_tmp() {
+        // A file in /tmp should not find a crate root.
+        let result = find_crate_root("/tmp/standalone.rs");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_crate_root_finds_examples() {
+        // examples/rust/src/arithmetic.rs is inside a crate.
+        let examples_src = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/rust/src/arithmetic.rs");
+        if std::path::Path::new(examples_src).exists() {
+            let root = find_crate_root(examples_src);
+            assert!(root.is_some(), "should find crate root for examples/rust/src");
+            let root = root.unwrap();
+            assert!(root.join("Cargo.toml").exists());
+        }
+    }
+
+    #[test]
+    fn extract_dependencies_section_basic() {
+        let toml = "[package]\nname = \"foo\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\n\n[dev-dependencies]\ncriterion = \"0.5\"\n";
+        let deps = extract_dependencies_section(toml);
+        assert!(deps.contains("regex"), "should include regex dep");
+        assert!(deps.contains("serde_json"), "should include serde_json dep");
+        assert!(!deps.contains("criterion"), "should not include dev-deps");
+        assert!(!deps.contains("[package]"), "should not include package section");
+    }
+
+    #[test]
+    fn extract_dependencies_section_empty() {
+        let toml = "[package]\nname = \"foo\"\n";
+        let deps = extract_dependencies_section(toml);
+        assert!(deps.is_empty(), "should be empty when no [dependencies] section");
+    }
+
+    #[test]
+    fn extract_dependencies_section_inline_table() {
+        let toml = "[package]\nname = \"foo\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n";
+        let deps = extract_dependencies_section(toml);
+        assert!(deps.contains("serde"), "should include inline table dep");
+    }
+
+    #[test]
+    fn generate_cargo_toml_includes_user_deps() {
+        let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
+        let runtime_path = std::path::Path::new("/fake/runtime");
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path);
+        assert!(result.contains("shatter-rust-runtime"), "must include runtime");
+        assert!(result.contains("regex"), "must include forwarded user dep");
+        assert!(result.contains("serde"), "must include serde");
+    }
+
+    // ─── crate-backed integration tests ──────────────────────────────────────
+    //
+    // These tests create a minimal Rust crate in a temp dir, compile it via the
+    // bin_only dispatch harness path, and verify end-to-end execution.  They
+    // require `cargo` to be on PATH; they skip gracefully when it is not.
+    //
+    // Known-answer target: `add(a: i32, b: i32) -> i32`
+    //   add(2, 3) → 5
+    //   add(10, 20) → 30
+    //   add(-1, 1) → 0
+    //
+    // Known-answer target: `double(x: i32) -> i32`
+    //   double(7) → 14
+
+    /// Write a minimal crate (Cargo.toml + src/lib.rs) to `dir` and return the
+    /// path to the source file.  The crate has no external dependencies so
+    /// compilation is fast.
+    fn write_test_crate(dir: &std::path::Path, source: &str) -> PathBuf {
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        let src_file = src_dir.join("lib.rs");
+        std::fs::write(&src_file, source).unwrap();
+        src_file
+    }
+
+    #[test]
+    fn crate_backed_execute_basic() {
+        // Execute `add(2, 3)` from a crate-backed source file.
+        // Verifies: crate-backed file routes to the bin_only harness and returns
+        // the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-basic");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(2), serde_json::json!(3)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(5)),
+                    "add(2, 3) should return 5"
+                );
+            }
+            // cargo not available in this CI environment — skip
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_execute_basic: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_second_call_reuses_cache() {
+        // Execute `add` twice with different inputs via the same CrateHarnessCache.
+        // Verifies: the second call hits the in-memory cache (no recompilation)
+        // and returns the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-cache");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        // First call — slow path: compile and spawn.
+        let first = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(10), serde_json::json!(20)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size_after_first = crate_cache.lock().unwrap().len();
+
+        // Second call with different inputs — must hit the fast path.
+        let second = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(-1), serde_json::json!(1)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size_after_second = crate_cache.lock().unwrap().len();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match (first, second) {
+            (Ok(r1), Ok(r2)) => {
+                assert_eq!(r1.return_value, Some(serde_json::json!(30)), "add(10, 20) should return 30");
+                assert_eq!(r2.return_value, Some(serde_json::json!(0)), "add(-1, 1) should return 0");
+                // The cache should have exactly one entry (same key for both calls).
+                assert_eq!(cache_size_after_first, 1, "one cache entry after first call");
+                assert_eq!(cache_size_after_second, 1, "still one entry after second call (cache hit)");
+            }
+            (Err(ExecuteError::CompilationFailed(msg)), _)
+            | (_, Err(ExecuteError::CompilationFailed(msg)))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})");
+            }
+            (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_multiple_functions_same_binary() {
+        // Execute two different functions (`add` and `double`) that live in the
+        // same crate file.  Verifies: both are served by a single dispatch binary
+        // and each returns the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-multi");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\npub fn double(x: i32) -> i32 { x * 2 }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let add_result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(4), serde_json::json!(6)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let double_result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "double",
+            &[serde_json::json!(7)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size = crate_cache.lock().unwrap().len();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match (add_result, double_result) {
+            (Ok(r1), Ok(r2)) => {
+                assert_eq!(r1.return_value, Some(serde_json::json!(10)), "add(4, 6) should return 10");
+                assert_eq!(r2.return_value, Some(serde_json::json!(14)), "double(7) should return 14");
+                // Both functions share one dispatch binary → one cache entry.
+                assert_eq!(cache_size, 1, "both functions share one crate cache entry");
+            }
+            (Err(ExecuteError::CompilationFailed(msg)), _)
+            | (_, Err(ExecuteError::CompilationFailed(msg)))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})");
+            }
+            (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_nonexistent_function_returns_error() {
+        // Request execution of a function that does not exist in the crate file.
+        // Verifies: returns NonExecutable immediately (no compilation attempted).
+        let dir = std::env::temp_dir().join("shatter-test-crate-notfound");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "nonexistent_fn",
+            &[serde_json::json!(1)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Err(ExecuteError::NonExecutable(msg)) => {
+                assert!(
+                    msg.contains("nonexistent_fn"),
+                    "error should mention the function name, got: {msg}"
+                );
+            }
+            other => panic!("expected NonExecutable error, got: {other:?}"),
+        }
     }
 }
