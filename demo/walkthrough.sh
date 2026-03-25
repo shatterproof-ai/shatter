@@ -15,6 +15,7 @@ DELAY=2
 DRY_RUN=false
 STEP_TIMEOUT=120  # seconds per step; 0 = no limit
 TIMING_DIR=""
+TOTAL_STEP_WALL_MS=0
 
 # Use temporary directories so the walkthrough never pollutes repo-local state
 # and never contends with Cargo's workspace artifact lock (avoids silent stalls
@@ -131,6 +132,32 @@ banner() {
     echo "${DIM}  ${desc}${RESET}"
     echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
+}
+
+now_ms() {
+    if date +%s%3N >/dev/null 2>&1; then
+        date +%s%3N
+    else
+        python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+    fi
+}
+
+format_duration_ms() {
+    python3 - "$1" <<'PY'
+import sys
+
+duration_ms = int(sys.argv[1])
+minutes, remainder = divmod(duration_ms, 60_000)
+seconds = remainder / 1000.0
+
+if minutes > 0:
+    print(f"{minutes}m {seconds:05.2f}s")
+else:
+    print(f"{seconds:.2f}s")
+PY
 }
 
 run_cmd() {
@@ -275,9 +302,15 @@ pause() {
 step() {
     local num="$1" total="$2" title="$3" desc="$4"
     shift 4
+    local step_started_ms step_elapsed_ms
     CURRENT_STEP="$num"
+    step_started_ms="$(now_ms)"
     banner "$num" "$total" "$title" "$desc"
     run_cmd "$@"
+    step_elapsed_ms=$(( $(now_ms) - step_started_ms ))
+    TOTAL_STEP_WALL_MS=$((TOTAL_STEP_WALL_MS + step_elapsed_ms))
+    echo "${DIM}  Wall time: $(format_duration_ms "$step_elapsed_ms")${RESET}"
+    echo ""
     pause
 }
 
@@ -607,6 +640,11 @@ step 55 $TOTAL "Cache Clear" \
 
 # ─── HTML Report Summary ──────────────────────────────────────────────
 echo ""
+echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo "${BOLD}  Walkthrough wall time: $(format_duration_ms "$TOTAL_STEP_WALL_MS")${RESET}"
+echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+
 echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo "${BOLD}  HTML reports written to: ${HTML_REPORT_DIR}/${RESET}"
 if ls "$HTML_REPORT_DIR"/*.html &>/dev/null 2>&1; then
