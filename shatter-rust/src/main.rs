@@ -14,6 +14,11 @@ mod wasm_generator;
 
 use std::io;
 
+/// Process-global mutex used by tests that mutate environment variables.
+/// See lib.rs for the canonical declaration; this mirrors it for the bin test binary.
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn main() {
     let handler = handler::Handler::new(io::stdin().lock(), io::stdout().lock(), io::stderr());
     if let Err(e) = handler.run() {

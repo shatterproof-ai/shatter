@@ -2463,11 +2463,15 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn standalone_target_dir_uses_cache_env() {
         // When SHATTER_HARNESS_CACHE is set, standalone_target_dir returns a path inside it.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         let cache_root = std::env::temp_dir().join("shatter-test-cache-root");
         let cache_str = cache_root.to_string_lossy().into_owned();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
 
         let target = standalone_target_dir();
+        // Restore before assertions so the var is cleared even on panic.
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
         assert!(target.is_some(), "expected Some when SHATTER_HARNESS_CACHE is set");
         let target = target.unwrap();
         assert!(
@@ -2478,13 +2482,11 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             target.ends_with("rust/standalone/target"),
             "target dir should end with rust/standalone/target, got {target:?}"
         );
-
-        // Restore: set to empty so harness_cache_root() returns None
-        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
     }
 
     #[test]
     fn standalone_target_dir_none_when_unset() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
         assert!(standalone_target_dir().is_none());
     }
@@ -2492,22 +2494,24 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn make_request_scratch_uses_scratch_env() {
         // When SHATTER_HARNESS_SCRATCH is set, make_request_scratch returns a path inside it.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         let scratch_root = std::env::temp_dir().join("shatter-test-scratch-root");
         let scratch_str = scratch_root.to_string_lossy().into_owned();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", &scratch_str) };
 
         let scratch = make_request_scratch();
+        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
+
         assert!(
             scratch.starts_with(&scratch_root),
             "scratch dir {scratch:?} should be under scratch root {scratch_str}"
         );
-
-        unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
     }
 
     #[test]
     fn make_request_scratch_fallback_to_temp() {
         // When SHATTER_HARNESS_SCRATCH is empty/unset, make_request_scratch returns a temp-based path.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
         let scratch = make_request_scratch();
         // Should not panic; path should contain "shatter-exec-"
@@ -2519,6 +2523,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
     #[test]
     fn make_request_scratch_unique_per_call() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "") };
         let a = make_request_scratch();
         let b = make_request_scratch();
@@ -2578,5 +2583,234 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
         assert!(result.contains("serde"), "must include serde");
+    }
+
+    // ─── crate-backed integration tests ──────────────────────────────────────
+    //
+    // These tests create a minimal Rust crate in a temp dir, compile it via the
+    // bin_only dispatch harness path, and verify end-to-end execution.  They
+    // require `cargo` to be on PATH; they skip gracefully when it is not.
+    //
+    // Known-answer target: `add(a: i32, b: i32) -> i32`
+    //   add(2, 3) → 5
+    //   add(10, 20) → 30
+    //   add(-1, 1) → 0
+    //
+    // Known-answer target: `double(x: i32) -> i32`
+    //   double(7) → 14
+
+    /// Write a minimal crate (Cargo.toml + src/lib.rs) to `dir` and return the
+    /// path to the source file.  The crate has no external dependencies so
+    /// compilation is fast.
+    fn write_test_crate(dir: &std::path::Path, source: &str) -> PathBuf {
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        let src_file = src_dir.join("lib.rs");
+        std::fs::write(&src_file, source).unwrap();
+        src_file
+    }
+
+    #[test]
+    fn crate_backed_execute_basic() {
+        // Execute `add(2, 3)` from a crate-backed source file.
+        // Verifies: crate-backed file routes to the bin_only harness and returns
+        // the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-basic");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(2), serde_json::json!(3)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(5)),
+                    "add(2, 3) should return 5"
+                );
+            }
+            // cargo not available in this CI environment — skip
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_execute_basic: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_second_call_reuses_cache() {
+        // Execute `add` twice with different inputs via the same CrateHarnessCache.
+        // Verifies: the second call hits the in-memory cache (no recompilation)
+        // and returns the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-cache");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        // First call — slow path: compile and spawn.
+        let first = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(10), serde_json::json!(20)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size_after_first = crate_cache.lock().unwrap().len();
+
+        // Second call with different inputs — must hit the fast path.
+        let second = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(-1), serde_json::json!(1)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size_after_second = crate_cache.lock().unwrap().len();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match (first, second) {
+            (Ok(r1), Ok(r2)) => {
+                assert_eq!(r1.return_value, Some(serde_json::json!(30)), "add(10, 20) should return 30");
+                assert_eq!(r2.return_value, Some(serde_json::json!(0)), "add(-1, 1) should return 0");
+                // The cache should have exactly one entry (same key for both calls).
+                assert_eq!(cache_size_after_first, 1, "one cache entry after first call");
+                assert_eq!(cache_size_after_second, 1, "still one entry after second call (cache hit)");
+            }
+            (Err(ExecuteError::CompilationFailed(msg)), _)
+            | (_, Err(ExecuteError::CompilationFailed(msg)))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})");
+            }
+            (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_multiple_functions_same_binary() {
+        // Execute two different functions (`add` and `double`) that live in the
+        // same crate file.  Verifies: both are served by a single dispatch binary
+        // and each returns the correct result.
+        let dir = std::env::temp_dir().join("shatter-test-crate-multi");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\npub fn double(x: i32) -> i32 { x * 2 }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let add_result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "add",
+            &[serde_json::json!(4), serde_json::json!(6)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let double_result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "double",
+            &[serde_json::json!(7)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let cache_size = crate_cache.lock().unwrap().len();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match (add_result, double_result) {
+            (Ok(r1), Ok(r2)) => {
+                assert_eq!(r1.return_value, Some(serde_json::json!(10)), "add(4, 6) should return 10");
+                assert_eq!(r2.return_value, Some(serde_json::json!(14)), "double(7) should return 14");
+                // Both functions share one dispatch binary → one cache entry.
+                assert_eq!(cache_size, 1, "both functions share one crate cache entry");
+            }
+            (Err(ExecuteError::CompilationFailed(msg)), _)
+            | (_, Err(ExecuteError::CompilationFailed(msg)))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})");
+            }
+            (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_nonexistent_function_returns_error() {
+        // Request execution of a function that does not exist in the crate file.
+        // Verifies: returns NonExecutable immediately (no compilation attempted).
+        let dir = std::env::temp_dir().join("shatter-test-crate-notfound");
+        let src_file = write_test_crate(
+            &dir,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "nonexistent_fn",
+            &[serde_json::json!(1)],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Err(ExecuteError::NonExecutable(msg)) => {
+                assert!(
+                    msg.contains("nonexistent_fn"),
+                    "error should mention the function name, got: {msg}"
+                );
+            }
+            other => panic!("expected NonExecutable error, got: {other:?}"),
+        }
     }
 }

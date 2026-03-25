@@ -1479,12 +1479,14 @@ mod tests {
 
     #[test]
     fn exec_timeout_default_is_5000ms() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
         assert_eq!(exec_timeout_from_env(), DEFAULT_EXEC_TIMEOUT_MS);
     }
 
     #[test]
     fn exec_timeout_reads_env_var() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "3") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
@@ -1493,6 +1495,7 @@ mod tests {
 
     #[test]
     fn exec_timeout_reads_fractional_seconds() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "2.5") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
@@ -1501,6 +1504,7 @@ mod tests {
 
     #[test]
     fn exec_timeout_ignores_invalid() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "not-a-number") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
@@ -1509,6 +1513,7 @@ mod tests {
 
     #[test]
     fn exec_timeout_ignores_zero() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_EXEC_TIMEOUT", "0") };
         let result = exec_timeout_from_env();
         unsafe { std::env::remove_var("SHATTER_EXEC_TIMEOUT") };
@@ -1517,6 +1522,7 @@ mod tests {
 
     #[test]
     fn harness_cache_from_env_reads_var() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "/tmp/cache") };
         let result = harness_cache_from_env();
         unsafe { std::env::remove_var("SHATTER_HARNESS_CACHE") };
@@ -1525,6 +1531,7 @@ mod tests {
 
     #[test]
     fn harness_cache_from_env_empty_returns_none() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
         let result = harness_cache_from_env();
         unsafe { std::env::remove_var("SHATTER_HARNESS_CACHE") };
@@ -1533,6 +1540,7 @@ mod tests {
 
     #[test]
     fn harness_scratch_from_env_reads_var() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_SCRATCH", "/tmp/scratch") };
         let result = harness_scratch_from_env();
         unsafe { std::env::remove_var("SHATTER_HARNESS_SCRATCH") };
@@ -1541,6 +1549,7 @@ mod tests {
 
     #[test]
     fn harness_scratch_from_env_unset_returns_none() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("SHATTER_HARNESS_SCRATCH") };
         let result = harness_scratch_from_env();
         assert_eq!(result, None);
