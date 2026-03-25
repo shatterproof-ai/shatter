@@ -170,6 +170,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -254,6 +255,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -328,6 +330,7 @@ async fn concolic_safedivide_discovers_error_paths() {
         vec![],
         &analysis.params,
         &config,
+        None,
         None,
     )
     .await
@@ -413,6 +416,7 @@ async fn concolic_validateemail_discovers_string_paths() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -496,6 +500,7 @@ async fn concolic_validateemail_with_literal_seeds() {
         vec![], // no user-provided inputs
         &analysis.params,
         &config,
+        None,
         None,
     )
     .await
@@ -615,6 +620,7 @@ async fn setup_session_context_flows_to_execute() {
                 }],
             }),
             capture: true,
+            prepare_id: None,
         })
         .await
         .expect("execute with setup context failed");
@@ -1044,6 +1050,7 @@ async fn orchestrator_explore_with_setup_context() {
         &analysis.params,
         &config,
         Some(setup_ctx),
+        None,
     )
     .await
     .expect("orchestrator explore with setup context failed");
@@ -1453,6 +1460,7 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1538,6 +1546,7 @@ async fn mcdc_compound_or_discovers_all_branches() {
         vec![],
         &analysis.params,
         &config,
+        None,
         None,
     )
     .await
