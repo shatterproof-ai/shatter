@@ -754,6 +754,39 @@ pub async fn explore_function(
     let mut iterations: u32 = 0;
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
+    // --- Prepare lifecycle ---
+    // When the frontend supports `prepare`, pre-build the harness once so all
+    // subsequent Execute calls can skip the compile phase.
+    let prepare_id: Option<String> = if frontend_supports(&config.capabilities, "prepare") {
+        match frontend
+            .send(ProtoCommand::Prepare {
+                file: config.file.clone(),
+                function: analysis.name.clone(),
+                mocks: config.mocks.clone(),
+                project_root: config.project_root.clone(),
+            })
+            .instrument(tracing::info_span!("explore.prepare"))
+            .await
+        {
+            Ok(resp) => match resp.result {
+                crate::protocol::ResponseResult::Prepare { prepare_id } => {
+                    log::debug!("prepare succeeded: {prepare_id}");
+                    Some(prepare_id)
+                }
+                other => {
+                    log::debug!("prepare returned unexpected response: {other:?}");
+                    None
+                }
+            },
+            Err(e) => {
+                log::debug!("prepare failed, falling back to per-execute build: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Per-dependency LiveFirst state: track whether each external dep is
     // reachable (live calls pass through) or unavailable (fall back to
     // autonomous mocks). All deps start as Untried.
@@ -784,6 +817,7 @@ pub async fn explore_function(
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
+                        prepare_id: prepare_id.clone(),
                     })
                     .await?;
 
@@ -794,6 +828,7 @@ pub async fn explore_function(
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
+                        prepare_id: prepare_id.clone(),
                     })
                     .await?;
 
@@ -1004,6 +1039,7 @@ pub async fn explore_function(
             &config.loop_buckets,
             &mut obs_state,
             config.capture_side_effects,
+            prepare_id.as_deref(),
         )
         .instrument(tracing::info_span!("explore.execute_round_trip"))
         .await
@@ -1136,6 +1172,7 @@ pub async fn explore_function(
                         mocks: effective_mocks.clone(),
                         setup_context: None,
                         capture: true,
+                        prepare_id: prepare_id.clone(),
                     })
                     .instrument(tracing::info_span!("shrink.execute_round_trip"))
                     .await;
@@ -1170,6 +1207,7 @@ pub async fn explore_function(
                             mocks: effective_mocks.clone(),
                             setup_context: None,
                             capture: false,
+                            prepare_id: prepare_id.clone(),
                         })
                         .instrument(tracing::info_span!("shrink.execute_round_trip"))
                         .await;
@@ -1204,6 +1242,7 @@ pub async fn explore_function(
                                 mocks: effective_mocks.clone(),
                                 setup_context: None,
                                 capture: false,
+                                prepare_id: prepare_id.clone(),
                             })
                             .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;

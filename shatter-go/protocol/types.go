@@ -73,6 +73,7 @@ type Request struct {
 
 	// Execute fields
 	Inputs       []json.RawMessage  `json:"inputs,omitempty"`
+	PrepareID    *string            `json:"prepare_id,omitempty"`
 	SetupContext *SetupContextStack `json:"setup_context,omitempty"`
 	// Capture controls whether side effects (console output, file writes, etc.) are
 	// collected. Nil or true means capture; false means skip for lower overhead.
@@ -124,6 +125,9 @@ type Response struct {
 	ScopeEvents            []json.RawMessage      `json:"scope_events,omitempty"`
 	CaptureTruncation      *TruncationInfo        `json:"capture_truncation,omitempty"`
 	Performance            *PerfMetrics           `json:"performance,omitempty"`
+
+	// Prepare
+	PrepareID string `json:"prepare_id,omitempty"`
 
 	// Setup
 	SetupContext *json.RawMessage `json:"setup_context,omitempty"`

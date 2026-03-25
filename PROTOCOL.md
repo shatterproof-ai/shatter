@@ -163,6 +163,49 @@ Rewrite a function's source to insert symbolic tracking at every branch point an
 }
 ```
 
+### `prepare` — Pre-Build Harness Artifacts
+
+Pre-compile the instrumented harness for a function once and return an opaque `prepare_id`. Subsequent `execute` commands can pass this ID to skip the compile phase, significantly reducing repeated-execute overhead during concolic exploration.
+
+**Lifecycle contract:**
+1. Call `prepare` before the exploration loop to get a `prepare_id`.
+2. Pass `prepare_id` in every `execute` call for that function/mocks combination.
+3. Call `teardown` (level: `function`) when done to free resources.
+
+**Frontend support:** TypeScript and Go implement `prepare`. Rust returns `not_supported` (execute is partial — see `rust-prepare-not-supported` in `protocol/parity-matrix.yaml`). Core checks capabilities before sending.
+
+**Request:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 3,
+  "command": "prepare",
+  "file": "src/shipping.ts",
+  "function": "calculateShipping",
+  "mocks": []
+}
+```
+
+Fields: `file` (required), `function` (required), `mocks` (required, must match mocks used in subsequent execute calls), `project_root` (optional).
+
+**Response:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 3,
+  "status": "prepare",
+  "prepare_id": "a1b2c3d4e5f6a7b8"
+}
+```
+
+The `prepare_id` is a 16-hex-character opaque handle. Pass it in `execute` requests as `"prepare_id": "<id>"`. When a frontend doesn't support `prepare`, pass `prepare_id: null` and the frontend falls back to per-execute compilation.
+
+**Error response:** `{ "status": "error", "code": "not_supported", ... }` for Rust and any frontend that doesn't implement prepare.
+
+---
+
 ### `execute` — Execute with Specific Inputs
 
 Run an instrumented function with specific inputs and mock configurations, collecting branch decisions, constraints, and performance metrics.

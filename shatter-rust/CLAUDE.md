@@ -25,6 +25,19 @@ When execute is fully implemented, `side_effects` in responses must use the cano
 
 See `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` for tracking.
 
+## Prepare Parity Contract
+
+Rust does **not** implement `prepare`. The handler returns `not_supported` and `prepare` is not listed in capabilities.
+
+| Aspect | Detail |
+|---|---|
+| Handler | `handle_prepare()` in `src/handler.rs` — always returns `error: not_supported` |
+| Advertised | No — not in capabilities list |
+| Reason | Execute is partial (see `rust-execute-partial` in parity-matrix.yaml) |
+| Tracking | `rust-prepare-not-supported` in `protocol/parity-matrix.yaml` |
+
+When execute is fully implemented, implement `prepare` and add `"prepare"` to capabilities.
+
 ## Timeout Contract
 
 Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

@@ -47,6 +47,20 @@ Console capture applies only when `capture: true` (default). Side effects list i
 
 See `protocol/parity-matrix.yaml` `side_effect_capabilities` for the cross-frontend matrix.
 
+## Prepare Parity Contract
+
+TypeScript implements the `prepare` command. It pre-warms the compiled script cache so subsequent execute calls skip TypeScript → JS transpilation.
+
+| Aspect | Detail |
+|---|---|
+| Handler | `"prepare"` case in `src/handlers.ts` |
+| Advertised | Yes — `"prepare"` in `SUPPORTED_CAPABILITIES` |
+| Cache key | `resolvedFile:function` (via `instrumentedSources` map) |
+| prepare_id | SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars |
+| Cache backing | `compiledScriptCache` in `src/executor.ts`, pre-warmed via `warmCompiledScriptCache()` |
+| Lifecycle | `preparedKeys.clear()` on teardown, shutdown, and `clearInstrumentedSources` |
+| Prerequisite | `instrument` must be called before `prepare` (source must be in `instrumentedSources`) |
+
 ## Timeout Contract
 
 Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

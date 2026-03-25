@@ -1082,3 +1082,422 @@ func rewritePackageToMain(dir string) error {
 	}
 	return nil
 }
+
+// ─── Prepare/Execute lifecycle ───────────────────────────────────────────────
+
+// PreparedHarness holds a pre-compiled binary and its metadata.
+// The binary reads inputs from shatter_inputs.json at runtime, allowing
+// repeated execution without recompilation.
+type PreparedHarness struct {
+	ArtifactDir string
+	BinaryPath  string
+	Params      []paramInfo
+	ReturnInfo  returnTypeInfo
+	GlobalVars  []globalVarInfo
+	HasMocks    bool
+}
+
+// Cleanup removes the artifact directory created by PrepareHarness.
+func (h *PreparedHarness) Cleanup() {
+	os.RemoveAll(h.ArtifactDir)
+}
+
+// PrepareHarness analyzes, instruments, and compiles a harness for the given
+// function without running it. The caller must call Cleanup() when done.
+func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collector, mocks []MockConfig) (*PreparedHarness, error) {
+	finishAnalyze := timing.Start("prepare.analyze")
+	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
+	if err != nil {
+		finishAnalyze()
+		return nil, fmt.Errorf("analyzing function: %w", err)
+	}
+	globalVars, err := analyzeGlobalVars(sourcePath)
+	finishAnalyze()
+	if err != nil {
+		globalVars = nil
+	}
+
+	finishInstrument := timing.Start("prepare.instrument")
+	outputDir, err := InstrumentFileWithTiming(sourcePath, &funcName, nil, timing)
+	finishInstrument()
+	if err != nil {
+		return nil, fmt.Errorf("instrumenting: %w", err)
+	}
+	// Do NOT defer RemoveAll — the artifact dir persists until Cleanup().
+
+	finishRewrite := timing.Start("prepare.rewrite_package")
+	if err := rewritePackageToMain(outputDir); err != nil {
+		finishRewrite()
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("rewriting package: %w", err)
+	}
+	finishRewrite()
+
+	hasMocks := len(mocks) > 0
+	if hasMocks {
+		// Use relative path — binary runs with Dir = outputDir.
+		mockSource := generateMockFile(mocks, "shatter_external_calls.json")
+		mockFilePath := filepath.Join(outputDir, "shatter_mocks.go")
+		finishWriteMocks := timing.Start("prepare.write_mocks")
+		if err := os.WriteFile(mockFilePath, []byte(mockSource), 0644); err != nil {
+			finishWriteMocks()
+			os.RemoveAll(outputDir)
+			return nil, fmt.Errorf("writing shatter_mocks.go: %w", err)
+		}
+		finishWriteMocks()
+	}
+
+	finishHarness := timing.Start("prepare.generate_harness")
+	harness, err := generateHarnessTemplate(funcName, params, returnInfo, globalVars, hasMocks)
+	finishHarness()
+	if err != nil {
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("generating harness template: %w", err)
+	}
+
+	mainPath := filepath.Join(outputDir, "main.go")
+	finishWriteHarness := timing.Start("prepare.write_harness")
+	if err := os.WriteFile(mainPath, []byte(harness), 0644); err != nil {
+		finishWriteHarness()
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("writing main.go: %w", err)
+	}
+	finishWriteHarness()
+
+	binaryName := "shatter_run"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
+
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), buildTimeout())
+	defer buildCancel()
+
+	finishBuild := timing.Start("prepare.build")
+	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
+	buildCmd.Dir = outputDir
+	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
+		finishBuild()
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("build failed: %w\n%s", err, buildOut)
+	}
+	finishBuild()
+
+	return &PreparedHarness{
+		ArtifactDir: outputDir,
+		BinaryPath:  binaryPath,
+		Params:      params,
+		ReturnInfo:  returnInfo,
+		GlobalVars:  globalVars,
+		HasMocks:    hasMocks,
+	}, nil
+}
+
+// ExecuteWithPreparedHarness runs the pre-compiled harness with the given inputs.
+func ExecuteWithPreparedHarness(h *PreparedHarness, inputs []json.RawMessage, timing *frontendtiming.Collector, capture bool) (*ExecuteResult, error) {
+	if len(inputs) != len(h.Params) {
+		return nil, fmt.Errorf("expected %d inputs, got %d", len(h.Params), len(inputs))
+	}
+
+	finishWriteInputs := timing.Start("execute.write_inputs")
+	inputsData, err := json.Marshal(inputs)
+	if err != nil {
+		finishWriteInputs()
+		return nil, fmt.Errorf("marshaling inputs: %w", err)
+	}
+	inputsPath := filepath.Join(h.ArtifactDir, "shatter_inputs.json")
+	if err := os.WriteFile(inputsPath, inputsData, 0644); err != nil {
+		finishWriteInputs()
+		return nil, fmt.Errorf("writing shatter_inputs.json: %w", err)
+	}
+	finishWriteInputs()
+
+	start := time.Now()
+	execDur := execTimeout()
+	runCtx, runCancel := context.WithTimeout(context.Background(), execDur)
+	defer runCancel()
+
+	finishRun := timing.Start("execute.run")
+	runCmd := exec.CommandContext(runCtx, h.BinaryPath)
+	runCmd.Dir = h.ArtifactDir
+	var stdoutBuf, stderrBuf strings.Builder
+	runCmd.Stdout = &stdoutBuf
+	runCmd.Stderr = &stderrBuf
+	runErr := runCmd.Run()
+	finishRun()
+	wallTime := time.Since(start)
+
+	result := &ExecuteResult{
+		BranchPath:    []BranchDecision{},
+		LinesExecuted: []int{},
+		SideEffects:   []SideEffect{},
+		ScopeEvents:   []json.RawMessage{},
+		Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+	}
+
+	if capture {
+		if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
+			result.SideEffects = append(result.SideEffects, SideEffect{
+				Kind: "console_output", Level: "log", Message: s,
+			})
+		}
+		if s := strings.TrimSpace(stderrBuf.String()); s != "" {
+			result.SideEffects = append(result.SideEffects, SideEffect{
+				Kind: "console_output", Level: "error", Message: s,
+			})
+		}
+	}
+
+	resultsPath := filepath.Join(h.ArtifactDir, "shatter_results.json")
+	finishParseResults := timing.Start("execute.parse_results")
+	if data, err := os.ReadFile(resultsPath); err == nil {
+		var recorded struct {
+			LinesExecuted []int             `json:"lines_executed"`
+			BranchPath    []BranchDecision  `json:"branch_path"`
+			ScopeEvents   []json.RawMessage `json:"scope_events"`
+		}
+		if err := json.Unmarshal(data, &recorded); err == nil {
+			result.LinesExecuted = recorded.LinesExecuted
+			result.BranchPath = recorded.BranchPath
+			result.ScopeEvents = recorded.ScopeEvents
+		}
+	}
+	finishParseResults()
+
+	returnPath := filepath.Join(h.ArtifactDir, "shatter_return.json")
+	finishParseReturn := timing.Start("execute.parse_return")
+	if data, err := os.ReadFile(returnPath); err == nil {
+		result.ReturnValue = json.RawMessage(data)
+	}
+	finishParseReturn()
+
+	if h.HasMocks {
+		mocksPath := filepath.Join(h.ArtifactDir, "shatter_external_calls.json")
+		finishParseMockCalls := timing.Start("execute.parse_mock_calls")
+		if data, err := os.ReadFile(mocksPath); err == nil {
+			var calls []ExternalCall
+			if err := json.Unmarshal(data, &calls); err == nil {
+				result.ExternalCalls = calls
+			}
+		}
+		finishParseMockCalls()
+	}
+
+	perfPath := filepath.Join(h.ArtifactDir, "shatter_perf.json")
+	finishParsePerf := timing.Start("execute.parse_perf")
+	if data, err := os.ReadFile(perfPath); err == nil {
+		var perf struct {
+			CPUTimeUs          int `json:"cpu_time_us"`
+			HeapUsedBytes      int `json:"heap_used_bytes"`
+			HeapAllocatedBytes int `json:"heap_allocated_bytes"`
+		}
+		if err := json.Unmarshal(data, &perf); err == nil {
+			result.Performance.CPUTimeUs = perf.CPUTimeUs
+			result.Performance.HeapUsedBytes = perf.HeapUsedBytes
+			result.Performance.HeapAllocatedBytes = perf.HeapAllocatedBytes
+		}
+	}
+	finishParsePerf()
+
+	if len(h.GlobalVars) > 0 {
+		globalsPath := filepath.Join(h.ArtifactDir, "shatter_globals.json")
+		if data, err := os.ReadFile(globalsPath); err == nil {
+			var changes []struct {
+				Kind     string          `json:"kind"`
+				Variable string          `json:"variable"`
+				Before   json.RawMessage `json:"before"`
+				After    json.RawMessage `json:"after"`
+			}
+			if err := json.Unmarshal(data, &changes); err == nil {
+				for _, c := range changes {
+					before := json.RawMessage(c.Before)
+					after := json.RawMessage(c.After)
+					result.SideEffects = append(result.SideEffects, SideEffect{
+						Kind:     "global_state_change",
+						Variable: c.Variable,
+						Before:   &before,
+						After:    &after,
+					})
+				}
+			}
+		}
+	}
+
+	if runErr != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			cat := "infrastructure"
+			result.ThrownError = &ErrorInfo{
+				ErrorType:     "timeout",
+				Message:       fmt.Sprintf("execution timed out after %s", execDur),
+				ErrorCategory: &cat,
+			}
+		} else {
+			cat := "runtime"
+			result.ThrownError = &ErrorInfo{
+				ErrorType:     "runtime_error",
+				Message:       runErr.Error(),
+				Stack:         stderrBuf.String(),
+				ErrorCategory: &cat,
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// generateHarnessTemplate creates a main.go that reads inputs from
+// shatter_inputs.json at runtime, enabling binary reuse across executions.
+// Output files use relative paths since the binary runs with Dir = ArtifactDir.
+func generateHarnessTemplate(funcName string, params []paramInfo, retInfo returnTypeInfo, globalVars []globalVarInfo, hasMocks bool) (string, error) {
+	var b strings.Builder
+
+	b.WriteString("package main\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"encoding/json\"\n")
+	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"os\"\n")
+	b.WriteString("\t\"runtime\"\n")
+	b.WriteString("\t\"time\"\n")
+	b.WriteString(")\n\n")
+
+	b.WriteString("func main() {\n")
+
+	if hasMocks {
+		b.WriteString("\tdefer shatterDumpMockCalls()\n\n")
+	}
+	b.WriteString("\tvar memBefore runtime.MemStats\n")
+	b.WriteString("\truntime.ReadMemStats(&memBefore)\n")
+	b.WriteString("\tcpuStart := time.Now()\n\n")
+
+	// Read inputs from shatter_inputs.json at runtime.
+	if len(params) > 0 {
+		b.WriteString("\t_shatterRaw, _shatterReadErr := os.ReadFile(\"shatter_inputs.json\")\n")
+		b.WriteString("\tif _shatterReadErr != nil {\n")
+		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to read shatter_inputs.json: %v\\n\", _shatterReadErr)\n")
+		b.WriteString("\t\tos.Exit(1)\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tvar _shatterInputs []json.RawMessage\n")
+		b.WriteString("\tif _shatterParseErr := json.Unmarshal(_shatterRaw, &_shatterInputs); _shatterParseErr != nil {\n")
+		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to parse shatter_inputs.json: %v\\n\", _shatterParseErr)\n")
+		b.WriteString("\t\tos.Exit(1)\n")
+		b.WriteString("\t}\n\n")
+
+		for i, p := range params {
+			b.WriteString(fmt.Sprintf("\tvar %s %s\n", p.Name, p.GoType))
+			b.WriteString(fmt.Sprintf("\tif _unmarshalErr%d := json.Unmarshal(_shatterInputs[%d], &%s); _unmarshalErr%d != nil {\n", i, i, p.Name, i))
+			b.WriteString(fmt.Sprintf("\t\tfmt.Fprintf(os.Stderr, \"failed to unmarshal input %s: %%v\\n\", _unmarshalErr%d)\n", p.Name, i))
+			b.WriteString("\t\tos.Exit(1)\n")
+			b.WriteString("\t}\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Snapshot exported global variables before the function call.
+	if len(globalVars) > 0 {
+		for _, v := range globalVars {
+			b.WriteString(fmt.Sprintf("\t_shatter_before_%s, _shatter_ok_%s := func() (json.RawMessage, bool) {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t_b, _err := json.Marshal(%s)\n", v.Name))
+			b.WriteString("\t\treturn _b, _err == nil\n")
+			b.WriteString("\t}()\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Call the function.
+	argList := make([]string, len(params))
+	for i, p := range params {
+		argList[i] = p.Name
+	}
+	callExpr := fmt.Sprintf("%s(%s)", funcName, strings.Join(argList, ", "))
+
+	if retInfo.Count == 0 {
+		b.WriteString(fmt.Sprintf("\t%s\n", callExpr))
+	} else if retInfo.Count == 1 {
+		b.WriteString(fmt.Sprintf("\tresult := %s\n", callExpr))
+	} else {
+		retVars := make([]string, retInfo.Count)
+		for i := range retInfo.Count {
+			if i == retInfo.Count-1 && retInfo.HasErr {
+				retVars[i] = "retErr"
+			} else {
+				retVars[i] = fmt.Sprintf("ret%d", i)
+			}
+		}
+		b.WriteString(fmt.Sprintf("\t%s := %s\n", strings.Join(retVars, ", "), callExpr))
+
+		if retInfo.HasErr {
+			b.WriteString("\tif retErr != nil {\n")
+			b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"function returned error: %v\\n\", retErr)\n")
+			b.WriteString("\t}\n")
+		}
+
+		if retInfo.Count == 1 || (retInfo.Count == 2 && retInfo.HasErr) {
+			b.WriteString(fmt.Sprintf("\tresult := ret0\n"))
+		} else {
+			nonErrVars := retVars
+			if retInfo.HasErr {
+				nonErrVars = retVars[:len(retVars)-1]
+			}
+			ifaceVars := make([]string, len(nonErrVars))
+			for i, v := range nonErrVars {
+				ifaceVars[i] = fmt.Sprintf("any(%s)", v)
+			}
+			b.WriteString(fmt.Sprintf("\tresult := []any{%s}\n", strings.Join(ifaceVars, ", ")))
+		}
+	}
+
+	b.WriteString("\n")
+
+	// Compare global variables after the call and write global_state_change entries.
+	if len(globalVars) > 0 {
+		b.WriteString("\ttype _shatterGlobalChange struct {\n")
+		b.WriteString("\t\tKind     string          `json:\"kind\"`\n")
+		b.WriteString("\t\tVariable string          `json:\"variable\"`\n")
+		b.WriteString("\t\tBefore   json.RawMessage `json:\"before\"`\n")
+		b.WriteString("\t\tAfter    json.RawMessage `json:\"after\"`\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tvar _shatterGlobals []_shatterGlobalChange\n")
+		for _, v := range globalVars {
+			b.WriteString(fmt.Sprintf("\tif _shatter_ok_%s {\n", v.Name))
+			b.WriteString(fmt.Sprintf("\t\tif _after_%s, _err := json.Marshal(%s); _err == nil {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t\tif string(_after_%s) != string(_shatter_before_%s) {\n", v.Name, v.Name))
+			b.WriteString(fmt.Sprintf("\t\t\t\t_shatterGlobals = append(_shatterGlobals, _shatterGlobalChange{Kind: \"global_state_change\", Variable: %q, Before: _shatter_before_%s, After: _after_%s})\n", v.Name, v.Name, v.Name))
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+		}
+		b.WriteString(fmt.Sprintf("\tif _gd, _err := json.Marshal(_shatterGlobals); _err == nil {\n"))
+		b.WriteString("\t\tos.WriteFile(\"shatter_globals.json\", _gd, 0644) //nolint:errcheck\n")
+		b.WriteString("\t}\n\n")
+	}
+
+	// Dump shatter recording results.
+	b.WriteString("\tif err := __shatter_dump_results(\"shatter_results.json\"); err != nil {\n")
+	b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to dump results: %v\\n\", err)\n")
+	b.WriteString("\t}\n")
+
+	// Write return value as JSON.
+	if retInfo.Count > 0 {
+		b.WriteString("\n\treturnData, err := json.Marshal(result)\n")
+		b.WriteString("\tif err != nil {\n")
+		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to marshal return: %v\\n\", err)\n")
+		b.WriteString("\t} else {\n")
+		b.WriteString("\t\tos.WriteFile(\"shatter_return.json\", returnData, 0644) //nolint:errcheck\n")
+		b.WriteString("\t}\n")
+	}
+
+	// Write performance metrics.
+	b.WriteString("\n\tcpuElapsed := time.Since(cpuStart)\n")
+	b.WriteString("\tvar memAfter runtime.MemStats\n")
+	b.WriteString("\truntime.ReadMemStats(&memAfter)\n")
+	b.WriteString("\tperfData, _ := json.Marshal(map[string]any{\n")
+	b.WriteString("\t\t\"cpu_time_us\": cpuElapsed.Microseconds(),\n")
+	b.WriteString("\t\t\"heap_used_bytes\": memAfter.HeapInuse - memBefore.HeapInuse,\n")
+	b.WriteString("\t\t\"heap_allocated_bytes\": memAfter.TotalAlloc - memBefore.TotalAlloc,\n")
+	b.WriteString("\t})\n")
+	b.WriteString("\tos.WriteFile(\"shatter_perf.json\", perfData, 0644) //nolint:errcheck\n")
+
+	b.WriteString("}\n")
+
+	return b.String(), nil
+}

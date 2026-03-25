@@ -366,6 +366,9 @@ pub struct Request {
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
     pub mocks: Vec<serde_json::Value>,
+    /// Opaque handle from a prior prepare command.
+    #[serde(default)]
+    pub prepare_id: Option<String>,
     /// Stack of active setup contexts from enclosing Setup commands, if any.
     #[allow(dead_code)] // carried on Execute requests; handler will forward when execute passes context
     #[serde(default)]
@@ -429,6 +432,10 @@ pub struct Response {
     pub generator_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipe: Option<serde_json::Value>,
+
+    // Prepare fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_id: Option<String>,
 
     // Instrument fields
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -516,6 +523,7 @@ impl Response {
             path_constraints: None,
             side_effects: None,
             performance: None,
+            prepare_id: None,
             code: None,
             message: None,
         }

@@ -18,7 +18,7 @@
     },
     "command": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "execute", "setup", "teardown", "generate", "shutdown"],
+      "enum": ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown", "generate", "shutdown"],
       "description": "The command to execute."
     }
   },
@@ -26,6 +26,7 @@
     { "$ref": "#/$defs/handshake_request" },
     { "$ref": "#/$defs/analyze_request" },
     { "$ref": "#/$defs/instrument_request" },
+    { "$ref": "#/$defs/prepare_request" },
     { "$ref": "#/$defs/execute_request" },
     { "$ref": "#/$defs/setup_request" },
     { "$ref": "#/$defs/teardown_request" },
@@ -88,6 +89,30 @@
       },
       "required": ["command", "file", "function", "mocks"]
     },
+    "prepare_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "prepare" },
+        "file": {
+          "type": "string",
+          "description": "Path to the source file."
+        },
+        "function": {
+          "type": "string",
+          "description": "Name of the function to prepare."
+        },
+        "mocks": {
+          "type": "array",
+          "items": { "$ref": "mock-config.schema.json" },
+          "description": "Mock configurations for external dependencies."
+        },
+        "project_root": {
+          "type": ["string", "null"],
+          "description": "Path to the detected project root directory."
+        }
+      },
+      "required": ["command", "file", "function", "mocks"]
+    },
     "execute_request": {
       "type": "object",
       "properties": {
@@ -104,6 +129,10 @@
           "type": "array",
           "items": { "$ref": "mock-config.schema.json" },
           "description": "Mock configurations for external dependencies."
+        },
+        "prepare_id": {
+          "type": "string",
+          "description": "Opaque handle from a prior prepare call. When present, reuse cached build artifacts."
         },
         "capture": {
           "type": "boolean",

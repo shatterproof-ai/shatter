@@ -411,6 +411,116 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 	}
 }
 
+func TestPrepareWithMissingFileReturnsError(t *testing.T) {
+	resp := sendRecv(t, reqJSON(3, "prepare", `"file":"/nonexistent.go","function":"F","mocks":[]`))
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrFileNotFound {
+		t.Errorf("code = %q, want file_not_found", resp.Code)
+	}
+}
+
+func TestPrepareWithoutFunctionReturnsError(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc F(x int) int { return x }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	resp := sendRecv(t, reqJSON(3, "prepare", fmt.Sprintf(`"file":"%s","mocks":[]`, tmp)))
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrInvalidRequest {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+}
+
+func TestPrepareWithValidFileReturnsSuccess(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	resp := sendRecv(t, reqJSON(3, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp)))
+	if resp.Status != "prepare" {
+		t.Fatalf("status = %q, want prepare (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.PrepareID == "" {
+		t.Error("prepare_id should be non-empty")
+	}
+	if len(resp.PrepareID) != 16 {
+		t.Errorf("prepare_id length = %d, want 16", len(resp.PrepareID))
+	}
+}
+
+func TestPrepareIsIdempotent(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	prepReq := reqJSON(3, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	r1 := sendRecv(t, prepReq)
+	r2 := sendRecv(t, prepReq)
+	if r1.Status != "prepare" || r2.Status != "prepare" {
+		t.Fatalf("expected both prepare responses, got %q and %q", r1.Status, r2.Status)
+	}
+	if r1.PrepareID != r2.PrepareID {
+		t.Errorf("prepare_id should be deterministic: %q != %q", r1.PrepareID, r2.PrepareID)
+	}
+}
+
+func TestPrepareAndExecuteSucceeds(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	prepReq := reqJSON(3, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	execReq := reqJSON(4, "execute", fmt.Sprintf(`"file":"%s","function":"add","inputs":[3,4],"mocks":[]`, tmp))
+
+	responses := conversation(t, prepReq, execReq)
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+
+	prepResp := responses[0]
+	if prepResp.Status != "prepare" {
+		t.Fatalf("prepare status = %q, want prepare (message: %s)", prepResp.Status, prepResp.Message)
+	}
+	prepareID := prepResp.PrepareID
+
+	// Re-run using conversation with prepare_id in the execute request.
+	execWithIDReq := reqJSON(5, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[3,4],"mocks":[],"prepare_id":%q`,
+		tmp, prepareID,
+	))
+	responses2 := conversation(t, prepReq, execWithIDReq)
+	if len(responses2) != 2 {
+		t.Fatalf("expected 2 responses (with prepare_id), got %d", len(responses2))
+	}
+	execResp := responses2[1]
+	if execResp.Status != "execute" {
+		t.Fatalf("execute status = %q, want execute (message: %s)", execResp.Status, execResp.Message)
+	}
+	_ = execReq // suppress unused warning
+}
+
 func TestExecuteWithoutFileReturnsError(t *testing.T) {
 	resp := sendRecv(t, reqJSON(4, "execute", `"function":"F","inputs":[],"mocks":[]`))
 	if resp.Status != "error" {

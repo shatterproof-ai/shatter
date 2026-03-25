@@ -51,6 +51,18 @@ commands:
       go: implemented
       rust: implemented
 
+  prepare:
+    status: optional
+    notes: >
+      TypeScript and Go implement prepare (pre-build harness once, reuse binary/script
+      across execute calls). Rust returns not_supported because execute is partial
+      (see allowed_divergences: rust-prepare-not-supported). Core checks capabilities
+      before sending.
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: not_implemented
+
   execute:
     status: required
     notes: >
@@ -530,6 +542,16 @@ allowed_divergences:
     resolution: >
       Expand the Rust executor to handle all input types that TS/Go handle,
       removing the NonExecutable early-exit path.
+
+  - id: rust-prepare-not-supported
+    description: >
+      The Rust frontend returns not_supported for the prepare command because
+      execute is partial. TypeScript and Go fully support prepare.
+    affected_frontends: [rust]
+    affected_commands: [prepare]
+    status: tracked
+    resolution: >
+      Implement prepare in the Rust frontend once execute is fully implemented.
 
   - id: side-effect-console-coverage
     description: >

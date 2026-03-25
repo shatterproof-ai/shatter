@@ -22,6 +22,8 @@ func FuzzProtocolParse(f *testing.F) {
 		reqJSON(6, "setup", `"file":"./s.ts","scope":"fn1","level":"function"`),
 		reqJSON(7, "teardown", `"scope":"fn1","level":"function"`),
 		reqJSON(8, "generate", `"file":"./g.wasm","name":"User","kind":"type_name"`),
+		reqJSON(9, "prepare", `"file":"src/main.go","function":"Foo","mocks":[]`),
+		reqJSON(10, "execute", `"function":"Foo","inputs":[1],"mocks":[],"prepare_id":"a1b2c3d4e5f6a7b8"`),
 		// Edge cases
 		`{}`,
 		`[]`,
@@ -55,6 +57,8 @@ func FuzzRequestDeserialize(f *testing.F) {
 		`{"protocol_version":"0.1.0","id":3,"command":"execute","file":"x.go","function":"F","inputs":[1,"hello",true,null]}`,
 		`{"protocol_version":"0.1.0","id":4,"command":"generate","file":"g.wasm","name":"User","kind":"type_name","recipe":{"seed":42}}`,
 		`{"protocol_version":"0.1.0","id":5,"command":"setup","file":"s.ts","scope":"fn1","level":"execution"}`,
+		`{"protocol_version":"0.1.0","id":6,"command":"prepare","file":"src/main.go","function":"Foo","mocks":[]}`,
+		`{"protocol_version":"0.1.0","id":7,"command":"execute","function":"Foo","inputs":[1],"mocks":[],"prepare_id":"a1b2c3d4e5f6a7b8"}`,
 		`{}`,
 		`{"command":null}`,
 		`{"id":"not_a_number"}`,
@@ -78,6 +82,7 @@ func FuzzResponseRoundTrip(f *testing.F) {
 		`{"protocol_version":"0.1.0","id":1,"status":"handshake","language":"go","capabilities":["analyze"]}`,
 		`{"protocol_version":"0.1.0","id":2,"status":"error","code":"invalid_request","message":"bad"}`,
 		`{"protocol_version":"0.1.0","id":3,"status":"execute","return_value":42,"branch_path":[{"branch_id":1,"line":10,"taken":true,"constraint":{"kind":"unknown"}}]}`,
+		`{"protocol_version":"0.1.0","id":4,"status":"prepare","prepare_id":"a1b2c3d4e5f6a7b8"}`,
 		`{}`,
 	}
 

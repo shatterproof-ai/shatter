@@ -1,0 +1,9 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 10,
+  "command": "prepare",
+  "file": "src/example.ts",
+  "function": "processOrder",
+  "mocks": [],
+  "project_root": "."
+}

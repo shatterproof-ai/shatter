@@ -31,9 +31,14 @@ commands:
     fields: [file, function, mocks, project_root]
     response_status: instrument
 
+  prepare:
+    description: Pre-build execution artifacts once for reuse across repeated execute calls.
+    fields: [file, function, mocks, project_root]
+    response_status: prepare
+
   execute:
     description: Run an instrumented function with concrete inputs.
-    fields: [function, inputs, mocks, setup_context, capture]
+    fields: [function, inputs, mocks, setup_context, capture, prepare_id]
     response_status: execute
 
   setup:
@@ -64,6 +69,8 @@ statuses:
     description: Analysis complete; includes function metadata.
   instrument:
     description: Instrumentation result; includes instrumented flag and output_file.
+  prepare:
+    description: Prepare complete; returns prepare_id for use in subsequent execute calls.
   execute:
     description: Execution complete; includes branch decisions, constraints, side effects.
   setup:
@@ -123,6 +130,7 @@ capabilities:
     - analyze
     - execute
     - instrument
+    - prepare
     - setup
     - teardown
     - generate
@@ -204,6 +212,7 @@ frontends:
       - analyze
       - execute
       - instrument
+      - prepare
       - setup
       - generate
     complex_type_capabilities:
@@ -225,6 +234,7 @@ frontends:
       - analyze
       - execute
       - instrument
+      - prepare
       - setup
       - teardown
       - generate

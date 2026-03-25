@@ -793,17 +793,30 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
             }),
         (
             arb_ident(),
+            arb_ident(),
+            prop::collection::vec(arb_mock_config(), 0..=2),
+        )
+            .prop_map(|(file, function, mocks)| Command::Prepare {
+                file,
+                function,
+                mocks,
+                project_root: None,
+            }),
+        (
+            arb_ident(),
             prop::collection::vec(arb_json_value(), 0..=4),
             prop::collection::vec(arb_mock_config(), 0..=2),
             proptest::option::of(arb_setup_context_stack()),
+            proptest::option::of(arb_ident()),
         )
             .prop_map(
-                |(function, inputs, mocks, setup_context)| Command::Execute {
+                |(function, inputs, mocks, setup_context, prepare_id)| Command::Execute {
                     function,
                     inputs,
                     mocks,
                     setup_context,
                     capture: true,
+                    prepare_id,
                 }
             ),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {
@@ -858,6 +871,7 @@ pub fn arb_response_result() -> impl Strategy<Value = ResponseResult> {
                     instrumentable_line_count,
                 }
             }),
+        arb_ident().prop_map(|prepare_id| ResponseResult::Prepare { prepare_id }),
         arb_execute_result().prop_map(|er| ResponseResult::Execute(Box::new(er))),
         arb_json_value().prop_map(|ctx| ResponseResult::Setup { setup_context: ctx }),
         Just(ResponseResult::TeardownAck),

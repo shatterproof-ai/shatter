@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 func writeExecTestSource(t *testing.T, dir, filename, content string) string {
@@ -1216,5 +1218,64 @@ func classify(x int) string {
 	}
 	if retVal != "positive" {
 		t.Errorf("expected %q, got %q", "positive", retVal)
+	}
+}
+
+// BenchmarkExecuteWithPreparedHarness measures the cost of repeated execute calls
+// when the harness has been pre-built via PrepareHarness. The compile step runs
+// once before b.ResetTimer() so the benchmark captures only the execute overhead.
+func BenchmarkExecuteWithPreparedHarness(b *testing.B) {
+	srcDir := b.TempDir()
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	srcPath := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
+		b.Fatalf("writing source: %v", err)
+	}
+
+	timing := frontendtiming.NewCollector()
+	harness, err := PrepareHarness(srcPath, "add", timing, nil)
+	if err != nil {
+		b.Fatalf("PrepareHarness: %v", err)
+	}
+	defer harness.Cleanup()
+
+	inputs := []json.RawMessage{json.RawMessage("3"), json.RawMessage("4")}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := ExecuteWithPreparedHarness(harness, inputs, frontendtiming.NewCollector(), false)
+		if err != nil {
+			b.Fatalf("ExecuteWithPreparedHarness: %v", err)
+		}
+	}
+}
+
+// BenchmarkExecuteFunction measures the cost of repeated execute calls without
+// a pre-built harness — each call rebuilds the binary from source. Comparing
+// this against BenchmarkExecuteWithPreparedHarness shows the prepare benefit.
+func BenchmarkExecuteFunction(b *testing.B) {
+	srcDir := b.TempDir()
+	src := `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+	srcPath := filepath.Join(srcDir, "target.go")
+	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
+		b.Fatalf("writing source: %v", err)
+	}
+
+	inputs := []json.RawMessage{json.RawMessage("3"), json.RawMessage("4")}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := ExecuteFunction(srcPath, "add", inputs, false)
+		if err != nil {
+			b.Fatalf("ExecuteFunction: %v", err)
+		}
 	}
 }

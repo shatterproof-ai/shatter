@@ -185,6 +185,26 @@ export function deleteCompiledScriptEntry(key: string): void {
 }
 
 /**
+ * Pre-warm the compiled script cache for the given instrumented source.
+ * If the key is already cached, this is a no-op. Called by the prepare handler.
+ */
+export function warmCompiledScriptCache(instrumentedSource: string, cacheKey: string): void {
+  if (compiledScriptCache.has(cacheKey)) return;
+  const jsResult = ts.transpileModule(instrumentedSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      esModuleInterop: true,
+      strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
+    },
+    fileName: cacheKey,
+  });
+  const compiled = new vm.Script(jsResult.outputText, { filename: cacheKey });
+  compiledScriptCache.set(cacheKey, compiled);
+}
+
+/**
  * Proxy console used in VM sandboxes. Delegates all calls to `consoleTarget`,
  * which can be swapped at execution time to capture output as side effects.
  */

@@ -18,7 +18,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "execute", "setup", "teardown_ack", "generate", "shutdown_ack", "error"],
+      "enum": ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown_ack", "generate", "shutdown_ack", "error"],
       "description": "The response type, matching the originating command."
     }
   },
@@ -26,6 +26,7 @@
     { "$ref": "#/$defs/handshake_response" },
     { "$ref": "#/$defs/analyze_response" },
     { "$ref": "#/$defs/instrument_response" },
+    { "$ref": "#/$defs/prepare_response" },
     { "$ref": "#/$defs/execute_response" },
     { "$ref": "#/$defs/setup_response" },
     { "$ref": "#/$defs/teardown_ack_response" },
@@ -85,6 +86,17 @@
         }
       },
       "required": ["status", "instrumented"]
+    },
+    "prepare_response": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "prepare" },
+        "prepare_id": {
+          "type": "string",
+          "description": "Opaque handle for subsequent execute calls. Pass as prepare_id in execute requests."
+        }
+      },
+      "required": ["status", "prepare_id"]
     },
     "execute_response": {
       "type": "object",

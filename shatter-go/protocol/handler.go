@@ -3,11 +3,14 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,13 +25,14 @@ const frontendLanguage = "go"
 
 // Handler processes protocol requests and writes responses.
 type Handler struct {
-	reader           *bufio.Scanner
-	writer           io.Writer
-	log              *slog.Logger
-	lastAnalyzedFile string // remembered from the most recent analyze command
-	registry         *generators.Registry
-	setupLoader      *setup.Loader
-	timingEnabled    bool
+	reader             *bufio.Scanner
+	writer             io.Writer
+	log                *slog.Logger
+	lastAnalyzedFile   string // remembered from the most recent analyze command
+	registry           *generators.Registry
+	setupLoader        *setup.Loader
+	timingEnabled      bool
+	preparedHarnesses  map[string]*instrument.PreparedHarness
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -37,11 +41,12 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	return &Handler{
-		reader:      scanner,
-		writer:      w,
-		log:         slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
-		registry:    generators.NewRegistry(),
-		setupLoader: setup.NewLoader(),
+		reader:            scanner,
+		writer:            w,
+		log:               slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
+		registry:          generators.NewRegistry(),
+		setupLoader:       setup.NewLoader(),
+		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
 	}
 }
 
@@ -50,11 +55,12 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 	return &Handler{
-		reader:      scanner,
-		writer:      w,
-		log:         slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
-		registry:    generators.NewRegistry(),
-		setupLoader: setup.NewLoader(),
+		reader:            scanner,
+		writer:            w,
+		log:               slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
+		registry:          generators.NewRegistry(),
+		setupLoader:       setup.NewLoader(),
+		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
 	}
 }
 
@@ -128,6 +134,8 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		return h.handleAnalyze(base, req), false
 	case "instrument":
 		return h.handleInstrument(base, req), false
+	case "prepare":
+		return h.handlePrepare(base, req), false
 	case "execute":
 		return h.handleExecute(base, req), false
 	case "setup":
@@ -277,6 +285,91 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	return finalizeResponse(resp, timing)
 }
 
+// computePrepareID returns a deterministic 16-hex-char ID derived from the
+// file path, function name, and sorted mock symbols.
+func computePrepareID(file, function string, mocks []instrument.MockConfig) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
+	symbols := make([]string, len(mocks))
+	for i, m := range mocks {
+		symbols[i] = m.Symbol
+	}
+	sort.Strings(symbols)
+	for _, s := range symbols {
+		fmt.Fprintf(h, "%s\x00", s)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func (h *Handler) handlePrepare(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
+	file := req.File
+	if file == "" {
+		file = h.lastAnalyzedFile
+	}
+	if file == "" {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = "prepare command requires a file path (or a prior analyze)"
+		return resp
+	}
+	if req.Function == nil || *req.Function == "" {
+		resp.Status = "error"
+		resp.Code = ErrInvalidRequest
+		resp.Message = "prepare command requires a function name"
+		return resp
+	}
+	if _, err := os.Stat(file); err != nil {
+		resp.Status = "error"
+		resp.Code = ErrFileNotFound
+		resp.Message = fmt.Sprintf("file not found: %s", file)
+		return resp
+	}
+
+	var execMocks []instrument.MockConfig
+	for _, m := range req.Mocks {
+		execMocks = append(execMocks, instrument.MockConfig{
+			Symbol:           m.Symbol,
+			ReturnValues:     m.ReturnValues,
+			ShouldTrackCalls: m.ShouldTrackCalls,
+			DefaultBehavior:  m.DefaultBehavior,
+		})
+	}
+
+	prepareID := computePrepareID(file, *req.Function, execMocks)
+
+	// Idempotent: return immediately if already prepared.
+	if _, exists := h.preparedHarnesses[prepareID]; exists {
+		h.log.Debug("prepare cache hit", "prepare_id", prepareID)
+		resp.Status = "prepare"
+		resp.PrepareID = prepareID
+		return finalizeResponse(resp, timing)
+	}
+
+	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
+
+	finishPrepare := timing.Start("prepare.total")
+	harness, err := instrument.PrepareHarness(file, *req.Function, timing, execMocks)
+	finishPrepare()
+	if err != nil {
+		resp.Status = "error"
+		if strings.Contains(err.Error(), "function not found") {
+			resp.Code = ErrFunctionNotFound
+		} else if strings.Contains(err.Error(), "build failed") {
+			resp.Code = ErrInstrumentationFailed
+		} else {
+			resp.Code = ErrInternalError
+		}
+		resp.Message = err.Error()
+		return resp
+	}
+
+	h.preparedHarnesses[prepareID] = harness
+	resp.Status = "prepare"
+	resp.PrepareID = prepareID
+	return finalizeResponse(resp, timing)
+}
+
 func (h *Handler) handleExecute(resp Response, req Request) Response {
 	timing := h.maybeTimingCollector()
 	file := req.File
@@ -316,8 +409,24 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	}
 	// capture defaults to true when omitted (nil), matching protocol semantics.
 	capture := req.Capture == nil || *req.Capture
+
+	var result *instrument.ExecuteResult
+	var err error
+
 	finishExecute := timing.Start("execute.total")
-	result, err := instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
+	if req.PrepareID != nil && *req.PrepareID != "" {
+		harness, ok := h.preparedHarnesses[*req.PrepareID]
+		if !ok {
+			finishExecute()
+			resp.Status = "error"
+			resp.Code = ErrInvalidRequest
+			resp.Message = fmt.Sprintf("prepare_id not found: %s", *req.PrepareID)
+			return resp
+		}
+		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
+	} else {
+		result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
+	}
 	finishExecute()
 	if err != nil {
 		resp.Status = "error"
@@ -570,6 +679,14 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 		return resp
 	}
 
+	// Clear prepared harnesses on function-level teardown to free compile artifacts.
+	if req.Level == SetupLevelFunction {
+		for _, ph := range h.preparedHarnesses {
+			ph.Cleanup()
+		}
+		h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+	}
+
 	// Clear stale session state so the next setup/execute cycle starts clean.
 	h.lastAnalyzedFile = ""
 	h.registry.Handles.Clear()
@@ -626,6 +743,10 @@ func (h *Handler) Registry() *generators.Registry {
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
+	for _, ph := range h.preparedHarnesses {
+		ph.Cleanup()
+	}
+	h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
 	h.registry.Close()
 	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"

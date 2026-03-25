@@ -188,6 +188,7 @@ pub async fn revalidate_behaviors(
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             })
             .await;
 

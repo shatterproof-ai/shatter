@@ -9,6 +9,7 @@ import {
   type TeardownAckResponse,
   type GenerateResponse,
   type ExecuteResponse,
+  type PrepareResponse,
   type SetupLevel,
   type SetupContextStack,
   type SetupRequest,
@@ -315,6 +316,83 @@ describe("handleRequest", () => {
       if (response.status === "instrument") {
         expect(response.instrumented).toBe(true);
         expect(response.output_file).toBeNull();
+      }
+    });
+  });
+
+  describe("prepare", () => {
+    const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+
+    it("returns instrumentation_failed when instrument has not been called first", async () => {
+      const { response } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("instrumentation_failed");
+      }
+    });
+
+    it("returns prepare_id after instrument", async () => {
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      const { response, shutdown } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(shutdown).toBe(false);
+      expect(response.status).toBe("prepare");
+      if (response.status === "prepare") {
+        const prepResp = response as PrepareResponse;
+        expect(prepResp.prepare_id).toMatch(/^[0-9a-f]{16}$/);
+      }
+    });
+
+    it("is idempotent: same inputs return same prepare_id", async () => {
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      const { response: r1 } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      const { response: r2 } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(r1.status).toBe("prepare");
+      expect(r2.status).toBe("prepare");
+      if (r1.status === "prepare" && r2.status === "prepare") {
+        expect((r1 as PrepareResponse).prepare_id).toBe((r2 as PrepareResponse).prepare_id);
+      }
+    });
+
+    it("execute with valid prepare_id returns correct result", async () => {
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      const { response: prepResp } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(prepResp.status).toBe("prepare");
+      const prepareId = (prepResp as PrepareResponse).prepare_id;
+
+      const { response } = await handleRequest(
+        makeRequest({ command: "execute", function: "classifyNumber", inputs: [42], mocks: [], prepare_id: prepareId })
+      );
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        const execResp = response as ExecuteResponse;
+        expect(execResp.return_value).toBe("positive-even");
+        expect(execResp.performance.wall_time_ms).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it("execute with unknown prepare_id returns invalid_request error", async () => {
+      const { response } = await handleRequest(
+        makeRequest({ command: "execute", function: "classifyNumber", inputs: [1], mocks: [], prepare_id: "deadbeefcafe0000" })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("invalid_request");
       }
     });
   });
