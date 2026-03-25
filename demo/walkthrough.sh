@@ -289,7 +289,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=53
+TOTAL=55
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -574,28 +574,33 @@ step 49 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
     $SHATTER specify /tmp/shatter-observe.json
 
-# Stage 49: HTML explore report
-step 50 $TOTAL "HTML Explore Report" \
+# Stage 49: Specify YAML — build FunctionSpec with invariant property descriptions
+step 50 $TOTAL "Specify from Observation (YAML)" \
+    "Build FunctionSpec as YAML with inferred invariant property descriptions" \
+    $SHATTER specify --yaml --invariants /tmp/shatter-observe.json
+
+# Stage 50: HTML explore report
+step 51 $TOTAL "HTML Explore Report" \
     "Generate a self-contained HTML report for exploration results" \
     $SHATTER explore -o "$HTML_REPORT_DIR/explore-html.html" --stdout "${EXAMPLES[0]}"
 
-# Stage 50: HTML scan report
-step 51 $TOTAL "HTML Scan Report" \
+# Stage 51: HTML scan report
+step 52 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
     $SHATTER scan -o "$HTML_REPORT_DIR/scan-html.html" --stdout examples/standalone/ts
 
-# Stage 51: Side-effect capture
-step 52 $TOTAL "Explore with Side-Effect Capture" \
+# Stage 52: Side-effect capture
+step 53 $TOTAL "Explore with Side-Effect Capture" \
     "Opt in to rich side-effect recording (console output, global state changes). Disabled by default for throughput." \
     $SHATTER explore --capture-side-effects "${EXAMPLES[0]}"
 
-# Stage 52: Properties export
-step 52 $TOTAL "Properties Export" \
+# Stage 53: Properties export
+step 54 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
 
-# Stage 53: Cache clear
-step 53 $TOTAL "Cache Clear" \
+# Stage 54: Cache clear
+step 55 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 
