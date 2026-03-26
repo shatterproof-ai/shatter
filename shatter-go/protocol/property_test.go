@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // ---------------------------------------------------------------------------
@@ -789,4 +792,132 @@ func TestErrorCodeParityWithRegistry(t *testing.T) {
 			t.Errorf("expected error code %q missing from AllErrorCodes", code)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// computePrepareID semantic properties
+// ---------------------------------------------------------------------------
+
+var hexPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
+
+// genMock returns an arbitrary MockConfig with a non-empty Symbol.
+func genMock(t *rapid.T, label string) instrument.MockConfig {
+	return instrument.MockConfig{
+		Symbol: rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9_]{0,15}`).Draw(t, label+"_symbol"),
+	}
+}
+
+// TestPropertyComputePrepareIDAlways16Hex verifies that computePrepareID always
+// returns exactly 16 lowercase hex characters regardless of input.
+func TestPropertyComputePrepareIDAlways16Hex(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := rapid.String().Draw(t, "file")
+		fn := rapid.String().Draw(t, "fn")
+		n := rapid.IntRange(0, 5).Draw(t, "n")
+		mocks := make([]instrument.MockConfig, n)
+		for i := range mocks {
+			mocks[i] = genMock(t, fmt.Sprintf("mock%d", i))
+		}
+		id := computePrepareID(file, fn, mocks)
+		if !hexPattern.MatchString(id) {
+			t.Fatalf("computePrepareID(%q, %q, mocks) = %q, want 16 lowercase hex chars", file, fn, id)
+		}
+	})
+}
+
+// TestPropertyComputePrepareIDDeterministic verifies that calling computePrepareID
+// twice with identical inputs returns the same ID.
+func TestPropertyComputePrepareIDDeterministic(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := rapid.String().Draw(t, "file")
+		fn := rapid.String().Draw(t, "fn")
+		n := rapid.IntRange(0, 5).Draw(t, "n")
+		mocks := make([]instrument.MockConfig, n)
+		for i := range mocks {
+			mocks[i] = genMock(t, fmt.Sprintf("mock%d", i))
+		}
+		id1 := computePrepareID(file, fn, mocks)
+		id2 := computePrepareID(file, fn, mocks)
+		if id1 != id2 {
+			t.Fatalf("not deterministic: first=%q second=%q", id1, id2)
+		}
+	})
+}
+
+// TestPropertyComputePrepareIDMockOrderIndependent verifies that the order of
+// mocks does not affect the computed ID (symbols are sorted internally).
+func TestPropertyComputePrepareIDMockOrderIndependent(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := rapid.StringMatching(`[a-z/]{1,20}\.go`).Draw(t, "file")
+		fn := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn")
+		n := rapid.IntRange(2, 5).Draw(t, "n")
+		mocks := make([]instrument.MockConfig, n)
+		for i := range mocks {
+			// Use distinct symbols to ensure ordering matters.
+			mocks[i] = instrument.MockConfig{
+				Symbol: fmt.Sprintf("Mock%c", 'A'+i),
+			}
+		}
+		// Reversed order.
+		reversed := make([]instrument.MockConfig, n)
+		for i, m := range mocks {
+			reversed[n-1-i] = m
+		}
+		id1 := computePrepareID(file, fn, mocks)
+		id2 := computePrepareID(file, fn, reversed)
+		if id1 != id2 {
+			t.Fatalf("mock order affected ID: forward=%q reversed=%q", id1, id2)
+		}
+	})
+}
+
+// TestPropertyComputePrepareIDFileSensitive verifies that different file paths
+// produce different IDs (for the same function and no mocks).
+func TestPropertyComputePrepareIDFileSensitive(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file1 := rapid.StringMatching(`[a-z]{3,10}/[a-z]{3,10}\.go`).Draw(t, "file1")
+		file2 := rapid.StringMatching(`[a-z]{3,10}/[a-z]{3,10}\.go`).Draw(t, "file2")
+		if file1 == file2 {
+			t.Skip()
+		}
+		fn := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn")
+		id1 := computePrepareID(file1, fn, nil)
+		id2 := computePrepareID(file2, fn, nil)
+		if id1 == id2 {
+			t.Fatalf("different files produced same ID: file1=%q file2=%q id=%q", file1, file2, id1)
+		}
+	})
+}
+
+// TestPropertyComputePrepareIDFunctionSensitive verifies that different function
+// names produce different IDs (for the same file and no mocks).
+func TestPropertyComputePrepareIDFunctionSensitive(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := rapid.StringMatching(`[a-z]{3,10}/[a-z]{3,10}\.go`).Draw(t, "file")
+		fn1 := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn1")
+		fn2 := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn2")
+		if fn1 == fn2 {
+			t.Skip()
+		}
+		id1 := computePrepareID(file, fn1, nil)
+		id2 := computePrepareID(file, fn2, nil)
+		if id1 == id2 {
+			t.Fatalf("different functions produced same ID: fn1=%q fn2=%q id=%q", fn1, fn2, id1)
+		}
+	})
+}
+
+// TestPropertyComputePrepareIDMocksSensitive verifies that adding a mock changes
+// the computed ID.
+func TestPropertyComputePrepareIDMocksSensitive(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := rapid.StringMatching(`[a-z]{3,10}/[a-z]{3,10}\.go`).Draw(t, "file")
+		fn := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn")
+		mock := genMock(t, "mock")
+		idWithout := computePrepareID(file, fn, nil)
+		idWith := computePrepareID(file, fn, []instrument.MockConfig{mock})
+		if idWithout == idWith {
+			t.Fatalf("adding mock did not change ID: file=%q fn=%q mock=%q id=%q", file, fn, mock.Symbol, idWithout)
+		}
+	})
 }
