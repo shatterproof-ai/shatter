@@ -206,7 +206,9 @@ const SHRINK_FLOAT_NEG_ONE: f64 = -1.0;
 /// required to reach a minimal form.
 #[must_use]
 pub fn witness_complexity(inputs: &[Value]) -> usize {
-    inputs.iter().map(value_complexity).sum()
+    inputs
+        .iter()
+        .fold(0usize, |acc, value| acc.saturating_add(value_complexity(value)))
 }
 
 /// Witnesses with complexity at or below this threshold are skipped during the
@@ -341,8 +343,12 @@ fn value_complexity(v: &Value) -> usize {
             }
         }
         Value::String(s) => s.len(),
-        Value::Array(arr) => arr.len() + arr.iter().map(value_complexity).sum::<usize>(),
-        Value::Object(obj) => obj.len() + obj.values().map(value_complexity).sum::<usize>(),
+        Value::Array(arr) => arr.iter().fold(arr.len(), |acc, value| {
+            acc.saturating_add(value_complexity(value))
+        }),
+        Value::Object(obj) => obj.values().fold(obj.len(), |acc, value| {
+            acc.saturating_add(value_complexity(value))
+        }),
     }
 }
 
@@ -1149,6 +1155,16 @@ mod tests {
             witness_complexity(&[json!("hi"), json!(3i64)]),
             2 + 3, // "hi".len() + abs(3)
         );
+    }
+
+    #[test]
+    fn complexity_saturates_on_large_number_sums() {
+        let max = json!(i64::MAX);
+        assert_eq!(
+            witness_complexity(&[max.clone(), max.clone(), max.clone()]),
+            usize::MAX
+        );
+        assert_eq!(witness_complexity(&[json!([i64::MAX, i64::MAX])]), usize::MAX);
     }
 
     mod witness_complexity_prop_tests {

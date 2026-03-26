@@ -392,6 +392,8 @@ name = "shatter-exec-temp"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [dependencies]
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
@@ -928,6 +930,8 @@ fn generate_cargo_toml(runtime_path: &Path) -> String {
 name = "shatter-exec-temp"
 version = "0.1.0"
 edition = "2021"
+
+[workspace]
 
 [dependencies]
 serde = {{ version = "1", features = ["derive"] }}
@@ -2000,6 +2004,7 @@ mod tests {
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
         let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"));
+        assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
     }
@@ -2666,6 +2671,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
         let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path);
+        assert!(result.contains("[workspace]"), "must opt generated harness out of parent workspaces");
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
         assert!(result.contains("serde"), "must include serde");
