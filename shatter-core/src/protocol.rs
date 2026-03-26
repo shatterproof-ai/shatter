@@ -97,6 +97,22 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
     },
+    /// Pre-build harness artifacts for a function so repeated execute calls skip compilation.
+    ///
+    /// The frontend compiles the instrumented harness once and returns an opaque
+    /// `prepare_id`. Subsequent Execute commands can pass this ID to skip the
+    /// compile phase, reducing repeated-execute overhead for concolic exploration.
+    Prepare {
+        /// Path to the source file.
+        file: String,
+        /// Name of the function to prepare.
+        function: String,
+        /// Mock configurations (must match the mocks used in subsequent execute calls).
+        mocks: Vec<MockConfig>,
+        /// Detected project root directory, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_root: Option<String>,
+    },
     /// Execute an instrumented function with specific inputs and mocks.
     Execute {
         /// Fully qualified function identifier.
@@ -113,6 +129,10 @@ pub enum Command {
         /// (branch_path, lines_executed, return_value, thrown_error) remain correct.
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         capture: bool,
+        /// Opaque handle from a prior Prepare command. When present, the frontend
+        /// skips the compile phase and runs the pre-built artifact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prepare_id: Option<String>,
     },
     /// Run a setup file to initialize state before function execution.
     Setup {
@@ -240,6 +260,11 @@ pub enum ResponseResult {
         /// Used as the denominator for line coverage instead of raw source span.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         instrumentable_line_count: Option<u32>,
+    },
+    /// Successful harness preparation result.
+    Prepare {
+        /// Opaque handle to pass to subsequent Execute commands to skip compilation.
+        prepare_id: String,
     },
     /// Successful execution result (boxed to reduce enum size).
     Execute(Box<ExecuteResult>),
@@ -737,6 +762,99 @@ mod tests {
     }
 
     #[test]
+    fn prepare_request_round_trips() {
+        round_trip(&Request::new(
+            5,
+            Command::Prepare {
+                file: "src/shipping.ts".into(),
+                function: "calculateShipping".into(),
+                mocks: vec![],
+                project_root: None,
+            },
+        ));
+    }
+
+    #[test]
+    fn prepare_request_with_mocks_round_trips() {
+        round_trip(&Request::new(
+            6,
+            Command::Prepare {
+                file: "src/order.ts".into(),
+                function: "processOrder".into(),
+                mocks: vec![MockConfig {
+                    symbol: "db.save".into(),
+                    return_values: vec![serde_json::json!(true)],
+                    should_track_calls: true,
+                    default_behavior: MockBehavior::RepeatLast,
+                }],
+                project_root: Some(".".into()),
+            },
+        ));
+    }
+
+    #[test]
+    fn prepare_response_round_trips() {
+        round_trip(&Response::new(
+            5,
+            ResponseResult::Prepare {
+                prepare_id: "a1b2c3d4e5f6a7b8".into(),
+            },
+        ));
+    }
+
+    #[test]
+    fn execute_request_with_prepare_id_round_trips() {
+        round_trip(&Request::new(
+            7,
+            Command::Execute {
+                function: "calculateShipping".into(),
+                inputs: vec![serde_json::json!({"weight": 2.5})],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+                prepare_id: Some("a1b2c3d4e5f6a7b8".into()),
+            },
+        ));
+    }
+
+    #[test]
+    fn prepare_id_omitted_when_none_in_execute_json() {
+        let req = Request::new(
+            8,
+            Command::Execute {
+                function: "fn1".into(),
+                inputs: vec![],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+                prepare_id: None,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert!(
+            !json.as_object().expect("object").contains_key("prepare_id"),
+            "prepare_id: None should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn prepare_id_present_when_set_in_execute_json() {
+        let req = Request::new(
+            9,
+            Command::Execute {
+                function: "fn1".into(),
+                inputs: vec![],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+                prepare_id: Some("deadbeef12345678".into()),
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["prepare_id"], "deadbeef12345678");
+    }
+
+    #[test]
     fn execute_request_round_trips() {
         round_trip(&Request::new(
             5,
@@ -746,6 +864,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             },
         ));
     }
@@ -1310,6 +1429,7 @@ mod tests {
                 ],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             },
         ));
     }
@@ -1677,6 +1797,7 @@ mod tests {
                     }],
                 }),
                 capture: true,
+                prepare_id: None,
             },
         ));
     }
@@ -1704,6 +1825,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1723,6 +1845,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: false,
+                prepare_id: None,
             },
         ));
     }
@@ -1750,6 +1873,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1770,6 +1894,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: false,
+                prepare_id: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");

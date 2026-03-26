@@ -497,6 +497,7 @@ async fn observe_one(
     triage_state: &mut TriageState,
     budget: &ExploreBudget,
     setup_context: &Option<SetupContextStack>,
+    prepare_id: Option<&str>,
 ) -> Result<ObserveOneResult, ExploreError> {
     // Check termination budgets.
     if budget.unique_paths >= config.max_iterations {
@@ -549,6 +550,7 @@ async fn observe_one(
             mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
             capture: true,
+            prepare_id: prepare_id.map(|s| s.to_string()),
         })
         .await?;
 
@@ -1255,6 +1257,7 @@ async fn refine_boundaries_async(
                     mocks: mocks.clone(),
                     setup_context: setup_context.clone(),
                     capture: false,
+                    prepare_id: None,
                 })
                 .await
             {
@@ -1333,6 +1336,7 @@ fn input_source_from_strategy_name(name: &str) -> InputSource {
 /// `seed_inputs` provides initial input sets to begin exploration.
 /// `user_inputs` provides user-provided candidate inputs (highest priority).
 /// `param_infos` provides parameter metadata including names and types.
+#[allow(clippy::too_many_arguments)]
 pub async fn explore(
     frontend: &mut Frontend,
     function_name: &str,
@@ -1341,6 +1345,7 @@ pub async fn explore(
     param_infos: &[ParamInfo],
     config: &ExploreConfig,
     setup_context: Option<SetupContextStack>,
+    prepare_id: Option<String>,
 ) -> Result<ExploreResult, ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
@@ -1455,6 +1460,7 @@ pub async fn explore(
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
+                        prepare_id: prepare_id.clone(),
                     })
                     .await?;
 
@@ -1465,6 +1471,7 @@ pub async fn explore(
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
+                        prepare_id: prepare_id.clone(),
                     })
                     .await?;
 
@@ -1563,6 +1570,7 @@ pub async fn explore(
             &mut triage_state,
             &budget,
             &setup_context,
+            prepare_id.as_deref(),
         )
         .await?;
 
@@ -1938,6 +1946,7 @@ pub async fn explore(
                         mocks: effective_mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: true,
+                        prepare_id: prepare_id.clone(),
                     })
                     .await;
                 if let Ok(resp) = resp
@@ -1969,6 +1978,7 @@ pub async fn explore(
                             mocks: effective_mocks.clone(),
                             setup_context: setup_context.clone(),
                             capture: false,
+                            prepare_id: prepare_id.clone(),
                         })
                         .await;
                     if let Ok(resp) = resp
@@ -2002,6 +2012,7 @@ pub async fn explore(
                                 mocks: effective_mocks.clone(),
                                 setup_context: setup_context.clone(),
                                 capture: false,
+                                prepare_id: prepare_id.clone(),
                             })
                             .await;
 
@@ -3047,6 +3058,7 @@ mod tests {
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
             None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3088,6 +3100,7 @@ mod tests {
             vec![],
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
+            None,
             None,
         )
         .await
@@ -3134,6 +3147,7 @@ mod tests {
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
             None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3172,6 +3186,7 @@ mod tests {
             vec![],
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
+            None,
             None,
         )
         .await
@@ -3212,6 +3227,7 @@ mod tests {
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
             None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3243,6 +3259,7 @@ mod tests {
             vec![],
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
+            None,
             None,
         )
         .await
@@ -3332,6 +3349,7 @@ mod tests {
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
             None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3375,6 +3393,7 @@ mod tests {
             vec![],
             &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
             &explore_config,
+            None,
             None,
         )
         .await

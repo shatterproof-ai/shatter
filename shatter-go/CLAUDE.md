@@ -34,6 +34,21 @@ The `convertSideEffects()` function in `protocol/handler.go` maps all 7 fields f
 
 See `protocol/parity-matrix.yaml` `side_effect_capabilities` and `allowed_divergences: go-side-effects-partial` for tracking.
 
+## Prepare Parity Contract
+
+Go implements the `prepare` command. It pre-builds the instrumented harness binary once so subsequent execute calls skip `go build`.
+
+| Aspect | Detail |
+|---|---|
+| Handler | `handlePrepare()` in `protocol/handler.go` |
+| Advertised | Yes — `"prepare"` in `CommandCapabilities` in `protocol/constants.go` |
+| Key type | `PreparedHarness` struct in `instrument/executor.go` |
+| prepare_id | SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`) |
+| Storage | `handler.preparedHarnesses map[string]*instrument.PreparedHarness` |
+| Idempotent | Yes — returns existing harness if prepare_id already exists |
+| Input handling | `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime |
+| Cleanup | `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses |
+
 ## Timeout Contract
 
 Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.

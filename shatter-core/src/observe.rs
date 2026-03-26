@@ -182,6 +182,7 @@ pub async fn observe_single(
     loop_buckets: &LoopBuckets,
     state: &mut ObserveState,
     capture: bool,
+    prepare_id: Option<&str>,
 ) -> Result<SingleObservation, ObserveError> {
     let response = frontend
         .send(ProtoCommand::Execute {
@@ -190,6 +191,7 @@ pub async fn observe_single(
             mocks: mocks.to_vec(),
             setup_context: setup_context.cloned(),
             capture,
+            prepare_id: prepare_id.map(|s| s.to_string()),
         })
         .await?;
 
@@ -265,6 +267,7 @@ pub async fn observe_batch(
     loop_buckets: &LoopBuckets,
     timeout: Option<Duration>,
     capture: bool,
+    prepare_id: Option<&str>,
 ) -> Result<BatchObservation, ObserveError> {
     let mut state = ObserveState::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
@@ -287,6 +290,7 @@ pub async fn observe_batch(
             loop_buckets,
             &mut state,
             capture,
+            prepare_id,
         )
         .await?;
 
@@ -405,6 +409,7 @@ pub async fn observe_function(
             &config.loop_buckets,
             config.timeout,
             config.capture_side_effects,
+            None,
         )
         .await?
     };
@@ -477,6 +482,7 @@ async fn observe_batch_with_per_execution_setup(
             &config.loop_buckets,
             &mut state,
             config.capture_side_effects,
+            None,
         )
         .await?;
 

@@ -32,6 +32,7 @@ export type Command =
   | "handshake"
   | "analyze"
   | "instrument"
+  | "prepare"
   | "execute"
   | "setup"
   | "teardown"
@@ -71,12 +72,22 @@ export interface InstrumentRequest extends BaseRequest {
   project_root?: string | null;
 }
 
+export interface PrepareRequest extends BaseRequest {
+  command: "prepare";
+  file: string;
+  function: string;
+  mocks: MockConfig[];
+  project_root?: string | null;
+}
+
 export interface ExecuteRequest extends BaseRequest {
   command: "execute";
   function: string;
   inputs: unknown[];
   mocks: MockConfig[];
   setup_context?: SetupContextStack | null;
+  /** Opaque handle from a prior prepare command. When set, reuses cached artifacts. */
+  prepare_id?: string | null;
   /** When false, skip side-effect capture (console/process interception) for lower overhead. Defaults to true. */
   capture?: boolean;
 }
@@ -113,6 +124,7 @@ export type Request =
   | HandshakeRequest
   | AnalyzeRequest
   | InstrumentRequest
+  | PrepareRequest
   | ExecuteRequest
   | SetupRequest
   | TeardownRequest
@@ -127,6 +139,7 @@ export type ResponseStatus =
   | "handshake"
   | "analyze"
   | "instrument"
+  | "prepare"
   | "execute"
   | "setup"
   | "teardown_ack"
@@ -177,6 +190,11 @@ export interface InstrumentResponse extends BaseResponse {
   instrumentable_line_count?: number;
 }
 
+export interface PrepareResponse extends BaseResponse {
+  status: "prepare";
+  prepare_id: string;
+}
+
 export interface ExecuteResponse extends BaseResponse {
   status: "execute";
   return_value: unknown;
@@ -224,6 +242,7 @@ export type Response =
   | HandshakeResponse
   | AnalyzeResponse
   | InstrumentResponse
+  | PrepareResponse
   | ExecuteResponse
   | SetupResponse
   | TeardownAckResponse

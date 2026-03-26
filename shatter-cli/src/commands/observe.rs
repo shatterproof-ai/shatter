@@ -122,6 +122,7 @@ pub(crate) async fn run_observe(
                 &func.params,
                 &concolic_config,
                 None,
+                None,
             )
             .await
             {

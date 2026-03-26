@@ -20,6 +20,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import {
   PROTOCOL_VERSION,
   FRONTEND_LANGUAGE,
@@ -35,7 +36,7 @@ import type { SetupModule } from "./setup-loader.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
-  "analyze", "execute", "instrument", "setup", "generate",
+  "analyze", "execute", "instrument", "prepare", "setup", "generate",
   "complex_type:date", "complex_type:date_time", "complex_type:duration",
   "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",
@@ -152,6 +153,27 @@ const setupContexts = new Map<string, { module: SetupModule; context: unknown }>
 /** Build a composite cache key for the setup context map. */
 function setupContextKey(level: SetupLevel, scope: string): string {
   return `${level}:${scope}`;
+}
+
+/**
+ * Maps prepare_id → instrument cache key ("resolvedFile:functionName").
+ * Set by the prepare handler; used by execute to look up pre-warmed scripts.
+ * Cleared on teardown.
+ */
+const preparedKeys = new Map<string, string>();
+
+/**
+ * Compute a deterministic 16-char hex prepare_id from file, function, and mocks.
+ * Matches the algorithm used by the Go and Rust frontends.
+ */
+function computePrepareId(file: string, funcName: string, mocks: Array<{ symbol: string }>): string {
+  const h = crypto.createHash("sha256");
+  h.update(`${file}\x00${funcName}\x00`);
+  const symbols = mocks.map(m => m.symbol).sort();
+  for (const s of symbols) {
+    h.update(`${s}\x00`);
+  }
+  return h.digest("hex").slice(0, 16);
 }
 
 let timingEnabled = false;
@@ -308,6 +330,49 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       };
     }
 
+    case "prepare": {
+      const timing = maybeTimingCollector();
+      const resolvedFile = path.resolve(request.file);
+      if (!fs.existsSync(resolvedFile)) {
+        return {
+          response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
+          shutdown: false,
+        };
+      }
+
+      const instrumentKey = `${resolvedFile}:${request.function}`;
+      const instrumentedSource = instrumentedSources.get(instrumentKey);
+      if (!instrumentedSource) {
+        return {
+          response: errorResponse(
+            request.id,
+            "instrumentation_failed",
+            `No instrumented source for ${request.function} in ${request.file}. Call instrument first.`,
+          ),
+          shutdown: false,
+        };
+      }
+
+      const prepareId = computePrepareId(resolvedFile, request.function, request.mocks);
+
+      // Idempotent: if already prepared, return the same id.
+      if (!preparedKeys.has(prepareId)) {
+        const executor = await getExecutor();
+        executor.warmCompiledScriptCache(instrumentedSource, instrumentKey);
+        preparedKeys.set(prepareId, instrumentKey);
+      }
+
+      return {
+        response: finalizeResponse({
+          protocol_version: PROTOCOL_VERSION,
+          id: request.id,
+          status: "prepare",
+          prepare_id: prepareId,
+        } as const, timing),
+        shutdown: false,
+      };
+    }
+
     case "execute": {
       const timing = maybeTimingCollector();
       const funcRef = request.function;
@@ -331,9 +396,20 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           executor.setProjectRoot(lastProjectRoot);
         }
 
-        // Check if we have instrumented source for this function
+        // Check if we have instrumented source for this function.
+        // When prepare_id is set, look up the instrument key from the prepare cache.
         const funcName = funcRef.includes(":") ? funcRef.split(":").pop()! : funcRef;
-        const instrumentKey = `${fileForExec}:${funcName}`;
+        let instrumentKey = `${fileForExec}:${funcName}`;
+        if (request.prepare_id) {
+          const preparedKey = preparedKeys.get(request.prepare_id);
+          if (!preparedKey) {
+            return {
+              response: errorResponse(request.id, "invalid_request", `prepare_id not found: ${request.prepare_id}`),
+              shutdown: false,
+            };
+          }
+          instrumentKey = preparedKey;
+        }
         const instrumentedSource = instrumentedSources.get(instrumentKey);
 
         const capture = request.capture ?? true;
@@ -431,6 +507,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
+        preparedKeys.clear();
         // Only clear executor caches if executor was loaded this session.
         if (_executor) {
           _executor.clearCompiledScriptCache();
@@ -517,6 +594,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Only invoke cleanup on modules that were actually loaded this session.
       if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
+      preparedKeys.clear();
       if (_executor) {
         _executor.clearCompiledScriptCache();
         _executor.clearModuleCache();
@@ -614,7 +692,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
     };
   }
 
-  const validCommands = ["handshake", "analyze", "instrument", "execute", "setup", "teardown", "generate", "shutdown"];
+  const validCommands = ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown", "generate", "shutdown"];
   if (!validCommands.includes(obj["command"] as string)) {
     return {
       error: errorResponse(id, "invalid_request", `Unknown command: ${String(obj["command"])}`),
@@ -630,6 +708,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
+  preparedKeys.clear();
   if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();

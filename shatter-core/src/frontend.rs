@@ -361,6 +361,7 @@ fn request_span(command: &ProtoCommand) -> tracing::Span {
         ProtoCommand::Handshake { .. } => tracing::info_span!("frontend.request.handshake"),
         ProtoCommand::Analyze { .. } => tracing::info_span!("frontend.request.analyze"),
         ProtoCommand::Instrument { .. } => tracing::info_span!("frontend.request.instrument"),
+        ProtoCommand::Prepare { .. } => tracing::info_span!("frontend.request.prepare"),
         ProtoCommand::Execute { .. } => tracing::info_span!("frontend.request.execute"),
         ProtoCommand::Setup { .. } => tracing::info_span!("frontend.request.setup"),
         ProtoCommand::Teardown { .. } => tracing::info_span!("frontend.request.teardown"),
@@ -470,6 +471,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             })
             .await
             .expect("execute failed");
@@ -555,6 +557,7 @@ mod tests {
                 mocks: vec![],
                 setup_context: None,
                 capture: true,
+                prepare_id: None,
             })
             .await
             .expect("execute failed");
@@ -594,6 +597,7 @@ mod tests {
                     mocks: vec![],
                     setup_context: None,
                     capture: true,
+                    prepare_id: None,
                 })
                 .entered();
             }

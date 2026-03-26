@@ -1,0 +1,7 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 10,
+  "status": "error",
+  "code": "not_supported",
+  "message": "prepare not supported (execute is partial)"
+}

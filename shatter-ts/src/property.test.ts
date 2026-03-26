@@ -30,6 +30,7 @@ import {
   ScopeEvent,
   HandshakeRequest,
   AnalyzeRequest,
+  PrepareRequest,
   ExecuteRequest,
   ShutdownRequest,
   SetupRequest,
@@ -40,6 +41,7 @@ import {
   Request,
   HandshakeResponse,
   AnalyzeResponse,
+  PrepareResponse,
   ErrorResponse,
   Response,
   FunctionAnalysis,
@@ -311,10 +313,19 @@ const arbRequest: fc.Arbitrary<Request> = fc.oneof(
   fc.record({
     protocol_version: fc.constant(PROTOCOL_VERSION),
     id: fc.nat(1000),
+    command: fc.constant("prepare" as const),
+    file: arbIdent,
+    function: arbIdent,
+    mocks: fc.constant([]),
+  }) as fc.Arbitrary<PrepareRequest>,
+  fc.record({
+    protocol_version: fc.constant(PROTOCOL_VERSION),
+    id: fc.nat(1000),
     command: fc.constant("execute" as const),
     function: arbIdent,
     inputs: fc.array(fc.oneof(fc.integer(), fc.constant("hello"), fc.boolean()), { maxLength: 4 }),
     mocks: fc.constant([]),
+    prepare_id: fc.option(fc.stringMatching(/[a-f0-9]{16}/), { nil: undefined }),
   }) as fc.Arbitrary<ExecuteRequest>,
   fc.record({
     protocol_version: fc.constant(PROTOCOL_VERSION),
@@ -353,6 +364,12 @@ const arbResponse: fc.Arbitrary<Response> = fc.oneof(
     status: fc.constant("analyze" as const),
     functions: fc.array(arbFunctionAnalysis, { maxLength: 3 }),
   }) as fc.Arbitrary<AnalyzeResponse>,
+  fc.record({
+    protocol_version: fc.constant(PROTOCOL_VERSION),
+    id: fc.nat(1000),
+    status: fc.constant("prepare" as const),
+    prepare_id: fc.stringMatching(/[a-f0-9]{16}/),
+  }) as fc.Arbitrary<PrepareResponse>,
   fc.record({
     protocol_version: fc.constant(PROTOCOL_VERSION),
     id: fc.nat(1000),
@@ -404,6 +421,85 @@ describe("property: protocol message round-trips", () => {
         expect(decoded).toEqual(resp);
       }),
     );
+  });
+
+  it("PrepareRequest survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          protocol_version: fc.constant(PROTOCOL_VERSION),
+          id: fc.nat(1000),
+          command: fc.constant("prepare" as const),
+          file: arbIdent,
+          function: arbIdent,
+          mocks: fc.constant([]),
+        }) as fc.Arbitrary<PrepareRequest>,
+        (req) => {
+          const json = JSON.stringify(req);
+          const decoded = JSON.parse(json) as PrepareRequest;
+          expect(decoded).toEqual(req);
+          expect(decoded.command).toBe("prepare");
+          expect(decoded.file).toBe(req.file);
+          expect(decoded.function).toBe(req.function);
+        },
+      ),
+    );
+  });
+
+  it("PrepareResponse survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          protocol_version: fc.constant(PROTOCOL_VERSION),
+          id: fc.nat(1000),
+          status: fc.constant("prepare" as const),
+          prepare_id: fc.stringMatching(/[a-f0-9]{16}/),
+        }) as fc.Arbitrary<PrepareResponse>,
+        (resp) => {
+          const json = JSON.stringify(resp);
+          const decoded = JSON.parse(json) as PrepareResponse;
+          expect(decoded).toEqual(resp);
+          expect(decoded.status).toBe("prepare");
+          expect(decoded.prepare_id).toBe(resp.prepare_id);
+        },
+      ),
+    );
+  });
+
+  it("ExecuteRequest with prepare_id survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          protocol_version: fc.constant(PROTOCOL_VERSION),
+          id: fc.nat(1000),
+          command: fc.constant("execute" as const),
+          function: arbIdent,
+          inputs: fc.constant([]),
+          mocks: fc.constant([]),
+          prepare_id: fc.stringMatching(/[a-f0-9]{16}/),
+        }) as fc.Arbitrary<ExecuteRequest>,
+        (req) => {
+          const json = JSON.stringify(req);
+          const decoded = JSON.parse(json) as ExecuteRequest;
+          expect(decoded).toEqual(req);
+          expect(decoded.prepare_id).toBe(req.prepare_id);
+        },
+      ),
+    );
+  });
+
+  it("ExecuteRequest without prepare_id omits field in JSON", () => {
+    const req: ExecuteRequest = {
+      protocol_version: PROTOCOL_VERSION,
+      id: 1,
+      command: "execute",
+      function: "fn1",
+      inputs: [],
+      mocks: [],
+    };
+    const json = JSON.stringify(req);
+    const obj = JSON.parse(json) as Record<string, unknown>;
+    expect(obj["prepare_id"]).toBeUndefined();
   });
 
   it("SetupContextStack survives JSON round-trip", () => {

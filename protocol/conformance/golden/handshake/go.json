@@ -13,6 +13,7 @@
     "execute",
     "generate",
     "instrument",
+    "prepare",
     "setup",
     "teardown"
   ],

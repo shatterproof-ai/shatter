@@ -268,6 +268,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "handshake" => (self.handle_handshake(resp, req), false),
             "analyze" => (self.handle_analyze(resp, req), false),
             "instrument" => (self.handle_instrument(resp, req), false),
+            "prepare" => (self.handle_prepare(resp), false),
             "execute" => (self.handle_execute(resp, req), false),
             "setup" => (self.handle_setup(resp, req), false),
             "teardown" => (self.handle_teardown(resp, req), false),
@@ -447,6 +448,14 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 self.finalize_response(resp, timing.as_mut())
             }
         }
+    }
+
+    /// Prepare is not supported — Rust execute is partial.
+    fn handle_prepare(&self, mut resp: Response) -> Response {
+        resp.status = "error".to_string();
+        resp.code = Some(ERR_NOT_SUPPORTED.to_string());
+        resp.message = Some("prepare not supported (execute is partial)".to_string());
+        resp
     }
 
     fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {

@@ -134,6 +134,7 @@ async fn float_probe_classifies_integer_treating() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("exploration failed");
@@ -181,6 +182,7 @@ async fn float_probe_classifies_float_sensitive() {
         &analysis.params,
         &config,
         None,
+        None,
     )
     .await
     .expect("exploration failed");
@@ -223,6 +225,7 @@ async fn float_probe_skips_non_float_params() {
         vec![],
         &analysis.params,
         &config,
+        None,
         None,
     )
     .await

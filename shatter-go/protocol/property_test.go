@@ -647,6 +647,126 @@ func TestPropertySideEffectKindCoverage(t *testing.T) {
 	}
 }
 
+// TestPropertyPrepareRequestRoundTrip verifies that a prepare request serializes
+// and deserializes correctly, preserving all fields.
+func TestPropertyPrepareRequestRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		file := genIdent().Draw(t, "file")
+		function := genIdent().Draw(t, "function")
+		req := Request{
+			ProtocolVersion: ProtocolVersion,
+			ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
+			Command:         "prepare",
+			File:            file,
+			Function:        &function,
+		}
+
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded Request
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if decoded.Command != "prepare" {
+			t.Fatalf("Command: got %q, want %q", decoded.Command, "prepare")
+		}
+		if decoded.File != file {
+			t.Fatalf("File: got %q, want %q", decoded.File, file)
+		}
+		if decoded.Function == nil || *decoded.Function != function {
+			t.Fatalf("Function: got %v, want %q", decoded.Function, function)
+		}
+	})
+}
+
+// TestPropertyPrepareResponseRoundTrip verifies that a prepare response with a
+// prepare_id serializes and deserializes correctly.
+func TestPropertyPrepareResponseRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		prepareID := rapid.StringMatching(`[a-f0-9]{16}`).Draw(t, "prepareID")
+		resp := Response{
+			ProtocolVersion: ProtocolVersion,
+			ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
+			Status:          "prepare",
+			PrepareID:       prepareID,
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded Response
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if decoded.Status != "prepare" {
+			t.Fatalf("Status: got %q, want %q", decoded.Status, "prepare")
+		}
+		if decoded.PrepareID != prepareID {
+			t.Fatalf("PrepareID: got %q, want %q", decoded.PrepareID, prepareID)
+		}
+	})
+}
+
+// TestPropertyExecuteWithPrepareIDRoundTrip verifies that an execute request
+// with a prepare_id round-trips correctly.
+func TestPropertyExecuteWithPrepareIDRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		prepareID := rapid.StringMatching(`[a-f0-9]{16}`).Draw(t, "prepareID")
+		req := Request{
+			ProtocolVersion: ProtocolVersion,
+			ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
+			Command:         "execute",
+			PrepareID:       &prepareID,
+		}
+
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded Request
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if decoded.PrepareID == nil {
+			t.Fatal("PrepareID should not be nil after roundtrip when set")
+		}
+		if *decoded.PrepareID != prepareID {
+			t.Fatalf("PrepareID: got %q, want %q", *decoded.PrepareID, prepareID)
+		}
+	})
+}
+
+// TestPropertyPrepareIDOmittedWhenNil verifies that prepare_id is omitted from
+// JSON when the field is nil, preserving backward compatibility.
+func TestPropertyPrepareIDOmittedWhenNil(t *testing.T) {
+	req := Request{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Command:         "execute",
+		PrepareID:       nil,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, ok := obj["prepare_id"]; ok {
+		t.Error("prepare_id should be omitted from JSON when nil")
+	}
+}
+
 func TestErrorCodeParityWithRegistry(t *testing.T) {
 	// AllErrorCodes must have exactly 11 entries matching protocol/registry.yaml.
 	if len(AllErrorCodes) != 11 {

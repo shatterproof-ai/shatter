@@ -375,6 +375,16 @@ fn extract_dependencies_section(cargo_toml: &str) -> String {
 /// external types (e.g. `regex::Regex`) that are available in the user's crate.
 fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path) -> String {
     let forwarded = extract_dependencies_section(user_cargo_toml);
+    // Filter out deps the harness template already injects to avoid duplicate TOML keys.
+    let filtered: String = forwarded
+        .lines()
+        .filter(|line| {
+            // Extract the dep name: everything before the first '=', ' ', or '.'
+            let key = line.split(['=', ' ', '.']).next().unwrap_or("").trim();
+            key != "serde" && key != "serde_json" && key != "shatter-rust-runtime"
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
     format!(
         r#"[package]
@@ -386,7 +396,7 @@ edition = "2021"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{forwarded}
+{filtered}
 "#
     )
 }
@@ -2659,6 +2669,17 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
         assert!(result.contains("serde"), "must include serde");
+    }
+
+    #[test]
+    fn generate_cargo_toml_deduplicates_injected_deps() {
+        // User crate already declares serde_json and serde — must not produce duplicate keys.
+        let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\nserde = { version = \"1\", features = [\"derive\"] }\n";
+        let runtime_path = std::path::Path::new("/fake/runtime");
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path);
+        assert!(result.contains("regex"), "must include forwarded user dep");
+        let serde_json_count = result.matches("serde_json").count();
+        assert_eq!(serde_json_count, 1, "serde_json must appear exactly once, got:\n{result}");
     }
 
     // ─── crate-backed integration tests ──────────────────────────────────────
