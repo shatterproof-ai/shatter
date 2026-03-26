@@ -21,6 +21,7 @@ import type {
   DiscoveredDependency,
   ConnectionFailure,
   ConnectionFailureKind,
+  RuntimeCryptoBoundary,
 } from "./protocol.js";
 import {
   ALL_ERROR_CODES,
@@ -217,6 +218,20 @@ const arbConnectionFailure: fc.Arbitrary<ConnectionFailure> = fc.record({
   symbol: arbIdent,
   error_kind: arbConnectionFailureKind,
   message: arbShortString,
+});
+
+const arbRuntimeCryptoBoundaryKind: fc.Arbitrary<"encrypt" | "decrypt"> = fc.constantFrom(
+  "encrypt", "decrypt",
+);
+
+export const arbRuntimeCryptoBoundary: fc.Arbitrary<RuntimeCryptoBoundary> = fc.record({
+  boundary_id: arbShortString,
+  kind: arbRuntimeCryptoBoundaryKind,
+  function_name: fc.constantFrom("createDecipheriv", "privateDecrypt", "createCipheriv"),
+  algorithm: fc.option(fc.constantFrom("aes-256-cbc", "aes-128-gcm"), { nil: undefined }),
+  ciphertext_param_index: fc.option(fc.integer({ min: -1, max: 5 }), { nil: undefined }),
+  key_value: fc.option(arbShortString, { nil: undefined }),
+  iv_value: fc.option(arbShortString, { nil: undefined }),
 });
 
 const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
@@ -968,6 +983,52 @@ describe("property: ConnectionFailure round-trips", () => {
         expect(typeof cf.message).toBe("string");
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RuntimeCryptoBoundary property tests
+// ---------------------------------------------------------------------------
+
+describe("property: RuntimeCryptoBoundary round-trips", () => {
+  it("RuntimeCryptoBoundary survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbRuntimeCryptoBoundary, (b) => {
+        const json = JSON.stringify(b);
+        const decoded = JSON.parse(json) as RuntimeCryptoBoundary;
+        expect(decoded).toEqual(b);
+      }),
+    );
+  });
+
+  it("kind is always 'encrypt' or 'decrypt'", () => {
+    fc.assert(
+      fc.property(arbRuntimeCryptoBoundary, (b) => {
+        expect(b.kind === "encrypt" || b.kind === "decrypt").toBe(true);
+      }),
+    );
+  });
+
+  it("boundary_id and function_name are strings", () => {
+    fc.assert(
+      fc.property(arbRuntimeCryptoBoundary, (b) => {
+        expect(typeof b.boundary_id).toBe("string");
+        expect(typeof b.function_name).toBe("string");
+      }),
+    );
+  });
+
+  it("optional fields are omitted from JSON when undefined", () => {
+    const boundary: RuntimeCryptoBoundary = {
+      boundary_id: "cb-0",
+      kind: "decrypt",
+      function_name: "createDecipheriv",
+    };
+    const json = JSON.stringify(boundary);
+    expect(json).not.toContain("algorithm");
+    expect(json).not.toContain("ciphertext_param_index");
+    expect(json).not.toContain("key_value");
+    expect(json).not.toContain("iv_value");
   });
 });
 

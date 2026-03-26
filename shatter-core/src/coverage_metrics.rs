@@ -765,7 +765,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.0,
                 cpu_time_us: 0,

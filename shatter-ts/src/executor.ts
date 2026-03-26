@@ -29,8 +29,9 @@ import type {
   ConnectionFailure,
   ConnectionFailureKind,
   ConditionOutcome,
+  RuntimeCryptoBoundary,
 } from "./protocol.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION } from "./instrumentor.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 import type { TimingCollector } from "./timing.js";
@@ -458,6 +459,7 @@ interface RawExecuteResult {
   scope_events: TraceEvent[];
   discovered_dependencies: DiscoveredDependency[];
   connection_failures: ConnectionFailure[];
+  runtime_crypto_boundaries: RuntimeCryptoBoundary[];
 }
 
 /**
@@ -475,6 +477,68 @@ export function truncateMessage(msg: string, maxBytes: number = MESSAGE_MAX_BYTE
     end--;
   }
   return msg.slice(0, end) + suffix;
+}
+
+/**
+ * Convert a raw Buffer/Uint8Array/string value to a base64 string.
+ * Returns undefined if the value cannot be sensibly converted.
+ */
+function toBase64(value: unknown): string | undefined {
+  if (Buffer.isBuffer(value)) {
+    return value.toString("base64");
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("base64");
+  }
+  if (typeof value === "string") {
+    return Buffer.from(value, "binary").toString("base64");
+  }
+  return undefined;
+}
+
+/**
+ * Build a RuntimeCryptoBoundary from the runtime arguments of a crypto call.
+ *
+ * Uses `KNOWN_CRYPTO_PARAM_ROLES` from the instrumentor to interpret which
+ * argument is the key, IV, algorithm, or ciphertext.
+ */
+export function buildRuntimeCryptoBoundary(
+  boundaryId: string,
+  kind: "encrypt" | "decrypt",
+  functionName: string,
+  args: unknown[],
+): RuntimeCryptoBoundary {
+  const paramRoles = KNOWN_CRYPTO_PARAM_ROLES[functionName];
+  let algorithm: string | undefined;
+  let keyValue: string | undefined;
+  let ivValue: string | undefined;
+  let ciphertextParamIndex: number | undefined;
+
+  if (paramRoles !== undefined) {
+    for (const [indexStr, role] of Object.entries(paramRoles)) {
+      const index = parseInt(indexStr, 10);
+      const value = args[index];
+      if (role === "algorithm" && typeof value === "string") {
+        algorithm = value;
+      } else if (role === "key") {
+        keyValue = toBase64(value);
+      } else if (role === "iv") {
+        ivValue = toBase64(value);
+      } else if (role === "data" && kind === "decrypt") {
+        ciphertextParamIndex = index;
+      }
+    }
+  }
+
+  return {
+    boundary_id: boundaryId,
+    kind,
+    function_name: functionName,
+    ...(algorithm !== undefined && { algorithm }),
+    ...(ciphertextParamIndex !== undefined && { ciphertext_param_index: ciphertextParamIndex }),
+    ...(keyValue !== undefined && { key_value: keyValue }),
+    ...(ivValue !== undefined && { iv_value: ivValue }),
+  };
 }
 
 /**
@@ -706,6 +770,7 @@ export async function executeFunction(
       scope_events: [],
       discovered_dependencies: [],
       connection_failures: [],
+      runtime_crypto_boundaries: [],
     };
   } else {
     // No-capture fast path: skip all capture infrastructure.
@@ -729,6 +794,7 @@ export async function executeFunction(
       scope_events: [],
       discovered_dependencies: [],
       connection_failures: [],
+      runtime_crypto_boundaries: [],
     };
   }
 }
@@ -784,6 +850,7 @@ export async function executeInstrumented(
   const sideEffects: SideEffect[] = [];
   const externalCalls: ExternalCall[] = [];
   const connectionFailures: ConnectionFailure[] = [];
+  const cryptoBoundaries: RuntimeCryptoBoundary[] = [];
   const scopeEvents: TraceEvent[] = [];
   const discoveredDeps: DiscoveredDependency[] = [];
   const seenDiscoveredModules = new Set<string>();
@@ -925,6 +992,24 @@ export async function executeInstrumented(
     scopeEvents.push({ type: "scope", event });
   };
 
+  /**
+   * Runtime callback injected by the instrumentor before calls to known
+   * encrypt/decrypt functions. Captures key, IV, and algorithm values so
+   * the core engine can apply boundary splitting.
+   *
+   * Signature: (boundaryId, kind, functionName, ...args)
+   * where `args` are the actual runtime arguments to the crypto function.
+   */
+  const cryptoBoundaryFn = (
+    boundaryId: string,
+    kind: "encrypt" | "decrypt",
+    functionName: string,
+    ...args: unknown[]
+  ): void => {
+    const boundary = buildRuntimeCryptoBoundary(boundaryId, kind, functionName, args);
+    cryptoBoundaries.push(boundary);
+  };
+
   // Build mock registry from MockConfig array
   const mockRegistry: Record<string, (...args: unknown[]) => unknown> = {};
   for (const mock of mocks) {
@@ -1057,6 +1142,7 @@ export async function executeInstrumented(
     [SCOPE_EVENT_FUNCTION]: scopeEventFn,
     [MOCK_REGISTRY]: mockRegistry,
     [MOCK_CALL_FUNCTION]: mockCallFn,
+    [CRYPTO_BOUNDARY_FUNCTION]: cryptoBoundaryFn,
   });
 
   const loadModule = (): void => {
@@ -1158,6 +1244,7 @@ export async function executeInstrumented(
     scope_events: scopeEvents,
     discovered_dependencies: discoveredDeps,
     connection_failures: connectionFailures,
+    runtime_crypto_boundaries: cryptoBoundaries,
   };
 }
 
@@ -1203,6 +1290,10 @@ export function buildExecuteResponse(
 
   if (rawResult.connection_failures.length > 0) {
     response.connection_failures = rawResult.connection_failures;
+  }
+
+  if (rawResult.runtime_crypto_boundaries.length > 0) {
+    response.runtime_crypto_boundaries = rawResult.runtime_crypto_boundaries;
   }
 
   return response;

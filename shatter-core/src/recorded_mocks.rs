@@ -338,7 +338,7 @@ mod tests {
                 heap_allocated_bytes: 2048,
             },
             capture_truncation: None,
-            discovered_dependencies: vec![], connection_failures: vec![],
+            discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
         }
     }
 

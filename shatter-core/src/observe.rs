@@ -547,7 +547,7 @@ mod tests {
                 heap_used_bytes: 0,
                 heap_allocated_bytes: 0,
             },
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -761,7 +761,7 @@ mod proptests {
                 heap_used_bytes: 0,
                 heap_allocated_bytes: 0,
             },
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
         })
     }
 

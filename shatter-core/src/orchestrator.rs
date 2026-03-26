@@ -1593,6 +1593,18 @@ pub async fn explore(
         // --- LiveFirst state transitions (parity with explorer.rs) ---
         update_live_first_states(&obs.result, &mut live_first_states);
 
+        // --- Crypto boundary logging (parity with explorer.rs) ---
+        if !obs.result.runtime_crypto_boundaries.is_empty() {
+            tracing::debug!(
+                count = obs.result.runtime_crypto_boundaries.len(),
+                boundaries = ?obs.result.runtime_crypto_boundaries
+                    .iter()
+                    .map(|b| format!("{} ({})", b.function_name, b.boundary_id))
+                    .collect::<Vec<_>>(),
+                "crypto boundaries detected in execution trace"
+            );
+        }
+
         total_executions += 1;
         if obs.is_sampled_skip && !obs.is_new_path {
             // Prediction was correct (duplicate path) — no misprediction.
@@ -2112,7 +2124,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -3716,7 +3728,7 @@ mod tests {
                 side_effects: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -3902,7 +3914,7 @@ mod tests {
                 side_effects: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -4067,7 +4079,7 @@ mod tests {
                     side_effects: vec![],
                     capture_truncation: None,
                     discovered_dependencies: vec![],
-                    connection_failures: vec![],
+                    connection_failures: vec![], runtime_crypto_boundaries: vec![],
                     performance: empty_perf(),
                 },
                 source: InputSource::Seed,

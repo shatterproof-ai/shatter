@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import ts from "typescript";
-import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, flattenConditions } from "./instrumentor";
+import { instrumentFunction, buildSymExpr, RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, flattenConditions, CRYPTO_BOUNDARY_FUNCTION } from "./instrumentor";
 import type { SymExpr, BranchDecision, SymConstraint, MockConfig, TraceEvent, ScopeEvent, ConditionOutcome } from "./protocol";
 
 /** Transpile TypeScript to JavaScript so it can be executed with new Function(). */
@@ -1717,5 +1717,69 @@ describe("MC/DC instrumentation (SHATTER_MCDC=1)", () => {
     const sourceFile = ts.createSourceFile("test.ts", chain, ts.ScriptTarget.Latest, true);
     const expr = (sourceFile.statements[0] as ts.ExpressionStatement).expression;
     expect(flattenConditions(expr, params, flow)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crypto boundary injection tests
+// ---------------------------------------------------------------------------
+
+describe("crypto boundary injection", () => {
+  it("injects __shatter_crypto_boundary before createDecipheriv call", () => {
+    const source = `
+      function fn(ciphertext: Buffer): string {
+        const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, IV);
+        return decipher.update(ciphertext).toString();
+      }
+    `;
+    const result = instrumentFunction(source, "fn");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.instrumentedSource).toContain(CRYPTO_BOUNDARY_FUNCTION);
+    expect(result.instrumentedSource).toContain('"decrypt"');
+    expect(result.instrumentedSource).toContain('"createDecipheriv"');
+  });
+
+  it("injects __shatter_crypto_boundary before createCipheriv call (encrypt)", () => {
+    const source = `
+      function fn(plaintext: string): Buffer {
+        const cipher = crypto.createCipheriv("aes-256-cbc", KEY, IV);
+        return Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+      }
+    `;
+    const result = instrumentFunction(source, "fn");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.instrumentedSource).toContain(CRYPTO_BOUNDARY_FUNCTION);
+    expect(result.instrumentedSource).toContain('"encrypt"');
+    expect(result.instrumentedSource).toContain('"createCipheriv"');
+  });
+
+  it("does not inject crypto boundary for non-crypto calls", () => {
+    const source = `
+      function fn(x: number): number {
+        const y = parseInt(String(x));
+        return y + 1;
+      }
+    `;
+    const result = instrumentFunction(source, "fn");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.instrumentedSource).not.toContain(CRYPTO_BOUNDARY_FUNCTION);
+  });
+
+  it("injects unique boundary IDs for multiple crypto calls", () => {
+    const source = `
+      function fn(c1: Buffer, c2: Buffer): string {
+        const d1 = crypto.createDecipheriv("aes-256-cbc", KEY, IV);
+        const d2 = crypto.createDecipheriv("aes-128-gcm", KEY2, IV2);
+        return d1.update(c1).toString() + d2.update(c2).toString();
+      }
+    `;
+    const result = instrumentFunction(source, "fn");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.instrumentedSource).toContain('"cb-0"');
+    expect(result.instrumentedSource).toContain('"cb-1"');
   });
 });

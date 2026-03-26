@@ -754,7 +754,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -780,7 +780,7 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
         }
     }
 

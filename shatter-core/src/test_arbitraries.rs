@@ -23,7 +23,8 @@ use crate::protocol::{
     BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary, DepDetectionKind,
     DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency,
     FunctionAnalysis, GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics,
-    Request, Response, ResponseResult, TimingPhaseSummary, TimingSummary, PROTOCOL_VERSION,
+    Request, Response, ResponseResult, RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind,
+    TimingPhaseSummary, TimingSummary, PROTOCOL_VERSION,
 };
 use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
@@ -584,6 +585,46 @@ pub fn arb_connection_failure() -> impl Strategy<Value = ConnectionFailure> {
         })
 }
 
+pub fn arb_runtime_crypto_boundary_kind(
+) -> impl Strategy<Value = RuntimeCryptoBoundaryKind> {
+    prop_oneof![
+        Just(RuntimeCryptoBoundaryKind::Encrypt),
+        Just(RuntimeCryptoBoundaryKind::Decrypt),
+    ]
+}
+
+pub fn arb_runtime_crypto_boundary() -> impl Strategy<Value = RuntimeCryptoBoundary> {
+    (
+        arb_short_string(),
+        arb_runtime_crypto_boundary_kind(),
+        prop_oneof![
+            Just("createDecipheriv".to_string()),
+            Just("privateDecrypt".to_string()),
+            Just("createCipheriv".to_string()),
+        ],
+        proptest::option::of(prop_oneof![
+            Just("aes-256-cbc".to_string()),
+            Just("aes-128-gcm".to_string()),
+        ]),
+        proptest::option::of(-1i32..=5i32),
+        proptest::option::of(arb_short_string()),
+        proptest::option::of(arb_short_string()),
+    )
+        .prop_map(
+            |(boundary_id, kind, function_name, algorithm, ciphertext_param_index, key_value, iv_value)| {
+                RuntimeCryptoBoundary {
+                    boundary_id,
+                    kind,
+                    function_name,
+                    algorithm,
+                    ciphertext_param_index,
+                    key_value,
+                    iv_value,
+                }
+            },
+        )
+}
+
 pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
     (
         proptest::option::of(arb_json_value_non_null()),
@@ -599,6 +640,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
             proptest::option::of(arb_truncation_info()),
             prop::collection::vec(arb_discovered_dependency(), 0..=3),
             prop::collection::vec(arb_connection_failure(), 0..=3),
+            prop::collection::vec(arb_runtime_crypto_boundary(), 0..=2),
         ),
     )
         .prop_map(
@@ -612,7 +654,12 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                 scope_events,
                 side_effects,
                 performance,
-                (capture_truncation, discovered_dependencies, connection_failures),
+                (
+                    capture_truncation,
+                    discovered_dependencies,
+                    connection_failures,
+                    runtime_crypto_boundaries,
+                ),
             )| {
                 ExecuteResult {
                     return_value,
@@ -627,6 +674,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     capture_truncation,
                     discovered_dependencies,
                     connection_failures,
+                    runtime_crypto_boundaries,
                 }
             },
         )

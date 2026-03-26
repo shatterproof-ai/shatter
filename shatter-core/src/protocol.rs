@@ -492,6 +492,47 @@ pub struct ConnectionFailure {
     pub message: String,
 }
 
+/// Whether a runtime crypto boundary is encrypting or decrypting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCryptoBoundaryKind {
+    Encrypt,
+    Decrypt,
+}
+
+/// A cryptographic boundary detected at execution time.
+///
+/// Produced when the frontend's instrumented code intercepts a call to a known
+/// decrypt or encrypt function. Used by the core engine to identify parameters
+/// that hold ciphertext, enabling boundary splitting: solve constraints on the
+/// plaintext domain then re-encrypt to produce valid ciphertext inputs.
+///
+/// Frontends inject `__shatter_crypto_boundary()` calls during instrumentation;
+/// those calls report back here with key, IV, and algorithm values captured at
+/// runtime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeCryptoBoundary {
+    /// Stable identifier for this boundary within the execution trace, e.g. `"cb-0"`.
+    pub boundary_id: String,
+    /// Whether this is an encrypt or decrypt boundary.
+    pub kind: RuntimeCryptoBoundaryKind,
+    /// Function name as it appears in the source (e.g. `"createDecipheriv"`).
+    pub function_name: String,
+    /// Algorithm string captured at runtime, if the function takes one (e.g. `"aes-256-cbc"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+    /// Index of the argument holding the ciphertext. `None` when the ciphertext is
+    /// passed to a separate method call (e.g. `decipher.update(ciphertext)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext_param_index: Option<i32>,
+    /// Base64-encoded key bytes captured at runtime, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_value: Option<String>,
+    /// Base64-encoded IV bytes captured at runtime, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iv_value: Option<String>,
+}
+
 /// Result of executing an instrumented function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteResult {
@@ -530,6 +571,13 @@ pub struct ExecuteResult {
     /// trigger LiveFirst fallback in the core engine.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connection_failures: Vec<ConnectionFailure>,
+    /// Cryptographic boundaries intercepted at runtime.
+    ///
+    /// When non-empty, the function called a known encrypt or decrypt API.
+    /// The core engine uses this to apply boundary splitting: solve constraints
+    /// on the plaintext then re-encrypt to produce valid ciphertext inputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_crypto_boundaries: Vec<RuntimeCryptoBoundary>,
 }
 
 /// Performance metrics from a single execution.
@@ -1025,6 +1073,7 @@ mod tests {
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
             })),
         ));
     }
@@ -1056,6 +1105,7 @@ mod tests {
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
             })),
         ));
     }
@@ -1093,6 +1143,7 @@ mod tests {
                         message: "getaddrinfo ENOTFOUND api.example.com".into(),
                     },
                 ],
+                runtime_crypto_boundaries: vec![],
             })),
         ));
     }
@@ -1104,6 +1155,63 @@ mod tests {
             error_kind: "timeout".into(),
             message: "ETIMEDOUT connecting to redis:6379".into(),
         });
+    }
+
+    #[test]
+    fn runtime_crypto_boundary_round_trips() {
+        round_trip(&RuntimeCryptoBoundary {
+            boundary_id: "cb-0".into(),
+            kind: RuntimeCryptoBoundaryKind::Decrypt,
+            function_name: "createDecipheriv".into(),
+            algorithm: Some("aes-256-cbc".into()),
+            ciphertext_param_index: None,
+            key_value: Some("dGVzdGtleQ==".into()),
+            iv_value: Some("dGVzdGl2dGVzdGl2".into()),
+        });
+    }
+
+    #[test]
+    fn runtime_crypto_boundary_omits_optional_fields_when_empty() {
+        let boundary = RuntimeCryptoBoundary {
+            boundary_id: "cb-1".into(),
+            kind: RuntimeCryptoBoundaryKind::Encrypt,
+            function_name: "createCipheriv".into(),
+            algorithm: None,
+            ciphertext_param_index: None,
+            key_value: None,
+            iv_value: None,
+        };
+        let json = serde_json::to_string(&boundary).expect("serialize");
+        assert!(!json.contains("algorithm"));
+        assert!(!json.contains("ciphertext_param_index"));
+        assert!(!json.contains("key_value"));
+        assert!(!json.contains("iv_value"));
+        let decoded: RuntimeCryptoBoundary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(boundary, decoded);
+    }
+
+    #[test]
+    fn execute_result_without_runtime_crypto_boundaries_omits_field() {
+        let result = ExecuteResult {
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            !json.contains("runtime_crypto_boundaries"),
+            "empty runtime_crypto_boundaries should be omitted from JSON"
+        );
     }
 
     #[test]
@@ -1121,6 +1229,7 @@ mod tests {
             capture_truncation: None,
             discovered_dependencies: vec![],
             connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(
@@ -2249,6 +2358,7 @@ mod tests {
             capture_truncation: None,
             discovered_dependencies: vec![],
             connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert!(validate_execute_result(&result));
     }
@@ -2278,6 +2388,7 @@ mod tests {
             capture_truncation: None,
             discovered_dependencies: vec![],
             connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert!(!validate_execute_result(&result));
     }
