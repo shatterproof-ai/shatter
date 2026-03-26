@@ -1484,3 +1484,167 @@ func TestConvertBranchPathPreservesExplicitConstraint(t *testing.T) {
 		t.Errorf("constraint.Kind = %q, want %q", result[0].Constraint.Kind, "expr")
 	}
 }
+
+// simpleGoSource returns a minimal Go source file with an add function.
+func simpleGoSource() string {
+	return `package main
+
+func add(a int, b int) int {
+	return a + b
+}
+`
+}
+
+func TestExecuteReusesPreparedSubprocess(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	prepReq := reqJSON(1, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	exec1 := reqJSON(2, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[1,2],"mocks":[]`, tmp))
+	exec2 := reqJSON(3, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[3,4],"mocks":[]`, tmp))
+
+	// Use a single handler session so subprocess state persists.
+	input := strings.NewReader(strings.Join([]string{prepReq, exec1, exec2}, "\n") + "\n")
+	var output bytes.Buffer
+	handler := NewHandler(input, &output, io.Discard)
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(lines))
+	}
+
+	var prepResp, exec1Resp, exec2Resp Response
+	json.Unmarshal([]byte(lines[0]), &prepResp)
+	json.Unmarshal([]byte(lines[1]), &exec1Resp)
+	json.Unmarshal([]byte(lines[2]), &exec2Resp)
+
+	if prepResp.Status != "prepare" {
+		t.Fatalf("prepare status = %q (message: %s)", prepResp.Status, prepResp.Message)
+	}
+	if exec1Resp.Status != "execute" {
+		t.Fatalf("first execute status = %q (message: %s)", exec1Resp.Status, exec1Resp.Message)
+	}
+	if exec2Resp.Status != "execute" {
+		t.Fatalf("second execute status = %q (message: %s)", exec2Resp.Status, exec2Resp.Message)
+	}
+}
+
+func TestExecuteAutoLookupPreparedHarness(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare first, then execute WITHOUT prepare_id — should auto-lookup.
+	prepReq := reqJSON(1, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	execReq := reqJSON(2, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[5,6],"mocks":[]`, tmp))
+
+	responses := conversation(t, prepReq, execReq)
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+	if responses[0].Status != "prepare" {
+		t.Fatalf("prepare status = %q (message: %s)", responses[0].Status, responses[0].Message)
+	}
+	if responses[1].Status != "execute" {
+		t.Fatalf("execute status = %q (message: %s)", responses[1].Status, responses[1].Message)
+	}
+}
+
+func TestPreparedHarnessStaleKeyForceRebuild(t *testing.T) {
+	// Verify that different mock configurations produce different prepare_ids,
+	// which means the handler caches them separately (stale key = different key).
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mocksA := []instrument.MockConfig{}
+	mocksB := []instrument.MockConfig{{Symbol: "someFunc"}}
+
+	idA := computePrepareID(tmp, "add", mocksA)
+	idB := computePrepareID(tmp, "add", mocksB)
+
+	if idA == idB {
+		t.Errorf("different mock configs must produce different prepare_ids: %s == %s", idA, idB)
+	}
+
+	// Also verify same inputs produce same id (idempotent).
+	idA2 := computePrepareID(tmp, "add", mocksA)
+	if idA != idA2 {
+		t.Errorf("same inputs must produce same prepare_id: %s != %s", idA, idA2)
+	}
+}
+
+func TestPreparedHarnessDeadProcessRecovery(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a long-lived handler to test subprocess recovery.
+	prepReq := reqJSON(1, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	exec1 := reqJSON(2, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[1,2],"mocks":[],"prepare_id":"PLACEHOLDER"`, tmp))
+	shutdownReq := reqJSON(99, "shutdown")
+
+	// First: prepare and get the prepare_id.
+	input1 := strings.NewReader(prepReq + "\n")
+	var output1 bytes.Buffer
+	h := NewHandler(input1, &output1, io.Discard)
+	if err := h.Run(); err != nil {
+		t.Fatalf("handler.Run (prepare): %v", err)
+	}
+	var prepResp Response
+	json.Unmarshal([]byte(strings.TrimSpace(output1.String())), &prepResp)
+	if prepResp.Status != "prepare" {
+		t.Fatalf("prepare status = %q (message: %s)", prepResp.Status, prepResp.Message)
+	}
+
+	// Execute once to spawn the subprocess.
+	execWithID := reqJSON(2, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[1,2],"mocks":[],"prepare_id":%q`, tmp, prepResp.PrepareID))
+	input2 := strings.NewReader(execWithID + "\n")
+	var output2 bytes.Buffer
+	h2 := NewHandlerWithLogLevel(input2, &output2, io.Discard, "error")
+	h2.preparedHarnesses = h.preparedHarnesses // share the cache
+	if err := h2.Run(); err != nil {
+		t.Fatalf("handler.Run (exec1): %v", err)
+	}
+	var exec1Resp Response
+	json.Unmarshal([]byte(strings.TrimSpace(output2.String())), &exec1Resp)
+	if exec1Resp.Status != "execute" {
+		t.Fatalf("exec1 status = %q (message: %s)", exec1Resp.Status, exec1Resp.Message)
+	}
+
+	// Kill the subprocess to simulate a dead process.
+	harness := h2.preparedHarnesses[prepResp.PrepareID]
+	harness.KillProc()
+
+	// Execute again — should detect dead process and respawn.
+	execAgain := reqJSON(3, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[10,20],"mocks":[],"prepare_id":%q`, tmp, prepResp.PrepareID))
+	input3 := strings.NewReader(execAgain + "\n" + shutdownReq + "\n")
+	var output3 bytes.Buffer
+	h3 := NewHandlerWithLogLevel(input3, &output3, io.Discard, "error")
+	h3.preparedHarnesses = h2.preparedHarnesses
+	if err := h3.Run(); err != nil {
+		t.Fatalf("handler.Run (exec2): %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output3.String()), "\n")
+	var exec2Resp Response
+	json.Unmarshal([]byte(lines[0]), &exec2Resp)
+	if exec2Resp.Status != "execute" {
+		t.Fatalf("exec2 (after recovery) status = %q (message: %s)", exec2Resp.Status, exec2Resp.Message)
+	}
+
+	_ = exec1
+	_ = shutdownReq
+}

@@ -424,6 +424,9 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			return resp
 		}
 		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
+	} else if harness := h.lookupPreparedHarness(file, *req.Function, execMocks); harness != nil {
+		h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
+		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
 	} else {
 		result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
 	}
@@ -592,6 +595,17 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 		}
 	}
 	return result
+}
+
+// lookupPreparedHarness checks if a prepared harness already exists for the
+// given file, function, and mock configuration.
+func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig) *instrument.PreparedHarness {
+	prepareID := computePrepareID(file, function, mocks)
+	harness, ok := h.preparedHarnesses[prepareID]
+	if !ok {
+		return nil
+	}
+	return harness
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {
