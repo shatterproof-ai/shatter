@@ -33,6 +33,7 @@ type Handler struct {
 	setupLoader        *setup.Loader
 	timingEnabled      bool
 	preparedHarnesses  map[string]*instrument.PreparedHarness
+	preparedTargets    map[string]string // "file\x00function" → current prepare_id for stale detection
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -47,6 +48,7 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
 		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
+		preparedTargets:   make(map[string]string),
 	}
 }
 
@@ -61,6 +63,7 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
 		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
+		preparedTargets:   make(map[string]string),
 	}
 }
 
@@ -337,6 +340,17 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	}
 
 	prepareID := computePrepareID(file, *req.Function, execMocks)
+	targetKey := file + "\x00" + *req.Function
+
+	// Invalidate stale harness if the same target was prepared with different inputs.
+	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
+		h.log.Debug("invalidating stale prepared harness", "old_prepare_id", oldID, "new_prepare_id", prepareID)
+		if oldHarness, ok := h.preparedHarnesses[oldID]; ok {
+			oldHarness.Cleanup()
+			delete(h.preparedHarnesses, oldID)
+		}
+		delete(h.preparedTargets, targetKey)
+	}
 
 	// Idempotent: return immediately if already prepared.
 	if _, exists := h.preparedHarnesses[prepareID]; exists {
@@ -365,6 +379,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	}
 
 	h.preparedHarnesses[prepareID] = harness
+	h.preparedTargets[targetKey] = prepareID
 	resp.Status = "prepare"
 	resp.PrepareID = prepareID
 	return finalizeResponse(resp, timing)
@@ -416,14 +431,17 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
 		harness, ok := h.preparedHarnesses[*req.PrepareID]
-		if !ok {
-			finishExecute()
-			resp.Status = "error"
-			resp.Code = ErrInvalidRequest
-			resp.Message = fmt.Sprintf("prepare_id not found: %s", *req.PrepareID)
-			return resp
+		if ok {
+			result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
+		} else {
+			// Stale or invalidated prepare_id — fall through to auto-lookup or one-shot.
+			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
+			if autoHarness := h.lookupPreparedHarness(file, *req.Function, execMocks); autoHarness != nil {
+				result, err = instrument.ExecuteWithPreparedHarness(autoHarness, req.Inputs, timing, capture)
+			} else {
+				result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
+			}
 		}
-		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
 	} else if harness := h.lookupPreparedHarness(file, *req.Function, execMocks); harness != nil {
 		h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
 		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
@@ -699,6 +717,7 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 			ph.Cleanup()
 		}
 		h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+		h.preparedTargets = make(map[string]string)
 	}
 
 	// Clear stale session state so the next setup/execute cycle starts clean.
@@ -762,6 +781,7 @@ func (h *Handler) handleShutdown(resp Response) Response {
 		ph.Cleanup()
 	}
 	h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+	h.preparedTargets = make(map[string]string)
 	h.registry.Close()
 	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"

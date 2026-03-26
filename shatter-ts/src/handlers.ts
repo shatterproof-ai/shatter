@@ -163,6 +163,13 @@ function setupContextKey(level: SetupLevel, scope: string): string {
 const preparedKeys = new Map<string, string>();
 
 /**
+ * Maps instrument cache key → current prepare_id for stale detection.
+ * When a new prepare arrives for the same target with a different prepare_id,
+ * the old entry is invalidated.
+ */
+const preparedTargets = new Map<string, string>();
+
+/**
  * Compute a deterministic 16-char hex prepare_id from file, function, and mocks.
  * Matches the algorithm used by the Go and Rust frontends.
  */
@@ -355,11 +362,20 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
       const prepareId = computePrepareId(resolvedFile, request.function, request.mocks);
 
+      // Invalidate stale prepared target if the same key was prepared with different inputs.
+      const oldPrepareId = preparedTargets.get(instrumentKey);
+      if (oldPrepareId !== undefined && oldPrepareId !== prepareId) {
+        preparedKeys.delete(oldPrepareId);
+        if (_executor) _executor.deleteCompiledScriptEntry(instrumentKey);
+        preparedTargets.delete(instrumentKey);
+      }
+
       // Idempotent: if already prepared, return the same id.
       if (!preparedKeys.has(prepareId)) {
         const executor = await getExecutor();
         executor.warmCompiledScriptCache(instrumentedSource, instrumentKey);
         preparedKeys.set(prepareId, instrumentKey);
+        preparedTargets.set(instrumentKey, prepareId);
       }
 
       return {
@@ -402,13 +418,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         let instrumentKey = `${fileForExec}:${funcName}`;
         if (request.prepare_id) {
           const preparedKey = preparedKeys.get(request.prepare_id);
-          if (!preparedKey) {
-            return {
-              response: errorResponse(request.id, "invalid_request", `prepare_id not found: ${request.prepare_id}`),
-              shutdown: false,
-            };
+          if (preparedKey) {
+            instrumentKey = preparedKey;
+          } else {
+            // Stale or invalidated prepare_id — fall through to default instrumentKey.
           }
-          instrumentKey = preparedKey;
         }
         const instrumentedSource = instrumentedSources.get(instrumentKey);
 
@@ -508,6 +522,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
         preparedKeys.clear();
+        preparedTargets.clear();
         // Only clear executor caches if executor was loaded this session.
         if (_executor) {
           _executor.clearCompiledScriptCache();
@@ -595,6 +610,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
       preparedKeys.clear();
+      preparedTargets.clear();
       if (_executor) {
         _executor.clearCompiledScriptCache();
         _executor.clearModuleCache();
