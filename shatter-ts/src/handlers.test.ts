@@ -386,14 +386,44 @@ describe("handleRequest", () => {
       }
     });
 
-    it("execute with unknown prepare_id returns invalid_request error", async () => {
-      const { response } = await handleRequest(
-        makeRequest({ command: "execute", function: "classifyNumber", inputs: [1], mocks: [], prepare_id: "deadbeefcafe0000" })
+    it("execute with stale prepare_id falls through to non-prepared execution", async () => {
+      // Instrument first so execute has a source to work with.
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
       );
-      expect(response.status).toBe("error");
-      if (response.status === "error") {
-        expect(response.code).toBe("invalid_request");
-      }
+      const { response } = await handleRequest(
+        makeRequest({ command: "execute", function: `${exampleFile}:classifyNumber`, inputs: [42], mocks: [], prepare_id: "deadbeefcafe0000" })
+      );
+      // Stale prepare_id should fall through to non-prepared execution, not error.
+      expect(response.status).toBe("execute");
+    });
+
+    it("invalidates stale target when mocks change", async () => {
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+
+      // Prepare with no mocks.
+      const { response: r1 } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(r1.status).toBe("prepare");
+      const id1 = (r1 as PrepareResponse).prepare_id;
+
+      // Prepare with a mock — different prepare_id, old one should be invalidated.
+      const { response: r2 } = await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [{ symbol: "foo", return_values: [], should_track_calls: false, default_behavior: "passthrough" }] })
+      );
+      expect(r2.status).toBe("prepare");
+      const id2 = (r2 as PrepareResponse).prepare_id;
+
+      expect(id1).not.toBe(id2);
+
+      // Execute with the new prepare_id succeeds.
+      const { response: execResp } = await handleRequest(
+        makeRequest({ command: "execute", function: `${exampleFile}:classifyNumber`, inputs: [42], mocks: [], prepare_id: id2 })
+      );
+      expect(execResp.status).toBe("execute");
     });
   });
 

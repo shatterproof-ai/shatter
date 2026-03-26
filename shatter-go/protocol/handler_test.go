@@ -1648,3 +1648,71 @@ func TestPreparedHarnessDeadProcessRecovery(t *testing.T) {
 	_ = exec1
 	_ = shutdownReq
 }
+
+func TestPrepareStaleMocksInvalidatesOldHarness(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare with no mocks → prepare_id_1.
+	prep1 := reqJSON(1, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	resp1 := sendRecv(t, prep1)
+	if resp1.Status != "prepare" {
+		t.Fatalf("prepare 1 status = %q (message: %s)", resp1.Status, resp1.Message)
+	}
+	id1 := resp1.PrepareID
+
+	// Prepare with a mock → prepare_id_2 (different).
+	prep2 := reqJSON(2, "prepare", fmt.Sprintf(
+		`"file":"%s","function":"add","mocks":[{"symbol":"someFunc"}]`, tmp))
+
+	// Run both prepares in a conversation so the handler sees the stale target.
+	responses := conversation(t, prep1, prep2)
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+	if responses[0].Status != "prepare" || responses[1].Status != "prepare" {
+		t.Fatalf("expected both prepare, got %q and %q", responses[0].Status, responses[1].Status)
+	}
+	id2 := responses[1].PrepareID
+
+	if id1 == id2 {
+		t.Errorf("different mock configs must produce different prepare_ids: %s == %s", id1, id2)
+	}
+
+	// Execute with the new prepare_id succeeds.
+	exec2 := reqJSON(3, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[1,2],"mocks":[{"symbol":"someFunc"}],"prepare_id":%q`, tmp, id2))
+	responses2 := conversation(t, prep1, prep2, exec2)
+	if len(responses2) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(responses2))
+	}
+	if responses2[2].Status != "execute" {
+		t.Fatalf("execute with new prepare_id: status = %q (message: %s)", responses2[2].Status, responses2[2].Message)
+	}
+}
+
+func TestExecuteWithStalePrepareIdFallsThrough(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare, then execute with a bogus prepare_id — should fall through to one-shot.
+	prep := reqJSON(1, "prepare", fmt.Sprintf(`"file":"%s","function":"add","mocks":[]`, tmp))
+	exec := reqJSON(2, "execute", fmt.Sprintf(
+		`"file":"%s","function":"add","inputs":[3,4],"mocks":[],"prepare_id":"deadbeefcafe0000"`, tmp))
+
+	responses := conversation(t, prep, exec)
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(responses))
+	}
+	if responses[0].Status != "prepare" {
+		t.Fatalf("prepare status = %q (message: %s)", responses[0].Status, responses[0].Message)
+	}
+	// Stale prepare_id should NOT error — should fall through to one-shot execution.
+	if responses[1].Status != "execute" {
+		t.Fatalf("execute with stale prepare_id: status = %q, want execute (message: %s)", responses[1].Status, responses[1].Message)
+	}
+}
