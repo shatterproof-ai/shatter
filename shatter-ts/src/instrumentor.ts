@@ -72,6 +72,61 @@ export const MCDC_RECORD_FUNCTION = "__shatter_mcdc_record";
  */
 export const MCDC_BRANCH_FUNCTION = "__shatter_branch_mcdc";
 
+/**
+ * The name of the crypto boundary recording function inserted into instrumented code.
+ * Injected before calls to known encrypt/decrypt functions so the executor can
+ * capture key, IV, and algorithm values for boundary splitting.
+ *
+ * Signature: __shatter_crypto_boundary(boundaryId, kind, functionName, ...args) → void
+ * - boundaryId: stable string ID for this boundary, e.g. "cb-0"
+ * - kind: "encrypt" | "decrypt"
+ * - functionName: the function name, e.g. "createDecipheriv"
+ * - ...args: the original runtime arguments to the crypto function (key, iv, etc.)
+ */
+export const CRYPTO_BOUNDARY_FUNCTION = "__shatter_crypto_boundary";
+
+/**
+ * Parameter role mappings for known Node.js crypto functions.
+ *
+ * Maps function name → { argIndex: role }. The executor uses this to extract
+ * algorithm, key, IV, and ciphertext index from the captured runtime arguments.
+ *
+ * Role meanings:
+ * - "algorithm": string name of the cipher, e.g. "aes-256-cbc"
+ * - "key": encryption/decryption key (Buffer or string)
+ * - "iv": initialization vector (Buffer, string, or null)
+ * - "data": the data argument — for decrypt functions this is the ciphertext
+ */
+export const KNOWN_CRYPTO_PARAM_ROLES: Record<string, Record<number, "algorithm" | "key" | "iv" | "data">> = {
+  // node:crypto — stream ciphers
+  createDecipheriv: { 0: "algorithm", 1: "key", 2: "iv" },
+  createCipheriv: { 0: "algorithm", 1: "key", 2: "iv" },
+  // node:crypto — RSA / asymmetric
+  privateDecrypt: { 1: "data" },
+  publicDecrypt: { 1: "data" },
+  privateEncrypt: { 1: "data" },
+  publicEncrypt: { 1: "data" },
+};
+
+/**
+ * Set of function names that represent known decrypt operations.
+ * Used during instrumentation to decide whether to inject a crypto boundary call.
+ */
+const KNOWN_DECRYPT_FUNCTION_NAMES = new Set<string>([
+  "createDecipheriv",
+  "privateDecrypt",
+  "publicDecrypt",
+]);
+
+/**
+ * Set of function names that represent known encrypt operations.
+ */
+const KNOWN_ENCRYPT_FUNCTION_NAMES = new Set<string>([
+  "createCipheriv",
+  "privateEncrypt",
+  "publicEncrypt",
+]);
+
 /** Mutable state threaded through the instrumentation pass. */
 interface InstrumentationContext {
   sourceFile: ts.SourceFile;
@@ -80,6 +135,8 @@ interface InstrumentationContext {
   nextBranchId: number;
   nextLoopId: number;
   nextCallSiteId: number;
+  /** Counter for crypto boundary IDs — incremented each time a boundary is injected. */
+  nextCryptoBoundaryId: number;
   /** Maps local variable names to their symbolic expressions derived from parameters. */
   dataFlowMap: Map<string, SymExpr>;
   /** Unique source lines where __shatter_record() calls were inserted. */
@@ -569,6 +626,7 @@ function createInstrumentationTransformer(
         nextBranchId: 0,
         nextLoopId: 0,
         nextCallSiteId: 0,
+        nextCryptoBoundaryId: 0,
         dataFlowMap,
         instrumentableLines,
       };
@@ -578,6 +636,7 @@ function createInstrumentationTransformer(
           ctx.nextBranchId = 0;
           ctx.nextLoopId = 0;
           ctx.nextCallSiteId = 1;
+          ctx.nextCryptoBoundaryId = 0;
           const instrumentedBody = instrumentBlock(node.body, ctx);
           const newBody = wrapFunctionBodyWithCallScope(instrumentedBody, 0, context.factory);
           branchState.nextBranchId = ctx.nextBranchId;
@@ -679,9 +738,115 @@ function createInstrumentationTransformer(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Crypto boundary injection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Information about a detected crypto function call within a statement.
+ */
+interface CryptoCallInfo {
+  functionName: string;
+  kind: "encrypt" | "decrypt";
+  args: ts.NodeArray<ts.Expression>;
+}
+
+/**
+ * If `expr` is a call to a known encrypt or decrypt function, return its info.
+ * Returns null for any other expression.
+ *
+ * Matches both bare calls `createDecipheriv(...)` and member calls
+ * `crypto.createDecipheriv(...)`.
+ */
+function findCryptoCallInExpression(expr: ts.Expression): CryptoCallInfo | null {
+  if (!ts.isCallExpression(expr)) return null;
+
+  let functionName: string | null = null;
+
+  if (ts.isPropertyAccessExpression(expr.expression)) {
+    functionName = expr.expression.name.text;
+  } else if (ts.isIdentifier(expr.expression)) {
+    functionName = expr.expression.text;
+  }
+
+  if (functionName === null) return null;
+
+  if (KNOWN_DECRYPT_FUNCTION_NAMES.has(functionName)) {
+    return { functionName, kind: "decrypt", args: expr.arguments };
+  }
+  if (KNOWN_ENCRYPT_FUNCTION_NAMES.has(functionName)) {
+    return { functionName, kind: "encrypt", args: expr.arguments };
+  }
+
+  return null;
+}
+
+/**
+ * Scan a statement shallowly for crypto function calls.
+ *
+ * Only checks the top-level expression of expression statements, the
+ * initializer of the first declaration in variable statements, and the
+ * return expression of return statements. Nested/chained calls are not
+ * traversed — the goal is to catch the common "const x = decrypt(...)"
+ * and "return decrypt(...)" patterns without expensive deep traversal.
+ */
+function findCryptoCallsInStatement(stmt: ts.Statement): CryptoCallInfo[] {
+  const results: CryptoCallInfo[] = [];
+
+  if (ts.isExpressionStatement(stmt)) {
+    const info = findCryptoCallInExpression(stmt.expression);
+    if (info !== null) results.push(info);
+  }
+
+  if (ts.isVariableStatement(stmt)) {
+    for (const decl of stmt.declarationList.declarations) {
+      if (decl.initializer !== undefined) {
+        const info = findCryptoCallInExpression(decl.initializer);
+        if (info !== null) results.push(info);
+      }
+    }
+  }
+
+  if (ts.isReturnStatement(stmt) && stmt.expression !== undefined) {
+    const info = findCryptoCallInExpression(stmt.expression);
+    if (info !== null) results.push(info);
+  }
+
+  return results;
+}
+
+/**
+ * Build a `__shatter_crypto_boundary(boundaryId, kind, functionName, ...args)` call.
+ *
+ * The call is injected immediately before the crypto function call so the
+ * executor can capture argument values before they are consumed.
+ */
+function createCryptoBoundaryCall(
+  info: CryptoCallInfo,
+  boundaryId: string,
+  factory: ts.NodeFactory,
+): ts.ExpressionStatement {
+  return factory.createExpressionStatement(
+    factory.createCallExpression(
+      factory.createIdentifier(CRYPTO_BOUNDARY_FUNCTION),
+      undefined,
+      [
+        factory.createStringLiteral(boundaryId),
+        factory.createStringLiteral(info.kind),
+        factory.createStringLiteral(info.functionName),
+        ...info.args,
+      ],
+    ),
+  );
+}
+
 /**
  * Instrument a block by prepending a __shatter_record() call before each
  * statement in the block, and recursively instrumenting branch bodies.
+ *
+ * Also injects `__shatter_crypto_boundary()` calls before any statement that
+ * contains a call to a known encrypt/decrypt function, so the executor can
+ * capture key, IV, and algorithm values at runtime.
  */
 function instrumentBlock(
   block: ts.Block,
@@ -693,6 +858,14 @@ function instrumentBlock(
     const line = ctx.sourceFile.getLineAndCharacterOfPosition(stmt.getStart(ctx.sourceFile)).line + 1;
     ctx.instrumentableLines.add(line);
     newStatements.push(createRecordCall(ctx.factory, line));
+
+    // Inject a crypto boundary recording call before any crypto API call.
+    const cryptoCalls = findCryptoCallsInStatement(stmt);
+    for (const info of cryptoCalls) {
+      const boundaryId = `cb-${ctx.nextCryptoBoundaryId++}`;
+      newStatements.push(createCryptoBoundaryCall(info, boundaryId, ctx.factory));
+    }
+
     newStatements.push(instrumentStatement(stmt, ctx));
   }
 

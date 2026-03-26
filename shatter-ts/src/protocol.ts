@@ -191,6 +191,10 @@ export interface ExecuteResponse extends BaseResponse {
   scope_events?: TraceEvent[];
   discovered_dependencies?: DiscoveredDependency[];
   connection_failures?: ConnectionFailure[];
+  /** Cryptographic boundaries intercepted at runtime.
+   *  When non-empty, the function called a known encrypt or decrypt API;
+   *  the core engine can use this for boundary splitting. */
+  runtime_crypto_boundaries?: RuntimeCryptoBoundary[];
 }
 
 export interface SetupResponse extends BaseResponse {
@@ -253,6 +257,35 @@ export interface CryptoBoundary {
   call_sites: number[];
   input_entropy?: number;
   output_entropy?: number;
+}
+
+/**
+ * A cryptographic boundary detected at execution time.
+ *
+ * The instrumented frontend injects `__shatter_crypto_boundary()` calls when it
+ * encounters known encrypt/decrypt API calls. Those calls populate this structure
+ * with key, IV, and algorithm values captured from the actual runtime arguments.
+ *
+ * The core engine uses these records to apply boundary splitting: constraints on
+ * the decrypted plaintext are solved, then the plaintext is re-encrypted to
+ * produce a valid ciphertext test input.
+ */
+export interface RuntimeCryptoBoundary {
+  /** Stable identifier for this boundary within the execution trace, e.g. `"cb-0"`. */
+  boundary_id: string;
+  /** Whether this is an encrypt or decrypt boundary. */
+  kind: "encrypt" | "decrypt";
+  /** Function name as it appears in the source, e.g. `"createDecipheriv"`. */
+  function_name: string;
+  /** Algorithm string captured at runtime, e.g. `"aes-256-cbc"`. */
+  algorithm?: string;
+  /** Index of the argument holding the ciphertext. Absent when ciphertext is
+   *  passed to a separate method call (e.g. `decipher.update(ciphertext)`). */
+  ciphertext_param_index?: number;
+  /** Base64-encoded key bytes captured at runtime. */
+  key_value?: string;
+  /** Base64-encoded IV bytes captured at runtime. */
+  iv_value?: string;
 }
 
 export interface FunctionAnalysis {

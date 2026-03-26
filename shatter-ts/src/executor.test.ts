@@ -18,6 +18,7 @@ import {
   DNS_FAILURE_PATTERNS,
   AUTH_ERROR_PATTERNS,
   TIMEOUT_PATTERNS,
+  buildRuntimeCryptoBoundary,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -790,6 +791,7 @@ describe("scope events in execution", () => {
       ],
       discovered_dependencies: [],
       connection_failures: [],
+      runtime_crypto_boundaries: [],
     };
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
@@ -1027,6 +1029,7 @@ describe("buildExecuteResponse includes connection_failures", () => {
       scope_events: [],
       discovered_dependencies: [],
       connection_failures: [],
+      runtime_crypto_boundaries: [],
     };
     const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
     expect(resp.connection_failures).toBeUndefined();
@@ -1047,11 +1050,68 @@ describe("buildExecuteResponse includes connection_failures", () => {
       connection_failures: [
         { symbol: "pg:query", error_kind: "connection_refused" as const, message: "ECONNREFUSED" },
       ],
+      runtime_crypto_boundaries: [],
     };
     const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
     expect(resp.connection_failures).toEqual([
       { symbol: "pg:query", error_kind: "connection_refused", message: "ECONNREFUSED" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRuntimeCryptoBoundary tests
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeCryptoBoundary", () => {
+  it("extracts algorithm, key, and iv from createDecipheriv arguments", () => {
+    const key = Buffer.from("0123456789abcdef0123456789abcdef", "utf-8");
+    const iv = Buffer.from("0123456789abcdef", "utf-8");
+    const result = buildRuntimeCryptoBoundary("cb-0", "decrypt", "createDecipheriv", [
+      "aes-256-cbc",
+      key,
+      iv,
+    ]);
+    expect(result.boundary_id).toBe("cb-0");
+    expect(result.kind).toBe("decrypt");
+    expect(result.function_name).toBe("createDecipheriv");
+    expect(result.algorithm).toBe("aes-256-cbc");
+    expect(result.key_value).toBe(key.toString("base64"));
+    expect(result.iv_value).toBe(iv.toString("base64"));
+    expect(result.ciphertext_param_index).toBeUndefined();
+  });
+
+  it("extracts ciphertext_param_index for privateDecrypt", () => {
+    const ciphertext = Buffer.from("encrypted-data");
+    const result = buildRuntimeCryptoBoundary("cb-1", "decrypt", "privateDecrypt", [
+      { key: "pem-key" },
+      ciphertext,
+    ]);
+    expect(result.kind).toBe("decrypt");
+    expect(result.function_name).toBe("privateDecrypt");
+    expect(result.ciphertext_param_index).toBe(1);
+    expect(result.algorithm).toBeUndefined();
+  });
+
+  it("returns boundary with only required fields when no param roles match", () => {
+    const result = buildRuntimeCryptoBoundary("cb-2", "encrypt", "unknownCrypto", []);
+    expect(result.boundary_id).toBe("cb-2");
+    expect(result.kind).toBe("encrypt");
+    expect(result.function_name).toBe("unknownCrypto");
+    expect(result.algorithm).toBeUndefined();
+    expect(result.key_value).toBeUndefined();
+    expect(result.iv_value).toBeUndefined();
+    expect(result.ciphertext_param_index).toBeUndefined();
+  });
+
+  it("handles string key/iv by base64-encoding as binary", () => {
+    const result = buildRuntimeCryptoBoundary("cb-3", "decrypt", "createDecipheriv", [
+      "aes-128-gcm",
+      "rawkeystring",
+      "rawivstring",
+    ]);
+    expect(result.key_value).toBeDefined();
+    expect(result.iv_value).toBeDefined();
   });
 });
 

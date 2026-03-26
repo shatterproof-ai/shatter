@@ -149,6 +149,45 @@
         "performance": {
           "$ref": "performance-metrics.schema.json",
           "description": "Performance metrics."
+        },
+        "runtime_crypto_boundaries": {
+          "type": "array",
+          "description": "Cryptographic boundaries intercepted at runtime. Present when the function called a known encrypt/decrypt API; the core engine uses these for boundary splitting.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "boundary_id": {
+                "type": "string",
+                "description": "Stable identifier for this boundary within the execution trace, e.g. 'cb-0'."
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["encrypt", "decrypt"],
+                "description": "Whether this is an encrypt or decrypt boundary."
+              },
+              "function_name": {
+                "type": "string",
+                "description": "Function name as it appears in source, e.g. 'createDecipheriv'."
+              },
+              "algorithm": {
+                "type": "string",
+                "description": "Algorithm string captured at runtime, e.g. 'aes-256-cbc'."
+              },
+              "ciphertext_param_index": {
+                "type": "integer",
+                "description": "Index of the argument holding the ciphertext. Absent when ciphertext is passed to a separate method call."
+              },
+              "key_value": {
+                "type": "string",
+                "description": "Base64-encoded key bytes captured at runtime."
+              },
+              "iv_value": {
+                "type": "string",
+                "description": "Base64-encoded IV bytes captured at runtime."
+              }
+            },
+            "required": ["boundary_id", "kind", "function_name"]
+          }
         }
       },
       "required": ["status", "branch_path", "lines_executed", "calls_to_external", "path_constraints", "side_effects", "performance"]

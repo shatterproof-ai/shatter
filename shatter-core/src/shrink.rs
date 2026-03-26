@@ -138,8 +138,10 @@ pub fn bulk_shrink_candidate(inputs: &[Value], param_infos: &[ParamInfo]) -> Opt
     let mut any_changed = false;
     for i in 0..param_infos.len().min(inputs.len()) {
         let candidates = shrink_candidates(&inputs[i], &param_infos[i].typ);
-        if let Some(first) = candidates.into_iter().next() {
-            trial[i] = first;
+        let orig_complexity = value_complexity(&inputs[i]);
+        // Only replace if the candidate is strictly simpler than the original.
+        if let Some(simpler) = candidates.into_iter().find(|c| value_complexity(c) < orig_complexity) {
+            trial[i] = simpler;
             any_changed = true;
         }
     }
@@ -1227,7 +1229,7 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -1430,7 +1432,7 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -1621,7 +1623,7 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -1952,7 +1954,7 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![],
+                connection_failures: vec![], runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
