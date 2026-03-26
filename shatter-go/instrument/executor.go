@@ -1647,9 +1647,9 @@ func rewritePackageToMain(dir string) error {
 
 // ─── Prepare/Execute lifecycle ───────────────────────────────────────────────
 
-// PreparedHarness holds a pre-compiled binary and its metadata.
-// The binary reads inputs from shatter_inputs.json at runtime, allowing
-// repeated execution without recompilation.
+// PreparedHarness holds a pre-compiled loop-mode binary and its metadata.
+// The binary communicates via stdin/stdout JSON, allowing repeated execution
+// through a persistent subprocess without recompilation or process re-spawn.
 type PreparedHarness struct {
 	ArtifactDir string
 	BinaryPath  string
@@ -1657,15 +1657,91 @@ type PreparedHarness struct {
 	ReturnInfo  returnTypeInfo
 	GlobalVars  []globalVarInfo
 	HasMocks    bool
+	DiscDeps    []DiscoveredDependency
+
+	mu   sync.Mutex
+	proc *persistentHarness // lazily spawned persistent subprocess
 }
 
-// Cleanup removes the artifact directory created by PrepareHarness.
+// Cleanup stops the persistent subprocess (if running) and removes the
+// artifact directory created by PrepareHarness.
 func (h *PreparedHarness) Cleanup() {
+	h.mu.Lock()
+	if h.proc != nil {
+		// Close subprocess but don't let it remove the dir (we do that below).
+		h.proc.stdin.Close()
+		_ = h.proc.cmd.Wait()
+		h.proc = nil
+	}
+	h.mu.Unlock()
 	os.RemoveAll(h.ArtifactDir)
 }
 
-// PrepareHarness analyzes, instruments, and compiles a harness for the given
-// function without running it. The caller must call Cleanup() when done.
+// KillProc forcibly kills the persistent subprocess (if any) without cleanup.
+// Intended for testing dead-process recovery.
+func (h *PreparedHarness) KillProc() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.proc != nil && h.proc.cmd.Process != nil {
+		h.proc.cmd.Process.Kill() //nolint:errcheck
+		_ = h.proc.cmd.Wait()
+		h.proc = nil
+	}
+}
+
+// spawnOrReuse returns an existing persistent subprocess or spawns a new one
+// from the pre-compiled binary. Dead subprocesses are detected and respawned.
+func (h *PreparedHarness) spawnOrReuse() (*persistentHarness, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Check if existing subprocess is still alive.
+	if h.proc != nil {
+		if h.proc.cmd.ProcessState != nil {
+			// Process has exited — clear and respawn.
+			h.proc = nil
+		} else {
+			return h.proc, nil
+		}
+	}
+
+	cmd := exec.Command(h.BinaryPath) //nolint:gosec
+	cmd.Dir = h.ArtifactDir
+	cmd.Stderr = os.Stderr
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		stdinPipe.Close()
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		stdinPipe.Close()
+		return nil, fmt.Errorf("starting prepared harness subprocess: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024) // 4 MB
+
+	h.proc = &persistentHarness{
+		cmd:        cmd,
+		stdinEnc:   json.NewEncoder(stdinPipe),
+		stdin:      stdinPipe,
+		stdout:     scanner,
+		dir:        h.ArtifactDir,
+		discDeps:   h.DiscDeps,
+		paramCount: len(h.Params),
+	}
+	return h.proc, nil
+}
+
+// PrepareHarness analyzes, instruments, and compiles a loop-mode harness for
+// the given function without running it. The resulting binary communicates via
+// stdin/stdout JSON, enabling persistent subprocess reuse across executions.
+// The caller must call Cleanup() when done.
 func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collector, mocks []MockConfig) (*PreparedHarness, error) {
 	finishAnalyze := timing.Start("prepare.analyze")
 	params, returnInfo, err := analyzeForExecution(sourcePath, funcName)
@@ -1678,6 +1754,7 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 	if err != nil {
 		globalVars = nil
 	}
+	discDeps := discoverDependencies(sourcePath, mocks)
 
 	finishInstrument := timing.Start("prepare.instrument")
 	outputDir, err := InstrumentFileWithTiming(sourcePath, &funcName, nil, timing)
@@ -1686,6 +1763,14 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 		return nil, fmt.Errorf("instrumenting: %w", err)
 	}
 	// Do NOT defer RemoveAll — the artifact dir persists until Cleanup().
+
+	// Copy sibling Go files for module-backed sources so the build can access
+	// package-private symbols (same as buildAndSpawnHarness).
+	if !isStandaloneGoFile(sourcePath) {
+		if sibErr := copySiblingGoFiles(sourcePath, outputDir); sibErr != nil {
+			fmt.Fprintf(os.Stderr, "[shatter-go] warning: copying sibling Go files: %v\n", sibErr)
+		}
+	}
 
 	finishRewrite := timing.Start("prepare.rewrite_package")
 	if err := rewritePackageToMain(outputDir); err != nil {
@@ -1697,8 +1782,7 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 
 	hasMocks := len(mocks) > 0
 	if hasMocks {
-		// Use relative path — binary runs with Dir = outputDir.
-		mockSource := generateMockFile(mocks, "shatter_external_calls.json")
+		mockSource := generateLoopMockFile(mocks)
 		mockFilePath := filepath.Join(outputDir, "shatter_mocks.go")
 		finishWriteMocks := timing.Start("prepare.write_mocks")
 		if err := os.WriteFile(mockFilePath, []byte(mockSource), 0644); err != nil {
@@ -1710,11 +1794,11 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 	}
 
 	finishHarness := timing.Start("prepare.generate_harness")
-	harness, err := generateHarnessTemplate(funcName, params, returnInfo, globalVars, hasMocks)
+	harness, err := generateLoopHarness(funcName, params, returnInfo, globalVars, hasMocks)
 	finishHarness()
 	if err != nil {
 		os.RemoveAll(outputDir)
-		return nil, fmt.Errorf("generating harness template: %w", err)
+		return nil, fmt.Errorf("generating loop harness: %w", err)
 	}
 
 	mainPath := filepath.Join(outputDir, "main.go")
@@ -1738,6 +1822,15 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 	finishBuild := timing.Start("prepare.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
+	if isStandaloneGoFile(sourcePath) {
+		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
+			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
+		}
+	} else {
+		if gocache := moduleGoBuildCacheDir(); gocache != "" {
+			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
+		}
+	}
 	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
 		finishBuild()
 		os.RemoveAll(outputDir)
@@ -1752,156 +1845,81 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 		ReturnInfo:  returnInfo,
 		GlobalVars:  globalVars,
 		HasMocks:    hasMocks,
+		DiscDeps:    discDeps,
 	}, nil
 }
 
-// ExecuteWithPreparedHarness runs the pre-compiled harness with the given inputs.
+// ExecuteWithPreparedHarness runs the pre-compiled loop-mode harness with the
+// given inputs. On first call it spawns a persistent subprocess; subsequent
+// calls reuse the same process. Dead subprocesses are detected and respawned.
 func ExecuteWithPreparedHarness(h *PreparedHarness, inputs []json.RawMessage, timing *frontendtiming.Collector, capture bool) (*ExecuteResult, error) {
 	if len(inputs) != len(h.Params) {
 		return nil, fmt.Errorf("expected %d inputs, got %d", len(h.Params), len(inputs))
 	}
 
-	finishWriteInputs := timing.Start("execute.write_inputs")
-	inputsData, err := json.Marshal(inputs)
+	proc, err := h.spawnOrReuse()
 	if err != nil {
-		finishWriteInputs()
-		return nil, fmt.Errorf("marshaling inputs: %w", err)
+		return nil, fmt.Errorf("spawning prepared harness: %w", err)
 	}
-	inputsPath := filepath.Join(h.ArtifactDir, "shatter_inputs.json")
-	if err := os.WriteFile(inputsPath, inputsData, 0644); err != nil {
-		finishWriteInputs()
-		return nil, fmt.Errorf("writing shatter_inputs.json: %w", err)
-	}
-	finishWriteInputs()
 
-	start := time.Now()
 	execDur := execTimeout()
-	runCtx, runCancel := context.WithTimeout(context.Background(), execDur)
-	defer runCancel()
-
 	finishRun := timing.Start("execute.run")
-	runCmd := exec.CommandContext(runCtx, h.BinaryPath)
-	runCmd.Dir = h.ArtifactDir
-	var stdoutBuf, stderrBuf strings.Builder
-	runCmd.Stdout = &stdoutBuf
-	runCmd.Stderr = &stderrBuf
-	runErr := runCmd.Run()
+	wallStart := time.Now()
+	resp, err := proc.execute(inputs, capture, execDur)
+	wallTime := time.Since(wallStart)
 	finishRun()
-	wallTime := time.Since(start)
+
+	if err != nil {
+		// Clear dead subprocess so next call respawns.
+		h.mu.Lock()
+		h.proc = nil
+		h.mu.Unlock()
+
+		if strings.Contains(err.Error(), "timed out") {
+			cat := "infrastructure"
+			return &ExecuteResult{
+				BranchPath:    []BranchDecision{},
+				LinesExecuted: []int{},
+				SideEffects:   []SideEffect{},
+				ScopeEvents:   []json.RawMessage{},
+				Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+				ThrownError: &ErrorInfo{
+					ErrorType:     "timeout",
+					Message:       fmt.Sprintf("execution timed out after %s", execDur),
+					ErrorCategory: &cat,
+				},
+			}, nil
+		}
+		return nil, err
+	}
 
 	result := &ExecuteResult{
-		BranchPath:    []BranchDecision{},
-		LinesExecuted: []int{},
-		SideEffects:   []SideEffect{},
-		ScopeEvents:   []json.RawMessage{},
-		Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+		ReturnValue:            resp.ReturnValue,
+		ThrownError:            resp.ThrownError,
+		BranchPath:             resp.BranchPath,
+		LinesExecuted:          resp.LinesExecuted,
+		ExternalCalls:          resp.ExternalCalls,
+		DiscoveredDependencies: h.DiscDeps,
+		SideEffects:            resp.SideEffects,
+		ScopeEvents:            resp.ScopeEvents,
+		Performance:            PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
 	}
-
-	if capture {
-		if s := strings.TrimSpace(stdoutBuf.String()); s != "" {
-			result.SideEffects = append(result.SideEffects, SideEffect{
-				Kind: "console_output", Level: "log", Message: s,
-			})
-		}
-		if s := strings.TrimSpace(stderrBuf.String()); s != "" {
-			result.SideEffects = append(result.SideEffects, SideEffect{
-				Kind: "console_output", Level: "error", Message: s,
-			})
-		}
+	if resp.Performance != nil {
+		result.Performance.CPUTimeUs = resp.Performance.CPUTimeUs
+		result.Performance.HeapUsedBytes = resp.Performance.HeapUsedBytes
+		result.Performance.HeapAllocatedBytes = resp.Performance.HeapAllocatedBytes
 	}
-
-	resultsPath := filepath.Join(h.ArtifactDir, "shatter_results.json")
-	finishParseResults := timing.Start("execute.parse_results")
-	if data, err := os.ReadFile(resultsPath); err == nil {
-		var recorded struct {
-			LinesExecuted []int             `json:"lines_executed"`
-			BranchPath    []BranchDecision  `json:"branch_path"`
-			ScopeEvents   []json.RawMessage `json:"scope_events"`
-		}
-		if err := json.Unmarshal(data, &recorded); err == nil {
-			result.LinesExecuted = recorded.LinesExecuted
-			result.BranchPath = recorded.BranchPath
-			result.ScopeEvents = recorded.ScopeEvents
-		}
+	if result.BranchPath == nil {
+		result.BranchPath = []BranchDecision{}
 	}
-	finishParseResults()
-
-	returnPath := filepath.Join(h.ArtifactDir, "shatter_return.json")
-	finishParseReturn := timing.Start("execute.parse_return")
-	if data, err := os.ReadFile(returnPath); err == nil {
-		result.ReturnValue = json.RawMessage(data)
+	if result.LinesExecuted == nil {
+		result.LinesExecuted = []int{}
 	}
-	finishParseReturn()
-
-	if h.HasMocks {
-		mocksPath := filepath.Join(h.ArtifactDir, "shatter_external_calls.json")
-		finishParseMockCalls := timing.Start("execute.parse_mock_calls")
-		if data, err := os.ReadFile(mocksPath); err == nil {
-			var calls []ExternalCall
-			if err := json.Unmarshal(data, &calls); err == nil {
-				result.ExternalCalls = calls
-			}
-		}
-		finishParseMockCalls()
+	if result.SideEffects == nil {
+		result.SideEffects = []SideEffect{}
 	}
-
-	perfPath := filepath.Join(h.ArtifactDir, "shatter_perf.json")
-	finishParsePerf := timing.Start("execute.parse_perf")
-	if data, err := os.ReadFile(perfPath); err == nil {
-		var perf struct {
-			CPUTimeUs          int `json:"cpu_time_us"`
-			HeapUsedBytes      int `json:"heap_used_bytes"`
-			HeapAllocatedBytes int `json:"heap_allocated_bytes"`
-		}
-		if err := json.Unmarshal(data, &perf); err == nil {
-			result.Performance.CPUTimeUs = perf.CPUTimeUs
-			result.Performance.HeapUsedBytes = perf.HeapUsedBytes
-			result.Performance.HeapAllocatedBytes = perf.HeapAllocatedBytes
-		}
-	}
-	finishParsePerf()
-
-	if len(h.GlobalVars) > 0 {
-		globalsPath := filepath.Join(h.ArtifactDir, "shatter_globals.json")
-		if data, err := os.ReadFile(globalsPath); err == nil {
-			var changes []struct {
-				Kind     string          `json:"kind"`
-				Variable string          `json:"variable"`
-				Before   json.RawMessage `json:"before"`
-				After    json.RawMessage `json:"after"`
-			}
-			if err := json.Unmarshal(data, &changes); err == nil {
-				for _, c := range changes {
-					before := json.RawMessage(c.Before)
-					after := json.RawMessage(c.After)
-					result.SideEffects = append(result.SideEffects, SideEffect{
-						Kind:     "global_state_change",
-						Variable: c.Variable,
-						Before:   &before,
-						After:    &after,
-					})
-				}
-			}
-		}
-	}
-
-	if runErr != nil {
-		if runCtx.Err() == context.DeadlineExceeded {
-			cat := "infrastructure"
-			result.ThrownError = &ErrorInfo{
-				ErrorType:     "timeout",
-				Message:       fmt.Sprintf("execution timed out after %s", execDur),
-				ErrorCategory: &cat,
-			}
-		} else {
-			cat := "runtime"
-			result.ThrownError = &ErrorInfo{
-				ErrorType:     "runtime_error",
-				Message:       runErr.Error(),
-				Stack:         stderrBuf.String(),
-				ErrorCategory: &cat,
-			}
-		}
+	if result.ScopeEvents == nil {
+		result.ScopeEvents = []json.RawMessage{}
 	}
 
 	return result, nil
