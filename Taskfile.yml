@@ -146,7 +146,7 @@ tasks:
         else
           echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
         fi
-      - python3 protocol/conformance/run_golden_tests.py --check
+      - python3 protocol/conformance/run_golden_tests.py
 
   golden-test:
     desc: Run cross-frontend parity golden tests (compare capabilities and outputs against recorded expectations)
