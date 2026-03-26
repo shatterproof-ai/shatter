@@ -455,7 +455,7 @@ pub(crate) async fn run_explore(
                     &resolved.param_generators,
                     &resolved.generators,
                 ),
-                capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                capabilities: shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
                 user_seeds: vec![],
                 candidate_inputs: resolved.candidate_inputs
                     .iter()
@@ -529,6 +529,46 @@ pub(crate) async fn run_explore(
                     mcdc,
                 };
 
+                // Instrument the function so the frontend has the source ready for prepare.
+                if let Err(e) = frontend.send(ProtoCommand::Instrument {
+                    file: file_str.to_string(),
+                    function: func.name.clone(),
+                    mocks: concolic_config.mocks.clone(),
+                    project_root: project_root_str.clone(),
+                }).await {
+                    log::debug!("instrument failed for concolic path: {e}");
+                }
+
+                // Prepare the harness once if the frontend supports it.
+                let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
+                    frontend.capabilities(),
+                );
+                let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+                    match frontend.send(ProtoCommand::Prepare {
+                        file: file_str.to_string(),
+                        function: func.name.clone(),
+                        mocks: concolic_config.mocks.clone(),
+                        project_root: project_root_str.clone(),
+                    }).await {
+                        Ok(resp) => match resp.result {
+                            ResponseResult::Prepare { prepare_id } => {
+                                log::debug!("concolic prepare succeeded: {prepare_id}");
+                                Some(prepare_id)
+                            }
+                            other => {
+                                log::debug!("concolic prepare unexpected response: {other:?}");
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            log::debug!("concolic prepare failed, falling back: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 match shatter_core::orchestrator::explore(
                     frontend,
                     &func.name,
@@ -537,7 +577,7 @@ pub(crate) async fn run_explore(
                     &func.params,
                     &concolic_config,
                     None,
-                    None,
+                    prepare_id,
                 ).await {
                     Ok(mut concolic_result) => {
                         // Fallback: concolic path doesn't call instrument, so no
