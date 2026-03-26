@@ -116,6 +116,7 @@ pub struct Frontend {
     next_id: u64,
     request_timeout: Duration,
     language: Option<String>,
+    capabilities: Vec<String>,
 }
 
 impl Frontend {
@@ -147,6 +148,7 @@ impl Frontend {
             next_id: 1,
             request_timeout: config.request_timeout,
             language: None,
+            capabilities: Vec::new(),
         };
 
         frontend
@@ -169,7 +171,7 @@ impl Frontend {
             ResponseResult::Handshake {
                 frontend_version,
                 language,
-                ..
+                capabilities: frontend_caps,
             } => {
                 let core_major_minor = major_minor(PROTOCOL_VERSION);
                 let frontend_major_minor = major_minor(&frontend_version);
@@ -180,6 +182,7 @@ impl Frontend {
                     });
                 }
                 self.language = Some(language);
+                self.capabilities = frontend_caps;
                 Ok(())
             }
             ResponseResult::Error {
@@ -353,6 +356,11 @@ impl Frontend {
     /// The language reported by the frontend during handshake.
     pub fn language(&self) -> Option<&str> {
         self.language.as_deref()
+    }
+
+    /// Capabilities advertised by the frontend during handshake.
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 }
 

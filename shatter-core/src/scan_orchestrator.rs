@@ -206,6 +206,8 @@ pub struct ScanConfig {
     /// are merged after the layer completes, with duplicate inputs deduplicated
     /// by input hash. Default: 1 (one worker per function, backward compatible).
     pub workers_per_fn: usize,
+    /// Frontend capabilities from handshake, used to gate prepare commands.
+    pub capabilities: crate::orchestrator::FrontendCapabilities,
 }
 
 /// Context about sampling mode, for report headers.
@@ -571,7 +573,7 @@ pub async fn scan(
             setup_file: None,
             setup_level: crate::protocol::SetupLevel::Function,
             value_sources: vec![],
-            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
             user_seeds: vec![],
             candidate_inputs,
             pool_seeds,
@@ -1418,7 +1420,7 @@ pub async fn parallel_scan(
                 setup_file: None,
                 setup_level: crate::protocol::SetupLevel::Function,
                 value_sources: vec![],
-                capabilities: crate::orchestrator::FrontendCapabilities::default(),
+                capabilities: config.capabilities.clone(),
                 user_seeds: vec![],
                 candidate_inputs,
                 pool_seeds,
@@ -2957,6 +2959,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3034,6 +3037,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3105,6 +3109,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3193,6 +3198,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3291,6 +3297,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3373,6 +3380,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -3429,6 +3437,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -3469,6 +3478,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -3499,6 +3509,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -4081,6 +4092,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -4179,6 +4191,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -4248,6 +4261,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4319,6 +4333,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4406,6 +4421,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4504,6 +4520,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4608,6 +4625,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4722,6 +4740,7 @@ mod tests {
             isolation: IsolationMode::None,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4811,6 +4830,7 @@ mod tests {
             isolation: IsolationMode::Function,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4895,6 +4915,7 @@ mod tests {
             isolation: IsolationMode::Function,
             capture_side_effects: false,
             workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)

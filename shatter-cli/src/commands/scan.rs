@@ -421,6 +421,13 @@ pub(crate) async fn run_scan(
         return Ok(());
     }
 
+    // Capture frontend capabilities before shutting down analysis frontends.
+    let frontend_caps = frontends
+        .values()
+        .next()
+        .map(|fe| shatter_core::orchestrator::FrontendCapabilities::from_raw(fe.capabilities()))
+        .unwrap_or_default();
+
     // Shut down analysis frontends before starting parallel exploration.
     for frontend in frontends.into_values() {
         shutdown_frontend(frontend).await;
@@ -457,6 +464,7 @@ pub(crate) async fn run_scan(
             isolation,
             capture_side_effects,
             workers_per_fn,
+            capabilities: frontend_caps.clone(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -532,6 +540,7 @@ pub(crate) async fn run_scan(
         isolation,
         capture_side_effects,
         workers_per_fn,
+        capabilities: frontend_caps,
     };
 
     let scan_start = Instant::now();

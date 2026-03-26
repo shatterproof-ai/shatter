@@ -114,6 +114,46 @@ pub(crate) async fn run_observe(
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
                 mcdc: false,
             };
+            // Instrument the function so the frontend has the source ready for prepare.
+            if let Err(e) = frontend.send(ProtoCommand::Instrument {
+                file: file_str.clone(),
+                function: func.name.clone(),
+                mocks: vec![],
+                project_root: project_root_str.clone(),
+            }).await {
+                log::debug!("instrument failed for concolic path: {e}");
+            }
+
+            // Prepare the harness once if the frontend supports it.
+            let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
+                frontend.capabilities(),
+            );
+            let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+                match frontend.send(ProtoCommand::Prepare {
+                    file: file_str.clone(),
+                    function: func.name.clone(),
+                    mocks: vec![],
+                    project_root: project_root_str.clone(),
+                }).await {
+                    Ok(resp) => match resp.result {
+                        ResponseResult::Prepare { prepare_id } => {
+                            log::debug!("concolic prepare succeeded: {prepare_id}");
+                            Some(prepare_id)
+                        }
+                        other => {
+                            log::debug!("concolic prepare unexpected response: {other:?}");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        log::debug!("concolic prepare failed, falling back: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             match shatter_core::orchestrator::explore(
                 &mut frontend,
                 &func.name,
@@ -122,7 +162,7 @@ pub(crate) async fn run_observe(
                 &func.params,
                 &concolic_config,
                 None,
-                None,
+                prepare_id,
             )
             .await
             {
@@ -149,7 +189,7 @@ pub(crate) async fn run_observe(
                     &std::collections::HashMap::new(),
                     &std::collections::HashMap::new(),
                 ),
-                capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+                capabilities: shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
                 user_seeds: vec![],
                 candidate_inputs: vec![],
                 pool_seeds: vec![],
