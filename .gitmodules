@@ -1,3 +1,5 @@
 [submodule ".agents"]
 	path = .agents
 	url = git@github.com:ketang/agents.git
+	update = merge
+	branch = main

@@ -222,14 +222,14 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // response is returned immediately — preloads run concurrently.
       preloadHeavyModules();
       return {
-        response: finalizeResponse({
+        response: {
           protocol_version: PROTOCOL_VERSION,
           id: request.id,
           status: "handshake",
           frontend_version: PROTOCOL_VERSION,
           language: FRONTEND_LANGUAGE,
           capabilities: SUPPORTED_CAPABILITIES,
-        }, timingEnabled ? new TimingCollector() : undefined),
+        },
         shutdown: false,
       };
 

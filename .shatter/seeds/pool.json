@@ -159,6 +159,11 @@
             "branch_id": 0,
             "function": "safeDivide",
             "severity": "handled_error"
+          },
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
@@ -174,6 +179,11 @@
             "branch_id": 0,
             "function": "safeDivide",
             "severity": "handled_error"
+          },
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
@@ -722,6 +732,66 @@
           "kind": "float"
         },
         "value": -95.20789425568351
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 113.30894992611024
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -348.2034520942765
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": -89.0
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 83.0
       }
     ],
     "{\"kind\":\"int\"}": [
@@ -755,6 +825,11 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "severity": "rare_path"
+          },
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
             "severity": "rare_path"
           }
         ],
@@ -824,6 +899,81 @@
           "kind": "int"
         },
         "value": -678
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 504
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 689
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 815
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -777
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 594
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
