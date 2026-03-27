@@ -1221,6 +1221,35 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         action: CacheAction,
     },
+
+    /// Review and classify suspected-nondeterministic fields.
+    Nondeterminism {
+        #[command(subcommand)]
+        action: NondeterminismAction,
+    },
+}
+
+/// Sub-subcommands for `shatter nondeterminism`.
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum NondeterminismAction {
+    /// Interactively review nondeterminism candidates from the most recent scan.
+    ///
+    /// Presents each suspected-nondeterministic field one at a time with evidence.
+    /// Respond with:
+    ///   y — confirm (add to .shatter/config.yaml nondeterminism.confirmed)
+    ///   n — reject  (add to .shatter/config.yaml nondeterminism.rejected)
+    ///   s — skip    (defer to next review session)
+    ///   ? — show full evidence detail
+    ///   q — quit and save progress
+    ///
+    /// Candidates already confirmed or rejected in .shatter/config.yaml are
+    /// suppressed, so only new or escalated candidates appear.
+    Review {
+        /// Cache directory containing behavior maps from the most recent scan.
+        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
+        #[arg(long, env = "SHATTER_CACHE_DIR")]
+        cache_dir: Option<std::path::PathBuf>,
+    },
 }
 
 /// Sub-subcommands for `shatter telemetry`.

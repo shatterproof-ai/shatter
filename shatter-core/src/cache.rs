@@ -212,6 +212,23 @@ impl BehaviorMapCache {
         Ok((file_count, bytes))
     }
 
+    /// Load every behavior map stored in this cache directory.
+    ///
+    /// Walks the entire cache directory tree, loading all `.json` entries
+    /// (excluding `.spec.json` files) that match the current protocol version.
+    /// Silently skips corrupt or version-mismatched entries.
+    ///
+    /// Intended for `nondeterminism review`, which needs all cached maps to
+    /// surface candidates without knowing specific function IDs in advance.
+    pub fn load_all(&self) -> Result<Vec<BehaviorMap>, CacheError> {
+        if !self.cache_dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut maps = Vec::new();
+        collect_all_maps(&self.cache_dir, &mut maps)?;
+        Ok(maps)
+    }
+
     /// Default cache directory relative to a project root: `<project_root>/.shatter-cache/behavior-maps/`.
     pub fn default_dir(project_root: &Path) -> PathBuf {
         project_root.join(".shatter-cache").join("behavior-maps")
@@ -222,6 +239,34 @@ impl BehaviorMapCache {
         p.set_extension("json");
         p
     }
+}
+
+/// Recursively walk `dir`, loading all `.json` behavior map entries (excluding
+/// `.spec.json`) that match the current protocol version into `out`.
+fn collect_all_maps(dir: &Path, out: &mut Vec<BehaviorMap>) -> Result<(), CacheError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(CacheError::Io(e)),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_all_maps(&path, out)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json")
+            && !path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.ends_with(".spec"))
+            && let Ok(contents) = fs::read_to_string(&path)
+            && let Ok(entry) = serde_json::from_str::<BehaviorMapCacheEntry>(&contents)
+            && entry.protocol_version == PROTOCOL_VERSION
+        {
+            out.push(entry.behavior_map);
+        }
+    }
+    Ok(())
 }
 
 /// Disk-backed cache for storing and loading [`FunctionSpec`]s.

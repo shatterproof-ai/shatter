@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -696,6 +697,30 @@ async fn main() -> ExitCode {
                 .and_then(|project_root| {
                     commands::cache::run_cache_clear_from_action(&action, &project_root)
                 });
+            return match result {
+                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    queue_command_error_event(&subcommand_name, &*e);
+                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+                }
+            };
+        }
+        CliCommand::Nondeterminism { action } => {
+            use args::NondeterminismAction;
+            // Detect whether stdin is a terminal; if not, use non-interactive mode.
+            let non_interactive = !std::io::stdin().is_terminal();
+            let dm = cmd_start.elapsed().as_millis() as u64;
+            let result = match action {
+                NondeterminismAction::Review { cache_dir } => {
+                    commands::nondeterminism::run_review(
+                        cli.project_dir.as_deref(),
+                        &colors,
+                        cache_dir.as_deref(),
+                        non_interactive,
+                    )
+                }
+            };
             return match result {
                 Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
                 Err(e) => {
