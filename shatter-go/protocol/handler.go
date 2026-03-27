@@ -431,6 +431,13 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
 		harness, ok := h.preparedHarnesses[*req.PrepareID]
+		if ok && !harness.IsValid() {
+			// Artifacts deleted externally — prune stale entry and fall through.
+			h.log.Warn("prepared harness artifacts missing, rebuilding", "prepare_id", *req.PrepareID)
+			harness.Cleanup()
+			delete(h.preparedHarnesses, *req.PrepareID)
+			ok = false
+		}
 		if ok {
 			result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
 		} else {
@@ -623,7 +630,38 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 	if !ok {
 		return nil
 	}
+	// If the harness's backing artifacts have been deleted externally, prune it.
+	if !harness.IsValid() {
+		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
+		harness.Cleanup()
+		delete(h.preparedHarnesses, prepareID)
+		targetKey := file + "\x00" + function
+		if h.preparedTargets[targetKey] == prepareID {
+			delete(h.preparedTargets, targetKey)
+		}
+		return nil
+	}
 	return harness
+}
+
+// pruneOrphans removes harness registrations whose backing source files no
+// longer exist on disk. It calls Cleanup() on each orphaned harness to free
+// subprocess and artifact resources. Returns the number of entries pruned.
+func (h *Handler) pruneOrphans() int {
+	pruned := 0
+	for targetKey, prepareID := range h.preparedTargets {
+		file := strings.SplitN(targetKey, "\x00", 2)[0]
+		if _, err := os.Stat(file); err != nil {
+			h.log.Debug("pruning orphaned harness registration", "file", file, "prepare_id", prepareID)
+			if ph, ok := h.preparedHarnesses[prepareID]; ok {
+				ph.Cleanup()
+				delete(h.preparedHarnesses, prepareID)
+			}
+			delete(h.preparedTargets, targetKey)
+			pruned++
+		}
+	}
+	return pruned
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {
@@ -711,8 +749,10 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 		return resp
 	}
 
-	// Clear prepared harnesses on function-level teardown to free compile artifacts.
+	// Prune harnesses whose source files have been deleted, then clear remaining
+	// harnesses on function-level teardown to free compile artifacts.
 	if req.Level == SetupLevelFunction {
+		h.pruneOrphans()
 		for _, ph := range h.preparedHarnesses {
 			ph.Cleanup()
 		}
@@ -777,6 +817,7 @@ func (h *Handler) Registry() *generators.Registry {
 
 func (h *Handler) handleShutdown(resp Response) Response {
 	instrument.CloseAllHarnesses()
+	h.pruneOrphans()
 	for _, ph := range h.preparedHarnesses {
 		ph.Cleanup()
 	}

@@ -150,6 +150,23 @@ pub struct HarnessKey {
     mocks_hash: u64,
 }
 
+impl HarnessKey {
+    /// Returns the source file path this harness was built for.
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
+    /// Create a key for testing.
+    #[cfg(test)]
+    pub fn new_test(file_path: &str, function_name: &str) -> Self {
+        Self {
+            file_path: file_path.to_string(),
+            function_name: function_name.to_string(),
+            mocks_hash: 0,
+        }
+    }
+}
+
 /// Signature data for a single compatible function used in dispatch harness generation.
 struct CompatFn {
     name: String,
@@ -172,6 +189,34 @@ pub struct CrateHarnessEntry {
     compatible_functions: HashSet<String>,
 }
 
+impl CrateHarnessKey {
+    /// Returns the source file path this harness was built for.
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
+    /// Create a key for testing.
+    #[cfg(test)]
+    pub fn new_test(file_path: &str) -> Self {
+        Self {
+            file_path: file_path.to_string(),
+            source_hash: 0,
+            mocks_hash: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CrateHarnessEntry {
+    /// Create an entry for testing.
+    pub fn new_test(harness: PersistentHarness) -> Self {
+        Self {
+            harness,
+            compatible_functions: HashSet::new(),
+        }
+    }
+}
+
 pub type CrateHarnessCache = Mutex<HashMap<CrateHarnessKey, CrateHarnessEntry>>;
 
 /// Cache key for a crate-bridge harness.
@@ -185,6 +230,34 @@ pub struct CrateBridgeHarnessKey {
     /// Hash of the generated `__shatter.rs` wrapper module content.
     wrapper_hash: u64,
     mocks_hash: u64,
+}
+
+impl CrateBridgeHarnessKey {
+    /// Returns the crate root path this harness was built for.
+    pub fn crate_root(&self) -> &Path {
+        &self.crate_root
+    }
+
+    /// Create a key for testing.
+    #[cfg(test)]
+    pub fn new_test(crate_root: PathBuf) -> Self {
+        Self {
+            crate_root,
+            wrapper_hash: 0,
+            mocks_hash: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CrateBridgeHarnessEntry {
+    /// Create an entry for testing.
+    pub fn new_test(harness: PersistentHarness) -> Self {
+        Self {
+            harness,
+            compatible_functions: HashSet::new(),
+        }
+    }
 }
 
 /// A running crate-bridge harness entry.
@@ -209,6 +282,32 @@ pub struct PersistentHarness {
 }
 
 impl PersistentHarness {
+    /// Returns true if the harness build directory still exists on disk.
+    pub fn is_alive(&self) -> bool {
+        self.harness_dir.exists()
+    }
+
+    /// Create a dummy harness for testing cleanup/recovery logic.
+    /// Spawns `sleep 3600` as a placeholder subprocess.
+    #[cfg(test)]
+    pub fn new_dummy(harness_dir: PathBuf) -> Self {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sleep")
+            .arg("3600")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn dummy subprocess");
+        let stdin = child.stdin.take().expect("stdin");
+        let (_tx, rx) = mpsc::channel();
+        Self {
+            child,
+            stdin,
+            response_rx: rx,
+            harness_dir,
+        }
+    }
+
     /// Send `inputs` to the subprocess and wait for a JSON response, with timeout.
     ///
     /// On timeout, kills the subprocess and returns a timeout `ExecuteResult`.

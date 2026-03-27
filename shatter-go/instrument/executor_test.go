@@ -1879,3 +1879,44 @@ func TestPreparedHarnessCleanupHandlesDeadProcess(t *testing.T) {
 		t.Errorf("artifact dir should be removed after Cleanup() on dead process, os.Stat error = %v", err)
 	}
 }
+
+func TestPreparedHarnessIsValid(t *testing.T) {
+	artifactDir := t.TempDir()
+	binaryPath := filepath.Join(artifactDir, "binary")
+	if err := os.WriteFile(binaryPath, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &PreparedHarness{
+		ArtifactDir: artifactDir,
+		BinaryPath:  binaryPath,
+	}
+
+	if !h.IsValid() {
+		t.Error("IsValid() should return true when both artifact dir and binary exist")
+	}
+
+	// Delete only the binary.
+	os.Remove(binaryPath)
+	if h.IsValid() {
+		t.Error("IsValid() should return false when binary is missing")
+	}
+}
+
+func TestPreparedHarnessIsValidMissingDir(t *testing.T) {
+	artifactDir := t.TempDir()
+	binaryPath := filepath.Join(artifactDir, "binary")
+	if err := os.WriteFile(binaryPath, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &PreparedHarness{
+		ArtifactDir: artifactDir,
+		BinaryPath:  binaryPath,
+	}
+
+	os.RemoveAll(artifactDir)
+	if h.IsValid() {
+		t.Error("IsValid() should return false when artifact dir is missing")
+	}
+}

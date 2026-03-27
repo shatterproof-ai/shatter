@@ -1839,3 +1839,129 @@ func TestExecuteWithStalePrepareIdFallsThrough(t *testing.T) {
 		t.Fatalf("execute with stale prepare_id: status = %q, want execute (message: %s)", responses[1].Status, responses[1].Message)
 	}
 }
+
+func TestPruneOrphansRemovesStaleEntries(t *testing.T) {
+	// Create a handler with a harness registered for a non-existent source file.
+	h := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	artifactDir := t.TempDir()
+	fakeFile := filepath.Join(t.TempDir(), "deleted.go")
+	prepareID := "orphan-id"
+	targetKey := fakeFile + "\x00" + "MyFunc"
+
+	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedTargets[targetKey] = prepareID
+
+	pruned := h.pruneOrphans()
+	if pruned != 1 {
+		t.Errorf("pruneOrphans returned %d, want 1", pruned)
+	}
+	if len(h.preparedHarnesses) != 0 {
+		t.Errorf("preparedHarnesses should be empty after pruning, len = %d", len(h.preparedHarnesses))
+	}
+	if len(h.preparedTargets) != 0 {
+		t.Errorf("preparedTargets should be empty after pruning, len = %d", len(h.preparedTargets))
+	}
+	// Artifact dir should be cleaned up.
+	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
+		t.Errorf("artifact dir should be removed on prune, os.Stat error = %v", err)
+	}
+}
+
+func TestPruneOrphansKeepsValidEntries(t *testing.T) {
+	// Create a handler with a harness registered for an existing source file.
+	h := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	artifactDir := t.TempDir()
+	// Use a real existing file so it won't be pruned.
+	realFile := filepath.Join(t.TempDir(), "exists.go")
+	if err := os.WriteFile(realFile, []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepareID := "valid-id"
+	targetKey := realFile + "\x00" + "MyFunc"
+
+	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedTargets[targetKey] = prepareID
+
+	pruned := h.pruneOrphans()
+	if pruned != 0 {
+		t.Errorf("pruneOrphans returned %d, want 0", pruned)
+	}
+	if len(h.preparedHarnesses) != 1 {
+		t.Errorf("preparedHarnesses should still have 1 entry, len = %d", len(h.preparedHarnesses))
+	}
+}
+
+func TestPruneOrphansIsIdempotent(t *testing.T) {
+	h := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	fakeFile := filepath.Join(t.TempDir(), "gone.go")
+	prepareID := "orphan-id"
+	targetKey := fakeFile + "\x00" + "Foo"
+
+	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: t.TempDir()}
+	h.preparedTargets[targetKey] = prepareID
+
+	first := h.pruneOrphans()
+	second := h.pruneOrphans()
+	if first != 1 {
+		t.Errorf("first prune returned %d, want 1", first)
+	}
+	if second != 0 {
+		t.Errorf("second prune returned %d, want 0 (idempotent)", second)
+	}
+}
+
+func TestShutdownPrunesOrphansBeforeCleanup(t *testing.T) {
+	// Register a harness for a deleted source file; shutdown should not panic.
+	artifactDir := t.TempDir()
+	fakeFile := filepath.Join(t.TempDir(), "deleted.go")
+	targetKey := fakeFile + "\x00" + "Foo"
+
+	var output bytes.Buffer
+	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
+	h.preparedHarnesses["orphan-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedTargets[targetKey] = "orphan-id"
+
+	if err := h.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output.String())), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != "shutdown_ack" {
+		t.Errorf("status = %q, want shutdown_ack", resp.Status)
+	}
+	if len(h.preparedHarnesses) != 0 {
+		t.Errorf("preparedHarnesses should be empty, len = %d", len(h.preparedHarnesses))
+	}
+}
+
+func TestLookupPreparedHarnessPrunesInvalid(t *testing.T) {
+	// A harness with a deleted artifact dir should be pruned on lookup.
+	h := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	artifactDir := t.TempDir()
+	realFile := filepath.Join(t.TempDir(), "source.go")
+	if err := os.WriteFile(realFile, []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compute the real prepare_id so lookupPreparedHarness finds the entry.
+	prepareID := computePrepareID(realFile, "Foo", nil)
+
+	// Register and then delete the artifact dir.
+	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{
+		ArtifactDir: artifactDir,
+		BinaryPath:  filepath.Join(artifactDir, "binary"),
+	}
+	h.preparedTargets[realFile+"\x00"+"Foo"] = prepareID
+	os.RemoveAll(artifactDir)
+
+	result := h.lookupPreparedHarness(realFile, "Foo", nil)
+	if result != nil {
+		t.Error("lookupPreparedHarness should return nil for invalid harness")
+	}
+	if len(h.preparedHarnesses) != 0 {
+		t.Errorf("invalid harness should be pruned from map, len = %d", len(h.preparedHarnesses))
+	}
+}
