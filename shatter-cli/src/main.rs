@@ -12,6 +12,7 @@ mod embedded_frontend;
 mod embedded_go_frontend;
 mod helpers;
 mod render;
+mod telemetry_flush;
 
 use args::*;
 use helpers::*;
@@ -728,6 +729,11 @@ fn finalize_exit_code(
 ) -> ExitCode {
     let _finalize_span = tracing::info_span!("cli.finalize_command").entered();
     queue_command_run_event(subcommand, duration_ms, exit_code);
+    // Fire-and-forget: flush the local telemetry queue to PostHog.
+    // Errors are silently swallowed — telemetry must never affect CLI exit behavior.
+    if telemetry::is_enabled() {
+        telemetry_flush::flush_queue();
+    }
     persist_timing_run(subcommand, duration_ms, exit_code, timing_config, timing_start_unix_ms, timing_handle);
     if exit_code == 0 {
         ExitCode::SUCCESS
