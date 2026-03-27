@@ -20,3 +20,6 @@ extism = "1"
 syn = { version = "2", features = ["full", "parsing", "visit-mut"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[dev-dependencies]
+proptest = "1"

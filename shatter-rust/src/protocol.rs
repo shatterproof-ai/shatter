@@ -1021,4 +1021,117 @@ mod tests {
         let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
         assert!(fa.crypto_boundaries.is_empty());
     }
+
+    #[test]
+    fn timing_summary_round_trips() {
+        let summary = TimingSummary {
+            phases: vec![
+                TimingPhaseSummary {
+                    phase_path: "analyze.total".to_string(),
+                    total_ms: 42.5,
+                    self_ms: 10.0,
+                    count: 1,
+                    attributes: std::collections::BTreeMap::new(),
+                },
+                TimingPhaseSummary {
+                    phase_path: "analyze.parse".to_string(),
+                    total_ms: 32.5,
+                    self_ms: 32.5,
+                    count: 1,
+                    attributes: std::collections::BTreeMap::from([
+                        ("file".to_string(), "test.rs".to_string()),
+                    ]),
+                },
+            ],
+        };
+        round_trip(&summary);
+    }
+
+    #[test]
+    fn response_with_timing_round_trips() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 5,
+            status: "analyze".to_string(),
+            timing: Some(TimingSummary {
+                phases: vec![TimingPhaseSummary {
+                    phase_path: "analyze.total".to_string(),
+                    total_ms: 15.0,
+                    self_ms: 15.0,
+                    count: 1,
+                    attributes: std::collections::BTreeMap::new(),
+                }],
+            }),
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: None,
+            generator_id: None,
+            recipe: None,
+            instrumented: None,
+            output_file: None,
+            instrumentable_line_count: None,
+            functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
+            code: None,
+            message: None,
+            prepare_id: None,
+        };
+        round_trip(&resp);
+    }
+
+    #[test]
+    fn timing_omitted_when_none() {
+        let resp = Response {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            id: 6,
+            status: "analyze".to_string(),
+            timing: None,
+            frontend_version: None,
+            language: None,
+            capabilities: None,
+            setup_context: None,
+            value: None,
+            generator_id: None,
+            recipe: None,
+            instrumented: None,
+            output_file: None,
+            instrumentable_line_count: None,
+            functions: None,
+            return_value: None,
+            thrown_error: None,
+            branch_path: None,
+            lines_executed: None,
+            calls_to_external: None,
+            path_constraints: None,
+            side_effects: None,
+            performance: None,
+            code: None,
+            message: None,
+            prepare_id: None,
+        };
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("timing"),
+            "timing should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn empty_timing_phases_omitted() {
+        let summary = TimingSummary { phases: vec![] };
+        let json = serde_json::to_value(&summary).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("phases"),
+            "empty phases should be omitted"
+        );
+    }
 }

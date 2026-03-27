@@ -70,3 +70,120 @@ impl TimingCollector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_phase_path() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,3}")
+            .expect("valid regex")
+    }
+
+    fn arb_timing_phase_summary() -> impl Strategy<Value = TimingPhaseSummary> {
+        (
+            arb_phase_path(),
+            0.0f64..1e6,
+            0.0f64..1e6,
+            1u64..1000,
+            prop::collection::btree_map("[a-z]{1,8}", "[a-z0-9]{1,16}", 0..3),
+        )
+            .prop_map(|(phase_path, total_ms, self_ms, count, attributes)| {
+                TimingPhaseSummary {
+                    phase_path,
+                    total_ms,
+                    self_ms: self_ms.min(total_ms),
+                    count,
+                    attributes,
+                }
+            })
+    }
+
+    fn arb_timing_summary() -> impl Strategy<Value = TimingSummary> {
+        prop::collection::vec(arb_timing_phase_summary(), 0..5).prop_map(|phases| {
+            // Deduplicate by phase_path (BTreeMap behavior in real collector)
+            let mut seen = BTreeMap::new();
+            for p in phases {
+                seen.entry(p.phase_path.clone()).or_insert(p);
+            }
+            TimingSummary {
+                phases: seen.into_values().collect(),
+            }
+        })
+    }
+
+    /// Compare two f64 values allowing for JSON roundtrip precision loss.
+    fn f64_eq_json(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-10 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    fn timing_phase_eq(a: &TimingPhaseSummary, b: &TimingPhaseSummary) -> bool {
+        a.phase_path == b.phase_path
+            && f64_eq_json(a.total_ms, b.total_ms)
+            && f64_eq_json(a.self_ms, b.self_ms)
+            && a.count == b.count
+            && a.attributes == b.attributes
+    }
+
+    proptest! {
+        #[test]
+        fn timing_phase_summary_roundtrip(phase in arb_timing_phase_summary()) {
+            let json = serde_json::to_string(&phase).expect("serialize");
+            let deserialized: TimingPhaseSummary =
+                serde_json::from_str(&json).expect("deserialize");
+            prop_assert!(timing_phase_eq(&phase, &deserialized),
+                "roundtrip mismatch: {:?} vs {:?}", phase, deserialized);
+        }
+
+        #[test]
+        fn timing_summary_roundtrip(summary in arb_timing_summary()) {
+            let json = serde_json::to_string(&summary).expect("serialize");
+            let deserialized: TimingSummary =
+                serde_json::from_str(&json).expect("deserialize");
+            prop_assert_eq!(summary.phases.len(), deserialized.phases.len());
+            for (a, b) in summary.phases.iter().zip(deserialized.phases.iter()) {
+                prop_assert!(timing_phase_eq(a, b),
+                    "phase roundtrip mismatch: {:?} vs {:?}", a, b);
+            }
+        }
+
+        #[test]
+        fn self_ms_never_exceeds_total_ms(phase in arb_timing_phase_summary()) {
+            prop_assert!(phase.self_ms <= phase.total_ms);
+        }
+
+        #[test]
+        fn count_aggregation(n in 1usize..10) {
+            let mut collector = TimingCollector::default();
+            for _ in 0..n {
+                collector.record("repeat.phase", |_| ());
+            }
+            let summary = collector.summary().expect("non-empty");
+            let phase = &summary.phases[0];
+            prop_assert_eq!(phase.count, n as u64);
+            prop_assert_eq!(&phase.phase_path, "repeat.phase");
+        }
+    }
+
+    #[test]
+    fn empty_collector_returns_none() {
+        let collector = TimingCollector::default();
+        assert!(collector.summary().is_none());
+    }
+
+    #[test]
+    fn nested_timing_parent_self_excludes_child() {
+        let mut collector = TimingCollector::default();
+        collector.record("parent", |c| {
+            c.record("child", |_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            });
+        });
+        let summary = collector.summary().expect("non-empty");
+        let parent = summary.phases.iter().find(|p| p.phase_path == "parent").unwrap();
+        let child = summary.phases.iter().find(|p| p.phase_path == "child").unwrap();
+        assert!(parent.total_ms >= child.total_ms);
+        assert!(parent.self_ms < parent.total_ms);
+    }
+}
