@@ -764,6 +764,94 @@ func add(a int, b int) int {
 	}
 }
 
+func TestInstrumentEmitsTimingWhenRequested(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func Add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fn := "Add"
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","timing"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"%s"`, tmp, fn)),
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+	if responses[1].Status != "instrument" {
+		t.Fatalf("status = %q, want instrument (message: %s)", responses[1].Status, responses[1].Message)
+	}
+
+	phases := timingPhaseNames(responses[1])
+	for _, want := range []string{
+		"instrument.total",
+		"serialize.response",
+	} {
+		if !phases[want] {
+			t.Errorf("missing timing phase %q in %+v", want, responses[1].Timing)
+		}
+	}
+}
+
+func TestPrepareEmitsTimingWhenRequested(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func Add(a int, b int) int {
+	return a + b
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fn := "Add"
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["prepare","timing"]`),
+		reqJSON(2, "prepare", fmt.Sprintf(`"file":"%s","function":"%s"`, tmp, fn)),
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+	if responses[1].Status != "prepare" {
+		t.Fatalf("status = %q, want prepare (message: %s)", responses[1].Status, responses[1].Message)
+	}
+
+	phases := timingPhaseNames(responses[1])
+	for _, want := range []string{
+		"prepare.total",
+		"serialize.response",
+	} {
+		if !phases[want] {
+			t.Errorf("missing timing phase %q in %+v", want, responses[1].Timing)
+		}
+	}
+}
+
+func TestTimingNotEmittedWithoutCapability(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc Add(a int, b int) int { return a + b }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["analyze"]`),
+		reqJSON(2, "analyze", fmt.Sprintf(`"file":"%s","function":"Add"`, tmp)),
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+	if responses[1].Timing != nil {
+		t.Errorf("timing should be nil when capability not requested, got %+v", responses[1].Timing)
+	}
+}
+
 func TestMultipleCommandsInSequence(t *testing.T) {
 	responses := conversation(t,
 		reqJSON(1, "handshake", `"capabilities":["analyze"]`),

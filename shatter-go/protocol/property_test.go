@@ -108,6 +108,30 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 	})
 }
 
+func genTimingPhaseSummary() *rapid.Generator[TimingPhaseSummary] {
+	return rapid.Custom[TimingPhaseSummary](func(t *rapid.T) TimingPhaseSummary {
+		totalMs := rapid.Float64Range(0, 10000).Draw(t, "totalMs")
+		selfMs := rapid.Float64Range(0, totalMs).Draw(t, "selfMs")
+		return TimingPhaseSummary{
+			PhasePath: rapid.SampledFrom([]string{
+				"analyze.total", "analyze.parse", "analyze.typecheck", "analyze.walk",
+				"instrument.total", "execute.total", "execute.run", "serialize.response",
+			}).Draw(t, "phasePath"),
+			TotalMs: totalMs,
+			SelfMs:  selfMs,
+			Count:   rapid.IntRange(1, 10).Draw(t, "count"),
+		}
+	})
+}
+
+func genTimingSummary() *rapid.Generator[TimingSummary] {
+	return rapid.Custom[TimingSummary](func(t *rapid.T) TimingSummary {
+		return TimingSummary{
+			Phases: rapid.SliceOfN(genTimingPhaseSummary(), 1, 5).Draw(t, "phases"),
+		}
+	})
+}
+
 func genResponse() *rapid.Generator[Response] {
 	return rapid.OneOf(
 		rapid.Custom[Response](func(t *rapid.T) Response {
@@ -903,6 +927,109 @@ func TestPropertyComputePrepareIDFunctionSensitive(t *testing.T) {
 		id2 := computePrepareID(file, fn2, nil)
 		if id1 == id2 {
 			t.Fatalf("different functions produced same ID: fn1=%q fn2=%q id=%q", fn1, fn2, id1)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Timing property tests
+// ---------------------------------------------------------------------------
+
+// TestPropertyTimingSummaryRoundTrip verifies that a TimingSummary survives
+// a JSON marshal/unmarshal roundtrip with all fields intact.
+func TestPropertyTimingSummaryRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		ts := genTimingSummary().Draw(t, "timing")
+		data, err := json.Marshal(ts)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded TimingSummary
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(decoded.Phases) != len(ts.Phases) {
+			t.Fatalf("phases count: got %d, want %d", len(decoded.Phases), len(ts.Phases))
+		}
+		for i := range ts.Phases {
+			if decoded.Phases[i].PhasePath != ts.Phases[i].PhasePath {
+				t.Fatalf("phases[%d].PhasePath: got %q, want %q", i, decoded.Phases[i].PhasePath, ts.Phases[i].PhasePath)
+			}
+			if decoded.Phases[i].Count != ts.Phases[i].Count {
+				t.Fatalf("phases[%d].Count: got %d, want %d", i, decoded.Phases[i].Count, ts.Phases[i].Count)
+			}
+		}
+	})
+}
+
+// TestPropertyTimingPhaseSummaryInvariants verifies that generated timing phases
+// satisfy TotalMs >= SelfMs >= 0 and Count >= 1.
+func TestPropertyTimingPhaseSummaryInvariants(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		phase := genTimingPhaseSummary().Draw(t, "phase")
+		if phase.TotalMs < 0 {
+			t.Fatalf("TotalMs = %f, want >= 0", phase.TotalMs)
+		}
+		if phase.SelfMs < 0 {
+			t.Fatalf("SelfMs = %f, want >= 0", phase.SelfMs)
+		}
+		if phase.SelfMs > phase.TotalMs {
+			t.Fatalf("SelfMs (%f) > TotalMs (%f)", phase.SelfMs, phase.TotalMs)
+		}
+		if phase.Count < 1 {
+			t.Fatalf("Count = %d, want >= 1", phase.Count)
+		}
+	})
+}
+
+// TestPropertyTimingOmittedWhenNil verifies that the "timing" field is absent
+// from JSON when Timing is nil on a Response.
+func TestPropertyTimingOmittedWhenNil(t *testing.T) {
+	resp := Response{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Status:          "analyze",
+		Functions:       []FunctionAnalysis{},
+		Timing:          nil,
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, ok := obj["timing"]; ok {
+		t.Error("timing should be omitted from JSON when nil")
+	}
+}
+
+// TestPropertyResponseWithTimingRoundTrip verifies that a Response with timing
+// data round-trips correctly.
+func TestPropertyResponseWithTimingRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		ts := genTimingSummary().Draw(t, "timing")
+		resp := Response{
+			ProtocolVersion: ProtocolVersion,
+			ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
+			Status:          "analyze",
+			Functions:       []FunctionAnalysis{},
+			Timing:          &ts,
+		}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded Response
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.Timing == nil {
+			t.Fatal("Timing should not be nil after roundtrip")
+		}
+		if len(decoded.Timing.Phases) != len(ts.Phases) {
+			t.Fatalf("timing phases count: got %d, want %d", len(decoded.Timing.Phases), len(ts.Phases))
 		}
 	})
 }
