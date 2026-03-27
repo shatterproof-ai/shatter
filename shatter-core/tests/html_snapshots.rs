@@ -187,6 +187,7 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
             },
             behavior_coverage: vec![],
             mocks_used,
+            mock_misses: vec![],
             coverage_metrics: Default::default(),
             refactoring_recommendations: vec![],
         }

@@ -981,6 +981,7 @@ mod tests {
             },
             behavior_coverage: vec![],
             mocks_used: mocks,
+            mock_misses: vec![],
             coverage_metrics: Default::default(),
             refactoring_recommendations: vec![],
         }
