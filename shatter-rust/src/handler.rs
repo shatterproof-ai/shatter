@@ -97,6 +97,126 @@ impl PersistentHarnessManager {
         }
     }
 
+    /// Remove cache entries whose source files no longer exist on disk.
+    /// Kills subprocesses and removes standalone harness dirs (tool-owned cache).
+    /// Crate-backed and bridge harness dirs are preserved (stable cache).
+    /// Returns the number of entries pruned.
+    pub fn prune_orphans(&self) -> usize {
+        let mut pruned = 0;
+
+        // Standalone cache: keyed by file_path.
+        {
+            let mut map = self.cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .keys()
+                .filter(|k| !std::path::Path::new(k.file_path()).exists())
+                .cloned()
+                .collect();
+            for key in stale_keys {
+                if let Some(mut h) = map.remove(&key) {
+                    let _ = h.child.kill();
+                    let _ = h.child.wait();
+                    let _ = std::fs::remove_dir_all(&h.harness_dir);
+                }
+                pruned += 1;
+            }
+        }
+
+        // Crate-backed cache: keyed by file_path.
+        {
+            let mut map = self.crate_cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .keys()
+                .filter(|k| !std::path::Path::new(k.file_path()).exists())
+                .cloned()
+                .collect();
+            for key in stale_keys {
+                if let Some(mut entry) = map.remove(&key) {
+                    let _ = entry.harness.child.kill();
+                    let _ = entry.harness.child.wait();
+                    // Preserve harness dir (stable cache).
+                }
+                pruned += 1;
+            }
+        }
+
+        // Bridge cache: keyed by crate_root.
+        {
+            let mut map = self.bridge_cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .keys()
+                .filter(|k| !k.crate_root().exists())
+                .cloned()
+                .collect();
+            for key in stale_keys {
+                if let Some(mut entry) = map.remove(&key) {
+                    let _ = entry.harness.child.kill();
+                    let _ = entry.harness.child.wait();
+                    // Preserve harness dir (stable cache).
+                }
+                pruned += 1;
+            }
+        }
+
+        pruned
+    }
+
+    /// Remove cache entries whose harness build directories have been deleted externally.
+    /// Kills subprocesses for all affected entries. Returns the number of entries pruned.
+    pub fn prune_missing_artifacts(&self) -> usize {
+        let mut pruned = 0;
+
+        {
+            let mut map = self.cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .iter()
+                .filter(|(_, h)| !h.harness_dir.exists())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in stale_keys {
+                if let Some(mut h) = map.remove(&key) {
+                    let _ = h.child.kill();
+                    let _ = h.child.wait();
+                }
+                pruned += 1;
+            }
+        }
+
+        {
+            let mut map = self.crate_cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .iter()
+                .filter(|(_, entry)| !entry.harness.harness_dir.exists())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in stale_keys {
+                if let Some(mut entry) = map.remove(&key) {
+                    let _ = entry.harness.child.kill();
+                    let _ = entry.harness.child.wait();
+                }
+                pruned += 1;
+            }
+        }
+
+        {
+            let mut map = self.bridge_cache.lock().unwrap();
+            let stale_keys: Vec<_> = map
+                .iter()
+                .filter(|(_, entry)| !entry.harness.harness_dir.exists())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in stale_keys {
+                if let Some(mut entry) = map.remove(&key) {
+                    let _ = entry.harness.child.kill();
+                    let _ = entry.harness.child.wait();
+                }
+                pruned += 1;
+            }
+        }
+
+        pruned
+    }
+
     /// Terminates all cached harness subprocesses and removes their build directories.
     pub fn close_all(&mut self) {
         let mut map = self.cache.lock().unwrap();
@@ -661,6 +781,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             crate::setup::run_teardown(level, scope)
         };
 
+        // Prune orphaned harness entries at function-level teardown.
+        if level == crate::protocol::SetupLevel::Function {
+            self.harness_manager.prune_orphans();
+            self.harness_manager.prune_missing_artifacts();
+        }
+
         match teardown_result {
             Ok(()) => {
                 resp.status = "teardown_ack".to_string();
@@ -776,6 +902,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_shutdown(&mut self, mut resp: Response) -> Response {
+        self.harness_manager.prune_orphans();
+        self.harness_manager.prune_missing_artifacts();
         self.harness_manager.close_all();
         resp.status = "shutdown_ack".to_string();
         resp
@@ -1595,5 +1723,110 @@ mod tests {
                 "error code {code:?} must be snake_case"
             );
         }
+    }
+
+    #[test]
+    fn prune_orphans_removes_stale_standalone_entries() {
+        let manager = PersistentHarnessManager::new();
+        let harness_dir = tempfile::tempdir().unwrap();
+        let harness_dir_path = harness_dir.path().to_path_buf();
+
+        let key = crate::executor::HarnessKey::new_test("/tmp/nonexistent-source.rs", "my_func");
+        let harness = crate::executor::PersistentHarness::new_dummy(harness_dir_path.clone());
+        manager.cache.lock().unwrap().insert(key, harness);
+
+        let pruned = manager.prune_orphans();
+        assert_eq!(pruned, 1, "should prune 1 entry with nonexistent source");
+        assert!(
+            manager.cache.lock().unwrap().is_empty(),
+            "cache should be empty after pruning"
+        );
+    }
+
+    #[test]
+    fn prune_orphans_keeps_valid_entries() {
+        let manager = PersistentHarnessManager::new();
+        let harness_dir = tempfile::tempdir().unwrap();
+
+        // Use the test's own Cargo.toml as an existing file.
+        let existing_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .to_string_lossy()
+            .to_string();
+
+        let key = crate::executor::HarnessKey::new_test(&existing_file, "my_func");
+        let harness =
+            crate::executor::PersistentHarness::new_dummy(harness_dir.path().to_path_buf());
+        manager.cache.lock().unwrap().insert(key, harness);
+
+        let pruned = manager.prune_orphans();
+        assert_eq!(pruned, 0, "should not prune entries with existing source");
+        assert_eq!(manager.cache.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prune_orphans_is_idempotent() {
+        let manager = PersistentHarnessManager::new();
+        let harness_dir = tempfile::tempdir().unwrap();
+
+        let key = crate::executor::HarnessKey::new_test("/tmp/gone.rs", "foo");
+        let harness =
+            crate::executor::PersistentHarness::new_dummy(harness_dir.path().to_path_buf());
+        manager.cache.lock().unwrap().insert(key, harness);
+
+        let first = manager.prune_orphans();
+        let second = manager.prune_orphans();
+        assert_eq!(first, 1);
+        assert_eq!(second, 0, "second prune should find nothing");
+    }
+
+    #[test]
+    fn prune_missing_artifacts_removes_deleted_dirs() {
+        let manager = PersistentHarnessManager::new();
+        let harness_dir = tempfile::tempdir().unwrap();
+        let harness_dir_path = harness_dir.path().to_path_buf();
+
+        // Use an existing file as source so prune_orphans wouldn't remove it.
+        let existing_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .to_string_lossy()
+            .to_string();
+
+        let key = crate::executor::HarnessKey::new_test(&existing_file, "my_func");
+        let harness = crate::executor::PersistentHarness::new_dummy(harness_dir_path.clone());
+        manager.cache.lock().unwrap().insert(key, harness);
+
+        // Delete the harness dir to simulate external cleanup.
+        drop(harness_dir);
+        std::fs::remove_dir_all(&harness_dir_path).ok();
+
+        let pruned = manager.prune_missing_artifacts();
+        assert_eq!(pruned, 1, "should prune 1 entry with missing artifacts");
+        assert!(manager.cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shutdown_after_source_deleted_returns_ack() {
+        // Create a temp file, reference it in a request, then delete it before shutdown.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let source_path = tmp.path().to_string_lossy().to_string();
+        std::fs::write(&source_path, "fn example() {}").unwrap();
+
+        let analyze = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{source_path}"}}"#
+        );
+        let shutdown = r#"{"protocol_version":"0.1.0","id":2,"command":"shutdown"}"#;
+
+        // Delete the source before shutdown.
+        std::fs::remove_file(&source_path).ok();
+
+        let responses = conversation(&[&analyze, shutdown]);
+        // The analyze may fail (file deleted between request crafting and handling) — that's fine.
+        // The shutdown must always succeed.
+        let last = responses.last().expect("at least one response");
+        assert_eq!(
+            last.status, "shutdown_ack",
+            "shutdown should succeed even after source deletion"
+        );
     }
 }

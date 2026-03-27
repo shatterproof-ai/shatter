@@ -1663,6 +1663,18 @@ type PreparedHarness struct {
 	proc *persistentHarness // lazily spawned persistent subprocess
 }
 
+// IsValid checks whether the harness's backing artifacts (directory and binary)
+// still exist on disk. Returns false if either has been removed externally.
+func (h *PreparedHarness) IsValid() bool {
+	if _, err := os.Stat(h.ArtifactDir); err != nil {
+		return false
+	}
+	if _, err := os.Stat(h.BinaryPath); err != nil {
+		return false
+	}
+	return true
+}
+
 // Cleanup stops the persistent subprocess (if running) and removes the
 // artifact directory created by PrepareHarness.
 func (h *PreparedHarness) Cleanup() {
