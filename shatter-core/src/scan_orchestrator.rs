@@ -243,6 +243,28 @@ pub struct MockUsage {
     pub source: MockSource,
 }
 
+/// A record of a caller invoking a mocked callee with arguments that fall
+/// outside the callee's explored behavior map domain.
+///
+/// When a caller passes novel inputs to a mocked callee, the mock cannot
+/// return an observed (real) value — it fabricates a response. The caller's
+/// exploration then proceeds on a false assumption about what the callee
+/// actually returns for those inputs.
+///
+/// A `MockMiss` surfaces this assumption so users know which callee behaviors
+/// are assumed, not observed. It does **not** trigger re-exploration in this
+/// phase — detection and reporting only.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MockMiss {
+    /// Symbol name of the callee whose behavior map was missed.
+    pub callee_name: String,
+    /// The arguments the caller passed that were not in the callee's domain.
+    pub missed_inputs: Vec<serde_json::Value>,
+    /// Input hash of the caller execution that triggered this miss.
+    /// Identifies which caller execution was operating on false assumptions.
+    pub caller_execution_id: u64,
+}
+
 /// Result of exploring a single function during a scan.
 #[derive(Debug)]
 pub struct FunctionResult {
@@ -256,6 +278,12 @@ pub struct FunctionResult {
     pub behavior_coverage: Vec<BehaviorCoverage>,
     /// Mocks used during exploration, with source attribution.
     pub mocks_used: Vec<MockUsage>,
+    /// Mock misses detected during exploration.
+    ///
+    /// Each entry records a callee call whose arguments fell outside the
+    /// callee's explored behavior map. The mock returned a fabricated value
+    /// rather than an observed one; these results may be unsound.
+    pub mock_misses: Vec<MockMiss>,
     /// Branch coverage metrics from the analyze stage.
     pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
     /// Refactoring recommendations for hard-to-mock dependencies.
@@ -355,6 +383,67 @@ fn execution_record_from_result(
         timestamp: String::new(),
         engine_version: String::new(),
     }
+}
+
+/// Detect mock misses in the raw execution results of a caller.
+///
+/// For each execution in `raw_results`, inspects every external call to a
+/// callee whose behavior map is present in `callee_maps`. A miss is recorded
+/// when the call arguments do not match any `input_args` entry in the callee's
+/// behavior map — meaning the mock fabricated a response for an input it had
+/// never actually observed.
+///
+/// Misses are deduplicated per `(callee_name, missed_inputs)` pair across the
+/// whole set of executions; the `caller_execution_id` stored is the input hash
+/// of the first caller execution that triggered each distinct miss.
+///
+/// # Arguments
+/// * `caller_inputs_and_results` — Slice of `(caller_inputs, _mocks, execute_result)`
+///   from [`ObservationOutput::raw_results`].
+/// * `callee_maps` — Behavior maps for callees, keyed by symbol name.
+pub fn detect_mock_misses(
+    caller_inputs_and_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
+    callee_maps: &HashMap<String, BehaviorMap>,
+) -> Vec<MockMiss> {
+    // Track seen (callee, inputs) pairs to avoid duplicates.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut misses: Vec<MockMiss> = Vec::new();
+
+    for (caller_inputs, _mocks, exec_result) in caller_inputs_and_results {
+        // Compute the caller's execution id (input hash) once per execution.
+        let mut hasher = DefaultHasher::new();
+        let input_str = serde_json::to_string(caller_inputs).unwrap_or_default();
+        input_str.hash(&mut hasher);
+        let caller_execution_id = hasher.finish();
+
+        for call in &exec_result.calls_to_external {
+            let callee_map = match callee_maps.get(&call.symbol) {
+                Some(m) => m,
+                None => continue, // no behavior map for this callee — type-aware stub or external
+            };
+
+            // Check whether the call arguments match any known behavior's input_args.
+            let is_in_domain = callee_map
+                .behaviors
+                .iter()
+                .any(|b| b.input_args == call.args);
+
+            if !is_in_domain {
+                // Deduplicate by (callee, serialised args).
+                let args_key = serde_json::to_string(&call.args).unwrap_or_default();
+                let dedup_key = (call.symbol.clone(), args_key);
+                if seen.insert(dedup_key) {
+                    misses.push(MockMiss {
+                        callee_name: call.symbol.clone(),
+                        missed_inputs: call.args.clone(),
+                        caller_execution_id,
+                    });
+                }
+            }
+        }
+    }
+
+    misses
 }
 
 /// Compute the fingerprint for a function using its source text and analysis.
@@ -632,6 +721,20 @@ pub async fn scan(
             }
         }
 
+        // Detect mock misses: callee calls with args outside the callee's behavior map domain.
+        let callee_maps_for_misses: HashMap<String, BehaviorMap> = callees
+            .iter()
+            .filter_map(|c| behavior_maps.get(c).map(|m| (c.clone(), m.clone())))
+            .collect();
+        let mock_misses = detect_mock_misses(&exploration.raw_results, &callee_maps_for_misses);
+        if !mock_misses.is_empty() {
+            log::debug!(
+                "{func_name}: {} mock miss(es) detected across {} callee(s)",
+                mock_misses.len(),
+                mock_misses.iter().map(|m| &m.callee_name).collect::<HashSet<_>>().len(),
+            );
+        }
+
         behavior_maps.insert(func_name.clone(), analyze_out.behavior_map.clone());
 
         let refactoring_recommendations =
@@ -643,6 +746,7 @@ pub async fn scan(
             behavior_map: analyze_out.behavior_map,
             behavior_coverage,
             mocks_used,
+            mock_misses,
             coverage_metrics: analyze_out.coverage_metrics,
             refactoring_recommendations,
         });
@@ -1071,6 +1175,20 @@ fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnaly
     let mocks_used = replicas[0].mocks_used.clone();
     let behavior_coverage = replicas[0].behavior_coverage.clone();
     let refactoring_recommendations = replicas[0].refactoring_recommendations.clone();
+    // Collect mock misses from all replicas, deduplicating by (callee, inputs).
+    let mut merged_miss_seen: HashSet<(String, String)> = HashSet::new();
+    let merged_mock_misses: Vec<MockMiss> = replicas
+        .iter()
+        .flat_map(|r| &r.mock_misses)
+        .filter(|m| {
+            let key = (
+                m.callee_name.clone(),
+                serde_json::to_string(&m.missed_inputs).unwrap_or_default(),
+            );
+            merged_miss_seen.insert(key)
+        })
+        .cloned()
+        .collect();
 
     // Accumulate exploration data across replicas.
     let mut merged_raw = Vec::new();
@@ -1140,6 +1258,7 @@ fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnaly
         behavior_map: analyze_out.behavior_map,
         behavior_coverage,
         mocks_used,
+        mock_misses: merged_mock_misses,
         coverage_metrics: analyze_out.coverage_metrics,
         refactoring_recommendations,
     }
@@ -1857,7 +1976,21 @@ async fn explore_single_function(
             behavior_coverage.push(coverage);
         }
     }
+
+    // Detect mock misses: callee calls with args outside the callee's behavior map domain.
+    let callee_maps_for_misses: HashMap<String, BehaviorMap> = callees
+        .iter()
+        .filter_map(|c| maps.get(c).map(|m| (c.clone(), m.clone())))
+        .collect();
     drop(maps);
+    let mock_misses = detect_mock_misses(&exploration.raw_results, &callee_maps_for_misses);
+    if !mock_misses.is_empty() {
+        log::debug!(
+            "{func_name}: {} mock miss(es) detected across {} callee(s)",
+            mock_misses.len(),
+            mock_misses.iter().map(|m| &m.callee_name).collect::<HashSet<_>>().len(),
+        );
+    }
 
     let refactoring_recommendations =
         crate::mock_analysis::generate_recommendations(&analysis.dependencies);
@@ -1868,6 +2001,7 @@ async fn explore_single_function(
         behavior_map: analyze_out.behavior_map,
         behavior_coverage,
         mocks_used: mocks_used.to_vec(),
+        mock_misses,
         coverage_metrics: analyze_out.coverage_metrics,
         refactoring_recommendations,
     })
@@ -1900,6 +2034,57 @@ fn format_mocks_used(mocks: &[MockUsage]) -> String {
     }
     if !excluded.is_empty() {
         parts.push(format!("{} stratum-excluded ({})", excluded.len(), excluded.join(", ")));
+    }
+    parts.join("; ")
+}
+
+/// Format mock misses as an indented human-readable string.
+///
+/// Groups misses by callee name and shows the count of distinct missed input
+/// sets per callee. Truncates individual input args to a short representation
+/// to keep report lines readable.
+fn format_mock_misses(misses: &[MockMiss]) -> String {
+    if misses.is_empty() {
+        return String::new();
+    }
+
+    // Group by callee name for a compact summary.
+    let mut by_callee: HashMap<&str, Vec<&MockMiss>> = HashMap::new();
+    for miss in misses {
+        by_callee.entry(miss.callee_name.as_str()).or_default().push(miss);
+    }
+
+    let mut callee_names: Vec<&str> = by_callee.keys().copied().collect();
+    callee_names.sort();
+
+    let mut parts = Vec::new();
+    for callee in callee_names {
+        let callee_misses = &by_callee[callee];
+        let count = callee_misses.len();
+        // Show at most 3 example input tuples, truncated to 60 chars each.
+        let examples: Vec<String> = callee_misses
+            .iter()
+            .take(3)
+            .map(|m| {
+                let s = serde_json::to_string(&m.missed_inputs).unwrap_or_else(|_| "?".into());
+                if s.len() > 60 {
+                    let mut end = 60;
+                    while !s.is_char_boundary(end) { end -= 1; }
+                    format!("{}…", &s[..end])
+                } else {
+                    s
+                }
+            })
+            .collect();
+        let example_str = examples.join(", ");
+        if count <= 3 {
+            parts.push(format!("{callee}: {count} miss(es) — {example_str}"));
+        } else {
+            parts.push(format!(
+                "{callee}: {count} miss(es) — {example_str} (+{} more)",
+                count - 3
+            ));
+        }
     }
     parts.join("; ")
 }
@@ -1958,6 +2143,13 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
             out.push_str(&format!(
                 "  Behavior coverage of {}: {}/{} ({pct:.0}%)\n",
                 cov.callee, exercised, total
+            ));
+        }
+
+        if !func_result.mock_misses.is_empty() {
+            out.push_str(&format!(
+                "  Mock misses (inputs outside callee's explored domain): {}\n",
+                format_mock_misses(&func_result.mock_misses)
             ));
         }
 
@@ -2023,6 +2215,13 @@ pub fn format_scan_report(result: &ScanResult) -> String {
             out.push_str(&format!(
                 "  Behavior coverage of {}: {}/{} ({pct:.0}%)\n",
                 cov.callee, exercised, total
+            ));
+        }
+
+        if !func_result.mock_misses.is_empty() {
+            out.push_str(&format!(
+                "  Mock misses (inputs outside callee's explored domain): {}\n",
+                format_mock_misses(&func_result.mock_misses)
             ));
         }
 
@@ -2431,6 +2630,7 @@ mod tests {
                     behavior_coverage: vec![],
                     mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
                 },
                 FunctionResult {
@@ -2458,6 +2658,7 @@ mod tests {
                     }],
                     mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
                 },
             ],
@@ -2496,6 +2697,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
@@ -2532,6 +2734,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![
@@ -2581,6 +2784,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                 coverage_metrics: Default::default(),
+                mock_misses: vec![],
                 refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![
@@ -2629,6 +2833,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
@@ -2666,6 +2871,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
@@ -2710,6 +2916,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
@@ -2816,6 +3023,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped: vec![SkippedFunction {
@@ -2863,6 +3071,7 @@ mod tests {
                 behavior_coverage: vec![],
                 mocks_used: vec![],
                     coverage_metrics: Default::default(),
+                    mock_misses: vec![],
                     refactoring_recommendations: vec![],
             }],
             skipped: vec![],
@@ -5100,6 +5309,7 @@ mod tests {
             behavior_coverage: vec![],
             mocks_used: vec![],
             coverage_metrics: analyze_out.coverage_metrics,
+            mock_misses: vec![],
             refactoring_recommendations: vec![],
         }
     }
@@ -5279,6 +5489,411 @@ mod tests {
         assert_eq!(layer1.available(), 0);
         // layer0's surplus is not visible to layer1.
         assert_eq!(layer0.available(), 100);
+    }
+
+    // --- detect_mock_misses unit tests ---
+
+    /// Build a minimal `ExecuteResult` with the given external calls.
+    fn make_execute_result_with_calls(calls: Vec<crate::execution_record::ExternalCall>) -> crate::protocol::ExecuteResult {
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        crate::protocol::ExecuteResult {
+            branch_path: vec![BranchDecision {
+                branch_id: 1,
+                line: 1,
+                taken: true,
+                constraint: SymConstraint::Unknown { hint: String::new() },
+                conditions: None,
+            }],
+            scope_events: vec![],
+            lines_executed: vec![],
+            calls_to_external: calls,
+            path_constraints: vec![],
+            return_value: None,
+            thrown_error: None,
+            side_effects: vec![],
+            performance: crate::protocol::PerformanceMetrics::default(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+        }
+    }
+
+    /// Build a `BehaviorMap` with the given input_args entries as behaviors.
+    fn make_behavior_map_with_inputs(function_id: &str, known_inputs: Vec<Vec<serde_json::Value>>) -> BehaviorMap {
+        use crate::behavior::Behavior;
+        BehaviorMap {
+            function_id: function_id.to_string(),
+            behaviors: known_inputs
+                .into_iter()
+                .enumerate()
+                .map(|(i, args)| Behavior {
+                    id: i as u32,
+                    input_args: args,
+                    return_value: Some(serde_json::json!(i)),
+                    thrown_error: None,
+                    branch_path: vec![],
+                    side_effects: vec![],
+                    dependency_trace: None,
+                    mock_values: vec![],
+                })
+                .collect(),
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        }
+    }
+
+    #[test]
+    fn detect_mock_misses_empty_raw_results_produces_no_misses() {
+        let callee_map = make_behavior_map_with_inputs("callee", vec![vec![serde_json::json!(1)]]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+        let misses = detect_mock_misses(&[], &callee_maps);
+        assert!(misses.is_empty());
+    }
+
+    #[test]
+    fn detect_mock_misses_hit_produces_no_miss() {
+        // Caller passes args that ARE in the callee's behavior map → no miss.
+        let known_args = vec![serde_json::json!(42)];
+        let callee_map = make_behavior_map_with_inputs("callee", vec![known_args.clone()]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+        let caller_inputs = vec![serde_json::json!(0)];
+        let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: known_args,
+            return_value: serde_json::json!(99),
+        }]);
+        let misses = detect_mock_misses(&[(caller_inputs, vec![], exec)], &callee_maps);
+        assert!(misses.is_empty(), "expected no miss when args match behavior map");
+    }
+
+    #[test]
+    fn detect_mock_misses_miss_is_recorded() {
+        // Caller passes args NOT in the callee's behavior map → one miss.
+        let callee_map = make_behavior_map_with_inputs("callee", vec![vec![serde_json::json!(1)]]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+        let missed_args = vec![serde_json::json!(999)]; // not in behavior map
+        let caller_inputs = vec![serde_json::json!(0)];
+        let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: missed_args.clone(),
+            return_value: serde_json::json!(0),
+        }]);
+
+        let misses = detect_mock_misses(&[(caller_inputs, vec![], exec)], &callee_maps);
+        assert_eq!(misses.len(), 1);
+        assert_eq!(misses[0].callee_name, "callee");
+        assert_eq!(misses[0].missed_inputs, missed_args);
+    }
+
+    #[test]
+    fn detect_mock_misses_deduplicates_identical_misses_across_executions() {
+        // Two caller executions both call callee with the same unknown args.
+        // Should produce one miss, not two.
+        let callee_map = make_behavior_map_with_inputs("callee", vec![]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+        let missed_args = vec![serde_json::json!(7)];
+        let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: missed_args,
+            return_value: serde_json::json!(0),
+        }]);
+
+        let raw = vec![
+            (vec![serde_json::json!(1)], vec![], exec.clone()),
+            (vec![serde_json::json!(2)], vec![], exec),
+        ];
+        let misses = detect_mock_misses(&raw, &callee_maps);
+        assert_eq!(misses.len(), 1, "duplicate missed args should be deduplicated");
+    }
+
+    #[test]
+    fn detect_mock_misses_distinct_missed_args_each_recorded() {
+        // Two distinct sets of missed args → two miss entries.
+        let callee_map = make_behavior_map_with_inputs("callee", vec![]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+        let missed_a = vec![serde_json::json!(10)];
+        let missed_b = vec![serde_json::json!(20)];
+
+        let exec_a = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: missed_a,
+            return_value: serde_json::json!(0),
+        }]);
+        let exec_b = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: missed_b,
+            return_value: serde_json::json!(0),
+        }]);
+
+        let raw = vec![
+            (vec![serde_json::json!(1)], vec![], exec_a),
+            (vec![serde_json::json!(2)], vec![], exec_b),
+        ];
+        let misses = detect_mock_misses(&raw, &callee_maps);
+        assert_eq!(misses.len(), 2);
+    }
+
+    #[test]
+    fn detect_mock_misses_ignores_unknown_callee() {
+        // Calls to symbols not in callee_maps are silently skipped.
+        let callee_maps: HashMap<String, BehaviorMap> = HashMap::new();
+        let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "unknown_dep".to_string(),
+            args: vec![serde_json::json!(1)],
+            return_value: serde_json::json!(0),
+        }]);
+        let misses = detect_mock_misses(&[(vec![], vec![], exec)], &callee_maps);
+        assert!(misses.is_empty());
+    }
+
+    #[test]
+    fn detect_mock_misses_caller_execution_id_set() {
+        // The caller_execution_id should be the input hash of the triggering execution.
+        let callee_map = make_behavior_map_with_inputs("callee", vec![]);
+        let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+        let caller_inputs = vec![serde_json::json!(42)];
+        let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+            symbol: "callee".to_string(),
+            args: vec![serde_json::json!(1)],
+            return_value: serde_json::json!(0),
+        }]);
+
+        let misses = detect_mock_misses(&[(caller_inputs.clone(), vec![], exec)], &callee_maps);
+        assert_eq!(misses.len(), 1);
+        // Verify it matches the hash of caller_inputs.
+        let mut hasher = std::hash::DefaultHasher::new();
+        let input_str = serde_json::to_string(&caller_inputs).unwrap();
+        use std::hash::Hash;
+        input_str.hash(&mut hasher);
+        use std::hash::Hasher;
+        let expected_id = hasher.finish();
+        assert_eq!(misses[0].caller_execution_id, expected_id);
+    }
+
+    #[test]
+    fn format_mock_misses_empty_produces_empty_string() {
+        assert_eq!(format_mock_misses(&[]), "");
+    }
+
+    #[test]
+    fn format_mock_misses_single_miss_shows_callee_and_inputs() {
+        let miss = MockMiss {
+            callee_name: "myCallee".to_string(),
+            missed_inputs: vec![serde_json::json!(1), serde_json::json!("hello")],
+            caller_execution_id: 0,
+        };
+        let output = format_mock_misses(&[miss]);
+        assert!(output.contains("myCallee"), "should mention callee name");
+        assert!(output.contains("1 miss"), "should mention count");
+    }
+
+    #[test]
+    fn format_scan_report_includes_mock_miss_line() {
+        // A scan result with a mock miss should show it in the report.
+        let miss = MockMiss {
+            callee_name: "leaf".to_string(),
+            missed_inputs: vec![serde_json::json!(99)],
+            caller_execution_id: 1234,
+        };
+        let result = ScanResult {
+            test_order: vec!["leaf".into(), "caller".into()],
+            function_results: vec![
+                FunctionResult {
+                    function_name: "leaf".into(),
+                    exploration: ObservationOutput {
+                        function_name: "leaf".into(),
+                        iterations: 5,
+                        unique_paths: 1,
+                        lines_covered: 3,
+                        total_lines: 5,
+                        new_path_executions: vec![],
+                        raw_results: vec![],
+                        discoveries: vec![],
+                        nondeterministic_fields: vec![],
+                        float_probe_results: vec![],
+                        boundary_results: vec![],
+                        shrunk_witnesses: std::collections::HashMap::new(),
+                        mcdc_summary: None,
+                        shrink_stats: crate::shrink::ShrinkStats::default(),
+                        abandoned_frontiers: vec![],
+                        opaque_suggestions: vec![],
+                    },
+                    behavior_map: BehaviorMap { function_id: "leaf".into(), behaviors: vec![], fingerprint: None, nondeterministic_fields: vec![] },
+                    behavior_coverage: vec![],
+                    mocks_used: vec![],
+                    mock_misses: vec![],
+                    coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
+                },
+                FunctionResult {
+                    function_name: "caller".into(),
+                    exploration: ObservationOutput {
+                        function_name: "caller".into(),
+                        iterations: 10,
+                        unique_paths: 2,
+                        lines_covered: 8,
+                        total_lines: 10,
+                        new_path_executions: vec![],
+                        raw_results: vec![],
+                        discoveries: vec![],
+                        nondeterministic_fields: vec![],
+                        float_probe_results: vec![],
+                        boundary_results: vec![],
+                        shrunk_witnesses: std::collections::HashMap::new(),
+                        mcdc_summary: None,
+                        shrink_stats: crate::shrink::ShrinkStats::default(),
+                        abandoned_frontiers: vec![],
+                        opaque_suggestions: vec![],
+                    },
+                    behavior_map: BehaviorMap { function_id: "caller".into(), behaviors: vec![], fingerprint: None, nondeterministic_fields: vec![] },
+                    behavior_coverage: vec![],
+                    mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
+                    mock_misses: vec![miss],
+                    coverage_metrics: Default::default(),
+                    refactoring_recommendations: vec![],
+                },
+            ],
+            skipped_functions: vec![],
+            sampling: None,
+        };
+
+        let report = format_scan_report(&result);
+        assert!(
+            report.contains("Mock misses"),
+            "report should contain 'Mock misses' section, got:\n{report}"
+        );
+        assert!(
+            report.contains("leaf"),
+            "mock miss section should name the callee"
+        );
+    }
+
+    // --- detect_mock_misses property tests ---
+
+    mod mock_miss_props {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generate a small JSON value (scalar or short string) for use in test args.
+        fn arb_json_scalar() -> impl Strategy<Value = serde_json::Value> {
+            prop_oneof![
+                any::<i32>().prop_map(|v| serde_json::json!(v)),
+                ".{0,20}".prop_map(|s: String| serde_json::Value::String(s)),
+                any::<bool>().prop_map(|v| serde_json::json!(v)),
+            ]
+        }
+
+        /// Generate a small args vector (0–3 elements).
+        fn arb_args() -> impl Strategy<Value = Vec<serde_json::Value>> {
+            proptest::collection::vec(arb_json_scalar(), 0..4)
+        }
+
+        proptest! {
+            /// Any call whose args exactly match a behavior-map entry is never a miss.
+            #[test]
+            fn hit_never_produces_miss(
+                known_args in arb_args(),
+            ) {
+                let callee_map = make_behavior_map_with_inputs("callee", vec![known_args.clone()]);
+                let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+                let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+                    symbol: "callee".to_string(),
+                    args: known_args,
+                    return_value: serde_json::json!(null),
+                }]);
+                let misses = detect_mock_misses(&[(vec![], vec![], exec)], &callee_maps);
+                prop_assert!(misses.is_empty(), "a call matching the behavior map should never be a miss");
+            }
+
+            /// Misses never reference a callee not in `callee_maps`.
+            #[test]
+            fn misses_only_reference_known_callees(
+                known_args in arb_args(),
+                missed_args in arb_args(),
+            ) {
+                prop_assume!(known_args != missed_args);
+
+                let callee_map = make_behavior_map_with_inputs("callee", vec![known_args]);
+                let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+                let exec = make_execute_result_with_calls(vec![
+                    crate::execution_record::ExternalCall {
+                        symbol: "callee".to_string(),
+                        args: missed_args,
+                        return_value: serde_json::json!(null),
+                    },
+                    crate::execution_record::ExternalCall {
+                        symbol: "unknown".to_string(),  // not in callee_maps
+                        args: vec![serde_json::json!(1)],
+                        return_value: serde_json::json!(null),
+                    },
+                ]);
+                let misses = detect_mock_misses(&[(vec![], vec![], exec)], &callee_maps);
+                // All misses reference only "callee", never "unknown".
+                for miss in &misses {
+                    prop_assert_eq!(miss.callee_name.as_str(), "callee");
+                }
+            }
+
+            /// Duplicate (callee, args) pairs across executions produce only one miss entry.
+            #[test]
+            fn deduplication_invariant(
+                missed_args in arb_args(),
+                n_duplicates in 1usize..5,
+            ) {
+                let callee_map = make_behavior_map_with_inputs("callee", vec![]);
+                let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+                let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+                    symbol: "callee".to_string(),
+                    args: missed_args,
+                    return_value: serde_json::json!(null),
+                }]);
+                let raw: Vec<_> = (0..n_duplicates)
+                    .map(|i| (vec![serde_json::json!(i as i32)], vec![], exec.clone()))
+                    .collect();
+                let misses = detect_mock_misses(&raw, &callee_maps);
+                prop_assert_eq!(misses.len(), 1, "duplicates should be collapsed to one miss");
+            }
+
+            /// Misses count never exceeds total distinct (callee, args) pairs in the raw results.
+            #[test]
+            fn miss_count_bounded_by_distinct_call_sites(
+                call_args in proptest::collection::vec(arb_args(), 1..8),
+            ) {
+                // Empty behavior map → every distinct call is a miss.
+                let callee_map = make_behavior_map_with_inputs("callee", vec![]);
+                let callee_maps = HashMap::from([("callee".to_string(), callee_map)]);
+
+                let raw: Vec<_> = call_args.iter().enumerate().map(|(i, args)| {
+                    let exec = make_execute_result_with_calls(vec![crate::execution_record::ExternalCall {
+                        symbol: "callee".to_string(),
+                        args: args.clone(),
+                        return_value: serde_json::json!(null),
+                    }]);
+                    (vec![serde_json::json!(i as i32)], vec![], exec)
+                }).collect();
+
+                let misses = detect_mock_misses(&raw, &callee_maps);
+                // Miss count ≤ number of distinct arg vectors.
+                let distinct: std::collections::HashSet<String> = call_args
+                    .iter()
+                    .map(|a| serde_json::to_string(a).unwrap())
+                    .collect();
+                prop_assert!(
+                    misses.len() <= distinct.len(),
+                    "miss count {} should not exceed distinct call count {}",
+                    misses.len(), distinct.len()
+                );
+            }
+        }
     }
 
     // --- BudgetSurplus property tests ---
