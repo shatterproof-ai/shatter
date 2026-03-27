@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker } from "./handlers.js";
+import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker, preparedKeysSize, preparedTargetsSize } from "./handlers.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
@@ -878,6 +878,26 @@ describe("handleRequest", () => {
 
       expect(instrumentedSourcesSize()).toBe(0);
       expect(compiledModuleCacheSize()).toBe(0);
+    });
+
+    it("shutdown clears prepared keys and targets", async () => {
+      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+
+      // Instrument then prepare — populates preparedKeys and preparedTargets.
+      await handleRequest(
+        makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      await handleRequest(
+        makeRequest({ command: "prepare", file: exampleFile, function: "classifyNumber", mocks: [] })
+      );
+      expect(preparedKeysSize()).toBeGreaterThan(0);
+      expect(preparedTargetsSize()).toBeGreaterThan(0);
+
+      // Shutdown must release all prepared-target state.
+      await handleRequest(makeRequest({ command: "shutdown" }));
+
+      expect(preparedKeysSize()).toBe(0);
+      expect(preparedTargetsSize()).toBe(0);
     });
   });
 

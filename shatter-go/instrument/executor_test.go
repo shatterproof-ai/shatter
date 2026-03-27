@@ -3,6 +3,7 @@ package instrument
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1817,5 +1818,64 @@ func add(a int, b int) int {
 		if err != nil {
 			b.Fatalf("ExecuteFunction: %v", err)
 		}
+	}
+}
+
+// ─── PreparedHarness.Cleanup() tests ─────────────────────────────────────────
+
+// TestPreparedHarnessCleanupRemovesArtifactDir verifies that Cleanup() removes
+// the artifact directory even when no subprocess has been spawned.
+func TestPreparedHarnessCleanupRemovesArtifactDir(t *testing.T) {
+	t.Parallel()
+	artifactDir := t.TempDir()
+
+	h := &PreparedHarness{ArtifactDir: artifactDir}
+	h.Cleanup()
+
+	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
+		t.Errorf("artifact dir should be removed by Cleanup(), os.Stat error = %v", err)
+	}
+}
+
+// TestPreparedHarnessCleanupHandlesDeadProcess verifies that Cleanup() removes
+// the artifact directory and does not panic when the subprocess has already exited
+// (i.e. h.proc is non-nil but the process is dead).
+func TestPreparedHarnessCleanupHandlesDeadProcess(t *testing.T) {
+	t.Parallel()
+	artifactDir := t.TempDir()
+
+	// Spawn a long-running subprocess (cat blocks on stdin) to populate proc.
+	cmd := exec.Command("cat")
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatal("creating pipe:", err)
+	}
+	cmd.Stdin = stdinR
+	if startErr := cmd.Start(); startErr != nil {
+		stdinR.Close()
+		stdinW.Close()
+		t.Skip("cannot start subprocess:", startErr)
+	}
+	stdinR.Close() // parent does not need the read end
+
+	h := &PreparedHarness{
+		ArtifactDir: artifactDir,
+		proc: &persistentHarness{
+			cmd:   cmd,
+			stdin: stdinW,
+		},
+	}
+
+	// Kill the process directly, leaving h.proc non-nil to simulate a crashed
+	// subprocess discovered at cleanup time (not via spawnOrReuse).
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait() // collect exit status; Cleanup's own Wait will get an error (ignored)
+
+	// Cleanup() must handle the already-dead process without panicking and still
+	// remove the artifact directory.
+	h.Cleanup()
+
+	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
+		t.Errorf("artifact dir should be removed after Cleanup() on dead process, os.Stat error = %v", err)
 	}
 }
