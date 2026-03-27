@@ -3,6 +3,7 @@
 pub mod analysis_cache;
 pub mod array_mutation;
 pub mod auto_mock;
+pub mod bench;
 pub mod batch_analyze;
 pub mod boundary_search;
 pub mod branch_profile;

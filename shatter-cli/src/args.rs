@@ -1227,6 +1227,50 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         action: NondeterminismAction,
     },
+
+    /// Run benchmarks against a manifest of canonical scenarios.
+    ///
+    /// Reads a benchmark manifest (default: benchmarks/sample-manifest.json),
+    /// selects a tier (smoke/standard/full), and explores each function
+    /// multiple times to produce a structured JSON timing bundle.
+    Bench {
+        /// Path to the benchmark manifest JSON file.
+        #[arg(long, default_value = "benchmarks/sample-manifest.json")]
+        manifest: std::path::PathBuf,
+
+        /// Benchmark tier to run: smoke, standard, or full.
+        #[arg(long, default_value = "smoke")]
+        tier: String,
+
+        /// Number of measured repetitions per function.
+        #[arg(long, default_value_t = 5)]
+        repeats: u32,
+
+        /// Number of warmup runs to discard before measuring.
+        #[arg(long, default_value_t = 1)]
+        warmups: u32,
+
+        /// Maximum iterations for each explore run (fixed for reproducibility).
+        #[arg(long, default_value_t = 20)]
+        max_iterations: u32,
+
+        /// Write the benchmark bundle JSON to this file path.
+        /// Without this flag, output goes to stdout only.
+        #[arg(long, short = 'o')]
+        output: Option<std::path::PathBuf>,
+
+        /// Per-request timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+
+        /// Execution timeout in seconds for each function invocation.
+        #[arg(long, default_value_t = 10)]
+        exec_timeout: u64,
+
+        /// Build timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        build_timeout: u64,
+    },
 }
 
 /// Sub-subcommands for `shatter nondeterminism`.
@@ -1249,8 +1293,6 @@ pub(crate) enum NondeterminismAction {
         /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<std::path::PathBuf>,
-    },
-}
 
 /// Sub-subcommands for `shatter telemetry`.
 #[derive(Debug, Clone, Subcommand)]

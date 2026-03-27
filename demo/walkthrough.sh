@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=56
+TOTAL=57
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -640,8 +640,13 @@ step 55 $TOTAL "Nondeterminism Review" \
     "Review nondeterminism candidates from the most recent scan (non-interactive: no stdin)" \
     bash -c "$SHATTER nondeterminism review --cache-dir '$SHATTER_CACHE_DIR' </dev/null; echo '(exit 0 expected: no nondeterminism candidates in standalone arithmetic scan)'"
 
-# Stage 55: Cache clear
-step 56 $TOTAL "Cache Clear" \
+# Stage 55: Benchmark run (smoke tier, minimal)
+step 56 $TOTAL "Benchmark Run (Smoke)" \
+    "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
+    $SHATTER bench --tier smoke --repeats 1 --warmups 0
+
+# Stage 56: Cache clear
+step 57 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 
