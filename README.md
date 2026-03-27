@@ -4,12 +4,41 @@ Automatic exploratory testing via concolic execution. Shatter analyzes your func
 
 ## Installation
 
-Shatter is not yet published to a package registry or public repository. Build from source:
+### Quick install (Linux / macOS)
 
 ```bash
+curl -sSL https://raw.githubusercontent.com/user/shatter/main/install.sh | bash
+```
+
+This detects your OS and architecture, downloads the correct binary from GitHub Releases, and installs it to `~/.local/bin`. Override the install location with `INSTALL_DIR`:
+
+```bash
+INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/user/shatter/main/install.sh | bash
+```
+
+Pin a specific version:
+
+```bash
+VERSION=v0.2.0 curl -sSL https://raw.githubusercontent.com/user/shatter/main/install.sh | bash
+```
+
+> **Note:** GitHub Releases are not yet configured — the install script will work once release artifacts are published. Until then, build from source.
+
+### Build from source
+
+Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and libclang.
+
+```bash
+git clone https://github.com/user/shatter.git
 cd shatter
 cargo build --release
 # Binary is at target/release/shatter
+```
+
+### Verify
+
+```bash
+shatter --version
 ```
 
 ## Quickstart
