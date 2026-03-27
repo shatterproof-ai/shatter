@@ -725,6 +725,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
   preparedKeys.clear();
+  preparedTargets.clear();
   if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
@@ -751,6 +752,16 @@ export function instrumentedSourcesSize(): number {
 /** Number of cached setup contexts. Exposed for testing. */
 export function setupContextsSize(): number {
   return setupContexts.size;
+}
+
+/** Number of cached prepare keys (prepare_id → instrument key). Exposed for testing. */
+export function preparedKeysSize(): number {
+  return preparedKeys.size;
+}
+
+/** Number of cached prepare targets (instrument key → prepare_id). Exposed for testing. */
+export function preparedTargetsSize(): number {
+  return preparedTargets.size;
 }
 
 /**

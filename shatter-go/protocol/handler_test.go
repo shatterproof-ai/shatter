@@ -123,6 +123,41 @@ func TestShutdownReturnsAckAndStops(t *testing.T) {
 	}
 }
 
+// TestShutdownCleansUpPreparedHarnesses verifies that handleShutdown calls
+// Cleanup() on all cached PreparedHarness entries, removing their artifact
+// directories and clearing the preparedHarnesses map.
+func TestShutdownCleansUpPreparedHarnesses(t *testing.T) {
+	artifactDir := t.TempDir()
+
+	// Build a handler and inject a PreparedHarness with a known artifact dir.
+	// No subprocess is needed — we test the dir-removal path here.
+	var output bytes.Buffer
+	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
+	h.preparedHarnesses["test-prepare-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+
+	if err := h.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output.String())), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != "shutdown_ack" {
+		t.Errorf("status = %q, want shutdown_ack", resp.Status)
+	}
+
+	// Cleanup() should have removed the artifact dir.
+	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
+		t.Errorf("artifact dir should be removed on shutdown, os.Stat error = %v", err)
+	}
+
+	// preparedHarnesses map should be empty after shutdown.
+	if len(h.preparedHarnesses) != 0 {
+		t.Errorf("preparedHarnesses should be empty after shutdown, len = %d", len(h.preparedHarnesses))
+	}
+}
+
 func TestVersionMismatchReturnsError(t *testing.T) {
 	resp := sendRecv(t, `{"protocol_version":"99.0.0","id":1,"command":"handshake","capabilities":[]}`)
 	if resp.Status != "error" {
