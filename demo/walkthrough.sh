@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=55
+TOTAL=56
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -632,8 +632,16 @@ step 54 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
 
-# Stage 54: Cache clear
-step 55 $TOTAL "Cache Clear" \
+# Stage 54: Nondeterminism review (non-interactive: reads from cache populated above).
+# The command runs in non-interactive mode when stdin is not a terminal (as in
+# the walkthrough). With no candidates in the cache it prints a diagnostic
+# message and exits 0, which is the expected outcome after the standalone scan.
+step 55 $TOTAL "Nondeterminism Review" \
+    "Review nondeterminism candidates from the most recent scan (non-interactive: no stdin)" \
+    bash -c "$SHATTER nondeterminism review --cache-dir '$SHATTER_CACHE_DIR' </dev/null; echo '(exit 0 expected: no nondeterminism candidates in standalone arithmetic scan)'"
+
+# Stage 55: Cache clear
+step 56 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 

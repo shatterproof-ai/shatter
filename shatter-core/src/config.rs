@@ -568,6 +568,73 @@ pub fn parse_config(path: &Path) -> Result<ShatterConfig, ConfigError> {
     Ok(config)
 }
 
+/// Update the nondeterminism section of a `.shatter/config.yaml` file.
+///
+/// Merges `new_confirmed` and `new_rejected` entries into the existing config,
+/// deduplicating by `(function, path)`. Writes the result back atomically
+/// (temp file + rename). Creates the config file if it does not exist.
+///
+/// Only the `nondeterminism` section is mutated; all other config is preserved.
+pub fn update_nondeterminism_config(
+    config_path: &Path,
+    new_confirmed: &[NondeterminismDeclaration],
+    new_rejected: &[NondeterminismDeclaration],
+) -> Result<(), ConfigError> {
+    // Load existing config, or start from default if the file does not exist.
+    let mut config = if config_path.exists() {
+        parse_config(config_path)?
+    } else {
+        ShatterConfig::default()
+    };
+
+    let nd = config.nondeterminism.get_or_insert_with(NondeterminismConfig::default);
+
+    // Merge confirmed: add entries not already present (keyed by function + path).
+    for decl in new_confirmed {
+        if !nd.confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+            nd.confirmed.push(decl.clone());
+        }
+    }
+
+    // Merge rejected: add entries not already present.
+    for decl in new_rejected {
+        if !nd.rejected.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+            nd.rejected.push(decl.clone());
+        }
+    }
+
+    // Remove the nondeterminism section entirely if both lists are empty
+    // (avoids writing an empty `nondeterminism: {confirmed: [], rejected: []}` block).
+    if nd.confirmed.is_empty() && nd.rejected.is_empty() {
+        config.nondeterminism = None;
+    }
+
+    // Serialize and write atomically.
+    let yaml = serde_yaml::to_string(&config).map_err(|e| ConfigError::Parse {
+        path: config_path.to_path_buf(),
+        source: e,
+    })?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
+            path: config_path.to_path_buf(),
+            source: e,
+        })?;
+    }
+
+    let tmp_path = config_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp_path, &yaml).map_err(|e| ConfigError::Io {
+        path: tmp_path.clone(),
+        source: e,
+    })?;
+    std::fs::rename(&tmp_path, config_path).map_err(|e| ConfigError::Io {
+        path: config_path.to_path_buf(),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 /// Parse a candidate inputs JSON file.
 pub fn parse_candidate_inputs(path: &Path) -> Result<Vec<CandidateInput>, ConfigError> {
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::InputIo {
@@ -2561,7 +2628,7 @@ defaults:
 mod config_proptests {
     use proptest::prelude::*;
 
-    use super::parse_set_overrides;
+    use super::{NondeterminismDeclaration, parse_config, parse_set_overrides, update_nondeterminism_config};
 
     proptest! {
         #[test]
@@ -2571,6 +2638,82 @@ mod config_proptests {
         )) {
             // Must not panic — only Ok or Err.
             let _ = parse_set_overrides(&pairs);
+        }
+
+        /// `update_nondeterminism_config` never panics for any combination of
+        /// function names and paths, and the resulting file round-trips cleanly.
+        #[test]
+        fn update_nondeterminism_config_roundtrip(
+            confirmed in proptest::collection::vec(
+                ("[a-z][a-z0-9]{0,15}", "\\$\\.[a-z][a-z0-9]{0,15}", "[a-z ]{1,40}"),
+                0..5usize,
+            ),
+            rejected in proptest::collection::vec(
+                ("[a-z][a-z0-9]{0,15}", "\\$\\.[a-z][a-z0-9]{0,15}", "[a-z ]{1,40}"),
+                0..5usize,
+            ),
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_path = tmp.path().join(".shatter").join("config.yaml");
+
+            let confirmed_decls: Vec<NondeterminismDeclaration> = confirmed
+                .into_iter()
+                .map(|(function, path, reason)| NondeterminismDeclaration { function, path, reason })
+                .collect();
+            let rejected_decls: Vec<NondeterminismDeclaration> = rejected
+                .into_iter()
+                .map(|(function, path, reason)| NondeterminismDeclaration { function, path, reason })
+                .collect();
+
+            // Must not panic or error.
+            update_nondeterminism_config(&config_path, &confirmed_decls, &rejected_decls)
+                .expect("update must succeed");
+
+            // File must be parseable.
+            let loaded = parse_config(&config_path).expect("config must be parseable");
+
+            // Confirmed entries must all be present.
+            if let Some(nd) = loaded.nondeterminism {
+                for decl in &confirmed_decls {
+                    prop_assert!(
+                        nd.confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path),
+                        "confirmed entry missing after update"
+                    );
+                }
+                for decl in &rejected_decls {
+                    prop_assert!(
+                        nd.rejected.iter().any(|d| d.function == decl.function && d.path == decl.path),
+                        "rejected entry missing after update"
+                    );
+                }
+            } else {
+                // nondeterminism section is absent only when both lists are empty.
+                prop_assert!(confirmed_decls.is_empty() && rejected_decls.is_empty());
+            }
+        }
+
+        /// Calling `update_nondeterminism_config` twice with the same entry must not duplicate it.
+        #[test]
+        fn update_nondeterminism_config_idempotent(
+            function in "[a-z][a-z0-9]{0,15}",
+            path in "\\$\\.[a-z][a-z0-9]{0,15}",
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_path = tmp.path().join(".shatter").join("config.yaml");
+
+            let decl = NondeterminismDeclaration {
+                function: function.clone(),
+                path: path.clone(),
+                reason: "test".to_string(),
+            };
+
+            update_nondeterminism_config(&config_path, &[decl.clone()], &[]).unwrap();
+            update_nondeterminism_config(&config_path, &[decl], &[]).unwrap();
+
+            let loaded = parse_config(&config_path).unwrap();
+            let nd = loaded.nondeterminism.unwrap();
+            let count = nd.confirmed.iter().filter(|d| d.function == function && d.path == path).count();
+            prop_assert_eq!(count, 1, "must not duplicate on repeated write");
         }
     }
 }
