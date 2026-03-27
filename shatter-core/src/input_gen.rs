@@ -1050,8 +1050,9 @@ pub fn generate_inputs_with_custom(
 /// Mutate a single JSON value according to its type.
 ///
 /// Applies a random type-appropriate mutation operator. The output is always
-/// type-valid for the given `TypeInfo`. Types that cannot be meaningfully
-/// mutated (Complex, Opaque, Unknown) are returned unchanged.
+/// type-valid for the given `TypeInfo`. Buffer complex types receive AFL-style
+/// binary mutation (bit flip, byte arithmetic, block insert/delete). All other
+/// complex types, opaque types, and unknown types are returned unchanged.
 pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
     match typ {
         TypeInfo::Int => mutate_int(value, rng),
@@ -1062,6 +1063,7 @@ pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mu
         TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
         TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
         TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
+        TypeInfo::Complex { kind: ComplexKind::Buffer, .. } => mutate_buffer(value, rng),
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
     }
 }
@@ -1383,6 +1385,169 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &m
     } else {
         mutate_value(value, inner, dictionary, rng)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Binary buffer mutation operators (AFL-style)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of bytes to insert in a block insertion mutation.
+const BUFFER_MAX_BLOCK_INSERT: usize = 8;
+
+/// Maximum number of bytes to delete in a block deletion mutation.
+const BUFFER_MAX_BLOCK_DELETE: usize = 8;
+
+/// Maximum absolute delta applied during byte arithmetic mutation.
+const BUFFER_BYTE_ARITH_MAX_DELTA: u8 = 35;
+
+/// Alphabet for standard (non-URL-safe) base64 encoding.
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Encode a byte slice to a standard base64 string (with `=` padding).
+///
+/// Avoids adding a `base64` crate dependency by implementing the minimal
+/// encoding needed for the buffer wire format.
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let combined = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_ALPHABET[((combined >> 18) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((combined >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(BASE64_ALPHABET[((combined >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(BASE64_ALPHABET[(combined & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Decode a standard base64 string to bytes.
+///
+/// Returns `None` for any character that is not in the base64 alphabet or `=`.
+/// Padding is handled leniently — trailing `=` characters are ignored.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let chars: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
+    for chunk in chars.chunks(4) {
+        let decode_char = |c: u8| -> Option<u32> {
+            BASE64_ALPHABET.iter().position(|&x| x == c).map(|p| p as u32)
+        };
+        let c0 = decode_char(chunk[0])?;
+        let c1 = decode_char(*chunk.get(1).unwrap_or(&b'A'))?;
+        let combined = (c0 << 18) | (c1 << 12);
+        out.push(((combined >> 16) & 0xFF) as u8);
+        if let Some(&c2_raw) = chunk.get(2) {
+            let c2 = decode_char(c2_raw)?;
+            let combined2 = combined | (c2 << 6);
+            out.push(((combined2 >> 8) & 0xFF) as u8);
+            if let Some(&c3_raw) = chunk.get(3) {
+                let c3 = decode_char(c3_raw)?;
+                out.push(((combined2 | c3) & 0xFF) as u8);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Apply AFL-style binary mutation operators to a buffer complex value.
+///
+/// Expects the wire format `{"__complex_type": "buffer", "encoding": "base64",
+/// "value": <base64-string>}`. If the value is malformed, falls back to
+/// generating a fresh buffer.
+///
+/// Four AFL-style mutation operators are applied, chosen uniformly at random
+/// when the buffer is non-empty. Empty buffers are always grown via block
+/// insertion (the only sensible operator when there are no bytes to modify):
+/// - **Bit flip**: flip a single random bit.
+/// - **Byte arithmetic**: add or subtract a small random delta (wrapping) from a
+///   single byte. This produces near-boundary values that trigger off-by-one checks.
+/// - **Block insertion**: insert 1–8 random bytes at a random position.
+/// - **Block deletion**: delete 1–8 bytes starting at a random position.
+///
+/// String inputs are not affected: this function is only reached for
+/// `TypeInfo::Complex { kind: ComplexKind::Buffer, .. }` parameters.
+fn mutate_buffer(value: &Value, rng: &mut impl Rng) -> Value {
+    // Extract the base64 payload from the wire format.
+    let encoded = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_str());
+
+    let mut bytes = match encoded.and_then(base64_decode) {
+        Some(b) => b,
+        None => {
+            // Malformed input — generate a fresh small buffer.
+            let len = rng.random_range(0..=4_usize);
+            (0..len).map(|_| rng.random_range(0u8..=255)).collect()
+        }
+    };
+
+    // Operator selection — only operators valid for the current buffer length are chosen.
+    //
+    // For non-empty buffers all four operators are available:
+    //   0 = bit flip, 1 = block insertion, 2 = byte arithmetic, 3 = block deletion
+    // For empty buffers only block insertion makes sense; the other three operators
+    // all require at least one existing byte to work on.
+    if bytes.is_empty() {
+        // Block insertion is the only sensible operator for an empty buffer.
+        let insert_len = rng.random_range(1..=BUFFER_MAX_BLOCK_INSERT);
+        let new_bytes: Vec<u8> = (0..insert_len)
+            .map(|_| rng.random_range(0u8..=255))
+            .collect();
+        bytes.extend(new_bytes);
+    } else {
+        let op: u8 = rng.random_range(0..4_u8);
+        match op {
+            0 => {
+                // Bit flip: flip one random bit.
+                let byte_idx = rng.random_range(0..bytes.len());
+                let bit = rng.random_range(0..8_u8);
+                bytes[byte_idx] ^= 1 << bit;
+            }
+            1 => {
+                // Block insertion: insert 1–8 random bytes at a random position.
+                let insert_len = rng.random_range(1..=BUFFER_MAX_BLOCK_INSERT);
+                let pos = rng.random_range(0..=bytes.len());
+                let new_bytes: Vec<u8> = (0..insert_len)
+                    .map(|_| rng.random_range(0u8..=255))
+                    .collect();
+                bytes.splice(pos..pos, new_bytes);
+            }
+            2 => {
+                // Byte arithmetic: add or subtract a small delta from one byte (wrapping).
+                let byte_idx = rng.random_range(0..bytes.len());
+                let delta: u8 = rng.random_range(1..=BUFFER_BYTE_ARITH_MAX_DELTA);
+                bytes[byte_idx] = if rng.random_bool(0.5) {
+                    bytes[byte_idx].wrapping_add(delta)
+                } else {
+                    bytes[byte_idx].wrapping_sub(delta)
+                };
+            }
+            _ => {
+                // Block deletion: delete 1–8 bytes starting at a random position.
+                let max_del = BUFFER_MAX_BLOCK_DELETE.min(bytes.len());
+                let del_len = rng.random_range(1..=max_del);
+                let start = rng.random_range(0..=bytes.len() - del_len);
+                bytes.drain(start..start + del_len);
+            }
+        }
+    }
+
+    json!({
+        "__complex_type": "buffer",
+        "encoding": "base64",
+        "value": base64_encode(&bytes)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -4291,5 +4456,419 @@ mod tests {
         let configs = generate_mock_values(&params, &mut rng, None);
         let val = &configs[0].return_values[0];
         assert!(val.get("status").is_some(), "network mock should have status field");
+    }
+
+    // -----------------------------------------------------------------------
+    // Base64 codec unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn base64_roundtrip_empty() {
+        let bytes: &[u8] = &[];
+        assert_eq!(base64_decode(&base64_encode(bytes)), Some(bytes.to_vec()));
+    }
+
+    #[test]
+    fn base64_roundtrip_single_byte() {
+        for b in [0u8, 1, 127, 128, 255] {
+            let encoded = base64_encode(&[b]);
+            let decoded = base64_decode(&encoded).expect("decode failed");
+            assert_eq!(decoded, vec![b], "roundtrip failed for byte {b}");
+        }
+    }
+
+    #[test]
+    fn base64_roundtrip_known_values() {
+        // "Hello" encodes to "SGVsbG8="
+        assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
+        assert_eq!(base64_decode("SGVsbG8="), Some(b"Hello".to_vec()));
+        // [0] encodes to "AA=="
+        assert_eq!(base64_encode(&[0u8]), "AA==");
+        assert_eq!(base64_decode("AA=="), Some(vec![0u8]));
+        // [255,255,255,255] encodes to "/////w=="
+        assert_eq!(base64_encode(&[255u8, 255, 255, 255]), "/////w==");
+        assert_eq!(base64_decode("/////w=="), Some(vec![255u8, 255, 255, 255]));
+        // [1,2,3,4] encodes to "AQIDBA=="
+        assert_eq!(base64_encode(&[1u8, 2, 3, 4]), "AQIDBA==");
+        assert_eq!(base64_decode("AQIDBA=="), Some(vec![1u8, 2, 3, 4]));
+    }
+
+    #[test]
+    fn base64_decode_invalid_char_returns_none() {
+        // '!' is not in the base64 alphabet
+        assert_eq!(base64_decode("SG!s"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Binary buffer mutation unit tests
+    // -----------------------------------------------------------------------
+
+    fn buffer_value(bytes: &[u8]) -> Value {
+        json!({
+            "__complex_type": "buffer",
+            "encoding": "base64",
+            "value": base64_encode(bytes)
+        })
+    }
+
+    fn extract_buffer_bytes(val: &Value) -> Vec<u8> {
+        let encoded = val
+            .as_object()
+            .and_then(|o| o.get("value"))
+            .and_then(|v| v.as_str())
+            .expect("expected buffer value field");
+        base64_decode(encoded).expect("expected valid base64")
+    }
+
+    #[test]
+    fn mutate_buffer_preserves_wire_format() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[1, 2, 3, 4]);
+        let mut rng = seeded_rng();
+        for _ in 0..100 {
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            let obj = mutated.as_object().expect("buffer mutant should be object");
+            assert_eq!(obj.get("__complex_type").and_then(|v| v.as_str()), Some("buffer"));
+            assert_eq!(obj.get("encoding").and_then(|v| v.as_str()), Some("base64"));
+            assert!(obj.contains_key("value"), "missing value field");
+            // value must be valid base64
+            let encoded = obj.get("value").and_then(|v| v.as_str()).unwrap();
+            assert!(base64_decode(encoded).is_some(), "value is not valid base64: {encoded}");
+        }
+    }
+
+    #[test]
+    fn mutate_buffer_actually_mutates() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[0x41, 0x42, 0x43, 0x44, 0x45]);
+        let mut any_diff = false;
+        for seed in 0..50_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            if mutated != input {
+                any_diff = true;
+                break;
+            }
+        }
+        assert!(any_diff, "mutate_buffer never produced a different value");
+    }
+
+    #[test]
+    fn mutate_buffer_empty_input_no_panic() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[]);
+        let mut rng = seeded_rng();
+        for _ in 0..50 {
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            assert!(mutated.is_object(), "expected object from empty buffer mutation");
+            // Empty buffer can only grow (insertion), result must be valid.
+            extract_buffer_bytes(&mutated); // panics if invalid
+        }
+    }
+
+    #[test]
+    fn mutate_buffer_single_byte_no_panic() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[0xFF]);
+        let mut rng = seeded_rng();
+        for _ in 0..100 {
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            assert!(mutated.is_object(), "expected object");
+            extract_buffer_bytes(&mutated); // panics if invalid
+        }
+    }
+
+    #[test]
+    fn mutate_buffer_bit_flip_changes_exactly_one_bit() {
+        // Force bit-flip operator (op=0) by using a buffer with 1 byte so
+        // all four operators are active; run enough seeds to hit bit_flip.
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input_bytes = [0b1010_1010u8];
+        let input = buffer_value(&input_bytes);
+        let mut saw_single_bit_flip = false;
+        for seed in 0..200_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            let out = extract_buffer_bytes(&mutated);
+            if out.len() == 1 {
+                let diff = input_bytes[0] ^ out[0];
+                // A single bit flip means exactly one bit is set in XOR diff.
+                if diff != 0 && diff.count_ones() == 1 {
+                    saw_single_bit_flip = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_single_bit_flip, "should produce a single-bit-flip mutation");
+    }
+
+    #[test]
+    fn mutate_buffer_block_insertion_grows_buffer() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[1, 2, 3]);
+        let mut saw_growth = false;
+        for seed in 0..200_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            let out = extract_buffer_bytes(&mutated);
+            if out.len() > 3 {
+                saw_growth = true;
+                break;
+            }
+        }
+        assert!(saw_growth, "should sometimes grow the buffer via block insertion");
+    }
+
+    #[test]
+    fn mutate_buffer_block_deletion_shrinks_buffer() {
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let input = buffer_value(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut saw_shrink = false;
+        for seed in 0..200_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mutated = mutate_value(&input, &typ, &[], &mut rng);
+            let out = extract_buffer_bytes(&mutated);
+            if out.len() < 8 {
+                saw_shrink = true;
+                break;
+            }
+        }
+        assert!(saw_shrink, "should sometimes shrink the buffer via block deletion");
+    }
+
+    #[test]
+    fn mutate_buffer_byte_arithmetic_wraps() {
+        // Verify that byte arithmetic wraps rather than panics on boundary bytes.
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        for boundary in [0u8, 255u8] {
+            let input = buffer_value(&[boundary; 4]);
+            let mut rng = seeded_rng();
+            for _ in 0..100 {
+                let mutated = mutate_value(&input, &typ, &[], &mut rng);
+                extract_buffer_bytes(&mutated); // must not panic
+            }
+        }
+    }
+
+    #[test]
+    fn mutate_buffer_malformed_value_regenerates_without_panic() {
+        // If the JSON value is missing fields or contains invalid base64, the
+        // mutation should not panic — it falls back to a fresh small buffer.
+        let typ = TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+        let malformed_inputs = [
+            json!(null),
+            json!("not_an_object"),
+            json!({"__complex_type": "buffer", "encoding": "base64", "value": "!!!invalid!!!"}),
+            json!({"__complex_type": "buffer", "encoding": "base64"}), // missing value
+        ];
+        let mut rng = seeded_rng();
+        for bad in &malformed_inputs {
+            for _ in 0..10 {
+                let mutated = mutate_value(bad, &typ, &[], &mut rng);
+                assert!(mutated.is_object(), "expected object for malformed input: {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn mutate_buffer_str_param_unaffected() {
+        // Strings must NOT be routed through the buffer mutator.
+        let mut rng = seeded_rng();
+        let val = json!("hello world");
+        for _ in 0..50 {
+            let mutated = mutate_value(&val, &TypeInfo::Str, &[], &mut rng);
+            assert!(mutated.is_string(), "Str mutation should always produce a string");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests for buffer mutation
+    // -----------------------------------------------------------------------
+
+    mod buffer_prop_tests {
+        use super::*;
+        use crate::types::ComplexKind;
+        use proptest::prelude::*;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        /// Arbitrary byte vec with length 0–32 for buffer mutation tests.
+        fn arb_byte_vec() -> impl Strategy<Value = Vec<u8>> {
+            prop::collection::vec(any::<u8>(), 0..=32)
+        }
+
+        proptest! {
+            /// Base64 roundtrip: encode then decode returns original bytes.
+            #[test]
+            fn base64_encode_decode_roundtrip(bytes in arb_byte_vec()) {
+                let encoded = base64_encode(&bytes);
+                let decoded = base64_decode(&encoded)
+                    .expect("encode→decode should always succeed");
+                prop_assert_eq!(decoded, bytes, "roundtrip failed");
+            }
+
+            /// Type contract: mutating a Buffer always produces a Buffer-tagged object.
+            #[test]
+            fn mutate_buffer_type_preserved(
+                bytes in arb_byte_vec(),
+                seed in 0..10000u64,
+            ) {
+                let typ = TypeInfo::Complex {
+                    kind: ComplexKind::Buffer,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let input = json!({
+                    "__complex_type": "buffer",
+                    "encoding": "base64",
+                    "value": base64_encode(&bytes)
+                });
+                let mut rng = StdRng::seed_from_u64(seed);
+                let mutated = mutate_value(&input, &typ, &[], &mut rng);
+
+                let obj = mutated.as_object().expect("result should be an object");
+                prop_assert_eq!(
+                    obj.get("__complex_type").and_then(|v| v.as_str()),
+                    Some("buffer"),
+                    "wrong __complex_type tag"
+                );
+                prop_assert_eq!(
+                    obj.get("encoding").and_then(|v| v.as_str()),
+                    Some("base64"),
+                    "wrong encoding"
+                );
+                let encoded = obj
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .expect("missing value field");
+                prop_assert!(
+                    base64_decode(encoded).is_some(),
+                    "value is not valid base64: {encoded}"
+                );
+            }
+
+            /// Mutation actually changes the value for buffers with >= 4 bytes.
+            ///
+            /// With 4 bytes and 20 seed attempts, probability of no change is
+            /// astronomically low (each operator has distinct output probabilities).
+            #[test]
+            fn mutate_buffer_changes_value_for_nontrivial_inputs(
+                bytes in prop::collection::vec(any::<u8>(), 4..=16),
+                base_seed in 0..1000u64,
+            ) {
+                let typ = TypeInfo::Complex {
+                    kind: ComplexKind::Buffer,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let input = json!({
+                    "__complex_type": "buffer",
+                    "encoding": "base64",
+                    "value": base64_encode(&bytes)
+                });
+                let mut any_diff = false;
+                for offset in 0..20u64 {
+                    let mut rng = StdRng::seed_from_u64(base_seed.wrapping_add(offset));
+                    let mutated = mutate_value(&input, &typ, &[], &mut rng);
+                    if mutated != input {
+                        any_diff = true;
+                        break;
+                    }
+                }
+                prop_assert!(any_diff, "no mutation ever changed a {}-byte buffer", bytes.len());
+            }
+
+            /// Length constraints: bit flip and byte arithmetic preserve length;
+            /// insertion grows by 1–8; deletion shrinks by 1–8 (but clamps at 0).
+            #[test]
+            fn mutate_buffer_length_constraints(
+                bytes in prop::collection::vec(any::<u8>(), 1..=16),
+                seed in 0..10000u64,
+            ) {
+                let typ = TypeInfo::Complex {
+                    kind: ComplexKind::Buffer,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let original_len = bytes.len();
+                let input = json!({
+                    "__complex_type": "buffer",
+                    "encoding": "base64",
+                    "value": base64_encode(&bytes)
+                });
+                let mut rng = StdRng::seed_from_u64(seed);
+                let mutated = mutate_value(&input, &typ, &[], &mut rng);
+                let out = base64_decode(
+                    mutated.as_object()
+                        .and_then(|o| o.get("value"))
+                        .and_then(|v| v.as_str())
+                        .expect("missing value field")
+                ).expect("invalid base64");
+                let out_len = out.len();
+                prop_assert!(
+                    out_len == original_len                                          // bit flip or byte arith
+                    || (out_len > original_len && out_len <= original_len + BUFFER_MAX_BLOCK_INSERT) // insert
+                    || (out_len < original_len && original_len - out_len <= BUFFER_MAX_BLOCK_DELETE), // delete
+                    "unexpected length: original={original_len}, output={out_len}"
+                );
+            }
+
+            /// No panic on any byte sequence, even adversarial ones.
+            #[test]
+            fn mutate_buffer_no_panic(
+                bytes in arb_byte_vec(),
+                seed in 0..10000u64,
+            ) {
+                let typ = TypeInfo::Complex {
+                    kind: ComplexKind::Buffer,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let input = json!({
+                    "__complex_type": "buffer",
+                    "encoding": "base64",
+                    "value": base64_encode(&bytes)
+                });
+                let mut rng = StdRng::seed_from_u64(seed);
+                // Must not panic.
+                let _ = mutate_value(&input, &typ, &[], &mut rng);
+            }
+        }
     }
 }
