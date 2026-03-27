@@ -174,6 +174,28 @@ pub struct CrateHarnessEntry {
 
 pub type CrateHarnessCache = Mutex<HashMap<CrateHarnessKey, CrateHarnessEntry>>;
 
+/// Cache key for a crate-bridge harness.
+///
+/// One harness binary per (crate root, wrapper source hash, mocks) — keyed by crate root
+/// rather than individual file so the same binary serves all bridge-enabled functions
+/// in the same crate.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CrateBridgeHarnessKey {
+    crate_root: PathBuf,
+    /// Hash of the generated `__shatter.rs` wrapper module content.
+    wrapper_hash: u64,
+    mocks_hash: u64,
+}
+
+/// A running crate-bridge harness entry.
+pub struct CrateBridgeHarnessEntry {
+    pub harness: PersistentHarness,
+    /// Names of the functions exposed in the wrapper (dispatch table).
+    compatible_functions: HashSet<String>,
+}
+
+pub type CrateBridgeHarnessCache = Mutex<HashMap<CrateBridgeHarnessKey, CrateBridgeHarnessEntry>>;
+
 /// A compiled, running harness subprocess ready to accept execute requests via stdin.
 pub struct PersistentHarness {
     /// The subprocess handle (used to kill on timeout/cleanup).
@@ -1622,6 +1644,641 @@ fn build_and_spawn_crate_harness(
     })
 }
 
+// ─── crate_bridge implementation ─────────────────────────────────────────────
+
+/// Content-addressed stable directory for a crate-bridge harness.
+///
+/// The directory path is deterministic: same crate root + wrapper hash + mocks → same path.
+fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    crate_root.hash(&mut h);
+    wrapper_hash.hash(&mut h);
+    mh.hash(&mut h);
+    let key = h.finish();
+    harness_cache_root()
+        .map(|c| c.join("rust").join("crate-bridge").join(format!("{key:016x}")))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-crate-bridge-{key:016x}")))
+}
+
+/// Locate the `lib.rs` entry point for a crate.
+///
+/// Checks `[lib] path` in Cargo.toml first, falls back to `src/lib.rs`.
+fn find_lib_rs(crate_root: &Path) -> Option<PathBuf> {
+    let cargo_toml_path = crate_root.join("Cargo.toml");
+    if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
+        // Look for `[lib]` section with a `path = "..."` override.
+        let mut in_lib = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed == "[lib]" {
+                in_lib = true;
+                continue;
+            }
+            if in_lib {
+                if trimmed.starts_with('[') {
+                    break;
+                }
+                if let Some(rest) = trimmed.strip_prefix("path") {
+                    let rest = rest.trim().trim_start_matches('=').trim();
+                    let path_val = rest.trim_matches('"').trim_matches('\'');
+                    let candidate = crate_root.join(path_val);
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    let default = crate_root.join("src").join("lib.rs");
+    if default.exists() { Some(default) } else { None }
+}
+
+/// Append `#[cfg(feature = "shatter-crate-bridge")] pub mod __shatter;` to lib.rs
+/// if the declaration is not already present (idempotent).
+fn inject_lib_module_declaration(lib_rs_path: &Path) -> Result<(), ExecuteError> {
+    const MARKER: &str = "pub mod __shatter;";
+    let content = std::fs::read_to_string(lib_rs_path)
+        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read lib.rs: {e}"))))?;
+    if content.contains(MARKER) {
+        return Ok(());
+    }
+    let declaration = "\n#[cfg(feature = \"shatter-crate-bridge\")]\npub mod __shatter;\n";
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(lib_rs_path)
+        .map_err(ExecuteError::IoError)?;
+    file.write_all(declaration.as_bytes())
+        .map_err(ExecuteError::IoError)
+}
+
+/// Add the `shatter-crate-bridge` feature plus optional `serde_json` and
+/// `shatter-rust-runtime` dependencies to the user's Cargo.toml (idempotent).
+///
+/// The `__shatter.rs` wrapper module calls both of these crates directly, so
+/// they must be present as optional deps gated by the feature.
+///
+/// Injection strategy avoids duplicate TOML section headers:
+/// - Appends a `[features]` block if no feature marker is present.
+/// - Appends `[dependencies]` only when no `[dependencies]` section exists yet;
+///   otherwise inserts dep lines directly after the existing header.
+fn inject_crate_bridge_feature(
+    cargo_toml_path: &Path,
+    runtime_path: &Path,
+) -> Result<(), ExecuteError> {
+    const FEATURE_MARKER: &str = "shatter-crate-bridge";
+    let content = std::fs::read_to_string(cargo_toml_path)
+        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read Cargo.toml: {e}"))))?;
+
+    let needs_feature = !content.contains(FEATURE_MARKER);
+    let needs_serde_json = !content.contains("serde_json");
+    let needs_runtime = !content.contains("shatter-rust-runtime");
+
+    if !needs_feature && !needs_serde_json && !needs_runtime {
+        return Ok(());
+    }
+
+    let mut new_content = content.clone();
+
+    // Insert new optional deps into the [dependencies] section (or add the section).
+    let mut deps_to_add = String::new();
+    if needs_serde_json {
+        deps_to_add.push_str("serde_json = { version = \"1\", optional = true }\n");
+    }
+    if needs_runtime {
+        let runtime_str = runtime_path.display().to_string().replace('\\', "/");
+        deps_to_add.push_str(&format!(
+            "shatter-rust-runtime = {{ path = \"{runtime_str}\", optional = true }}\n"
+        ));
+    }
+
+    if !deps_to_add.is_empty() {
+        if let Some(pos) = new_content.find("[dependencies]") {
+            let insert_at = pos + "[dependencies]".len();
+            let insert_at = new_content[insert_at..].find('\n')
+                .map(|n| insert_at + n + 1)
+                .unwrap_or(new_content.len());
+            new_content.insert_str(insert_at, &deps_to_add);
+        } else {
+            new_content.push_str("\n[dependencies]\n");
+            new_content.push_str(&deps_to_add);
+        }
+    }
+
+    if needs_feature {
+        let mut feature_deps = Vec::new();
+        if needs_serde_json { feature_deps.push("\"dep:serde_json\""); }
+        if needs_runtime { feature_deps.push("\"dep:shatter-rust-runtime\""); }
+        let dep_list = feature_deps.join(", ");
+        new_content.push_str(&format!("\n[features]\nshatter-crate-bridge = [{dep_list}]\n"));
+    }
+
+    std::fs::write(cargo_toml_path, new_content).map_err(ExecuteError::IoError)
+}
+
+/// Generate the `__shatter.rs` wrapper module content.
+///
+/// The module exposes:
+/// - One `pub fn shatter_wrap_<name>(inputs: Vec<Value>) -> Value` per compatible function,
+///   each calling the real function via `super::<name>()` to access private items.
+/// - A `pub fn shatter_run_harness()` entry point with the stdin/stdout dispatch loop.
+///   The stable driver binary just calls `<user_crate>::__shatter::shatter_run_harness()`.
+fn generate_crate_bridge_wrapper(
+    fns: &[CompatFn],
+    mocks_json: &str,
+    static_mut_names: &[String],
+) -> String {
+    let mut w = String::with_capacity(8192);
+    w.push_str("// Generated by shatter-rust crate_bridge — do not edit\n");
+    w.push_str("#![allow(unused_imports, dead_code, clippy::all)]\n");
+    w.push_str("use serde_json::Value;\n\n");
+
+    // Per-function wrapper: deserialise inputs, call via super::, return JSON.
+    for fn_info in fns {
+        let fn_name = &fn_info.name;
+        let param_names = &fn_info.param_names;
+        let param_types = &fn_info.param_types;
+        let return_type = &fn_info.return_type;
+
+        w.push_str(&format!(
+            "pub fn shatter_wrap_{fn_name}(inputs: Vec<Value>) -> Value {{\n"
+        ));
+
+        for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
+            let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
+            if let Some(mapping) = owned_type_for_ref(ty) {
+                w.push_str(&format!(
+                    "    let {clean}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                    mapping.deser_type
+                ));
+                if mapping.needs_slice_conversion {
+                    w.push_str(&format!(
+                        "    let {clean}_refs: Vec<&str> = {clean}_owned.iter().map(|s| s.as_str()).collect();\n"
+                    ));
+                }
+            } else {
+                w.push_str(&format!(
+                    "    let {clean}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                ));
+            }
+        }
+
+        let arg_list: Vec<String> = param_names.iter().zip(param_types.iter()).map(|(n, ty)| {
+            let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
+            if let Some(mapping) = owned_type_for_ref(ty) {
+                if mapping.needs_slice_conversion { format!("&{clean}_refs") } else { format!("&{clean}_owned") }
+            } else {
+                clean.to_string()
+            }
+        }).collect();
+        let args = arg_list.join(", ");
+
+        // Snapshot static mut before call.
+        for name in static_mut_names {
+            w.push_str(&format!(
+                "    let __before_{name} = unsafe {{ serde_json::to_value(&super::{name}).ok() }};\n"
+            ));
+        }
+
+        w.push_str("    shatter_rust_runtime::reset();\n");
+        w.push_str("    let start = std::time::Instant::now();\n");
+        w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+        w.push_str(&format!("        super::{fn_name}({args})\n"));
+        w.push_str("    }));\n");
+        w.push_str("    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n");
+        w.push_str("    let runtime_json = shatter_rust_runtime::flush_results();\n");
+        w.push_str("    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
+        w.push_str("    let obj = exec_result.as_object_mut().unwrap();\n");
+
+        if return_type.is_some() {
+            w.push_str("    match result {\n");
+            w.push_str("        Ok(ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null)); }\n");
+        } else {
+            w.push_str("    match result {\n");
+            w.push_str("        Ok(()) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
+        }
+        w.push_str("        Err(panic_info) => {\n");
+        w.push_str("            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
+        w.push_str("            obj.insert(\"thrown_error\".into(), serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg}));\n");
+        w.push_str("        }\n");
+        w.push_str("    }\n");
+        w.push_str("    obj.insert(\"performance\".into(), serde_json::json!({\"wall_time_ms\": wall_time_ms, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}));\n");
+
+        // Detect global state changes.
+        if !static_mut_names.is_empty() {
+            w.push_str("    let mut __global_se: Vec<Value> = Vec::new();\n");
+            for name in static_mut_names {
+                w.push_str(&format!(
+                    "    let __after_{name} = unsafe {{ serde_json::to_value(&super::{name}).ok() }};\n"
+                ));
+                w.push_str(&format!(
+                    "    if let (Some(__b), Some(__a)) = (__before_{name}, __after_{name}) {{\n"
+                ));
+                w.push_str("        if __b != __a {\n");
+                w.push_str(&format!(
+                    "            __global_se.push(serde_json::json!({{\"kind\":\"global_state_change\",\"variable\":\"{name}\",\"before\":__b,\"after\":__a}}));\n"
+                ));
+                w.push_str("        }\n");
+                w.push_str("    }\n");
+            }
+            w.push_str("    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
+            w.push_str("    if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_se); }\n");
+            w.push_str("    drop(obj);\n");
+        } else {
+            w.push_str("    obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
+            w.push_str("    drop(obj);\n");
+        }
+        w.push_str("    exec_result\n");
+        w.push_str("}\n\n");
+    }
+
+    // shatter_run_harness: the stable entry point called by the driver binary.
+    w.push_str("/// Stable entry point called by the crate-bridge driver binary.\n");
+    w.push_str("/// Reads `{\"function\": \"name\", \"inputs\": [...]}` lines from stdin,\n");
+    w.push_str("/// dispatches to the appropriate wrapper, and writes JSON results to stdout.\n");
+    w.push_str("pub fn shatter_run_harness() {\n");
+    w.push_str("    use std::io::BufRead;\n");
+    w.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
+    w.push_str("    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n");
+    w.push_str("    for mock in &mocks {\n");
+    w.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
+    w.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
+    w.push_str("            mock.get(\"return_values\").and_then(|v| v.as_array()),\n");
+    w.push_str("        ) {\n");
+    w.push_str("            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n");
+    w.push_str("        }\n");
+    w.push_str("    }\n\n");
+    w.push_str("    let stdin = std::io::stdin();\n");
+    w.push_str("    let mut reader = std::io::BufReader::new(stdin.lock());\n");
+    w.push_str("    loop {\n");
+    w.push_str("        let mut line = String::new();\n");
+    w.push_str("        match reader.read_line(&mut line) {\n");
+    w.push_str("            Ok(0) | Err(_) => break,\n");
+    w.push_str("            Ok(_) => {}\n");
+    w.push_str("        }\n");
+    w.push_str("        let line = line.trim();\n");
+    w.push_str("        if line.is_empty() { continue; }\n");
+    w.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
+    w.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
+    w.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n");
+    w.push_str("        let exec_result = match function_name {\n");
+    for fn_info in fns {
+        let fn_name = &fn_info.name;
+        w.push_str(&format!("            {:?} => shatter_wrap_{fn_name}(inputs),\n", fn_name.as_str()));
+    }
+    w.push_str("            unknown => serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"not_supported\", \"message\": format!(\"function not in crate_bridge dispatch table: {}\", unknown)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
+    w.push_str("        };\n");
+    w.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
+    w.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
+    w.push_str("    }\n");
+    w.push_str("}\n");
+
+    w
+}
+
+/// Generate the stable driver binary `main.rs`.
+///
+/// The body never changes — it just calls the wrapper module's entry point.
+/// The binary is "stable" because its source is constant regardless of which
+/// function is being tested.
+fn generate_crate_bridge_bin(crate_name: &str) -> String {
+    format!(
+        "fn main() {{\n    {}::__shatter::shatter_run_harness();\n}}\n",
+        crate_name
+    )
+}
+
+/// Generate a Cargo.toml for the crate-bridge driver binary.
+///
+/// The driver depends on the user's crate (by path) with the
+/// `shatter-crate-bridge` feature enabled, so it compiles `__shatter.rs`.
+fn generate_crate_bridge_cargo_toml(crate_name: &str, crate_root: &Path) -> String {
+    let crate_path = crate_root.display().to_string().replace('\\', "/");
+    format!(
+        r#"[package]
+name = "shatter-crate-bridge-exec"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+{crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
+"#
+    )
+}
+
+/// Extract the `name` field from a `[package]` section of a Cargo.toml string.
+fn extract_crate_name(cargo_toml: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if in_package {
+            if trimmed.starts_with('[') {
+                break;
+            }
+            if let Some(rest) = trimmed.strip_prefix("name") {
+                let rest = rest.trim().trim_start_matches('=').trim();
+                let name = rest.trim_matches('"').trim_matches('\'').to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Compile the crate-bridge driver binary and spawn it as a persistent subprocess.
+///
+/// The driver binary lives in `harness_dir`. If the binary already exists and
+/// `src/main.rs` is unchanged, recompilation is skipped (stable cache).
+fn build_and_spawn_crate_bridge_harness(
+    driver_source: &str,
+    cargo_toml_content: &str,
+    harness_dir: &Path,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<PersistentHarness, ExecuteError> {
+    let src_dir = harness_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+
+    let release = harness_release_mode();
+    let profile_dir = if release { "release" } else { "debug" };
+    let binary_name = if cfg!(windows) { "shatter-crate-bridge-exec.exe" } else { "shatter-crate-bridge-exec" };
+    let target_dir = harness_dir.join("target");
+    let binary_path = target_dir.join(profile_dir).join(binary_name);
+
+    let main_rs_path = src_dir.join("main.rs");
+    let already_built = binary_path.exists()
+        && std::fs::read_to_string(&main_rs_path).ok().as_deref() == Some(driver_source);
+
+    if !already_built {
+        std::fs::write(harness_dir.join("Cargo.toml"), cargo_toml_content)?;
+        std::fs::write(&main_rs_path, driver_source)?;
+
+        cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
+
+        let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_BUILD_TIMEOUT_SECS);
+        let build_timeout = Duration::from_secs(build_timeout_secs);
+
+        let mut cargo_args = vec!["build"];
+        if release {
+            cargo_args.push("--release");
+        }
+
+        let build_start = Instant::now();
+        let build_output = if let Some(t) = timing {
+            t.record("execute.build", |_| {
+                Command::new("cargo")
+                    .args(&cargo_args)
+                    .current_dir(harness_dir)
+                    .env("CARGO_TARGET_DIR", &target_dir)
+                    .output()
+                    .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+            })?
+        } else {
+            Command::new("cargo")
+                .args(&cargo_args)
+                .current_dir(harness_dir)
+                .env("CARGO_TARGET_DIR", &target_dir)
+                .output()
+                .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
+        };
+
+        if build_start.elapsed() > build_timeout {
+            return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+        }
+        if !build_output.status.success() {
+            return Err(ExecuteError::CompilationFailed(
+                String::from_utf8_lossy(&build_output.stderr).into_owned(),
+            ));
+        }
+    }
+
+    if !binary_path.exists() {
+        return Err(ExecuteError::CompilationFailed("compiled crate-bridge binary not found".to_string()));
+    }
+
+    let mut child = Command::new(&binary_path)
+        .current_dir(harness_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(ExecuteError::IoError)?;
+
+    let stdin = child.stdin.take().ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdin pipe")))?;
+    let stdout = child.stdout.take().ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdout pipe")))?;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if !l.is_empty() => {
+                    if tx.send(l).is_err() { break; }
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(PersistentHarness {
+        child,
+        stdin,
+        response_rx: rx,
+        harness_dir: harness_dir.to_path_buf(),
+    })
+}
+
+/// Execute a function via the crate_bridge harness mode.
+///
+/// Injects a feature-gated `__shatter.rs` wrapper module into the user's library
+/// crate, compiles a thin driver binary that depends on the user crate, and
+/// dispatches execution through `__shatter::shatter_run_harness()`. This allows
+/// calling crate-private functions that the bin_only harness cannot reach.
+#[allow(clippy::too_many_arguments)]
+fn execute_function_crate_bridge(
+    file_path: &str,
+    function_name: &str,
+    inputs: &[Value],
+    mocks: &[Value],
+    timeout_ms: u64,
+    mut timing: Option<&mut TimingCollector>,
+    bridge_cache: &CrateBridgeHarnessCache,
+    crate_root: &Path,
+) -> Result<ExecuteResult, ExecuteError> {
+    let source = std::fs::read_to_string(file_path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+    let mh = mocks_hash(mocks);
+
+    // Collect all functions and build the wrapper to get a stable wrapper_hash.
+    let all_fn_ctxs = extract_all_fn_contexts(&source);
+    let static_mut_names = extract_static_mut_items(&source);
+
+    // For crate_bridge, generic/dyn constraints still apply (can't deserialise them),
+    // but external-type and module-path restrictions are lifted.
+    let compatible_fns: Vec<CompatFn> = all_fn_ctxs
+        .iter()
+        .filter_map(|(name, ctx)| {
+            // Only block on generics and trait objects; allow external + module-path refs.
+            let has_generics = ctx.sig.has_generics;
+            let has_dyn = ctx.sig.param_types.iter().any(|t| is_trait_object_type(t));
+            if has_generics || has_dyn {
+                None
+            } else {
+                Some(CompatFn {
+                    name: name.clone(),
+                    param_names: ctx.sig.param_names.clone(),
+                    param_types: ctx.sig.param_types.clone(),
+                    return_type: ctx.sig.return_type.clone(),
+                })
+            }
+        })
+        .collect();
+
+    if !compatible_fns.iter().any(|f| f.name == function_name) {
+        // Give a precise error for the requested function.
+        if let Some((_, ctx)) = all_fn_ctxs.iter().find(|(n, _)| n == function_name) {
+            if ctx.sig.has_generics {
+                return Err(ExecuteError::NonExecutable(format!(
+                    "crate_bridge: function `{function_name}` has generic type parameters — cannot deserialise concrete inputs"
+                )));
+            }
+            if ctx.sig.param_types.iter().any(|t| is_trait_object_type(t)) {
+                return Err(ExecuteError::NonExecutable(format!(
+                    "crate_bridge: function `{function_name}` has trait object parameters — cannot deserialise from JSON"
+                )));
+            }
+        }
+        return Err(ExecuteError::NonExecutable(format!(
+            "function `{function_name}` not found in `{file_path}`"
+        )));
+    }
+
+    let expected_inputs = compatible_fns.iter()
+        .find(|f| f.name == function_name)
+        .map(|f| f.param_names.len())
+        .unwrap_or(0);
+    if inputs.len() != expected_inputs {
+        return Err(ExecuteError::InstrumentError(format!(
+            "expected {expected_inputs} inputs for {function_name}, got {}",
+            inputs.len()
+        )));
+    }
+
+    let mocks_json = serde_json::to_string(mocks)
+        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
+
+    // Instrument the source for branch/coverage tracking (whole file, no filter).
+    let instr_result = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("execute.instrument", |timing| {
+            instrument::instrument_source_with_timing(&source, None, Some(timing))
+                .map_err(|e| ExecuteError::InstrumentError(e.to_string()))
+        })?
+    } else {
+        instrument::instrument_source(&source, None)
+            .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?
+    };
+
+    let wrapper_content = generate_crate_bridge_wrapper(&compatible_fns, &mocks_json, &static_mut_names);
+    let wrapper_hash = source_hash(&wrapper_content);
+
+    let key = CrateBridgeHarnessKey {
+        crate_root: crate_root.to_path_buf(),
+        wrapper_hash,
+        mocks_hash: mh,
+    };
+
+    // Fast path: harness already running and function in dispatch table.
+    {
+        let mut map = bridge_cache.lock().unwrap();
+        if let Some(entry) = map.get_mut(&key)
+            && entry.compatible_functions.contains(function_name)
+        {
+            let result = entry.harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+            if result.thrown_error.as_ref()
+                .and_then(|e| e.get("error_type"))
+                .and_then(|v| v.as_str()) == Some("timeout")
+            {
+                map.remove(&key);
+            }
+            return Ok(result);
+        }
+    }
+
+    // Slow path: inject wrapper into user crate and build driver binary.
+    let user_cargo_toml_path = crate_root.join("Cargo.toml");
+    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
+
+    let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
+    let runtime_path = find_runtime_crate_path()?;
+
+    // Write the instrumented source back to the original file so instrumentation
+    // is active when the crate compiles.
+    std::fs::write(file_path, &instr_result.source)
+        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source: {e}"))))?;
+
+    // Write the wrapper module: `__shatter.rs` with pub wrappers + shatter_run_harness().
+    let shatter_module_path = crate_root.join("src").join("__shatter.rs");
+    std::fs::write(&shatter_module_path, &wrapper_content)
+        .map_err(ExecuteError::IoError)?;
+
+    // Inject mod declaration into lib.rs (idempotent).
+    if let Some(lib_rs) = find_lib_rs(crate_root) {
+        inject_lib_module_declaration(&lib_rs)?;
+    } else {
+        return Err(ExecuteError::NonExecutable(
+            "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
+        ));
+    }
+
+    // Inject feature + optional serde_json + shatter-rust-runtime into user Cargo.toml (idempotent).
+    inject_crate_bridge_feature(&user_cargo_toml_path, &runtime_path)?;
+
+    let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
+    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root);
+
+    let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
+    std::fs::create_dir_all(&harness_dir)?;
+
+    let mut harness = if let Some(timing) = timing {
+        timing.record("execute.build", |timing| {
+            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(timing))
+        })?
+    } else {
+        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
+    };
+
+    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+
+    let timed_out = result.thrown_error.as_ref()
+        .and_then(|e| e.get("error_type"))
+        .and_then(|v| v.as_str()) == Some("timeout");
+
+    if !timed_out {
+        let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
+        bridge_cache.lock().unwrap().insert(key, CrateBridgeHarnessEntry {
+            harness,
+            compatible_functions: compatible_set,
+        });
+    } else {
+        let _ = std::fs::remove_dir_all(&harness_dir);
+    }
+
+    Ok(result)
+}
+
 /// Execute a function from a crate-backed Rust file using the stable bin-only dispatch harness.
 ///
 /// One harness handles all compatible functions in the file; different inputs for the same
@@ -1771,16 +2428,19 @@ fn execute_function_crate_backed(
 ///
 /// On the first call for a given (file, function, mocks) triple, compiles the
 /// harness and spawns the subprocess. Subsequent calls reuse the cached process.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_function(
     file_path: &str,
     function_name: &str,
     inputs: &[Value],
     mocks: &[Value],
     timeout_ms: u64,
+    harness_mode: Option<&str>,
     cache: &HarnessCache,
     crate_cache: &CrateHarnessCache,
+    bridge_cache: &CrateBridgeHarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
-    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, None, cache, crate_cache)
+    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, harness_mode, None, cache, crate_cache, bridge_cache)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1790,13 +2450,34 @@ pub fn execute_function_with_timing(
     inputs: &[Value],
     mocks: &[Value],
     timeout_ms: u64,
+    harness_mode: Option<&str>,
     mut timing: Option<&mut TimingCollector>,
     cache: &HarnessCache,
     crate_cache: &CrateHarnessCache,
+    bridge_cache: &CrateBridgeHarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
         return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+    }
+
+    // Explicit opt-in to crate_bridge mode: inject wrapper into the library crate.
+    if harness_mode == Some("crate_bridge") {
+        let crate_root = find_crate_root(file_path).ok_or_else(|| {
+            ExecuteError::NonExecutable(
+                "crate_bridge mode requires the target file to be inside a Cargo.toml crate".to_string(),
+            )
+        })?;
+        return execute_function_crate_bridge(
+            file_path,
+            function_name,
+            inputs,
+            mocks,
+            timeout_ms,
+            timing,
+            bridge_cache,
+            &crate_root,
+        );
     }
 
     // Route crate-backed files to the stable bin-only dispatch harness path.
@@ -2139,7 +2820,8 @@ fn main() {
     fn execute_nonexistent_file_returns_error() {
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
-        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, &cache, &crate_cache);
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, None, &cache, &crate_cache, &bridge_cache);
         assert!(result.is_err());
         if let Err(ExecuteError::FileError(msg)) = result {
             assert!(msg.contains("not found"));
@@ -2157,14 +2839,17 @@ fn main() {
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "add",
             &[serde_json::json!(1)], // only 1 input, needs 2
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -2212,14 +2897,17 @@ fn main() {
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "query",
             &[serde_json::json!(null)],
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2337,14 +3025,17 @@ fn main() {
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "identity",
             &[serde_json::json!(42)],
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2364,14 +3055,17 @@ fn main() {
 
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let result = execute_function(
             &file.to_string_lossy(),
             "process",
             &[serde_json::json!(null)],
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2731,6 +3425,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
         let result = execute_function_with_timing(
             src_file.to_str().unwrap(),
@@ -2739,8 +3434,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2776,6 +3473,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
         // First call — slow path: compile and spawn.
         let first = execute_function_with_timing(
@@ -2785,8 +3483,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let cache_size_after_first = crate_cache.lock().unwrap().len();
@@ -2799,8 +3499,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let cache_size_after_second = crate_cache.lock().unwrap().len();
@@ -2837,6 +3539,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
         let add_result = execute_function_with_timing(
             src_file.to_str().unwrap(),
@@ -2845,8 +3548,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let double_result = execute_function_with_timing(
@@ -2856,8 +3561,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let cache_size = crate_cache.lock().unwrap().len();
@@ -2892,6 +3599,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
         let result = execute_function_with_timing(
             src_file.to_str().unwrap(),
@@ -2900,8 +3608,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &[],
             30_000,
             None,
+            None,
             &cache,
             &crate_cache,
+            &bridge_cache,
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2942,5 +3652,234 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert!(!skip_cargo_check(), "'0' should not enable skip");
 
         unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
+    }
+
+    // ─── crate_bridge helper tests ────────────────────────────────────────────
+
+    #[test]
+    fn crate_bridge_wrapper_contains_all_functions() {
+        let fns = vec![
+            CompatFn { name: "foo".to_string(), param_names: vec!["x".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()) },
+            CompatFn { name: "bar".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+        ];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(wrapper.contains("shatter_wrap_foo"), "wrapper must contain shatter_wrap_foo");
+        assert!(wrapper.contains("shatter_wrap_bar"), "wrapper must contain shatter_wrap_bar");
+    }
+
+    #[test]
+    fn crate_bridge_wrapper_uses_super_prefix() {
+        let fns = vec![
+            CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()) },
+        ];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(wrapper.contains("super::my_fn"), "wrapper must call super::my_fn, not bare my_fn");
+    }
+
+    #[test]
+    fn crate_bridge_wrapper_has_run_harness_entry_point() {
+        let fns = vec![
+            CompatFn { name: "calc".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+        ];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(wrapper.contains("pub fn shatter_run_harness()"), "wrapper must export shatter_run_harness");
+        assert!(wrapper.contains("shatter_wrap_calc"), "dispatch in run_harness must call wrapper");
+    }
+
+    #[test]
+    fn crate_bridge_wrapper_dispatch_includes_function_names() {
+        let fns = vec![
+            CompatFn { name: "alpha".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+            CompatFn { name: "beta".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+        ];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(wrapper.contains("\"alpha\""), "dispatch must match on \"alpha\"");
+        assert!(wrapper.contains("\"beta\""), "dispatch must match on \"beta\"");
+    }
+
+    #[test]
+    fn crate_bridge_bin_is_stable() {
+        let bin1 = generate_crate_bridge_bin("my_crate");
+        let bin2 = generate_crate_bridge_bin("my_crate");
+        assert_eq!(bin1, bin2, "driver bin must be deterministic");
+        assert!(bin1.contains("shatter_run_harness"), "must call shatter_run_harness");
+        assert!(bin1.contains("my_crate"), "must reference the user crate name");
+    }
+
+    #[test]
+    fn crate_bridge_cargo_toml_has_feature_dep() {
+        let toml = generate_crate_bridge_cargo_toml("my-crate", std::path::Path::new("/some/path"));
+        assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
+        assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
+    }
+
+    #[test]
+    fn inject_lib_module_declaration_adds_mod() {
+        let dir = std::env::temp_dir().join("shatter-test-inject-mod");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib_rs = dir.join("lib.rs");
+        std::fs::write(&lib_rs, "pub fn foo() {}\n").unwrap();
+
+        inject_lib_module_declaration(&lib_rs).unwrap();
+
+        let content = std::fs::read_to_string(&lib_rs).unwrap();
+        assert!(content.contains("pub mod __shatter;"), "must contain mod declaration");
+        assert!(content.contains("shatter-crate-bridge"), "must be feature-gated");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_lib_module_declaration_idempotent() {
+        let dir = std::env::temp_dir().join("shatter-test-inject-mod-idem");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib_rs = dir.join("lib.rs");
+        std::fs::write(&lib_rs, "pub fn foo() {}\n").unwrap();
+
+        inject_lib_module_declaration(&lib_rs).unwrap();
+        inject_lib_module_declaration(&lib_rs).unwrap();
+
+        let content = std::fs::read_to_string(&lib_rs).unwrap();
+        let count = content.matches("pub mod __shatter;").count();
+        assert_eq!(count, 1, "declaration must appear exactly once, got {count}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_crate_bridge_feature_adds_feature() {
+        let dir = std::env::temp_dir().join("shatter-test-inject-feat");
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml_path = dir.join("Cargo.toml");
+        std::fs::write(
+            &toml_path,
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        inject_crate_bridge_feature(&toml_path, std::path::Path::new("/fake/runtime")).unwrap();
+
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        assert!(content.contains("shatter-crate-bridge"), "must add feature to Cargo.toml");
+        assert!(content.contains("serde_json"), "must add serde_json optional dep");
+        assert!(content.contains("shatter-rust-runtime"), "must add runtime optional dep");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_crate_bridge_feature_idempotent() {
+        let dir = std::env::temp_dir().join("shatter-test-inject-feat-idem");
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml_path = dir.join("Cargo.toml");
+        std::fs::write(
+            &toml_path,
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let fake_runtime = std::path::Path::new("/fake/runtime");
+        inject_crate_bridge_feature(&toml_path, fake_runtime).unwrap();
+        inject_crate_bridge_feature(&toml_path, fake_runtime).unwrap();
+
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        let count = content.matches("shatter-crate-bridge").count();
+        assert_eq!(count, 1, "feature must appear exactly once, got {count}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_crate_name_from_package_section() {
+        let toml = "[package]\nname = \"my-fancy-crate\"\nversion = \"0.1.0\"\n";
+        let name = extract_crate_name(toml);
+        assert_eq!(name, Some("my-fancy-crate".to_string()));
+    }
+
+    #[test]
+    fn extract_crate_name_returns_none_for_no_package() {
+        let toml = "[workspace]\nmembers = [\"crate-a\"]\n";
+        assert_eq!(extract_crate_name(toml), None);
+    }
+
+    #[test]
+    fn find_lib_rs_finds_default() {
+        let dir = std::env::temp_dir().join("shatter-test-find-lib-rs");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let lib = src.join("lib.rs");
+        std::fs::write(&lib, "").unwrap();
+
+        let found = find_lib_rs(&dir);
+        assert_eq!(found, Some(lib));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_lib_rs_none_when_missing() {
+        let dir = std::env::temp_dir().join("shatter-test-find-lib-rs-none");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(find_lib_rs(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── crate_bridge integration test ───────────────────────────────────────
+    //
+    // Known-answer target: `secret_add(a: i32, b: i32) -> i32`
+    //   secret_add(3, 4) → 7
+    //
+    // The function is NOT marked `pub`, verifying that crate_bridge can access
+    // crate-private functions that bin_only cannot reach.
+
+    #[test]
+    fn crate_bridge_executes_private_function() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-private");
+        // Write a crate with a private function.
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-bridge-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        ).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "fn secret_add(a: i32, b: i32) -> i32 { a + b }\n",
+        ).unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src.join("lib.rs").to_str().unwrap(),
+            "secret_add",
+            &[serde_json::json!(3), serde_json::json!(4)],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(7)),
+                    "secret_add(3, 4) should return 7"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("cargo") || msg.contains("No such file") =>
+            {
+                eprintln!("skipping crate_bridge_executes_private_function: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
     }
 }
