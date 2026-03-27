@@ -84,6 +84,8 @@ pub struct PersistentHarnessManager {
     pub cache: crate::executor::HarnessCache,
     /// Cache for crate-backed dispatch harnesses (one per file, keyed by source hash + mocks).
     pub crate_cache: crate::executor::CrateHarnessCache,
+    /// Cache for crate-bridge harnesses (one per crate root + wrapper hash + mocks).
+    pub bridge_cache: crate::executor::CrateBridgeHarnessCache,
 }
 
 impl PersistentHarnessManager {
@@ -91,6 +93,7 @@ impl PersistentHarnessManager {
         Self {
             cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             crate_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            bridge_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -105,6 +108,13 @@ impl PersistentHarnessManager {
         // Crate-backed harnesses: kill subprocesses but preserve harness dirs (stable cache).
         let mut crate_map = self.crate_cache.lock().unwrap();
         for (_, mut entry) in crate_map.drain() {
+            let _ = entry.harness.child.kill();
+            let _ = entry.harness.child.wait();
+            // Do NOT remove harness_dir — it contains the stable compiled binary.
+        }
+        // Crate-bridge harnesses: kill subprocesses but preserve harness dirs (stable cache).
+        let mut bridge_map = self.bridge_cache.lock().unwrap();
+        for (_, mut entry) in bridge_map.drain() {
             let _ = entry.harness.child.kill();
             let _ = entry.harness.child.wait();
             // Do NOT remove harness_dir — it contains the stable compiled binary.
@@ -486,6 +496,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             );
         }
 
+        let harness_mode = req.harness_mode.as_deref();
         let execution = if let Some(timing) = timing.as_mut() {
             timing.record("execute.total", |timing| {
                 crate::executor::execute_function_with_timing(
@@ -494,9 +505,11 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     &req.inputs,
                     &req.mocks,
                     self.exec_timeout_ms,
+                    harness_mode,
                     Some(timing),
                     &self.harness_manager.cache,
                     &self.harness_manager.crate_cache,
+                    &self.harness_manager.bridge_cache,
                 )
             })
         } else {
@@ -506,8 +519,10 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 &req.inputs,
                 &req.mocks,
                 self.exec_timeout_ms,
+                harness_mode,
                 &self.harness_manager.cache,
                 &self.harness_manager.crate_cache,
+                &self.harness_manager.bridge_cache,
             )
         };
 

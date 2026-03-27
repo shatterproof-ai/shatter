@@ -369,6 +369,12 @@ pub struct Request {
     /// Opaque handle from a prior prepare command.
     #[serde(default)]
     pub prepare_id: Option<String>,
+    /// Harness execution mode for the execute command.
+    /// `"bin_only"` (default) uses the standalone/crate-backed dispatch harness.
+    /// `"crate_bridge"` injects a feature-gated wrapper module into the library crate
+    /// and routes execution through it, enabling calls to crate-private functions.
+    #[serde(default)]
+    pub harness_mode: Option<String>,
     /// Stack of active setup contexts from enclosing Setup commands, if any.
     #[allow(dead_code)] // carried on Execute requests; handler will forward when execute passes context
     #[serde(default)]
