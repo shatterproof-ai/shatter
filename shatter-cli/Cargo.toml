@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 termimad = "0.34"
 askama = "0.15"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 ureq = { version = "3", features = ["json"] }
 
 [dev-dependencies]

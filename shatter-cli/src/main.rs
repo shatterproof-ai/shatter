@@ -689,6 +689,32 @@ async fn main() -> ExitCode {
                 }
             };
         }
+        CliCommand::Bench {
+            manifest,
+            tier,
+            repeats,
+            warmups,
+            max_iterations,
+            output,
+            request_timeout,
+            exec_timeout,
+            build_timeout,
+        } => {
+            commands::bench::run_bench(
+                &manifest,
+                &tier,
+                repeats,
+                warmups,
+                max_iterations,
+                output.as_deref(),
+                request_timeout,
+                exec_timeout,
+                build_timeout,
+                log_level,
+                cli.project_dir.as_deref(),
+            )
+            .await
+        }
         CliCommand::Cache { action } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
             let result = std::env::current_dir()

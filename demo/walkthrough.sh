@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=55
+TOTAL=56
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -632,8 +632,13 @@ step 54 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
 
-# Stage 54: Cache clear
-step 55 $TOTAL "Cache Clear" \
+# Stage 55: Benchmark run (smoke tier, minimal)
+step 55 $TOTAL "Benchmark Run (Smoke)" \
+    "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
+    $SHATTER bench --tier smoke --repeats 1 --warmups 0
+
+# Stage 56: Cache clear
+step 56 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 
