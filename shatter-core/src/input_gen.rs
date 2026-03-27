@@ -1160,6 +1160,36 @@ fn mutate_bool(value: &Value) -> Value {
     }
 }
 
+/// Copy a random slice of `s` and insert it at another random position.
+///
+/// Returns the original string unchanged when `s` is empty (there is nothing
+/// to copy). For a single-character input the slice is always that one
+/// character, so the result is always two copies of it.
+///
+/// The returned string is always longer than the input (except for the empty
+/// case), making this operator useful for finding length-sensitive code paths
+/// and repeated-pattern branches.
+pub fn duplicate_substring(s: &str, rng: &mut impl Rng) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    if len == 0 {
+        return s.to_string();
+    }
+    // Pick a non-empty slice [start, end) from the char vector.
+    let start = rng.random_range(0..len);
+    // end is in start+1..=len so the slice is always at least one character.
+    let end = rng.random_range((start + 1)..=(len));
+    let slice: String = chars[start..end].iter().collect();
+
+    // Insert position: anywhere in [0, len] (including appending at the end).
+    let insert_at = rng.random_range(0..=len);
+    let byte_pos: usize = chars[..insert_at].iter().map(|c| c.len_utf8()).sum();
+
+    let mut result = s.to_string();
+    result.insert_str(byte_pos, &slice);
+    result
+}
+
 /// Mutate a string value.
 ///
 /// When `dictionary` is non-empty, an additional mutation operator (fragment
@@ -1174,7 +1204,9 @@ fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Valu
     if rng.random_range(0..5_u8) == 0 {
         return json!(string_mutation::mutate_structure_aware(&s, rng));
     }
-    let num_ops: u8 = if dictionary.is_empty() { 6 } else { 7 };
+    // num_ops counts the base operators (0–6) plus the dictionary injection
+    // operator (7) that is only available when the dictionary is non-empty.
+    let num_ops: u8 = if dictionary.is_empty() { 7 } else { 8 };
     let op: u8 = rng.random_range(0..num_ops);
     match op {
         0 => {
@@ -1256,6 +1288,12 @@ fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Valu
             // Long string (1000 chars)
             let long: String = (0..1000).map(|_| 'a').collect();
             json!(long)
+        }
+        6 => {
+            // Substring duplication: copy a random slice and insert it at
+            // another random position.  Finds length-sensitive bugs and
+            // repeated-pattern paths.  No-op on empty input.
+            json!(duplicate_substring(&s, rng))
         }
         _ => {
             // Dictionary fragment injection
@@ -2902,11 +2940,74 @@ mod tests {
     #[test]
     fn mutate_string_empty_dictionary_no_injection() {
         let mut rng = StdRng::seed_from_u64(42);
-        // With empty dictionary, op range is 0..6, same as before
+        // With empty dictionary, op range is 0..7 (ops 0–6, no dictionary injection)
         for _ in 0..100 {
             let mutated = mutate_value(&json!("test"), &TypeInfo::Str, &[], &mut rng);
             assert!(mutated.is_string(), "expected string, got {mutated}");
         }
+    }
+
+    #[test]
+    fn duplicate_substring_empty_is_safe() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let result = duplicate_substring("", &mut rng);
+        assert_eq!(result, "", "empty string should be returned unchanged");
+    }
+
+    #[test]
+    fn duplicate_substring_single_char_is_safe() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let result = duplicate_substring("x", &mut rng);
+        assert_eq!(result, "xx", "single-char duplication should double the string");
+    }
+
+    #[test]
+    fn duplicate_substring_grows_string() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let original = "hello world";
+        for _ in 0..50 {
+            let result = duplicate_substring(original, &mut rng);
+            assert!(
+                result.len() > original.len(),
+                "duplicate_substring should produce a longer string; got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_substring_always_valid_utf8() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Multi-byte UTF-8 characters to stress the byte-position logic.
+        let inputs = ["", "a", "café", "日本語", "hello"];
+        for s in inputs {
+            for _ in 0..20 {
+                let result = duplicate_substring(s, &mut rng);
+                // std::String is always valid UTF-8; this assertion confirms
+                // no byte-splitting of multi-byte chars occurred.
+                assert!(
+                    std::str::from_utf8(result.as_bytes()).is_ok(),
+                    "result is not valid UTF-8 for input {s:?}: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mutate_string_substr_dup_operator_fires() {
+        // Verify the operator is reachable through mutate_value and produces
+        // longer output on non-empty inputs.
+        let mut rng = StdRng::seed_from_u64(7);
+        let original = "abcdefgh";
+        let mut saw_longer = false;
+        for _ in 0..500 {
+            let mutated = mutate_value(&json!(original), &TypeInfo::Str, &[], &mut rng);
+            let s = mutated.as_str().expect("mutate_value(Str) must return a string");
+            if s.len() > original.len() && s.len() < 1000 {
+                saw_longer = true;
+                break;
+            }
+        }
+        assert!(saw_longer, "substring duplication operator should produce longer strings");
     }
 
     #[test]
@@ -3683,6 +3784,71 @@ mod tests {
                     result.is_string(),
                     "mutating Str produced non-string: {result:?}"
                 );
+            }
+
+            // -----------------------------------------------------------------
+            // duplicate_substring: core invariants
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn duplicate_substring_result_is_valid_string(
+                s in ".*",
+                seed in 0u64..10_000,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let result = duplicate_substring(&s, &mut rng);
+                // std::String is always valid UTF-8; confirm no byte-level corruption.
+                prop_assert!(
+                    std::str::from_utf8(result.as_bytes()).is_ok(),
+                    "result is not valid UTF-8 for input {s:?}"
+                );
+            }
+
+            #[test]
+            fn duplicate_substring_grows_nonempty_input(
+                s in ".+",   // at least one character
+                seed in 0u64..10_000,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let result = duplicate_substring(&s, &mut rng);
+                prop_assert!(
+                    result.len() > s.len(),
+                    "expected result longer than input {s:?} ({} chars), got {result:?} ({} chars)",
+                    s.chars().count(),
+                    result.chars().count(),
+                );
+            }
+
+            #[test]
+            fn duplicate_substring_empty_unchanged(seed in 0u64..10_000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let result = duplicate_substring("", &mut rng);
+                prop_assert_eq!(&result, "", "empty input must return empty string");
+            }
+
+            #[test]
+            fn duplicate_substring_preserves_original_chars(
+                s in ".+",
+                seed in 0u64..10_000,
+            ) {
+                // All original characters must still be present in the result
+                // because we only insert — we never remove.  The original is
+                // not necessarily a contiguous substring (the insertion point
+                // can split it), but every character must appear at least as
+                // many times as in the input.
+                let mut rng = StdRng::seed_from_u64(seed);
+                let result = duplicate_substring(&s, &mut rng);
+                let mut result_chars: Vec<char> = result.chars().collect();
+                for ch in s.chars() {
+                    let pos = result_chars.iter().position(|&c| c == ch);
+                    prop_assert!(
+                        pos.is_some(),
+                        "character {ch:?} from input {s:?} missing in result {result:?}"
+                    );
+                    if let Some(i) = pos {
+                        result_chars.remove(i);
+                    }
+                }
             }
 
             #[test]
