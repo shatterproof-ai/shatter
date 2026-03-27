@@ -19,5 +19,97 @@
       "examples/standalone/rust/04_errors.rs:safe_divide",
       "examples/standalone/rust/18_accept_language.rs:negotiate_language"
     ]
+  },
+  "perf": {
+    "smoke": {
+      "typescript": [
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+      ],
+      "go": [
+        "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
+      ],
+      "rust": [
+        "examples/standalone/rust/01_arithmetic.rs:classify_number"
+      ]
+    },
+    "standard": {
+      "typescript": [
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber",
+        "examples/standalone/ts/02-strings.ts:classifyString",
+        "examples/standalone/ts/06-nested-control-flow.ts:classifyHttpResponse",
+        "examples/standalone/ts/16-cron-parser.ts:parseCron"
+      ],
+      "go": [
+        "examples/standalone/go/01-arithmetic.go:ClassifyNumber",
+        "examples/standalone/go/02-strings.go:ClassifyString",
+        "examples/standalone/go/06-nested-control-flow.go:ClassifyHttpResponse",
+        "examples/standalone/go/16-cron-parser.go:ParseCron"
+      ],
+      "rust": [
+        "examples/standalone/rust/01_arithmetic.rs:classify_number",
+        "examples/standalone/rust/02_strings.rs:classify_string",
+        "examples/standalone/rust/06_nested_control_flow.rs:classify_http_response",
+        "examples/standalone/rust/16_cron_parser.rs:parse_cron"
+      ]
+    },
+    "full": {
+      "typescript": [
+        "examples/standalone/ts/01-arithmetic.ts:classifyNumber",
+        "examples/standalone/ts/02-strings.ts:classifyString",
+        "examples/standalone/ts/03-objects.ts:categorizeUser",
+        "examples/standalone/ts/04-errors.ts:safeDivide",
+        "examples/standalone/ts/05-unions.ts:computeArea",
+        "examples/standalone/ts/06-nested-control-flow.ts:classifyHttpResponse",
+        "examples/standalone/ts/07-auth-validation.ts:validateJwt",
+        "examples/standalone/ts/08-data-transform.ts:mergeConfig",
+        "examples/standalone/ts/09-rate-limiter.ts:checkRateLimit",
+        "examples/standalone/ts/10-path-router.ts:matchRoute",
+        "examples/standalone/ts/13-roman-numerals.ts:intToRoman",
+        "examples/standalone/ts/14-semver.ts:parseSemver",
+        "examples/standalone/ts/15-email-validator.ts:validateEmail",
+        "examples/standalone/ts/16-cron-parser.ts:parseCron",
+        "examples/standalone/ts/18-accept-language.ts:negotiateLanguage",
+        "examples/standalone/ts/19-robots-policy.ts:evaluateRobotsPolicy",
+        "examples/standalone/ts/20-dotenv-parser.ts:parseDotenv"
+      ],
+      "go": [
+        "examples/standalone/go/01-arithmetic.go:ClassifyNumber",
+        "examples/standalone/go/02-strings.go:ClassifyString",
+        "examples/standalone/go/03-objects.go:CategorizeUser",
+        "examples/standalone/go/04-errors.go:SafeDivide",
+        "examples/standalone/go/05-unions.go:ComputeArea",
+        "examples/standalone/go/06-nested-control-flow.go:ClassifyHttpResponse",
+        "examples/standalone/go/07-auth-validation.go:AuthorizeRequest",
+        "examples/standalone/go/08-data-transform.go:MergeConfig",
+        "examples/standalone/go/09-rate-limiter.go:CheckRateLimit",
+        "examples/standalone/go/10-path-router.go:MatchRoute",
+        "examples/standalone/go/13-roman-numerals.go:IntToRoman",
+        "examples/standalone/go/14-semver.go:ParseSemver",
+        "examples/standalone/go/15-email-validator.go:ValidateEmail",
+        "examples/standalone/go/16-cron-parser.go:ParseCron",
+        "examples/standalone/go/18-accept-language.go:NegotiateLanguage",
+        "examples/standalone/go/19-robots-policy.go:EvaluateRobotsPolicy",
+        "examples/standalone/go/20-dotenv-parser.go:ParseDotenv"
+      ],
+      "rust": [
+        "examples/standalone/rust/01_arithmetic.rs:classify_number",
+        "examples/standalone/rust/02_strings.rs:classify_string",
+        "examples/standalone/rust/03_objects.rs:categorize_user",
+        "examples/standalone/rust/04_errors.rs:safe_divide",
+        "examples/standalone/rust/05_unions.rs:compute_area",
+        "examples/standalone/rust/06_nested_control_flow.rs:classify_http_response",
+        "examples/standalone/rust/07_auth_validation.rs:validate_jwt",
+        "examples/standalone/rust/08_data_transform.rs:merge_config",
+        "examples/standalone/rust/09_rate_limiter.rs:check_rate_limit",
+        "examples/standalone/rust/10_path_router.rs:match_route",
+        "examples/standalone/rust/13_roman_numerals.rs:int_to_roman",
+        "examples/standalone/rust/14_semver.rs:parse_semver",
+        "examples/standalone/rust/15_email_validator.rs:validate_email",
+        "examples/standalone/rust/16_cron_parser.rs:parse_cron",
+        "examples/standalone/rust/18_accept_language.rs:negotiate_language",
+        "examples/standalone/rust/19_robots_policy.rs:evaluate_robots_policy",
+        "examples/standalone/rust/20_dotenv_parser.rs:parse_dotenv"
+      ]
+    }
   }
 }
