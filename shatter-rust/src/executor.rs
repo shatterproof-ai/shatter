@@ -433,13 +433,33 @@ fn harness_release_mode() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve `p` to an absolute path by prepending `current_dir` if relative.
+///
+/// Does not require the path to exist. Used to ensure `CARGO_TARGET_DIR` is
+/// always an absolute path — Cargo resolves a relative `CARGO_TARGET_DIR`
+/// relative to the build process's CWD (harness_dir), which differs from the
+/// frontend process CWD, causing binary lookup failures.
+fn to_absolute(p: PathBuf) -> PathBuf {
+    if p.is_absolute() {
+        p
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&p))
+            .unwrap_or(p)
+    }
+}
+
 /// Read the harness cache root from `SHATTER_HARNESS_CACHE`.
-/// Returns `None` if unset or empty.
+/// Returns `None` if unset or empty. Always returns an absolute path so that
+/// all derived paths (`standalone_target_dir`, `make_harness_dir`, etc.) are
+/// absolute — this prevents Cargo from resolving `CARGO_TARGET_DIR` relative
+/// to the build subprocess CWD instead of the frontend process CWD.
 fn harness_cache_root() -> Option<PathBuf> {
     std::env::var("SHATTER_HARNESS_CACHE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+        .map(to_absolute)
 }
 
 /// Read the harness scratch root from `SHATTER_HARNESS_SCRATCH`.
@@ -2565,6 +2585,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         assert!(target.is_some(), "expected Some when SHATTER_HARNESS_CACHE is set");
         let target = target.unwrap();
+        assert!(target.is_absolute(), "standalone_target_dir must be absolute, got {target:?}");
         assert!(
             target.starts_with(&cache_root),
             "target dir {target:?} should be under cache root {cache_str}"
@@ -2580,6 +2601,40 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         let _lock = crate::ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
         assert!(standalone_target_dir().is_none());
+    }
+
+    #[test]
+    fn harness_cache_root_is_absolute_when_env_is_relative() {
+        // Reproduce str-kdzq: when SHATTER_HARNESS_CACHE is a relative path,
+        // harness_cache_root() must still return an absolute path so that
+        // CARGO_TARGET_DIR resolves correctly when cargo runs in a subdirectory.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "relative/cache") };
+        let root = harness_cache_root();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
+        let root = root.expect("should return Some for non-empty env var");
+        assert!(
+            root.is_absolute(),
+            "harness_cache_root must be absolute even with relative env var, got: {root:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_target_dir_is_absolute_with_relative_cache() {
+        // Reproduce str-kdzq: relative SHATTER_HARNESS_CACHE caused "compiled binary not found"
+        // because CARGO_TARGET_DIR resolved relative to harness_dir (cargo's CWD), not the
+        // frontend process CWD, so the binary was placed at a different path than expected.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "relative/harness/cache") };
+        let target = standalone_target_dir();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
+        let target = target.expect("should return Some when env var is set");
+        assert!(
+            target.is_absolute(),
+            "standalone_target_dir must be absolute for CARGO_TARGET_DIR correctness, got: {target:?}"
+        );
     }
 
     #[test]
