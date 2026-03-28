@@ -247,6 +247,7 @@ pub(crate) async fn run_scan(
             end_line: entry.end_line,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         });
     }
 

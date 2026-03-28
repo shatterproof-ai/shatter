@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/loop-info.schema.json",
+  "title": "LoopInfo",
+  "description": "A canonical counted loop detected during static analysis.",
+  "type": "object",
+  "required": ["loop_id", "line", "induction_var"],
+  "properties": {
+    "loop_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Matches the loop_id in ScopeEvent LoopEnter/LoopExit."
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Source line of the loop statement."
+    },
+    "induction_var": {
+      "$ref": "induction-var.schema.json",
+      "description": "Induction variable metadata."
+    }
+  }
+}

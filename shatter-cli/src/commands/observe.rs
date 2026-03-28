@@ -163,6 +163,7 @@ pub(crate) async fn run_observe(
                 &concolic_config,
                 None,
                 prepare_id,
+                func.loops.clone(),
             )
             .await
             {

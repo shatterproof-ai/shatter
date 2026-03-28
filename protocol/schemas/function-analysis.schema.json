@@ -38,6 +38,11 @@
       "type": "integer",
       "minimum": 0,
       "description": "Last line of the function in source."
+    },
+    "loops": {
+      "type": "array",
+      "items": { "$ref": "loop-info.schema.json" },
+      "description": "Canonical counted loops with induction variable metadata."
     }
   }
 }

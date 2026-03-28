@@ -530,6 +530,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 
@@ -741,6 +742,7 @@ mod tests {
             end_line,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 

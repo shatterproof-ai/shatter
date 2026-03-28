@@ -578,6 +578,7 @@ pub(crate) async fn run_explore(
                     &concolic_config,
                     None,
                     prepare_id,
+                    func.loops.clone(),
                 ).await {
                     Ok(mut concolic_result) => {
                         // Fallback: concolic path doesn't call instrument, so no

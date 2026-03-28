@@ -241,6 +241,7 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	returnType := extractReturnType(fn, info)
 	paramNames := paramNameSet(params)
 	branches := extractBranches(fset, fn.Body, paramNames)
+	loops := extractLoops(fset, fn.Body, paramNames)
 	deps := extractDependencies(fset, fn.Body, info)
 	literals := extractLiterals(fn, file)
 
@@ -257,6 +258,7 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 		StartLine:    startLine,
 		EndLine:      endLine,
 		Literals:     literals,
+		Loops:        loops,
 	}
 }
 
@@ -743,6 +745,200 @@ func extractBranches(fset *token.FileSet, body *ast.BlockStmt, params map[string
 		return []BranchInfo{}
 	}
 	return branches
+}
+
+// extractLoops walks the function body in AST traversal order (matching the
+// instrumentor's loop numbering) and returns LoopInfo for any canonical counted
+// for-loop whose induction variable can be fully characterized. The nextLoopID
+// counter increments for every for or range statement so the IDs stay in sync
+// with the instrumentor's numbering even when some loops are not canonical.
+func extractLoops(fset *token.FileSet, body *ast.BlockStmt, params map[string]bool) []LoopInfo {
+	var loops []LoopInfo
+	nextLoopID := 0
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch stmt := n.(type) {
+		case *ast.ForStmt:
+			loopID := nextLoopID
+			nextLoopID++
+			iv := analyzeForStmtInductionVar(fset, stmt, params)
+			if iv != nil {
+				loops = append(loops, LoopInfo{
+					LoopID:       loopID,
+					Line:         fset.Position(stmt.Pos()).Line,
+					InductionVar: iv,
+				})
+			}
+		case *ast.RangeStmt:
+			nextLoopID++
+		}
+		return true
+	})
+
+	return loops
+}
+
+// analyzeForStmtInductionVar attempts to extract a canonical induction variable
+// from a for-statement of the form:
+//
+//	for i := init; i op bound; i++ { ... }
+//	for i := init; i op bound; i += step { ... }
+//
+// Returns nil if the loop does not match the canonical pattern or if the
+// induction variable is modified inside the loop body.
+func analyzeForStmtInductionVar(fset *token.FileSet, stmt *ast.ForStmt, params map[string]bool) *InductionVar {
+	// Init must be a short variable declaration with exactly one LHS identifier.
+	initAssign, ok := stmt.Init.(*ast.AssignStmt)
+	if !ok || initAssign.Tok != token.DEFINE || len(initAssign.Lhs) != 1 {
+		return nil
+	}
+	initIdent, ok := initAssign.Lhs[0].(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	varName := initIdent.Name
+
+	// Condition must be a binary comparison where one side is the induction variable.
+	condBin, ok := stmt.Cond.(*ast.BinaryExpr)
+	if !ok {
+		return nil
+	}
+	var boundExprAST ast.Expr
+	var boundOp string
+	switch condBin.Op {
+	case token.LSS:
+		if isIdent(condBin.X, varName) {
+			boundOp = "lt"
+			boundExprAST = condBin.Y
+		} else if isIdent(condBin.Y, varName) {
+			boundOp = "gt"
+			boundExprAST = condBin.X
+		} else {
+			return nil
+		}
+	case token.LEQ:
+		if isIdent(condBin.X, varName) {
+			boundOp = "le"
+			boundExprAST = condBin.Y
+		} else if isIdent(condBin.Y, varName) {
+			boundOp = "ge"
+			boundExprAST = condBin.X
+		} else {
+			return nil
+		}
+	case token.GTR:
+		if isIdent(condBin.X, varName) {
+			boundOp = "gt"
+			boundExprAST = condBin.Y
+		} else if isIdent(condBin.Y, varName) {
+			boundOp = "lt"
+			boundExprAST = condBin.X
+		} else {
+			return nil
+		}
+	case token.GEQ:
+		if isIdent(condBin.X, varName) {
+			boundOp = "ge"
+			boundExprAST = condBin.Y
+		} else if isIdent(condBin.Y, varName) {
+			boundOp = "le"
+			boundExprAST = condBin.X
+		} else {
+			return nil
+		}
+	default:
+		return nil
+	}
+
+	// Post must be an increment/decrement or compound assignment on the induction variable.
+	var stepExpr *SymExpr
+	switch post := stmt.Post.(type) {
+	case *ast.IncDecStmt:
+		if !isIdent(post.X, varName) {
+			return nil
+		}
+		if post.Tok == token.INC {
+			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(1)}
+		} else if post.Tok == token.DEC {
+			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(-1)}
+		} else {
+			return nil
+		}
+	case *ast.AssignStmt:
+		if len(post.Lhs) != 1 || !isIdent(post.Lhs[0], varName) {
+			return nil
+		}
+		if len(post.Rhs) != 1 {
+			return nil
+		}
+		rhsSym := buildSymExpr(post.Rhs[0], params)
+		if post.Tok == token.ADD_ASSIGN {
+			stepExpr = rhsSym
+		} else if post.Tok == token.SUB_ASSIGN {
+			// Negate the RHS to express subtraction as a negative step.
+			stepExpr = &SymExpr{Kind: "un_op", Op: "neg", Operand: rhsSym}
+		} else {
+			return nil
+		}
+	default:
+		return nil
+	}
+
+	// Verify the induction variable is not modified inside the loop body.
+	if inductionVarModifiedInBody(stmt.Body, varName) {
+		return nil
+	}
+
+	// Build symbolic expressions for init and bound using the params context.
+	// The init RHS may reference params (e.g. for i := start; ...).
+	var initExpr *SymExpr
+	if len(initAssign.Rhs) == 1 {
+		initExpr = buildSymExpr(initAssign.Rhs[0], params)
+	} else {
+		initExpr = &SymExpr{Kind: "unknown"}
+	}
+	boundExpr := buildSymExpr(boundExprAST, params)
+
+	return &InductionVar{
+		Name:      varName,
+		InitExpr:  initExpr,
+		StepExpr:  stepExpr,
+		BoundExpr: boundExpr,
+		BoundOp:   boundOp,
+	}
+}
+
+// isIdent returns true if expr is an *ast.Ident with the given name.
+func isIdent(expr ast.Expr, name string) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name
+}
+
+// inductionVarModifiedInBody returns true if varName is assigned or
+// incremented/decremented anywhere inside body.
+func inductionVarModifiedInBody(body *ast.BlockStmt, varName string) bool {
+	modified := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if modified {
+			return false
+		}
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				if isIdent(lhs, varName) {
+					modified = true
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if isIdent(s.X, varName) {
+				modified = true
+				return false
+			}
+		}
+		return true
+	})
+	return modified
 }
 
 func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, nextID *int) BranchInfo {

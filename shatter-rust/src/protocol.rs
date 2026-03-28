@@ -261,6 +261,34 @@ pub struct CryptoBoundary {
     pub output_entropy: Option<f64>,
 }
 
+/// Comparison operator for induction variable bound checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Metadata about a loop induction variable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InductionVar {
+    pub name: String,
+    pub init_expr: SymExpr,
+    pub step_expr: SymExpr,
+    pub bound_expr: SymExpr,
+    pub bound_op: BoundOp,
+}
+
+/// A canonical counted loop detected during static analysis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopInfo {
+    pub loop_id: u32,
+    pub line: u32,
+    pub induction_var: InductionVar,
+}
+
 /// Analysis result for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionAnalysis {
@@ -277,6 +305,8 @@ pub struct FunctionAnalysis {
     pub literals: Vec<LiteralValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crypto_boundaries: Vec<CryptoBoundary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<LoopInfo>,
 }
 
 /// Current protocol version.
@@ -929,6 +959,7 @@ mod tests {
                 },
             ],
             crypto_boundaries: vec![],
+            loops: vec![],
         });
     }
 
@@ -945,6 +976,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -1007,6 +1039,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(

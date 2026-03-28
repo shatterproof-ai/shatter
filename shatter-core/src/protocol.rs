@@ -349,6 +349,11 @@ pub struct FunctionAnalysis {
     /// Populated by core after analysis; frontends leave this empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crypto_boundaries: Vec<CryptoBoundary>,
+    /// Canonical counted loops with induction variable metadata.
+    /// Only populated for loops where the induction variable is integer-typed
+    /// and unmodified in the loop body.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<LoopInfo>,
 }
 
 /// A branch point found during static analysis.
@@ -435,6 +440,49 @@ pub struct CryptoBoundary {
 
 fn default_confidence() -> Confidence {
     Confidence::High
+}
+
+/// Comparison operator for induction variable bound checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Metadata about a loop induction variable (e.g., `i` in `for (i = 0; i < n; i++)`).
+///
+/// Only populated for canonical counted loops where the induction variable has
+/// integer type and is not modified inside the loop body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InductionVar {
+    /// Variable name (e.g., "i").
+    pub name: String,
+    /// Initial value expression (e.g., Const(Int(0))).
+    pub init_expr: SymExpr,
+    /// Step expression per iteration (e.g., Const(Int(1)) for i++).
+    pub step_expr: SymExpr,
+    /// Bound expression (e.g., Param("n") for i < n).
+    pub bound_expr: SymExpr,
+    /// Comparison operator in the loop condition.
+    pub bound_op: BoundOp,
+}
+
+/// A canonical counted loop detected during static analysis.
+///
+/// The `loop_id` matches the scope event `LoopEnter`/`LoopExit` IDs emitted
+/// during instrumented execution, enabling the core engine to correlate static
+/// analysis with runtime traces.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopInfo {
+    /// Matches the loop_id in ScopeEvent::LoopEnter/LoopExit.
+    pub loop_id: u32,
+    /// Source line of the loop statement.
+    pub line: u32,
+    /// Induction variable metadata.
+    pub induction_var: InductionVar,
 }
 
 fn default_true() -> bool {
@@ -991,6 +1039,7 @@ mod tests {
                     end_line: 45,
                     literals: vec![],
                     crypto_boundaries: vec![],
+            loops: vec![],
                 }],
             },
         ));
@@ -1477,6 +1526,7 @@ mod tests {
             end_line: 3,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         });
     }
 
@@ -1694,6 +1744,7 @@ mod tests {
                         end_line: 3,
                         literals: vec![],
                         crypto_boundaries: vec![],
+            loops: vec![],
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
@@ -1730,6 +1781,7 @@ mod tests {
                         end_line: 10,
                         literals: vec![],
                         crypto_boundaries: vec![],
+            loops: vec![],
                     },
                 ],
             },
@@ -2115,6 +2167,7 @@ mod tests {
                 },
             ],
             crypto_boundaries: vec![],
+            loops: vec![],
         });
     }
 
@@ -2141,6 +2194,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -2272,6 +2326,7 @@ mod tests {
                 input_entropy: None,
                 output_entropy: None,
             }],
+            loops: vec![],
         });
     }
 
@@ -2288,6 +2343,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -2406,6 +2462,7 @@ mod tests {
             end_line: 10,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
         assert!(validate_analyze_result(&functions));
     }
@@ -2423,6 +2480,7 @@ mod tests {
             end_line: 10,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
         assert!(!validate_analyze_result(&functions));
     }
@@ -2440,6 +2498,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
         assert!(!validate_analyze_result(&functions));
     }

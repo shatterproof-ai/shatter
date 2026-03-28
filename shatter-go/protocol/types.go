@@ -224,6 +224,7 @@ type FunctionAnalysis struct {
 	EndLine          int                  `json:"end_line"`
 	Literals         []LiteralValue       `json:"literals,omitempty"`
 	CryptoBoundaries []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
+	Loops            []LoopInfo           `json:"loops,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.
@@ -233,6 +234,24 @@ type BranchInfo struct {
 	ConditionText string   `json:"condition_text"`
 	Condition     *SymExpr `json:"condition"`
 	BranchType    string   `json:"branch_type"`
+}
+
+// InductionVar holds metadata about a loop induction variable detected during
+// static analysis of a canonical counted for-loop.
+type InductionVar struct {
+	Name      string   `json:"name"`
+	InitExpr  *SymExpr `json:"init_expr"`
+	StepExpr  *SymExpr `json:"step_expr"`
+	BoundExpr *SymExpr `json:"bound_expr"`
+	BoundOp   string   `json:"bound_op"` // "lt", "le", "gt", "ge"
+}
+
+// LoopInfo represents a canonical counted loop detected during static analysis.
+// Only loops where the induction variable can be fully characterized are included.
+type LoopInfo struct {
+	LoopID       int           `json:"loop_id"`
+	Line         int           `json:"line"`
+	InductionVar *InductionVar `json:"induction_var"`
 }
 
 // ConditionOutcome records the outcome of an individual condition within a compound decision.

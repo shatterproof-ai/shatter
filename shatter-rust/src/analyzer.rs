@@ -284,6 +284,7 @@ fn analyze_function(
         end_line,
         literals,
         crypto_boundaries: vec![],
+        loops: vec![],
     }
 }
 
