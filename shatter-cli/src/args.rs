@@ -468,6 +468,12 @@ pub(crate) enum CliCommand {
         /// Format for stdout output. One of: markdown (default), json, html, text.
         #[arg(long, default_value = "markdown")]
         format: StdoutFormat,
+
+        /// Maximum number of functions to explore in parallel.
+        /// Each parallel function spawns its own frontend process.
+        /// Default: number of available CPUs (0 = auto-detect).
+        #[arg(long, short = 'j', default_value_t = 0)]
+        jobs: usize,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,

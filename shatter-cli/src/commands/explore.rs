@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use shatter_core::behavior::BehaviorMap;
@@ -7,7 +8,7 @@ use shatter_core::cache::BehaviorMapCache;
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 use shatter_core::executability;
 use shatter_core::explorer::{self, ExploreConfig, ReportOptions};
-use shatter_core::frontend::Frontend;
+use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
@@ -16,6 +17,14 @@ use tracing::Instrument;
 
 use crate::args::*;
 use crate::helpers::*;
+
+/// Result of exploring a single function, collected after parallel execution.
+struct FuncExploreOutcome {
+    func: shatter_core::protocol::FunctionAnalysis,
+    mock_symbols: Vec<String>,
+    result: Result<shatter_core::explorer::ObservationOutput, String>,
+    wall_time: Duration,
+}
 
 /// Run the explore command.
 // Each argument corresponds to a CLI flag; grouping into a struct would add indirection
@@ -70,6 +79,7 @@ pub(crate) async fn run_explore(
     report_outputs: &[std::path::PathBuf],
     stdout: bool,
     format: crate::args::StdoutFormat,
+    jobs: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -120,13 +130,24 @@ pub(crate) async fn run_explore(
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
 
+    // Resolve effective parallelism: 0 means auto-detect (CPU count).
+    let effective_jobs = if jobs == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        jobs
+    };
+
     // Resolve project root once for harness storage env propagation.
     // Explicit --project-dir wins; otherwise auto-detect from the first target.
     let storage_project_root = resolve_project_root(project_dir, &parsed[0].file);
 
-    // Spawn one frontend per language — reuse the session across same-language targets
-    // so the per-spawn handshake cost is paid only once per language, not once per target.
+    // Build per-language FrontendConfig templates for spawning per-function explore
+    // frontends.  Also spawn one shared frontend per language for the analysis phase
+    // (analysis is fast and doesn't benefit from parallelism).
     let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
+    let mut fe_configs: HashMap<crate::args::Language, FrontendConfig> = HashMap::new();
     let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
     for lang in unique_langs {
         let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled, release)?;
@@ -134,6 +155,7 @@ pub(crate) async fn run_explore(
         if mcdc {
             config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
         }
+        fe_configs.insert(lang, config.clone());
         let frontend = Frontend::spawn(&config).await.map_err(|e| {
             format!("failed to spawn {} frontend: {e}", lang.label())
         })?;
@@ -141,9 +163,10 @@ pub(crate) async fn run_explore(
         frontends.insert(lang, frontend);
     }
     log::info!(
-        "Spawned {} frontend session(s) for {} target(s) (same-language session reuse)",
+        "Spawned {} frontend session(s) for {} target(s) ({} parallel job(s))",
         frontends.len(),
         parsed.len(),
+        effective_jobs,
     );
 
     // Accumulate HTML and markdown fragments for -o report files.
@@ -335,9 +358,31 @@ pub(crate) async fn run_explore(
             header_printed = true;
         }
 
-        // Exploration phase: generate random inputs and execute
+        // Exploration phase: generate random inputs and execute.
+        //
+        // Three phases:
+        //   1. Collect work items (sequential — config resolution, mock generation)
+        //   2. Parallel exploration (tokio::spawn per function, each with its own frontend)
+        //   3. Process results (sequential — stats, reports, specs)
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
+
+        // Capture capabilities from the shared analysis frontend for ExploreConfig construction.
+        let frontend_caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
+            frontend.capabilities(),
+        );
+
+        // --- Phase 1: Collect work items (fast, sequential) ---
+        struct FuncWorkItem {
+            func: shatter_core::protocol::FunctionAnalysis,
+            explore_config: ExploreConfig,
+            mock_symbols: Vec<String>,
+            concolic_config: Option<shatter_core::orchestrator::ExploreConfig>,
+            seed_inputs: Vec<Vec<serde_json::Value>>,
+            user_inputs: Vec<Vec<serde_json::Value>>,
+        }
+
+        let mut work_items: Vec<FuncWorkItem> = Vec::new();
         for func in &functions {
             // Skip fresh functions in incremental mode
             if fresh_set.contains(&func.name) {
@@ -455,7 +500,7 @@ pub(crate) async fn run_explore(
                     &resolved.param_generators,
                     &resolved.generators,
                 ),
-                capabilities: shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
+                capabilities: frontend_caps.clone(),
                 user_seeds: vec![],
                 candidate_inputs: resolved.candidate_inputs
                     .iter()
@@ -479,24 +524,10 @@ pub(crate) async fn run_explore(
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
             };
 
-            if !resolved.candidate_inputs.is_empty() {
-                log::debug!(
-                    "Exploring {} ({} candidate input(s) from config)...",
-                    func.name,
-                    resolved.candidate_inputs.len()
-                );
-            } else {
-                log::debug!("Exploring {}...", func.name);
-            }
-
-            let _ = &shatter_configs; // suppress unused warning
-
-            let func_start = Instant::now();
-
-            // Choose exploration strategy: concolic (Z3-backed) or random.
-            let explore_result: Result<shatter_core::explorer::ObservationOutput, shatter_core::explorer::ExploreError> = if use_concolic {
-                let mut seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
-                let user_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+            // Build concolic-specific config if needed.
+            let (concolic_config, seed_inputs, user_inputs) = if use_concolic {
+                let mut seeds = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+                let users: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
                     .iter()
                     .map(|input| input.args.clone())
                     .collect();
@@ -506,14 +537,14 @@ pub(crate) async fn run_explore(
                     && let Ok(Some(pool)) = shatter_core::interesting_pool::load_pool(pp)
                 {
                     let pool_candidates = shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool);
-                    seed_inputs.extend(pool_candidates);
+                    seeds.extend(pool_candidates);
                 }
 
                 // Literal-derived seeds: string/number constants from static analysis
                 let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(&func.params, &func.literals);
-                seed_inputs.extend(literal_candidates);
+                seeds.extend(literal_candidates);
 
-                let concolic_config = shatter_core::orchestrator::ExploreConfig {
+                let cc = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations as usize,
                     max_executions: (explore_config.max_iterations as usize) * 5,
                     plateau_threshold: if mcdc { 60 } else { 20 },
@@ -528,82 +559,161 @@ pub(crate) async fn run_explore(
                     shrink_budget,
                     mcdc,
                 };
+                (Some(cc), seeds, users)
+            } else {
+                (None, vec![], vec![])
+            };
 
-                // Instrument the function so the frontend has the source ready for prepare.
-                if let Err(e) = frontend.send(ProtoCommand::Instrument {
-                    file: file_str.to_string(),
-                    function: func.name.clone(),
-                    mocks: concolic_config.mocks.clone(),
-                    project_root: project_root_str.clone(),
-                }).await {
-                    log::debug!("instrument failed for concolic path: {e}");
-                }
-
-                // Prepare the harness once if the frontend supports it.
-                let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
-                    frontend.capabilities(),
+            if !resolved.candidate_inputs.is_empty() {
+                log::debug!(
+                    "Exploring {} ({} candidate input(s) from config)...",
+                    func.name,
+                    resolved.candidate_inputs.len()
                 );
-                let prepare_id: Option<String> = if caps.commands.contains("prepare") {
-                    match frontend.send(ProtoCommand::Prepare {
-                        file: file_str.to_string(),
-                        function: func.name.clone(),
+            } else {
+                log::debug!("Exploring {}...", func.name);
+            }
+
+            let _ = &shatter_configs; // suppress unused warning
+
+            work_items.push(FuncWorkItem {
+                func: func.clone(),
+                explore_config,
+                mock_symbols,
+                concolic_config,
+                seed_inputs,
+                user_inputs,
+            });
+        }
+
+        // --- Phase 2: Parallel exploration ---
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
+        let mut handles = Vec::new();
+
+        let fe_config_for_lang = fe_configs
+            .get(&target.language)
+            .expect("fe_config must exist for target language")
+            .clone();
+
+        for item in work_items {
+            let sem = Arc::clone(&semaphore);
+            let fe_config = fe_config_for_lang.clone();
+            let file_str_owned = file_str.to_string();
+            let project_root_owned = project_root_str.clone();
+
+            let handle = tokio::spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore is never closed");
+                let func_start = Instant::now();
+
+                let mut task_frontend = match Frontend::spawn(&fe_config).await {
+                    Ok(fe) => fe,
+                    Err(e) => {
+                        return FuncExploreOutcome {
+                            func: item.func,
+                            mock_symbols: item.mock_symbols,
+                            result: Err(format!("failed to spawn frontend: {e}")),
+                            wall_time: func_start.elapsed(),
+                        };
+                    }
+                };
+
+                let explore_result = if let Some(ref concolic_config) = item.concolic_config {
+                    // Concolic path: instrument → prepare → orchestrator::explore
+                    if let Err(e) = task_frontend.send(ProtoCommand::Instrument {
+                        file: file_str_owned.clone(),
+                        function: item.func.name.clone(),
                         mocks: concolic_config.mocks.clone(),
-                        project_root: project_root_str.clone(),
+                        project_root: project_root_owned.clone(),
                     }).await {
-                        Ok(resp) => match resp.result {
-                            ResponseResult::Prepare { prepare_id } => {
-                                log::debug!("concolic prepare succeeded: {prepare_id}");
-                                Some(prepare_id)
-                            }
-                            other => {
-                                log::debug!("concolic prepare unexpected response: {other:?}");
+                        log::debug!("instrument failed for concolic path: {e}");
+                    }
+
+                    let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
+                        task_frontend.capabilities(),
+                    );
+                    let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+                        match task_frontend.send(ProtoCommand::Prepare {
+                            file: file_str_owned.clone(),
+                            function: item.func.name.clone(),
+                            mocks: concolic_config.mocks.clone(),
+                            project_root: project_root_owned.clone(),
+                        }).await {
+                            Ok(resp) => match resp.result {
+                                ResponseResult::Prepare { prepare_id } => {
+                                    log::debug!("concolic prepare succeeded: {prepare_id}");
+                                    Some(prepare_id)
+                                }
+                                other => {
+                                    log::debug!("concolic prepare unexpected response: {other:?}");
+                                    None
+                                }
+                            },
+                            Err(e) => {
+                                log::debug!("concolic prepare failed, falling back: {e}");
                                 None
                             }
-                        },
-                        Err(e) => {
-                            log::debug!("concolic prepare failed, falling back: {e}");
-                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    match shatter_core::orchestrator::explore(
+                        &mut task_frontend,
+                        &item.func.name,
+                        item.seed_inputs,
+                        item.user_inputs,
+                        &item.func.params,
+                        concolic_config,
+                        None,
+                        prepare_id,
+                        item.func.loops.clone(),
+                    ).await {
+                        Ok(mut concolic_result) => {
+                            concolic_result.total_lines = item.func.end_line.saturating_sub(item.func.start_line) + 1;
+                            let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
+                            Ok(obs)
+                        }
+                        Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+                            Err(shatter_core::explorer::ExploreError::Frontend(fe))
                         }
                     }
                 } else {
-                    None
+                    // Random path: explore_function handles instrument + prepare internally.
+                    explorer::explore_function(&mut task_frontend, &item.func, &item.explore_config, None)
+                        .instrument(tracing::info_span!("explore.function"))
+                        .await
                 };
 
-                match shatter_core::orchestrator::explore(
-                    frontend,
-                    &func.name,
-                    seed_inputs,
-                    user_inputs,
-                    &func.params,
-                    &concolic_config,
-                    None,
-                    prepare_id,
-                    func.loops.clone(),
-                ).await {
-                    Ok(mut concolic_result) => {
-                        // Fallback: concolic path doesn't call instrument, so no
-                        // instrumentable_line_count available. Use raw span for now.
-                        concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+                let _ = task_frontend.shutdown().await;
 
-                        let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
-                        Ok(obs)
-                    }
-                    Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
-                        Err(shatter_core::explorer::ExploreError::Frontend(fe))
-                    }
+                FuncExploreOutcome {
+                    func: item.func,
+                    mock_symbols: item.mock_symbols,
+                    result: explore_result.map_err(|e| e.to_string()),
+                    wall_time: func_start.elapsed(),
                 }
-            } else {
-                explorer::explore_function(frontend, func, &explore_config, None)
-                    .instrument(tracing::info_span!("explore.function"))
-                    .await
-            };
+            });
 
-            match explore_result {
+            handles.push(handle);
+        }
+
+        // --- Phase 3: Collect results and process (sequential, in order) ---
+        for handle in handles {
+            let outcome = match handle.await {
+                Ok(o) => o,
+                Err(e) => {
+                    log::error!("Task join error: {e}");
+                    continue;
+                }
+            };
+            let func = &outcome.func;
+
+            match outcome.result {
                 Ok(result) => {
-                    let wall_time = func_start.elapsed();
+                    let wall_time = outcome.wall_time;
+                    let mock_symbols = &outcome.mock_symbols;
 
                     // Harvest interesting inputs into the cross-function pool.
-                    // Applies to both concolic and random explorer paths — provenance doesn't matter.
                     if let Some(ref pp) = pool_path {
                         let mut pool = shatter_core::interesting_pool::load_pool(pp)
                             .unwrap_or_else(|e| {
@@ -717,7 +827,7 @@ pub(crate) async fn run_explore(
                                 &result,
                                 crate::render::ExploreRenderOpts {
                                     location: Some(&location),
-                                    mocks_used: &mock_symbols,
+                                    mocks_used: mock_symbols,
                                     is_concolic: use_concolic,
                                 },
                             );
