@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/induction-var.schema.json",
+  "title": "InductionVar",
+  "description": "Metadata about a loop induction variable.",
+  "type": "object",
+  "required": ["name", "init_expr", "step_expr", "bound_expr", "bound_op"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Variable name (e.g., 'i')."
+    },
+    "init_expr": {
+      "$ref": "sym-expr.schema.json",
+      "description": "Initial value expression."
+    },
+    "step_expr": {
+      "$ref": "sym-expr.schema.json",
+      "description": "Step expression per iteration."
+    },
+    "bound_expr": {
+      "$ref": "sym-expr.schema.json",
+      "description": "Bound expression."
+    },
+    "bound_op": {
+      "type": "string",
+      "enum": ["lt", "le", "gt", "ge"],
+      "description": "Comparison operator in the loop condition."
+    }
+  }
+}

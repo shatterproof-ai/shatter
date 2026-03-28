@@ -891,3 +891,109 @@ func TestMediumOpacityHeuristics(t *testing.T) {
 		t.Errorf("param c (SafeType): expected non-opaque kind, got opaque with medium_opacity=%q", pc.Type.MediumOpacity)
 	}
 }
+
+// --- Induction variable / loop analysis ---
+
+// TestLoopCanonicalIncrement verifies that a canonical for i := 0; i < n; i++
+// loop is detected with the correct induction variable metadata.
+func TestLoopCanonicalIncrement(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("loops.go"), "SumUpTo")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	fn := results[0]
+	if len(fn.Loops) != 1 {
+		t.Fatalf("loops len = %d, want 1", len(fn.Loops))
+	}
+	loop := fn.Loops[0]
+	if loop.LoopID != 0 {
+		t.Errorf("loop_id = %d, want 0", loop.LoopID)
+	}
+	if loop.InductionVar == nil {
+		t.Fatal("induction_var is nil")
+	}
+	iv := loop.InductionVar
+	if iv.Name != "i" {
+		t.Errorf("induction_var.name = %q, want i", iv.Name)
+	}
+	if iv.BoundOp != "lt" {
+		t.Errorf("induction_var.bound_op = %q, want lt", iv.BoundOp)
+	}
+	// Init should be const int 0.
+	if iv.InitExpr == nil || iv.InitExpr.Kind != "const" || iv.InitExpr.Type != "int" {
+		t.Errorf("init_expr = %+v, want const int", iv.InitExpr)
+	}
+	// Step should be const int 1.
+	if iv.StepExpr == nil || iv.StepExpr.Kind != "const" || iv.StepExpr.Type != "int" {
+		t.Errorf("step_expr = %+v, want const int", iv.StepExpr)
+	}
+	// Bound should reference param n.
+	if iv.BoundExpr == nil || iv.BoundExpr.Kind != "param" || iv.BoundExpr.Name != "n" {
+		t.Errorf("bound_expr = %+v, want param n", iv.BoundExpr)
+	}
+}
+
+// TestLoopCanonicalStep2 verifies that for i := 0; i < n; i += 2 is detected
+// with step expressed as a const int 2.
+func TestLoopCanonicalStep2(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("loops.go"), "SumStep2")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Loops) != 1 {
+		t.Fatalf("loops len = %d, want 1", len(fn.Loops))
+	}
+	iv := fn.Loops[0].InductionVar
+	if iv == nil {
+		t.Fatal("induction_var is nil")
+	}
+	if iv.BoundOp != "lt" {
+		t.Errorf("bound_op = %q, want lt", iv.BoundOp)
+	}
+	// Step must be const int 2 (the RHS of i += 2).
+	if iv.StepExpr == nil || iv.StepExpr.Kind != "const" {
+		t.Fatalf("step_expr kind = %+v, want const", iv.StepExpr)
+	}
+}
+
+// TestLoopBodyModifiesIV verifies that a loop whose body assigns to the
+// induction variable is NOT reported as a canonical counted loop.
+func TestLoopBodyModifiesIV(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("loops.go"), "ModifyIV")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Loops) != 0 {
+		t.Errorf("loops len = %d, want 0 (body modifies i)", len(fn.Loops))
+	}
+}
+
+// TestLoopNoCond verifies that an infinite loop (no condition) produces no LoopInfo.
+func TestLoopNoCond(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("loops.go"), "NoCond")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Loops) != 0 {
+		t.Errorf("loops len = %d, want 0 (no condition)", len(fn.Loops))
+	}
+}
+
+// TestLoopRangeProducesNoLoopInfo verifies that range loops are not included
+// in the Loops slice (range loops have no induction variable to analyze).
+func TestLoopRangeProducesNoLoopInfo(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("loops.go"), "RangeOnly")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Loops) != 0 {
+		t.Errorf("loops len = %d, want 0 (range loop)", len(fn.Loops))
+	}
+}

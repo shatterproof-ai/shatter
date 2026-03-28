@@ -752,6 +752,7 @@ mod tests {
             end_line: 20,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 

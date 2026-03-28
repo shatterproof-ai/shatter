@@ -2544,6 +2544,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 
@@ -3118,6 +3119,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "caller".to_string(),
@@ -3141,6 +3143,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 
@@ -3221,6 +3224,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -3288,6 +3292,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -3364,6 +3369,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "fn_b".to_string(),
@@ -3380,6 +3386,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 
@@ -3461,6 +3468,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "slow_b".to_string(),
@@ -3477,6 +3485,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 
@@ -3554,6 +3563,7 @@ mod tests {
             end_line: 10,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 
@@ -4259,6 +4269,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         // Compute the fingerprint parallel_scan will derive from the source file.
@@ -4346,6 +4357,7 @@ mod tests {
             end_line: 1,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         let warm_fp = compute_expected_deep_fp(&warm_source, &warm_analysis);
@@ -4373,6 +4385,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -4444,6 +4457,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -4509,6 +4523,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4597,6 +4612,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4695,6 +4711,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         // leaf_a → mid → root: three distinct topological layers.
@@ -4779,6 +4796,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         let leaf_names = ["leaf_a", "leaf_b", "leaf_c", "leaf_d"];
@@ -4807,6 +4825,7 @@ mod tests {
             end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         });
 
         let mut file_map = HashMap::new();
@@ -4906,6 +4925,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "beta".to_string(),
@@ -4922,6 +4942,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 
@@ -5000,6 +5021,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "fn_two".to_string(),
@@ -5012,6 +5034,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 
@@ -5078,6 +5101,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
             FunctionAnalysis {
                 name: "caller_fn".to_string(),
@@ -5097,6 +5121,7 @@ mod tests {
                 end_line: 5,
                 literals: vec![],
                 crypto_boundaries: vec![],
+                loops: vec![],
             },
         ];
 

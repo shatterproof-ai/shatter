@@ -1346,6 +1346,7 @@ pub async fn explore(
     config: &ExploreConfig,
     setup_context: Option<SetupContextStack>,
     prepare_id: Option<String>,
+    loops: Vec<crate::protocol::LoopInfo>,
 ) -> Result<ExploreResult, ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
@@ -1408,7 +1409,7 @@ pub async fn explore(
     let strategies: Vec<Box<dyn InputStrategy>> = vec![
         Box::new(UserProvidedStrategy::new(combined_seed)),
         Box::new(BoundarySeeds::new(param_infos)),
-        Box::new(Z3SolverStrategy::new(config.solver_timeout_ms, param_infos.to_vec())),
+        Box::new(Z3SolverStrategy::new(config.solver_timeout_ms, param_infos.to_vec(), loops)),
         Box::new(FuzzerStrategy::new(None)),
     ];
     let mut meta_strategy = MetaStrategy::new(strategies, config.meta_config.clone());
@@ -3071,6 +3072,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3114,6 +3116,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3160,6 +3163,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3200,6 +3204,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3240,6 +3245,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3273,6 +3279,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3362,6 +3369,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");
@@ -3407,6 +3415,7 @@ mod tests {
             &explore_config,
             None,
             None,
+            vec![],
         )
         .await
         .expect("explore failed");

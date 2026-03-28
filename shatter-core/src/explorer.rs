@@ -2491,6 +2491,7 @@ mod tests {
             return_type: TypeInfo::Unknown, start_line: 1, end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 

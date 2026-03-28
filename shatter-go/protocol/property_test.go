@@ -91,10 +91,56 @@ func genBranchInfo() *rapid.Generator[BranchInfo] {
 	})
 }
 
+func genSymExprLeaf() *rapid.Generator[SymExpr] {
+	return rapid.OneOf(
+		rapid.Map(rapid.Int64Range(-1000, 1000), func(v int64) SymExpr {
+			return SymExpr{Kind: "const", Type: "int", Value: v}
+		}),
+		rapid.Map(genIdent(), func(name string) SymExpr {
+			return SymExpr{Kind: "param", Name: name, Path: []string{}}
+		}),
+		rapid.Just(SymExpr{Kind: "unknown"}),
+	)
+}
+
+func genBoundOp() *rapid.Generator[string] {
+	return rapid.SampledFrom([]string{"lt", "le", "gt", "ge"})
+}
+
+func genInductionVar() *rapid.Generator[InductionVar] {
+	return rapid.Custom[InductionVar](func(t *rapid.T) InductionVar {
+		initLeaf := genSymExprLeaf().Draw(t, "init")
+		stepLeaf := genSymExprLeaf().Draw(t, "step")
+		boundLeaf := genSymExprLeaf().Draw(t, "bound")
+		return InductionVar{
+			Name:      genIdent().Draw(t, "name"),
+			InitExpr:  &initLeaf,
+			StepExpr:  &stepLeaf,
+			BoundExpr: &boundLeaf,
+			BoundOp:   genBoundOp().Draw(t, "boundOp"),
+		}
+	})
+}
+
+func genLoopInfo() *rapid.Generator[LoopInfo] {
+	return rapid.Custom[LoopInfo](func(t *rapid.T) LoopInfo {
+		iv := genInductionVar().Draw(t, "iv")
+		return LoopInfo{
+			LoopID:       rapid.IntRange(0, 50).Draw(t, "loopID"),
+			Line:         rapid.IntRange(1, 500).Draw(t, "line"),
+			InductionVar: &iv,
+		}
+	})
+}
+
 func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 	return rapid.Custom[FunctionAnalysis](func(t *rapid.T) FunctionAnalysis {
 		startLine := rapid.IntRange(1, 500).Draw(t, "start")
 		endLine := rapid.IntRange(startLine, startLine+200).Draw(t, "end")
+		var loops []LoopInfo
+		if rapid.Bool().Draw(t, "hasLoops") {
+			loops = rapid.SliceOfN(genLoopInfo(), 0, 3).Draw(t, "loops")
+		}
 		return FunctionAnalysis{
 			Name:         genIdent().Draw(t, "name"),
 			Exported:     rapid.Bool().Draw(t, "exported"),
@@ -104,6 +150,7 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 			ReturnType:   genTypeInfo(1).Draw(t, "retType"),
 			StartLine:    startLine,
 			EndLine:      endLine,
+			Loops:        loops,
 		}
 	})
 }
@@ -243,6 +290,63 @@ func TestPropertyResponseRoundTrip(t *testing.T) {
 		}
 		if decoded.Status != resp.Status {
 			t.Fatalf("status: got %q, want %q", decoded.Status, resp.Status)
+		}
+	})
+}
+
+func TestPropertyLoopInfoRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		li := genLoopInfo().Draw(t, "loopInfo")
+		data, err := json.Marshal(li)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded LoopInfo
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.LoopID != li.LoopID {
+			t.Fatalf("loop_id: got %d, want %d", decoded.LoopID, li.LoopID)
+		}
+		if decoded.Line != li.Line {
+			t.Fatalf("line: got %d, want %d", decoded.Line, li.Line)
+		}
+		if decoded.InductionVar == nil {
+			t.Fatal("induction_var: got nil, want non-nil")
+		}
+		if decoded.InductionVar.Name != li.InductionVar.Name {
+			t.Fatalf("induction_var.name: got %q, want %q", decoded.InductionVar.Name, li.InductionVar.Name)
+		}
+		if decoded.InductionVar.BoundOp != li.InductionVar.BoundOp {
+			t.Fatalf("induction_var.bound_op: got %q, want %q", decoded.InductionVar.BoundOp, li.InductionVar.BoundOp)
+		}
+	})
+}
+
+func TestPropertyFunctionAnalysisLoopsRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		fa := genFunctionAnalysis().Draw(t, "funcAnalysis")
+		data, err := json.Marshal(fa)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded FunctionAnalysis
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(decoded.Loops) != len(fa.Loops) {
+			t.Fatalf("loops len: got %d, want %d", len(decoded.Loops), len(fa.Loops))
+		}
+		for i, loop := range fa.Loops {
+			if decoded.Loops[i].LoopID != loop.LoopID {
+				t.Fatalf("loops[%d].loop_id: got %d, want %d", i, decoded.Loops[i].LoopID, loop.LoopID)
+			}
+			if decoded.Loops[i].InductionVar == nil {
+				t.Fatalf("loops[%d].induction_var: got nil, want non-nil", i)
+			}
+			if decoded.Loops[i].InductionVar.BoundOp != loop.InductionVar.BoundOp {
+				t.Fatalf("loops[%d].induction_var.bound_op: got %q, want %q", i, decoded.Loops[i].InductionVar.BoundOp, loop.InductionVar.BoundOp)
+			}
 		}
 	})
 }

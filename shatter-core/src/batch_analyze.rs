@@ -292,6 +292,7 @@ mod tests {
             end_line: 10,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 
@@ -361,6 +362,7 @@ mod tests {
             end_line: 15,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         };
 
         let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");

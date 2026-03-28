@@ -285,6 +285,7 @@ mod tests {
             end_line: 10,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 

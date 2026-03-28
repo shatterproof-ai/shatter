@@ -755,14 +755,21 @@ pub struct Z3SolverStrategy {
     solver_timeout_ms: Option<u64>,
     param_infos: Vec<ParamInfo>,
     pending: VecDeque<Vec<Value>>,
+    /// Canonical loop metadata from static analysis, used to collapse backedge constraints.
+    loops: Vec<crate::protocol::LoopInfo>,
 }
 
 impl Z3SolverStrategy {
-    pub fn new(solver_timeout_ms: Option<u64>, param_infos: Vec<ParamInfo>) -> Self {
+    pub fn new(
+        solver_timeout_ms: Option<u64>,
+        param_infos: Vec<ParamInfo>,
+        loops: Vec<crate::protocol::LoopInfo>,
+    ) -> Self {
         Self {
             solver_timeout_ms,
             param_infos,
             pending: VecDeque::new(),
+            loops,
         }
     }
 }
@@ -775,7 +782,11 @@ impl InputStrategy for Z3SolverStrategy {
     fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, _was_new_path: bool) {
         let sym_constraints = crate::orchestrator::extract_sym_constraints(result);
 
-        let solvable: Vec<SymExpr> = sym_constraints
+        // Collapse O(k) backedge constraints into O(1) for canonical counted loops.
+        let rewritten =
+            crate::loop_analysis::rewrite_loop_constraints(&sym_constraints, &self.loops, result);
+
+        let solvable: Vec<SymExpr> = rewritten
             .iter()
             .filter_map(|c| c.clone())
             .collect();
@@ -1601,7 +1612,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_z3_solver(params: Vec<ParamInfo>) -> Z3SolverStrategy {
-        Z3SolverStrategy::new(Some(1000), params)
+        Z3SolverStrategy::new(Some(1000), params, vec![])
     }
 
     fn int_param(name: &str) -> ParamInfo {
@@ -1799,7 +1810,7 @@ mod tests {
                     })
                     .collect();
                 let inputs: Vec<Value> = (0..len).map(|i| Value::from(i as i64)).collect();
-                let mut s = Z3SolverStrategy::new(Some(500), params);
+                let mut s = Z3SolverStrategy::new(Some(500), params, vec![]);
                 // Must not panic.
                 s.feedback(&inputs, &er, false);
             }
@@ -1823,7 +1834,7 @@ mod tests {
                     literals: vec![],
                     capabilities: FrontendCapabilities::from_raw(&[]),
                 };
-                let mut s = Z3SolverStrategy::new(Some(500), params);
+                let mut s = Z3SolverStrategy::new(Some(500), params, vec![]);
                 s.feedback(&inputs, &er, false);
                 while let Some(output) = s.next(&ctx) {
                     prop_assert_eq!(output.len(), len);

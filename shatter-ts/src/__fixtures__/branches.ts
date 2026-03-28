@@ -86,3 +86,47 @@ export function mixedBranches(x: number, y: number): string {
   }
   return "non-positive";
 }
+
+// Loop induction variable analysis fixtures
+
+export function forLoopCanonical(n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum += i;
+  }
+  return sum;
+}
+
+export function forLoopStepTwo(n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i += 2) {
+    sum += i;
+  }
+  return sum;
+}
+
+export function forLoopBodyModifiesI(n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    i = 5;
+    sum += i;
+  }
+  return sum;
+}
+
+export function forLoopNoCondition(n: number): number {
+  let sum = 0;
+  for (let i = 0; ; i++) {
+    if (i >= n) break;
+    sum += i;
+  }
+  return sum;
+}
+
+export function forLoopFloatInit(n: number): number {
+  let sum = 0;
+  for (let i = 0.5; i < n; i++) {
+    sum += i;
+  }
+  return sum;
+}

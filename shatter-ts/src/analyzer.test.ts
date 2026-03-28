@@ -732,4 +732,56 @@ describe("analyzeFile", () => {
       expect(paramType.kind).not.toBe("opaque");
     });
   });
+
+  describe("loop induction variable analysis", () => {
+    it("detects canonical for loop: for (let i = 0; i < n; i++)", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoopCanonical");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.loops).toBeDefined();
+      expect(fn.loops).toHaveLength(1);
+      const loop = fn.loops![0]!;
+      expect(loop.loop_id).toBe(0);
+      expect(loop.induction_var.name).toBe("i");
+      expect(loop.induction_var.init_expr).toEqual({ kind: "const", type: "int", value: 0 });
+      expect(loop.induction_var.step_expr).toEqual({ kind: "const", type: "int", value: 1 });
+      expect(loop.induction_var.bound_expr).toEqual({ kind: "param", name: "n", path: [] });
+      expect(loop.induction_var.bound_op).toBe("lt");
+    });
+
+    it("detects for loop with step 2: for (let i = 0; i < n; i += 2)", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoopStepTwo");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.loops).toBeDefined();
+      expect(fn.loops).toHaveLength(1);
+      const loop = fn.loops![0]!;
+      expect(loop.induction_var.name).toBe("i");
+      expect(loop.induction_var.init_expr).toEqual({ kind: "const", type: "int", value: 0 });
+      expect(loop.induction_var.step_expr).toEqual({ kind: "const", type: "int", value: 2 });
+      expect(loop.induction_var.bound_op).toBe("lt");
+    });
+
+    it("does NOT detect loop when body modifies induction variable", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoopBodyModifiesI");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      // loops field should be absent or empty
+      expect(!fn.loops || fn.loops.length === 0).toBe(true);
+    });
+
+    it("does NOT detect loop when condition is missing", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoopNoCondition");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(!fn.loops || fn.loops.length === 0).toBe(true);
+    });
+
+    it("does NOT detect loop when init is a float literal", () => {
+      const results = analyzeFile(path.join(fixtures, "branches.ts"), "forLoopFloatInit");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(!fn.loops || fn.loops.length === 0).toBe(true);
+    });
+  });
 });

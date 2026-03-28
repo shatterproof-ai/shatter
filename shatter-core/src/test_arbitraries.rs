@@ -20,11 +20,12 @@ use crate::invariants::{
     ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
 };
 use crate::protocol::{
-    BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary, DepDetectionKind,
-    DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult, ExternalDependency,
-    FunctionAnalysis, GeneratorKind, LiteralValue, MockBehavior, MockConfig, PerformanceMetrics,
-    Request, Response, ResponseResult, RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind,
-    TimingPhaseSummary, TimingSummary, PROTOCOL_VERSION,
+    BoundOp, BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary,
+    DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult,
+    ExternalDependency, FunctionAnalysis, GeneratorKind, InductionVar, LiteralValue, LoopInfo,
+    MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
+    RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary, TimingSummary,
+    PROTOCOL_VERSION,
 };
 use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
@@ -787,6 +788,42 @@ pub fn arb_external_dependency() -> impl Strategy<Value = ExternalDependency> {
         )
 }
 
+pub fn arb_bound_op() -> impl Strategy<Value = BoundOp> {
+    prop_oneof![
+        Just(BoundOp::Lt),
+        Just(BoundOp::Le),
+        Just(BoundOp::Gt),
+        Just(BoundOp::Ge),
+    ]
+}
+
+pub fn arb_induction_var() -> impl Strategy<Value = InductionVar> {
+    (
+        arb_ident(),
+        arb_sym_expr(0),
+        arb_sym_expr(0),
+        arb_sym_expr(0),
+        arb_bound_op(),
+    )
+        .prop_map(|(name, init_expr, step_expr, bound_expr, bound_op)| InductionVar {
+            name,
+            init_expr,
+            step_expr,
+            bound_expr,
+            bound_op,
+        })
+}
+
+pub fn arb_loop_info() -> impl Strategy<Value = LoopInfo> {
+    (0..100u32, 1..500u32, arb_induction_var()).prop_map(|(loop_id, line, induction_var)| {
+        LoopInfo {
+            loop_id,
+            line,
+            induction_var,
+        }
+    })
+}
+
 pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
     (
         arb_ident(),
@@ -822,9 +859,19 @@ pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
                     end_line: end_line.max(start_line),
                     literals,
                     crypto_boundaries: vec![],
+                    loops: vec![],
                 }
             },
         )
+}
+
+pub fn arb_function_analysis_with_loops() -> impl Strategy<Value = FunctionAnalysis> {
+    (arb_function_analysis(), prop::collection::vec(arb_loop_info(), 0..=2)).prop_map(
+        |(mut fa, loops)| {
+            fa.loops = loops;
+            fa
+        },
+    )
 }
 
 pub fn arb_command() -> impl Strategy<Value = Command> {

@@ -1717,6 +1717,7 @@ mod tests {
             end_line: end,
             literals: vec![],
             crypto_boundaries: vec![],
+            loops: vec![],
         }
     }
 
