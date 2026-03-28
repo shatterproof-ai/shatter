@@ -191,6 +191,80 @@ func moduleGoBuildCacheDir() string {
 	return p
 }
 
+// harnessRuntimeModuleName is the Go module path used by the shared harness
+// runtime package. Generated harness binaries import this module and the
+// output directory's go.mod has a replace directive pointing at the cached
+// source.
+const harnessRuntimeModuleName = "shatter-harness"
+
+// harnessRuntimeSourceCache caches the resolved path to the harness runtime
+// source directory so we only write it once per process.
+var (
+	harnessRuntimeOnce sync.Once
+	harnessRuntimeDir  string
+	harnessRuntimeErr  error
+)
+
+// ensureHarnessRuntimeDir writes the harness runtime Go source to a cache
+// directory and returns the absolute path. The directory contains a go.mod
+// and runtime.go ready to be used as a replace target. The source is written
+// once per process and reused thereafter.
+func ensureHarnessRuntimeDir() (string, error) {
+	harnessRuntimeOnce.Do(func() {
+		var base string
+		if cache := harnessCacheDir(); cache != "" {
+			base = filepath.Join(cache, "go", "harness-runtime")
+		} else if scratch := harnessScratchDir(); scratch != "" {
+			base = filepath.Join(scratch, "go", "harness-runtime")
+		} else {
+			base, harnessRuntimeErr = os.MkdirTemp("", "shatter-harness-runtime-*")
+			if harnessRuntimeErr != nil {
+				return
+			}
+		}
+		if err := os.MkdirAll(base, 0755); err != nil {
+			harnessRuntimeErr = fmt.Errorf("creating harness runtime dir: %w", err)
+			return
+		}
+
+		goMod := "module " + harnessRuntimeModuleName + "\n\ngo 1.23\n"
+		if err := os.WriteFile(filepath.Join(base, "go.mod"), []byte(goMod), 0644); err != nil {
+			harnessRuntimeErr = fmt.Errorf("writing harness runtime go.mod: %w", err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(base, "runtime.go"), []byte(harnessRuntimeSource()), 0644); err != nil {
+			harnessRuntimeErr = fmt.Errorf("writing harness runtime.go: %w", err)
+			return
+		}
+
+		abs, err := filepath.Abs(base)
+		if err != nil {
+			harnessRuntimeDir = base
+		} else {
+			harnessRuntimeDir = abs
+		}
+	})
+	return harnessRuntimeDir, harnessRuntimeErr
+}
+
+// appendHarnessRequire appends a require + replace directive to the go.mod in
+// outputDir so the generated harness can import the shared harness runtime.
+func appendHarnessRequire(outputDir, runtimeDir string) error {
+	modPath := filepath.Join(outputDir, "go.mod")
+	f, err := os.OpenFile(modPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening go.mod for append: %w", err)
+	}
+	defer f.Close()
+
+	directive := fmt.Sprintf("\nrequire %s v0.0.0\nreplace %s => %s\n",
+		harnessRuntimeModuleName, harnessRuntimeModuleName, runtimeDir)
+	if _, err := f.WriteString(directive); err != nil {
+		return fmt.Errorf("writing harness replace directive: %w", err)
+	}
+	return nil
+}
+
 // copySiblingGoFiles copies all non-test .go files from the source file's
 // package directory into destDir, skipping the source file itself and any
 // files that already exist in destDir. This makes unexported symbols from
@@ -580,6 +654,17 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 		return nil, fmt.Errorf("writing main.go: %w", err)
 	}
 
+	// Wire the shared harness runtime into the generated module's go.mod.
+	runtimeDir, err := ensureHarnessRuntimeDir()
+	if err != nil {
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("harness runtime: %w", err)
+	}
+	if err := appendHarnessRequire(outputDir, runtimeDir); err != nil {
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("harness require: %w", err)
+	}
+
 	binaryName := "shatter_run"
 	if runtime.GOOS == "windows" {
 		binaryName += ".exe"
@@ -702,7 +787,7 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 				LinesExecuted: []int{},
 				SideEffects:   []SideEffect{},
 				ScopeEvents:   []json.RawMessage{},
-				Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+				Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Microseconds()) / 1000.0},
 				ThrownError: &ErrorInfo{
 					ErrorType:     "timeout",
 					Message:       fmt.Sprintf("execution timed out after %s", execDur),
@@ -722,7 +807,7 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 		DiscoveredDependencies: h.discDeps,
 		SideEffects:            resp.SideEffects,
 		ScopeEvents:            resp.ScopeEvents,
-		Performance:            PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+		Performance:            PerfMetrics{WallTimeMs: float64(wallTime.Microseconds()) / 1000.0},
 	}
 	if resp.Performance != nil {
 		result.Performance.CPUTimeUs = resp.Performance.CPUTimeUs
@@ -929,89 +1014,29 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
-	b.WriteString("\t\"bufio\"\n")
-	b.WriteString("\t\"bytes\"\n")
 	b.WriteString("\t\"encoding/json\"\n")
-	b.WriteString("\t\"fmt\"\n")
-	b.WriteString("\t\"io\"\n")
-	b.WriteString("\t\"os\"\n")
-	b.WriteString("\t\"runtime\"\n")
-	b.WriteString("\t\"strings\"\n")
-	b.WriteString("\t\"time\"\n")
+	if len(params) > 0 {
+		b.WriteString("\t\"fmt\"\n")
+	}
+	b.WriteString("\n")
+	b.WriteString("\t\"shatter-harness\"\n")
 	b.WriteString(")\n\n")
 
-	// Inline types avoid package-level import issues.
-	b.WriteString("type _hReq struct {\n")
-	b.WriteString("\tInputs  []json.RawMessage `json:\"inputs\"`\n")
-	b.WriteString("\tCapture bool              `json:\"capture\"`\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("type _hSideEffect struct {\n")
-	b.WriteString("\tKind     string          `json:\"kind\"`\n")
-	b.WriteString("\tLevel    string          `json:\"level,omitempty\"`\n")
-	b.WriteString("\tMessage  string          `json:\"message,omitempty\"`\n")
-	b.WriteString("\tVariable string          `json:\"variable,omitempty\"`\n")
-	b.WriteString("\tBefore   json.RawMessage `json:\"before,omitempty\"`\n")
-	b.WriteString("\tAfter    json.RawMessage `json:\"after,omitempty\"`\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("type _hError struct {\n")
-	b.WriteString("\tErrorType     string `json:\"error_type\"`\n")
-	b.WriteString("\tMessage       string `json:\"message\"`\n")
-	b.WriteString("\tStack         string `json:\"stack,omitempty\"`\n")
-	b.WriteString("\tErrorCategory string `json:\"error_category,omitempty\"`\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("type _hPerf struct {\n")
-	b.WriteString("\tCPUTimeUs          int64 `json:\"cpu_time_us\"`\n")
-	b.WriteString("\tHeapUsedBytes      int64 `json:\"heap_used_bytes\"`\n")
-	b.WriteString("\tHeapAllocatedBytes int64 `json:\"heap_allocated_bytes\"`\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("type _hResp struct {\n")
-	b.WriteString("\tReturnValue   json.RawMessage          `json:\"return_value,omitempty\"`\n")
-	b.WriteString("\tBranchPath    []__shatterBranchDecision `json:\"branch_path\"`\n")
-	b.WriteString("\tLinesExecuted []int                    `json:\"lines_executed\"`\n")
-	b.WriteString("\tScopeEvents   []__shatterTraceEvent    `json:\"scope_events\"`\n")
-	b.WriteString("\tSideEffects   []_hSideEffect           `json:\"side_effects\"`\n")
-	if hasMocks {
-		b.WriteString("\tExternalCalls []json.RawMessage        `json:\"external_calls,omitempty\"`\n")
-	}
-	b.WriteString("\tThrownError   *_hError                 `json:\"thrown_error,omitempty\"`\n")
-	b.WriteString("\tPerformance   *_hPerf                  `json:\"performance\"`\n")
-	b.WriteString("\tError         string                   `json:\"error,omitempty\"`\n")
-	b.WriteString("}\n\n")
-
-	// Suppress "declared and not used" for imports that may be unused in some configurations.
-	b.WriteString("var _ = strings.TrimSpace\n")
-	b.WriteString("var _ = time.Now\n\n")
-
 	b.WriteString("func main() {\n")
-	b.WriteString("\t_sc := bufio.NewScanner(os.Stdin)\n")
-	b.WriteString("\t_sc.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)\n")
-	b.WriteString("\t_enc := json.NewEncoder(os.Stdout)\n\n")
-
-	b.WriteString("\tfor _sc.Scan() {\n")
-	b.WriteString("\t\tvar _req _hReq\n")
-	b.WriteString("\t\tif _e := json.Unmarshal(_sc.Bytes(), &_req); _e != nil {\n")
-	b.WriteString("\t\t\t_enc.Encode(_hResp{Error: \"bad request: \" + _e.Error()})\n") //nolint:errcheck
-	b.WriteString("\t\t\tcontinue\n")
-	b.WriteString("\t\t}\n\n")
+	b.WriteString("\tharness.RunLoop(func(_req harness.Request) harness.Response {\n")
 
 	// Deserialize typed input parameters from _req.Inputs
 	for i, p := range params {
 		b.WriteString(fmt.Sprintf("\t\tvar %s %s\n", p.Name, p.GoType))
 		b.WriteString(fmt.Sprintf("\t\tif %d < len(_req.Inputs) {\n", i))
 		b.WriteString(fmt.Sprintf("\t\t\tif _e := json.Unmarshal(_req.Inputs[%d], &%s); _e != nil {\n", i, p.Name))
-		b.WriteString(fmt.Sprintf("\t\t\t\t_enc.Encode(_hResp{Error: fmt.Sprintf(\"unmarshal %s: %%v\", _e)})\n", p.Name)) //nolint:errcheck
-		b.WriteString("\t\t\t\tcontinue\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\treturn harness.Response{Error: fmt.Sprintf(\"unmarshal %s: %%v\", _e)}\n", p.Name))
 		b.WriteString("\t\t\t}\n")
 		b.WriteString("\t\t}\n")
 	}
 	b.WriteString("\n")
 
-	// Reset recorder state (must happen before any function call so recordings
-	// from the previous iteration don't bleed into this one).
+	// Reset recorder state
 	b.WriteString("\t\t__shatter_reset()\n")
 	if hasMocks {
 		b.WriteString("\t\tshatterResetMockCounters()\n")
@@ -1029,26 +1054,9 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 		b.WriteString("\n")
 	}
 
-	// Performance counters
-	b.WriteString("\t\tvar _mBef runtime.MemStats\n")
-	b.WriteString("\t\truntime.ReadMemStats(&_mBef)\n")
-	b.WriteString("\t\t_tStart := time.Now()\n\n")
-
-	// Console capture: redirect os.Stdout/os.Stderr to pipes so fmt.Print* calls
-	// from the target function are captured rather than mixing with JSON responses.
-	b.WriteString("\t\t_rOut, _wOut, _ := os.Pipe()\n")
-	b.WriteString("\t\t_origOut := os.Stdout\n")
-	b.WriteString("\t\tos.Stdout = _wOut\n")
-	b.WriteString("\t\tvar _capOut bytes.Buffer\n")
-	b.WriteString("\t\t_donOut := make(chan struct{})\n")
-	b.WriteString("\t\tgo func() { io.Copy(&_capOut, _rOut); close(_donOut) }()\n\n") //nolint:errcheck
-
-	b.WriteString("\t\t_rErr, _wErr, _ := os.Pipe()\n")
-	b.WriteString("\t\t_origErr := os.Stderr\n")
-	b.WriteString("\t\tos.Stderr = _wErr\n")
-	b.WriteString("\t\tvar _capErr bytes.Buffer\n")
-	b.WriteString("\t\t_donErr := make(chan struct{})\n")
-	b.WriteString("\t\tgo func() { io.Copy(&_capErr, _rErr); close(_donErr) }()\n\n") //nolint:errcheck
+	// Performance + console capture via harness package
+	b.WriteString("\t\t_perf := harness.StartPerf()\n")
+	b.WriteString("\t\t_cap := harness.CaptureConsole()\n\n")
 
 	// Declare result variable(s) before the closure so they're accessible afterwards.
 	switch {
@@ -1064,28 +1072,14 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 		}
 	}
 
-	// Panic-recovering closure wraps the function call.
-	b.WriteString("\t\tvar _thrownErr *_hError\n")
-	b.WriteString("\t\tfunc() {\n")
-	b.WriteString("\t\t\tdefer func() {\n")
-	b.WriteString("\t\t\t\tif _r := recover(); _r != nil {\n")
-	b.WriteString("\t\t\t\t\t_stk := make([]byte, 4096)\n")
-	b.WriteString("\t\t\t\t\t_n := runtime.Stack(_stk, false)\n")
-	b.WriteString("\t\t\t\t\t_thrownErr = &_hError{\n")
-	b.WriteString("\t\t\t\t\t\tErrorType:     \"panic\",\n")
-	b.WriteString("\t\t\t\t\t\tMessage:       fmt.Sprintf(\"%v\", _r),\n")
-	b.WriteString("\t\t\t\t\t\tStack:         string(_stk[:_n]),\n")
-	b.WriteString("\t\t\t\t\t\tErrorCategory: \"runtime\",\n")
-	b.WriteString("\t\t\t\t\t}\n")
-	b.WriteString("\t\t\t\t}\n")
-	b.WriteString("\t\t\t}()\n")
-
+	// Panic-recovering call via harness.SafeCall
 	argList := make([]string, len(params))
 	for i, p := range params {
 		argList[i] = p.Name
 	}
 	callExpr := fmt.Sprintf("%s(%s)", funcName, strings.Join(argList, ", "))
 
+	b.WriteString("\t\t_thrownErr := harness.SafeCall(func() {\n")
 	switch {
 	case retInfo.Count == 0:
 		b.WriteString(fmt.Sprintf("\t\t\t%s\n", callExpr))
@@ -1102,33 +1096,25 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 		}
 		b.WriteString(fmt.Sprintf("\t\t\t%s = %s\n", strings.Join(retVars, ", "), callExpr))
 	}
-	b.WriteString("\t\t}()\n\n")
+	b.WriteString("\t\t})\n\n")
 
-	// Restore stdout/stderr and drain capture pipes.
-	b.WriteString("\t\tos.Stdout = _origOut\n")
-	b.WriteString("\t\t_wOut.Close()\n")
-	b.WriteString("\t\t<-_donOut\n")
-	b.WriteString("\t\tos.Stderr = _origErr\n")
-	b.WriteString("\t\t_wErr.Close()\n")
-	b.WriteString("\t\t<-_donErr\n\n")
+	// Stop capture and finish perf measurement
+	b.WriteString("\t\t_stdout, _stderr := _cap.Stop()\n")
+	b.WriteString("\t\t_perfResult := _perf.Finish()\n\n")
 
-	// Performance counters (end)
-	b.WriteString("\t\t_tElapsed := time.Since(_tStart)\n")
-	b.WriteString("\t\tvar _mAft runtime.MemStats\n")
-	b.WriteString("\t\truntime.ReadMemStats(&_mAft)\n\n")
+	// Marshal recorder results to json.RawMessage
+	b.WriteString("\t\t_rec := __shatter_collect_results()\n")
+	b.WriteString("\t\t_branchPath, _ := json.Marshal(_rec.BranchPath)\n")
+	b.WriteString("\t\t_linesExec, _ := json.Marshal(_rec.LinesExecuted)\n")
+	b.WriteString("\t\t_scopeEvts, _ := json.Marshal(_rec.ScopeEvents)\n\n")
 
 	// Build response
-	b.WriteString("\t\t_rec := __shatter_collect_results()\n")
-	b.WriteString("\t\t_resp := _hResp{\n")
-	b.WriteString("\t\t\tBranchPath:    _rec.BranchPath,\n")
-	b.WriteString("\t\t\tLinesExecuted: _rec.LinesExecuted,\n")
-	b.WriteString("\t\t\tScopeEvents:   _rec.ScopeEvents,\n")
+	b.WriteString("\t\t_resp := harness.Response{\n")
+	b.WriteString("\t\t\tBranchPath:    _branchPath,\n")
+	b.WriteString("\t\t\tLinesExecuted: _linesExec,\n")
+	b.WriteString("\t\t\tScopeEvents:   _scopeEvts,\n")
 	b.WriteString("\t\t\tThrownError:   _thrownErr,\n")
-	b.WriteString("\t\t\tPerformance: &_hPerf{\n")
-	b.WriteString("\t\t\t\tCPUTimeUs:          _tElapsed.Microseconds(),\n")
-	b.WriteString("\t\t\t\tHeapUsedBytes:      int64(_mAft.HeapInuse) - int64(_mBef.HeapInuse),\n")
-	b.WriteString("\t\t\t\tHeapAllocatedBytes: int64(_mAft.TotalAlloc) - int64(_mBef.TotalAlloc),\n")
-	b.WriteString("\t\t\t},\n")
+	b.WriteString("\t\t\tPerformance:   _perfResult,\n")
 	b.WriteString("\t\t}\n\n")
 
 	// Serialize return value
@@ -1140,7 +1126,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	case retInfo.Count > 1:
 		if retInfo.HasErr {
 			b.WriteString("\t\tif _retErr != nil && _thrownErr == nil {\n")
-			b.WriteString("\t\t\t_resp.ThrownError = &_hError{ErrorType: \"function_error\", Message: _retErr.Error(), ErrorCategory: \"runtime\"}\n")
+			b.WriteString("\t\t\t_resp.ThrownError = &harness.Error{ErrorType: \"function_error\", Message: _retErr.Error(), ErrorCategory: \"runtime\"}\n")
 			b.WriteString("\t\t}\n")
 		}
 		nonErrCount := retInfo.Count
@@ -1165,12 +1151,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 
 	// Console side effects (only included when capture=true)
 	b.WriteString("\t\tif _req.Capture {\n")
-	b.WriteString("\t\t\tif _s := strings.TrimSpace(_capOut.String()); _s != \"\" {\n")
-	b.WriteString("\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, _hSideEffect{Kind: \"console_output\", Level: \"log\", Message: _s})\n")
-	b.WriteString("\t\t\t}\n")
-	b.WriteString("\t\t\tif _s := strings.TrimSpace(_capErr.String()); _s != \"\" {\n")
-	b.WriteString("\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, _hSideEffect{Kind: \"console_output\", Level: \"error\", Message: _s})\n")
-	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\t_resp.SideEffects = append(_resp.SideEffects, harness.ConsoleSideEffects(_stdout, _stderr)...)\n")
 	b.WriteString("\t\t}\n\n")
 
 	// Global state changes
@@ -1179,7 +1160,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 			b.WriteString(fmt.Sprintf("\t\tif _ok_%s {\n", v.Name))
 			b.WriteString(fmt.Sprintf("\t\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", v.Name, v.Name))
 			b.WriteString(fmt.Sprintf("\t\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", v.Name, v.Name))
-			b.WriteString("\t\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, _hSideEffect{\n")
+			b.WriteString("\t\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, harness.SideEffect{\n")
 			b.WriteString("\t\t\t\t\t\tKind:     \"global_state_change\",\n")
 			b.WriteString(fmt.Sprintf("\t\t\t\t\t\tVariable: %q,\n", v.Name))
 			b.WriteString(fmt.Sprintf("\t\t\t\t\t\tBefore:   _bef_%s,\n", v.Name))
@@ -1194,13 +1175,14 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 
 	// Mock call records
 	if hasMocks {
-		b.WriteString("\t\t_resp.ExternalCalls = shatterGetAndResetMockCalls()\n\n")
+		b.WriteString("\t\tif _mockCalls := shatterGetAndResetMockCalls(); len(_mockCalls) > 0 {\n")
+		b.WriteString("\t\t\t_resp.ExternalCalls, _ = json.Marshal(_mockCalls)\n")
+		b.WriteString("\t\t}\n\n")
 	}
 
-	b.WriteString("\t\t_enc.Encode(_resp)\n") //nolint:errcheck
-	b.WriteString("\t}\n")          // end for _sc.Scan()
-	b.WriteString("\tos.Exit(1)\n") // EOF exit code convention: 1 = clean termination
-	b.WriteString("}\n")            // end main()
+	b.WriteString("\t\treturn _resp\n")
+	b.WriteString("\t})\n")  // end RunLoop handler
+	b.WriteString("}\n")     // end main()
 
 	return b.String(), nil
 }
@@ -1822,6 +1804,17 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 	}
 	finishWriteHarness()
 
+	// Wire the shared harness runtime into the generated module's go.mod.
+	runtimeDir, err := ensureHarnessRuntimeDir()
+	if err != nil {
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("harness runtime: %w", err)
+	}
+	if err := appendHarnessRequire(outputDir, runtimeDir); err != nil {
+		os.RemoveAll(outputDir)
+		return nil, fmt.Errorf("harness require: %w", err)
+	}
+
 	binaryName := "shatter_run"
 	if runtime.GOOS == "windows" {
 		binaryName += ".exe"
@@ -1894,7 +1887,7 @@ func ExecuteWithPreparedHarness(h *PreparedHarness, inputs []json.RawMessage, ti
 				LinesExecuted: []int{},
 				SideEffects:   []SideEffect{},
 				ScopeEvents:   []json.RawMessage{},
-				Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+				Performance:   PerfMetrics{WallTimeMs: float64(wallTime.Microseconds()) / 1000.0},
 				ThrownError: &ErrorInfo{
 					ErrorType:     "timeout",
 					Message:       fmt.Sprintf("execution timed out after %s", execDur),
@@ -1914,7 +1907,7 @@ func ExecuteWithPreparedHarness(h *PreparedHarness, inputs []json.RawMessage, ti
 		DiscoveredDependencies: h.DiscDeps,
 		SideEffects:            resp.SideEffects,
 		ScopeEvents:            resp.ScopeEvents,
-		Performance:            PerfMetrics{WallTimeMs: float64(wallTime.Milliseconds())},
+		Performance:            PerfMetrics{WallTimeMs: float64(wallTime.Microseconds()) / 1000.0},
 	}
 	if resp.Performance != nil {
 		result.Performance.CPUTimeUs = resp.Performance.CPUTimeUs
