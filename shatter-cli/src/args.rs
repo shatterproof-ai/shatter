@@ -1293,6 +1293,8 @@ pub(crate) enum NondeterminismAction {
         /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<std::path::PathBuf>,
+    },
+}
 
 /// Sub-subcommands for `shatter telemetry`.
 #[derive(Debug, Clone, Subcommand)]
