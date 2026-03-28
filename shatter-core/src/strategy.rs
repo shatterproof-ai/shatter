@@ -782,9 +782,13 @@ impl InputStrategy for Z3SolverStrategy {
     fn feedback(&mut self, inputs: &[Value], result: &ExecuteResult, _was_new_path: bool) {
         let sym_constraints = crate::orchestrator::extract_sym_constraints(result);
 
-        // Collapse O(k) backedge constraints into O(1) for canonical counted loops.
+        // Technique 5: collapse O(k) backedge constraints into O(1) for canonical counted loops.
         let rewritten =
             crate::loop_analysis::rewrite_loop_constraints(&sym_constraints, &self.loops, result);
+
+        // Technique 6: merge remaining per-iteration constraints into ITE chains.
+        let rewritten =
+            crate::loop_analysis::merge_loop_states(&rewritten, &self.loops, result);
 
         let solvable: Vec<SymExpr> = rewritten
             .iter()

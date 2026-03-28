@@ -40,6 +40,14 @@ pub enum SymExpr {
         args: Vec<SymExpr>,
     },
 
+    /// If-then-else: condition ? then_expr : else_expr.
+    /// Used by loop state merging to build ITE chains from per-iteration constraints.
+    Ite {
+        condition: Box<SymExpr>,
+        then_expr: Box<SymExpr>,
+        else_expr: Box<SymExpr>,
+    },
+
     /// Could not be tracked symbolically — fall back to fuzzing.
     Unknown,
 }
@@ -127,6 +135,15 @@ fn collect_param_names(expr: &SymExpr, names: &mut HashSet<String>) {
             for arg in args {
                 collect_param_names(arg, names);
             }
+        }
+        SymExpr::Ite {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_param_names(condition, names);
+            collect_param_names(then_expr, names);
+            collect_param_names(else_expr, names);
         }
     }
 }
@@ -222,6 +239,74 @@ mod tests {
     #[test]
     fn sym_expr_unknown_round_trips() {
         round_trip(&SymExpr::Unknown);
+    }
+
+    #[test]
+    fn sym_expr_ite_round_trips() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "iter".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            }),
+            then_expr: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            else_expr: Box::new(SymExpr::Const(ConstValue::Int(42))),
+        };
+        round_trip(&expr);
+
+        // Verify the serde tag is "ite"
+        let json = serde_json::to_value(&expr).expect("serialize");
+        assert_eq!(json["kind"], "ite");
+    }
+
+    #[test]
+    fn extract_param_names_ite() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(SymExpr::Param {
+                name: "cond".into(),
+                path: vec![],
+            }),
+            then_expr: Box::new(SymExpr::Param {
+                name: "a".into(),
+                path: vec![],
+            }),
+            else_expr: Box::new(SymExpr::Param {
+                name: "b".into(),
+                path: vec![],
+            }),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["cond".into(), "a".into(), "b".into()])
+        );
+    }
+
+    #[test]
+    fn extract_param_names_ite_deduplicates() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            then_expr: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            else_expr: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+        };
+        assert_eq!(
+            extract_param_names(&expr),
+            HashSet::from(["x".into()])
+        );
     }
 
     #[test]

@@ -324,6 +324,12 @@ pub fn arb_sym_expr(depth: u32) -> BoxedStrategy<SymExpr> {
                     receiver: receiver.map(Box::new),
                     args,
                 }),
+            1 => (arb_sym_expr(depth - 1), arb_sym_expr(depth - 1), arb_sym_expr(depth - 1))
+                .prop_map(|(condition, then_expr, else_expr)| SymExpr::Ite {
+                    condition: Box::new(condition),
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                }),
         ]
         .boxed()
     }
