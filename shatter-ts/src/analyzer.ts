@@ -21,6 +21,9 @@ import type {
   LiteralValue,
   StaticOpacityReason,
   MediumOpacityReason,
+  InductionVar,
+  LoopInfo,
+  BoundOp,
 } from "./protocol.js";
 import type { TimingCollector } from "./timing.js";
 
@@ -200,7 +203,9 @@ function analyzeFunctionDeclaration(
   const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
 
-  const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
+  const { branches, loops } = node.body
+    ? extractBranches(node.body, sourceFile, paramNames)
+    : { branches: [], loops: [] };
   const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
   const literals = extractLiterals(node, sourceFile, checker);
 
@@ -214,6 +219,7 @@ function analyzeFunctionDeclaration(
     start_line: startLine,
     end_line: endLine,
     ...(literals.length > 0 ? { literals } : {}),
+    ...(loops.length > 0 ? { loops } : {}),
   };
 }
 
@@ -236,7 +242,9 @@ function analyzeArrowFunction(
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
 
   const body = ts.isBlock(node.body) ? node.body : null;
-  const branches = body ? extractBranches(body, sourceFile, paramNames) : [];
+  const { branches, loops } = body
+    ? extractBranches(body, sourceFile, paramNames)
+    : { branches: [], loops: [] };
   const dependencies = body ? extractDependencies(body, checker, sourceFile, paramNames) : [];
   const literals = extractLiterals(node, sourceFile, checker);
 
@@ -250,6 +258,7 @@ function analyzeArrowFunction(
     start_line: startLine,
     end_line: endLine,
     ...(literals.length > 0 ? { literals } : {}),
+    ...(loops.length > 0 ? { loops } : {}),
   };
 }
 
@@ -270,7 +279,9 @@ function analyzeFunctionDeclarationUnnamed(
   const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
 
-  const branches = node.body ? extractBranches(node.body, sourceFile, paramNames) : [];
+  const { branches, loops } = node.body
+    ? extractBranches(node.body, sourceFile, paramNames)
+    : { branches: [], loops: [] };
   const dependencies = node.body ? extractDependencies(node.body, checker, sourceFile, paramNames) : [];
   const literals = extractLiterals(node, sourceFile, checker);
 
@@ -284,6 +295,7 @@ function analyzeFunctionDeclarationUnnamed(
     start_line: startLine,
     end_line: endLine,
     ...(literals.length > 0 ? { literals } : {}),
+    ...(loops.length > 0 ? { loops } : {}),
   };
 }
 
@@ -306,7 +318,7 @@ function analyzeFunctionExpression(
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
 
   const body = node.body;
-  const branches = extractBranches(body, sourceFile, paramNames);
+  const { branches, loops } = extractBranches(body, sourceFile, paramNames);
   const dependencies = extractDependencies(body, checker, sourceFile, paramNames);
   const literals = extractLiterals(node, sourceFile, checker);
 
@@ -320,6 +332,7 @@ function analyzeFunctionExpression(
     start_line: startLine,
     end_line: endLine,
     ...(literals.length > 0 ? { literals } : {}),
+    ...(loops.length > 0 ? { loops } : {}),
   };
 }
 
@@ -511,31 +524,35 @@ function convertUnionType(
 // Branch extraction
 // ---------------------------------------------------------------------------
 
-/** Mutable state for assigning sequential branch IDs. */
+/** Mutable state for assigning sequential branch and loop IDs. */
 interface BranchContext {
   sourceFile: ts.SourceFile;
   paramNames: Set<string>;
   nextId: number;
+  /** Counter incremented for every loop statement (for, while, do-while, for-of, for-in). */
+  nextLoopId: number;
 }
 
 /**
- * Walk a function body and extract all branch points.
+ * Walk a function body and extract all branch points and loop induction info.
  */
 function extractBranches(
   body: ts.Block,
   sourceFile: ts.SourceFile,
   paramNames: Set<string>,
-): BranchInfo[] {
-  const ctx: BranchContext = { sourceFile, paramNames, nextId: 0 };
+): { branches: BranchInfo[]; loops: LoopInfo[] } {
+  const ctx: BranchContext = { sourceFile, paramNames, nextId: 0, nextLoopId: 0 };
   const branches: BranchInfo[] = [];
-  walkForBranches(body, ctx, branches, false);
-  return branches;
+  const loops: LoopInfo[] = [];
+  walkForBranches(body, ctx, branches, loops, false);
+  return { branches, loops };
 }
 
 function walkForBranches(
   node: ts.Node,
   ctx: BranchContext,
   branches: BranchInfo[],
+  loops: LoopInfo[],
   isElseIf: boolean,
 ): void {
   if (ts.isIfStatement(node)) {
@@ -552,12 +569,12 @@ function walkForBranches(
     });
 
     // Recurse into then/else blocks
-    walkForBranches(node.thenStatement, ctx, branches, false);
+    walkForBranches(node.thenStatement, ctx, branches, loops, false);
     if (node.elseStatement) {
       if (ts.isIfStatement(node.elseStatement)) {
-        walkForBranches(node.elseStatement, ctx, branches, true);
+        walkForBranches(node.elseStatement, ctx, branches, loops, true);
       } else {
-        walkForBranches(node.elseStatement, ctx, branches, false);
+        walkForBranches(node.elseStatement, ctx, branches, loops, false);
       }
     }
     return;
@@ -577,7 +594,7 @@ function walkForBranches(
         });
       }
       for (const stmt of clause.statements) {
-        walkForBranches(stmt, ctx, branches, false);
+        walkForBranches(stmt, ctx, branches, loops, false);
       }
     }
     return;
@@ -595,8 +612,8 @@ function walkForBranches(
       branch_type: "ternary",
     });
     // Recurse into branches of the ternary
-    walkForBranches(node.whenTrue, ctx, branches, false);
-    walkForBranches(node.whenFalse, ctx, branches, false);
+    walkForBranches(node.whenTrue, ctx, branches, loops, false);
+    walkForBranches(node.whenFalse, ctx, branches, loops, false);
     return;
   }
 
@@ -637,11 +654,36 @@ function walkForBranches(
       condition: isSymExprMeaningful(symCondition) ? symCondition : null,
       branch_type: "while",
     });
-    walkForBranches(node.statement, ctx, branches, false);
+    // Increment loop counter for non-for loop statements
+    ctx.nextLoopId++;
+    walkForBranches(node.statement, ctx, branches, loops, false);
+    return;
+  }
+
+  if (ts.isDoStatement(node)) {
+    const line = ctx.sourceFile.getLineAndCharacterOfPosition(node.getStart(ctx.sourceFile)).line + 1;
+    const conditionText = node.expression.getText(ctx.sourceFile);
+    const symCondition = buildSymExpr(node.expression, ctx.paramNames);
+    branches.push({
+      id: ctx.nextId++,
+      line,
+      condition_text: conditionText,
+      condition: isSymExprMeaningful(symCondition) ? symCondition : null,
+      branch_type: "while",
+    });
+    ctx.nextLoopId++;
+    walkForBranches(node.statement, ctx, branches, loops, false);
+    return;
+  }
+
+  if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+    ctx.nextLoopId++;
+    walkForBranches(node.statement, ctx, branches, loops, false);
     return;
   }
 
   if (ts.isForStatement(node)) {
+    const loopId = ctx.nextLoopId++;
     if (node.condition) {
       const line = ctx.sourceFile.getLineAndCharacterOfPosition(node.getStart(ctx.sourceFile)).line + 1;
       const conditionText = node.condition.getText(ctx.sourceFile);
@@ -653,13 +695,23 @@ function walkForBranches(
         condition: isSymExprMeaningful(symCondition) ? symCondition : null,
         branch_type: "for",
       });
+
+      // Attempt to detect induction variable for loop analysis
+      const inductionVar = analyzeForLoopInductionVar(node, ctx.paramNames, ctx.sourceFile);
+      if (inductionVar !== null) {
+        loops.push({
+          loop_id: loopId,
+          line: ctx.sourceFile.getLineAndCharacterOfPosition(node.getStart(ctx.sourceFile)).line + 1,
+          induction_var: inductionVar,
+        });
+      }
     }
-    walkForBranches(node.statement, ctx, branches, false);
+    walkForBranches(node.statement, ctx, branches, loops, false);
     return;
   }
 
   // Recurse into child nodes
-  ts.forEachChild(node, (child) => walkForBranches(child, ctx, branches, false));
+  ts.forEachChild(node, (child) => walkForBranches(child, ctx, branches, loops, false));
 }
 
 /**
@@ -667,6 +719,209 @@ function walkForBranches(
  */
 function isSymExprMeaningful(expr: SymExpr): boolean {
   return expr.kind !== "unknown";
+}
+
+/**
+ * Attempt to detect an induction variable in a canonical for loop.
+ *
+ * Recognizes the pattern: `for (let i = INIT; i OP BOUND; i STEP)` where
+ * OP is one of <, <=, >, >= and STEP is ++, --, +=, -=, or `i = i ± STEP`.
+ * Returns null for non-canonical loops (missing condition, float inits,
+ * body that reassigns the induction variable, etc.).
+ */
+function analyzeForLoopInductionVar(
+  node: ts.ForStatement,
+  paramNames: Set<string>,
+  sourceFile: ts.SourceFile,
+): InductionVar | null {
+  // 1. Require a variable declaration list with exactly one declaration
+  if (!node.initializer || !ts.isVariableDeclarationList(node.initializer)) {
+    return null;
+  }
+  const decls = node.initializer.declarations;
+  if (decls.length !== 1) {
+    return null;
+  }
+  const decl = decls[0]!;
+  if (!decl.initializer) {
+    return null;
+  }
+  if (!ts.isIdentifier(decl.name)) {
+    return null;
+  }
+  const varName = decl.name.text;
+
+  // 2. Reject float induction variables: check for decimal point in init literal
+  if (ts.isNumericLiteral(decl.initializer) && decl.initializer.text.includes(".")) {
+    return null;
+  }
+
+  // 3. Require a binary condition with <, <=, >, >= where one side is the induction var
+  if (!node.condition || !ts.isBinaryExpression(node.condition)) {
+    return null;
+  }
+  const cond = node.condition;
+  let boundOp: BoundOp;
+  let boundExprNode: ts.Expression;
+
+  const tokenKind = cond.operatorToken.kind;
+  if (tokenKind === ts.SyntaxKind.LessThanToken) {
+    boundOp = "lt";
+  } else if (tokenKind === ts.SyntaxKind.LessThanEqualsToken) {
+    boundOp = "le";
+  } else if (tokenKind === ts.SyntaxKind.GreaterThanToken) {
+    boundOp = "gt";
+  } else if (tokenKind === ts.SyntaxKind.GreaterThanEqualsToken) {
+    boundOp = "ge";
+  } else {
+    return null;
+  }
+
+  // One side must be the induction variable identifier
+  const leftIsVar = ts.isIdentifier(cond.left) && cond.left.text === varName;
+  const rightIsVar = ts.isIdentifier(cond.right) && cond.right.text === varName;
+  if (leftIsVar) {
+    boundExprNode = cond.right;
+  } else if (rightIsVar) {
+    // Flip the operator direction
+    boundExprNode = cond.left;
+    if (boundOp === "lt") boundOp = "gt";
+    else if (boundOp === "le") boundOp = "ge";
+    else if (boundOp === "gt") boundOp = "lt";
+    else if (boundOp === "ge") boundOp = "le";
+  } else {
+    return null;
+  }
+
+  // 4. Require an incrementor; determine step expression
+  if (!node.incrementor) {
+    return null;
+  }
+  let stepExpr: SymExpr | null = null;
+  const inc = node.incrementor;
+
+  if (ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) {
+    const operand = inc.operand;
+    if (!ts.isIdentifier(operand) || operand.text !== varName) {
+      return null;
+    }
+    if (inc.operator === ts.SyntaxKind.PlusPlusToken) {
+      stepExpr = { kind: "const", type: "int", value: 1 };
+    } else if (inc.operator === ts.SyntaxKind.MinusMinusToken) {
+      stepExpr = { kind: "const", type: "int", value: -1 };
+    } else {
+      return null;
+    }
+  } else if (ts.isBinaryExpression(inc)) {
+    const incOp = inc.operatorToken.kind;
+    const incLeftIsVar = ts.isIdentifier(inc.left) && inc.left.text === varName;
+
+    if (incOp === ts.SyntaxKind.PlusEqualsToken && incLeftIsVar) {
+      // i += STEP
+      stepExpr = buildSymExpr(inc.right, paramNames);
+    } else if (incOp === ts.SyntaxKind.MinusEqualsToken && incLeftIsVar) {
+      // i -= STEP
+      const inner = buildSymExpr(inc.right, paramNames);
+      stepExpr = { kind: "un_op", op: "neg", operand: inner };
+    } else if (incOp === ts.SyntaxKind.EqualsToken && incLeftIsVar) {
+      // i = i ± STEP
+      if (!ts.isBinaryExpression(inc.right)) {
+        return null;
+      }
+      const rhs = inc.right;
+      const rhsOp = rhs.operatorToken.kind;
+      const rhsLeftIsVar = ts.isIdentifier(rhs.left) && rhs.left.text === varName;
+      const rhsRightIsVar = ts.isIdentifier(rhs.right) && rhs.right.text === varName;
+
+      if (rhsOp === ts.SyntaxKind.PlusToken && rhsLeftIsVar) {
+        // i = i + STEP
+        stepExpr = buildSymExpr(rhs.right, paramNames);
+      } else if (rhsOp === ts.SyntaxKind.PlusToken && rhsRightIsVar) {
+        // i = STEP + i
+        stepExpr = buildSymExpr(rhs.left, paramNames);
+      } else if (rhsOp === ts.SyntaxKind.MinusToken && rhsLeftIsVar) {
+        // i = i - STEP
+        const inner = buildSymExpr(rhs.right, paramNames);
+        stepExpr = { kind: "un_op", op: "neg", operand: inner };
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  if (stepExpr === null) {
+    return null;
+  }
+
+  // 5. Conservative safety check: verify the induction variable is NOT reassigned in the body
+  if (inductionVarIsModifiedInBody(node.statement, varName, sourceFile)) {
+    return null;
+  }
+
+  // 6. Build init_expr and bound_expr from AST
+  const initExpr = buildSymExpr(decl.initializer, paramNames);
+  const boundExpr = buildSymExpr(boundExprNode, paramNames);
+
+  return {
+    name: varName,
+    init_expr: initExpr,
+    step_expr: stepExpr,
+    bound_expr: boundExpr,
+    bound_op: boundOp,
+  };
+}
+
+/**
+ * Returns true if the given variable name is modified anywhere inside `body`.
+ *
+ * Checks for: `varName = ...`, `varName += ...`, `varName -= ...`,
+ * `varName++`, `++varName`, `varName--`, `--varName`.
+ */
+function inductionVarIsModifiedInBody(
+  body: ts.Statement,
+  varName: string,
+  _sourceFile: ts.SourceFile,
+): boolean {
+  let found = false;
+
+  function walk(node: ts.Node): void {
+    if (found) return;
+
+    if (ts.isBinaryExpression(node)) {
+      const op = node.operatorToken.kind;
+      const isAssign =
+        op === ts.SyntaxKind.EqualsToken ||
+        op === ts.SyntaxKind.PlusEqualsToken ||
+        op === ts.SyntaxKind.MinusEqualsToken ||
+        op === ts.SyntaxKind.AsteriskEqualsToken ||
+        op === ts.SyntaxKind.SlashEqualsToken;
+      if (isAssign && ts.isIdentifier(node.left) && node.left.text === varName) {
+        found = true;
+        return;
+      }
+    }
+
+    if (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) {
+      const op = node.operator;
+      if (
+        (op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) &&
+        ts.isIdentifier(node.operand) &&
+        node.operand.text === varName
+      ) {
+        found = true;
+        return;
+      }
+    }
+
+    ts.forEachChild(node, walk);
+  }
+
+  walk(body);
+  return found;
 }
 
 // ---------------------------------------------------------------------------

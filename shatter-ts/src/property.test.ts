@@ -22,6 +22,9 @@ import type {
   ConnectionFailure,
   ConnectionFailureKind,
   RuntimeCryptoBoundary,
+  BoundOp,
+  InductionVar,
+  LoopInfo,
 } from "./protocol.js";
 import {
   ALL_ERROR_CODES,
@@ -280,6 +283,22 @@ const arbBranchInfo: fc.Arbitrary<BranchInfo> = fc.record({
   branch_type: arbBranchType,
 });
 
+const arbBoundOp: fc.Arbitrary<BoundOp> = fc.constantFrom("lt", "le", "gt", "ge");
+
+const arbInductionVar: fc.Arbitrary<InductionVar> = fc.record({
+  name: arbIdent,
+  init_expr: arbSymExpr,
+  step_expr: arbSymExpr,
+  bound_expr: arbSymExpr,
+  bound_op: arbBoundOp,
+});
+
+const arbLoopInfo: fc.Arbitrary<LoopInfo> = fc.record({
+  loop_id: fc.nat(50),
+  line: fc.integer({ min: 1, max: 500 }),
+  induction_var: arbInductionVar,
+});
+
 const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   name: arbIdent,
   exported: fc.boolean(),
@@ -289,6 +308,7 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   return_type: arbTypeInfo,
   start_line: fc.integer({ min: 1, max: 500 }),
   end_line: fc.integer({ min: 1, max: 500 }),
+  loops: fc.option(fc.array(arbLoopInfo, { maxLength: 3 }), { nil: undefined }),
 });
 
 // ---------------------------------------------------------------------------
@@ -1327,6 +1347,54 @@ describe("MC/DC short-circuit masking semantics", () => {
         expect(orResult.decision).toBe(jsOr);
       }),
       { numRuns: 500 },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LoopInfo property tests
+// ---------------------------------------------------------------------------
+
+describe("property: LoopInfo round-trips", () => {
+  it("LoopInfo survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbLoopInfo, (li) => {
+        const json = JSON.stringify(li);
+        const decoded = JSON.parse(json) as LoopInfo;
+        expect(decoded).toEqual(li);
+      }),
+    );
+  });
+
+  it("bound_op is always a valid BoundOp variant", () => {
+    const validOps = new Set<string>(["lt", "le", "gt", "ge"]);
+    fc.assert(
+      fc.property(arbLoopInfo, (li) => {
+        expect(validOps.has(li.induction_var.bound_op)).toBe(true);
+      }),
+    );
+  });
+
+  it("InductionVar name is a string", () => {
+    fc.assert(
+      fc.property(arbInductionVar, (iv) => {
+        expect(typeof iv.name).toBe("string");
+        expect(iv.name.length).toBeGreaterThan(0);
+      }),
+    );
+  });
+
+  it("FunctionAnalysis with loops survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbFunctionAnalysis, (fn) => {
+        const json = JSON.stringify(fn);
+        const decoded = JSON.parse(json) as FunctionAnalysis;
+        expect(decoded).toEqual(fn);
+        if (fn.loops !== undefined) {
+          expect(decoded.loops).toBeDefined();
+          expect(decoded.loops).toHaveLength(fn.loops.length);
+        }
+      }),
     );
   });
 });

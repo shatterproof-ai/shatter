@@ -307,6 +307,22 @@ export interface RuntimeCryptoBoundary {
   iv_value?: string;
 }
 
+export type BoundOp = "lt" | "le" | "gt" | "ge";
+
+export interface InductionVar {
+  name: string;
+  init_expr: SymExpr;
+  step_expr: SymExpr;
+  bound_expr: SymExpr;
+  bound_op: BoundOp;
+}
+
+export interface LoopInfo {
+  loop_id: number;
+  line: number;
+  induction_var: InductionVar;
+}
+
 export interface FunctionAnalysis {
   name: string;
   exported?: boolean;
@@ -318,6 +334,7 @@ export interface FunctionAnalysis {
   end_line: number;
   literals?: LiteralValue[];
   crypto_boundaries?: CryptoBoundary[];
+  loops?: LoopInfo[];
 }
 
 export interface ParamInfo {
