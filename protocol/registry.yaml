@@ -258,6 +258,7 @@ frontends:
       - execute
       - generate
       - instrument
+      - prepare
       - setup
       - teardown
     complex_type_capabilities: []
