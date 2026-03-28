@@ -171,6 +171,7 @@ async fn main() -> ExitCode {
             report_outputs,
             stdout,
             format,
+            jobs,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
@@ -252,6 +253,7 @@ async fn main() -> ExitCode {
                 &report_outputs,
                 stdout,
                 format,
+                jobs,
             )
             .await
         }
