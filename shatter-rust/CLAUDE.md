@@ -14,29 +14,33 @@ Commands: `handshake`, `analyze`, `instrument`, `execute`, `setup`, `teardown`, 
 
 ## Side Effect Parity Contract
 
-The Rust frontend's execute handler is partial (see `rust-execute-partial` in `protocol/parity-matrix.yaml`). Side effects are not yet captured:
+Rust captures 3 of the 7 canonical side effect kinds. Capture is implemented in the generated harness code (standalone + dispatch modes). Crate-bridge harness captures thrown_error and global_state_change but not console_output (cannot inject libc dep into user crate).
 
-| Kind | Captured? | Notes |
-|---|---|---|
-| `console_output` | No | Execute partial; returns `not_supported` for many inputs |
-| All other kinds | No | Not yet implemented |
+| Kind | Captured? | Source | Notes |
+|---|---|---|---|
+| `console_output` | Yes | fd redirection (libc dup/dup2) in standalone/dispatch harness | stdout → level "log", stderr → level "error"; max 4096 chars/message; crate-bridge skips |
+| `global_state_change` | Yes | mutable static variable snapshots (serde before/after) | Tracks `static mut` variables with Serialize derive |
+| `thrown_error` | Yes | `catch_unwind` in harness | Captures error_type "runtime_error", message, stack: null |
+| `global_mutation` | No | — | Not yet implemented |
+| `file_write` | No | — | Not yet intercepted |
+| `network_request` | No | — | Not yet intercepted |
+| `environment_read` | No | — | Not yet intercepted |
 
-When execute is fully implemented, `side_effects` in responses must use the canonical 7-kind wire format defined in `shatter-core/src/execution_record.rs`. The Rust frontend stores `side_effects: Option<Vec<serde_json::Value>>` in its response struct — this is intentionally untyped until execute is real.
-
-See `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` for tracking.
+See `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` for tracking (status: resolved).
 
 ## Prepare Parity Contract
 
-Rust does **not** implement `prepare`. The handler returns `not_supported` and `prepare` is not listed in capabilities.
+Rust implements the `prepare` command. It pre-builds the harness binary so subsequent execute calls skip compilation.
 
 | Aspect | Detail |
 |---|---|
-| Handler | `handle_prepare()` in `src/handler.rs` — always returns `error: not_supported` |
-| Advertised | No — not in capabilities list |
-| Reason | Execute is partial (see `rust-execute-partial` in parity-matrix.yaml) |
-| Tracking | `rust-prepare-not-supported` in `protocol/parity-matrix.yaml` |
-
-When execute is fully implemented, implement `prepare` and add `"prepare"` to capabilities.
+| Handler | `handle_prepare()` in `src/handler.rs` |
+| Advertised | Yes — `"prepare"` in capabilities list |
+| prepare_id | SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`) |
+| Storage | `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>` |
+| Idempotent | Yes — returns existing prepare_id if already prepared |
+| Prerequisite | Source file must exist; function must be analyzable |
+| Cleanup | `prepared_harnesses.clear()` on function-level teardown + shutdown |
 
 ## Timeout Contract
 

@@ -54,14 +54,12 @@ commands:
   prepare:
     status: optional
     notes: >
-      TypeScript and Go implement prepare (pre-build harness once, reuse binary/script
-      across execute calls). Rust returns not_supported because execute is partial
-      (see allowed_divergences: rust-prepare-not-supported). Core checks capabilities
-      before sending.
+      All three frontends implement prepare (pre-build harness once, reuse binary/script
+      across execute calls). Core checks capabilities before sending.
     frontends:
       typescript: implemented
       go: implemented
-      rust: not_implemented
+      rust: implemented
 
   execute:
     status: required
@@ -397,33 +395,35 @@ side_effect_capabilities:
     notes: >
       All execute-capable frontends must capture stdout/stderr output.
       Level values: "log", "warn", "error", "info", "debug" (TS);
-      "log" (stdout) and "error" (stderr) as combined buffers (Go).
+      "log" (stdout) and "error" (stderr) as combined buffers (Go and Rust).
+      Rust captures via fd redirection in standalone/dispatch harnesses;
+      crate-bridge harness does not capture console output.
     frontends:
       typescript: captured
       go: captured
-      rust: not_captured   # execute is partial; see rust-execute-partial
+      rust: captured   # standalone/dispatch harnesses; crate-bridge skips
 
   global_state_change:
     status: optional
     notes: >
       TS tracks exported module-level variable mutations by comparing
       JSON.stringify(before) vs after. Go tracks exported package-level
-      variables. Rust execute is partial.
+      variables. Rust tracks mutable static variables via serde snapshots.
     frontends:
       typescript: captured
       go: captured
-      rust: not_captured
+      rust: captured
 
   thrown_error:
     status: optional
     notes: >
-      TS captures errors thrown during execution (error_type, message, stack).
+      TS and Rust capture errors/panics during execution (error_type, message, stack).
       Go does not yet capture thrown_error; panics are handled internally.
       See go-side-effects-partial for tracking.
     frontends:
       typescript: captured
       go: not_captured
-      rust: not_captured
+      rust: captured
 
   global_mutation:
     status: optional
@@ -498,25 +498,25 @@ side_effect_capabilities:
   console_output:
     status: optional
     notes: >
-      TypeScript and Go capture console/stdout output with shape { kind, level, message }.
-      Rust does not capture console output. Coverage granularity differs between TS
-      (per-call) and Go (process-level bulk); see allowed_divergences:
-      side-effect-console-coverage.
+      TypeScript, Go, and Rust capture console/stdout output with shape { kind, level, message }.
+      Coverage granularity differs between TS (per-call) and Go/Rust (process-level bulk);
+      see allowed_divergences: side-effect-console-coverage.
+      Rust crate-bridge harness does not capture console output.
     frontends:
       typescript: supported
       go: supported
-      rust: not_supported
+      rust: supported
 
   thrown_error:
     status: optional
     notes: >
-      TypeScript emits thrown errors as a thrown_error side effect entry.
-      Go and Rust report via the top-level thrown_error response field instead.
+      TypeScript and Rust emit thrown errors/panics as a thrown_error side effect entry.
+      Go reports via the top-level thrown_error response field instead.
       See allowed_divergences: side-effect-thrown-error-placement.
     frontends:
       typescript: supported
       go: not_supported
-      rust: not_supported
+      rust: supported
 
 allowed_divergences:
   - id: ts-missing-teardown
@@ -545,41 +545,40 @@ allowed_divergences:
 
   - id: rust-prepare-not-supported
     description: >
-      The Rust frontend returns not_supported for the prepare command because
-      execute is partial. TypeScript and Go fully support prepare.
+      The Rust frontend now implements the prepare command. It pre-builds the
+      harness binary and returns a prepare_id (SHA-256 of file:function:mocks,
+      first 16 hex chars). Subsequent execute calls with that prepare_id skip
+      compilation.
     affected_frontends: [rust]
     affected_commands: [prepare]
-    status: tracked
-    resolution: >
-      Implement prepare in the Rust frontend once execute is fully implemented.
+    status: resolved
 
   - id: side-effect-console-coverage
     description: >
       All frontends that capture console output use the same shape
       { kind: "console_output", level, message }, but differ in granularity.
       TypeScript intercepts each console.* call individually (per-call, distinct
-      log levels). Go captures process-level stdout/stderr bulk output after the
-      subprocess exits (all stdout → level "log", all stderr → level "error").
-      Rust does not capture console output at all.
-    affected_frontends: [go, rust]
+      log levels). Go and Rust capture process-level stdout/stderr bulk output
+      (all stdout → level "log", all stderr → level "error").
+      Rust crate-bridge harness does not capture console output.
+    affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
     resolution: >
       Improve Go to capture per-call console output via harness injection.
-      Add console capture to the Rust frontend harness.
 
   - id: side-effect-thrown-error-placement
     description: >
-      TypeScript emits thrown errors as a side effect entry with
+      TypeScript and Rust emit thrown errors/panics as a side effect entry with
       { kind: "thrown_error", error_type, message, stack } inside the
-      side_effects array. Go and Rust report thrown errors exclusively via
-      the top-level thrown_error field in the execute response.
-    affected_frontends: [go, rust]
+      side_effects array AND via the top-level thrown_error response field.
+      Go reports thrown errors exclusively via the top-level field.
+    affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
     resolution: >
-      Add thrown_error side effect emission to Go and Rust executors,
-      mirroring TypeScript behavior. The top-level field can be retained
+      Add thrown_error side effect emission to Go executor,
+      mirroring TypeScript/Rust behavior. The top-level field can be retained
       for backwards compatibility.
 
   - id: go-side-effects-partial
@@ -600,15 +599,15 @@ allowed_divergences:
 
   - id: rust-side-effects-not-captured
     description: >
-      The Rust execute handler is partial (see rust-execute-partial), so
-      side_effects in execute responses will be empty until execute is
-      fully implemented.
+      The Rust frontend now captures 3 of the 7 canonical side effect kinds:
+      console_output (stdout/stderr via fd redirection in standalone/dispatch
+      harnesses), thrown_error (panics caught and emitted as side effects),
+      and global_state_change (mutable static variable snapshots). The remaining
+      kinds (global_mutation, file_write, network_request, environment_read)
+      are not yet captured. Crate-bridge harness does not capture console_output.
     affected_frontends: [rust]
     affected_commands: [execute]
-    status: tracked
-    resolution: >
-      Implement full Rust execute handler (see rust-execute-partial);
-      side effect capture follows from that work.
+    status: resolved
 
   - id: medium-opacity-analyze-partial
     description: >

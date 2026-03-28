@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 
 use crate::generators::NativeRegistry;
@@ -268,6 +269,16 @@ pub struct Handler<R, W, L> {
     /// can fall back when the core omits the file field (which it always does).
     last_file: Option<String>,
     timing_enabled: bool,
+    /// Maps prepare_id → (file_path, function_name, mocks, harness_mode).
+    prepared_harnesses: HashMap<String, PreparedHarnessInfo>,
+}
+
+/// Stored info about a prepared harness, keyed by prepare_id.
+struct PreparedHarnessInfo {
+    file_path: String,
+    function_name: String,
+    mocks: Vec<serde_json::Value>,
+    harness_mode: Option<String>,
 }
 
 impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
@@ -285,6 +296,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             native_registry: None,
             last_file: None,
             timing_enabled: false,
+            prepared_harnesses: HashMap::new(),
         }
     }
 
@@ -308,6 +320,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             native_registry: Some(registry),
             last_file: None,
             timing_enabled: false,
+            prepared_harnesses: HashMap::new(),
         }
     }
 
@@ -327,6 +340,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             native_registry: None,
             last_file: None,
             timing_enabled: false,
+            prepared_harnesses: HashMap::new(),
         }
     }
 
@@ -398,7 +412,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "handshake" => (self.handle_handshake(resp, req), false),
             "analyze" => (self.handle_analyze(resp, req), false),
             "instrument" => (self.handle_instrument(resp, req), false),
-            "prepare" => (self.handle_prepare(resp), false),
+            "prepare" => (self.handle_prepare(resp, req), false),
             "execute" => (self.handle_execute(resp, req), false),
             "setup" => (self.handle_setup(resp, req), false),
             "teardown" => (self.handle_teardown(resp, req), false),
@@ -423,6 +437,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "execute".to_string(),
             "generate".to_string(),
             "instrument".to_string(),
+            "prepare".to_string(),
             "setup".to_string(),
             "teardown".to_string(),
         ]);
@@ -580,34 +595,149 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    /// Prepare is not supported — Rust execute is partial.
-    fn handle_prepare(&self, mut resp: Response) -> Response {
-        resp.status = "error".to_string();
-        resp.code = Some(ERR_NOT_SUPPORTED.to_string());
-        resp.message = Some("prepare not supported (execute is partial)".to_string());
-        resp
-    }
-
-    fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+    /// Pre-build a harness for a (file, function, mocks) triple.
+    /// Returns a prepare_id that can be passed to subsequent execute calls.
+    fn handle_prepare(&mut self, mut resp: Response, req: &Request) -> Response {
         let mut timing = self.maybe_timing_collector();
+
         let file_path = match req.file.as_ref().or(self.last_file.as_ref()) {
-            Some(f) => f,
+            Some(f) => f.clone(),
             None => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INVALID_REQUEST.to_string());
-                resp.message = Some("execute command requires a file path (none provided and no prior analyze/instrument)".to_string());
+                resp.message = Some("prepare requires a file path".to_string());
                 return resp;
             }
         };
         let function_name = match &req.function {
-            Some(f) => f,
+            Some(f) => f.clone(),
             None => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INVALID_REQUEST.to_string());
-                resp.message = Some("execute command requires a function name".to_string());
+                resp.message = Some("prepare requires a function name".to_string());
                 return resp;
             }
         };
+
+        if !std::path::Path::new(&file_path).exists() {
+            resp.status = "error".to_string();
+            resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
+            resp.message = Some(format!("file not found: {file_path}"));
+            return resp;
+        }
+
+        let prepare_id = crate::executor::compute_prepare_id(&file_path, &function_name, &req.mocks);
+
+        // Idempotent: return immediately if already prepared with same id.
+        if self.prepared_harnesses.contains_key(&prepare_id) {
+            resp.status = "prepare".to_string();
+            resp.prepare_id = Some(prepare_id);
+            return self.finalize_response(resp, timing.as_mut());
+        }
+
+        let harness_mode = req.harness_mode.as_deref();
+        let build_result = if let Some(timing) = timing.as_mut() {
+            timing.record("prepare.total", |_| {
+                crate::executor::prepare_harness(
+                    &file_path,
+                    &function_name,
+                    &req.mocks,
+                    self.exec_timeout_ms,
+                    harness_mode,
+                    &self.harness_manager.cache,
+                    &self.harness_manager.crate_cache,
+                    &self.harness_manager.bridge_cache,
+                )
+            })
+        } else {
+            crate::executor::prepare_harness(
+                &file_path,
+                &function_name,
+                &req.mocks,
+                self.exec_timeout_ms,
+                harness_mode,
+                &self.harness_manager.cache,
+                &self.harness_manager.crate_cache,
+                &self.harness_manager.bridge_cache,
+            )
+        };
+
+        match build_result {
+            Ok(()) => {
+                self.prepared_harnesses.insert(prepare_id.clone(), PreparedHarnessInfo {
+                    file_path,
+                    function_name,
+                    mocks: req.mocks.clone(),
+                    harness_mode: req.harness_mode.clone(),
+                });
+                resp.status = "prepare".to_string();
+                resp.prepare_id = Some(prepare_id);
+                self.finalize_response(resp, timing.as_mut())
+            }
+            Err(crate::executor::ExecuteError::NonExecutable(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some(ERR_NOT_SUPPORTED.to_string());
+                resp.message = Some(msg);
+                self.finalize_response(resp, timing.as_mut())
+            }
+            Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
+                resp.status = "error".to_string();
+                resp.code = Some(ERR_COMPILATION_ERROR.to_string());
+                resp.message = Some(msg);
+                self.finalize_response(resp, timing.as_mut())
+            }
+            Err(e) => {
+                resp.status = "error".to_string();
+                resp.code = Some(ERR_INTERNAL_ERROR.to_string());
+                resp.message = Some(e.to_string());
+                self.finalize_response(resp, timing.as_mut())
+            }
+        }
+    }
+
+    fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+        let mut timing = self.maybe_timing_collector();
+
+        // If a prepare_id is provided, look up the prepared harness info and use
+        // its file/function/mocks. The harness is already compiled and cached.
+        let (eff_file, eff_function, eff_mocks, eff_harness_mode);
+        if let Some(ref pid) = req.prepare_id {
+            if let Some(info) = self.prepared_harnesses.get(pid) {
+                eff_file = info.file_path.clone();
+                eff_function = info.function_name.clone();
+                eff_mocks = info.mocks.clone();
+                eff_harness_mode = info.harness_mode.clone();
+            } else {
+                resp.status = "error".to_string();
+                resp.code = Some(ERR_INVALID_REQUEST.to_string());
+                resp.message = Some(format!("unknown prepare_id: {pid}"));
+                return resp;
+            }
+        } else {
+            eff_file = match req.file.as_ref().or(self.last_file.as_ref()) {
+                Some(f) => f.clone(),
+                None => {
+                    resp.status = "error".to_string();
+                    resp.code = Some(ERR_INVALID_REQUEST.to_string());
+                    resp.message = Some("execute command requires a file path (none provided and no prior analyze/instrument)".to_string());
+                    return resp;
+                }
+            };
+            eff_function = match &req.function {
+                Some(f) => f.clone(),
+                None => {
+                    resp.status = "error".to_string();
+                    resp.code = Some(ERR_INVALID_REQUEST.to_string());
+                    resp.message = Some("execute command requires a function name".to_string());
+                    return resp;
+                }
+            };
+            eff_mocks = req.mocks.clone();
+            eff_harness_mode = req.harness_mode.clone();
+        }
+
+        let file_path = &eff_file;
+        let function_name = &eff_function;
 
         if self.log_level >= FrontendLogLevel::Debug {
             eprintln!(
@@ -616,14 +746,14 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             );
         }
 
-        let harness_mode = req.harness_mode.as_deref();
+        let harness_mode = eff_harness_mode.as_deref();
         let execution = if let Some(timing) = timing.as_mut() {
             timing.record("execute.total", |timing| {
                 crate::executor::execute_function_with_timing(
                     file_path,
                     function_name,
                     &req.inputs,
-                    &req.mocks,
+                    &eff_mocks,
                     self.exec_timeout_ms,
                     harness_mode,
                     Some(timing),
@@ -637,7 +767,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 file_path,
                 function_name,
                 &req.inputs,
-                &req.mocks,
+                &eff_mocks,
                 self.exec_timeout_ms,
                 harness_mode,
                 &self.harness_manager.cache,
@@ -752,7 +882,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_teardown(&self, mut resp: Response, req: &Request) -> Response {
+    fn handle_teardown(&mut self, mut resp: Response, req: &Request) -> Response {
         let mut timing = self.maybe_timing_collector();
         let level = match &req.level {
             Some(l) => *l,
@@ -783,6 +913,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
         // Prune orphaned harness entries at function-level teardown.
         if level == crate::protocol::SetupLevel::Function {
+            self.prepared_harnesses.clear();
             self.harness_manager.prune_orphans();
             self.harness_manager.prune_missing_artifacts();
         }
@@ -902,6 +1033,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     }
 
     fn handle_shutdown(&mut self, mut resp: Response) -> Response {
+        self.prepared_harnesses.clear();
         self.harness_manager.prune_orphans();
         self.harness_manager.prune_missing_artifacts();
         self.harness_manager.close_all();
@@ -1017,6 +1149,10 @@ mod tests {
         assert!(caps.contains(&"generate".to_string()));
         assert!(caps.contains(&"instrument".to_string()));
         assert!(
+            caps.contains(&"prepare".to_string()),
+            "prepare must be advertised"
+        );
+        assert!(
             caps.contains(&"setup".to_string()),
             "setup must be advertised"
         );
@@ -1024,6 +1160,33 @@ mod tests {
             caps.contains(&"teardown".to_string()),
             "teardown must be advertised"
         );
+    }
+
+    #[test]
+    fn prepare_without_file_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":1,"command":"prepare"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn prepare_without_function_returns_error() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":1,"command":"prepare","file":"/tmp/test.rs"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn prepare_with_missing_file_returns_file_not_found() {
+        let resp = send_recv(
+            r#"{"protocol_version":"0.1.0","id":1,"command":"prepare","file":"/tmp/nonexistent_shatter_test.rs","function":"add"}"#,
+        );
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some("file_not_found"));
     }
 
     #[test]
