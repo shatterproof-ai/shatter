@@ -199,6 +199,7 @@ fn infer_sort(expr: &SymExpr) -> Sort {
             UnOpKind::TypeOf => Sort::Str,
         },
         SymExpr::Call { name, .. } => infer_call_sort(name),
+        SymExpr::Ite { then_expr, .. } => infer_sort(then_expr),
         SymExpr::Param { .. } | SymExpr::Unknown => Sort::Int,
         SymExpr::Const(ConstValue::Null | ConstValue::Undefined) => Sort::Int,
         // Complex constants unwrap to their repr's sort
@@ -308,6 +309,27 @@ fn to_z3_expr(
             receiver,
             args,
         } => convert_string_call(vars, name, receiver.as_deref(), args),
+
+        SymExpr::Ite {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond_bool = to_z3_bool(vars, condition)?;
+            let then_sort = infer_sort(then_expr);
+            let then_z3 = to_z3_expr(vars, then_expr, then_sort)?;
+            let else_z3 = to_z3_expr(vars, else_expr, then_sort)?;
+            match (then_z3, else_z3) {
+                (Z3Ast::Int(t), Z3Ast::Int(e)) => Ok(Z3Ast::Int(cond_bool.ite(&t, &e))),
+                (Z3Ast::Real(t), Z3Ast::Real(e)) => Ok(Z3Ast::Real(cond_bool.ite(&t, &e))),
+                (Z3Ast::Bool(t), Z3Ast::Bool(e)) => Ok(Z3Ast::Bool(cond_bool.ite(&t, &e))),
+                (Z3Ast::Str(t), Z3Ast::Str(e)) => Ok(Z3Ast::Str(cond_bool.ite(&t, &e))),
+                _ => Err(SolverError::TypeMismatch {
+                    expected: "matching sorts for ITE branches".into(),
+                    actual: "mismatched sorts".into(),
+                }),
+            }
+        }
 
         SymExpr::Unknown => Err(SolverError::Unsupported(
             "unknown expression cannot be represented in Z3".into(),

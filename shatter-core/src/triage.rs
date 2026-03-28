@@ -330,6 +330,18 @@ pub fn evaluate_constraint(
             receiver,
             args,
         } => eval_call(name, receiver.as_deref(), args, params, param_names),
+        SymExpr::Ite {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond_val = evaluate_constraint(condition, params, param_names)?;
+            if is_truthy(&cond_val) {
+                evaluate_constraint(then_expr, params, param_names)
+            } else {
+                evaluate_constraint(else_expr, params, param_names)
+            }
+        }
         SymExpr::Unknown => None,
     }
 }
@@ -832,6 +844,38 @@ mod tests {
     #[test]
     fn unknown_returns_none() {
         assert_eq!(evaluate_constraint(&SymExpr::Unknown, &[], &[]), None);
+    }
+
+    // --- ITE ---
+
+    #[test]
+    fn ite_true_branch() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(bool_const(true)),
+            then_expr: Box::new(int_const(42)),
+            else_expr: Box::new(int_const(99)),
+        };
+        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(42)));
+    }
+
+    #[test]
+    fn ite_false_branch() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(bool_const(false)),
+            then_expr: Box::new(int_const(42)),
+            else_expr: Box::new(int_const(99)),
+        };
+        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(99)));
+    }
+
+    #[test]
+    fn ite_unknown_condition_returns_none() {
+        let expr = SymExpr::Ite {
+            condition: Box::new(SymExpr::Unknown),
+            then_expr: Box::new(int_const(42)),
+            else_expr: Box::new(int_const(99)),
+        };
+        assert_eq!(evaluate_constraint(&expr, &[], &[]), None);
     }
 
     // --- Comparisons ---

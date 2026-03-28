@@ -1,10 +1,14 @@
-//! Loop analysis: induction variable detection and constraint rewriting.
+//! Loop analysis: induction variable detection, constraint rewriting, and state merging.
 //!
 //! Canonical counted loops (e.g., `for (i = 0; i < n; i++)`) produce O(k) redundant
-//! backedge constraints per loop iteration. This module detects such loops from
-//! [`LoopInfo`] metadata (populated by frontends during analysis) and rewrites
-//! the constraint vector to collapse backedge constraints into O(1) direct
-//! induction variable constraints.
+//! backedge constraints per loop iteration. This module provides two complementary
+//! techniques:
+//!
+//! - **Technique 5** ([`rewrite_loop_constraints`]): Collapses backedge constraints
+//!   into O(1) direct induction variable constraints.
+//! - **Technique 6** ([`merge_loop_states`]): Merges per-iteration constraints into
+//!   ITE chains with a free iteration variable, allowing Z3 to reason about
+//!   path-dependent behaviors across iterations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -147,6 +151,203 @@ pub fn rewrite_loop_constraints(
     }
 
     rewritten
+}
+
+/// Maximum number of loop iterations to merge via ITE chains.
+/// Beyond this, constraints pass through unmodified (Technique 5 may still handle them).
+const MAX_MERGE_DEPTH: u32 = 10;
+
+/// Result of merging per-iteration constraints into an ITE chain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedLoopState {
+    /// Which loop this merge applies to.
+    pub loop_id: u32,
+    /// Name of the free iteration variable (e.g., `__loop_0_iter`).
+    pub iteration_var: String,
+    /// The merged ITE-chain constraint (includes iteration bound).
+    pub merged_constraint: SymExpr,
+    /// Number of iterations observed (and merged).
+    pub iteration_count: u32,
+}
+
+/// Build the iteration variable name for a given loop.
+fn iteration_var_name(loop_id: u32) -> String {
+    format!("__loop_{loop_id}_iter")
+}
+
+/// Build the bounding constraint: `0 <= iter_var && iter_var < N`.
+fn build_iteration_bound(iter_var: &str, n: u32) -> SymExpr {
+    let iter_param = SymExpr::Param {
+        name: iter_var.to_string(),
+        path: vec![],
+    };
+    let lower = SymExpr::BinOp {
+        op: BinOpKind::Le,
+        left: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        right: Box::new(iter_param.clone()),
+    };
+    let upper = SymExpr::BinOp {
+        op: BinOpKind::Lt,
+        left: Box::new(iter_param),
+        right: Box::new(SymExpr::Const(ConstValue::Int(i64::from(n)))),
+    };
+    SymExpr::BinOp {
+        op: BinOpKind::And,
+        left: Box::new(lower),
+        right: Box::new(upper),
+    }
+}
+
+/// Build an ITE chain from per-iteration constraints.
+///
+/// For constraints `[c0, c1, c2]` and iteration variable `iter`:
+/// ```text
+/// ite(iter == 0, c0, ite(iter == 1, c1, c2))
+/// ```
+///
+/// The last constraint becomes the else branch of the innermost ITE.
+fn build_ite_chain(iter_var: &str, constraints: &[SymExpr]) -> Option<SymExpr> {
+    if constraints.is_empty() {
+        return None;
+    }
+    if constraints.len() == 1 {
+        return Some(constraints[0].clone());
+    }
+
+    let iter_param = SymExpr::Param {
+        name: iter_var.to_string(),
+        path: vec![],
+    };
+
+    // Fold from the right: last constraint is the base else-branch.
+    let mut result = constraints.last()?.clone();
+
+    for (i, constraint) in constraints.iter().enumerate().rev().skip(1) {
+        let condition = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(iter_param.clone()),
+            right: Box::new(SymExpr::Const(ConstValue::Int(i as i64))),
+        };
+        result = SymExpr::Ite {
+            condition: Box::new(condition),
+            then_expr: Box::new(constraint.clone()),
+            else_expr: Box::new(result),
+        };
+    }
+
+    Some(result)
+}
+
+/// Merge per-iteration loop constraints into ITE chains (Technique 6).
+///
+/// For each canonical loop with 2..=[`MAX_MERGE_DEPTH`] observed iterations, this
+/// collects per-iteration constraints, builds an ITE chain with a free iteration
+/// variable, and replaces the original per-iteration constraints with a single
+/// merged constraint.
+///
+/// Constraints not matching any loop pass through unchanged. Loops with more than
+/// [`MAX_MERGE_DEPTH`] iterations or fewer than 2 constraints are left unmodified.
+pub fn merge_loop_states(
+    constraints: &[Option<SymExpr>],
+    loops: &[LoopInfo],
+    result: &ExecuteResult,
+) -> Vec<Option<SymExpr>> {
+    if loops.is_empty() {
+        return constraints.to_vec();
+    }
+
+    let iteration_counts = count_loop_iterations(result);
+    if iteration_counts.is_empty() {
+        return constraints.to_vec();
+    }
+
+    let loop_map: HashMap<u32, &LoopInfo> = loops.iter().map(|l| (l.loop_id, l)).collect();
+
+    // Collect per-iteration constraints for each eligible loop.
+    // A constraint is "per-iteration" if it matches the loop's condition pattern.
+    let mut loop_constraints: HashMap<u32, Vec<(usize, SymExpr)>> = HashMap::new();
+
+    for (idx, constraint) in constraints.iter().enumerate() {
+        if let Some(expr) = constraint {
+            for (&loop_id, &loop_info) in &loop_map {
+                let count = iteration_counts.get(&loop_id).copied().unwrap_or(0);
+                if (2..=MAX_MERGE_DEPTH).contains(&count)
+                    && constraint_matches_loop_condition(expr, loop_info)
+                {
+                    loop_constraints
+                        .entry(loop_id)
+                        .or_default()
+                        .push((idx, expr.clone()));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Filter to loops with >= 2 per-iteration constraints.
+    let mergeable: HashMap<u32, Vec<(usize, SymExpr)>> = loop_constraints
+        .into_iter()
+        .filter(|(_, v)| v.len() >= 2)
+        .collect();
+
+    if mergeable.is_empty() {
+        return constraints.to_vec();
+    }
+
+    // Collect all indices that will be replaced.
+    let mut replaced_indices: HashSet<usize> = HashSet::new();
+    let mut merged_states: Vec<MergedLoopState> = Vec::new();
+
+    for (&loop_id, per_iter) in &mergeable {
+        let iter_var = iteration_var_name(loop_id);
+        let per_iter_exprs: Vec<SymExpr> = per_iter.iter().map(|(_, e)| e.clone()).collect();
+        let count = per_iter_exprs.len() as u32;
+
+        if let Some(ite_chain) = build_ite_chain(&iter_var, &per_iter_exprs) {
+            let bound = build_iteration_bound(&iter_var, count);
+            let merged = SymExpr::BinOp {
+                op: BinOpKind::And,
+                left: Box::new(bound),
+                right: Box::new(ite_chain),
+            };
+
+            for &(idx, _) in per_iter {
+                replaced_indices.insert(idx);
+            }
+
+            merged_states.push(MergedLoopState {
+                loop_id,
+                iteration_var: iter_var,
+                merged_constraint: merged,
+                iteration_count: count,
+            });
+        }
+    }
+
+    // Build the output: pass through non-replaced constraints, insert merged ones.
+    let mut output: Vec<Option<SymExpr>> = Vec::with_capacity(constraints.len());
+    let mut first_replaced_per_loop: HashMap<u32, bool> = HashMap::new();
+
+    for (idx, constraint) in constraints.iter().enumerate() {
+        if replaced_indices.contains(&idx) {
+            // Find which loop this index belongs to and insert merged constraint once.
+            for ms in &merged_states {
+                let is_member = mergeable
+                    .get(&ms.loop_id)
+                    .is_some_and(|v| v.iter().any(|(i, _)| *i == idx));
+                if is_member && !first_replaced_per_loop.contains_key(&ms.loop_id) {
+                    first_replaced_per_loop.insert(ms.loop_id, true);
+                    output.push(Some(ms.merged_constraint.clone()));
+                    break;
+                }
+            }
+            // Subsequent indices for the same loop are dropped (collapsed).
+        } else {
+            output.push(constraint.clone());
+        }
+    }
+
+    output
 }
 
 #[cfg(test)]
@@ -395,10 +596,247 @@ mod tests {
         }
     }
 
+    // --- merge_loop_states tests ---
+
+    #[test]
+    fn merge_empty_loops_returns_unchanged() {
+        let constraints = vec![
+            Some(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            None,
+        ];
+        let result = make_execute_result_with_loops(&[]);
+        let merged = merge_loop_states(&constraints, &[], &result);
+        assert_eq!(merged, constraints);
+    }
+
+    #[test]
+    fn merge_single_iteration_skipped() {
+        let backedge = make_backedge_constraint("i", "n");
+        let constraints = vec![Some(backedge)];
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 1)]);
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+        // Single iteration: not worth merging, pass through
+        assert_eq!(merged, constraints);
+    }
+
+    #[test]
+    fn merge_two_iterations_produces_ite() {
+        let backedge = make_backedge_constraint("i", "n");
+        let constraints = vec![Some(backedge.clone()), Some(backedge.clone())];
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 2)]);
+
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+
+        // Should collapse to 1 constraint
+        assert_eq!(merged.len(), 1);
+        let merged_expr = merged[0].as_ref().expect("should have merged constraint");
+
+        // Top level is And(bound, ite_chain)
+        match merged_expr {
+            SymExpr::BinOp {
+                op: BinOpKind::And,
+                right,
+                ..
+            } => {
+                // The right side should be an ITE
+                match right.as_ref() {
+                    SymExpr::Ite { condition, .. } => {
+                        // Condition should be: __loop_0_iter == 0
+                        match condition.as_ref() {
+                            SymExpr::BinOp {
+                                op: BinOpKind::Eq,
+                                left,
+                                right,
+                            } => {
+                                match left.as_ref() {
+                                    SymExpr::Param { name, .. } => {
+                                        assert_eq!(name, "__loop_0_iter")
+                                    }
+                                    other => panic!("expected Param, got {:?}", other),
+                                }
+                                assert_eq!(**right, SymExpr::Const(ConstValue::Int(0)));
+                            }
+                            other => panic!("expected BinOp(Eq), got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected Ite, got {:?}", other),
+                }
+            }
+            other => panic!("expected BinOp(And), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn merge_three_iterations_nested_ite() {
+        let backedge = make_backedge_constraint("i", "n");
+        let constraints = vec![
+            Some(backedge.clone()),
+            Some(backedge.clone()),
+            Some(backedge.clone()),
+        ];
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 3)]);
+
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+        assert_eq!(merged.len(), 1);
+
+        // Verify the ITE chain has 2 levels of nesting
+        let merged_expr = merged[0].as_ref().expect("should have merged constraint");
+        match merged_expr {
+            SymExpr::BinOp {
+                op: BinOpKind::And,
+                right,
+                ..
+            } => match right.as_ref() {
+                SymExpr::Ite { else_expr, .. } => match else_expr.as_ref() {
+                    SymExpr::Ite { .. } => {} // Good: nested ITE
+                    other => panic!("expected nested Ite, got {:?}", other),
+                },
+                other => panic!("expected Ite, got {:?}", other),
+            },
+            other => panic!("expected BinOp(And), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn merge_exceeds_cap_passes_through() {
+        let backedge = make_backedge_constraint("i", "n");
+        let constraints: Vec<Option<SymExpr>> = (0..11).map(|_| Some(backedge.clone())).collect();
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 11)]);
+
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+        // Exceeds MAX_MERGE_DEPTH (10), should pass through unchanged
+        assert_eq!(merged.len(), 11);
+        assert_eq!(merged, constraints);
+    }
+
+    #[test]
+    fn merge_preserves_non_loop_constraints() {
+        let backedge = make_backedge_constraint("i", "n");
+        let non_loop = SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        };
+
+        let constraints = vec![
+            Some(non_loop.clone()),
+            Some(backedge.clone()),
+            Some(backedge.clone()),
+            None,
+        ];
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 2)]);
+
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+
+        // non_loop + merged + None = 3
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0], Some(non_loop));
+        assert!(merged[1].is_some()); // merged ITE
+        assert!(merged[2].is_none());
+    }
+
+    #[test]
+    fn merge_iteration_bound_present() {
+        let backedge = make_backedge_constraint("i", "n");
+        let constraints = vec![Some(backedge.clone()), Some(backedge.clone())];
+        let loop_info = make_loop_info(0, "i");
+        let result = make_execute_result_with_loops(&[(0, 2)]);
+
+        let merged = merge_loop_states(&constraints, &[loop_info], &result);
+        let merged_expr = merged[0].as_ref().expect("should have merged constraint");
+
+        // Top level is And(bound, ite_chain)
+        // bound is And(Le(0, iter), Lt(iter, 2))
+        match merged_expr {
+            SymExpr::BinOp {
+                op: BinOpKind::And,
+                left: bound,
+                ..
+            } => match bound.as_ref() {
+                SymExpr::BinOp {
+                    op: BinOpKind::And,
+                    left: lower,
+                    right: upper,
+                } => {
+                    match lower.as_ref() {
+                        SymExpr::BinOp {
+                            op: BinOpKind::Le, ..
+                        } => {}
+                        other => panic!("expected Le bound, got {:?}", other),
+                    }
+                    match upper.as_ref() {
+                        SymExpr::BinOp {
+                            op: BinOpKind::Lt,
+                            right,
+                            ..
+                        } => {
+                            assert_eq!(**right, SymExpr::Const(ConstValue::Int(2)));
+                        }
+                        other => panic!("expected Lt bound, got {:?}", other),
+                    }
+                }
+                other => panic!("expected And bound, got {:?}", other),
+            },
+            other => panic!("expected BinOp(And), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_ite_chain_empty_returns_none() {
+        assert!(build_ite_chain("iter", &[]).is_none());
+    }
+
+    #[test]
+    fn build_ite_chain_single_returns_expr() {
+        let expr = SymExpr::Const(ConstValue::Int(42));
+        let chain = build_ite_chain("iter", &[expr.clone()]);
+        assert_eq!(chain, Some(expr));
+    }
+
+    #[test]
+    fn build_ite_chain_two_produces_single_ite() {
+        let c0 = SymExpr::Const(ConstValue::Int(0));
+        let c1 = SymExpr::Const(ConstValue::Int(1));
+        let chain = build_ite_chain("iter", &[c0.clone(), c1.clone()]).unwrap();
+        match &chain {
+            SymExpr::Ite {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                // condition: iter == 0
+                match condition.as_ref() {
+                    SymExpr::BinOp {
+                        op: BinOpKind::Eq,
+                        right,
+                        ..
+                    } => assert_eq!(**right, SymExpr::Const(ConstValue::Int(0))),
+                    other => panic!("expected Eq, got {:?}", other),
+                }
+                assert_eq!(**then_expr, c0);
+                assert_eq!(**else_expr, c1);
+            }
+            other => panic!("expected Ite, got {:?}", other),
+        }
+    }
+
     mod proptests {
         use proptest::prelude::*;
 
-        use crate::test_arbitraries::{arb_induction_var, arb_loop_info};
+        use super::*;
+        use crate::sym_expr::extract_param_names;
+        use crate::test_arbitraries::{arb_induction_var, arb_loop_info, arb_sym_expr};
 
         proptest! {
             #[test]
@@ -413,6 +851,84 @@ mod tests {
                 let json = serde_json::to_string(&li).unwrap();
                 let back: crate::protocol::LoopInfo = serde_json::from_str(&json).unwrap();
                 prop_assert_eq!(li, back);
+            }
+
+            /// ITE chain length never exceeds input length.
+            #[test]
+            fn ite_chain_preserves_constraints(
+                constraints in prop::collection::vec(arb_sym_expr(1), 1..=12)
+            ) {
+                let chain = build_ite_chain("__test_iter", &constraints);
+                prop_assert!(chain.is_some());
+            }
+
+            /// Merged constraint always references the iteration variable.
+            #[test]
+            fn merged_constraint_contains_iteration_var(
+                constraints in prop::collection::vec(arb_sym_expr(1), 2..=8)
+            ) {
+                let iter_var = "__loop_99_iter";
+                if let Some(chain) = build_ite_chain(iter_var, &constraints) {
+                    let params = extract_param_names(&chain);
+                    prop_assert!(
+                        params.contains(iter_var),
+                        "ITE chain should reference iteration var, got params: {:?}",
+                        params
+                    );
+                }
+            }
+
+            /// ITE chain round-trips through serde.
+            #[test]
+            fn ite_chain_serde_roundtrip(
+                constraints in prop::collection::vec(arb_sym_expr(1), 2..=6)
+            ) {
+                if let Some(chain) = build_ite_chain("__loop_0_iter", &constraints) {
+                    let json = serde_json::to_string(&chain).unwrap();
+                    let back: SymExpr = serde_json::from_str(&json).unwrap();
+                    prop_assert_eq!(chain, back);
+                }
+            }
+
+            /// Iteration bound is well-formed: And(Le(0, var), Lt(var, N)).
+            #[test]
+            fn iteration_bound_well_formed(n in 2u32..=20) {
+                let bound = build_iteration_bound("__loop_0_iter", n);
+                match &bound {
+                    SymExpr::BinOp { op: BinOpKind::And, left, right } => {
+                        match left.as_ref() {
+                            SymExpr::BinOp { op: BinOpKind::Le, .. } => {}
+                            other => prop_assert!(false, "expected Le, got {:?}", other),
+                        }
+                        match right.as_ref() {
+                            SymExpr::BinOp { op: BinOpKind::Lt, right: upper, .. } => {
+                                prop_assert_eq!(
+                                    upper.as_ref(),
+                                    &SymExpr::Const(ConstValue::Int(i64::from(n)))
+                                );
+                            }
+                            other => prop_assert!(false, "expected Lt, got {:?}", other),
+                        }
+                    }
+                    other => prop_assert!(false, "expected And, got {:?}", other),
+                }
+            }
+
+            /// merge_loop_states never produces more constraints than the input.
+            #[test]
+            fn merge_output_not_larger_than_input(count in 2u32..=10) {
+                let backedge = make_backedge_constraint("i", "n");
+                let constraints: Vec<Option<SymExpr>> =
+                    (0..count).map(|_| Some(backedge.clone())).collect();
+                let loop_info = make_loop_info(0, "i");
+                let result = make_execute_result_with_loops(&[(0, count)]);
+                let merged = merge_loop_states(&constraints, &[loop_info], &result);
+                prop_assert!(
+                    merged.len() <= constraints.len(),
+                    "merged ({}) should not exceed input ({})",
+                    merged.len(),
+                    constraints.len()
+                );
             }
         }
     }
