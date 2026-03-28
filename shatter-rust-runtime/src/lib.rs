@@ -277,6 +277,168 @@ pub fn flush_results() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Harness helpers — reduce per-function boilerplate
+// ---------------------------------------------------------------------------
+
+/// Parse a JSON array of mock definitions and register each one.
+///
+/// Each element must be an object with `"symbol"` (string) and
+/// `"return_values"` (array). Malformed entries are silently skipped.
+pub fn register_mocks_from_json(mocks_json: &str) {
+    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();
+    for mock in &mocks {
+        if let (Some(symbol), Some(return_values)) = (
+            mock.get("symbol").and_then(|s| s.as_str()),
+            mock.get("return_values").and_then(|v| v.as_array()),
+        ) {
+            register_mock(symbol, return_values.clone());
+        }
+    }
+}
+
+/// Execute a closure with `catch_unwind` and wall-time measurement.
+///
+/// Returns `(Ok(return_value), wall_time_ms)` on success, or
+/// `(Err(panic_message), wall_time_ms)` if the closure panics.
+pub fn execute_with_timing<F, R>(f: F) -> (Result<R, String>, f64)
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    let start = std::time::Instant::now();
+    let result = std::panic::catch_unwind(f);
+    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let mapped = result.map_err(|panic_info| {
+        if let Some(s) = panic_info.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_info)
+        }
+    });
+
+    (mapped, wall_time_ms)
+}
+
+/// Build a complete result JSON object by merging `flush_results()` output
+/// with caller-provided return value, error, performance, and side effects.
+pub fn build_result_json(
+    return_value: Option<Value>,
+    thrown_error: Option<Value>,
+    wall_time_ms: f64,
+    side_effects: Vec<Value>,
+) -> Value {
+    let runtime_json = flush_results();
+    let mut obj: Value =
+        serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));
+
+    if let Some(map) = obj.as_object_mut() {
+        if let Some(rv) = return_value {
+            map.insert("return_value".into(), rv);
+        }
+        if let Some(te) = thrown_error {
+            map.insert("thrown_error".into(), te);
+        }
+        map.insert(
+            "performance".into(),
+            serde_json::json!({
+                "wall_time_ms": wall_time_ms,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0,
+            }),
+        );
+        let existing = map
+            .entry("side_effects")
+            .or_insert(serde_json::json!([]));
+        if let Some(arr) = existing.as_array_mut() {
+            arr.extend(side_effects);
+        }
+    }
+
+    obj
+}
+
+/// Run a persistent stdin-loop harness.
+///
+/// Handles mock registration, stdin reading, JSON parsing, `reset()` per
+/// iteration, calling the handler, and writing the response to stdout.
+///
+/// The `handler` receives the `"inputs"` array from each request and must
+/// return a complete result JSON `Value` (typically built via
+/// [`build_result_json`]).
+pub fn run_harness_loop<F>(mocks_json: &str, mut handler: F)
+where
+    F: FnMut(&[Value]) -> Value,
+{
+    register_mocks_from_json(mocks_json);
+
+    let stdin = std::io::stdin();
+    let mut reader = std::io::BufReader::new(stdin.lock());
+
+    loop {
+        let mut line = String::new();
+        match std::io::BufRead::read_line(&mut reader, &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let req: Value = serde_json::from_str(line).unwrap_or_default();
+        let inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+
+        reset();
+
+        let result = handler(&inputs);
+
+        let output = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+        println!("{output}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+}
+
+/// Run a persistent stdin-loop harness with multi-function dispatch.
+///
+/// Like [`run_harness_loop`], but the handler also receives the `"function"`
+/// name from each request, enabling a single harness binary to serve
+/// multiple functions via match dispatch.
+pub fn run_dispatch_loop<F>(mocks_json: &str, mut handler: F)
+where
+    F: FnMut(&str, &[Value]) -> Value,
+{
+    register_mocks_from_json(mocks_json);
+
+    let stdin = std::io::stdin();
+    let mut reader = std::io::BufReader::new(stdin.lock());
+
+    loop {
+        let mut line = String::new();
+        match std::io::BufRead::read_line(&mut reader, &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let req: Value = serde_json::from_str(line).unwrap_or_default();
+        let function_name = req["function"].as_str().unwrap_or("");
+        let inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+
+        reset();
+
+        let result = handler(function_name, &inputs);
+
+        let output = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+        println!("{output}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -479,6 +641,97 @@ mod tests {
             .expect("calls_to_external array");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["symbol"], "dep");
+    }
+
+    #[test]
+    fn register_mocks_from_json_registers_all() {
+        setup();
+
+        let mocks = r#"[
+            {"symbol": "db::query", "return_values": [1, 2]},
+            {"symbol": "fs::read", "return_values": ["hello"]}
+        ]"#;
+        register_mocks_from_json(mocks);
+
+        assert_eq!(mock_call("db::query", "[]"), Some(serde_json::json!(1)));
+        assert_eq!(
+            mock_call("fs::read", "[]"),
+            Some(serde_json::json!("hello"))
+        );
+    }
+
+    #[test]
+    fn register_mocks_from_json_skips_malformed() {
+        setup();
+
+        let mocks = r#"[{"bad": true}, {"symbol": "ok", "return_values": [42]}]"#;
+        register_mocks_from_json(mocks);
+
+        assert_eq!(mock_call("ok", "[]"), Some(serde_json::json!(42)));
+    }
+
+    #[test]
+    fn register_mocks_from_json_handles_invalid_json() {
+        setup();
+
+        register_mocks_from_json("not json at all");
+        // Should not panic, just register nothing
+        assert_eq!(mock_call("anything", "[]"), None);
+    }
+
+    #[test]
+    fn execute_with_timing_captures_success() {
+        let (result, wall_ms) = execute_with_timing(|| 42);
+        assert_eq!(result, Ok(42));
+        assert!(wall_ms >= 0.0);
+    }
+
+    #[test]
+    fn execute_with_timing_captures_panic() {
+        let (result, wall_ms) = execute_with_timing(|| -> i32 { panic!("boom") });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("boom"));
+        assert!(wall_ms >= 0.0);
+    }
+
+    #[test]
+    fn build_result_json_merges_all_fields() {
+        setup();
+
+        branch_hit(1, 10, true, r#""x""#);
+
+        let result = build_result_json(
+            Some(serde_json::json!(99)),
+            None,
+            1.5,
+            vec![serde_json::json!({"kind": "console_output", "level": "log", "message": "hi"})],
+        );
+
+        let obj = result.as_object().expect("should be object");
+        assert_eq!(obj["return_value"], serde_json::json!(99));
+        assert!(obj.get("thrown_error").is_none() || obj["thrown_error"].is_null());
+        assert_eq!(obj["performance"]["wall_time_ms"], serde_json::json!(1.5));
+        let se = obj["side_effects"].as_array().expect("side_effects array");
+        assert_eq!(se.len(), 1);
+        assert_eq!(se[0]["kind"], "console_output");
+        let bp = obj["branch_path"].as_array().expect("branch_path array");
+        assert_eq!(bp.len(), 1);
+    }
+
+    #[test]
+    fn build_result_json_with_error() {
+        setup();
+
+        let result = build_result_json(
+            None,
+            Some(serde_json::json!({"error_type": "runtime_error", "message": "oops"})),
+            0.5,
+            vec![],
+        );
+
+        let obj = result.as_object().expect("should be object");
+        assert_eq!(obj["thrown_error"]["error_type"], "runtime_error");
+        assert_eq!(obj["thrown_error"]["message"], "oops");
     }
 
     #[test]

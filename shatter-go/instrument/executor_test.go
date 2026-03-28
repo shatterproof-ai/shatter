@@ -948,13 +948,28 @@ func TestGenerateLoopMockFileUsesAtomicCounters(t *testing.T) {
 	}
 }
 
-func TestGenerateLoopHarnessContainsEOFExit(t *testing.T) {
+func TestGenerateLoopHarnessUsesRuntimeLoop(t *testing.T) {
 	src, err := generateLoopHarness("myFunc", []paramInfo{{Name: "x", GoType: "int"}}, returnTypeInfo{Count: 1, Types: []string{"int"}}, nil, false)
 	if err != nil {
 		t.Fatalf("generateLoopHarness failed: %v", err)
 	}
-	if !contains(src, "os.Exit(1)") {
-		t.Error("expected os.Exit(1) after scan loop for EOF exit convention")
+	if !contains(src, "harness.RunLoop") {
+		t.Error("expected harness.RunLoop call in generated code")
+	}
+	if !contains(src, "harness.SafeCall") {
+		t.Error("expected harness.SafeCall call in generated code")
+	}
+	if !contains(src, "harness.CaptureConsole") {
+		t.Error("expected harness.CaptureConsole call in generated code")
+	}
+	if !contains(src, "harness.StartPerf") {
+		t.Error("expected harness.StartPerf call in generated code")
+	}
+	if !contains(src, `"shatter-harness"`) {
+		t.Error("expected shatter-harness import in generated code")
+	}
+	if contains(src, "type _hReq struct") {
+		t.Error("expected inline _hReq type to be removed")
 	}
 }
 

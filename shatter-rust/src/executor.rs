@@ -1159,50 +1159,19 @@ fn generate_harness(
     static_mut_names: &[String],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
-    let mut h = String::with_capacity(8192);
+    let mut h = String::with_capacity(4096);
 
     h.push_str("#![allow(unused_imports)]\n");
-    h.push_str("use std::io::BufRead;\n");
     h.push_str("use serde_json::Value;\n\n");
     h.push_str(&module_block);
     h.push_str("\n\nfn main() {\n");
-
-    // Register mocks once at startup (baked in, same for all calls to this harness).
-    h.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
-    h.push_str(
-        "    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n",
-    );
-    h.push_str("    for mock in &mocks {\n");
-    h.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
-    h.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
-    h.push_str("            mock.get(\"return_values\").and_then(|v| v.as_array()),\n");
-    h.push_str("        ) {\n");
-    h.push_str("            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n");
-    h.push_str("        }\n");
-    h.push_str("    }\n\n");
-
-    // Main request loop: read one JSON line per call, write one JSON line response.
-    h.push_str("    let stdin = std::io::stdin();\n");
-    h.push_str("    let mut reader = std::io::BufReader::new(stdin.lock());\n");
-    h.push_str("    loop {\n");
-    h.push_str("        let mut line = String::new();\n");
-    h.push_str("        match reader.read_line(&mut line) {\n");
-    h.push_str("            Ok(0) | Err(_) => break,\n");
-    h.push_str("            Ok(_) => {}\n");
-    h.push_str("        }\n");
-    h.push_str("        let line = line.trim();\n");
-    h.push_str("        if line.is_empty() { continue; }\n");
-    h.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
-    h.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n\n");
-
-    // Reset runtime state (branch recorder, etc.) — keeps mock registrations.
-    h.push_str("        shatter_rust_runtime::reset();\n\n");
+    h.push_str(&format!(
+        "    shatter_rust_runtime::run_harness_loop(r#\"{}\"#, |inputs| {{\n",
+        mocks_json
+    ));
 
     // Snapshot mutable globals before execution.
-    // Each `static mut` is read with `unsafe` and serialized to JSON.
-    // Variables whose type does not implement Serialize produce `None` and are skipped.
     if !static_mut_names.is_empty() {
-        h.push_str("        // Snapshot mutable static variables before execution\n");
         for name in static_mut_names {
             h.push_str(&format!(
                 "        let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
@@ -1211,11 +1180,7 @@ fn generate_harness(
         h.push('\n');
     }
 
-    // Deserialize each input parameter from the request's inputs array.
-    // Reference types like `&str` can't be deserialized directly — deserialize
-    // to the owned type (e.g. `String`) and borrow in the function call.
-    // Slice references like `&[&str]` need a two-step conversion:
-    // deserialize to `Vec<String>`, then create a `Vec<&str>` of borrows.
+    // Deserialize each input parameter from the inputs array.
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
         if let Some(mapping) = owned_type_for_ref(ty) {
@@ -1270,12 +1235,12 @@ fn generate_harness(
     h.push_str("            unsafe { libc::dup2(__ef.as_raw_fd(), 2); }\n");
     h.push_str("        }\n\n");
 
-    // Call the function inside catch_unwind, measuring time
-    h.push_str("        let start = std::time::Instant::now();\n");
-    h.push_str("        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str(&format!("            user_code::{function_name}({args})\n"));
-    h.push_str("        }));\n");
-    h.push_str("        let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n\n");
+    // Call the function with panic recovery and timing via the runtime helper.
+    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+    h.push_str(&format!(
+        "            user_code::{function_name}({args})\n"
+    ));
+    h.push_str("        }));\n\n");
 
     // Restore original stdout/stderr before writing JSON response.
     h.push_str("        unsafe { libc::dup2(__orig_stdout, 1); libc::close(__orig_stdout); }\n");
@@ -1297,53 +1262,18 @@ fn generate_harness(
     h.push_str("        let _ = std::fs::remove_file(&__stdout_path);\n");
     h.push_str("        let _ = std::fs::remove_file(&__stderr_path);\n\n");
 
-    // Flush runtime results
-    h.push_str("        let runtime_json = shatter_rust_runtime::flush_results();\n");
-    h.push_str(
-        "        let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n",
-    );
-    h.push_str("        let obj = exec_result.as_object_mut().unwrap();\n\n");
-
-    // Set return_value or thrown_error
-    h.push_str("        match result {\n");
+    // Map result to return_value / thrown_error
+    h.push_str("        let (ret_val, err_val) = match result {\n");
     if return_type.is_some() {
-        h.push_str("            Ok(ret_val) => {\n");
-        h.push_str(
-            "                obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null));\n",
-        );
-        h.push_str("            }\n");
+        h.push_str("            Ok(v) => (Some(serde_json::to_value(&v).unwrap_or(Value::Null)), None),\n");
     } else {
-        h.push_str("            Ok(()) => {\n");
-        h.push_str("                obj.insert(\"return_value\".into(), Value::Null);\n");
-        h.push_str("            }\n");
+        h.push_str("            Ok(()) => (Some(Value::Null), None),\n");
     }
-    h.push_str("            Err(ref panic_info) => {\n");
-    h.push_str("                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {\n");
-    h.push_str("                    s.to_string()\n");
-    h.push_str("                } else if let Some(s) = panic_info.downcast_ref::<String>() {\n");
-    h.push_str("                    s.clone()\n");
-    h.push_str("                } else {\n");
-    h.push_str("                    format!(\"{:?}\", panic_info)\n");
-    h.push_str("                };\n");
-    h.push_str("                obj.insert(\"thrown_error\".into(), serde_json::json!({\n");
-    h.push_str("                    \"error_type\": \"runtime_error\",\n");
-    h.push_str("                    \"message\": msg,\n");
-    h.push_str("                }));\n");
-    h.push_str("            }\n");
-    h.push_str("        }\n\n");
+    h.push_str("            Err(ref msg) => (None, Some(serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg}))),\n");
+    h.push_str("        };\n\n");
 
-    // Set performance metrics
-    h.push_str("        obj.insert(\"performance\".into(), serde_json::json!({\n");
-    h.push_str("            \"wall_time_ms\": wall_time_ms,\n");
-    h.push_str("            \"cpu_time_us\": 0,\n");
-    h.push_str("            \"heap_used_bytes\": 0,\n");
-    h.push_str("            \"heap_allocated_bytes\": 0,\n");
-    h.push_str("        }));\n\n");
-
-    // Build side_effects array: console_output first, then thrown_error, then global_state_change.
-    h.push_str("        let mut __side_effects: Vec<serde_json::Value> = Vec::new();\n\n");
-
-    // Console output side effects from captured stdout/stderr.
+    // Build side_effects: console_output first, then thrown_error, then global_state_change.
+    h.push_str("        let mut __side_effects: Vec<serde_json::Value> = Vec::new();\n");
     h.push_str("        for __line in __captured_stdout.lines() {\n");
     h.push_str("            if !__line.is_empty() {\n");
     h.push_str("                let __msg: String = __line.chars().take(4096).collect();\n");
@@ -1355,11 +1285,8 @@ fn generate_harness(
     h.push_str("                let __msg: String = __line.chars().take(4096).collect();\n");
     h.push_str("                __side_effects.push(serde_json::json!({\"kind\": \"console_output\", \"level\": \"error\", \"message\": __msg}));\n");
     h.push_str("            }\n");
-    h.push_str("        }\n\n");
-
-    // Thrown error side effect (mirrors TS behavior: error in both response field and side_effects).
-    h.push_str("        if let Err(ref panic_info) = result {\n");
-    h.push_str("            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
+    h.push_str("        }\n");
+    h.push_str("        if let Err(ref msg) = result {\n");
     h.push_str("            __side_effects.push(serde_json::json!({\"kind\": \"thrown_error\", \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null}));\n");
     h.push_str("        }\n\n");
 
@@ -1379,14 +1306,13 @@ fn generate_harness(
             h.push_str("            }\n");
             h.push_str("        }\n");
         }
+        h.push('\n');
+        h.push_str("        shatter_rust_runtime::build_result_json(ret_val, err_val, wall_time_ms, __side_effects)\n");
+    } else {
+        h.push_str("        shatter_rust_runtime::build_result_json(ret_val, err_val, wall_time_ms, __side_effects)\n");
     }
-    h.push_str("        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-    h.push_str("        if let Some(__arr) = __se.as_array_mut() { __arr.extend(__side_effects); }\n\n");
 
-    // Write result to stdout and flush
-    h.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
-    h.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
-    h.push_str("    } // end loop\n");
+    h.push_str("    });\n"); // end closure + run_harness_loop call
     h.push_str("}\n");
 
     Ok(h)
@@ -1406,45 +1332,19 @@ fn generate_dispatch_harness(
     static_mut_names: &[String],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
-    let mut h = String::with_capacity(16384);
+    let mut h = String::with_capacity(8192);
 
     h.push_str("#![allow(unused_imports)]\n");
-    h.push_str("use std::io::BufRead;\n");
     h.push_str("use serde_json::Value;\n\n");
     h.push_str(&module_block);
     h.push_str("\n\nfn main() {\n");
+    h.push_str(&format!(
+        "    shatter_rust_runtime::run_dispatch_loop(r#\"{}\"#, |function_name, inputs| {{\n",
+        mocks_json
+    ));
 
-    // Register mocks once at startup (baked in, same for all calls to this harness).
-    h.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
-    h.push_str("    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n");
-    h.push_str("    for mock in &mocks {\n");
-    h.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
-    h.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
-    h.push_str("            mock.get(\"return_values\").and_then(|v| v.as_array()),\n");
-    h.push_str("        ) {\n");
-    h.push_str("            shatter_rust_runtime::register_mock(symbol, return_values.clone());\n");
-    h.push_str("        }\n");
-    h.push_str("    }\n\n");
-
-    // Main request loop.
-    h.push_str("    let stdin = std::io::stdin();\n");
-    h.push_str("    let mut reader = std::io::BufReader::new(stdin.lock());\n");
-    h.push_str("    loop {\n");
-    h.push_str("        let mut line = String::new();\n");
-    h.push_str("        match reader.read_line(&mut line) {\n");
-    h.push_str("            Ok(0) | Err(_) => break,\n");
-    h.push_str("            Ok(_) => {}\n");
-    h.push_str("        }\n");
-    h.push_str("        let line = line.trim();\n");
-    h.push_str("        if line.is_empty() { continue; }\n");
-    h.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
-    h.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
-    h.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n\n");
-
-    // Reset runtime state and snapshot mutable globals before dispatch.
-    h.push_str("        shatter_rust_runtime::reset();\n\n");
+    // Snapshot mutable globals before dispatch.
     if !static_mut_names.is_empty() {
-        h.push_str("        // Snapshot mutable static variables before execution\n");
         for name in static_mut_names {
             h.push_str(&format!(
                 "        let __before_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
@@ -1468,8 +1368,8 @@ fn generate_dispatch_harness(
     h.push_str("            unsafe { libc::dup2(__ef.as_raw_fd(), 2); }\n");
     h.push_str("        }\n\n");
 
-    // Build the dispatch match.
-    h.push_str("        let exec_result: Value = match function_name {\n");
+    // Build the dispatch match — each arm deserializes params, calls, and returns result.
+    h.push_str("        let (ret_val, err_val, wall_time_ms): (Option<Value>, Option<Value>, f64) = match function_name {\n");
     for fn_info in fns {
         let fn_name = &fn_info.name;
         let param_names = &fn_info.param_names;
@@ -1513,43 +1413,26 @@ fn generate_dispatch_harness(
             })
             .collect();
         let args = arg_list.join(", ");
-        // Call + timing.
-        h.push_str("                let start = std::time::Instant::now();\n");
-        h.push_str("                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-        h.push_str(&format!("                    user_code::{fn_name}({args})\n"));
+        // Call with timing + panic recovery via runtime helper.
+        h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+        h.push_str(&format!(
+            "                    user_code::{fn_name}({args})\n"
+        ));
         h.push_str("                }));\n");
-        h.push_str("                let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n");
-        // Flush runtime results.
-        h.push_str("                let runtime_json = shatter_rust_runtime::flush_results();\n");
-        h.push_str("                let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
-        h.push_str("                let obj = exec_result.as_object_mut().unwrap();\n");
-        // Return value or panic.
+        // Map result.
         h.push_str("                match result {\n");
         if return_type.is_some() {
-            h.push_str("                    Ok(ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null)); }\n");
+            h.push_str("                    Ok(v) => (Some(serde_json::to_value(&v).unwrap_or(Value::Null)), None, wt),\n");
         } else {
-            h.push_str("                    Ok(()) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
+            h.push_str("                    Ok(()) => (Some(Value::Null), None, wt),\n");
         }
-        h.push_str("                    Err(ref panic_info) => {\n");
-        h.push_str("                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
-        h.push_str("                        obj.insert(\"thrown_error\".into(), serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg}));\n");
-        h.push_str("                    }\n");
+        h.push_str("                    Err(msg) => (None, Some(serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg})), wt),\n");
         h.push_str("                }\n");
-        // Performance.
-        h.push_str("                obj.insert(\"performance\".into(), serde_json::json!({\"wall_time_ms\": wall_time_ms, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}));\n");
-        // Thrown error side effect.
-        h.push_str("                if let Err(ref panic_info) = result {\n");
-        h.push_str("                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
-        h.push_str("                    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-        h.push_str("                    if let Some(__arr) = __se.as_array_mut() { __arr.push(serde_json::json!({\"kind\": \"thrown_error\", \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null})); }\n");
-        h.push_str("                }\n");
-        h.push_str("                obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-        h.push_str("                exec_result\n");
         h.push_str("            }\n");
     }
     // Unknown function fallback.
     h.push_str("            unknown => {\n");
-    h.push_str("                serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"not_supported\", \"message\": format!(\"function not in dispatch table: {}\", unknown)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}})\n");
+    h.push_str("                (None, Some(serde_json::json!({\"error_type\": \"not_supported\", \"message\": format!(\"function not in dispatch table: {}\", unknown)})), 0.0)\n");
     h.push_str("            }\n");
     h.push_str("        };\n\n");
 
@@ -1571,7 +1454,7 @@ fn generate_dispatch_harness(
     h.push_str("        let _ = std::fs::remove_file(&__stdout_path);\n");
     h.push_str("        let _ = std::fs::remove_file(&__stderr_path);\n\n");
 
-    // Build side effects: console_output + global_state_change.
+    // Build side effects: console_output, then thrown_error, then global_state_change.
     h.push_str("        let mut __side_effects: Vec<serde_json::Value> = Vec::new();\n");
     h.push_str("        for __line in __captured_stdout.lines() {\n");
     h.push_str("            if !__line.is_empty() {\n");
@@ -1585,11 +1468,14 @@ fn generate_dispatch_harness(
     h.push_str("                __side_effects.push(serde_json::json!({\"kind\": \"console_output\", \"level\": \"error\", \"message\": __msg}));\n");
     h.push_str("            }\n");
     h.push_str("        }\n");
+    h.push_str("        if let Some(ref err) = err_val {\n");
+    h.push_str("            if let Some(msg) = err.get(\"message\").and_then(|m| m.as_str()) {\n");
+    h.push_str("                __side_effects.push(serde_json::json!({\"kind\": \"thrown_error\", \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null}));\n");
+    h.push_str("            }\n");
+    h.push_str("        }\n\n");
 
     // Global state changes.
-    h.push_str("        let mut exec_result = exec_result;\n");
     if !static_mut_names.is_empty() {
-        h.push_str("        let obj = exec_result.as_object_mut().unwrap();\n");
         for name in static_mut_names {
             h.push_str(&format!(
                 "        let __after_{name} = unsafe {{ serde_json::to_value(&user_code::{name}).ok() }};\n"
@@ -1604,19 +1490,13 @@ fn generate_dispatch_harness(
             h.push_str("            }\n");
             h.push_str("        }\n");
         }
-        h.push_str("        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-        h.push_str("        if let Some(__arr) = __se.as_array_mut() { __arr.extend(__side_effects); }\n");
-        h.push_str("        drop(obj);\n");
+        h.push('\n');
+        h.push_str("        shatter_rust_runtime::build_result_json(ret_val, err_val, wall_time_ms, __side_effects)\n");
     } else {
-        h.push_str("        if !__side_effects.is_empty() {\n");
-        h.push_str("            let obj = exec_result.as_object_mut().unwrap();\n");
-        h.push_str("            let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-        h.push_str("            if let Some(__arr) = __se.as_array_mut() { __arr.extend(__side_effects); }\n");
-        h.push_str("        }\n");
+        h.push_str("        shatter_rust_runtime::build_result_json(ret_val, err_val, wall_time_ms, __side_effects)\n");
     }
-    h.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
-    h.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
-    h.push_str("    } // end loop\n");
+
+    h.push_str("    });\n"); // end closure + run_dispatch_loop call
     h.push_str("}\n");
 
     Ok(h)
@@ -3022,11 +2902,9 @@ mod tests {
         .unwrap();
         assert!(harness.contains("mod user_code"));
         assert!(harness.contains("user_code::classify_number(n)"));
-        assert!(harness.contains("catch_unwind"));
-        assert!(harness.contains("flush_results"));
-        assert!(harness.contains("shatter_rust_runtime::reset()"));
-        assert!(harness.contains("loop"));
-        assert!(harness.contains("read_line"));
+        assert!(harness.contains("run_harness_loop"));
+        assert!(harness.contains("execute_with_timing"));
+        assert!(harness.contains("build_result_json"));
     }
 
     #[test]
@@ -3034,7 +2912,7 @@ mod tests {
         let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[]).unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
-        assert!(harness.contains("loop"));
+        assert!(harness.contains("run_harness_loop"));
     }
 
     /// Reproduction test for str-cfhk: source with `fn main()` must not
@@ -3554,10 +3432,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             !harness.contains("__after_"),
             "no after-snapshots when no mutable statics\n\nharness:\n{harness}"
         );
-        // side_effects must still be present (via or_insert)
+        // build_result_json call must still be present (handles side_effects)
         assert!(
-            harness.contains("side_effects"),
-            "side_effects entry must still be present\n\nharness:\n{harness}"
+            harness.contains("build_result_json"),
+            "build_result_json must be called\n\nharness:\n{harness}"
         );
     }
 
