@@ -16,6 +16,10 @@ Two complementary approaches:
 
 When adding a protocol message type or parsing function, add both: a rapid property test for semantic correctness and a fuzz target for crash resistance. Seed corpus from existing test fixtures.
 
+## Ite SymExpr Parity Contract
+
+Go can deserialize `ite` SymExpr nodes (struct fields on `SymExpr` and local `symExpr`) but does not produce them. Go lacks data flow tracking — `exprToSymExpr` only resolves function parameters. Adding SSA phi-node merging to Go is a separate effort. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
+
 ## Side Effect Parity Contract
 
 Go captures 2 of the 7 canonical side effect kinds. The `instrument.SideEffect` struct in `executor.go` and `protocol.SideEffect` in `protocol/types.go` both carry fields for all 7 kinds; only the capture logic is missing for the unimplemented kinds.
