@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=57
+TOTAL=58
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -447,12 +447,17 @@ step 20 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
     $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/standalone/ts
 
-# Stage 20: Execution timeout
-step 21 $TOTAL "Execution Timeout" \
+# Stage 20: Parallel explore with --jobs
+step 21 $TOTAL "Parallel Explore" \
+    "Explore multiple functions in parallel using --jobs (limits concurrency)" \
+    $SHATTER explore --jobs 2 "${EXAMPLES[@]}"
+
+# Stage 22: Execution timeout
+step 22 $TOTAL "Execution Timeout" \
     "Configure per-execution timeout passed to frontends" \
     $SHATTER explore --exec-timeout 5 --build-timeout 20 "${EXAMPLES[0]}"
 
-# Stage 21: Go execution timeout
+# Stage 22: Go execution timeout
 step 22 $TOTAL "Go Execution Timeout" \
     "Configurable timeouts also apply to the Go frontend" \
     $SHATTER explore --exec-timeout 8 "${GO_EXAMPLES[0]}"
