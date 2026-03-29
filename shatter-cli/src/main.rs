@@ -223,7 +223,6 @@ async fn main() -> ExitCode {
                 config_path.as_deref(),
                 spec_out.as_deref(),
                 log_level,
-                timing_config.show_text_summary(),
                 &colors,
                 spec || spec_json || spec_out.is_some() || invariants,
                 spec_json || spec_out.is_some(),

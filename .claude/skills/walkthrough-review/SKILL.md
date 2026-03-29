@@ -127,9 +127,9 @@ A function explored with 100 iterations should produce roughly the same output a
 
 ### G. Performance data only when requested
 
-Performance stats (timing, memory, iteration counts) should appear only when `--perf` is passed.
+Performance stats (timing, memory, iteration counts) should appear only when `--timing` is passed.
 
-**Fail** if performance data appears in default output. If `--perf` is not yet implemented, note as "not yet applicable."
+**Fail** if performance data appears in default output. If `--timing` is not yet implemented, note as "not yet applicable."
 
 ### H. Console-appropriate formatting
 
