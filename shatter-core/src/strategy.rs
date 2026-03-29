@@ -30,7 +30,7 @@ use serde_json::Value;
 pub use crate::value_strategy::{TypeAwareMutator, ValueStrategy, ValueToVectorAdapter};
 
 use crate::boundary_dict::generate_boundary_inputs;
-use crate::input_gen::{crossover_inputs, generate_random_inputs, literals_to_candidate_inputs, mutate_inputs};
+use crate::input_gen::{crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs, mutate_inputs};
 use crate::execution_record::SymConstraint;
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
@@ -779,6 +779,10 @@ impl FuzzerStrategy {
             );
             self.pending.push_back(child_a);
         }
+
+        // 4. Havoc — compound multi-mutation sequence for escaping local optima.
+        let havoc = havoc_mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+        self.pending.push_back(havoc);
     }
 }
 

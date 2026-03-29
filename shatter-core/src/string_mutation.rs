@@ -88,7 +88,16 @@ pub fn mutate_multi_point(s: &str, rng: &mut impl Rng) -> String {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
-    let num_points = rng.random_range(2..=4.min(chars.len()));
+    let max_points = chars.len().min(4);
+    if max_points < 2 {
+        // Too short for multi-point — fall back to single substitution.
+        let idx = rng.random_range(0..chars.len());
+        let new_char = rng.random_range(b' '..=b'~') as char;
+        let mut mutated = chars;
+        mutated[idx] = new_char;
+        return mutated.into_iter().collect();
+    }
+    let num_points = rng.random_range(2..=max_points);
     let mut mutated = chars.clone();
     for _ in 0..num_points {
         let idx = rng.random_range(0..chars.len());

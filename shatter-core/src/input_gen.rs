@@ -1068,6 +1068,51 @@ pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mu
     }
 }
 
+/// Apply 2–5 random mutations in sequence to a single value (AFL havoc stage).
+///
+/// Each round applies [`mutate_value`], feeding the output of one round as
+/// input to the next. The mutation count is chosen uniformly in
+/// `[HAVOC_MIN_ROUNDS, HAVOC_MAX_ROUNDS]`. Compound mutations find deeper
+/// paths than single edits by stacking multiple type-appropriate operators.
+pub fn havoc_mutate_value(
+    value: &Value,
+    typ: &TypeInfo,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
+    let rounds = rng.random_range(HAVOC_MIN_ROUNDS..=HAVOC_MAX_ROUNDS);
+    let mut result = value.clone();
+    for _ in 0..rounds {
+        result = mutate_value(&result, typ, dictionary, rng);
+    }
+    result
+}
+
+/// Havoc-mutate an input vector with per-field probability.
+///
+/// Like [`mutate_inputs`], but each selected field receives 2–5 sequential
+/// mutations instead of one. Produces more aggressive mutations for escaping
+/// local optima.
+pub fn havoc_mutate_inputs(
+    inputs: &[Value],
+    params: &[crate::types::ParamInfo],
+    mutation_rate: f64,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Vec<Value> {
+    inputs
+        .iter()
+        .zip(params.iter())
+        .map(|(val, param)| {
+            if rng.random_range(0.0..1.0_f64) < mutation_rate {
+                havoc_mutate_value(val, &param.typ, dictionary, rng)
+            } else {
+                val.clone()
+            }
+        })
+        .collect()
+}
+
 /// Mutate an input vector with per-field probability.
 ///
 /// For each parameter, with probability `mutation_rate` (0.0–1.0), applies
@@ -1430,6 +1475,11 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &m
 // ---------------------------------------------------------------------------
 
 /// Maximum number of bytes to insert in a block insertion mutation.
+/// Minimum number of sequential mutations in havoc mode.
+const HAVOC_MIN_ROUNDS: u32 = 2;
+/// Maximum number of sequential mutations in havoc mode.
+const HAVOC_MAX_ROUNDS: u32 = 5;
+
 const BUFFER_MAX_BLOCK_INSERT: usize = 8;
 
 /// Maximum number of bytes to delete in a block deletion mutation.
@@ -4119,6 +4169,103 @@ mod tests {
                 }
                 prop_assert!(any_diff,
                     "mutate_inputs with rate=1.0 never changed anything over 20 tries");
+            }
+
+            // -----------------------------------------------------------------
+            // havoc_mutate_value: type preservation
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn havoc_mutate_value_preserves_type(
+                seed in 0..10000u64,
+                typ in prop_oneof![
+                    Just(TypeInfo::Int),
+                    Just(TypeInfo::Float),
+                    Just(TypeInfo::Bool),
+                    Just(TypeInfo::Str),
+                ],
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let value = generate_random_value(&typ, &mut rng, None);
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let result = havoc_mutate_value(&value, &typ, &[], &mut rng2);
+                prop_assert!(
+                    value_matches_type(&result, &typ),
+                    "havoc_mutate_value({value:?}, {typ:?}) produced {result:?} which doesn't match type"
+                );
+            }
+
+            // -----------------------------------------------------------------
+            // havoc_mutate_inputs: length preservation
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn havoc_mutate_inputs_preserves_length(
+                seed in 0..10000u64,
+                len in 1..6usize,
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let params: Vec<ParamInfo> = (0..len)
+                    .map(|i| ParamInfo {
+                        name: format!("p{i}"),
+                        typ: TypeInfo::Int,
+                        type_name: None,
+                    })
+                    .collect();
+                let inputs: Vec<serde_json::Value> =
+                    (0..len).map(|i| serde_json::json!(i as i64)).collect();
+                let mutated = havoc_mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
+                prop_assert_eq!(
+                    inputs.len(),
+                    mutated.len(),
+                    "havoc_mutate_inputs changed vector length"
+                );
+            }
+
+            // -----------------------------------------------------------------
+            // havoc_mutate_inputs: type preservation with arbitrary types
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn havoc_mutate_inputs_preserves_types_arbitrary(
+                seed in 0..10000u64,
+                typs in prop::collection::vec(
+                    prop_oneof![
+                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Float),
+                        Just(TypeInfo::Bool),
+                        Just(TypeInfo::Str),
+                    ],
+                    1..=5,
+                ),
+            ) {
+                let params: Vec<ParamInfo> = typs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, typ)| ParamInfo {
+                        name: format!("p{i}"),
+                        typ,
+                        type_name: None,
+                    })
+                    .collect();
+                let mut rng = StdRng::seed_from_u64(seed);
+                let inputs: Vec<serde_json::Value> = params
+                    .iter()
+                    .map(|p| generate_random_value(&p.typ, &mut rng, None))
+                    .collect();
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let mutated = havoc_mutate_inputs(&inputs, &params, 1.0, &[], &mut rng2);
+
+                prop_assert_eq!(mutated.len(), params.len(),
+                    "havoc_mutate_inputs changed vector length");
+
+                for (i, (val, param)) in mutated.iter().zip(params.iter()).enumerate() {
+                    prop_assert!(
+                        value_matches_type(val, &param.typ),
+                        "havoc mutated[{i}] = {val:?} doesn't match type {:?}",
+                        param.typ
+                    );
+                }
             }
 
             // -----------------------------------------------------------------
