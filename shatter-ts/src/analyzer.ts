@@ -7,6 +7,7 @@
 
 import * as ts from "typescript";
 import * as path from "node:path";
+import { refineIntegerParams } from "./integer-heuristic.js";
 import type {
   FunctionAnalysis,
   ParamInfo,
@@ -192,7 +193,8 @@ function analyzeFunctionDeclaration(
   if (!node.name) return null;
 
   const name = node.name.text;
-  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const params = refineIntegerParams(rawParams, node.body, sourceFile);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -230,7 +232,8 @@ function analyzeArrowFunction(
   sourceFile: ts.SourceFile,
   exported: boolean,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const params = refineIntegerParams(rawParams, ts.isBlock(node.body) ? node.body : undefined, sourceFile);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -268,7 +271,8 @@ function analyzeFunctionDeclarationUnnamed(
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const params = refineIntegerParams(rawParams, node.body, sourceFile);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -306,7 +310,8 @@ function analyzeFunctionExpression(
   sourceFile: ts.SourceFile,
   exported: boolean,
 ): FunctionAnalysis {
-  const params = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
+  const params = refineIntegerParams(rawParams, node.body, sourceFile);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
