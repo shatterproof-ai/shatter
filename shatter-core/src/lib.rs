@@ -80,6 +80,7 @@ pub mod test_prioritization;
 pub mod test_runner;
 pub mod triage;
 pub mod types;
+pub mod value_strategy;
 
 #[cfg(test)]
 mod test_arbitraries;
