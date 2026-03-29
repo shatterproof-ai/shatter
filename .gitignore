@@ -131,6 +131,10 @@ dist
 # Claude Code local settings (environment-specific)
 .claude/settings.local.json
 
+# External tooling directories (machine-local, not project files)
+.agentsea/
+.codex/
+
 # yarn v2
 .yarn/cache
 .yarn/unplugged
