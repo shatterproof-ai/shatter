@@ -485,6 +485,7 @@ func TestClassifyNumber(t *testing.T) {
 4. **No Windows support**: Frontends assume Unix-like process spawning.
 5. **No support for async functions**: The explorer does not handle async/await or promises.
 6. **Limited type inference**: Complex TypeScript types (generics, conditional types, mapped types) may not be fully analyzed.
+7. **Limited string theory support**: Z3 Seq theory covers 8 string operations (see `string-ops.yaml`). `split()` cannot be modeled (would require bounded unrolling). Regex support is limited to Z3's decidable fragment (`str.in_re`) — backreferences, lookahead, and named groups are unsupported. Functions using these operations fall back to random/mutation-based exploration. Planned workaround: frontend-side structural candidate generation (deferred).
 
 ---
 

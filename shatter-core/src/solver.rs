@@ -559,6 +559,21 @@ fn convert_unop(
 /// Supports cross-language method names: TS uses `includes`, `indexOf`, `startsWith`, etc.;
 /// Go uses `strings.Contains`, `strings.Index`, `strings.HasPrefix`, etc.
 /// Returns `SolverError::Unsupported` for unrecognized call names.
+///
+/// # Unsupported operations (str-548q — deferred)
+///
+/// - **split()**: Z3 Seq theory has no split primitive. Modeling it would require
+///   bounded unrolling to a configurable max segment count, which is expensive and
+///   produces fragile constraints for variable-length results.
+/// - **Regex (match/test/replace)**: Z3 supports only a decidable regex fragment
+///   (`str.in_re`). JS/Go/Rust regex features — backreferences, lookahead/lookbehind,
+///   named capture groups — fall outside this fragment and cannot be encoded.
+///
+/// Unrecognized calls return `SolverError::Unsupported`, causing the explorer to
+/// fall back to random/mutation-based input generation for that path constraint.
+/// Planned workaround: frontend-side structural candidate generation for
+/// split/regex-heavy functions (generate plausible inputs from observed examples
+/// rather than solving symbolically).
 fn convert_string_call(
     vars: &mut VarTable,
     name: &str,
