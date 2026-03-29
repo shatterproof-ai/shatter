@@ -386,7 +386,7 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
                 None
             } else {
                 let escaped: Vec<String> =
-                    f.mocks_used.iter().map(|m| html_escape(m)).collect();
+                    f.mocks_used.iter().map(|m| html_escape(&m.name)).collect();
                 Some(escaped.join(", "))
             };
 

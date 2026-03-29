@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::batch_state::BatchState;
 use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
-use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, ScanResult};
+use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, ScanResult};
 
 // ---------------------------------------------------------------------------
 // Per-function report
@@ -54,6 +54,23 @@ pub struct BehaviorClusterSummary {
     pub thrown_error: Option<String>,
 }
 
+/// Mock usage details for a single mocked dependency in the scan report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MockUsageReport {
+    /// Symbol name of the mocked dependency.
+    pub name: String,
+    /// How the mock was sourced: "behavior_map", "type_stub", or "stratum_excluded".
+    pub source: String,
+    /// Fraction of the callee's behaviors exercised by the caller (0.0-1.0).
+    /// Present only for behavior-map-backed mocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock_coverage_pct: Option<f64>,
+    /// Number of concrete executions that informed the mock's behavior map.
+    /// Present only for behavior-map-backed mocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock_execution_count: Option<u64>,
+}
+
 /// Report data for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionReport {
@@ -79,8 +96,8 @@ pub struct FunctionReport {
     pub lines_covered: usize,
     /// Total source lines in the function.
     pub total_lines: u32,
-    /// Functions mocked during exploration.
-    pub mocks_used: Vec<String>,
+    /// Functions mocked during exploration, with quality metrics.
+    pub mocks_used: Vec<MockUsageReport>,
     /// Refactoring recommendations for hard-to-mock dependencies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
@@ -218,7 +235,46 @@ fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionRe
         iterations: exploration.iterations,
         lines_covered: exploration.lines_covered,
         total_lines: exploration.total_lines,
-        mocks_used: result.mocks_used.iter().map(|m| m.name.clone()).collect(),
+        mocks_used: result
+            .mocks_used
+            .iter()
+            .map(|m| {
+                let (mock_coverage_pct, mock_execution_count) = match m.source {
+                    MockSource::CachedBehaviorMap => {
+                        // Look up BehaviorCoverage for this callee to get metrics.
+                        let coverage = result
+                            .behavior_coverage
+                            .iter()
+                            .find(|bc| bc.callee == m.name);
+                        match coverage {
+                            Some(bc) => {
+                                let pct = if bc.total_behaviors > 0 {
+                                    bc.exercised_behavior_ids.len() as f64
+                                        / bc.total_behaviors as f64
+                                } else {
+                                    0.0
+                                };
+                                (Some(pct), Some(bc.total_behaviors as u64))
+                            }
+                            // CachedBehaviorMap but no coverage data (shouldn't happen,
+                            // but degrade gracefully).
+                            None => (Some(0.0), Some(0)),
+                        }
+                    }
+                    MockSource::TypeAwareStub | MockSource::StratumExcluded => (None, None),
+                };
+                MockUsageReport {
+                    name: m.name.clone(),
+                    source: match m.source {
+                        MockSource::CachedBehaviorMap => "behavior_map".to_string(),
+                        MockSource::TypeAwareStub => "type_stub".to_string(),
+                        MockSource::StratumExcluded => "stratum_excluded".to_string(),
+                    },
+                    mock_coverage_pct,
+                    mock_execution_count,
+                }
+            })
+            .collect(),
         refactoring_recommendations: result.refactoring_recommendations.clone(),
     }
 }
@@ -669,7 +725,8 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
         );
 
         if !func.mocks_used.is_empty() {
-            let _ = writeln!(out, "- **Mocks:** {}", func.mocks_used.join(", "));
+            let mock_names: Vec<&str> = func.mocks_used.iter().map(|m| m.name.as_str()).collect();
+            let _ = writeln!(out, "- **Mocks:** {}", mock_names.join(", "));
         }
 
         if !func.behavior_clusters.is_empty() {
@@ -1025,7 +1082,12 @@ mod tests {
         let caller = &report.functions[1];
         assert_eq!(caller.function_name, "caller");
         assert_eq!(caller.file_path, "src/app.ts");
-        assert_eq!(caller.mocks_used, vec!["leaf"]);
+        assert_eq!(caller.mocks_used.len(), 1);
+        assert_eq!(caller.mocks_used[0].name, "leaf");
+        assert_eq!(caller.mocks_used[0].source, "behavior_map");
+        // No behavior_coverage in make_function_result → fallback to 0.0/0
+        assert_eq!(caller.mocks_used[0].mock_coverage_pct, Some(0.0));
+        assert_eq!(caller.mocks_used[0].mock_execution_count, Some(0));
 
         // Check codebase report
         assert_eq!(report.codebase.total_functions, 2);
@@ -1686,5 +1748,217 @@ mod tests {
         assert!(html.contains("</html>"));
         assert!(html.contains("<details>foo</details>"));
         assert!(html.contains('%'), "must show coverage percentage");
+    }
+
+    #[test]
+    fn mock_quality_metrics_with_behavior_coverage() {
+        use crate::behavior::BehaviorCoverage;
+
+        let mut func_result = make_function_result("caller", 10, 2, 5, 10, vec!["dep".to_string()]);
+        // Add behavior coverage: 2 of 5 callee behaviors exercised
+        func_result.behavior_coverage = vec![BehaviorCoverage {
+            caller: "caller".to_string(),
+            callee: "dep".to_string(),
+            exercised_behavior_ids: vec![0, 3],
+            total_behaviors: 5,
+        }];
+
+        let report = build_function_report(&func_result, "src/caller.ts");
+
+        assert_eq!(report.mocks_used.len(), 1);
+        let mock = &report.mocks_used[0];
+        assert_eq!(mock.name, "dep");
+        assert_eq!(mock.source, "behavior_map");
+        assert!((mock.mock_coverage_pct.unwrap() - 0.4).abs() < f64::EPSILON);
+        assert_eq!(mock.mock_execution_count, Some(5));
+    }
+
+    #[test]
+    fn mock_quality_metrics_type_stub_has_none() {
+        use crate::scan_orchestrator::{MockSource, MockUsage};
+
+        let mut func_result = make_function_result("caller", 10, 2, 5, 10, vec![]);
+        func_result.mocks_used = vec![MockUsage {
+            name: "stub_dep".to_string(),
+            source: MockSource::TypeAwareStub,
+        }];
+
+        let report = build_function_report(&func_result, "src/caller.ts");
+
+        assert_eq!(report.mocks_used.len(), 1);
+        let mock = &report.mocks_used[0];
+        assert_eq!(mock.name, "stub_dep");
+        assert_eq!(mock.source, "type_stub");
+        assert!(mock.mock_coverage_pct.is_none());
+        assert!(mock.mock_execution_count.is_none());
+    }
+
+    #[test]
+    fn mock_quality_metrics_stratum_excluded_has_none() {
+        use crate::scan_orchestrator::{MockSource, MockUsage};
+
+        let mut func_result = make_function_result("caller", 10, 2, 5, 10, vec![]);
+        func_result.mocks_used = vec![MockUsage {
+            name: "excluded_dep".to_string(),
+            source: MockSource::StratumExcluded,
+        }];
+
+        let report = build_function_report(&func_result, "src/caller.ts");
+
+        assert_eq!(report.mocks_used.len(), 1);
+        let mock = &report.mocks_used[0];
+        assert_eq!(mock.source, "stratum_excluded");
+        assert!(mock.mock_coverage_pct.is_none());
+        assert!(mock.mock_execution_count.is_none());
+    }
+
+    #[test]
+    fn mock_quality_metrics_mixed_sources() {
+        use crate::behavior::BehaviorCoverage;
+        use crate::scan_orchestrator::{MockSource, MockUsage};
+
+        let mut func_result = make_function_result("caller", 10, 2, 5, 10, vec![]);
+        func_result.mocks_used = vec![
+            MockUsage { name: "cached".to_string(), source: MockSource::CachedBehaviorMap },
+            MockUsage { name: "stubbed".to_string(), source: MockSource::TypeAwareStub },
+            MockUsage { name: "excluded".to_string(), source: MockSource::StratumExcluded },
+        ];
+        func_result.behavior_coverage = vec![BehaviorCoverage {
+            caller: "caller".to_string(),
+            callee: "cached".to_string(),
+            exercised_behavior_ids: vec![0, 1, 2],
+            total_behaviors: 3,
+        }];
+
+        let report = build_function_report(&func_result, "src/caller.ts");
+
+        assert_eq!(report.mocks_used.len(), 3);
+        // CachedBehaviorMap: has metrics
+        assert_eq!(report.mocks_used[0].source, "behavior_map");
+        assert!((report.mocks_used[0].mock_coverage_pct.unwrap() - 1.0).abs() < f64::EPSILON);
+        assert_eq!(report.mocks_used[0].mock_execution_count, Some(3));
+        // TypeAwareStub: no metrics
+        assert!(report.mocks_used[1].mock_coverage_pct.is_none());
+        assert!(report.mocks_used[1].mock_execution_count.is_none());
+        // StratumExcluded: no metrics
+        assert!(report.mocks_used[2].mock_coverage_pct.is_none());
+        assert!(report.mocks_used[2].mock_execution_count.is_none());
+    }
+
+    #[test]
+    fn mock_usage_report_serialization_roundtrip() {
+        let report = MockUsageReport {
+            name: "dep".to_string(),
+            source: "behavior_map".to_string(),
+            mock_coverage_pct: Some(0.75),
+            mock_execution_count: Some(12),
+        };
+        let json = serde_json::to_string(&report).expect("serialize");
+        let deserialized: MockUsageReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(report, deserialized);
+    }
+
+    #[test]
+    fn mock_usage_report_none_fields_omitted_in_json() {
+        let report = MockUsageReport {
+            name: "dep".to_string(),
+            source: "type_stub".to_string(),
+            mock_coverage_pct: None,
+            mock_execution_count: None,
+        };
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert!(!json.contains("mock_coverage_pct"));
+        assert!(!json.contains("mock_execution_count"));
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_mock_source() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("behavior_map".to_string()),
+            Just("type_stub".to_string()),
+            Just("stratum_excluded".to_string()),
+        ]
+    }
+
+    fn arb_mock_usage_report() -> impl Strategy<Value = MockUsageReport> {
+        (
+            "[a-z_]{1,20}",
+            arb_mock_source(),
+        )
+            .prop_flat_map(|(name, source)| {
+                let has_metrics = source == "behavior_map";
+                let coverage = if has_metrics {
+                    (0.0..=1.0f64).prop_map(Some).boxed()
+                } else {
+                    Just(None).boxed()
+                };
+                let exec_count = if has_metrics {
+                    (0..=1000u64).prop_map(Some).boxed()
+                } else {
+                    Just(None).boxed()
+                };
+                (Just(name), Just(source), coverage, exec_count)
+            })
+            .prop_map(|(name, source, mock_coverage_pct, mock_execution_count)| {
+                MockUsageReport {
+                    name,
+                    source,
+                    mock_coverage_pct,
+                    mock_execution_count,
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn mock_usage_report_roundtrip(report in arb_mock_usage_report()) {
+            let json = serde_json::to_string(&report).expect("serialize");
+            let deserialized: MockUsageReport = serde_json::from_str(&json).expect("deserialize");
+            // Coverage pct needs approximate comparison for floats
+            prop_assert_eq!(&deserialized.name, &report.name);
+            prop_assert_eq!(&deserialized.source, &report.source);
+            prop_assert_eq!(deserialized.mock_execution_count, report.mock_execution_count);
+            match (deserialized.mock_coverage_pct, report.mock_coverage_pct) {
+                (Some(a), Some(b)) => prop_assert!((a - b).abs() < 1e-10),
+                (None, None) => {},
+                _ => prop_assert!(false, "coverage_pct presence mismatch"),
+            }
+        }
+
+        #[test]
+        fn behavior_map_mocks_always_have_metrics(
+            coverage_pct in 0.0..=1.0f64,
+            exec_count in 0..=1000u64,
+        ) {
+            let report = MockUsageReport {
+                name: "dep".to_string(),
+                source: "behavior_map".to_string(),
+                mock_coverage_pct: Some(coverage_pct),
+                mock_execution_count: Some(exec_count),
+            };
+            prop_assert!(report.mock_coverage_pct.is_some());
+            prop_assert!(report.mock_execution_count.is_some());
+            let pct = report.mock_coverage_pct.unwrap();
+            prop_assert!((0.0..=1.0).contains(&pct), "coverage must be in [0.0, 1.0]");
+        }
+
+        #[test]
+        fn non_behavior_map_mocks_never_have_metrics(
+            source in prop_oneof![Just("type_stub".to_string()), Just("stratum_excluded".to_string())],
+        ) {
+            let report = MockUsageReport {
+                name: "dep".to_string(),
+                source,
+                mock_coverage_pct: None,
+                mock_execution_count: None,
+            };
+            prop_assert!(report.mock_coverage_pct.is_none());
+            prop_assert!(report.mock_execution_count.is_none());
+        }
     }
 }
