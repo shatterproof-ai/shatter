@@ -20,7 +20,7 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until your issue branch has been merged into `main` and `git push origin main` succeeds.
 
 **MANDATORY WORKFLOW:**
 
@@ -29,16 +29,22 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
+   git commit                  # if the issue branch still has uncommitted work
+   git fetch origin
+   git rebase origin/main      # from the issue branch
+   git push --force-with-lease # update the rebased issue branch
+   git checkout main
+   git pull --ff-only origin main
+   git merge --no-ff <issue-branch>
+   git push origin main
+   git status  # MUST show clean working tree on main
    ```
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
+- Work is NOT complete until the issue branch is merged into `main` and `git push origin main` succeeds
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds

@@ -9,6 +9,10 @@ See `PLAN.md` for the full architecture and implementation roadmap.
 @.agents/rules/code-quality.md
 @.agents/rules/beads.md
 
+Shared `.agents` rules are the baseline. When project-local instructions in
+this file or `AGENTS.md` conflict with shared defaults, follow the Shatter
+project-local instructions.
+
 ## Prerequisites
 
 For local dev: Rust toolchain, Node.js 22+, Go 1.24+, libclang. Run `./scripts/configure-bindgen.sh` if Z3 build fails. Devcontainer includes everything.
