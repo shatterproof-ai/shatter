@@ -12,6 +12,10 @@ Does **not** depend on `shatter-core` — defines its own protocol types that pr
 
 Commands: `handshake`, `analyze`, `instrument`, `execute`, `setup`, `teardown`, `generate`, `shutdown`
 
+## Ite SymExpr Parity Contract
+
+Rust frontend can deserialize `ite` SymExpr nodes (`SymExpr::Ite` variant in `protocol.rs`) but does not produce them. The analyze handler is a stub and does not perform data flow tracking. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
+
 ## Side Effect Parity Contract
 
 Rust captures 3 of the 7 canonical side effect kinds. Capture is implemented in the generated harness code (standalone + dispatch modes). Crate-bridge harness captures thrown_error and global_state_change but not console_output (cannot inject libc dep into user crate).

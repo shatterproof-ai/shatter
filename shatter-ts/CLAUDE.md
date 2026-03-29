@@ -29,6 +29,10 @@ Property tests live in `src/property.test.ts` using `fast-check`. Use `fc.letrec
 
 When adding a new AST node type or protocol message, add corresponding fast-check properties.
 
+## Ite SymExpr Parity Contract
+
+TS is the only frontend that produces `ite` SymExpr nodes. The `ite` variant represents SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust frontends can deserialize `ite` but do not produce it — Go lacks data flow tracking, Rust frontend analyze is a stub. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial` for tracking.
+
 ## Side Effect Parity Contract
 
 TS is the reference implementation for side effect capture. All 7 canonical kinds are defined in `src/protocol.ts` and the generator `arbSideEffect` in `src/property.test.ts` covers all of them.
