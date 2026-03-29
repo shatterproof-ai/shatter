@@ -407,6 +407,7 @@ export type SymExpr =
   | { kind: "bin_op"; op: BinOpKind; left: SymExpr; right: SymExpr }
   | { kind: "un_op"; op: UnOpKind; operand: SymExpr }
   | { kind: "call"; name: string; receiver: SymExpr | null; args: SymExpr[] }
+  | { kind: "ite"; condition: SymExpr; then_expr: SymExpr; else_expr: SymExpr }
   | { kind: "unknown" };
 
 /** Const variant of SymExpr. Flattened to match Rust serde serialization. */

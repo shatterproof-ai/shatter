@@ -8,7 +8,7 @@
   "properties": {
     "kind": {
       "type": "string",
-      "enum": ["param", "const", "bin_op", "un_op", "call", "unknown"]
+      "enum": ["param", "const", "bin_op", "un_op", "call", "ite", "unknown"]
     }
   },
   "oneOf": [
@@ -88,6 +88,15 @@
         }
       },
       "required": ["kind", "name", "args"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "ite" },
+        "condition": { "$ref": "#", "description": "Branch condition." },
+        "then_expr": { "$ref": "#", "description": "Value if condition is true." },
+        "else_expr": { "$ref": "#", "description": "Value if condition is false." }
+      },
+      "required": ["kind", "condition", "then_expr", "else_expr"]
     },
     {
       "properties": {

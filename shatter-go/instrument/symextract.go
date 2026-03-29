@@ -20,8 +20,11 @@ type symExpr struct {
 	Left     *symExpr  `json:"left,omitempty"`
 	Right    *symExpr  `json:"right,omitempty"`
 	Operand  *symExpr  `json:"operand,omitempty"`
-	Receiver *symExpr  `json:"receiver,omitempty"`
-	Args     []symExpr `json:"args,omitempty"`
+	Receiver  *symExpr  `json:"receiver,omitempty"`
+	Args      []symExpr `json:"args,omitempty"`
+	Condition *symExpr  `json:"condition,omitempty"`
+	ThenExpr  *symExpr  `json:"then_expr,omitempty"`
+	ElseExpr  *symExpr  `json:"else_expr,omitempty"`
 }
 
 // symConstraint is either an expression constraint or an unknown hint.

@@ -627,3 +627,18 @@ allowed_divergences:
       Intentional permanent divergence for the Rust frontend analyze stub.
       When/if the Rust frontend gains full static analysis, it should emit
       medium_opacity following the same heuristics as TypeScript and Go.
+
+  - id: ite-symexpr-production-partial
+    description: >
+      The ite SymExpr variant represents SSA phi-node merges from conditional
+      variable reassignment. TypeScript produces ite expressions via data flow
+      analysis in visitStatementsForDataFlow (str-4kop). Go and Rust frontends
+      can deserialize ite (struct fields / enum variant present) but do not
+      produce ite because they lack data flow tracking. Go only resolves
+      function parameters in exprToSymExpr; Rust frontend analyze is a stub.
+    affected_frontends: [go, rust]
+    affected_commands: [analyze]
+    status: tracked
+    resolution: >
+      Add data flow tracking to Go frontend (separate issue). Rust frontend
+      deferred until full analyze implementation lands.

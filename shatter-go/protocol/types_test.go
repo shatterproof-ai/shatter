@@ -258,6 +258,47 @@ func TestSymExprRoundTripBinOp(t *testing.T) {
 	}
 }
 
+func TestSymExprRoundTripIte(t *testing.T) {
+	expr := SymExpr{
+		Kind: "ite",
+		Condition: &SymExpr{
+			Kind: "param",
+			Name: "flag",
+			Path: []string{},
+		},
+		ThenExpr: &SymExpr{
+			Kind: "param",
+			Name: "b",
+			Path: []string{},
+		},
+		ElseExpr: &SymExpr{
+			Kind: "param",
+			Name: "a",
+			Path: []string{},
+		},
+	}
+	data, err := json.Marshal(expr)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded SymExpr
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Kind != "ite" {
+		t.Errorf("kind = %q, want ite", decoded.Kind)
+	}
+	if decoded.Condition == nil || decoded.Condition.Name != "flag" {
+		t.Errorf("condition.name = %v, want flag", decoded.Condition)
+	}
+	if decoded.ThenExpr == nil || decoded.ThenExpr.Name != "b" {
+		t.Errorf("then_expr.name = %v, want b", decoded.ThenExpr)
+	}
+	if decoded.ElseExpr == nil || decoded.ElseExpr.Name != "a" {
+		t.Errorf("else_expr.name = %v, want a", decoded.ElseExpr)
+	}
+}
+
 func TestFunctionAnalysisExportedField(t *testing.T) {
 	tests := []struct {
 		name     string

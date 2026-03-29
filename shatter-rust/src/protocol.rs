@@ -157,6 +157,11 @@ pub enum SymExpr {
         #[serde(default)]
         args: Vec<SymExpr>,
     },
+    Ite {
+        condition: Box<SymExpr>,
+        then_expr: Box<SymExpr>,
+        else_expr: Box<SymExpr>,
+    },
     Unknown,
 }
 
@@ -685,6 +690,31 @@ mod tests {
         } else {
             panic!("expected Object, got {:?}", nested);
         }
+    }
+
+    #[test]
+    fn symexpr_ite_round_trips() {
+        round_trip(&SymExpr::Ite {
+            condition: Box::new(SymExpr::Param {
+                name: "flag".into(),
+                path: vec![],
+            }),
+            then_expr: Box::new(SymExpr::Param {
+                name: "b".into(),
+                path: vec![],
+            }),
+            else_expr: Box::new(SymExpr::Param {
+                name: "a".into(),
+                path: vec![],
+            }),
+        });
+    }
+
+    #[test]
+    fn symexpr_ite_deserializes_from_json() {
+        let json = r#"{"kind":"ite","condition":{"kind":"param","name":"flag","path":[]},"then_expr":{"kind":"param","name":"b","path":[]},"else_expr":{"kind":"param","name":"a","path":[]}}"#;
+        let expr: SymExpr = serde_json::from_str(json).expect("deserialize ite");
+        assert!(matches!(expr, SymExpr::Ite { .. }));
     }
 
     // -- Request deserialization tests for new commands --

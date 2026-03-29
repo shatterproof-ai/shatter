@@ -20,6 +20,11 @@ known_drifts:
   - pattern: "side_effects.*global_mutation"
     reason: "Go does not yet capture global_mutation side effects; only TS emits this kind (see go-side-effects-partial)"
 
+  # ite SymExpr production divergence: TS produces ite via SSA phi-node merging
+  # in data flow analysis. Go and Rust can deserialize ite but do not produce it.
+  - pattern: "condition.*ite"
+    reason: "Only TS produces ite SymExpr from conditional reassignment; Go/Rust lack data flow tracking (str-4kop)"
+
 frontends:
   noop:
     command: ["bash", "protocol/noop-frontend.sh"]
