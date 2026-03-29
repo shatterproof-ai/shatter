@@ -35,6 +35,7 @@ pub mod frontier;
 pub mod frontend;
 pub mod harness_storage;
 pub mod genetic;
+pub mod genetic_explorer;
 pub mod genetic_fitness;
 pub mod input_gen;
 pub mod interesting_pool;
