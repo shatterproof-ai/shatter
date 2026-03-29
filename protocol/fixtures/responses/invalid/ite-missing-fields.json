@@ -1,0 +1,27 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 2,
+  "status": "analyze",
+  "functions": [
+    {
+      "name": "broken",
+      "params": [],
+      "branches": [
+        {
+          "id": 0,
+          "line": 1,
+          "condition_text": "x > 10",
+          "condition": {
+            "kind": "ite",
+            "condition": { "kind": "param", "name": "flag", "path": [] }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": { "kind": "int" },
+      "start_line": 1,
+      "end_line": 5
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 2,
+  "status": "analyze",
+  "functions": [
+    {
+      "name": "conditionalReassign",
+      "params": [
+        {
+          "name": "a",
+          "type": { "kind": "int" }
+        },
+        {
+          "name": "b",
+          "type": { "kind": "int" }
+        },
+        {
+          "name": "flag",
+          "type": { "kind": "bool" }
+        }
+      ],
+      "branches": [
+        {
+          "id": 0,
+          "line": 3,
+          "condition_text": "flag",
+          "condition": {
+            "kind": "param",
+            "name": "flag",
+            "path": []
+          },
+          "branch_type": "if"
+        },
+        {
+          "id": 1,
+          "line": 6,
+          "condition_text": "x > 10",
+          "condition": {
+            "kind": "bin_op",
+            "op": "gt",
+            "left": {
+              "kind": "ite",
+              "condition": { "kind": "param", "name": "flag", "path": [] },
+              "then_expr": { "kind": "param", "name": "b", "path": [] },
+              "else_expr": { "kind": "param", "name": "a", "path": [] }
+            },
+            "right": { "kind": "const", "type": "int", "value": 10 }
+          },
+          "branch_type": "if"
+        }
+      ],
+      "dependencies": [],
+      "return_type": { "kind": "int" },
+      "start_line": 1,
+      "end_line": 10
+    }
+  ]
+}
