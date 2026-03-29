@@ -556,6 +556,15 @@ async fn main() -> ExitCode {
                 Err(e) => Err(e),
             }
         }
+        CliCommand::Compare { spec_a, spec_b, json } => {
+            match commands::compare::run_compare(&spec_a, &spec_b, json, use_color) {
+                Ok(has_divergences) => {
+                    let code = if has_divergences { 1 } else { 0 };
+                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                }
+                Err(e) => Err(e),
+            }
+        }
         CliCommand::BuildFrontend {
             language,
             config,

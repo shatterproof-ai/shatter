@@ -14,6 +14,7 @@ pub mod call_graph;
 pub mod cache;
 pub mod canonical_json;
 pub mod checkpoint;
+pub mod compare;
 pub mod config;
 pub mod crypto_registry;
 pub mod core_sample;

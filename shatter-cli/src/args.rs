@@ -1034,6 +1034,26 @@ pub(crate) enum CliCommand {
         json: bool,
     },
 
+    /// Compare two function implementations across languages by input/output behavior.
+    ///
+    /// Ignores branch paths (which are language-specific) and compares only
+    /// concrete examples: same inputs should produce same outputs.
+    /// Accepts two spec JSON files (as produced by `explore --spec-json`).
+    /// Exit code is 0 when all shared behaviors match, nonzero when divergences are found.
+    Compare {
+        /// Path to the first spec JSON file (e.g., TypeScript implementation).
+        #[arg(required = true)]
+        spec_a: PathBuf,
+
+        /// Path to the second spec JSON file (e.g., Go implementation).
+        #[arg(required = true)]
+        spec_b: PathBuf,
+
+        /// Output the comparison result as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Build a custom frontend binary with user-provided native generators.
     ///
     /// Reads generator paths from `.shatter/config.yaml`, compiles a custom
@@ -2313,6 +2333,50 @@ mod tests {
         assert!(result.is_err());
 
         let result = Cli::try_parse_from(["shatter", "spec-diff", "only-one.json"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_parses_compare_subcommand() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "compare",
+            "spec_a.json",
+            "spec_b.json",
+        ]);
+        match cli.command {
+            CliCommand::Compare { spec_a, spec_b, json } => {
+                assert_eq!(spec_a, PathBuf::from("spec_a.json"));
+                assert_eq!(spec_b, PathBuf::from("spec_b.json"));
+                assert!(!json);
+            }
+            _ => panic!("expected Compare command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_compare_with_json_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "compare",
+            "--json",
+            "spec_a.json",
+            "spec_b.json",
+        ]);
+        match cli.command {
+            CliCommand::Compare { json, .. } => {
+                assert!(json);
+            }
+            _ => panic!("expected Compare command"),
+        }
+    }
+
+    #[test]
+    fn cli_compare_requires_both_arguments() {
+        let result = Cli::try_parse_from(["shatter", "compare"]);
+        assert!(result.is_err());
+
+        let result = Cli::try_parse_from(["shatter", "compare", "only-one.json"]);
         assert!(result.is_err());
     }
 
