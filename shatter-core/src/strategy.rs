@@ -1,10 +1,33 @@
-//! Input generation strategy trait and adaptive meta-strategy.
+//! Input generation strategy traits and adaptive meta-strategy.
 //!
-//! Each input source (literals, boundary seeds, pool, random, Z3 solver, fuzzer,
-//! user-provided) implements [`InputStrategy`]. The [`MetaStrategy`] selects
-//! among registered strategies using outcome-based adaptive scoring.
+//! # Strategy Tiers
+//!
+//! Strategies are organized into two tiers:
+//!
+//! - **Vector-level** ([`InputStrategy`]): operates on the full `Vec<Value>` input
+//!   vector. All seeding strategies (user-provided, literals, boundary, pool),
+//!   generation strategies (random), and solver strategies (Z3) live here.
+//! - **Value-level** ([`ValueStrategy`]): operates on a single `Value` given its
+//!   type. Atomic mutation building blocks (type-aware mutation, char mutation,
+//!   havoc, fragment injection). See [`crate::value_strategy`].
+//!
+//! The [`FuzzerStrategy`] operates at **both** levels: crossover is vector-level,
+//! while per-parameter mutation delegates to value-level logic via
+//! [`mutate_value`](crate::input_gen::mutate_value).
+//!
+//! [`ValueToVectorAdapter`] bridges the two tiers, lifting any [`ValueStrategy`]
+//! into an [`InputStrategy`] by applying it per-parameter.
+//!
+//! The [`MetaStrategy`] selects among registered vector-level strategies using
+//! outcome-based adaptive scoring.
+//!
+//! [`ValueStrategy`]: crate::value_strategy::ValueStrategy
+//! [`ValueToVectorAdapter`]: crate::value_strategy::ValueToVectorAdapter
 
 use serde_json::Value;
+
+// Re-export value-level strategy types for convenience.
+pub use crate::value_strategy::{TypeAwareMutator, ValueStrategy, ValueToVectorAdapter};
 
 use crate::boundary_dict::generate_boundary_inputs;
 use crate::input_gen::{crossover_inputs, generate_random_inputs, literals_to_candidate_inputs, mutate_inputs};
@@ -41,14 +64,45 @@ impl StrategyContext {
 }
 
 // ---------------------------------------------------------------------------
+// StrategyTier — classification of strategy operational level
+// ---------------------------------------------------------------------------
+
+/// Classification of an input strategy by the level at which it operates.
+///
+/// Strategies fall into three tiers based on whether they produce/transform
+/// complete input vectors, individual values, or both. This classification
+/// enables the orchestrator and future GA population management (str-gx5)
+/// to compose strategies at the correct level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategyTier {
+    /// Produces or transforms complete input vectors as atomic units.
+    /// Examples: boundary seeds, pool seeding, parameter drilling, Z3 solver.
+    Vector,
+    /// Produces or transforms individual values within an input vector.
+    /// Examples: char mutation, havoc mode, fragment injection.
+    Value,
+    /// Operates at both vector and value levels.
+    /// Example: fuzzer with crossover (vector) + mutation (value).
+    Hybrid,
+}
+
+// ---------------------------------------------------------------------------
 // InputStrategy trait
 // ---------------------------------------------------------------------------
 
-/// A composable input generation strategy.
+/// A composable vector-level input generation strategy.
 ///
-/// Strategies produce candidate input vectors and optionally react to execution
-/// feedback. The [`MetaStrategy`] polls strategies by adaptive priority and
-/// fans out feedback to all registered strategies after each execution.
+/// # Tier: Vector
+///
+/// Strategies produce candidate input vectors (`Vec<Value>`) and optionally
+/// react to execution feedback. The [`MetaStrategy`] polls strategies by
+/// adaptive priority and fans out feedback to all registered strategies
+/// after each execution.
+///
+/// For value-level strategies that operate on a single `Value`, see
+/// [`ValueStrategy`](crate::value_strategy::ValueStrategy). Use
+/// [`ValueToVectorAdapter`](crate::value_strategy::ValueToVectorAdapter)
+/// to lift a value strategy into this trait.
 pub trait InputStrategy: Send {
     /// Produce the next candidate input vector, or `None` if exhausted.
     fn next(&mut self, ctx: &StrategyContext) -> Option<Vec<Value>>;
@@ -82,6 +136,15 @@ pub trait InputStrategy: Send {
     fn is_finite(&self) -> bool {
         true
     }
+
+    /// The operational tier of this strategy.
+    ///
+    /// Used for classification, logging, and composability. Most strategies
+    /// produce complete input vectors (`Vector`). Override for strategies
+    /// that mutate individual values (`Value`) or do both (`Hybrid`).
+    fn tier(&self) -> StrategyTier {
+        StrategyTier::Vector
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +152,8 @@ pub trait InputStrategy: Send {
 // ---------------------------------------------------------------------------
 
 /// Strategy that yields user-provided candidate inputs in order.
+///
+/// # Tier: Vector
 ///
 /// Exhaustible: returns `None` once all candidates have been yielded.
 /// Feedback is ignored — the input list is fixed at construction time.
@@ -128,6 +193,8 @@ impl InputStrategy for UserProvidedStrategy {
 // ---------------------------------------------------------------------------
 
 /// Yields inputs derived from literals extracted during static analysis.
+///
+/// # Tier: Vector
 ///
 /// Pre-computes candidates via [`literals_to_candidate_inputs`] at construction
 /// time, then yields them one at a time. Does not apply any budget cap — that
@@ -172,6 +239,8 @@ impl InputStrategy for LiteralsStrategy {
 
 /// Infinite strategy that generates random inputs matching parameter types.
 ///
+/// # Tier: Vector
+///
 /// Wraps [`generate_random_inputs`] with an owned RNG. Seeded for
 /// reproducibility or from system entropy.
 pub struct RandomStrategy {
@@ -210,6 +279,8 @@ impl InputStrategy for RandomStrategy {
 // ---------------------------------------------------------------------------
 
 /// Yields pre-computed boundary-value input vectors using pairwise coverage.
+///
+/// # Tier: Vector
 ///
 /// For each parameter position, every boundary value for that parameter's type
 /// is paired with neutral defaults for all other parameters. This caps the
@@ -388,6 +459,11 @@ impl MetaStrategy {
     /// The name of the strategy at the given index.
     pub fn strategy_name(&self, idx: usize) -> &str {
         self.states[idx].strategy.name()
+    }
+
+    /// The operational tier of the strategy at the given index.
+    pub fn strategy_tier(&self, idx: usize) -> StrategyTier {
+        self.states[idx].strategy.tier()
     }
 
     /// Number of registered strategies.
@@ -587,6 +663,8 @@ fn weighted_select(candidates: &[(usize, f64)], rng: &mut impl Rng) -> usize {
 
 /// Exhaustible strategy that yields pre-collected pool seed inputs from
 /// cross-function seed sharing (`.shatter/seeds/pool.json`).
+///
+/// # Tier: Vector
 pub struct PoolSeedsStrategy {
     seeds: Vec<Vec<Value>>,
     index: usize,
@@ -633,6 +711,12 @@ const FUZZER_CROSSOVER_RATE: f64 = 0.7;
 
 /// Infinite strategy that mutates and crosses over inputs which hit Unknown
 /// constraints or discovered new paths.
+///
+/// # Tier: Both (Vector + Value)
+///
+/// Crossover (`crossover_inputs`) is a vector-level operation — it recombines
+/// entire input vectors. Per-parameter mutation (`mutate_inputs` →
+/// `mutate_value`) is a value-level operation applied across the vector.
 ///
 /// Feedback records interesting inputs (those reaching branches with no
 /// symbolic constraint, or discovering new coverage). `next()` draws from
@@ -733,6 +817,10 @@ impl InputStrategy for FuzzerStrategy {
     fn is_finite(&self) -> bool {
         false
     }
+
+    fn tier(&self) -> StrategyTier {
+        StrategyTier::Hybrid
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +832,8 @@ const Z3_SOLVER_STRATEGY_NAME: &str = "z3_solver";
 
 /// Reactive strategy that uses Z3 constraint solving to generate inputs
 /// targeting unexplored branches.
+///
+/// # Tier: Vector
 ///
 /// `feedback()` extracts symbolic constraints from execution results, negates
 /// each solvable constraint, solves with Z3, and overlays solutions onto the
@@ -1845,5 +1935,56 @@ mod tests {
                 }
             }
         }
+
+    // --- StrategyTier classification tests ---
+
+    #[test]
+    fn strategy_tier_classification() {
+        let user = UserProvidedStrategy::new(vec![]);
+        assert_eq!(user.tier(), StrategyTier::Vector);
+
+        let literals = LiteralsStrategy::new(&[], &[]);
+        assert_eq!(literals.tier(), StrategyTier::Vector);
+
+        let random = RandomStrategy::new(Some(42));
+        assert_eq!(random.tier(), StrategyTier::Vector);
+
+        let boundary = BoundarySeeds::new(&[]);
+        assert_eq!(boundary.tier(), StrategyTier::Vector);
+
+        let pool = PoolSeedsStrategy::new(vec![]);
+        assert_eq!(pool.tier(), StrategyTier::Vector);
+
+        let fuzzer = FuzzerStrategy::new(Some(42));
+        assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
+
+        let z3 = Z3SolverStrategy::new(None, vec![], vec![]);
+        assert_eq!(z3.tier(), StrategyTier::Vector);
+    }
+
+    #[test]
+    fn default_tier_is_vector() {
+        let s = FixedStrategy::new("test", vec![]);
+        assert_eq!(s.tier(), StrategyTier::Vector);
+    }
+
+    #[test]
+    fn meta_strategy_tier_query() {
+        let user = UserProvidedStrategy::new(vec![vec![Value::from(1)]]);
+        let fuzzer = FuzzerStrategy::new(Some(42));
+        let meta = MetaStrategy::new(
+            vec![Box::new(user), Box::new(fuzzer)],
+            MetaConfig::default(),
+        );
+        assert_eq!(meta.strategy_tier(0), StrategyTier::Vector);
+        assert_eq!(meta.strategy_tier(1), StrategyTier::Hybrid);
+    }
+
+    #[test]
+    fn hybrid_strategies_are_infinite() {
+        let fuzzer = FuzzerStrategy::new(Some(0));
+        assert!(!fuzzer.is_finite());
+        assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
+    }
     }
 }
