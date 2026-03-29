@@ -336,13 +336,36 @@ function visitStatementsForDataFlow(
         }
       }
     }
-    // Recurse into blocks for if/else, loops, etc.
+    // Track reassignment expressions: x = expr
+    if (ts.isExpressionStatement(stmt)) {
+      const expr = stmt.expression;
+      if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        if (ts.isIdentifier(expr.left)) {
+          const symExpr = buildSymExprWithFlow(expr.right, resolveName);
+          if (symExpr.kind !== "unknown") {
+            flowMap.set(expr.left.text, symExpr);
+          }
+        }
+      }
+    }
+    // SSA-style merge for if/else: snapshot flowMap, visit each branch,
+    // then merge divergent entries as ite(condition, then_value, else_value).
     if (ts.isIfStatement(stmt)) {
+      const condSym = buildSymExprWithFlow(stmt.expression, resolveName);
+      const snapshot = new Map(flowMap);
+
+      // Visit then-branch
       visitStatementsForDataFlow(
         statementsFromBranch(stmt.thenStatement),
         resolveName,
         flowMap,
       );
+      const thenMap = new Map(flowMap);
+
+      // Restore snapshot for else-branch
+      flowMap.clear();
+      for (const [k, v] of snapshot) flowMap.set(k, v);
+
       if (stmt.elseStatement) {
         if (ts.isIfStatement(stmt.elseStatement)) {
           visitStatementsForDataFlow([stmt.elseStatement], resolveName, flowMap);
@@ -354,9 +377,84 @@ function visitStatementsForDataFlow(
           );
         }
       }
+      const elseMap = new Map(flowMap);
+
+      // Merge: produce ite for variables that diverge between branches
+      mergeFlowMaps(condSym, snapshot, thenMap, elseMap, flowMap);
     }
     if (ts.isBlock(stmt)) {
       visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
+    }
+  }
+}
+
+/**
+ * Merge flow maps from then/else branches using SSA phi-node semantics.
+ * For variables that differ between branches, produces an ite(cond, then_val, else_val).
+ * Falls back to last-writer-wins when the condition is unknown.
+ */
+function mergeFlowMaps(
+  condSym: SymExpr,
+  snapshot: Map<string, SymExpr>,
+  thenMap: Map<string, SymExpr>,
+  elseMap: Map<string, SymExpr>,
+  flowMap: Map<string, SymExpr>,
+): void {
+  // If condition is unknown, the solver cannot reason about ite —
+  // fall back to keeping the else-branch state (last-writer-wins behavior).
+  if (condSym.kind === "unknown") {
+    flowMap.clear();
+    for (const [k, v] of elseMap) flowMap.set(k, v);
+    // Also include variables only defined in then-branch
+    for (const [k, v] of thenMap) {
+      if (!flowMap.has(k)) flowMap.set(k, v);
+    }
+    return;
+  }
+
+  // Collect all variable names across both branches
+  const allVars = new Set([...thenMap.keys(), ...elseMap.keys()]);
+  flowMap.clear();
+
+  for (const name of allVars) {
+    const thenVal = thenMap.get(name);
+    const elseVal = elseMap.get(name);
+    const preVal = snapshot.get(name);
+
+    // Both branches have the same value (or both undefined) — no divergence
+    if (thenVal === elseVal) {
+      if (thenVal) flowMap.set(name, thenVal);
+      continue;
+    }
+
+    // Deep equality check for structurally identical SymExprs
+    if (thenVal && elseVal && JSON.stringify(thenVal) === JSON.stringify(elseVal)) {
+      flowMap.set(name, thenVal);
+      continue;
+    }
+
+    // Variable only introduced in one branch (not in pre-if snapshot) —
+    // conditionally defined, not reassigned. Keep whichever branch defined it.
+    if (!preVal && (!thenVal || !elseVal)) {
+      const val = thenVal ?? elseVal;
+      if (val) flowMap.set(name, val);
+      continue;
+    }
+
+    // Divergent values: produce ite
+    const thenExpr = thenVal ?? preVal;
+    const elseExpr = elseVal ?? preVal;
+    if (thenExpr && elseExpr) {
+      flowMap.set(name, {
+        kind: "ite",
+        condition: condSym,
+        then_expr: thenExpr,
+        else_expr: elseExpr,
+      });
+    } else if (thenExpr) {
+      flowMap.set(name, thenExpr);
+    } else if (elseExpr) {
+      flowMap.set(name, elseExpr);
     }
   }
 }

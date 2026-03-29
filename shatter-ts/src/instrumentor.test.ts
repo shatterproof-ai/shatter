@@ -1271,6 +1271,141 @@ describe("data flow tracking", () => {
       },
     });
   });
+
+  it("produces ite for conditional reassignment in if-only (no else)", () => {
+    const source = `function check(a: number, b: number, flag: boolean): number {
+  let x = a;
+  if (flag) {
+    x = b;
+  }
+  if (x > 10) {
+    return 1;
+  }
+  return 0;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [5, 20, true]);
+    // The second branch condition (x > 10) should resolve x as ite(flag, b, a)
+    const secondBranch = branches[1];
+    expect(secondBranch).toBeDefined();
+    expect(secondBranch!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "ite",
+          condition: { kind: "param", name: "flag", path: [] },
+          then_expr: { kind: "param", name: "b", path: [] },
+          else_expr: { kind: "param", name: "a", path: [] },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("produces ite for conditional reassignment in if/else", () => {
+    const source = `function check(a: number, b: number, flag: boolean): number {
+  let x = a;
+  if (flag) {
+    x = b;
+  } else {
+    x = a + 1;
+  }
+  if (x > 10) {
+    return 1;
+  }
+  return 0;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [5, 20, true]);
+    const secondBranch = branches[1];
+    expect(secondBranch).toBeDefined();
+    expect(secondBranch!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "ite",
+          condition: { kind: "param", name: "flag", path: [] },
+          then_expr: { kind: "param", name: "b", path: [] },
+          else_expr: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "a", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("skips ite when condition is unknown", () => {
+    // Use a bare function call with no param args — resolves to fully unknown
+    const source = `function check(a: number, b: number): number {
+  let x = a;
+  const unknownCond = () => true;
+  if (unknownCond()) {
+    x = b;
+  }
+  if (x > 10) {
+    return 1;
+  }
+  return 0;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [5, 20]);
+    // With unknown condition, falls back to last-writer-wins — no ite
+    const secondBranch = branches[1];
+    expect(secondBranch).toBeDefined();
+    // x should NOT be an ite since the condition is unknown
+    const expr = secondBranch!.constraint;
+    if (expr.kind === "expr") {
+      expect(expr.expr.kind).toBe("bin_op");
+      if (expr.expr.kind === "bin_op") {
+        expect(expr.expr.left.kind).not.toBe("ite");
+      }
+    }
+  });
+
+  it("produces no ite when both branches assign the same value", () => {
+    const source = `function check(a: number, flag: boolean): number {
+  let x = a;
+  if (flag) {
+    x = a;
+  } else {
+    x = a;
+  }
+  if (x > 10) {
+    return 1;
+  }
+  return 0;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [5, true]);
+    const secondBranch = branches[1];
+    expect(secondBranch).toBeDefined();
+    // Both branches assign the same value — should be param(a), not ite
+    expect(secondBranch!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: { kind: "param", name: "a", path: [] },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
 });
 
 describe("mock injection via import rewriting", () => {

@@ -133,6 +133,12 @@ const arbSymExpr: fc.Arbitrary<SymExpr> = fc.letrec<{ expr: SymExpr }>(tie => ({
       op: arbUnOpKind,
       operand: tie("expr"),
     }),
+    fc.record({
+      kind: fc.constant("ite" as const),
+      condition: tie("expr"),
+      then_expr: tie("expr"),
+      else_expr: tie("expr"),
+    }),
   ),
 })).expr;
 
@@ -641,7 +647,7 @@ describe("property: SideEffect wire format", () => {
 });
 
 describe("property: SymExpr structural validity", () => {
-  const VALID_KINDS = new Set(["param", "const", "bin_op", "un_op", "call", "unknown"]);
+  const VALID_KINDS = new Set(["param", "const", "bin_op", "un_op", "call", "ite", "unknown"]);
 
   it("every generated SymExpr has a valid kind tag", () => {
     fc.assert(
@@ -680,6 +686,18 @@ describe("property: SymExpr structural validity", () => {
         if (expr.kind === "param") {
           expect(typeof expr.name).toBe("string");
           expect(Array.isArray(expr.path)).toBe(true);
+        }
+      }),
+    );
+  });
+
+  it("ite always has condition, then_expr, and else_expr", () => {
+    fc.assert(
+      fc.property(arbSymExpr, (expr) => {
+        if (expr.kind === "ite") {
+          expect(expr.condition).toBeDefined();
+          expect(expr.then_expr).toBeDefined();
+          expect(expr.else_expr).toBeDefined();
         }
       }),
     );
