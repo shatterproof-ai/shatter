@@ -69,6 +69,15 @@ describe("integer heuristic via analyzeFile", () => {
     expect(results[0]!.params[0]!.type).toEqual({ kind: "float" });
   });
 
+  it("does not refine when param is compared against Math.floor(param) — float-sensitivity check", () => {
+    // `x !== Math.floor(x)` detects fractional part; the veto must fire
+    // even though x < 0 and x === 0 are integer comparison signals
+    const results = analyzeFile(heuristicFixture, "precisionCheck");
+    expect(results).toHaveLength(1);
+    expect(results[0]!.params[0]!.name).toBe("x");
+    expect(results[0]!.params[0]!.type).toEqual({ kind: "float" });
+  });
+
   it("refines param with JSDoc + comparison signals", () => {
     const results = analyzeFile(heuristicFixture, "jsdocInteger");
     expect(results).toHaveLength(1);

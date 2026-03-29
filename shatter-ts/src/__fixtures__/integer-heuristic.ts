@@ -80,6 +80,17 @@ export function roundIt(x: number): number {
   return 0;
 }
 
+// Fractional veto: param compared against Math.floor(param) — float-sensitivity check
+// `x !== Math.floor(x)` detects fractional part; should NOT fire coercion signal
+// Even though x < 0 and x === 0 give comparison signals, the veto kills them
+// Expected: veto → stays float
+export function precisionCheck(x: number): string {
+  if (x !== Math.floor(x)) return "fractional";
+  if (x < 0) return "negative-integer";
+  if (x === 0) return "zero";
+  return "positive-integer";
+}
+
 // Signal 5: JSDoc @param {integer}
 // + Signal 1 (comparison n > 0)
 // Expected: 2 signals → refine to int

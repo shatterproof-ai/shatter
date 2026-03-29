@@ -165,6 +165,26 @@ export function countIntegerSignals(
       return;
     }
 
+    // Check for fractional veto: param compared against Math.floor/trunc/ceil(param)
+    // e.g. `x !== Math.floor(x)` or `Math.floor(x) !== x` — float-sensitivity check
+    if (ts.isBinaryExpression(node) && COMPARISON_OPS.has(node.operatorToken.kind)) {
+      const isMathRoundingCall = (n: ts.Node): boolean =>
+        ts.isCallExpression(n) &&
+        (isMathMethod(n.expression, "floor") ||
+          isMathMethod(n.expression, "trunc") ||
+          isMathMethod(n.expression, "ceil")) &&
+        n.arguments.length > 0 &&
+        isParamRef(n.arguments[0]!, paramName);
+
+      if (
+        (isParamRef(node.left, paramName) && isMathRoundingCall(node.right)) ||
+        (isMathRoundingCall(node.left) && isParamRef(node.right, paramName))
+      ) {
+        hasFractionalVeto = true;
+        return;
+      }
+    }
+
     // Signal 1: Integer comparison literals
     if (ts.isBinaryExpression(node) && COMPARISON_OPS.has(node.operatorToken.kind)) {
       if (
