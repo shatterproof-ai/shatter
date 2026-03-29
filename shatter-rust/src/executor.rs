@@ -1265,7 +1265,7 @@ fn generate_harness(
     // Map result to return_value / thrown_error
     h.push_str("        let (ret_val, err_val) = match result {\n");
     if return_type.is_some() {
-        h.push_str("            Ok(v) => (Some(serde_json::to_value(&v).unwrap_or(Value::Null)), None),\n");
+        h.push_str("            Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None),\n");
     } else {
         h.push_str("            Ok(()) => (Some(Value::Null), None),\n");
     }
@@ -1422,11 +1422,11 @@ fn generate_dispatch_harness(
         // Map result.
         h.push_str("                match result {\n");
         if return_type.is_some() {
-            h.push_str("                    Ok(v) => (Some(serde_json::to_value(&v).unwrap_or(Value::Null)), None, wt),\n");
+            h.push_str("                    Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None, wt),\n");
         } else {
             h.push_str("                    Ok(()) => (Some(Value::Null), None, wt),\n");
         }
-        h.push_str("                    Err(msg) => (None, Some(serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg})), wt),\n");
+        h.push_str("                    Err(ref msg) => (None, Some(serde_json::json!({\"error_type\": \"runtime_error\", \"message\": msg})), wt),\n");
         h.push_str("                }\n");
         h.push_str("            }\n");
     }
@@ -1958,7 +1958,7 @@ fn generate_crate_bridge_wrapper(
 
         if return_type.is_some() {
             w.push_str("    match result {\n");
-            w.push_str("        Ok(ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(&ret_val).unwrap_or(Value::Null)); }\n");
+            w.push_str("        Ok(ref ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
         } else {
             w.push_str("    match result {\n");
             w.push_str("        Ok(()) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
@@ -2913,6 +2913,78 @@ mod tests {
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
         assert!(harness.contains("run_harness_loop"));
+    }
+
+    /// Regression test for str-dcln: Result-returning functions must use
+    /// `Ok(ref v)` to avoid partial move of the `result` variable.
+    #[test]
+    fn generate_harness_result_returning_uses_ref_binding() {
+        let source = r#"fn safe_divide(a: f64, b: f64) -> Result<f64, String> {
+            if b == 0.0 { Err("division by zero".to_string()) } else { Ok(a / b) }
+        }"#;
+        let harness = generate_harness(
+            source,
+            "safe_divide",
+            &["a".to_string(), "b".to_string()],
+            &["f64".to_string(), "f64".to_string()],
+            Some("Result < f64 , String >"),
+            "[]",
+            &[],
+        )
+        .unwrap();
+        assert!(
+            harness.contains("Ok(ref v)"),
+            "harness for Result-returning fn must use Ok(ref v) to avoid partial move\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("Err(ref msg)"),
+            "harness must use Err(ref msg)\n\nharness:\n{harness}"
+        );
+    }
+
+    /// Regression test for str-dcln: dispatch harness must use `Ok(ref v)`
+    /// and `Err(ref msg)` to avoid partial move of the `result` variable.
+    #[test]
+    fn generate_dispatch_harness_result_returning_uses_ref_binding() {
+        let source = r#"fn safe_divide(a: f64, b: f64) -> Result<f64, String> {
+            if b == 0.0 { Err("division by zero".to_string()) } else { Ok(a / b) }
+        }"#;
+        let fns = vec![CompatFn {
+            name: "safe_divide".to_string(),
+            param_names: vec!["a".to_string(), "b".to_string()],
+            param_types: vec!["f64".to_string(), "f64".to_string()],
+            return_type: Some("Result < f64 , String >".to_string()),
+        }];
+        let harness = generate_dispatch_harness(source, &fns, "[]", &[]).unwrap();
+        assert!(
+            harness.contains("Ok(ref v)"),
+            "dispatch harness for Result-returning fn must use Ok(ref v)\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("Err(ref msg)"),
+            "dispatch harness must use Err(ref msg)\n\nharness:\n{harness}"
+        );
+    }
+
+    /// Regression test for str-dcln: crate-bridge wrapper must use `Ok(ref ret_val)`
+    /// to avoid partial move — `result` is reused after the match for side-effect capture.
+    #[test]
+    fn generate_crate_bridge_wrapper_result_returning_uses_ref_binding() {
+        let fns = vec![CompatFn {
+            name: "safe_divide".to_string(),
+            param_names: vec!["a".to_string(), "b".to_string()],
+            param_types: vec!["f64".to_string(), "f64".to_string()],
+            return_type: Some("Result < f64 , String >".to_string()),
+        }];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(
+            wrapper.contains("Ok(ref ret_val)"),
+            "crate-bridge wrapper must use Ok(ref ret_val)\n\nwrapper:\n{wrapper}"
+        );
+        assert!(
+            wrapper.contains("Err(ref panic_info)"),
+            "crate-bridge wrapper must use Err(ref panic_info)\n\nwrapper:\n{wrapper}"
+        );
     }
 
     /// Reproduction test for str-cfhk: source with `fn main()` must not
