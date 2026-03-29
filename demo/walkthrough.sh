@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=58
+TOTAL=59
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -489,8 +489,15 @@ step 27 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
     bash -c "$SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json && $SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
-# Stage 27: Explore without boundary values
-step 28 $TOTAL "Explore Without Boundary Values" \
+# Stage 27: Cross-language compare
+# Reuses the v1 and v2 spec files from step 27 to demonstrate cross-language
+# behavioral comparison. Compares by input/output behavior, ignoring branch paths.
+step 28 $TOTAL "Cross-Language Compare" \
+    "Compare two specs by input/output behavior (ignoring language-specific branch paths)" \
+    bash -c "$SHATTER compare /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true"
+
+# Stage 28: Explore without boundary values
+step 29 $TOTAL "Explore Without Boundary Values" \
     "Disable built-in boundary value seeding with --no-boundary-values" \
     $SHATTER explore --no-boundary-values "${EXAMPLES[0]}"
 
