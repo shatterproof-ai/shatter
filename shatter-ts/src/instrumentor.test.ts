@@ -1408,6 +1408,143 @@ describe("data flow tracking", () => {
   });
 });
 
+describe("closure over mutable state", () => {
+  it("preserves symbolic link for const capture (safe)", () => {
+    // const y is safe — closure captures an immutable binding
+    const source = `function check(x: number): boolean {
+  const y = x + 1;
+  const f = () => y;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "param", name: "x", path: [] },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("poisons let variable captured by closure when mutated after", () => {
+    // let y captured by closure, then y++ (compound mutation not tracked by flowMap)
+    // Poisoning marks y as unknown so the stale symbolic link isn't used
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  const f = () => y;
+  y++;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    const expr = branches[0]!.constraint;
+    expect(expr.kind).toBe("expr");
+    if (expr.kind === "expr") {
+      expect(expr.expr.kind).toBe("bin_op");
+      if (expr.expr.kind === "bin_op") {
+        expect(expr.expr.left.kind).toBe("unknown");
+      }
+    }
+  });
+
+  it("preserves symbolic link for let variable not reassigned after closure", () => {
+    // let y captured but no mutation follows — safe to keep symbolic link
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  const f = () => y;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "param", name: "x", path: [] },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("poisons var variable captured by closure when mutated after", () => {
+    // var y captured, then y += 5 (compound assignment, not tracked by flowMap)
+    const source = `function check(x: number): boolean {
+  var y = x + 1;
+  const f = () => y;
+  y += 5;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    const expr = branches[0]!.constraint;
+    expect(expr.kind).toBe("expr");
+    if (expr.kind === "expr") {
+      expect(expr.expr.kind).toBe("bin_op");
+      if (expr.expr.kind === "bin_op") {
+        expect(expr.expr.left.kind).toBe("unknown");
+      }
+    }
+  });
+
+  it("only poisons the captured-and-mutated variable, not unaffected ones", () => {
+    // x is captured by f and mutated afterward — poisoned
+    // y is NOT captured by f and not mutated — stays symbolic
+    const source = `function check(a: number, b: number): boolean {
+  let x = a + 1;
+  let y = b + 1;
+  const f = () => x;
+  x++;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20, 20]);
+    // y was never captured or mutated — should stay symbolic
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "param", name: "b", path: [] },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+});
+
 describe("mock injection via import rewriting", () => {
   it("rewrites import with mocked symbol to use mock registry", () => {
     const source = `import { foo } from 'bar';

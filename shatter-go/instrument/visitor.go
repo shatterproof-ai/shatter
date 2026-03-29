@@ -73,7 +73,7 @@ func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string
 			transformRangeStmt(fset, s, params, branchID, loopID, callSiteID)
 		}
 		// Instrument function literals in expressions (callbacks).
-		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID)
+		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, block)
 		newList = append(newList, stmt)
 	}
 	block.List = newList
@@ -261,7 +261,8 @@ func makeDeferScopeRecordStmt(kind string, id int) ast.Stmt {
 
 // instrumentFuncLits walks the statement's expression tree and instruments
 // any function literals (closures) with call scope markers.
-func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+// enclosingBlock is used to check if captured outer params are reassigned after the closure.
+func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bool, branchID, loopID, callSiteID *int, enclosingBlock *ast.BlockStmt) {
 	ast.Inspect(stmt, func(n ast.Node) bool {
 		fl, ok := n.(*ast.FuncLit)
 		if !ok || fl.Body == nil {
@@ -274,9 +275,18 @@ func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bo
 			makeDeferScopeRecordStmt("call_exit", id),
 		}, fl.Body.List...)
 
+		// Collect identifiers referenced inside the closure body.
+		capturedIdents := collectIdentifiers(fl.Body)
+
 		// Build param set from the FuncLit's own parameters.
 		funcParams := make(map[string]bool)
 		for k, v := range params {
+			// Exclude outer params that are captured by the closure and
+			// reassigned after the closure's position in the enclosing block.
+			// Go closures capture by reference, so the symbolic link is unreliable.
+			if capturedIdents[k] && enclosingBlock != nil && isReassignedAfter(k, enclosingBlock.List, fl.Pos()) {
+				continue
+			}
 			funcParams[k] = v
 		}
 		if fl.Type.Params != nil {
@@ -289,4 +299,80 @@ func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bo
 		transformBlock(fset, fl.Body, funcParams, branchID, loopID, callSiteID)
 		return false // don't recurse into the body again
 	})
+}
+
+// collectIdentifiers walks an AST node and returns all identifier names referenced.
+// Skips parameter names of nested FuncLit nodes (they shadow, not capture).
+func collectIdentifiers(node ast.Node) map[string]bool {
+	idents := make(map[string]bool)
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			// Don't recurse into nested closures — their params shadow
+			if x != node {
+				return false
+			}
+		case *ast.Ident:
+			idents[x.Name] = true
+		}
+		return true
+	})
+	return idents
+}
+
+// isReassignedAfter checks if varName is assigned in any statement in stmts
+// that appears after the given position.
+func isReassignedAfter(varName string, stmts []ast.Stmt, pos token.Pos) bool {
+	for _, stmt := range stmts {
+		if stmt.Pos() <= pos {
+			continue
+		}
+		if hasAssignment(varName, stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAssignment checks if a node contains an assignment to varName.
+func hasAssignment(varName string, node ast.Node) bool {
+	found := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		// Skip nested function literals — they have their own scope
+		if fl, ok := n.(*ast.FuncLit); ok && fl != node {
+			return false
+		}
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name == varName {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	// Also check for increment/decrement statements
+	if !found {
+		ast.Inspect(node, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			inc, ok := n.(*ast.IncDecStmt)
+			if !ok {
+				return true
+			}
+			if ident, ok := inc.X.(*ast.Ident); ok && ident.Name == varName {
+				found = true
+				return false
+			}
+			return true
+		})
+	}
+	return found
 }

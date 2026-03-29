@@ -320,7 +320,9 @@ function visitStatementsForDataFlow(
   resolveName: (name: string) => SymExpr | undefined,
   flowMap: Map<string, SymExpr>,
 ): void {
-  for (const stmt of statements) {
+  const stmtArray = Array.from(statements);
+  for (let i = 0; i < stmtArray.length; i++) {
+    const stmt = stmtArray[i]!;
     if (ts.isVariableStatement(stmt)) {
       for (const decl of stmt.declarationList.declarations) {
         if (ts.isIdentifier(decl.name) && decl.initializer) {
@@ -384,6 +386,20 @@ function visitStatementsForDataFlow(
     }
     if (ts.isBlock(stmt)) {
       visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
+    }
+
+    // Detect closures that capture mutable variables reassigned after this point.
+    // Poison those variables to {kind: 'unknown'} so the solver doesn't use stale links.
+    const closures = findClosuresInNode(stmt);
+    for (const closure of closures) {
+      const freeVars = collectFreeIdentifiers(closure);
+      for (const varName of freeVars) {
+        if (!flowMap.has(varName)) continue;
+        if (isConstDeclaration(varName, stmtArray)) continue;
+        if (hasReassignmentInStatements(varName, stmtArray, i + 1)) {
+          flowMap.set(varName, { kind: "unknown" });
+        }
+      }
     }
   }
 }
@@ -464,6 +480,175 @@ function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
     return stmt.statements;
   }
   return [stmt];
+}
+
+// ---------------------------------------------------------------------------
+// Closure mutable-capture detection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Find all arrow functions and function expressions directly contained in a node.
+ * Does NOT recurse into nested function bodies.
+ */
+function findClosuresInNode(node: ts.Node): ts.Node[] {
+  const result: ts.Node[] = [];
+  function walk(n: ts.Node): void {
+    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) {
+      result.push(n);
+      return; // don't recurse into the closure body
+    }
+    // Skip function declarations — they have their own scope
+    if (ts.isFunctionDeclaration(n)) return;
+    ts.forEachChild(n, walk);
+  }
+  ts.forEachChild(node, walk);
+  return result;
+}
+
+/**
+ * Collect all free identifier references in a closure node.
+ * Skips the closure's own parameters, local variable declarations inside the
+ * closure, property names in property access expressions, and parameters of
+ * nested closures (they shadow, not capture).
+ */
+function collectFreeIdentifiers(closureNode: ts.Node): Set<string> {
+  const freeVars = new Set<string>();
+  const localDecls = new Set<string>();
+
+  // Collect the closure's own parameter names
+  const closureParams = new Set<string>();
+  if (ts.isArrowFunction(closureNode) || ts.isFunctionExpression(closureNode)) {
+    for (const param of closureNode.parameters) {
+      if (ts.isIdentifier(param.name)) {
+        closureParams.add(param.name.text);
+      }
+    }
+  }
+
+  function walk(n: ts.Node): void {
+    // Skip nested function params (they shadow)
+    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) {
+      if (n !== closureNode) return; // don't recurse into nested closures
+    }
+
+    // Track local variable declarations inside the closure
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+      localDecls.add(n.name.text);
+    }
+
+    // Skip property names in property access (x.foo — 'foo' is not a free var)
+    if (ts.isPropertyAccessExpression(n)) {
+      walk(n.expression);
+      // Skip n.name — it's a property, not a free identifier
+      return;
+    }
+
+    if (ts.isIdentifier(n)) {
+      const name = n.text;
+      if (!closureParams.has(name) && !localDecls.has(name)) {
+        freeVars.add(name);
+      }
+      return;
+    }
+
+    ts.forEachChild(n, walk);
+  }
+
+  // Walk the closure body
+  if (ts.isArrowFunction(closureNode) || ts.isFunctionExpression(closureNode)) {
+    if (closureNode.body) {
+      walk(closureNode.body);
+    }
+  }
+
+  return freeVars;
+}
+
+/**
+ * Check if a variable is reassigned in statements starting from startIndex.
+ * Recursively checks nested blocks, if/else branches, and loops.
+ */
+function hasReassignmentInStatements(
+  varName: string,
+  statements: ReadonlyArray<ts.Statement>,
+  startIndex: number,
+): boolean {
+  for (let j = startIndex; j < statements.length; j++) {
+    if (hasReassignmentInNode(varName, statements[j]!)) return true;
+  }
+  return false;
+}
+
+function hasReassignmentInNode(varName: string, node: ts.Node): boolean {
+  // Simple assignment: x = expr
+  if (ts.isBinaryExpression(node)) {
+    const assignOps = [
+      ts.SyntaxKind.EqualsToken,
+      ts.SyntaxKind.PlusEqualsToken,
+      ts.SyntaxKind.MinusEqualsToken,
+      ts.SyntaxKind.AsteriskEqualsToken,
+      ts.SyntaxKind.SlashEqualsToken,
+      ts.SyntaxKind.PercentEqualsToken,
+      ts.SyntaxKind.AmpersandEqualsToken,
+      ts.SyntaxKind.BarEqualsToken,
+      ts.SyntaxKind.CaretEqualsToken,
+      ts.SyntaxKind.LessThanLessThanEqualsToken,
+      ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+      ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+    ];
+    if (assignOps.includes(node.operatorToken.kind) && ts.isIdentifier(node.left) && node.left.text === varName) {
+      return true;
+    }
+  }
+  // Prefix/postfix increment/decrement: ++x, x++, --x, x--
+  if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
+    const op = node.operator;
+    if ((op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) &&
+        ts.isIdentifier(node.operand) && node.operand.text === varName) {
+      return true;
+    }
+  }
+  // Don't recurse into nested function bodies — they have their own scope
+  if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    return false;
+  }
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && hasReassignmentInNode(varName, child)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+/**
+ * Check if a variable was declared with `const` in the given statements.
+ */
+function isConstDeclaration(
+  varName: string,
+  statements: ReadonlyArray<ts.Statement>,
+): boolean {
+  for (const stmt of statements) {
+    if (ts.isVariableStatement(stmt)) {
+      const isConst = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
+      if (isConst) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.name.text === varName) {
+            return true;
+          }
+          // Check destructured bindings
+          if (ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) {
+            for (const el of decl.name.elements) {
+              if (ts.isBindingElement(el) && ts.isIdentifier(el.name) && el.name.text === varName) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /**
