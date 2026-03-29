@@ -287,6 +287,75 @@ func F(x int) {
 	}
 }
 
+func TestClosureCapturedParamNotReassigned(t *testing.T) {
+	// Param x is captured by closure but NOT reassigned afterward.
+	// The closure should inherit x in its param set — branch constraint should be symbolic.
+	src := `package main
+
+func F(x int) {
+	f := func() bool {
+		if x > 0 {
+			return true
+		}
+		return false
+	}
+	_ = f()
+}
+`
+	out, _ := transformSource(t, src, nil)
+	// The closure's if-condition should reference x as a param (JSON is escaped in Go string)
+	if !strings.Contains(out, `\"kind\":\"param\",\"name\":\"x\"`) {
+		t.Errorf("expected param constraint in closure, got unknown\noutput:\n%s", out)
+	}
+}
+
+func TestClosureCapturedParamReassignedAfter(t *testing.T) {
+	// Param x is captured by closure and reassigned AFTER the closure definition.
+	// The closure should NOT inherit x — branch constraint should be unknown.
+	src := `package main
+
+func F(x int) {
+	f := func() bool {
+		if x > 0 {
+			return true
+		}
+		return false
+	}
+	x = 42
+	_ = f()
+}
+`
+	out, _ := transformSource(t, src, nil)
+	// The closure's if-condition should NOT have x as a param (should be unknown)
+	if strings.Contains(out, `\"kind\":\"param\",\"name\":\"x\"`) {
+		t.Errorf("expected x to be excluded from closure params due to reassignment\noutput:\n%s", out)
+	}
+}
+
+func TestClosureUncapturedParamReassigned(t *testing.T) {
+	// Param x is reassigned but NOT captured by the closure.
+	// Param y is captured but NOT reassigned.
+	// The closure should inherit y but not care about x.
+	src := `package main
+
+func F(x int, y int) {
+	f := func() bool {
+		if y > 0 {
+			return true
+		}
+		return false
+	}
+	x = 42
+	_ = f()
+}
+`
+	out, _ := transformSource(t, src, nil)
+	// y should still be a param in the closure (not captured+reassigned)
+	if !strings.Contains(out, `\"kind\":\"param\",\"name\":\"y\"`) {
+		t.Errorf("expected y to be a param in closure\noutput:\n%s", out)
+	}
+}
+
 func TestFuncLitCallScopeMarkers(t *testing.T) {
 	src := `package main
 
