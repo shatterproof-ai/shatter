@@ -31,6 +31,14 @@ pub trait ScmProvider {
 
     /// Files changed between `base_ref` and HEAD (merge-base diff).
     fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError>;
+
+    /// Files changed between `since_ref` and `until_ref` (merge-base diff).
+    fn diff_files_range(
+        &self,
+        root: &Path,
+        since_ref: &str,
+        until_ref: &str,
+    ) -> Result<Vec<PathBuf>, ScmError>;
 }
 
 /// Git-based SCM provider. Shells out to `git` via `std::process::Command`.
@@ -77,6 +85,20 @@ impl ScmProvider for GitProvider {
         files.dedup();
         Ok(files)
     }
+
+    fn diff_files_range(
+        &self,
+        root: &Path,
+        since_ref: &str,
+        until_ref: &str,
+    ) -> Result<Vec<PathBuf>, ScmError> {
+        let range = format!("{since_ref}...{until_ref}");
+        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let mut files = parse_file_list(&output, root);
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
 }
 
 /// Detect the SCM provider for the given directory.
@@ -108,6 +130,40 @@ pub fn detect_provider(root: &Path) -> Result<GitProvider, ScmError> {
 pub fn blob_hash(root: &Path, file: &Path) -> Result<String, ScmError> {
     let file_str = file.to_string_lossy();
     let output = run_git(root, &["hash-object", &file_str])?;
+    Ok(output.trim().to_string())
+}
+
+/// Retrieve file contents at a specific git ref.
+///
+/// `relative_path` must be relative to the repository root.
+/// Returns the raw bytes of the file as it existed at `git_ref`.
+pub fn show_file_at_ref(root: &Path, git_ref: &str, relative_path: &Path) -> Result<Vec<u8>, ScmError> {
+    let path_str = relative_path.to_string_lossy();
+    let spec = format!("{git_ref}:{path_str}");
+    let output = Command::new("git")
+        .args(["show", &spec])
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ScmError::GitNotFound
+            } else {
+                ScmError::Io(e)
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let code = output.status.code().unwrap_or(-1);
+        return Err(ScmError::GitFailed { code, stderr });
+    }
+
+    Ok(output.stdout)
+}
+
+/// Check whether a git ref resolves to a valid commit.
+pub fn validate_ref(root: &Path, git_ref: &str) -> Result<String, ScmError> {
+    let output = run_git(root, &["rev-parse", "--verify", git_ref])?;
     Ok(output.trim().to_string())
 }
 
@@ -239,5 +295,47 @@ mod tests {
         let result = provider.diff_files(root, "HEAD");
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_diff_files_range_same_ref() {
+        // HEAD...HEAD range should produce no changes
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = detect_provider(root).expect("should be a git repo");
+        let result = provider.diff_files_range(root, "HEAD", "HEAD");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_show_file_at_ref() {
+        // shatter-core/Cargo.toml relative to repo root
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = show_file_at_ref(root, "HEAD", Path::new("shatter-core/Cargo.toml"));
+        assert!(result.is_ok());
+        let content = String::from_utf8(result.unwrap()).expect("valid utf-8");
+        assert!(content.contains("[package]"));
+    }
+
+    #[test]
+    fn test_show_file_at_ref_nonexistent() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = show_file_at_ref(root, "HEAD", Path::new("nonexistent-file.xyz"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_ref_head() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = validate_ref(root, "HEAD");
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_validate_ref_invalid() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = validate_ref(root, "nonexistent-ref-abc123");
+        assert!(result.is_err());
     }
 }

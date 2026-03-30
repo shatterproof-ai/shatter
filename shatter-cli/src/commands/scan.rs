@@ -27,6 +27,7 @@ pub(crate) async fn run_scan(
     exclude_patterns: &[String],
     changed: bool,
     since: Option<&str>,
+    until: Option<&str>,
     include_untracked: bool,
     all_functions: bool,
     max_depth: Option<usize>,
@@ -115,27 +116,119 @@ pub(crate) async fn run_scan(
         respect_gitignore: true,
         max_depth,
     };
-    let files = if changed || since.is_some() {
-        use shatter_core::scm::{ScmProvider, detect_provider};
+    // When --until is specified, we need to:
+    // 1. Validate the ref
+    // 2. Check out historical file contents into a temp directory
+    // 3. Use that as the analysis root with isolated .shatter state
+    let _until_temp_dir: Option<tempfile::TempDir> = None;
+    let (effective_root, _until_temp_dir) = if let (Some(base_ref), Some(until_ref)) = (since, until) {
+        use shatter_core::scm::{ScmProvider, detect_provider, validate_ref, show_file_at_ref};
+
+        // Validate the until ref resolves to a real commit.
+        let resolved = validate_ref(&root, until_ref)
+            .map_err(|e| format!("--until ref '{until_ref}' is not valid: {e}"))?;
+        log::info!(
+            "Time-travel analysis: examining code at {} (resolved: {})",
+            until_ref,
+            &resolved[..std::cmp::min(12, resolved.len())],
+        );
+        log::warn!(
+            "Results are for historical code at '{}', not the current working tree. \
+             Seeds and specs are isolated and will not affect HEAD state.",
+            until_ref,
+        );
+
         let provider = detect_provider(&root)
             .map_err(|e| format!("SCM detection failed: {e}"))?;
-        let scm_files = if let Some(base_ref) = since {
-            provider.diff_files(&root, base_ref)
-        } else {
-            provider.changed_files(&root, include_untracked)
-        }
-        .map_err(|e| format!("SCM file query failed: {e}"))?;
+        let scm_files = provider
+            .diff_files_range(&root, base_ref, until_ref)
+            .map_err(|e| format!("SCM file query failed: {e}"))?;
 
         if scm_files.is_empty() {
-            log::info!("No changed files found");
+            log::info!("No changed files found between '{base_ref}' and '{until_ref}'");
             return Ok(());
         }
-        log::info!("SCM reports {} changed file(s)", scm_files.len());
+        log::info!(
+            "SCM reports {} changed file(s) between '{}' and '{}'",
+            scm_files.len(),
+            base_ref,
+            until_ref,
+        );
 
-        discovery::filter_file_list(&root, scm_files, &options)
-            .map_err(|e| format!("file filtering failed: {e}"))?
+        // Create temp directory and extract historical file contents.
+        let temp_dir = tempfile::TempDir::new()
+            .map_err(|e| format!("failed to create temp directory: {e}"))?;
+        let temp_root = temp_dir.path().to_path_buf();
+
+        for file in &scm_files {
+            let rel_path = file.strip_prefix(&root)
+                .map_err(|_| format!("file '{}' is not under root '{}'", file.display(), root.display()))?;
+
+            let content = match show_file_at_ref(&root, until_ref, rel_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    // File may have been deleted at until_ref; skip it.
+                    log::debug!("Skipping {}: {e}", rel_path.display());
+                    continue;
+                }
+            };
+
+            let dest = temp_root.join(rel_path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create dir '{}': {e}", parent.display()))?;
+            }
+            std::fs::write(&dest, &content)
+                .map_err(|e| format!("failed to write '{}': {e}", dest.display()))?;
+        }
+
+        log::info!(
+            "Extracted {} file(s) at '{}' into temporary directory",
+            scm_files.len(),
+            until_ref,
+        );
+
+        let effective = temp_root;
+        (effective, Some(temp_dir))
     } else {
-        discovery::discover_files(&root, &options)
+        (root.clone(), None)
+    };
+
+    // When using --until, isolate .shatter state so HEAD seeds/specs aren't clobbered.
+    let scan_pool_path = if until.is_some() && !no_seeds {
+        Some(effective_root.join(".shatter").join("seeds").join("pool.json"))
+    } else {
+        scan_pool_path
+    };
+
+    // Re-resolve discovery options against the effective root.
+    let files = if changed || since.is_some() {
+        if until.is_some() {
+            // Files already extracted into effective_root; discover from there.
+            discovery::discover_files(&effective_root, &options)
+                .map_err(|e| format!("file discovery failed: {e}"))?
+        } else {
+            use shatter_core::scm::{ScmProvider, detect_provider};
+            let provider = detect_provider(&root)
+                .map_err(|e| format!("SCM detection failed: {e}"))?;
+            let scm_files = if let Some(base_ref) = since {
+                provider.diff_files(&root, base_ref)
+            } else {
+                provider.changed_files(&root, include_untracked)
+            }
+            .map_err(|e| format!("SCM file query failed: {e}"))?;
+
+            if scm_files.is_empty() {
+                log::info!("No changed files found");
+                return Ok(());
+            }
+            log::info!("SCM reports {} changed file(s)", scm_files.len());
+
+            discovery::filter_file_list(&root, scm_files, &options)
+                .map_err(|e| format!("file filtering failed: {e}"))?
+        }
+    } else {
+        discovery::discover_files(&effective_root, &options)
             .map_err(|e| format!("file discovery failed: {e}"))?
     };
 
