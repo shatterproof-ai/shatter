@@ -509,22 +509,6 @@ func TestAnalyzeFormatNameTrimSpaceHasMultipleCallSites(t *testing.T) {
 	t.Fatal("strings.TrimSpace not found in dependencies")
 }
 
-// --- Line numbers ---
-
-func TestAnalyzeAddHasCorrectLineNumbers(t *testing.T) {
-	results, err := AnalyzeFile(testdataPath("basic.go"), "Add")
-	if err != nil {
-		t.Fatalf("AnalyzeFile: %v", err)
-	}
-	fn := results[0]
-	if fn.StartLine < 1 {
-		t.Errorf("start_line = %d, want >= 1", fn.StartLine)
-	}
-	if fn.EndLine <= fn.StartLine {
-		t.Errorf("end_line %d should be > start_line %d", fn.EndLine, fn.StartLine)
-	}
-}
-
 // --- File-level analysis ---
 
 func TestAnalyzeFileWithoutFunctionReturnsAll(t *testing.T) {

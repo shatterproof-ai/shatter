@@ -120,9 +120,4 @@ mod tests {
         assert!(cache.plugins.is_empty());
     }
 
-    #[test]
-    fn new_creates_empty_cache() {
-        let cache = WasmCache::new();
-        assert!(cache.plugins.is_empty());
-    }
 }

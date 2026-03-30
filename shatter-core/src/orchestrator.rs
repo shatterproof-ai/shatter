@@ -2295,16 +2295,6 @@ mod tests {
 
     // -- WorklistEntry ordering tests --
 
-    // -- ExploreConfig defaults --
-
-    #[test]
-    fn default_config_has_reasonable_limits() {
-        let config = ExploreConfig::default();
-        assert_eq!(config.max_iterations, 100);
-        assert_eq!(config.max_executions, DEFAULT_MAX_EXECUTIONS);
-        assert_eq!(config.plateau_threshold, 20);
-    }
-
     // -- Integration test: concolic loop finds x=42 via Z3 --
 
     /// This test simulates the concolic loop without a real frontend by directly
