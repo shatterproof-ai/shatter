@@ -184,3 +184,57 @@ func FuzzBranchDecisionDeserialization(f *testing.F) {
 		_ = json.Unmarshal([]byte(data), &decision)
 	})
 }
+
+// FuzzHarnessLoopResponseDeserialization fuzzes the harnessLoopResponse type
+// which is deserialized from harness subprocess stdout — an untrusted input
+// boundary. Contains nested BranchDecision, SideEffect, json.RawMessage, and
+// optional ErrorInfo fields.
+func FuzzHarnessLoopResponseDeserialization(f *testing.F) {
+	seeds := []string{
+		`{"return_value":42,"branch_path":[{"branch_id":0,"line":5,"taken":true}],"lines_executed":[5,6],"scope_events":[],"side_effects":[],"performance":{"wall_time_ms":1.5}}`,
+		`{"return_value":"hello","branch_path":[],"lines_executed":[],"scope_events":[],"side_effects":[{"kind":"console_output","level":"log","message":"hi"}]}`,
+		`{"error":"compile failed"}`,
+		`{"return_value":null,"branch_path":[],"lines_executed":[],"scope_events":[],"side_effects":[],"thrown_error":{"error_type":"panic","message":"index out of range","stack":"goroutine 1"}}`,
+		`{"return_value":{"x":1},"branch_path":[{"branch_id":0,"line":1,"taken":true,"conditions":[{"condition_index":0,"value":true}]}],"lines_executed":[1,2,3],"scope_events":[{"type":"enter"}],"side_effects":[{"kind":"global_state_change","variable":"count","before":0,"after":1}],"external_calls":[{"symbol":"fmt.Println","args":["test"],"return_value":null}]}`,
+		`{}`,
+		`{"branch_path":null,"lines_executed":null,"side_effects":null,"scope_events":null}`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		var resp harnessLoopResponse
+		_ = json.Unmarshal([]byte(data), &resp)
+	})
+}
+
+// FuzzExecuteResultDeserialization fuzzes ExecuteResult which is the public
+// result type returned from ExecuteFunction. It contains json.RawMessage,
+// nested slice types, and optional pointer fields.
+func FuzzExecuteResultDeserialization(f *testing.F) {
+	seeds := []string{
+		`{"return_value":42,"branch_path":[{"branch_id":0,"line":5,"taken":true}],"lines_executed":[5,6],"side_effects":[],"scope_events":[],"performance":{"wall_time_ms":1.0,"cpu_time_us":500,"heap_used_bytes":1024,"heap_allocated_bytes":2048}}`,
+		`{"return_value":null,"branch_path":[],"lines_executed":[],"side_effects":[],"scope_events":[],"performance":{"wall_time_ms":0},"thrown_error":{"error_type":"runtime","message":"bad","stack":""},"discovered_dependencies":[{"symbol":"os.Exit","source_module":"os","kind":"unmocked_import","is_subprocess_spawn":false}]}`,
+		`{"return_value":"str","branch_path":[],"lines_executed":[],"side_effects":[{"kind":"console_output","level":"log","message":"x"}],"scope_events":[],"performance":{"wall_time_ms":0},"external_calls":[{"symbol":"mock","args":[1],"return_value":"ok"}]}`,
+		`{}`,
+		`{"branch_path":null,"side_effects":null,"scope_events":null}`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		var result ExecuteResult
+		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			return
+		}
+		// Round-trip must not panic
+		remarshaled, err := json.Marshal(result)
+		if err != nil {
+			return
+		}
+		var result2 ExecuteResult
+		json.Unmarshal(remarshaled, &result2) //nolint:errcheck
+	})
+}
