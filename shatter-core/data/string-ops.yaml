@@ -3,6 +3,19 @@
 # Each operation maps to a Z3 Seq theory function. The `z3_sort` field
 # declares the Z3 sort of the operation's return value (Bool, Int, or Str).
 # Aliases list the method names as reported by each language frontend.
+#
+# NOT COVERED (str-548q — deferred):
+#   - split(): Z3 Seq theory has no split primitive. Modeling it would require
+#     bounded unrolling (enumerate segment counts up to a configurable max),
+#     which is expensive and fragile for variable-length results.
+#   - Regex operations (match/test/replace/replaceAll): Z3 supports only a
+#     decidable regex fragment via `str.in_re`. JS/Go/Rust regex features like
+#     backreferences, lookahead/lookbehind, and named capture groups fall
+#     outside this fragment and cannot be encoded.
+#   Functions using these operations fall back to random/mutation-based
+#   exploration. Planned workaround: frontend-side structural candidate
+#   generation (generate plausible split/regex inputs from observed examples
+#   rather than solving symbolically).
 
 operations:
   - name: contains
