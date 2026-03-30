@@ -34,6 +34,7 @@ import type {
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
+import logger from "./logger.js";
 import type { TimingCollector } from "./timing.js";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 15_000;
@@ -98,6 +99,94 @@ const SUBPROCESS_SYMBOLS = new Set([
   "exec", "execSync", "execFile", "execFileSync",
   "spawn", "spawnSync", "fork",
 ]);
+
+/**
+ * Callable function target type for Proxy-based stubs.
+ * Must be a function so the Proxy supports apply/construct traps.
+ */
+type CallableTarget = (() => void) & Record<string, unknown>;
+
+/**
+ * Check whether an error is a MODULE_NOT_FOUND error for the requested module
+ * (not a transitive dependency failure). Uses duck-typing instead of
+ * `instanceof` because errors that cross a VM context boundary lose their
+ * prototype chain (the VM's `Error` is a different constructor).
+ */
+function isModuleNotFoundError(err: unknown, requestedModule: string): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const errObj = err as Record<string, unknown>;
+  const code = typeof errObj["code"] === "string" ? errObj["code"] : undefined;
+  const message = typeof errObj["message"] === "string" ? errObj["message"] : String(err);
+  const hasCode = code === "MODULE_NOT_FOUND";
+  const hasMessage = message.startsWith("Cannot find module");
+  if (!hasCode && !hasMessage) return false;
+  // Ensure the error is for the direct require, not a transitive dep
+  return message.includes(requestedModule);
+}
+
+/**
+ * Create a recursive Proxy that silently absorbs all property access,
+ * function calls, and constructor calls. Used as a fallback when a
+ * module cannot be resolved at runtime.
+ *
+ * - Property access returns another recursive Proxy
+ * - Function calls return undefined
+ * - Constructor calls (new) return another recursive Proxy
+ * - `.then` returns undefined to prevent thenable coercion
+ * - `.__esModule` returns true for ESM interop
+ */
+export function createUnresolvableModuleStub(_moduleName: string): Record<string, unknown> {
+  const handler: ProxyHandler<CallableTarget> = {
+    get(_target: CallableTarget, prop: string | symbol): unknown {
+      if (prop === Symbol.toPrimitive) return () => undefined;
+      if (prop === Symbol.iterator) return undefined;
+      if (prop === "then") return undefined;
+      if (prop === "__esModule") return true;
+      if (prop === "default") return createProxy();
+      return createProxy();
+    },
+    apply(): undefined {
+      return undefined;
+    },
+    construct(): Record<string, unknown> {
+      return createProxy();
+    },
+  };
+
+  function createProxy(): Record<string, unknown> {
+    const target = Object.assign(function callableTarget() {}, {}) as CallableTarget;
+    return new Proxy(target, handler) as unknown as Record<string, unknown>;
+  }
+
+  return createProxy();
+}
+
+/**
+ * Wrap a require function with a fallback that returns a Proxy stub
+ * for modules that cannot be resolved (MODULE_NOT_FOUND).
+ * Used in the non-instrumented loadModule path where there is no
+ * discovered_dependencies array to populate.
+ */
+function wrapRequireWithStubFallback(originalRequire: NodeRequire): NodeRequire {
+  const wrapped = ((modulePath: string) => {
+    try {
+      return originalRequire(modulePath);
+    } catch (err: unknown) {
+      if (isModuleNotFoundError(err, modulePath)) {
+        logger.warn("module %s could not be resolved; returning stub", modulePath);
+        return createUnresolvableModuleStub(modulePath);
+      }
+      throw err;
+    }
+  }) as NodeRequire;
+
+  wrapped.resolve = originalRequire.resolve;
+  wrapped.cache = originalRequire.cache;
+  wrapped.extensions = originalRequire.extensions;
+  wrapped.main = originalRequire.main;
+
+  return wrapped;
+}
 
 const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
 const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError"]);
@@ -302,7 +391,9 @@ function loadModule(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
-  const targetRequire = wrapRequireWithReactShim(createRequire(absolutePath), absolutePath);
+  const targetRequire = wrapRequireWithStubFallback(
+    wrapRequireWithReactShim(createRequire(absolutePath), absolutePath),
+  );
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
@@ -1090,9 +1181,28 @@ export async function executeInstrumented(
     }
   }
 
-  // Wrap require to detect unmocked external imports and subprocess APIs
+  // Wrap require to detect unmocked external imports, subprocess APIs,
+  // and gracefully stub unresolvable modules instead of crashing.
   const sandboxRequire = (id: string): unknown => {
-    const result = baseRequire(id);
+    let result: unknown;
+    try {
+      result = baseRequire(id);
+    } catch (err: unknown) {
+      if (isModuleNotFoundError(err, id)) {
+        logger.warn("module %s could not be resolved; returning stub", id);
+        if (!id.startsWith(".") && !id.startsWith("/") && !seenDiscoveredModules.has(id)) {
+          seenDiscoveredModules.add(id);
+          discoveredDeps.push({
+            symbol: id,
+            source_module: id,
+            kind: "stubbed_import",
+            is_subprocess_spawn: false,
+          });
+        }
+        return createUnresolvableModuleStub(id);
+      }
+      throw err;
+    }
 
     // Skip relative/absolute paths (local modules) and already-seen modules
     if (!id.startsWith(".") && !id.startsWith("/") && !seenDiscoveredModules.has(id)) {

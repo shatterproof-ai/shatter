@@ -513,6 +513,10 @@ pub enum DepDetectionKind {
     /// A subprocess-spawning API (`child_process.exec`, `spawn`, etc.) was
     /// invoked during execution.
     SubprocessSpawn,
+    /// A `require()` call failed with MODULE_NOT_FOUND and was replaced
+    /// with a recursive Proxy stub. Results from this execution are
+    /// partially analyzed.
+    StubbedImport,
 }
 
 /// A dependency discovered at execution time that static analysis missed.
