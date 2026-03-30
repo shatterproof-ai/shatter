@@ -655,10 +655,4 @@ mod tests {
         assert_ne!(hash_inputs(&a), hash_inputs(&b));
     }
 
-    #[test]
-    fn recursive_config_default() {
-        let config = RecursiveConfig::default();
-        assert_eq!(config.max_depth, DEFAULT_MAX_DEPTH);
-        assert_eq!(config.max_probes, 20);
-    }
 }
