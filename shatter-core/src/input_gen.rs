@@ -2149,6 +2149,85 @@ pub fn pool_to_candidate_inputs(
     result
 }
 
+/// Maximum non-callee pool seeds when callee-sourced seeds exist.
+///
+/// Caps "other" pool values to avoid drowning out the callee-sourced seeds
+/// that are most likely to exercise interesting cross-function paths.
+const NON_CALLEE_SEED_CAP: usize = 10;
+
+/// Call-graph-aware variant of [`pool_to_candidate_inputs`].
+///
+/// Produces candidate input vectors in two tiers:
+/// 1. **Callee-sourced**: values whose [`BehaviorObservation::function`] matches
+///    a direct callee of the target function. These are most likely to exercise
+///    interesting paths when passed through the target.
+/// 2. **Other pool values**: remaining type-matched values from unrelated
+///    functions, capped to avoid drowning out callee-sourced seeds.
+///
+/// When `callees` is empty, falls back to [`pool_to_candidate_inputs`].
+///
+/// # Future work
+///
+/// Full backward constraint solving: given callee B's interesting input x,
+/// express "B receives argument x" as a SymConstraint on A's parameters and
+/// solve backwards. This requires frontends to report symbolic call-site
+/// argument expressions, which they don't currently do.
+pub fn pool_to_candidate_inputs_for_callees(
+    params: &[ParamInfo],
+    pool: &crate::interesting_pool::InterestingPool,
+    callees: &std::collections::HashSet<String>,
+) -> Vec<Vec<Value>> {
+    if callees.is_empty() || params.is_empty() {
+        return pool_to_candidate_inputs(params, pool);
+    }
+
+    let defaults: Vec<Value> = params
+        .iter()
+        .map(|p| {
+            get_boundary_values(&p.typ)
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut callee_rows = Vec::new();
+    let mut other_rows = Vec::new();
+
+    for (idx, param) in params.iter().enumerate() {
+        let entries = pool.entries_for_type(&param.typ);
+
+        for entry in entries {
+            let dedup_key = (idx, serde_json::to_string(&entry.value).unwrap_or_default());
+            if !seen.insert(dedup_key) {
+                continue;
+            }
+
+            let mut row = defaults.clone();
+            row[idx] = entry.value.clone();
+
+            let from_callee = entry
+                .behaviors
+                .iter()
+                .any(|b| callees.contains(&b.function));
+
+            if from_callee {
+                callee_rows.push(row);
+            } else {
+                other_rows.push(row);
+            }
+        }
+    }
+
+    let other_cap = NON_CALLEE_SEED_CAP.max(callee_rows.len());
+    other_rows.truncate(other_cap);
+
+    callee_rows.extend(other_rows);
+    callee_rows
+}
+
 /// Check whether a `LiteralValue` is type-compatible with a `TypeInfo` and return
 /// the corresponding `serde_json::Value` if so.
 fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
@@ -3698,6 +3777,116 @@ mod tests {
         assert_eq!(candidates.len(), 1, "duplicate values should be deduplicated");
     }
 
+    // -- Call-graph-aware pool-to-candidate tests --
+
+    fn make_pool_entry(
+        value: serde_json::Value,
+        ty: TypeInfo,
+        function: &str,
+        severity: crate::interesting_pool::Severity,
+    ) -> crate::interesting_pool::PoolEntry {
+        crate::interesting_pool::PoolEntry {
+            value,
+            ty,
+            behaviors: vec![crate::interesting_pool::BehaviorObservation {
+                function: function.into(),
+                branch_id: 1,
+                severity,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn callgraph_pool_prioritizes_callee_values() {
+        use crate::interesting_pool::Severity;
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        pool.insert(make_pool_entry(json!(10), TypeInfo::Int, "callee_b", Severity::RarePath));
+        pool.insert(make_pool_entry(json!(20), TypeInfo::Int, "unrelated_d", Severity::Crash));
+
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let callees: std::collections::HashSet<String> =
+            ["callee_b".to_string()].into_iter().collect();
+
+        let candidates = pool_to_candidate_inputs_for_callees(&params, &pool, &callees);
+        assert_eq!(candidates.len(), 2);
+        // Callee-sourced value (10) must come before non-callee value (20).
+        assert_eq!(candidates[0][0], json!(10));
+        assert_eq!(candidates[1][0], json!(20));
+    }
+
+    #[test]
+    fn callgraph_pool_caps_non_callee_values() {
+        use crate::interesting_pool::Severity;
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        // 1 callee value
+        pool.insert(make_pool_entry(json!(1), TypeInfo::Int, "callee_b", Severity::RarePath));
+        // 25 non-callee values (exceeds NON_CALLEE_SEED_CAP of 10)
+        for i in 100..125 {
+            pool.insert(make_pool_entry(json!(i), TypeInfo::Int, "unrelated", Severity::RarePath));
+        }
+
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let callees: std::collections::HashSet<String> =
+            ["callee_b".to_string()].into_iter().collect();
+
+        let candidates = pool_to_candidate_inputs_for_callees(&params, &pool, &callees);
+        // 1 callee + min(25, max(1, 10)) = 1 + 10 = 11
+        assert_eq!(candidates.len(), 11);
+        // First row is the callee-sourced value.
+        assert_eq!(candidates[0][0], json!(1));
+    }
+
+    #[test]
+    fn callgraph_pool_empty_callees_falls_back() {
+        use crate::interesting_pool::Severity;
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        pool.insert(make_pool_entry(json!(42), TypeInfo::Int, "foo", Severity::RarePath));
+
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let empty_callees: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let from_callgraph = pool_to_candidate_inputs_for_callees(&params, &pool, &empty_callees);
+        let from_plain = pool_to_candidate_inputs(&params, &pool);
+        assert_eq!(from_callgraph, from_plain);
+    }
+
+    #[test]
+    fn callgraph_pool_deduplicates() {
+        use crate::interesting_pool::{BehaviorObservation, Severity};
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        // Same value (7) observed in both a callee and a non-callee function.
+        // InterestingPool merges by (ty, value), so behaviors accumulate.
+        pool.insert(crate::interesting_pool::PoolEntry {
+            value: json!(7),
+            ty: TypeInfo::Int,
+            behaviors: vec![
+                BehaviorObservation { function: "callee_b".into(), branch_id: 1, severity: Severity::RarePath },
+                BehaviorObservation { function: "unrelated".into(), branch_id: 2, severity: Severity::Crash },
+            ],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        });
+
+        let params = vec![
+            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+        ];
+        let callees: std::collections::HashSet<String> =
+            ["callee_b".to_string()].into_iter().collect();
+
+        let candidates = pool_to_candidate_inputs_for_callees(&params, &pool, &callees);
+        // Value 7 appears once (classified as callee-sourced since it has a callee behavior).
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!(7));
+    }
+
     // -----------------------------------------------------------------------
     // Param-name heuristic string tests
     // -----------------------------------------------------------------------
@@ -3979,6 +4168,64 @@ mod tests {
         }
 
         proptest! {
+            /// Call-graph-aware pool seeding produces valid-length rows with
+            /// type-matched values, and callee-sourced values precede others.
+            #[test]
+            fn callgraph_pool_rows_valid(
+                params in prop::collection::vec(arb_param_info(), 1..=4),
+                seed in 0u64..100,
+            ) {
+                use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
+
+                let mut pool = InterestingPool::default();
+                let mut rng = StdRng::seed_from_u64(seed);
+
+                // Insert some entries with varied function sources.
+                let functions = ["callee_a", "callee_b", "other_x", "other_y"];
+                for param in &params {
+                    let val = generate_random_value(&param.typ, &mut rng, None);
+                    let func = functions[(seed as usize) % functions.len()];
+                    pool.insert(PoolEntry {
+                        value: val,
+                        ty: param.typ.clone(),
+                        behaviors: vec![BehaviorObservation {
+                            function: func.into(),
+                            branch_id: 1,
+                            severity: Severity::RarePath,
+                        }],
+                        discovered_epoch: 0,
+                        last_hit_epoch: 0,
+                    });
+                }
+
+                let callees: std::collections::HashSet<String> =
+                    ["callee_a".to_string(), "callee_b".to_string()].into_iter().collect();
+
+                let candidates = pool_to_candidate_inputs_for_callees(&params, &pool, &callees);
+
+                // Every row has the correct length.
+                for row in &candidates {
+                    prop_assert_eq!(row.len(), params.len());
+                }
+
+                // Every injected value at position i is type-compatible with params[i]
+                // or is a boundary default.
+                for row in &candidates {
+                    for (i, val) in row.iter().enumerate() {
+                        let pool_vals = pool.values_for_type(&params[i].typ);
+                        let is_pool_val = pool_vals.contains(val);
+                        let is_boundary = get_boundary_values(&params[i].typ)
+                            .into_iter()
+                            .any(|e| &e.value == val);
+                        let is_null = val.is_null();
+                        prop_assert!(
+                            is_pool_val || is_boundary || is_null,
+                            "row value {val:?} at pos {i} not from pool or boundary"
+                        );
+                    }
+                }
+            }
+
             #[test]
             fn mutate_int_preserves_number(val in -1_000_000i64..1_000_000i64) {
                 let input = serde_json::json!(val);
