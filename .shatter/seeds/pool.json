@@ -717,6 +717,36 @@
           "kind": "float"
         },
         "value": 483.8792741606105
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 805.9082071614503
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 794.2526433011742
       }
     ],
     "{\"kind\":\"int\"}": [
@@ -849,6 +879,51 @@
           "kind": "int"
         },
         "value": -264
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 392
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -15
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -937
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [

@@ -1377,6 +1377,7 @@ pub fn collect_stubbed_modules(
 #[derive(Debug, Clone, Default)]
 pub struct ReportOptions {
     pub location: Option<String>,
+    pub show_perf: bool,
     pub wall_time: Option<std::time::Duration>,
     pub coverage_metrics: Option<crate::coverage_metrics::CoverageMetrics>,
     pub style: crate::report_style::ReportStyle,
@@ -1579,6 +1580,28 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
         ));
     }
 
+    if options.show_perf {
+        if let Some(dur) = options.wall_time {
+            out.push_str(&format!(
+                "  {dim}Perf: {:.1}ms, {} iteration(s){reset}\n",
+                dur.as_secs_f64() * 1000.0,
+                result.iterations,
+                dim = s.dim,
+                reset = s.reset,
+            ));
+        } else {
+            out.push_str(&format!(
+                "  {dim}Perf: {} iteration(s){reset}\n",
+                result.iterations,
+                dim = s.dim,
+                reset = s.reset,
+            ));
+        }
+        let shrink_line = crate::shrink::format_shrink_stats_line(&result.shrink_stats);
+        if !shrink_line.is_empty() {
+            out.push_str(&shrink_line);
+        }
+    }
     out
 }
 
@@ -2314,6 +2337,21 @@ mod tests {
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
         assert!(report.contains("TypeError"));
+    }
+
+    #[test]
+    fn format_exploration_report_with_perf() {
+        let result = ObservationOutput {
+            function_name: "fast".into(), iterations: 10, unique_paths: 1,
+            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+        };
+        let report = format_exploration_report(&result, &ReportOptions {
+            show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
+            ..Default::default()
+        });
+        assert!(report.contains("Perf:"));
+        assert!(report.contains("42.0ms"));
+        assert!(report.contains("10 iteration(s)"));
     }
 
     #[test]

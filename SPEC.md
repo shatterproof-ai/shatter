@@ -233,7 +233,7 @@ Source code → Analyze → Explore → Cluster → Report
 | `--log-level LEVEL` | `info` | Log verbosity: `error`, `warn`, `info`, `debug`, `trace` |
 | `-v` / `--verbose` | — | Increase verbosity (`-v` = debug, `-vv` = trace) |
 | `-q` / `--quiet` | — | Decrease to warnings and errors only |
-| `--timing MODE` | off | Show per-function performance timing (`summary` or `detailed`) |
+| `--perf` | false | Show per-function performance timing |
 
 ---
 

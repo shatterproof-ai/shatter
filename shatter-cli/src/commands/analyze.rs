@@ -30,6 +30,7 @@ pub(crate) fn run_analyze(
     };
     let report_opts = ReportOptions {
         location: Some(format!("{}:{}-{}", stage_input.file, analysis.start_line, analysis.end_line)),
+        show_perf: false,
         wall_time: None,
         coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
         style: report_style.clone(),

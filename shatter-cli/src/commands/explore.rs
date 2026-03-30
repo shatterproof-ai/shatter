@@ -49,6 +49,7 @@ pub(crate) async fn run_explore(
     config_path: Option<&Path>,
     output_path: Option<&Path>,
     log_level: LogLevel,
+    show_perf: bool,
     colors: &Colors,
     show_spec: bool,
     spec_as_json: bool,
@@ -841,6 +842,7 @@ pub(crate) async fn run_explore(
                         } else {
                             let report_opts = ReportOptions {
                                 location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
+                                show_perf,
                                 wall_time: Some(wall_time),
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
                                 style: report_style.clone(),
