@@ -43,6 +43,10 @@
       "type": "array",
       "items": { "$ref": "loop-info.schema.json" },
       "description": "Canonical counted loops with induction variable metadata."
+    },
+    "source_file": {
+      "type": "string",
+      "description": "Actual source file path when function was discovered via re-export."
     }
   }
 }

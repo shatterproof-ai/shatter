@@ -315,6 +315,9 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   start_line: fc.integer({ min: 1, max: 500 }),
   end_line: fc.integer({ min: 1, max: 500 }),
   loops: fc.option(fc.array(arbLoopInfo, { maxLength: 3 }), { nil: undefined }),
+  source_file: fc.option(fc.stringMatching(/^\/[a-z][a-z\/]{0,20}\.ts$/), {
+    nil: undefined,
+  }),
 });
 
 // ---------------------------------------------------------------------------

@@ -225,6 +225,7 @@ type FunctionAnalysis struct {
 	Literals         []LiteralValue       `json:"literals,omitempty"`
 	CryptoBoundaries []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
 	Loops            []LoopInfo           `json:"loops,omitempty"`
+	SourceFile       string               `json:"source_file,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.

@@ -312,6 +312,8 @@ pub struct FunctionAnalysis {
     pub crypto_boundaries: Vec<CryptoBoundary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<LoopInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<String>,
 }
 
 /// Current protocol version.
@@ -990,6 +992,7 @@ mod tests {
             ],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         });
     }
 
@@ -1007,6 +1010,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -1070,6 +1074,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(

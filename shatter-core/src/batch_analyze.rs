@@ -141,15 +141,17 @@ pub async fn batch_analyze(
             && let Ok(Some(cached_functions)) = cache.lookup(file_path)
         {
             for func in cached_functions {
-                let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
-                let idx = entries.len();
-                index.insert(qualified, idx);
-                entries.push(function_entry_from_analysis(
+                let entry = function_entry_from_analysis(
                     file_path.clone(),
                     func,
                     crypto_registry.as_ref(),
                     language.as_registry_str(),
-                ));
+                );
+                let qualified =
+                    FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+                let idx = entries.len();
+                index.insert(qualified, idx);
+                entries.push(entry);
             }
             continue;
         }
@@ -206,15 +208,17 @@ pub async fn batch_analyze(
         }
 
         for func in functions {
-            let qualified = FunctionRegistry::qualified_name(file_path, &func.name);
-            let idx = entries.len();
-            index.insert(qualified, idx);
-            entries.push(function_entry_from_analysis(
+            let entry = function_entry_from_analysis(
                 file_path.clone(),
                 func,
                 crypto_registry.as_ref(),
                 language.as_registry_str(),
-            ));
+            );
+            let qualified =
+                FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+            let idx = entries.len();
+            index.insert(qualified, idx);
+            entries.push(entry);
         }
     }
 
@@ -229,6 +233,13 @@ fn function_entry_from_analysis(
     crypto_registry: Option<&CryptoRegistry>,
     language: &str,
 ) -> FunctionEntry {
+    // Use the real source file if the frontend reported one (barrel re-exports).
+    let effective_path = analysis
+        .source_file
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or(file_path);
+
     let branch_count = analysis.branches.len();
     let raw_boundaries = crypto_registry
         .map(|r| r.classify_all_dependencies(&analysis.dependencies, language))
@@ -246,7 +257,7 @@ fn function_entry_from_analysis(
     }
 
     FunctionEntry {
-        file_path,
+        file_path: effective_path,
         name: analysis.name,
         exported: analysis.exported,
         params: analysis.params,
@@ -293,6 +304,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         }
     }
 
@@ -363,6 +375,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         };
 
         let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
@@ -384,6 +397,32 @@ mod tests {
         let analysis = make_analysis("private_helper", false, 0);
         let entry = function_entry_from_analysis(PathBuf::from("src/utils.ts"), analysis, None, "typescript");
         assert!(!entry.exported);
+    }
+
+    #[test]
+    fn function_entry_uses_source_file_when_present() {
+        let mut analysis = make_analysis("barrelAdd", true, 1);
+        analysis.source_file = Some("/project/src/math.ts".into());
+        let entry = function_entry_from_analysis(
+            PathBuf::from("/project/src/index.ts"),
+            analysis,
+            None,
+            "typescript",
+        );
+        assert_eq!(entry.file_path, PathBuf::from("/project/src/math.ts"));
+        assert_eq!(entry.name, "barrelAdd");
+    }
+
+    #[test]
+    fn function_entry_ignores_source_file_when_absent() {
+        let analysis = make_analysis("directFunc", true, 1);
+        let entry = function_entry_from_analysis(
+            PathBuf::from("/project/src/app.ts"),
+            analysis,
+            None,
+            "typescript",
+        );
+        assert_eq!(entry.file_path, PathBuf::from("/project/src/app.ts"));
     }
 
     #[test]

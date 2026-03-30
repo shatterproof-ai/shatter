@@ -784,4 +784,47 @@ describe("analyzeFile", () => {
       expect(!fn.loops || fn.loops.length === 0).toBe(true);
     });
   });
+
+  describe("barrel re-exports", () => {
+    it("discovers functions from export * re-exports", () => {
+      const results = analyzeFile(path.join(fixtures, "barrel-index.ts"));
+      const names = results.map((r) => r.name).sort();
+      expect(names).toContain("barrelAdd");
+      expect(names).toContain("barrelGreet");
+    });
+
+    it("sets source_file to the actual declaration file", () => {
+      const results = analyzeFile(path.join(fixtures, "barrel-index.ts"));
+      const barrelAdd = results.find((r) => r.name === "barrelAdd");
+      expect(barrelAdd).toBeDefined();
+      expect(barrelAdd!.source_file).toBe(
+        path.resolve(path.join(fixtures, "barrel-source.ts")),
+      );
+    });
+
+    it("discovers named re-exports with rename", () => {
+      const results = analyzeFile(path.join(fixtures, "barrel-index.ts"));
+      const names = results.map((r) => r.name);
+      // renamedAdd re-exports barrelAdd under a new name; the analyzer
+      // resolves to the original declaration so the name is barrelAdd
+      expect(names).toContain("barrelAdd");
+    });
+
+    it("does NOT set source_file on direct analysis", () => {
+      const results = analyzeFile(path.join(fixtures, "barrel-source.ts"));
+      expect(results.length).toBeGreaterThan(0);
+      for (const fn of results) {
+        expect(fn.source_file).toBeUndefined();
+      }
+    });
+
+    it("does NOT follow re-exports when file has own functions", () => {
+      // primitives.ts has its own functions — re-export following should not trigger
+      const results = analyzeFile(path.join(fixtures, "primitives.ts"));
+      expect(results.length).toBeGreaterThan(0);
+      for (const fn of results) {
+        expect(fn.source_file).toBeUndefined();
+      }
+    });
+  });
 });

@@ -285,6 +285,7 @@ fn analyze_function(
         literals,
         crypto_boundaries: vec![],
         loops: vec![],
+        source_file: None,
     }
 }
 
