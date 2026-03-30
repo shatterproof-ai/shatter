@@ -322,7 +322,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
-TOTAL=59
+TOTAL=60
 
 # ─── Walkthrough ──────────────────────────────────────────────────────
 
@@ -614,51 +614,56 @@ step 48 $TOTAL "Analyze Observe Output" \
     "Read observation output and run offline analysis stage" \
     $SHATTER analyze /tmp/shatter-observe.json
 
-# Stage 48: Specify from observation — build FunctionSpec markdown
-step 49 $TOTAL "Specify from Observation" \
+# Stage 48: Solve uncovered branches — offline Z3 constraint solving
+step 49 $TOTAL "Solve Uncovered Branches" \
+    "Run Z3 constraint solver on observation output to find inputs for uncovered branches" \
+    $SHATTER solve /tmp/shatter-observe.json
+
+# Stage 49: Specify from observation — build FunctionSpec markdown
+step 50 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
     $SHATTER specify /tmp/shatter-observe.json
 
-# Stage 49: Specify YAML — build FunctionSpec with invariant property descriptions
-step 50 $TOTAL "Specify from Observation (YAML)" \
+# Stage 50: Specify YAML — build FunctionSpec with invariant property descriptions
+step 51 $TOTAL "Specify from Observation (YAML)" \
     "Build FunctionSpec as YAML with inferred invariant property descriptions" \
     $SHATTER specify --yaml --invariants /tmp/shatter-observe.json
 
-# Stage 50: HTML explore report
-step 51 $TOTAL "HTML Explore Report" \
+# Stage 51: HTML explore report
+step 52 $TOTAL "HTML Explore Report" \
     "Generate a self-contained HTML report for exploration results" \
     $SHATTER explore -o "$HTML_REPORT_DIR/explore-html.html" --stdout "${EXAMPLES[0]}"
 
-# Stage 51: HTML scan report
-step 52 $TOTAL "HTML Scan Report" \
+# Stage 52: HTML scan report
+step 53 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
     $SHATTER scan -o "$HTML_REPORT_DIR/scan-html.html" --stdout examples/standalone/ts
 
-# Stage 52: Side-effect capture
-step 53 $TOTAL "Explore with Side-Effect Capture" \
+# Stage 53: Side-effect capture
+step 54 $TOTAL "Explore with Side-Effect Capture" \
     "Opt in to rich side-effect recording (console output, global state changes). Disabled by default for throughput." \
     $SHATTER explore --capture-side-effects "${EXAMPLES[0]}"
 
-# Stage 53: Properties export
-step 54 $TOTAL "Properties Export" \
+# Stage 54: Properties export
+step 55 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
 
-# Stage 54: Nondeterminism review (non-interactive: reads from cache populated above).
+# Stage 55: Nondeterminism review (non-interactive: reads from cache populated above).
 # The command runs in non-interactive mode when stdin is not a terminal (as in
 # the walkthrough). With no candidates in the cache it prints a diagnostic
 # message and exits 0, which is the expected outcome after the standalone scan.
-step 55 $TOTAL "Nondeterminism Review" \
+step 56 $TOTAL "Nondeterminism Review" \
     "Review nondeterminism candidates from the most recent scan (non-interactive: no stdin)" \
     bash -c "$SHATTER nondeterminism review --cache-dir '$SHATTER_CACHE_DIR' </dev/null; echo '(exit 0 expected: no nondeterminism candidates in standalone arithmetic scan)'"
 
-# Stage 55: Benchmark run (smoke tier, minimal)
-step 56 $TOTAL "Benchmark Run (Smoke)" \
+# Stage 56: Benchmark run (smoke tier, minimal)
+step 57 $TOTAL "Benchmark Run (Smoke)" \
     "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
     $SHATTER bench --tier smoke --repeats 1 --warmups 0
 
-# Stage 56: Cache clear
-step 57 $TOTAL "Cache Clear" \
+# Stage 57: Cache clear
+step 58 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 

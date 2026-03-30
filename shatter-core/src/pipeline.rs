@@ -1,19 +1,24 @@
 //! Staged pipeline: composable Observe → Analyze → Solve → Specify stages.
 //!
 //! Each stage is a pure function with well-defined input/output types.
-//! The Analyze stage groups raw exploration results into equivalence classes,
-//! builds a behavior map, and computes coverage metrics.
+//! - **Observe**: execute the function with various inputs, collect traces.
+//! - **Analyze**: group into equivalence classes, build behavior map, compute coverage.
+//! - **Solve**: for uncovered branches, use Z3 to find triggering inputs.
+//! - Specify (future): generate behavioral specifications from full-coverage data.
 
 use crate::behavior::BehaviorMap;
 use crate::coverage_metrics::CoverageMetrics;
 use crate::equivalence::{self, EquivalenceClass};
 use crate::execution_record::{ExecutionRecord, SymConstraint};
 use crate::explorer::ObservationOutput;
+use crate::orchestrator::{extract_sym_constraints, overlay_solved_values};
 use crate::protocol::{ExecuteResult, FunctionAnalysis};
+use crate::solver::{self, SolveResult};
 use crate::spec::FunctionSpec;
+use crate::sym_expr::SymExpr;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
@@ -51,6 +56,71 @@ pub struct AnalyzeStageOutput {
     pub function_name: String,
     /// Source file path, carried forward for provenance.
     pub file: String,
+}
+
+/// Bundled output of the Solve stage, suitable for serialization to disk.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SolveStageOutput {
+    /// Solve results for each uncovered branch.
+    pub solve: StageSolveOutput,
+    /// Function name, carried forward for provenance.
+    pub function_name: String,
+    /// Source file path, carried forward for provenance.
+    pub file: String,
+}
+
+/// Result of the Solve stage — solved inputs for uncovered branches.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StageSolveOutput {
+    /// Per-branch solve results.
+    pub solved_branches: Vec<SolvedBranch>,
+    /// Aggregate metrics for the solve pass.
+    pub metrics: SolveMetrics,
+}
+
+/// A single branch solve attempt result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolvedBranch {
+    /// Branch identifier from static analysis.
+    pub branch_id: u32,
+    /// Source line of the branch.
+    pub line: u32,
+    /// Whether we were trying to reach the true or false direction.
+    pub target_taken: bool,
+    /// Outcome of the solve attempt.
+    pub outcome: SolveOutcome,
+}
+
+/// Outcome of attempting to solve for a single uncovered branch direction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SolveOutcome {
+    /// Z3 found satisfying inputs that should trigger this branch direction.
+    Sat { inputs: Vec<serde_json::Value> },
+    /// The constraint path is unsatisfiable — no inputs can reach this direction.
+    Unsat,
+    /// Branch has only opaque/unknown constraints — not solvable by Z3.
+    Opaque { hint: String },
+    /// Branch was never reached by any execution — no constraints available to solve.
+    Unreachable,
+    /// Solver error (timeout, unsupported expression, etc.).
+    Error { message: String },
+}
+
+/// Aggregate metrics for the Solve stage.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SolveMetrics {
+    /// Total number of uncovered branch directions targeted.
+    pub total_uncovered: usize,
+    /// Branches for which Z3 found satisfying inputs.
+    pub sat_count: usize,
+    /// Branches with unsatisfiable constraints.
+    pub unsat_count: usize,
+    /// Branches with opaque/unknown constraints.
+    pub opaque_count: usize,
+    /// Branches never reached by any execution.
+    pub unreachable_count: usize,
+    /// Branches where the solver returned an error.
+    pub error_count: usize,
 }
 
 /// Error type for stage I/O operations.
@@ -109,8 +179,219 @@ pub fn write_analyze_stage(output: &AnalyzeStageOutput, path: &Path) -> Result<(
     }
     let json = serde_json::to_string_pretty(output)?;
     std::fs::write(path, json)?;
-    Ok(()
-    )
+    Ok(())
+}
+
+/// Read a [`SolveStageOutput`] from a JSON file on disk.
+pub fn read_solve_stage(path: &Path) -> Result<SolveStageOutput, StageIoError> {
+    let data = std::fs::read_to_string(path)?;
+    let output = serde_json::from_str(&data)?;
+    Ok(output)
+}
+
+/// Write a [`SolveStageOutput`] to a JSON file on disk.
+pub fn write_solve_stage(output: &SolveStageOutput, path: &Path) -> Result<(), StageIoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(output)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Run the Solve stage: attempt Z3 constraint solving for uncovered branch directions.
+///
+/// For each branch in the static analysis that was only observed in one direction
+/// (e.g., `taken=true` but never `taken=false`), this stage:
+/// 1. Finds an execution that visited the branch in the opposite direction
+/// 2. Extracts the symbolic constraint path up to that branch
+/// 3. Negates the target constraint and calls Z3 to find triggering inputs
+///
+/// Branches never reached by any execution are reported as [`SolveOutcome::Unreachable`].
+/// Branches with opaque/unknown constraints are reported as [`SolveOutcome::Opaque`].
+pub fn solve(
+    observe: &ObserveStageOutput,
+    solver_timeout_ms: Option<u64>,
+) -> StageSolveOutput {
+    let analysis = &observe.analysis;
+    let raw_results = &observe.observation.raw_results;
+
+    // Collect observed branch directions: branch_id → set of taken values.
+    let mut observed_directions: HashMap<u32, HashSet<bool>> = HashMap::new();
+    for (_, _mocks, result) in raw_results {
+        for decision in &result.branch_path {
+            observed_directions
+                .entry(decision.branch_id)
+                .or_default()
+                .insert(decision.taken);
+        }
+    }
+
+    // For each analysis branch, identify uncovered directions.
+    let mut solved_branches = Vec::new();
+    let mut metrics = SolveMetrics::default();
+
+    for branch_info in &analysis.branches {
+        let directions = observed_directions.get(&branch_info.id);
+
+        // Check which directions are missing.
+        let missing: Vec<bool> = match directions {
+            None => {
+                // Branch never reached by any execution.
+                vec![true, false]
+            }
+            Some(seen) => {
+                let mut missing = Vec::new();
+                if !seen.contains(&true) {
+                    missing.push(true);
+                }
+                if !seen.contains(&false) {
+                    missing.push(false);
+                }
+                missing
+            }
+        };
+
+        for target_taken in missing {
+            metrics.total_uncovered += 1;
+
+            let outcome = if directions.is_none() {
+                // No execution ever reached this branch.
+                metrics.unreachable_count += 1;
+                SolveOutcome::Unreachable
+            } else {
+                // Find the best execution that visited this branch in the opposite direction.
+                solve_for_branch_direction(
+                    branch_info.id,
+                    target_taken,
+                    raw_results,
+                    &analysis.params,
+                    &analysis.loops,
+                    solver_timeout_ms,
+                    &mut metrics,
+                )
+            };
+
+            solved_branches.push(SolvedBranch {
+                branch_id: branch_info.id,
+                line: branch_info.line,
+                target_taken,
+                outcome,
+            });
+        }
+    }
+
+    StageSolveOutput {
+        solved_branches,
+        metrics,
+    }
+}
+
+/// Attempt to solve for a single uncovered branch direction.
+///
+/// Finds an execution that visited the branch in the opposite direction,
+/// extracts its constraint path, and calls Z3 to negate the target constraint.
+fn solve_for_branch_direction(
+    branch_id: u32,
+    target_taken: bool,
+    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, ExecuteResult)],
+    param_infos: &[crate::types::ParamInfo],
+    loops: &[crate::protocol::LoopInfo],
+    solver_timeout_ms: Option<u64>,
+    metrics: &mut SolveMetrics,
+) -> SolveOutcome {
+    // Find an execution that visited this branch in the opposite direction.
+    let opposite_taken = !target_taken;
+    let witness = raw_results.iter().find(|(_, _, result)| {
+        result
+            .branch_path
+            .iter()
+            .any(|d| d.branch_id == branch_id && d.taken == opposite_taken)
+    });
+
+    let (base_inputs, _mocks, witness_result) = match witness {
+        Some(w) => w,
+        None => {
+            // Should not happen (we checked directions.is_some()), but handle gracefully.
+            metrics.unreachable_count += 1;
+            return SolveOutcome::Unreachable;
+        }
+    };
+
+    // Find the branch's position in the witness execution's branch_path.
+    let branch_idx = match witness_result
+        .branch_path
+        .iter()
+        .position(|d| d.branch_id == branch_id)
+    {
+        Some(idx) => idx,
+        None => {
+            metrics.error_count += 1;
+            return SolveOutcome::Error {
+                message: format!("branch {branch_id} not found in witness path"),
+            };
+        }
+    };
+
+    // Check if the target branch has a solvable constraint.
+    let target_decision = &witness_result.branch_path[branch_idx];
+    if let SymConstraint::Unknown { hint } = &target_decision.constraint {
+        metrics.opaque_count += 1;
+        return SolveOutcome::Opaque {
+            hint: hint.clone(),
+        };
+    }
+
+    // Extract symbolic constraints from the witness execution.
+    let raw_constraints = extract_sym_constraints(witness_result);
+
+    // Apply loop constraint rewriting if loops are present.
+    let rewritten = crate::loop_analysis::rewrite_loop_constraints(&raw_constraints, loops, witness_result);
+    let rewritten = crate::loop_analysis::merge_loop_states(&rewritten, loops, witness_result);
+
+    // Build the solvable-only constraint list (filtering out None/Unknown entries).
+    // We need constraints up to and including the target branch.
+    let prefix_with_target = &rewritten[..=branch_idx];
+    let solvable: Vec<SymExpr> = prefix_with_target
+        .iter()
+        .filter_map(|opt| opt.clone())
+        .collect();
+
+    if solvable.is_empty() {
+        metrics.opaque_count += 1;
+        return SolveOutcome::Opaque {
+            hint: "no solvable constraints in path prefix".into(),
+        };
+    }
+
+    // The target constraint is the last solvable entry that corresponds to our branch.
+    // Count how many Some entries exist up to and including branch_idx to find the
+    // solvable index of our target.
+    let solvable_idx = prefix_with_target
+        .iter()
+        .filter(|opt| opt.is_some())
+        .count()
+        .saturating_sub(1);
+
+    // Call Z3 to solve with the target constraint negated.
+    match solver::solve_for_new_path(&solvable, solvable_idx, solver_timeout_ms, param_infos) {
+        Ok(SolveResult::Sat(solved_values)) => {
+            let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
+            let inputs = overlay_solved_values(base_inputs, &solved_values, &param_names);
+            metrics.sat_count += 1;
+            SolveOutcome::Sat { inputs }
+        }
+        Ok(SolveResult::Unsat) => {
+            metrics.unsat_count += 1;
+            SolveOutcome::Unsat
+        }
+        Err(e) => {
+            metrics.error_count += 1;
+            SolveOutcome::Error {
+                message: e.to_string(),
+            }
+        }
+    }
 }
 
 /// Run the Analyze stage on an observation result.
@@ -621,5 +902,392 @@ mod tests {
         assert_eq!(output.unique_paths, 2);
         assert_eq!(output.total_lines, 10);
         assert_eq!(output.discoveries.len(), 1);
+    }
+
+    // ---- Solve stage tests ----
+
+    fn stub_observe_stage(
+        name: &str,
+        branch_count: usize,
+        raw_results: Vec<(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, ExecuteResult)>,
+    ) -> ObserveStageOutput {
+        let observation = ObservationOutput {
+            function_name: name.into(),
+            iterations: raw_results.len() as u32,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results,
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+        };
+        ObserveStageOutput {
+            observation,
+            analysis: stub_analysis(name, branch_count),
+            file: "test.ts".into(),
+        }
+    }
+
+    #[test]
+    fn solve_all_covered_returns_empty() {
+        // Both directions observed for the single branch → nothing to solve.
+        let branch_path_t = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: true,
+            constraint: SymConstraint::Expr {
+                expr: crate::sym_expr::SymExpr::BinOp {
+                    op: crate::sym_expr::BinOpKind::Gt,
+                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                },
+            },
+            conditions: None,
+        }];
+        let branch_path_f = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: false,
+            constraint: SymConstraint::Expr {
+                expr: crate::sym_expr::SymExpr::BinOp {
+                    op: crate::sym_expr::BinOpKind::Gt,
+                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                },
+            },
+            conditions: None,
+        }];
+        let make_result = |bp| ExecuteResult {
+            return_value: Some(json!(1)),
+            thrown_error: None,
+            branch_path: bp,
+            lines_executed: vec![1],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            performance: empty_perf(),
+        };
+        let observe = stub_observe_stage("all_covered", 1, vec![
+            (vec![json!(5)], vec![], make_result(branch_path_t)),
+            (vec![json!(-1)], vec![], make_result(branch_path_f)),
+        ]);
+
+        let output = solve(&observe, Some(1000));
+        assert!(output.solved_branches.is_empty(), "no uncovered branches to solve");
+        assert_eq!(output.metrics.total_uncovered, 0);
+    }
+
+    #[test]
+    fn solve_unreachable_branch() {
+        // Branch 0 is in analysis but no execution ever reached it.
+        let observe = stub_observe_stage("unreachable", 1, vec![]);
+
+        let output = solve(&observe, Some(1000));
+        // Branch 0 has two missing directions (true and false).
+        assert_eq!(output.metrics.total_uncovered, 2);
+        assert_eq!(output.metrics.unreachable_count, 2);
+        for sb in &output.solved_branches {
+            assert_eq!(sb.outcome, SolveOutcome::Unreachable);
+        }
+    }
+
+    #[test]
+    fn solve_opaque_constraint() {
+        // Branch observed in one direction but with Unknown constraint → Opaque.
+        let branch_path = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: true,
+            constraint: SymConstraint::Unknown { hint: "opaque call".into() },
+            conditions: None,
+        }];
+        let result = ExecuteResult {
+            return_value: Some(json!(1)),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![1],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            performance: empty_perf(),
+        };
+        let observe = stub_observe_stage("opaque", 1, vec![
+            (vec![json!(1)], vec![], result),
+        ]);
+
+        let output = solve(&observe, Some(1000));
+        assert_eq!(output.metrics.total_uncovered, 1);
+        assert_eq!(output.metrics.opaque_count, 1);
+        assert_eq!(output.solved_branches.len(), 1);
+        assert_eq!(output.solved_branches[0].target_taken, false);
+        assert!(matches!(output.solved_branches[0].outcome, SolveOutcome::Opaque { .. }));
+    }
+
+    #[test]
+    fn solve_with_solvable_constraint() {
+        // Branch 0: x > 0, only taken=true observed. Solve should find inputs for taken=false.
+        let branch_path = vec![BranchDecision {
+            branch_id: 0, line: 10, taken: true,
+            constraint: SymConstraint::Expr {
+                expr: crate::sym_expr::SymExpr::BinOp {
+                    op: crate::sym_expr::BinOpKind::Gt,
+                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                },
+            },
+            conditions: None,
+        }];
+        let result = ExecuteResult {
+            return_value: Some(json!("positive")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![1, 2],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            performance: empty_perf(),
+        };
+        let observe = stub_observe_stage("solvable", 1, vec![
+            (vec![json!(5)], vec![], result),
+        ]);
+
+        let output = solve(&observe, Some(5000));
+        assert_eq!(output.metrics.total_uncovered, 1);
+        assert_eq!(output.solved_branches.len(), 1);
+        assert_eq!(output.solved_branches[0].branch_id, 0);
+        assert_eq!(output.solved_branches[0].target_taken, false);
+        // Z3 should find x <= 0 as satisfying.
+        assert!(
+            matches!(output.solved_branches[0].outcome, SolveOutcome::Sat { .. }),
+            "expected Sat, got {:?}",
+            output.solved_branches[0].outcome
+        );
+        if let SolveOutcome::Sat { inputs } = &output.solved_branches[0].outcome {
+            assert_eq!(inputs.len(), 1, "single param function");
+            // The solved value should be <= 0.
+            let val = inputs[0].as_i64().expect("should be integer");
+            assert!(val <= 0, "solved value {val} should satisfy x <= 0");
+        }
+    }
+
+    #[test]
+    fn solve_metrics_tally() {
+        // Verify metrics counts match the number of solved_branches by outcome type.
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 0, line: 10, taken: true,
+                constraint: SymConstraint::Expr {
+                    expr: crate::sym_expr::SymExpr::BinOp {
+                        op: crate::sym_expr::BinOpKind::Gt,
+                        left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
+                        right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                    },
+                },
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 1, line: 20, taken: true,
+                constraint: SymConstraint::Unknown { hint: "opaque".into() },
+                conditions: None,
+            },
+        ];
+        let result = ExecuteResult {
+            return_value: Some(json!(1)),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![1, 2],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            performance: empty_perf(),
+        };
+        // 3 branches in analysis: branch 0 (solvable, one direction), branch 1 (opaque, one direction),
+        // branch 2 (never reached).
+        let observe = stub_observe_stage("tally", 3, vec![
+            (vec![json!(5)], vec![], result),
+        ]);
+
+        let output = solve(&observe, Some(5000));
+        let m = &output.metrics;
+
+        // Tally check: sum of outcomes should equal total_uncovered.
+        let tally = m.sat_count + m.unsat_count + m.opaque_count + m.unreachable_count + m.error_count;
+        assert_eq!(
+            tally, m.total_uncovered,
+            "outcome tally ({tally}) must equal total_uncovered ({})",
+            m.total_uncovered
+        );
+
+        // Branch 2 was never reached → 2 unreachable (true + false).
+        assert_eq!(m.unreachable_count, 2);
+        // Branch 1 opaque → 1 opaque.
+        assert_eq!(m.opaque_count, 1);
+    }
+
+    #[test]
+    fn solve_stage_output_round_trips() {
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![
+                SolvedBranch {
+                    branch_id: 0,
+                    line: 10,
+                    target_taken: false,
+                    outcome: SolveOutcome::Sat { inputs: vec![json!(42)] },
+                },
+                SolvedBranch {
+                    branch_id: 1,
+                    line: 20,
+                    target_taken: true,
+                    outcome: SolveOutcome::Unsat,
+                },
+                SolvedBranch {
+                    branch_id: 2,
+                    line: 30,
+                    target_taken: false,
+                    outcome: SolveOutcome::Opaque { hint: "test".into() },
+                },
+                SolvedBranch {
+                    branch_id: 3,
+                    line: 40,
+                    target_taken: true,
+                    outcome: SolveOutcome::Unreachable,
+                },
+                SolvedBranch {
+                    branch_id: 4,
+                    line: 50,
+                    target_taken: false,
+                    outcome: SolveOutcome::Error { message: "timeout".into() },
+                },
+            ],
+            metrics: SolveMetrics {
+                total_uncovered: 5,
+                sat_count: 1,
+                unsat_count: 1,
+                opaque_count: 1,
+                unreachable_count: 1,
+                error_count: 1,
+            },
+        };
+        let stage = SolveStageOutput {
+            solve: solve_out,
+            function_name: "round_trip".into(),
+            file: "test.ts".into(),
+        };
+        let json = serde_json::to_string(&stage).expect("serialize");
+        let d: SolveStageOutput = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(d.function_name, "round_trip");
+        assert_eq!(d.file, "test.ts");
+        assert_eq!(d.solve.solved_branches.len(), 5);
+        assert_eq!(d.solve.metrics.total_uncovered, 5);
+        assert_eq!(d.solve.metrics.sat_count, 1);
+        assert_eq!(d.solve.solved_branches[0].outcome, SolveOutcome::Sat { inputs: vec![json!(42)] });
+        assert_eq!(d.solve.solved_branches[1].outcome, SolveOutcome::Unsat);
+        assert_eq!(d.solve.solved_branches[3].outcome, SolveOutcome::Unreachable);
+    }
+
+    // -- Property-based tests --
+
+    fn arb_solve_outcome() -> impl proptest::strategy::Strategy<Value = SolveOutcome> {
+        use proptest::prelude::*;
+        prop_oneof![
+            proptest::collection::vec(
+                prop_oneof![
+                    Just(json!(42)),
+                    Just(json!("hello")),
+                    Just(json!(true)),
+                    Just(json!(3.14)),
+                    Just(json!(null)),
+                ],
+                0..5,
+            )
+            .prop_map(|inputs| SolveOutcome::Sat { inputs }),
+            Just(SolveOutcome::Unsat),
+            "[a-z ]{1,30}".prop_map(|hint| SolveOutcome::Opaque { hint }),
+            Just(SolveOutcome::Unreachable),
+            "[a-z ]{1,30}".prop_map(|message| SolveOutcome::Error { message }),
+        ]
+    }
+
+    fn arb_solved_branch() -> impl proptest::strategy::Strategy<Value = SolvedBranch> {
+        use proptest::prelude::*;
+        (0..100u32, 1..500u32, any::<bool>(), arb_solve_outcome()).prop_map(
+            |(branch_id, line, target_taken, outcome)| SolvedBranch {
+                branch_id,
+                line,
+                target_taken,
+                outcome,
+            },
+        )
+    }
+
+    fn arb_solve_metrics() -> impl proptest::strategy::Strategy<Value = SolveMetrics> {
+        use proptest::prelude::*;
+        (0..50usize, 0..50usize, 0..50usize, 0..50usize, 0..50usize).prop_map(
+            |(sat, unsat, opaque, unreachable, error)| SolveMetrics {
+                total_uncovered: sat + unsat + opaque + unreachable + error,
+                sat_count: sat,
+                unsat_count: unsat,
+                opaque_count: opaque,
+                unreachable_count: unreachable,
+                error_count: error,
+            },
+        )
+    }
+
+    proptest::proptest! {
+        /// SolveStageOutput survives a serialize → deserialize roundtrip.
+        #[test]
+        fn solve_stage_output_proptest_roundtrip(
+            branches in proptest::collection::vec(arb_solved_branch(), 0..10),
+            metrics in arb_solve_metrics(),
+            name in "[a-z_]{1,20}",
+            file in "[a-z/]{1,20}\\.ts",
+        ) {
+            let branch_count = branches.len();
+            let expected_total = metrics.total_uncovered;
+            let stage = SolveStageOutput {
+                solve: StageSolveOutput {
+                    solved_branches: branches,
+                    metrics,
+                },
+                function_name: name.clone(),
+                file: file.clone(),
+            };
+            let json = serde_json::to_string(&stage).expect("serialize");
+            let d: SolveStageOutput = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d.function_name, name);
+            proptest::prop_assert_eq!(d.file, file);
+            proptest::prop_assert_eq!(d.solve.solved_branches.len(), branch_count);
+            proptest::prop_assert_eq!(d.solve.metrics.total_uncovered, expected_total);
+        }
+
+        /// SolveMetrics tally invariant: component counts always sum to total.
+        #[test]
+        fn solve_metrics_tally_invariant(metrics in arb_solve_metrics()) {
+            let sum = metrics.sat_count
+                + metrics.unsat_count
+                + metrics.opaque_count
+                + metrics.unreachable_count
+                + metrics.error_count;
+            proptest::prop_assert_eq!(sum, metrics.total_uncovered);
+        }
+
+        /// Each SolveOutcome variant survives a roundtrip.
+        #[test]
+        fn solve_outcome_roundtrip(outcome in arb_solve_outcome()) {
+            let json = serde_json::to_string(&outcome).expect("serialize");
+            let d: SolveOutcome = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d, outcome);
+        }
     }
 }
