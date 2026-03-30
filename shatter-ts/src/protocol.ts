@@ -335,6 +335,7 @@ export interface FunctionAnalysis {
   literals?: LiteralValue[];
   crypto_boundaries?: CryptoBoundary[];
   loops?: LoopInfo[];
+  source_file?: string;
 }
 
 export interface ParamInfo {

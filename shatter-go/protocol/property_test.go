@@ -141,6 +141,10 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 		if rapid.Bool().Draw(t, "hasLoops") {
 			loops = rapid.SliceOfN(genLoopInfo(), 0, 3).Draw(t, "loops")
 		}
+		var sourceFile string
+		if rapid.Bool().Draw(t, "hasSourceFile") {
+			sourceFile = "/src/" + genIdent().Draw(t, "sourceFile") + ".ts"
+		}
 		return FunctionAnalysis{
 			Name:         genIdent().Draw(t, "name"),
 			Exported:     rapid.Bool().Draw(t, "exported"),
@@ -151,6 +155,7 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 			StartLine:    startLine,
 			EndLine:      endLine,
 			Loops:        loops,
+			SourceFile:   sourceFile,
 		}
 	})
 }

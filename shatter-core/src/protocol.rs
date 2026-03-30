@@ -354,6 +354,10 @@ pub struct FunctionAnalysis {
     /// and unmodified in the loop body.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<LoopInfo>,
+    /// When set, indicates that this function was discovered via a re-export
+    /// and actually lives in a different source file than the one analyzed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<String>,
 }
 
 /// A branch point found during static analysis.
@@ -1040,6 +1044,7 @@ mod tests {
                     literals: vec![],
                     crypto_boundaries: vec![],
             loops: vec![],
+                    source_file: None,
                 }],
             },
         ));
@@ -1527,6 +1532,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         });
     }
 
@@ -1745,6 +1751,7 @@ mod tests {
                         literals: vec![],
                         crypto_boundaries: vec![],
             loops: vec![],
+                        source_file: None,
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
@@ -1782,6 +1789,7 @@ mod tests {
                         literals: vec![],
                         crypto_boundaries: vec![],
             loops: vec![],
+                        source_file: None,
                     },
                 ],
             },
@@ -2168,6 +2176,7 @@ mod tests {
             ],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         });
     }
 
@@ -2195,6 +2204,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -2327,6 +2337,7 @@ mod tests {
                 output_entropy: None,
             }],
             loops: vec![],
+            source_file: None,
         });
     }
 
@@ -2344,6 +2355,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -2463,6 +2475,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         }];
         assert!(validate_analyze_result(&functions));
     }
@@ -2481,6 +2494,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         }];
         assert!(!validate_analyze_result(&functions));
     }
@@ -2499,6 +2513,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            source_file: None,
         }];
         assert!(!validate_analyze_result(&functions));
     }

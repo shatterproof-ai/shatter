@@ -866,6 +866,7 @@ pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
                     literals,
                     crypto_boundaries: vec![],
                     loops: vec![],
+                    source_file: None,
                 }
             },
         )

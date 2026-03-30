@@ -181,6 +181,53 @@ export function analyzeFile(
     walk();
   }
 
+  // Follow barrel re-exports when direct scanning found no functions and no
+  // specific function was requested (whole-file analysis mode).
+  if (results.length === 0 && functionName == null) {
+    const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
+    if (moduleSymbol) {
+      const exports = checker.getExportsOfModule(moduleSymbol);
+      // Group exported symbols by their declaring source file.
+      const byFile = new Map<string, string[]>();
+
+      for (const exp of exports) {
+        const resolved =
+          exp.flags & ts.SymbolFlags.Alias
+            ? checker.getAliasedSymbol(exp)
+            : exp;
+
+        const decls = resolved.getDeclarations();
+        if (!decls || decls.length === 0) continue;
+
+        const declSourceFile = decls[0]!.getSourceFile();
+        const declPath = declSourceFile.fileName;
+
+        // Skip external package re-exports.
+        if (declPath.includes("node_modules")) continue;
+        // Skip self-references (avoid re-analyzing the barrel itself).
+        if (path.resolve(declPath) === absolutePath) continue;
+
+        const resolvedDeclPath = path.resolve(declPath);
+        let names = byFile.get(resolvedDeclPath);
+        if (!names) {
+          names = [];
+          byFile.set(resolvedDeclPath, names);
+        }
+        names.push(exp.name);
+      }
+
+      for (const [realPath, names] of byFile) {
+        for (const name of names) {
+          const subResults = analyzeFile(realPath, name, projectRoot, timing);
+          for (const fn of subResults) {
+            fn.source_file = realPath;
+            results.push(fn);
+          }
+        }
+      }
+    }
+  }
+
   return results;
 }
 
