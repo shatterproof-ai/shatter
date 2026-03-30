@@ -620,6 +620,11 @@ pub(crate) enum CliCommand {
         #[arg(long, conflicts_with = "changed")]
         since: Option<String>,
 
+        /// End boundary for --since range. Analyzes files as they existed at
+        /// this ref instead of the current working tree. Defaults to HEAD.
+        #[arg(long, requires = "since")]
+        until: Option<String>,
+
         /// Include untracked files when using --changed.
         #[arg(long, requires = "changed")]
         include_untracked: bool,
@@ -2528,6 +2533,53 @@ mod tests {
                 assert!(progress);
                 assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_until_requires_since() {
+        // --until without --since should fail
+        let result = Cli::try_parse_from([
+            "shatter",
+            "scan",
+            "--until", "HEAD~2",
+            "src/",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_scan_since_with_until() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--since", "HEAD~5",
+            "--until", "HEAD~2",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { since, until, .. } => {
+                assert_eq!(since, Some("HEAD~5".to_string()));
+                assert_eq!(until, Some("HEAD~2".to_string()));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_since_without_until() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--since", "HEAD~5",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { since, until, .. } => {
+                assert_eq!(since, Some("HEAD~5".to_string()));
+                assert!(until.is_none());
             }
             _ => panic!("expected Scan command"),
         }
