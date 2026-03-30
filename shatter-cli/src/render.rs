@@ -236,6 +236,7 @@ mod tests {
             mcdc_summary: None,
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         }
     }
 

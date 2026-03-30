@@ -929,6 +929,7 @@ mod tests {
             shrink_stats: crate::shrink::ShrinkStats::default(),
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         ObserveStageOutput {
             observation,
