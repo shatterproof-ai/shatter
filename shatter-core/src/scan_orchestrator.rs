@@ -644,7 +644,7 @@ pub async fn scan(
             .cloned()
             .unwrap_or_default();
 
-        let pool_seeds = crate::input_gen::pool_to_candidate_inputs(&analysis.params, &input_pool);
+        let pool_seeds = crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &input_pool, &callees);
 
         let candidate_inputs = load_config_candidate_inputs(
             func_name,
@@ -1520,7 +1520,7 @@ pub async fn parallel_scan(
 
             let pool_seeds = {
                 let pool_guard = input_pool.lock().await;
-                crate::input_gen::pool_to_candidate_inputs(&analysis.params, &pool_guard)
+                crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &pool_guard, &callees)
             };
 
             let candidate_inputs = load_config_candidate_inputs(

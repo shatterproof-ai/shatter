@@ -252,6 +252,18 @@ impl InterestingPool {
             .unwrap_or_default()
     }
 
+    /// Return all pool entries matching the given type, with full metadata.
+    ///
+    /// Unlike [`values_for_type`] which returns only values, this exposes
+    /// [`BehaviorObservation`] metadata so callers can filter by source function.
+    pub fn entries_for_type(&self, ty: &TypeInfo) -> &[PoolEntry] {
+        let key = type_key(ty);
+        self.buckets
+            .get(&key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Insert an entry into the pool, evicting if the bucket is at capacity.
     ///
     /// Returns `true` if the entry was inserted (or merged), `false` if
@@ -718,6 +730,32 @@ mod tests {
 
         let values = pool.values_for_type(&TypeInfo::Str);
         assert!(values.is_empty());
+    }
+
+    #[test]
+    fn entries_for_type_returns_full_entries() {
+        let mut pool = InterestingPool::default();
+        pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
+        pool.insert(make_entry(serde_json::json!(99), "bar", Severity::Crash));
+
+        let entries = pool.entries_for_type(&TypeInfo::Int);
+        assert_eq!(entries.len(), 2);
+        // Verify behavior metadata is accessible.
+        let functions: Vec<&str> = entries
+            .iter()
+            .flat_map(|e| e.behaviors.iter().map(|b| b.function.as_str()))
+            .collect();
+        assert!(functions.contains(&"foo"));
+        assert!(functions.contains(&"bar"));
+    }
+
+    #[test]
+    fn entries_for_type_returns_empty_for_missing_type() {
+        let mut pool = InterestingPool::default();
+        pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
+
+        let entries = pool.entries_for_type(&TypeInfo::Str);
+        assert!(entries.is_empty());
     }
 
     // -- harvest_from_exploration tests --
