@@ -273,6 +273,17 @@ async fn main() -> ExitCode {
                 use_color,
             )
         }
+        CliCommand::Solve {
+            input,
+            output,
+            solver_timeout,
+        } => {
+            commands::solve::run_solve(
+                &input,
+                output.as_deref(),
+                solver_timeout,
+            )
+        }
         CliCommand::Observe {
             target,
             concolic,

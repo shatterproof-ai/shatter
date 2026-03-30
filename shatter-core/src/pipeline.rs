@@ -79,7 +79,7 @@ pub struct StageSolveOutput {
 }
 
 /// A single branch solve attempt result.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolvedBranch {
     /// Branch identifier from static analysis.
     pub branch_id: u32,
@@ -1192,5 +1192,101 @@ mod tests {
         assert_eq!(d.solve.solved_branches[0].outcome, SolveOutcome::Sat { inputs: vec![json!(42)] });
         assert_eq!(d.solve.solved_branches[1].outcome, SolveOutcome::Unsat);
         assert_eq!(d.solve.solved_branches[3].outcome, SolveOutcome::Unreachable);
+    }
+
+    // -- Property-based tests --
+
+    fn arb_solve_outcome() -> impl proptest::strategy::Strategy<Value = SolveOutcome> {
+        use proptest::prelude::*;
+        prop_oneof![
+            proptest::collection::vec(
+                prop_oneof![
+                    Just(json!(42)),
+                    Just(json!("hello")),
+                    Just(json!(true)),
+                    Just(json!(3.14)),
+                    Just(json!(null)),
+                ],
+                0..5,
+            )
+            .prop_map(|inputs| SolveOutcome::Sat { inputs }),
+            Just(SolveOutcome::Unsat),
+            "[a-z ]{1,30}".prop_map(|hint| SolveOutcome::Opaque { hint }),
+            Just(SolveOutcome::Unreachable),
+            "[a-z ]{1,30}".prop_map(|message| SolveOutcome::Error { message }),
+        ]
+    }
+
+    fn arb_solved_branch() -> impl proptest::strategy::Strategy<Value = SolvedBranch> {
+        use proptest::prelude::*;
+        (0..100u32, 1..500u32, any::<bool>(), arb_solve_outcome()).prop_map(
+            |(branch_id, line, target_taken, outcome)| SolvedBranch {
+                branch_id,
+                line,
+                target_taken,
+                outcome,
+            },
+        )
+    }
+
+    fn arb_solve_metrics() -> impl proptest::strategy::Strategy<Value = SolveMetrics> {
+        use proptest::prelude::*;
+        (0..50usize, 0..50usize, 0..50usize, 0..50usize, 0..50usize).prop_map(
+            |(sat, unsat, opaque, unreachable, error)| SolveMetrics {
+                total_uncovered: sat + unsat + opaque + unreachable + error,
+                sat_count: sat,
+                unsat_count: unsat,
+                opaque_count: opaque,
+                unreachable_count: unreachable,
+                error_count: error,
+            },
+        )
+    }
+
+    proptest::proptest! {
+        /// SolveStageOutput survives a serialize → deserialize roundtrip.
+        #[test]
+        fn solve_stage_output_proptest_roundtrip(
+            branches in proptest::collection::vec(arb_solved_branch(), 0..10),
+            metrics in arb_solve_metrics(),
+            name in "[a-z_]{1,20}",
+            file in "[a-z/]{1,20}\\.ts",
+        ) {
+            let branch_count = branches.len();
+            let expected_total = metrics.total_uncovered;
+            let stage = SolveStageOutput {
+                solve: StageSolveOutput {
+                    solved_branches: branches,
+                    metrics,
+                },
+                function_name: name.clone(),
+                file: file.clone(),
+            };
+            let json = serde_json::to_string(&stage).expect("serialize");
+            let d: SolveStageOutput = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d.function_name, name);
+            proptest::prop_assert_eq!(d.file, file);
+            proptest::prop_assert_eq!(d.solve.solved_branches.len(), branch_count);
+            proptest::prop_assert_eq!(d.solve.metrics.total_uncovered, expected_total);
+        }
+
+        /// SolveMetrics tally invariant: component counts always sum to total.
+        #[test]
+        fn solve_metrics_tally_invariant(metrics in arb_solve_metrics()) {
+            let sum = metrics.sat_count
+                + metrics.unsat_count
+                + metrics.opaque_count
+                + metrics.unreachable_count
+                + metrics.error_count;
+            proptest::prop_assert_eq!(sum, metrics.total_uncovered);
+        }
+
+        /// Each SolveOutcome variant survives a roundtrip.
+        #[test]
+        fn solve_outcome_roundtrip(outcome in arb_solve_outcome()) {
+            let json = serde_json::to_string(&outcome).expect("serialize");
+            let d: SolveOutcome = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d, outcome);
+        }
     }
 }

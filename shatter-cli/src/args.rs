@@ -547,6 +547,23 @@ pub(crate) enum CliCommand {
         memory_limit: Option<u64>,
     },
 
+    /// Solve uncovered branches: read Stage 1 observation output and use Z3 constraint
+    /// solver to find inputs that trigger uncovered branch directions. No frontend
+    /// needed — pure offline computation on serialized observation data.
+    Solve {
+        /// Path to a Stage 1 observation JSON file (produced by `shatter observe`).
+        #[arg(required = true)]
+        input: PathBuf,
+
+        /// Write Stage 3 solve output to a JSON file (for downstream stages).
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+
+        /// Z3 solver timeout in milliseconds per branch.
+        #[arg(long, default_value_t = 5000)]
+        solver_timeout: u64,
+    },
+
     /// Build a FunctionSpec from an observation file produced by `shatter observe`.
     Specify {
         /// Path to an ObserveStageOutput JSON file.

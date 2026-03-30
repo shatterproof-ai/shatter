@@ -13,6 +13,7 @@ pub(crate) mod properties;
 pub(crate) mod revalidate;
 pub(crate) mod run;
 pub(crate) mod scan;
+pub(crate) mod solve;
 pub(crate) mod specify;
 pub(crate) mod stale;
 pub(crate) mod telemetry;
