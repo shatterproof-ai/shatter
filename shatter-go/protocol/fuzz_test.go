@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -227,5 +228,214 @@ func FuzzSymExprDeserialize(f *testing.F) {
 		}
 		var expr2 SymExpr
 		json.Unmarshal(remarshaled, &expr2) //nolint:errcheck
+	})
+}
+
+// FuzzParamInfoDeserialize fuzzes ParamInfo which embeds the recursive TypeInfo.
+func FuzzParamInfoDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"name":"x","type":{"kind":"int"}}`,
+		`{"name":"s","type":{"kind":"str"},"type_name":"string"}`,
+		`{"name":"arr","type":{"kind":"array","element":{"kind":"float"}}}`,
+		`{"name":"opt","type":{"kind":"nullable","inner":{"kind":"bool"}}}`,
+		`{}`,
+		`{"name":"","type":{}}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var pi ParamInfo
+		if err := json.Unmarshal(data, &pi); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(pi)
+		if err != nil {
+			return
+		}
+		var pi2 ParamInfo
+		json.Unmarshal(remarshaled, &pi2) //nolint:errcheck
+	})
+}
+
+// FuzzBranchInfoDeserialize fuzzes BranchInfo which contains SymExpr and
+// SymConstraint recursive types.
+func FuzzBranchInfoDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"id":0,"line":5,"condition_text":"x > 0","branch_type":"if","condition":{"kind":"expression","expr":{"kind":"bin_op","op":"gt","left":{"kind":"param","name":"x","path":[]},"right":{"kind":"const","type":"int","value":0}}}}`,
+		`{"id":1,"line":10,"condition_text":"flag","branch_type":"if","condition":{"kind":"unknown","hint":"opaque"}}`,
+		`{"id":0,"line":1,"condition_text":"","branch_type":""}`,
+		`{}`,
+		`{"id":-1,"condition":null}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var bi BranchInfo
+		if err := json.Unmarshal(data, &bi); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(bi)
+		if err != nil {
+			return
+		}
+		var bi2 BranchInfo
+		json.Unmarshal(remarshaled, &bi2) //nolint:errcheck
+	})
+}
+
+// FuzzLiteralValueDeserialize fuzzes the LiteralValue tagged union which uses
+// a "type" field to select between int/float/str/bool/regex variants.
+func FuzzLiteralValueDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"type":"int","value":42}`,
+		`{"type":"float","value":3.14}`,
+		`{"type":"str","value":"hello"}`,
+		`{"type":"bool","value":true}`,
+		`{"type":"regex","pattern":"\\d+"}`,
+		`{}`,
+		`{"type":""}`,
+		`{"type":"unknown","value":null}`,
+		`{"type":"int","value":"not_a_number"}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var lv LiteralValue
+		if err := json.Unmarshal(data, &lv); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(lv)
+		if err != nil {
+			return
+		}
+		var lv2 LiteralValue
+		json.Unmarshal(remarshaled, &lv2) //nolint:errcheck
+	})
+}
+
+// FuzzSideEffectDeserialize fuzzes the SideEffect type which has 7 possible
+// kinds with different field combinations and json.RawMessage pointer fields.
+func FuzzSideEffectDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"kind":"console_output","level":"info","message":"hello"}`,
+		`{"kind":"thrown_error","error_type":"TypeError","message":"bad","stack":"at main.go:5"}`,
+		`{"kind":"file_write","path":"/tmp/x","content":"data"}`,
+		`{"kind":"network_request","method":"GET","url":"http://example.com","body":{"key":"val"}}`,
+		`{"kind":"global_mutation","name":"counter"}`,
+		`{"kind":"global_state_change","variable":"cfg","before":null,"after":{"x":1}}`,
+		`{"kind":"environment_read","name":"HOME","value":"/root"}`,
+		`{}`,
+		`{"kind":""}`,
+		`{"kind":"console_output","body":null}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var se SideEffect
+		if err := json.Unmarshal(data, &se); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(se)
+		if err != nil {
+			return
+		}
+		var se2 SideEffect
+		json.Unmarshal(remarshaled, &se2) //nolint:errcheck
+	})
+}
+
+// FuzzMockConfigDeserialize fuzzes MockConfig directly with arbitrary JSON.
+func FuzzMockConfigDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"symbol":"fs.readFile","return_values":["ok"],"should_track_calls":true,"default_behavior":"repeat_last"}`,
+		`{"symbol":"db.query","return_values":[null,{"rows":[]}],"should_track_calls":false,"default_behavior":"cycle"}`,
+		`{"symbol":"","return_values":[],"should_track_calls":false,"default_behavior":""}`,
+		`{}`,
+		`{"symbol":"x","return_values":"not_array"}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var mc MockConfig
+		if err := json.Unmarshal(data, &mc); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(mc)
+		if err != nil {
+			return
+		}
+		var mc2 MockConfig
+		json.Unmarshal(remarshaled, &mc2) //nolint:errcheck
+	})
+}
+
+// FuzzFunctionAnalysisDeserialize fuzzes the top-level FunctionAnalysis
+// composite type which contains ParamInfo, BranchInfo, LiteralValue, and
+// other nested types.
+func FuzzFunctionAnalysisDeserialize(f *testing.F) {
+	seeds := []string{
+		`{"name":"Foo","exported":true,"params":[{"name":"x","type":{"kind":"int"}}],"branches":[{"id":0,"line":5,"condition_text":"x>0","branch_type":"if"}],"dependencies":[],"return_type":{"kind":"str"},"start_line":1,"end_line":10}`,
+		`{"name":"Bar","params":[],"branches":[],"dependencies":[{"kind":"import","symbol":"fmt.Println","source_module":"fmt","return_type":{"kind":"unknown"},"param_types":[],"call_sites":[3]}],"return_type":{"kind":"bool"},"start_line":1,"end_line":5,"literals":[{"type":"int","value":42}]}`,
+		`{}`,
+		`{"name":"","params":null,"branches":null,"dependencies":null,"return_type":{},"start_line":0,"end_line":0}`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var fa FunctionAnalysis
+		if err := json.Unmarshal(data, &fa); err != nil {
+			return
+		}
+		remarshaled, err := json.Marshal(fa)
+		if err != nil {
+			return
+		}
+		var fa2 FunctionAnalysis
+		json.Unmarshal(remarshaled, &fa2) //nolint:errcheck
+	})
+}
+
+// FuzzVersionParsing fuzzes parseMajorMinor and isVersionCompatible with
+// arbitrary version strings.
+func FuzzVersionParsing(f *testing.F) {
+	seeds := []string{
+		"0.1.0",
+		"1.0.0",
+		"99.99.99",
+		"0.0.0",
+		"",
+		".",
+		"..",
+		"abc",
+		"1",
+		"1.",
+		"1.2.3.4",
+		"-1.0.0",
+		"0.1.0-beta",
+		"999999999999999999.0.0",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, version string) {
+		if strings.ContainsRune(version, 0) {
+			return
+		}
+		// Must not panic on any input
+		parseMajorMinor(version)
+		isVersionCompatible(version)
 	})
 }
