@@ -19,6 +19,7 @@ import {
   AUTH_ERROR_PATTERNS,
   TIMEOUT_PATTERNS,
   buildRuntimeCryptoBoundary,
+  createUnresolvableModuleStub,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -918,6 +919,87 @@ describe("execution-time dep gap detection", () => {
     `;
     const result = await executeInstrumented(source, "noop", [], []);
     expect(result.discovered_dependencies.length).toBe(0);
+  });
+});
+
+describe("stubbed_import fallback for unresolvable modules", () => {
+  it("returns a stub for MODULE_NOT_FOUND and records stubbed_import dependency", async () => {
+    const source = `
+      const fake = require("nonexistent-module-xyz-stub-test");
+      export function useFake(): string {
+        return typeof fake.someMethod;
+      }
+    `;
+    const result = await executeInstrumented(source, "useFake", [], []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("function");
+    const dep = result.discovered_dependencies.find(
+      d => d.source_module === "nonexistent-module-xyz-stub-test",
+    );
+    expect(dep).toBeDefined();
+    expect(dep!.kind).toBe("stubbed_import");
+    expect(dep!.is_subprocess_spawn).toBe(false);
+  });
+
+  it("stub supports nested property access without crashing", async () => {
+    const source = `
+      const fake = require("nonexistent-deep-xyz-stub-test");
+      export function deep(): string {
+        return typeof fake.a.b.c.d;
+      }
+    `;
+    const result = await executeInstrumented(source, "deep", [], []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("function");
+  });
+
+  it("stub supports constructor calls", async () => {
+    const source = `
+      const Fake = require("nonexistent-ctor-xyz-stub-test");
+      export function construct(): string {
+        const instance = new Fake.Client({ host: "localhost" });
+        return typeof instance.connect;
+      }
+    `;
+    const result = await executeInstrumented(source, "construct", [], []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("function");
+  });
+
+  it("does not stub modules that exist", async () => {
+    const source = `
+      const nodePath = require("path");
+      export function joinIt(): string {
+        return nodePath.join("a", "b");
+      }
+    `;
+    const result = await executeInstrumented(source, "joinIt", [], []);
+    expect(result.thrown_error).toBeNull();
+    const stubbedDep = result.discovered_dependencies.find(d => d.kind === "stubbed_import");
+    expect(stubbedDep).toBeUndefined();
+  });
+
+  it("records stubbed_import only once per module", async () => {
+    const source = `
+      const a = require("nonexistent-dedup-xyz-stub-test");
+      const b = require("nonexistent-dedup-xyz-stub-test");
+      export function run(): number { return 1; }
+    `;
+    const result = await executeInstrumented(source, "run", [], []);
+    const deps = result.discovered_dependencies.filter(
+      d => d.source_module === "nonexistent-dedup-xyz-stub-test",
+    );
+    expect(deps).toHaveLength(1);
+  });
+
+  it("stub .then returns undefined to prevent thenable coercion", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(stub.then).toBeUndefined();
+  });
+
+  it("stub .__esModule returns true for ESM interop", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(stub.__esModule).toBe(true);
   });
 });
 

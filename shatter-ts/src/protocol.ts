@@ -478,7 +478,7 @@ export interface ConnectionFailure {
   message: string;
 }
 
-export type DepDetectionKind = "unmocked_import" | "subprocess_spawn";
+export type DepDetectionKind = "unmocked_import" | "subprocess_spawn" | "stubbed_import";
 
 export interface DiscoveredDependency {
   symbol: string;

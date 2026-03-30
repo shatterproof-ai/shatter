@@ -209,7 +209,7 @@ const arbErrorInfo: fc.Arbitrary<ErrorInfo> = fc.record({
 });
 
 const arbDepDetectionKind: fc.Arbitrary<DepDetectionKind> = fc.constantFrom(
-  "unmocked_import", "subprocess_spawn",
+  "unmocked_import", "subprocess_spawn", "stubbed_import",
 );
 
 const arbDiscoveredDependency: fc.Arbitrary<DiscoveredDependency> = fc.record({
@@ -971,7 +971,7 @@ describe("property: DiscoveredDependency round-trips", () => {
   });
 
   it("DiscoveredDependency kind is always a valid variant", () => {
-    const validKinds = new Set(["unmocked_import", "subprocess_spawn"]);
+    const validKinds = new Set(["unmocked_import", "subprocess_spawn", "stubbed_import"]);
     fc.assert(
       fc.property(arbDiscoveredDependency, (dd) => {
         expect(validKinds.has(dd.kind)).toBe(true);

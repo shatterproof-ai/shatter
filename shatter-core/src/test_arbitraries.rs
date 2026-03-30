@@ -553,6 +553,7 @@ pub fn arb_dep_detection_kind() -> impl Strategy<Value = DepDetectionKind> {
     prop_oneof![
         Just(DepDetectionKind::UnmockedImport),
         Just(DepDetectionKind::SubprocessSpawn),
+        Just(DepDetectionKind::StubbedImport),
     ]
 }
 
