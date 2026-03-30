@@ -228,6 +228,11 @@ pub struct ObservationOutput {
     /// Populated when parameters have unknown types or caused repeated solver failures.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opaque_suggestions: Vec<crate::executability::OpaqueSuggestion>,
+    /// Module names that could not be resolved at runtime and were replaced
+    /// with recursive Proxy stubs.  When non-empty the function was only
+    /// **partially analyzed** — coverage may be limited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stubbed_modules: Vec<String>,
 }
 
 /// Transitional alias: existing code that references `ExplorationResult`
@@ -1331,6 +1336,7 @@ pub async fn explore_function(
         &analysis.params,
         &std::collections::HashMap::new(),
     );
+    let stubbed_modules = collect_stubbed_modules(&raw_results);
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations,
@@ -1348,7 +1354,23 @@ pub async fn explore_function(
         shrink_stats,
         abandoned_frontiers: vec![],
         opaque_suggestions,
+        stubbed_modules,
     })
+}
+
+/// Extract deduplicated module names with `StubbedImport` kind from raw results.
+pub fn collect_stubbed_modules(
+    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
+) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (_, _, result) in raw_results {
+        for dep in &result.discovered_dependencies {
+            if dep.kind == crate::protocol::DepDetectionKind::StubbedImport {
+                seen.insert(dep.source_module.clone());
+            }
+        }
+    }
+    seen.into_iter().collect()
 }
 
 /// Options for formatting an exploration report.
@@ -1433,6 +1455,17 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
         ));
     }
     out.push_str(&format!("  {}\n", summary_parts.join(" \u{00b7} ")));
+
+    // Stubbed-import warning
+    if !result.stubbed_modules.is_empty() {
+        let modules = result.stubbed_modules.join(", ");
+        out.push_str(&format!(
+            "  {yellow}\u{26a0} Partially analyzed:{reset} stubbed imports for {dim}{modules}{reset}\n",
+            yellow = s.yellow,
+            dim = s.dim,
+            reset = s.reset,
+        ));
+    }
 
     // Tree-style path clusters
     if !result.new_path_executions.is_empty() {
@@ -2236,7 +2269,7 @@ mod tests {
                     return_value: Some(serde_json::json!("negative")),
                     thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -2257,7 +2290,7 @@ mod tests {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             location: Some("src/math.ts:10-25".into()), ..Default::default()
@@ -2276,7 +2309,7 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
                 lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -2287,7 +2320,7 @@ mod tests {
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
             function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
@@ -2311,7 +2344,7 @@ mod tests {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions {
             style: crate::report_style::ReportStyle::ansi(), ..Default::default()
@@ -2342,13 +2375,95 @@ mod tests {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
                 thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
         assert!(report.contains("2 unique path(s)"));
         assert!(report.contains("positive-odd"));
         assert!(report.contains("Discovered paths:"));
+    }
+
+    #[test]
+    fn format_report_shows_stubbed_modules_warning() {
+        let result = ObservationOutput {
+            function_name: "useFake".into(), iterations: 3, unique_paths: 1,
+            lines_covered: 2, total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            stubbed_modules: vec!["pg".into(), "redis".into()],
+        };
+        let report = format_exploration_report(&result, &ReportOptions::default());
+        assert!(report.contains("Partially analyzed"), "report should contain partial analysis warning");
+        assert!(report.contains("pg"), "report should list stubbed module 'pg'");
+        assert!(report.contains("redis"), "report should list stubbed module 'redis'");
+    }
+
+    #[test]
+    fn format_report_no_warning_without_stubbed_modules() {
+        let result = ObservationOutput {
+            function_name: "clean".into(), iterations: 3, unique_paths: 1,
+            lines_covered: 2, total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+        };
+        let report = format_exploration_report(&result, &ReportOptions::default());
+        assert!(!report.contains("Partially analyzed"), "clean report should not contain partial analysis warning");
+    }
+
+    #[test]
+    fn collect_stubbed_modules_deduplicates_and_sorts() {
+        use crate::protocol::{DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics};
+
+        fn stub_dep(module: &str) -> DiscoveredDependency {
+            DiscoveredDependency {
+                symbol: String::new(),
+                source_module: module.to_string(),
+                kind: DepDetectionKind::StubbedImport,
+                is_subprocess_spawn: false,
+            }
+        }
+
+        let result1 = ExecuteResult {
+            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
+            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            discovered_dependencies: vec![stub_dep("redis"), stub_dep("pg")],
+            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+        };
+        let result2 = ExecuteResult {
+            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
+            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            discovered_dependencies: vec![stub_dep("pg")], // duplicate
+            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+        };
+        let raw = vec![
+            (vec![], vec![], result1),
+            (vec![], vec![], result2),
+        ];
+        let modules = collect_stubbed_modules(&raw);
+        assert_eq!(modules, vec!["pg", "redis"]); // sorted, deduplicated
+    }
+
+    #[test]
+    fn collect_stubbed_modules_ignores_non_stubbed_deps() {
+        use crate::protocol::{DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics};
+        let result = ExecuteResult {
+            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
+            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            discovered_dependencies: vec![DiscoveredDependency {
+                symbol: String::new(),
+                source_module: "axios".to_string(),
+                kind: DepDetectionKind::UnmockedImport,
+                is_subprocess_spawn: false,
+            }],
+            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+        };
+        let raw = vec![(vec![], vec![], result)];
+        let modules = collect_stubbed_modules(&raw);
+        assert!(modules.is_empty());
     }
 
     #[test]
@@ -2842,7 +2957,7 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -2888,7 +3003,7 @@ mod tests {
             raw_results: vec![(vec![], vec![], result)],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -2941,7 +3056,7 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
 

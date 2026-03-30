@@ -321,6 +321,8 @@ pub struct ExploreResult {
     pub abandoned_frontiers: Vec<(u32, u32)>,
     /// Parameters suggested as opaque type candidates based on solver failures.
     pub opaque_suggestions: Vec<crate::executability::OpaqueSuggestion>,
+    /// Module names that could not be resolved and were replaced with stubs.
+    pub stubbed_modules: Vec<String>,
 }
 
 /// Errors that can occur during concolic exploration.
@@ -2067,6 +2069,7 @@ pub async fn explore(
     let mcdc_summary = mcdc_table.map(|t| t.summary());
     let opaque_suggestions =
         crate::executability::build_opaque_suggestions(param_infos, &param_fail_counts);
+    let stubbed_modules = crate::explorer::collect_stubbed_modules(&raw_results);
 
     Ok(ExploreResult {
         function_name: function_name.to_string(),
@@ -2092,6 +2095,7 @@ pub async fn explore(
         shrink_stats,
         abandoned_frontiers,
         opaque_suggestions,
+        stubbed_modules,
     })
 }
 

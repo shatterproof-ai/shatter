@@ -422,6 +422,7 @@ pub async fn observe_function(
     let total_lines = instrumentable_line_count
         .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
 
+    let stubbed_modules = crate::explorer::collect_stubbed_modules(&batch.raw_results);
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations: total_input_count,
@@ -437,6 +438,7 @@ pub async fn observe_function(
         mcdc_summary: None,
         shrink_stats: crate::shrink::ShrinkStats::default(),
         abandoned_frontiers: vec![], opaque_suggestions: vec![],
+        stubbed_modules,
     })
 }
 
