@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution_record::{
     BranchDecision, ErrorInfo, ExternalCall, ExecutionRecord, SideEffect,
 };
+use crate::orchestrator::hash_branch_path;
 use crate::protocol::{ExecuteResult, MockBehavior, MockConfig};
 
 // ---------------------------------------------------------------------------
@@ -335,6 +336,31 @@ impl BehaviorMap {
             should_track_calls: true,
             default_behavior: MockBehavior::RepeatLast,
         }
+    }
+
+    /// Merge GA-discovered behaviors into this map, deduplicating by branch path hash.
+    ///
+    /// Only behaviors whose `branch_path` hash is not already represented in the
+    /// map are added. Returns the number of newly added behaviors.
+    pub fn merge_ga_discoveries(&mut self, discoveries: &[Behavior]) -> usize {
+        let mut seen: HashSet<u64> =
+            self.behaviors.iter().map(|b| hash_branch_path(&b.branch_path)).collect();
+
+        let mut next_id = self.behaviors.iter().map(|b| b.id).max().map_or(0, |m| m + 1);
+        let mut added = 0usize;
+
+        for discovery in discoveries {
+            let path_hash = hash_branch_path(&discovery.branch_path);
+            if seen.insert(path_hash) {
+                let mut behavior = discovery.clone();
+                behavior.id = next_id;
+                next_id += 1;
+                self.behaviors.push(behavior);
+                added += 1;
+            }
+        }
+
+        added
     }
 }
 
@@ -1407,5 +1433,54 @@ mod tests {
         let map = BehaviorMap::from_exploration_result("fn1", &result);
         assert_eq!(map.nondeterministic_fields.len(), 1);
         assert_eq!(map.nondeterministic_fields[0].field_path, "return.id");
+    }
+
+    /// Helper: build a Behavior with the given id and branch_path.
+    fn make_behavior(id: u32, branch_path: Vec<BranchDecision>) -> Behavior {
+        Behavior {
+            id,
+            input_args: vec![json!(id)],
+            return_value: Some(json!(id)),
+            thrown_error: None,
+            branch_path,
+            side_effects: vec![],
+            dependency_trace: None,
+            mock_values: vec![],
+        }
+    }
+
+    fn make_branch(branch_id: u32, taken: bool) -> BranchDecision {
+        BranchDecision {
+            branch_id,
+            line: 0,
+            taken,
+            constraint: Default::default(),
+            conditions: None,
+        }
+    }
+
+    #[test]
+    fn merge_ga_discoveries_dedup_by_path_hash() {
+        let path_a = vec![make_branch(1, true)];
+        let path_b = vec![make_branch(2, false)];
+        let path_c = vec![make_branch(3, true)];
+
+        // Existing map has 2 behaviors with paths A and B.
+        let mut map = BehaviorMap {
+            function_id: "test_fn".to_string(),
+            behaviors: vec![make_behavior(0, path_a.clone()), make_behavior(1, path_b.clone())],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+
+        // GA discoveries: path_c is new, path_a is a duplicate.
+        let discoveries = vec![make_behavior(0, path_c.clone()), make_behavior(1, path_a)];
+
+        let added = map.merge_ga_discoveries(&discoveries);
+
+        assert_eq!(added, 1, "only the new path should be added");
+        assert_eq!(map.behaviors.len(), 3, "2 original + 1 new");
+        assert_eq!(map.behaviors[2].id, 2, "new behavior gets next sequential id");
+        assert_eq!(map.behaviors[2].branch_path, path_c);
     }
 }
