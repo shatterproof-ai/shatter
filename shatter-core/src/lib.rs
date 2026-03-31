@@ -51,6 +51,7 @@ pub mod invariants;
 pub mod observe;
 pub mod orchestrator;
 pub mod pipeline;
+pub mod pipeline_orchestrator;
 pub mod project;
 pub mod protocol;
 pub mod recorded_mocks;
