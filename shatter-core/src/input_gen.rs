@@ -1064,7 +1064,10 @@ pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mu
         TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
         TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
         TypeInfo::Complex { kind: ComplexKind::Buffer, .. } => mutate_buffer(value, rng),
-        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
+        TypeInfo::Complex { kind, metadata, inner } => {
+            mutate_complex(value, *kind, metadata, inner.as_deref(), dictionary, rng)
+        }
+        TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
     }
 }
 
@@ -1468,6 +1471,473 @@ fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &m
     } else {
         mutate_value(value, inner, dictionary, rng)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Complex type mutation operators
+// ---------------------------------------------------------------------------
+
+/// Small delta range for temporal mutations (±1 day in milliseconds).
+const TEMPORAL_DELTA_MS: i64 = 86_400_000;
+
+/// Mutate a complex-typed value, preserving its `__complex_type` tag.
+///
+/// Each complex kind has a type-appropriate mutation strategy. Kinds that are
+/// too opaque for meaningful field-level mutation (Closure, Iterator, Symbol)
+/// fall back to regeneration via `generate_complex_value`.
+fn mutate_complex(
+    value: &Value,
+    kind: ComplexKind,
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    inner: Option<&TypeInfo>,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
+    match kind {
+        ComplexKind::Date | ComplexKind::DateTime => mutate_date(value, rng),
+        ComplexKind::Duration => mutate_duration(value, rng),
+        ComplexKind::Time => mutate_time(value, rng),
+        ComplexKind::BigInt => mutate_bigint(value, rng),
+        ComplexKind::BigDecimal => mutate_big_decimal(value, rng),
+        ComplexKind::Uuid => mutate_uuid(value, rng),
+        ComplexKind::IpAddress => mutate_ip_address(value, rng),
+        ComplexKind::Color => mutate_color(value, rng),
+        ComplexKind::GeoPoint => mutate_geo_point(value, rng),
+        ComplexKind::Money => mutate_money(value, rng),
+        ComplexKind::SemVer => mutate_semver(value, rng),
+        ComplexKind::Range => mutate_range(value, rng),
+        ComplexKind::Complex => mutate_complex_number(value, rng),
+        ComplexKind::Rational => mutate_rational(value, rng),
+        ComplexKind::Char | ComplexKind::Rune => mutate_char(value, rng),
+        ComplexKind::GoByte => mutate_go_byte(value, rng),
+        ComplexKind::Url => mutate_string_complex(value, "url", "value", dictionary, rng),
+        ComplexKind::Email => mutate_string_complex(value, "email", "value", dictionary, rng),
+        ComplexKind::Path => mutate_string_complex(value, "path", "value", dictionary, rng),
+        ComplexKind::RegExp => mutate_string_complex(value, "reg_exp", "source", dictionary, rng),
+        ComplexKind::MimeType => mutate_string_complex(value, "mime_type", "value", dictionary, rng),
+        ComplexKind::Locale => mutate_string_complex(value, "locale", "value", dictionary, rng),
+        // Opaque kinds: regenerate rather than mutate.
+        ComplexKind::Buffer => mutate_buffer(value, rng), // shouldn't reach here, but handle it
+        _ => generate_complex_value(kind, metadata, inner, rng),
+    }
+}
+
+/// Mutate a Date/DateTime value by perturbing the epoch-ms field.
+fn mutate_date(value: &Value, rng: &mut impl Rng) -> Value {
+    let ms = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let op: u8 = rng.random_range(0..3);
+    let new_ms = match op {
+        0 => {
+            // Small delta: ±1 day
+            let delta = rng.random_range(-TEMPORAL_DELTA_MS..=TEMPORAL_DELTA_MS);
+            ms.saturating_add(delta)
+        }
+        1 => {
+            // Boundary values
+            let boundaries = [0_i64, -1, 2_147_483_647_000, 253_402_300_799_000, -62_135_596_800_000];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+        _ => {
+            // Negate
+            ms.saturating_neg()
+        }
+    };
+    json!({"__complex_type": "date", "value": new_ms})
+}
+
+/// Mutate a Duration value.
+fn mutate_duration(value: &Value, rng: &mut impl Rng) -> Value {
+    let ms = value
+        .as_object()
+        .and_then(|o| o.get("ms"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let op: u8 = rng.random_range(0..3);
+    let new_ms = match op {
+        0 => {
+            let delta = rng.random_range(-3_600_000..=3_600_000_i64);
+            ms.saturating_add(delta)
+        }
+        1 => {
+            let boundaries = [0_i64, 1, -1, 1_000, 60_000, 86_400_000, -86_400_000];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+        _ => ms.saturating_neg(),
+    };
+    json!({"__complex_type": "duration", "ms": new_ms})
+}
+
+/// Mutate a Time value by perturbing one component.
+fn mutate_time(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_time(rng),
+    };
+    let h = obj.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    let m = obj.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    let s = obj.get("second").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    let ms = obj.get("ms").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+
+    let field: u8 = rng.random_range(0..4);
+    let (nh, nm, ns, nms) = match field {
+        0 => ((h.wrapping_add(rng.random_range(1..=6))) % 24, m, s, ms),
+        1 => (h, (m.wrapping_add(rng.random_range(1..=15))) % 60, s, ms),
+        2 => (h, m, (s.wrapping_add(rng.random_range(1..=15))) % 60, ms),
+        _ => (h, m, s, (ms.wrapping_add(rng.random_range(1..=500))) % 1000),
+    };
+    json!({"__complex_type": "time", "hour": nh, "minute": nm, "second": ns, "ms": nms})
+}
+
+/// Mutate a BigInt value by adjusting its string representation.
+fn mutate_bigint(value: &Value, rng: &mut impl Rng) -> Value {
+    let s = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("0");
+    let op: u8 = rng.random_range(0..4);
+    let new_s = match op {
+        0 => {
+            // Increment or decrement last digit
+            let mut chars: Vec<char> = s.chars().collect();
+            if let Some(last) = chars.last_mut().filter(|c| c.is_ascii_digit()) {
+                let d = *last as u8 - b'0';
+                *last = if rng.random_bool(0.5) {
+                    (b'0' + (d + 1) % 10) as char
+                } else {
+                    (b'0' + (d + 9) % 10) as char
+                };
+            }
+            chars.into_iter().collect()
+        }
+        1 => {
+            // Append a digit (multiply by ~10)
+            format!("{}{}", s, rng.random_range(0..=9))
+        }
+        2 => {
+            // Negate
+            if let Some(stripped) = s.strip_prefix('-') {
+                stripped.to_string()
+            } else if s == "0" {
+                "0".to_string()
+            } else {
+                format!("-{s}")
+            }
+        }
+        _ => {
+            // Boundary
+            let boundaries = ["0", "1", "-1", "9007199254740992", "-9007199254740992"];
+            boundaries[rng.random_range(0..boundaries.len())].to_string()
+        }
+    };
+    json!({"__complex_type": "big_int", "value": new_s})
+}
+
+/// Mutate a BigDecimal value.
+fn mutate_big_decimal(value: &Value, rng: &mut impl Rng) -> Value {
+    let s = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("0");
+    let op: u8 = rng.random_range(0..3);
+    let new_s = match op {
+        0 => {
+            // Parse as f64, apply small perturbation, format back
+            let n: f64 = s.parse().unwrap_or(0.0);
+            let delta = rng.random_range(-1.0..1.0_f64);
+            format!("{}", n + delta)
+        }
+        1 => {
+            // Negate
+            if let Some(stripped) = s.strip_prefix('-') {
+                stripped.to_string()
+            } else if s == "0" {
+                "0".to_string()
+            } else {
+                format!("-{s}")
+            }
+        }
+        _ => {
+            let boundaries = ["0", "0.01", "-0.01", "999999999999.999999"];
+            boundaries[rng.random_range(0..boundaries.len())].to_string()
+        }
+    };
+    json!({"__complex_type": "big_decimal", "value": new_s})
+}
+
+/// Mutate a UUID by flipping a random hex nibble.
+fn mutate_uuid(value: &Value, rng: &mut impl Rng) -> Value {
+    let s = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("00000000-0000-0000-0000-000000000000");
+    let mut chars: Vec<char> = s.chars().collect();
+    // Find hex character positions (skip dashes)
+    let hex_positions: Vec<usize> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_ascii_hexdigit())
+        .map(|(i, _)| i)
+        .collect();
+    if !hex_positions.is_empty() {
+        let idx = hex_positions[rng.random_range(0..hex_positions.len())];
+        let hex_chars = b"0123456789abcdef";
+        chars[idx] = hex_chars[rng.random_range(0..16)] as char;
+    }
+    json!({"__complex_type": "uuid", "value": chars.into_iter().collect::<String>()})
+}
+
+/// Mutate an IP address value.
+fn mutate_ip_address(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_ip_address(rng),
+    };
+    let version = obj.get("version").and_then(|v| v.as_i64()).unwrap_or(4);
+    let addr = obj
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("127.0.0.1");
+
+    if version == 4 {
+        // Mutate one octet
+        let parts: Vec<&str> = addr.split('.').collect();
+        if parts.len() == 4 {
+            let mut octets: Vec<u8> = parts
+                .iter()
+                .map(|p| p.parse().unwrap_or(0))
+                .collect();
+            let idx = rng.random_range(0..4);
+            let op: u8 = rng.random_range(0..3);
+            octets[idx] = match op {
+                0 => octets[idx].wrapping_add(rng.random_range(1..=10)),
+                1 => octets[idx].wrapping_sub(rng.random_range(1..=10)),
+                _ => {
+                    let boundaries: &[u8] = &[0, 1, 127, 255];
+                    boundaries[rng.random_range(0..boundaries.len())]
+                }
+            };
+            let new_addr = format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
+            return json!({"__complex_type": "ip_address", "version": 4, "value": new_addr});
+        }
+    }
+    // IPv6 or malformed — regenerate
+    generate_ip_address(rng)
+}
+
+/// Mutate a Color (RGBA) value by perturbing one channel.
+fn mutate_color(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_color(rng),
+    };
+    let mut rgba = [
+        obj.get("r").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+        obj.get("g").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+        obj.get("b").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+        obj.get("a").and_then(|v| v.as_u64()).unwrap_or(255) as u8,
+    ];
+    let ch = rng.random_range(0..4);
+    rgba[ch] = rgba[ch].wrapping_add(rng.random_range(1..=50));
+    json!({"__complex_type": "color", "r": rgba[0], "g": rgba[1], "b": rgba[2], "a": rgba[3]})
+}
+
+/// Mutate a GeoPoint by perturbing lat/lng.
+fn mutate_geo_point(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_geo_point(rng),
+    };
+    let lat = obj.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let lng = obj.get("lng").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let delta_lat = rng.random_range(-5.0..5.0_f64);
+    let delta_lng = rng.random_range(-5.0..5.0_f64);
+    let new_lat = (lat + delta_lat).clamp(-90.0, 90.0);
+    let new_lng = (lng + delta_lng).clamp(-180.0, 180.0);
+    json!({"__complex_type": "geo_point", "lat": new_lat, "lng": new_lng})
+}
+
+/// Mutate a Money value by perturbing the amount.
+fn mutate_money(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_money(rng),
+    };
+    let amount_str = obj.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
+    let currency = obj
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .unwrap_or("USD");
+    let amount: f64 = amount_str.parse().unwrap_or(0.0);
+    let op: u8 = rng.random_range(0..3);
+    let new_amount = match op {
+        0 => amount + rng.random_range(-10.0..10.0_f64),
+        1 => -amount,
+        _ => {
+            let boundaries = [0.0, 0.01, -0.01, 999999.99];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+    };
+    json!({"__complex_type": "money", "amount": format!("{new_amount:.2}"), "currency": currency})
+}
+
+/// Mutate a SemVer by bumping one component.
+fn mutate_semver(value: &Value, rng: &mut impl Rng) -> Value {
+    let s = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.0.0");
+    // Strip pre-release/build metadata for parsing
+    let base = s.split('-').next().unwrap_or(s);
+    let base = base.split('+').next().unwrap_or(base);
+    let parts: Vec<u32> = base.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+    let (major, minor, patch) = (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+        parts.get(2).copied().unwrap_or(0),
+    );
+    let field: u8 = rng.random_range(0..3);
+    let (nm, ni, np) = match field {
+        0 => (major.saturating_add(1), minor, patch),
+        1 => (major, minor.saturating_add(1), patch),
+        _ => (major, minor, patch.saturating_add(1)),
+    };
+    json!({"__complex_type": "sem_ver", "value": format!("{nm}.{ni}.{np}")})
+}
+
+/// Mutate a Range value by perturbing start/end or flipping inclusive.
+fn mutate_range(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_range(rng),
+    };
+    let start = obj.get("start").and_then(|v| v.as_i64()).unwrap_or(0);
+    let end = obj.get("end").and_then(|v| v.as_i64()).unwrap_or(10);
+    let inclusive = obj.get("inclusive").and_then(|v| v.as_bool()).unwrap_or(false);
+    let op: u8 = rng.random_range(0..3);
+    let (ns, ne, ni) = match op {
+        0 => (start.saturating_add(rng.random_range(-5..=5)), end, inclusive),
+        1 => (start, end.saturating_add(rng.random_range(-5..=5)), inclusive),
+        _ => (start, end, !inclusive),
+    };
+    json!({"__complex_type": "range", "start": ns, "end": ne, "inclusive": ni})
+}
+
+/// Mutate a complex number by perturbing real or imaginary part.
+fn mutate_complex_number(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_complex_number(rng),
+    };
+    let real = obj.get("real").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let imag = obj.get("imag").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if rng.random_bool(0.5) {
+        let delta = rng.random_range(-10.0..10.0_f64);
+        json!({"__complex_type": "complex", "real": real + delta, "imag": imag})
+    } else {
+        let delta = rng.random_range(-10.0..10.0_f64);
+        json!({"__complex_type": "complex", "real": real, "imag": imag + delta})
+    }
+}
+
+/// Mutate a Rational value by perturbing numerator or denominator.
+fn mutate_rational(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_rational(rng),
+    };
+    let num = obj.get("numerator").and_then(|v| v.as_i64()).unwrap_or(0);
+    let den = obj.get("denominator").and_then(|v| v.as_i64()).unwrap_or(1);
+    if rng.random_bool(0.5) {
+        let delta = rng.random_range(-5..=5_i64);
+        json!({"__complex_type": "rational", "numerator": num.saturating_add(delta), "denominator": den})
+    } else {
+        // Keep denominator positive and non-zero
+        let delta = rng.random_range(1..=10_i64);
+        let new_den = if rng.random_bool(0.5) {
+            den.saturating_add(delta).max(1)
+        } else {
+            den.saturating_sub(delta).max(1)
+        };
+        json!({"__complex_type": "rational", "numerator": num, "denominator": new_den})
+    }
+}
+
+/// Mutate a Char/Rune by replacing with a nearby codepoint.
+fn mutate_char(value: &Value, rng: &mut impl Rng) -> Value {
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return generate_char(rng),
+    };
+    let cp = obj.get("codepoint").and_then(|v| v.as_u64()).unwrap_or(97) as u32;
+    let op: u8 = rng.random_range(0..3);
+    let new_cp = match op {
+        0 => {
+            // Nearby codepoint
+            let delta = rng.random_range(1..=10_u32);
+            if rng.random_bool(0.5) { cp.saturating_add(delta) } else { cp.saturating_sub(delta) }
+        }
+        1 => {
+            // Random printable ASCII
+            rng.random_range(32..=126_u32)
+        }
+        _ => {
+            // Boundary chars
+            let boundaries = [0_u32, 32, 127, 0x20AC, 0x1F389];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+    };
+    let ch = char::from_u32(new_cp).unwrap_or('?');
+    json!({"__complex_type": "char", "value": ch.to_string(), "codepoint": new_cp})
+}
+
+/// Mutate a GoByte by applying delta or boundary.
+fn mutate_go_byte(value: &Value, rng: &mut impl Rng) -> Value {
+    let v = value
+        .as_object()
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u8;
+    let op: u8 = rng.random_range(0..3);
+    let new_v = match op {
+        0 => v.wrapping_add(rng.random_range(1..=10)),
+        1 => v.wrapping_sub(rng.random_range(1..=10)),
+        _ => {
+            let boundaries: &[u8] = &[0, 1, 127, 128, 255];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+    };
+    json!({"__complex_type": "go_byte", "value": new_v})
+}
+
+/// Mutate a complex type that wraps a string field (URL, Email, Path, RegExp, etc.).
+///
+/// Extracts the string from the named field, applies `mutate_string`, and
+/// reassembles the tagged JSON object.
+fn mutate_string_complex(
+    value: &Value,
+    complex_type: &str,
+    field_name: &str,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
+    let inner_str = value
+        .as_object()
+        .and_then(|o| o.get(field_name))
+        .cloned()
+        .unwrap_or_else(|| json!(""));
+    let mutated = mutate_string(&inner_str, dictionary, rng);
+    let mut obj = value.as_object().cloned().unwrap_or_default();
+    obj.insert("__complex_type".to_string(), json!(complex_type));
+    obj.insert(field_name.to_string(), mutated);
+    Value::Object(obj)
 }
 
 // ---------------------------------------------------------------------------
@@ -4834,6 +5304,194 @@ mod tests {
                     prop_assert!(child2[idx].return_values.len() >= min_vals,
                         "child2[{}] return_values too short", idx);
                 }
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_complex: preserves __complex_type tag
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_complex_preserves_tag(
+                seed in 0..10000u64,
+                kind in prop_oneof![
+                    Just(ComplexKind::Date),
+                    Just(ComplexKind::Duration),
+                    Just(ComplexKind::Time),
+                    Just(ComplexKind::BigInt),
+                    Just(ComplexKind::BigDecimal),
+                    Just(ComplexKind::Uuid),
+                    Just(ComplexKind::IpAddress),
+                    Just(ComplexKind::Color),
+                    Just(ComplexKind::GeoPoint),
+                    Just(ComplexKind::Money),
+                    Just(ComplexKind::SemVer),
+                    Just(ComplexKind::Range),
+                    Just(ComplexKind::Complex),
+                    Just(ComplexKind::Rational),
+                    Just(ComplexKind::Char),
+                    Just(ComplexKind::GoByte),
+                    Just(ComplexKind::Url),
+                    Just(ComplexKind::Email),
+                    Just(ComplexKind::Path),
+                    Just(ComplexKind::RegExp),
+                ],
+            ) {
+                let metadata = serde_json::Map::new();
+                let mut rng = StdRng::seed_from_u64(seed);
+                let original = generate_complex_value(kind, &metadata, None, &mut rng);
+                let typ = TypeInfo::Complex { kind, metadata: metadata.clone(), inner: None };
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let mutated = mutate_value(&original, &typ, &[], &mut rng2);
+
+                let orig_tag = original.as_object()
+                    .and_then(|o| o.get("__complex_type"))
+                    .and_then(|v| v.as_str());
+                let mutated_tag = mutated.as_object()
+                    .and_then(|o| o.get("__complex_type"))
+                    .and_then(|v| v.as_str());
+                prop_assert_eq!(
+                    orig_tag, mutated_tag,
+                    "complex type tag changed for kind {:?}", kind
+                );
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_complex: mutation produces valid JSON object
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_complex_produces_object(
+                seed in 0..10000u64,
+                kind in prop_oneof![
+                    Just(ComplexKind::Date),
+                    Just(ComplexKind::Duration),
+                    Just(ComplexKind::Time),
+                    Just(ComplexKind::BigInt),
+                    Just(ComplexKind::Uuid),
+                    Just(ComplexKind::Color),
+                    Just(ComplexKind::GeoPoint),
+                    Just(ComplexKind::Range),
+                    Just(ComplexKind::Complex),
+                    Just(ComplexKind::Rational),
+                    Just(ComplexKind::Char),
+                    Just(ComplexKind::GoByte),
+                ],
+            ) {
+                let metadata = serde_json::Map::new();
+                let mut rng = StdRng::seed_from_u64(seed);
+                let original = generate_complex_value(kind, &metadata, None, &mut rng);
+                let typ = TypeInfo::Complex { kind, metadata: metadata.clone(), inner: None };
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                let mutated = mutate_value(&original, &typ, &[], &mut rng2);
+
+                prop_assert!(
+                    mutated.is_object(),
+                    "mutate_complex({kind:?}) did not produce a JSON object: {mutated:?}"
+                );
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_complex: actually changes something over multiple seeds
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_complex_actually_mutates(
+                base_seed in 0..1000u64,
+                kind in prop_oneof![
+                    Just(ComplexKind::Date),
+                    Just(ComplexKind::Duration),
+                    Just(ComplexKind::BigInt),
+                    Just(ComplexKind::Color),
+                    Just(ComplexKind::GeoPoint),
+                    Just(ComplexKind::Range),
+                ],
+            ) {
+                let metadata = serde_json::Map::new();
+                let mut rng = StdRng::seed_from_u64(base_seed);
+                let original = generate_complex_value(kind, &metadata, None, &mut rng);
+                let typ = TypeInfo::Complex { kind, metadata: metadata.clone(), inner: None };
+
+                let mut any_diff = false;
+                for offset in 0..20u64 {
+                    let mut rng2 = StdRng::seed_from_u64(base_seed.wrapping_add(offset + 1));
+                    let mutated = mutate_value(&original, &typ, &[], &mut rng2);
+                    if mutated != original {
+                        any_diff = true;
+                        break;
+                    }
+                }
+                prop_assert!(any_diff,
+                    "mutate_complex({kind:?}) never changed anything over 20 tries");
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_value: full type coverage with arb_type_info
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_value_no_panic_arbitrary_type(
+                seed in 0..10000u64,
+                typ in crate::test_arbitraries::arb_type_info(2),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let value = generate_random_value(&typ, &mut rng, None);
+                let mut rng2 = StdRng::seed_from_u64(seed.wrapping_add(1));
+                // Must not panic for any TypeInfo variant.
+                let _ = mutate_value(&value, &typ, &[], &mut rng2);
+            }
+
+            // -----------------------------------------------------------------
+            // mutate_value: composite types preserve structure
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn mutate_array_preserves_array(
+                seed in 0..10000u64,
+                len in 0..5usize,
+            ) {
+                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+                let mut rng = StdRng::seed_from_u64(seed);
+                let arr: Vec<serde_json::Value> = (0..len)
+                    .map(|i| json!(i as i64))
+                    .collect();
+                let input = json!(arr);
+                let result = mutate_value(&input, &typ, &[], &mut rng);
+                prop_assert!(
+                    result.is_array(),
+                    "mutating Array produced non-array: {result:?}"
+                );
+            }
+
+            #[test]
+            fn mutate_object_preserves_object(seed in 0..10000u64) {
+                let typ = TypeInfo::Object {
+                    fields: vec![
+                        ("x".to_string(), TypeInfo::Int),
+                        ("y".to_string(), TypeInfo::Str),
+                    ],
+                };
+                let mut rng = StdRng::seed_from_u64(seed);
+                let input = json!({"x": 1, "y": "hello"});
+                let result = mutate_value(&input, &typ, &[], &mut rng);
+                prop_assert!(
+                    result.is_object(),
+                    "mutating Object produced non-object: {result:?}"
+                );
+            }
+
+            #[test]
+            fn mutate_nullable_preserves_type_contract(
+                seed in 0..10000u64,
+            ) {
+                let inner = TypeInfo::Int;
+                let typ = TypeInfo::Nullable { inner: Box::new(inner.clone()) };
+                let mut rng = StdRng::seed_from_u64(seed);
+                let input = json!(42);
+                let result = mutate_value(&input, &typ, &[], &mut rng);
+                prop_assert!(
+                    value_matches_type(&result, &typ),
+                    "mutating Nullable produced invalid value: {result:?}"
+                );
             }
         }
     }
