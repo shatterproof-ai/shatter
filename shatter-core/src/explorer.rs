@@ -3313,4 +3313,48 @@ mod tests {
             "Non-Passthrough behavior should not be overridden"
         );
     }
+
+    #[test]
+    fn format_exploration_report_shows_ga_stats_when_present() {
+        let result = ObservationOutput {
+            function_name: "target".into(), iterations: 10, unique_paths: 2,
+            lines_covered: 5, total_lines: 10,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("ok")),
+                thrown_error: None, lines_executed: vec![1, 2], is_new_path: true, error_intent: None }],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+        };
+        let report = format_exploration_report(&result, &ReportOptions {
+            genetic_stats: Some(GeneticStats {
+                targets_attempted: 5,
+                targets_solved: 3,
+                generations_run: 42,
+                total_executions: 2100,
+            }),
+            ..Default::default()
+        });
+        assert!(report.contains("GA:"), "report should contain GA section header");
+        assert!(report.contains("3/5 targets solved"), "report should show solved/attempted");
+        assert!(report.contains("42 generation(s)"), "report should show generation count");
+        assert!(report.contains("2100 execution(s)"), "report should show execution count");
+    }
+
+    #[test]
+    fn format_exploration_report_omits_ga_section_when_none() {
+        let result = ObservationOutput {
+            function_name: "plain".into(), iterations: 5, unique_paths: 1,
+            lines_covered: 3, total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("ok")),
+                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
+            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+        };
+        let report = format_exploration_report(&result, &ReportOptions {
+            genetic_stats: None,
+            ..Default::default()
+        });
+        assert!(!report.contains("GA:"), "report should not contain GA section when stats are None");
+    }
 }
