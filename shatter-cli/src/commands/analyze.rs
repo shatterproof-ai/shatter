@@ -34,6 +34,7 @@ pub(crate) fn run_analyze(
         wall_time: None,
         coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
         style: report_style.clone(),
+        genetic_stats: None,
     };
     print!("{}", explorer::format_exploration_report(observation, &report_opts));
     print!(

@@ -1373,6 +1373,19 @@ pub fn collect_stubbed_modules(
     seen.into_iter().collect()
 }
 
+/// Stats from a genetic algorithm follow-up phase, for report rendering.
+#[derive(Debug, Clone)]
+pub struct GeneticStats {
+    /// Number of unsolved branch targets the GA attempted.
+    pub targets_attempted: usize,
+    /// Number of those targets the GA solved (newly covered).
+    pub targets_solved: usize,
+    /// Number of generations completed.
+    pub generations_run: u32,
+    /// Total individual executions performed.
+    pub total_executions: usize,
+}
+
 /// Options for formatting an exploration report.
 #[derive(Debug, Clone, Default)]
 pub struct ReportOptions {
@@ -1381,6 +1394,7 @@ pub struct ReportOptions {
     pub wall_time: Option<std::time::Duration>,
     pub coverage_metrics: Option<crate::coverage_metrics::CoverageMetrics>,
     pub style: crate::report_style::ReportStyle,
+    pub genetic_stats: Option<GeneticStats>,
 }
 
 /// Render the top banner for an explore session.
@@ -1601,6 +1615,17 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
         if !shrink_line.is_empty() {
             out.push_str(&shrink_line);
         }
+    }
+    if let Some(ref ga) = options.genetic_stats {
+        out.push_str(&format!(
+            "  {dim}GA: {solved}/{attempted} targets solved \u{00b7} {gens} generation(s) \u{00b7} {execs} execution(s){reset}\n",
+            solved = ga.targets_solved,
+            attempted = ga.targets_attempted,
+            gens = ga.generations_run,
+            execs = ga.total_executions,
+            dim = s.dim,
+            reset = s.reset,
+        ));
     }
     out
 }

@@ -208,6 +208,8 @@ pub struct ScanConfig {
     pub workers_per_fn: usize,
     /// Frontend capabilities from handshake, used to gate prepare commands.
     pub capabilities: crate::orchestrator::FrontendCapabilities,
+    /// Configuration for the optional genetic algorithm follow-up phase.
+    pub genetic_config: crate::config::GeneticConfig,
 }
 
 /// Context about sampling mode, for report headers.
@@ -687,6 +689,43 @@ pub async fn scan(
             func_name,
         );
 
+        // Genetic algorithm follow-up phase: target unsolved branches.
+        if config.genetic_config.enabled {
+            let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
+            if !targets.is_empty() {
+                log::info!(
+                    "[scan] Starting GA for {} ({} unsolved target(s))",
+                    func_name, targets.len(),
+                );
+                let seed_inputs: Vec<Vec<serde_json::Value>> = exploration
+                    .raw_results
+                    .iter()
+                    .map(|(inputs, _, _)| inputs.clone())
+                    .collect();
+                match crate::genetic_explorer::genetic_explore(
+                    frontend,
+                    func_name,
+                    seed_inputs,
+                    targets,
+                    &analysis.params,
+                    &config.genetic_config,
+                ).await {
+                    Ok(ga_result) => {
+                        if !ga_result.discoveries.is_empty() {
+                            log::info!(
+                                "[scan] GA found {} new behavior(s) for {}",
+                                ga_result.discoveries.len(),
+                                func_name,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[scan] GA error for {}: {e}", func_name);
+                    }
+                }
+            }
+        }
+
         // Run the Analyze stage to produce behavior map and coverage metrics.
         let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
         analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
@@ -982,6 +1021,7 @@ async fn run_layer_function_mode(
     cache: &Option<Arc<BehaviorMapCache>>,
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
     input_pool: &Arc<Mutex<InterestingPool>>,
+    genetic_config: &crate::config::GeneticConfig,
 ) -> (Vec<FunctionOutcome>, usize) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::new();
@@ -992,6 +1032,7 @@ async fn run_layer_function_mode(
         let behavior_maps = Arc::clone(behavior_maps);
         let input_pool = Arc::clone(input_pool);
         let cache = cache.clone();
+        let genetic_config = genetic_config.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire a concurrency slot before spawning the frontend.
@@ -1019,6 +1060,7 @@ async fn run_layer_function_mode(
                     &behavior_maps,
                     deep_fp,
                     &input_pool,
+                    &genetic_config,
                 ),
             )
             .await;
@@ -1601,6 +1643,7 @@ pub async fn parallel_scan(
                         &config.cache,
                         &behavior_maps,
                         &input_pool,
+                        &config.genetic_config,
                     )
                     .await;
                     peak_workers = peak_workers.max(layer_peak);
@@ -1674,6 +1717,7 @@ pub async fn parallel_scan(
                         let timeout = config.timeout_per_fn;
                         let fe_config = Arc::clone(&fe_config_persistent);
                         let tasks_remaining = Arc::clone(&tasks_remaining);
+                        let genetic_config = config.genetic_config.clone();
 
                         let handle = tokio::spawn(async move {
                             let mut frontend = pool.checkout().await;
@@ -1690,6 +1734,7 @@ pub async fn parallel_scan(
                                     &behavior_maps,
                                     deep_fp.clone(),
                                     &input_pool,
+                                    &genetic_config,
                                 ),
                             )
                             .await;
@@ -1933,8 +1978,46 @@ async fn explore_single_function(
     behavior_maps: &Mutex<HashMap<String, BehaviorMap>>,
     fingerprint: Option<String>,
     input_pool: &Mutex<InterestingPool>,
+    genetic_config: &crate::config::GeneticConfig,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
+
+    // Genetic algorithm follow-up phase: target unsolved branches.
+    if genetic_config.enabled {
+        let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
+        if !targets.is_empty() {
+            log::info!(
+                "[scan] Starting GA for {} ({} unsolved target(s))",
+                func_name, targets.len(),
+            );
+            let seed_inputs: Vec<Vec<serde_json::Value>> = exploration
+                .raw_results
+                .iter()
+                .map(|(inputs, _, _)| inputs.clone())
+                .collect();
+            match crate::genetic_explorer::genetic_explore(
+                frontend,
+                func_name,
+                seed_inputs,
+                targets,
+                &analysis.params,
+                genetic_config,
+            ).await {
+                Ok(ga_result) => {
+                    if !ga_result.discoveries.is_empty() {
+                        log::info!(
+                            "[scan] GA found {} new behavior(s) for {}",
+                            ga_result.discoveries.len(),
+                            func_name,
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[scan] GA error for {}: {e}", func_name);
+                }
+            }
+        }
+    }
 
     // Donate unused budget to the layer surplus so other functions can use it.
     if let Some(ref surplus) = explore_config.budget_surplus {
@@ -3177,6 +3260,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3257,6 +3341,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3331,6 +3416,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3424,6 +3510,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3527,6 +3614,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -3612,6 +3700,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -3669,6 +3758,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -3710,6 +3800,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -3741,6 +3832,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -4326,6 +4418,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -4429,6 +4522,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -4501,6 +4595,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4575,6 +4670,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4665,6 +4761,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4766,6 +4863,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4875,6 +4973,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4994,6 +5093,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5088,6 +5188,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5177,6 +5278,7 @@ mod tests {
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
