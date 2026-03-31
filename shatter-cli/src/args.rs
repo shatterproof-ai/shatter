@@ -2649,6 +2649,24 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_scan_with_core_sample_and_stratum() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--core-sample", "50%",
+            "--stratum", "0..2",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan { core_sample, stratum, .. } => {
+                assert_eq!(core_sample, Some("50%".to_string()));
+                assert_eq!(stratum, Some("0..2".to_string()));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
     fn cli_parses_explore_with_spec_out_flag() {
         let cli = Cli::parse_from([
             "shatter",
