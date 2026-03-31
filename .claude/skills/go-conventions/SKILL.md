@@ -4,47 +4,32 @@ description: Go coding standards for Shatter. Use when writing or reviewing Go c
 user-invocable: true
 ---
 
-## Code Quality
+## Tool-Verified Rules
 - `go vet ./...` must pass
 - `golangci-lint run` must pass
-- Follow effective Go and Go proverbs
-- `gofmt`/`goimports` for formatting
-- Godoc on exported symbols — document behavior and contracts, not syntax (see root CLAUDE.md "Inline Documentation")
-- Testdata fixtures document what the analyzer should detect, not what language construct they use
+- Prefer extending `golangci-lint` with existing OSS linters such as `revive`, `goconst`, `forbidigo`, and `depguard` over adding custom scripts
+- Treat linter-backed documentation checks as the enforcement path for exported API docs; comments should describe behavior and contracts, not syntax
 
 ## Error Handling
-- Return `error` as last return value
-- Wrap with `fmt.Errorf("context: %w", err)`
-- Check all errors — no ignored return values
-- Sentinel errors or custom types for matchable errors
+- Wrap errors with context using `fmt.Errorf("context: %w", err)` when returning them upward
+- Check all errors; rely on `errcheck` and the rest of the `golangci-lint` stack to keep this mechanical
+- Use sentinel errors or custom types only when callers need stable matching behavior
 
 ## Testing
-- **Table-driven tests** for all test functions
-- Files: `foo_test.go` alongside `foo.go`
-- Names: `TestHandler_RejectsUnknownMessageType`
-- Use `t.Run` for subtests
-- `testify` acceptable if already in use; otherwise stdlib
+- Follow the repo-level testing policy in the root `CLAUDE.md`
+- Use `rapid` for property tests where invariants and round-trips matter; the Go frontend already uses property testing heavily
+- Favor table-driven tests and `t.Run` when they improve coverage and readability, but do not force that shape on every test
+- `testify` is acceptable if already in use; otherwise prefer the standard library
+- Testdata fixtures should document what the analyzer is expected to detect, not merely the language construct being exercised
 
 ## Protocol Handlers
 - JSON over stdio (newline-delimited)
-- Types in `protocol/types.go` mirror `shatter-core/src/protocol.rs`
-- `json.Decoder` for streaming input, `json.Encoder` for output
-- Dispatch by message type in handler
+- `json.Decoder` for streaming input and `json.Encoder` for output
+- Dispatch by message type in the handler layer
+- Protocol-visible Go types must stay aligned with the shared protocol contract; verify behavior with the repo's parity and conformance tooling rather than source-level guesswork
 
-## Constants
-- Define named constants for default values, timeouts, error codes, and capability lists
-- Constants file per package: `protocol/constants.go`, `instrument/constants.go`
-- Error codes: `const ErrInvalidRequest = "invalid_request"` — never bare strings in handler logic
-- Capability lists: define as a package-level slice variable
-- Tests reference constants, never duplicate the literal value
-
-## Module Layout
-- Module root: `shatter-go/` (`go.mod`)
-- Packages: `protocol/` (types + handler), `instrument/` (AST, recorder, sym extraction)
-- One responsibility per package
+## Design Guidance
+- Define named constants for defaults, timeouts, error codes, and capability lists; avoid scattering protocol literals through handler logic
+- Keep interfaces small and driven by actual call sites
+- Use pointer receivers for stateful or mutating methods
 - Unexport what you can
-
-## Struct & Interface
-- Accept interfaces, return structs
-- Small interfaces (1-3 methods)
-- Pointer receivers for state-modifying methods

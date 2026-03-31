@@ -4,43 +4,36 @@ description: TypeScript coding standards for Shatter. Use when writing or review
 user-invocable: true
 ---
 
-## Strict Mode
-- `strict: true` in tsconfig — no exceptions
-- `noUncheckedIndexAccess: true` — guard all index access
-- **No `any` type** — use `unknown` and narrow, or define types
-- No `@ts-ignore` without a linked issue
+## Tool-Verified Rules
+- `strict: true` in `tsconfig`
+- `noUncheckedIndexedAccess: true` in `tsconfig`
+- Prefer `ESLint` with `typescript-eslint` for enforceable policy: `no-explicit-any`, `ban-ts-comment`, `consistent-type-imports`, `consistent-type-exports`, and no default exports
+- Use lint-backed documentation rules for exported APIs if the repo adds them; JSDoc should explain contracts and non-obvious behavior, not repeat types
 
 ## Testing
-- Jest test runner (`npm test` in `shatter-ts/`)
-- Test files: `foo.test.ts` alongside `foo.ts`
-- Behavior-descriptive names: `it('rejects malformed protocol messages')`
-- Round-trip tests for protocol: serialize → deserialize → verify
-- Every public function has tests
+- Jest is the test runner in `shatter-ts/`
+- Follow the repo-level testing policy in the root `CLAUDE.md`
+- `fast-check` is a primary testing tool here. Add property tests for protocol round-trips, invariants, and malformed input where they matter
+- When touching protocol-visible behavior, capabilities, or handler outputs, run the repo's parity and conformance gates instead of relying on local examples alone
 
 ## Module System
 - Node16 module resolution
-- Named exports only; avoid default exports
-- `import type` for type-only imports
+- Prefer named exports over default exports
+- Use `import type` for type-only imports
 
 ## Protocol Handlers
 - JSON over stdio (newline-delimited)
-- Validate and parse into typed discriminated unions
+- Validate incoming data and parse into typed discriminated unions
 - Match on message type for dispatch
-- Report errors via protocol error messages, not thrown exceptions
+- Report errors through protocol error responses, not thrown exceptions that escape the handler boundary
 
 ## Type Safety
-- Protocol types mirror `shatter-core/src/protocol.rs`
+- Protocol-visible TypeScript types must stay aligned with the shared protocol contract; verify observable behavior with the repo's parity and conformance tooling
 - Use discriminated unions for message types
-- Define types explicitly; don't infer from external data
-- `readonly` on properties that shouldn't change
+- Define types explicitly; do not infer trusted shapes from external data
+- Use `readonly` where immutability prevents accidental drift
 
-## Constants
-- Define named constants for default values, timeouts, and any value shared between production and test code
-- Protocol constants live in `src/protocol.ts` (e.g., `PROTOCOL_VERSION`, `ErrorCode`)
-- Execution constants live in respective modules (e.g., `DEFAULT_EXEC_TIMEOUT_MS` in `src/executor.ts`)
-- Tests import and reference constants, never duplicate the literal value
-
-## Code Style
-- Short, focused functions
-- Precise names that don't need explaining comments
-- JSDoc on exported functions — document contracts and non-obvious behavior, not type signatures (see root CLAUDE.md "Inline Documentation")
+## Design Guidance
+- Define named constants for defaults, timeouts, and values shared between production and test code
+- Keep protocol constants in `src/protocol.ts` and local execution constants with the module that owns them
+- Tests should import important shared constants instead of duplicating protocol literals
