@@ -28,6 +28,9 @@ use crate::protocol::{
     PROTOCOL_VERSION,
 };
 use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
+use crate::pipeline::{
+    CoverageCompleteness, SpecifyStageOutput, TestSuggestion, TestSuggestionSource,
+};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 use crate::triage::{BranchPrediction, TriageDisableReason, TriageVerdict};
@@ -1371,4 +1374,84 @@ pub fn arb_triage_disable_reason() -> impl Strategy<Value = TriageDisableReason>
         Just(TriageDisableReason::LowSkipRate),
         Just(TriageDisableReason::HighMisprediction),
     ]
+}
+
+pub fn arb_test_suggestion_source() -> impl Strategy<Value = TestSuggestionSource> {
+    prop_oneof![
+        Just(TestSuggestionSource::Observed),
+        Just(TestSuggestionSource::Solved),
+    ]
+}
+
+pub fn arb_test_suggestion() -> impl Strategy<Value = TestSuggestion> {
+    (
+        arb_short_string(),
+        prop::collection::vec(arb_json_value(), 0..=3),
+        proptest::option::of(arb_json_value_non_null()),
+        proptest::option::of(arb_short_string()),
+        arb_test_suggestion_source(),
+    )
+        .prop_map(
+            |(description, inputs, expected_return, expected_error, source)| TestSuggestion {
+                description,
+                inputs,
+                expected_return,
+                expected_error,
+                source,
+            },
+        )
+}
+
+pub fn arb_coverage_completeness() -> impl Strategy<Value = CoverageCompleteness> {
+    (
+        0usize..200,
+        0usize..100,
+        0usize..50,
+        0usize..50,
+        0usize..50,
+        0usize..50,
+        0usize..50,
+    )
+        .prop_map(
+            |(total, observed, sat, unsat, opaque, unreachable, errors)| {
+                let total_branch_directions = total.max(observed + sat + unsat + opaque + unreachable + errors);
+                let accounted = observed + sat + unsat;
+                let completeness_pct = if total_branch_directions > 0 {
+                    (accounted as f64 / total_branch_directions as f64) * 100.0
+                } else {
+                    100.0
+                };
+                CoverageCompleteness {
+                    total_branch_directions,
+                    observed,
+                    proven_sat: sat,
+                    proven_unsat: unsat,
+                    opaque,
+                    unreachable,
+                    solver_errors: errors,
+                    completeness_pct,
+                }
+            },
+        )
+}
+
+pub fn arb_specify_stage_output() -> impl Strategy<Value = SpecifyStageOutput> {
+    (
+        arb_function_spec(),
+        arb_coverage_completeness(),
+        prop::collection::vec(arb_test_suggestion(), 0..=5),
+        arb_ident(),
+        arb_short_string(),
+    )
+        .prop_map(
+            |(spec, coverage_completeness, test_suggestions, function_name, file)| {
+                SpecifyStageOutput {
+                    spec,
+                    coverage_completeness,
+                    test_suggestions,
+                    function_name,
+                    file,
+                }
+            },
+        )
 }
