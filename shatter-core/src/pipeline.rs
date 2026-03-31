@@ -4,7 +4,7 @@
 //! - **Observe**: execute the function with various inputs, collect traces.
 //! - **Analyze**: group into equivalence classes, build behavior map, compute coverage.
 //! - **Solve**: for uncovered branches, use Z3 to find triggering inputs.
-//! - Specify (future): generate behavioral specifications from full-coverage data.
+//! - **Specify**: generate behavioral specifications from full-coverage data.
 
 use crate::behavior::BehaviorMap;
 use crate::coverage_metrics::CoverageMetrics;
@@ -123,6 +123,77 @@ pub struct SolveMetrics {
     pub error_count: usize,
 }
 
+/// Bundled output of the Specify stage, suitable for serialization to disk.
+///
+/// Contains the final behavioral specification enriched with solve-stage
+/// provenance, coverage completeness accounting, and test suggestions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecifyStageOutput {
+    /// Complete behavioral specification, enriched with solve provenance.
+    pub spec: FunctionSpec,
+    /// Coverage completeness after integrating solve results.
+    pub coverage_completeness: CoverageCompleteness,
+    /// Test suggestions derived from the spec and solve results.
+    pub test_suggestions: Vec<TestSuggestion>,
+    /// Function name, carried forward for provenance.
+    pub function_name: String,
+    /// Source file path, carried forward for provenance.
+    pub file: String,
+}
+
+/// Coverage completeness summary after integrating all pipeline stages.
+///
+/// Unlike [`CoverageMetrics`] (which tracks *how* branches were discovered),
+/// this tracks the final accounting of every branch direction: observed,
+/// proven satisfiable, proven unsatisfiable, opaque, or unreachable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoverageCompleteness {
+    /// Total branch directions in the function (2 × branch count).
+    pub total_branch_directions: usize,
+    /// Branch directions observed during execution (observe stage).
+    pub observed: usize,
+    /// Branch directions proven satisfiable by Z3 (solve stage).
+    pub proven_sat: usize,
+    /// Branch directions proven unsatisfiable (solve stage).
+    pub proven_unsat: usize,
+    /// Branch directions with opaque/unknown constraints.
+    pub opaque: usize,
+    /// Branch directions never reached by any execution.
+    pub unreachable: usize,
+    /// Branch directions where the solver returned an error.
+    pub solver_errors: usize,
+    /// Percentage of directions fully accounted for:
+    /// (observed + proven_sat + proven_unsat) / total × 100.
+    pub completeness_pct: f64,
+}
+
+/// A test suggestion derived from the behavioral specification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestSuggestion {
+    /// Human-readable description of what this test covers.
+    pub description: String,
+    /// Input arguments for the test.
+    pub inputs: Vec<serde_json::Value>,
+    /// Expected return value (if the behavior returns normally).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_return: Option<serde_json::Value>,
+    /// Expected error message (if the behavior throws).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_error: Option<String>,
+    /// How this test suggestion was derived.
+    pub source: TestSuggestionSource,
+}
+
+/// Origin of a test suggestion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestSuggestionSource {
+    /// Derived from an observed execution (canonical example from eq class).
+    Observed,
+    /// Derived from a Z3-solved input (not yet executed).
+    Solved,
+}
+
 /// Error type for stage I/O operations.
 #[derive(Debug)]
 pub enum StageIoError {
@@ -172,6 +243,13 @@ pub fn write_observe_stage(output: &ObserveStageOutput, path: &Path) -> Result<(
     Ok(())
 }
 
+/// Read an [`AnalyzeStageOutput`] from a JSON file on disk.
+pub fn read_analyze_stage(path: &Path) -> Result<AnalyzeStageOutput, StageIoError> {
+    let data = std::fs::read_to_string(path)?;
+    let output = serde_json::from_str(&data)?;
+    Ok(output)
+}
+
 /// Write an [`AnalyzeStageOutput`] to a JSON file on disk.
 pub fn write_analyze_stage(output: &AnalyzeStageOutput, path: &Path) -> Result<(), StageIoError> {
     if let Some(parent) = path.parent() {
@@ -191,6 +269,23 @@ pub fn read_solve_stage(path: &Path) -> Result<SolveStageOutput, StageIoError> {
 
 /// Write a [`SolveStageOutput`] to a JSON file on disk.
 pub fn write_solve_stage(output: &SolveStageOutput, path: &Path) -> Result<(), StageIoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(output)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Read a [`SpecifyStageOutput`] from a JSON file on disk.
+pub fn read_specify_stage(path: &Path) -> Result<SpecifyStageOutput, StageIoError> {
+    let data = std::fs::read_to_string(path)?;
+    let output = serde_json::from_str(&data)?;
+    Ok(output)
+}
+
+/// Write a [`SpecifyStageOutput`] to a JSON file on disk.
+pub fn write_specify_stage(output: &SpecifyStageOutput, path: &Path) -> Result<(), StageIoError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -441,6 +536,192 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         behavior_map,
         coverage_metrics,
     }
+}
+
+/// Run the Specify stage: build a complete, validated specification from all
+/// prior stage outputs.
+///
+/// This is the terminal stage of the pipeline. It:
+/// 1. Builds a [`FunctionSpec`] from observation data and equivalence classes
+/// 2. Optionally enriches with Daikon-style invariants
+/// 3. Integrates solve results: upgrades provenance for Z3-proven branches
+///    and adds solved inputs as additional concrete examples
+/// 4. Computes coverage completeness accounting
+/// 5. Generates test suggestions from spec classes and solved inputs
+pub fn specify(
+    observe: &ObserveStageOutput,
+    analyze: &AnalyzeOutput,
+    solve: &StageSolveOutput,
+    detect_invariants: bool,
+) -> SpecifyStageOutput {
+    let location = Some(format!(
+        "{}:{}-{}",
+        observe.file, observe.analysis.start_line, observe.analysis.end_line
+    ));
+
+    let mut spec = crate::spec::build_spec(
+        &observe.observation,
+        &analyze.eq_classes,
+        location,
+        None,
+    );
+
+    if detect_invariants {
+        crate::spec::detect_spec_invariants(&mut spec, &observe.observation, &analyze.eq_classes);
+    }
+
+    // Enrich provenance from solve results: branches with Sat outcomes are Proven.
+    let proven_branch_ids: HashSet<u32> = solve
+        .solved_branches
+        .iter()
+        .filter(|sb| matches!(sb.outcome, SolveOutcome::Sat { .. }))
+        .map(|sb| sb.branch_id)
+        .collect();
+
+    for class in &mut spec.classes {
+        let all_proven = !class.branch_path.0.is_empty()
+            && class
+                .branch_path
+                .0
+                .iter()
+                .all(|step| proven_branch_ids.contains(&step.branch_id));
+        if all_proven {
+            class.precondition_provenance = crate::spec::Provenance::Proven;
+            class.postcondition_provenance = crate::spec::Provenance::Proven;
+        }
+    }
+
+    // Add solved inputs as additional examples on matching classes.
+    for sb in &solve.solved_branches {
+        if let SolveOutcome::Sat { ref inputs } = sb.outcome {
+            for class in &mut spec.classes {
+                let matches_branch = class
+                    .branch_path
+                    .0
+                    .iter()
+                    .any(|step| step.branch_id == sb.branch_id);
+                if matches_branch {
+                    class.examples.push(crate::spec::ConcreteExample {
+                        inputs: inputs.clone(),
+                        return_value: None,
+                        thrown_error: None,
+                    });
+                }
+            }
+        }
+    }
+
+    let coverage_completeness = compute_coverage_completeness(observe, solve);
+    let test_suggestions = build_test_suggestions(&spec, solve);
+
+    SpecifyStageOutput {
+        spec,
+        coverage_completeness,
+        test_suggestions,
+        function_name: observe.observation.function_name.clone(),
+        file: observe.file.clone(),
+    }
+}
+
+/// Compute coverage completeness from observed directions and solve outcomes.
+fn compute_coverage_completeness(
+    observe: &ObserveStageOutput,
+    solve: &StageSolveOutput,
+) -> CoverageCompleteness {
+    let total_branch_directions = observe.analysis.branches.len() * 2;
+
+    // Count observed directions from raw results.
+    let mut observed_directions: HashSet<(u32, bool)> = HashSet::new();
+    for (_, _mocks, result) in &observe.observation.raw_results {
+        for decision in &result.branch_path {
+            observed_directions.insert((decision.branch_id, decision.taken));
+        }
+    }
+    let observed = observed_directions.len();
+
+    // Count solve outcomes (only for directions NOT already observed).
+    let mut proven_sat = 0usize;
+    let mut proven_unsat = 0usize;
+    let mut opaque = 0usize;
+    let mut unreachable = 0usize;
+    let mut solver_errors = 0usize;
+
+    for sb in &solve.solved_branches {
+        // Solve stage only targets unobserved directions, so no overlap with observed.
+        match &sb.outcome {
+            SolveOutcome::Sat { .. } => proven_sat += 1,
+            SolveOutcome::Unsat => proven_unsat += 1,
+            SolveOutcome::Opaque { .. } => opaque += 1,
+            SolveOutcome::Unreachable => unreachable += 1,
+            SolveOutcome::Error { .. } => solver_errors += 1,
+        }
+    }
+
+    let accounted = observed + proven_sat + proven_unsat;
+    let completeness_pct = if total_branch_directions > 0 {
+        (accounted as f64 / total_branch_directions as f64) * 100.0
+    } else {
+        100.0
+    };
+
+    CoverageCompleteness {
+        total_branch_directions,
+        observed,
+        proven_sat,
+        proven_unsat,
+        opaque,
+        unreachable,
+        solver_errors,
+        completeness_pct,
+    }
+}
+
+/// Generate test suggestions from spec classes and solve results.
+fn build_test_suggestions(
+    spec: &FunctionSpec,
+    solve: &StageSolveOutput,
+) -> Vec<TestSuggestion> {
+    let mut suggestions = Vec::new();
+
+    // One suggestion per spec class from its canonical example.
+    for class in &spec.classes {
+        if let Some(example) = class.examples.first() {
+            let (expected_return, expected_error) = match &class.postcondition {
+                crate::spec::Postcondition::Returns { value } => (Some(value.clone()), None),
+                crate::spec::Postcondition::Throws { error } => {
+                    (None, Some(format!("{}: {}", error.error_type, error.message)))
+                }
+                crate::spec::Postcondition::ReturnsVoid => (None, None),
+            };
+
+            suggestions.push(TestSuggestion {
+                description: class.label.clone(),
+                inputs: example.inputs.clone(),
+                expected_return,
+                expected_error,
+                source: TestSuggestionSource::Observed,
+            });
+        }
+    }
+
+    // One suggestion per solved branch with Sat inputs.
+    for sb in &solve.solved_branches {
+        if let SolveOutcome::Sat { ref inputs } = sb.outcome {
+            let direction = if sb.target_taken { "true" } else { "false" };
+            suggestions.push(TestSuggestion {
+                description: format!(
+                    "Z3-solved: branch {} line {} direction {}",
+                    sb.branch_id, sb.line, direction
+                ),
+                inputs: inputs.clone(),
+                expected_return: None,
+                expected_error: None,
+                source: TestSuggestionSource::Solved,
+            });
+        }
+    }
+
+    suggestions
 }
 
 /// Build an [`ExecutionRecord`] from an [`ExecuteResult`] and its inputs.
@@ -1291,5 +1572,281 @@ mod tests {
             let d: SolveOutcome = serde_json::from_str(&json).expect("deserialize");
             proptest::prop_assert_eq!(d, outcome);
         }
+
+        /// SpecifyStageOutput survives a JSON roundtrip.
+        #[test]
+        fn specify_stage_output_roundtrip(
+            output in crate::test_arbitraries::arb_specify_stage_output()
+        ) {
+            let json = serde_json::to_string(&output).expect("serialize");
+            let d: SpecifyStageOutput = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(&d.function_name, &output.function_name);
+            proptest::prop_assert_eq!(&d.file, &output.file);
+            proptest::prop_assert_eq!(&d.test_suggestions, &output.test_suggestions);
+            // Float field: compare with tolerance instead of exact equality.
+            proptest::prop_assert!(
+                (d.coverage_completeness.completeness_pct
+                    - output.coverage_completeness.completeness_pct)
+                    .abs()
+                    < 1e-10
+            );
+            proptest::prop_assert_eq!(
+                d.coverage_completeness.observed,
+                output.coverage_completeness.observed
+            );
+        }
+
+        /// CoverageCompleteness roundtrip (float field compared with tolerance).
+        #[test]
+        fn coverage_completeness_roundtrip(
+            cc in crate::test_arbitraries::arb_coverage_completeness()
+        ) {
+            let json = serde_json::to_string(&cc).expect("serialize");
+            let d: CoverageCompleteness = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d.total_branch_directions, cc.total_branch_directions);
+            proptest::prop_assert_eq!(d.observed, cc.observed);
+            proptest::prop_assert_eq!(d.proven_sat, cc.proven_sat);
+            proptest::prop_assert_eq!(d.proven_unsat, cc.proven_unsat);
+            proptest::prop_assert_eq!(d.opaque, cc.opaque);
+            proptest::prop_assert_eq!(d.unreachable, cc.unreachable);
+            proptest::prop_assert_eq!(d.solver_errors, cc.solver_errors);
+            proptest::prop_assert!((d.completeness_pct - cc.completeness_pct).abs() < 1e-10);
+        }
+
+        /// TestSuggestion roundtrip.
+        #[test]
+        fn test_suggestion_roundtrip(
+            ts in crate::test_arbitraries::arb_test_suggestion()
+        ) {
+            let json = serde_json::to_string(&ts).expect("serialize");
+            let d: TestSuggestion = serde_json::from_str(&json).expect("deserialize");
+            proptest::prop_assert_eq!(d, ts);
+        }
+    }
+
+    fn stub_specify_inputs(name: &str, branch_count: usize) -> (ObserveStageOutput, AnalyzeOutput) {
+        let branch_path = (0..branch_count)
+            .map(|i| BranchDecision {
+                branch_id: i as u32,
+                line: (i as u32 + 1) * 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: format!("cond_{i}"),
+                },
+                conditions: None,
+            })
+            .collect::<Vec<_>>();
+
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("ok")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            performance: empty_perf(),
+        };
+
+        let observation = ObservationOutput {
+            function_name: name.into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![json!(42)], vec![], exec_result)],
+            discoveries: vec![(0, DiscoveryMethod::Random)],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+        };
+
+        let analysis = stub_analysis(name, branch_count);
+
+        let observe_stage = ObserveStageOutput {
+            observation,
+            analysis,
+            file: "test.ts".into(),
+        };
+
+        let analyze_out = analyze(&observe_stage.observation, &observe_stage.analysis);
+
+        (observe_stage, analyze_out)
+    }
+
+    #[test]
+    fn specify_produces_complete_output() {
+        let (observe_stage, analyze_out) = stub_specify_inputs("myFunc", 2);
+
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![SolvedBranch {
+                branch_id: 0,
+                line: 10,
+                target_taken: false,
+                outcome: SolveOutcome::Sat {
+                    inputs: vec![json!(-1)],
+                },
+            }],
+            metrics: SolveMetrics {
+                total_uncovered: 1,
+                sat_count: 1,
+                ..Default::default()
+            },
+        };
+
+        let result = specify(&observe_stage, &analyze_out, &solve_out, false);
+
+        assert_eq!(result.function_name, "myFunc");
+        assert_eq!(result.file, "test.ts");
+        assert!(!result.spec.classes.is_empty());
+        assert!(!result.test_suggestions.is_empty());
+        assert!(result.coverage_completeness.total_branch_directions > 0);
+    }
+
+    #[test]
+    fn specify_enriches_provenance_from_solved() {
+        let (observe_stage, analyze_out) = stub_specify_inputs("provenFunc", 1);
+
+        // Solve found an input for branch 0 in the false direction.
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![SolvedBranch {
+                branch_id: 0,
+                line: 10,
+                target_taken: false,
+                outcome: SolveOutcome::Sat {
+                    inputs: vec![json!(-5)],
+                },
+            }],
+            metrics: SolveMetrics {
+                total_uncovered: 1,
+                sat_count: 1,
+                ..Default::default()
+            },
+        };
+
+        let result = specify(&observe_stage, &analyze_out, &solve_out, false);
+
+        // The class containing branch 0 should now be Proven.
+        let class = &result.spec.classes[0];
+        assert_eq!(
+            class.precondition_provenance,
+            crate::spec::Provenance::Proven
+        );
+        assert_eq!(
+            class.postcondition_provenance,
+            crate::spec::Provenance::Proven
+        );
+
+        // The solved input should appear as an additional example.
+        assert!(class.examples.len() >= 2);
+        assert_eq!(class.examples.last().unwrap().inputs, vec![json!(-5)]);
+    }
+
+    #[test]
+    fn specify_coverage_completeness_calculation() {
+        let (observe_stage, analyze_out) = stub_specify_inputs("coverageFunc", 3);
+
+        // 3 branches × 2 directions = 6 total.
+        // Observe saw all 3 in true direction = 3 observed.
+        // Solve targets: branch 0 false (Sat), branch 1 false (Unsat), branch 2 false (Opaque).
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![
+                SolvedBranch {
+                    branch_id: 0,
+                    line: 10,
+                    target_taken: false,
+                    outcome: SolveOutcome::Sat {
+                        inputs: vec![json!(0)],
+                    },
+                },
+                SolvedBranch {
+                    branch_id: 1,
+                    line: 20,
+                    target_taken: false,
+                    outcome: SolveOutcome::Unsat,
+                },
+                SolvedBranch {
+                    branch_id: 2,
+                    line: 30,
+                    target_taken: false,
+                    outcome: SolveOutcome::Opaque {
+                        hint: "regex".into(),
+                    },
+                },
+            ],
+            metrics: SolveMetrics {
+                total_uncovered: 3,
+                sat_count: 1,
+                unsat_count: 1,
+                opaque_count: 1,
+                ..Default::default()
+            },
+        };
+
+        let result = specify(&observe_stage, &analyze_out, &solve_out, false);
+        let cc = &result.coverage_completeness;
+
+        assert_eq!(cc.total_branch_directions, 6);
+        assert_eq!(cc.observed, 3);
+        assert_eq!(cc.proven_sat, 1);
+        assert_eq!(cc.proven_unsat, 1);
+        assert_eq!(cc.opaque, 1);
+        // completeness = (3 + 1 + 1) / 6 ≈ 83.33%
+        let expected_pct = (5.0 / 6.0) * 100.0;
+        assert!((cc.completeness_pct - expected_pct).abs() < 0.01);
+    }
+
+    #[test]
+    fn specify_empty_solve() {
+        let (observe_stage, analyze_out) = stub_specify_inputs("noSolve", 2);
+
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![],
+            metrics: SolveMetrics::default(),
+        };
+
+        let result = specify(&observe_stage, &analyze_out, &solve_out, false);
+
+        // All classes should be Observed (no Z3 enrichment).
+        for class in &result.spec.classes {
+            assert_eq!(
+                class.precondition_provenance,
+                crate::spec::Provenance::Observed
+            );
+        }
+
+        // Only observed test suggestions (no solved).
+        for ts in &result.test_suggestions {
+            assert_eq!(ts.source, TestSuggestionSource::Observed);
+        }
+    }
+
+    #[test]
+    fn specify_with_invariants() {
+        let (observe_stage, analyze_out) = stub_specify_inputs("invFunc", 1);
+
+        let solve_out = StageSolveOutput {
+            solved_branches: vec![],
+            metrics: SolveMetrics::default(),
+        };
+
+        let result = specify(&observe_stage, &analyze_out, &solve_out, true);
+
+        // With detect_invariants=true, the invariants detection runs.
+        // With only 1 execution, function-wide invariants may or may not be detected,
+        // but the pipeline should not error.
+        assert_eq!(result.function_name, "invFunc");
     }
 }

@@ -584,6 +584,12 @@ pub(crate) enum CliCommand {
         #[arg(long, conflicts_with = "json")]
         yaml: bool,
 
+        /// Path to a SolveStageOutput JSON file from `shatter solve --output`.
+        /// When provided, enriches the spec with Z3-proven provenance and
+        /// coverage completeness accounting.
+        #[arg(long, value_name = "FILE")]
+        solve_file: Option<PathBuf>,
+
         /// Detect and include function-wide invariants.
         #[arg(long)]
         invariants: bool,
