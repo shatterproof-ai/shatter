@@ -66,7 +66,26 @@ What to expect:
 - It executes the function with generated inputs.
 - It reports distinct observed behaviors and example inputs that reach them.
 
-## 3. Save a Behavioral Spec
+## 3. Initialize a Project for Persistent Shatter State
+
+If you want repo-local Shatter configuration and reusable state, initialize the
+project explicitly:
+
+```bash
+shatter init
+```
+
+This is the installed-project path. It opts the repository into persistent
+Shatter state under paths such as:
+
+- `.shatter/config.yaml` for project configuration
+- `.shatter-cache/` for caches
+- `shatter-artifacts/` for preserved outputs such as recorded mocks and reports
+
+Use this when you want durable project-local settings, repeatable runs, or
+other Shatter-managed state to live alongside the code.
+
+## 4. Save a Behavioral Spec
 
 Generate a spec you can diff later:
 
@@ -80,7 +99,7 @@ Write JSON instead:
 shatter explore --concolic --spec-json --spec-out shipping-spec.json shipping.ts:calculateShipping
 ```
 
-## 4. Scan More Than One File
+## 5. Scan More Than One File
 
 Once the single-function flow works, move up to a directory:
 
@@ -95,7 +114,7 @@ shatter scan --changed src/
 shatter export-tests --framework jest shipping.ts:calculateShipping
 ```
 
-## 5. Know Where To Look Next
+## 6. Know Where To Look Next
 
 - `shatter --help`: top-level command list
 - `shatter explore --help`: current `explore` flags
@@ -106,5 +125,6 @@ shatter export-tests --framework jest shipping.ts:calculateShipping
 ## Notes
 
 - File targets use `<file>:<function>` for one function or `<file>` for all exported functions in that file.
+- Initializing a project is separate from installing the `shatter` binary.
 - TypeScript and Go are the current primary user-facing frontends.
 - Rust support is not yet complete for normal end-user exploration workflows.

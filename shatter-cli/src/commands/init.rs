@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 use crate::helpers::Colors;
 
-/// Initialize a `.shatter/` directory structure in the target directory.
+/// Initialize persistent Shatter project state in the target directory.
 ///
-/// Creates `.shatter/config.yaml` with auto-detected language and sensible defaults.
+/// Creates `.shatter/config.yaml` with auto-detected language and sensible
+/// defaults. This establishes the repo-local Shatter configuration root.
 /// Idempotent: if `.shatter/` already exists, reports status without overwriting.
 pub(crate) fn run_init(
     directory: Option<&Path>,

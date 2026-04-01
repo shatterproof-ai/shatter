@@ -56,6 +56,26 @@ curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install
 
 If release assets are not available for your version or platform, build from source instead.
 
+## Initialize a Project
+
+Installing the `shatter` binary and initializing a project are separate steps.
+
+- Installing Shatter puts the CLI on your machine.
+- Initializing a project opts that repository into persistent Shatter state.
+
+Run this from the project root when you want Shatter to keep repo-local state:
+
+```bash
+shatter init
+```
+
+Today that creates `.shatter/config.yaml` if it does not already exist. Other
+commands may also create repo-local cache or artifact directories when using the
+initialized project path, including `.shatter-cache/` and `shatter-artifacts/`.
+
+Use initialization when you want durable project-local configuration, cached
+results, custom generators, or other repeatable Shatter state in the repo.
+
 ## Quick Start
 
 See [QUICKSTART.md](QUICKSTART.md) for a copy-paste first run.
