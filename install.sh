@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shatter installer — downloads the correct platform binary from GitHub Releases.
-# Usage: curl -sSL https://raw.githubusercontent.com/user/shatter/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | bash
 #
 # Environment variables:
 #   INSTALL_DIR  — where to place the binary (default: ~/.local/bin)
@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-REPO="user/shatter"
+REPO="shatterproof-ai/shatter"
 BINARY="shatter"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
