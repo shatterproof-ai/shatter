@@ -45,7 +45,8 @@ See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detaile
 | Full | `npx task check` | Before merge |
 | E2E | `npx task e2e` | After pipeline changes |
 | Smoke | `npx task smoke` | Before closing any issue |
-| Walkthrough | `npx task walkthrough` | After CLI/protocol changes |
+| Walkthrough | `npx task walkthrough` | After changes to the compact demo path, walkthrough output, or walkthrough example set |
+| Gauntlet | `bash demo/gauntlet.sh --auto --delay 0` | After broad CLI coverage changes, demo-ineligible command additions, or gauntlet/example coverage changes |
 | Parity | `npx task parity` | After changing frontend capability declarations, protocol registry, or adding a command handler |
 
 **E2E gate**: The E2E concolic tests (`shatter-core/tests/e2e_concolic.rs`) run the real TS frontend subprocess through analyze → instrument → explore → Z3 solve. They are the **only tests that validate the full pipeline end-to-end**. Unit tests alone are insufficient — a module can pass all its own tests while being silently disconnected from the pipeline (see "Completion checklist" below). Run E2E tests after any change to:
@@ -55,7 +56,9 @@ See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detaile
 - Protocol types that affect execute responses (`protocol.rs`, `protocol.ts`)
 - CLI wiring that passes config to explorers (`main.rs`)
 
-**Walkthrough gate**: The walkthrough exercises the full pipeline end-to-end (analyze, explore, scan, export, spec). Run it after any change to CLI commands, frontend handlers, protocol types, or example files. The walkthrough prints an **ERROR SUMMARY** at the end and exits with code 1 if any step produced errors — check this summary, investigate failures, and fix before merging. Known exceptions: `stale` exit code 1 is informational (means "some functions are stale"), and scan errors for `11-opaque-types.ts` and `12-external-deps.ts` are expected.
+**Walkthrough gate**: The walkthrough is a compact demo, not a full command inventory. Keep it to roughly 8-15 steps and optimize for a coherent product story. The walkthrough must maintain parity across TypeScript, Go, and Rust for the core journey: each language should appear in equivalent demo steps for analyze, explore, scan, and one artifact/reporting path unless a documented product limitation prevents it. Run the walkthrough after changes to walkthrough output, walkthrough examples, or any user-facing behavior that materially changes the compact demo narrative.
+
+**Gauntlet gate**: The gauntlet is the broad CLI and coverage path. Add feature probes, flag permutations, config variants, and other non-demo command coverage there instead of growing the walkthrough. Run the gauntlet after changes to CLI commands, frontend handlers, protocol-visible command behavior, or example coverage that falls outside the compact demo. The gauntlet prints an **ERROR SUMMARY** at the end and exits with code 1 if any step produced errors. Known exceptions: `stale` exit code 1 is informational (means "some functions are stale"), and scan errors for `11-opaque-types.ts` and `12-external-deps.ts` are expected.
 
 ### Formal Methods & Verification
 
@@ -108,8 +111,9 @@ In addition to the shared testing completion checklist (unit tests, linter, cros
 1. **Property tests adequate** — if adding/modifying a public function, include proptest/fast-check/rapid properties covering its core invariants (not just serialization roundtrips)
 2. **Cross-language tests pass** — if touching protocol types (Full tier)
 3. **E2E pipeline works** — if touching any component in the analyze → instrument → execute → solve chain, run `cargo test --test e2e_concolic` and verify the pipeline still discovers expected branches
-4. **Walkthrough passes** — if touching CLI output or example files
-5. **Parity contract updated** — if making a protocol-visible frontend change (new command handler, response field, error code, capability, or any observable behavior change), update the parity contract in the affected frontend's `CLAUDE.md` and add or adjust parity tests. *Output parity* (JSON wire format, response structure, error codes, observable behavior) is required across all frontends. *Implementation details* (internal types, helper functions, data structure choices) may differ between frontends. Run `npx task parity` (registry consistency + capability contract) and `npx task conformance` (wire format parity) to verify no unexpected drift.
+4. **Walkthrough passes** — if touching walkthrough output, walkthrough examples, or the compact demo flow
+5. **Gauntlet passes** — if touching broad CLI coverage, non-demo command behavior, or gauntlet example coverage
+6. **Parity contract updated** — if making a protocol-visible frontend change (new command handler, response field, error code, capability, or any observable behavior change), update the parity contract in the affected frontend's `CLAUDE.md` and add or adjust parity tests. *Output parity* (JSON wire format, response structure, error codes, observable behavior) is required across all frontends. *Implementation details* (internal types, helper functions, data structure choices) may differ between frontends. Run `npx task parity` (registry consistency + capability contract) and `npx task conformance` (wire format parity) to verify no unexpected drift.
 
 **Why E2E matters:** This project has multiple code paths that process the same data (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes). Features that work on one path are routinely broken on others. Closing an issue based on unit tests alone has repeatedly led to silent pipeline breakages. If the E2E tests don't cover your change, add a new E2E test case before closing.
 
@@ -118,7 +122,7 @@ In addition to the shared testing completion checklist (unit tests, linter, cros
 Security basics (secrets, build output, linter bypasses, hardcoded paths) are in the shared agent rules. Shatter-specific prohibitions:
 
 - **Never edit generated protocol bindings** manually — regenerate from the schema
-- **Never add a CLI command** without updating `demo/walkthrough.sh`
+- **Never treat the walkthrough as the catch-all CLI inventory** — add a command to the walkthrough only if it materially improves the compact demo story. Otherwise add coverage to the gauntlet, conformance tests, E2E, or targeted command tests.
 - **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` to verify end-to-end behavior
 - **Never add a capability to one explorer path without checking the other** — the random explorer (`explorer.rs`) and concolic orchestrator (`orchestrator.rs`) are wired differently in `main.rs`. A feature added to one is routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
 - **Never change protocol-visible frontend behavior without updating the parity contract** — if a frontend change affects JSON output, error codes, response fields, or any observable behavior, update the parity contract in that frontend's `CLAUDE.md` and verify conformance (`npx task conformance`) before closing the issue. Internal refactors that leave JSON output identical do not require parity contract updates.
@@ -148,7 +152,24 @@ Follow the full checklist in [`protocol/GOVERNANCE.md`](protocol/GOVERNANCE.md).
 1. Add the clap subcommand in `shatter-cli/src/`
 2. Implement the handler, delegating to `shatter-core` for logic
 3. Add integration tests exercising the command
-4. Update `demo/walkthrough.sh` to exercise the new command
+4. Decide whether the command belongs in the compact walkthrough or the gauntlet:
+   - update `demo/walkthrough.sh` only if the command materially improves the compact demo story
+   - otherwise update `demo/gauntlet.sh` or targeted test coverage
+
+### Walkthrough vs. gauntlet
+
+Use the compact walkthrough for the core Shatter story, not exhaustive coverage.
+
+- Keep the walkthrough to roughly 8-15 steps.
+- Preserve language parity across TypeScript, Go, and Rust for the core journey.
+- Document any language-specific exception inline in the script when parity cannot be maintained.
+- Prefer one representative command per capability cluster in the walkthrough.
+
+Use the gauntlet for breadth.
+
+- Add flag permutations, config-driven variants, stress cases, and non-essential command probes there.
+- Docker and local walkthrough runners should cover the same compact step set as closely as practical.
+- If a step cannot run in Docker because of missing mounts, persisted artifacts, or runtime prerequisites, fix the environment or move the step to gauntlet.
 
 ### Add an integration test with known-answer functions
 
