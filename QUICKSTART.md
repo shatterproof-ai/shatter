@@ -99,6 +99,7 @@ shatter export-tests --framework jest shipping.ts:calculateShipping
 
 - `shatter --help`: top-level command list
 - `shatter explore --help`: current `explore` flags
+- [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md): directories, config files, caches, and generated artifacts
 - [SPEC.md](SPEC.md): command behavior and output contract
 - [README.md](README.md): high-level overview
 

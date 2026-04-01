@@ -9,6 +9,7 @@ Shatter analyzes functions, discovers branch behavior, and generates inputs that
 This file is the user-facing entry point.
 
 - Want to try Shatter on a function today? Start with [QUICKSTART.md](QUICKSTART.md).
+- Want to know what files and directories Shatter creates? See [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md).
 - Want precise command behavior and output contracts? See [SPEC.md](SPEC.md).
 - Want to work on Shatter itself? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -89,6 +90,7 @@ Shatter combines concrete execution with symbolic reasoning:
 ## Documentation
 
 - [QUICKSTART.md](QUICKSTART.md): first successful run as a user
+- [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md): project directories, config files, caches, and artifacts
 - [SPEC.md](SPEC.md): detailed command and output behavior
 - [docs/INDEX.md](docs/INDEX.md): documentation map
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and workflow
