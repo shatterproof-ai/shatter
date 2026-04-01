@@ -37,8 +37,11 @@ HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough.XXXXXX")"
 # Error tracking: collect failures for a summary at the end.
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
 STEP_ERRORS=0
+EXAMPLES_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-examples.XXXXXX")"
+EXAMPLES_REPO_URL="${SHATTER_EXAMPLES_REPO:-https://github.com/shatterproof-ai/examples.git}"
+EXAMPLES_REPO_REF="${SHATTER_EXAMPLES_REF:-}"
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" || true; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
@@ -63,15 +66,43 @@ else
     SHATTER_COLOR="never"
 fi
 
-# Ensure the examples submodule is initialized (needed after fresh clone)
-if [[ ! -f "examples/standalone/ts/01-arithmetic.ts" ]]; then
-    echo "${YELLOW}Initializing examples submodule...${RESET}"
-    git submodule update --init examples
-    if [[ ! -f "examples/standalone/ts/01-arithmetic.ts" ]]; then
-        echo "${RED}examples/ submodule is empty. Run: git submodule update --init${RESET}"
+example_path() {
+    local path="$1"
+    if [[ "$path" == examples/* ]]; then
+        printf '%s\n' "$EXAMPLES_ROOT/${path#examples/}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+if [[ -z "$EXAMPLES_REPO_REF" ]]; then
+    EXAMPLES_REPO_REF="$(git ls-tree HEAD examples 2>/dev/null | awk '$1 == "160000" { print $3; exit }')"
+fi
+
+echo "${YELLOW}Cloning clean examples checkout...${RESET}"
+if ! git clone --quiet "$EXAMPLES_REPO_URL" "$EXAMPLES_ROOT"; then
+    echo "${RED}failed to clone examples repository from ${EXAMPLES_REPO_URL}${RESET}"
+    exit 1
+fi
+if [[ -n "$EXAMPLES_REPO_REF" ]]; then
+    if ! git -C "$EXAMPLES_ROOT" checkout --quiet "$EXAMPLES_REPO_REF"; then
+        echo "${RED}failed to checkout examples revision ${EXAMPLES_REPO_REF}${RESET}"
         exit 1
     fi
 fi
+if [[ ! -f "$(example_path "examples/standalone/ts/01-arithmetic.ts")" ]]; then
+    echo "${RED}clean examples checkout is missing walkthrough fixtures${RESET}"
+    exit 1
+fi
+
+EXAMPLES_TS_DIR="$(example_path "examples/standalone/ts")"
+EXAMPLES_RUST_SRC_DIR="$(example_path "examples/rust/src")"
+EXAMPLES_TS_CONFIG="$(example_path "examples/typescript/.shatter/config.yaml")"
+TS_ARITHMETIC_FN="$(example_path "examples/standalone/ts/01-arithmetic.ts:classifyNumber")"
+TS_ARITHMETIC_FILE="$(example_path "examples/standalone/ts/01-arithmetic.ts")"
+TS_OBJECTS_FN="$(example_path "examples/standalone/ts/03-objects.ts:categorizeUser")"
+TS_STRINGS_FN="$(example_path "examples/standalone/ts/02-strings.ts:classifyString")"
+TS_MCDC_FILE="$(example_path "examples/standalone/ts/13-mcdc-compound.ts")"
 
 if [[ -n "${SHATTER_BIN:-}" ]]; then
     SHATTER="$SHATTER_BIN"
@@ -328,9 +359,9 @@ step() {
 # Standalone examples: self-contained files with no project dependencies.
 # Include one branch-dense "advanced" example in the guided demo. The other
 # new mirrored examples stay in scan coverage to keep the walkthrough readable.
-mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
-mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
-mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
+mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript" | while IFS= read -r sample; do example_path "$sample"; done)
+mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go" | while IFS= read -r sample; do example_path "$sample"; done)
+mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust" | while IFS= read -r sample; do example_path "$sample"; done)
 
 TOTAL=60
 
@@ -340,6 +371,7 @@ echo ""
 echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
 echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go + ${#RUST_EXAMPLES[@]} Rust example functions${RESET}"
 echo "${DIM}HTML reports will be written to: ${HTML_REPORT_DIR}/${RESET}"
+echo "${DIM}Using clean examples checkout: ${EXAMPLES_ROOT}${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
 fi
@@ -377,7 +409,7 @@ step 5 $TOTAL "Show Behavior Clusters" \
 # Stage 5: Scan standalone TS files
 step 6 $TOTAL "Scan Standalone TypeScript" \
     "Scan standalone TypeScript files (no project dependencies needed)" \
-    $SHATTER scan -o "$HTML_REPORT_DIR/scan.html" --stdout examples/standalone/ts
+    $SHATTER scan -o "$HTML_REPORT_DIR/scan.html" --stdout "$EXAMPLES_TS_DIR"
 
 # Stage 6: Cache behavior maps
 step 7 $TOTAL "Explore with Disk Cache" \
@@ -412,24 +444,24 @@ step 11 $TOTAL "Explore Rust Functions" \
 # Stage 11: Scan Rust examples (project with deps)
 step 12 $TOTAL "Scan Rust Examples" \
     "Preview a dependency-ordered Rust scan plan on a representative sample" \
-    $SHATTER scan --core-sample 3 --dry-run examples/rust/src
+    $SHATTER scan --core-sample 3 --dry-run "$EXAMPLES_RUST_SRC_DIR"
 
 # Stage 12: Export tests
 step 13 $TOTAL "Export Generated Tests" \
     "Generate Jest test files from explored behavior maps" \
     $SHATTER export-tests --framework jest --module-path "./src/01-arithmetic" \
     -o "$HTML_REPORT_DIR/export-tests.html" --stdout \
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    "$TS_ARITHMETIC_FN"
 
 # Stage 13: Run (full pipeline, analyze only)
 step 14 $TOTAL "Run: Analyze Only" \
     "Discover, analyze, and report on all files in the standalone TS directory" \
-    $SHATTER run --analyze-only examples/standalone/ts
+    $SHATTER run --analyze-only "$EXAMPLES_TS_DIR"
 
 # Stage 14: Run (full pipeline with exploration)
 step 15 $TOTAL "Run: Full Pipeline" \
     "Discover, analyze, explore, and generate a full report" \
-    $SHATTER run --max-iterations 10 --timeout 60 examples/standalone/ts
+    $SHATTER run --max-iterations 10 --timeout 60 "$EXAMPLES_TS_DIR"
 
 # Stage 15: Log level verbosity (debug)
 step 16 $TOTAL "Verbose Output with Debug Log Level" \
@@ -444,7 +476,7 @@ step 17 $TOTAL "Request Timeout" \
 # Stage 17: User-provided inputs via config
 step 18 $TOTAL "User-Provided Inputs via Config" \
     "Load candidate inputs from a .shatter config directory" \
-    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     "${EXAMPLES[0]}"
 
 # Stage 18: Performance stats
@@ -455,7 +487,7 @@ step 19 $TOTAL "Performance Stats" \
 # Stage 19: Parallel scan with worker pool
 step 20 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
-    $SHATTER scan --parallelism 2 --timeout-per-fn 30 examples/standalone/ts
+    $SHATTER scan --parallelism 2 --timeout-per-fn 30 "$EXAMPLES_TS_DIR"
 
 # Stage 20: Parallel explore with --jobs
 step 21 $TOTAL "Parallel Explore" \
@@ -475,7 +507,7 @@ step 22 $TOTAL "Go Execution Timeout" \
 # Stage 22: Scan with total timeout
 step 23 $TOTAL "Scan Total Timeout" \
     "Bound overall scan wall-clock time with --timeout-total" \
-    $SHATTER scan --timeout-total 120 --timeout-per-fn 30 examples/standalone/ts
+    $SHATTER scan --timeout-total 120 --timeout-per-fn 30 "$EXAMPLES_TS_DIR"
 
 # Stage 23: Memory limit
 step 24 $TOTAL "Memory Limit" \
@@ -515,17 +547,17 @@ step 29 $TOTAL "Explore Without Boundary Values" \
 step 29 $TOTAL "Emit Tests from Scan" \
     "Generate Jest test files from behavior maps discovered during scan" \
     $SHATTER scan --emit-tests jest --tests-dir /tmp/shatter-demo-tests \
-    examples/standalone/ts
+    "$EXAMPLES_TS_DIR"
 
 # Stage 29: Markdown scan report
 step 30 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan -o /tmp/shatter-scan-report.md examples/standalone/ts
+    $SHATTER scan -o /tmp/shatter-scan-report.md "$EXAMPLES_TS_DIR"
 
 # Stage 30: Scan dry-run
 step 31 $TOTAL "Scan Dry Run" \
     "Preview which files would be scanned without executing" \
-    $SHATTER scan --dry-run --language typescript examples/standalone/ts
+    $SHATTER scan --dry-run --language typescript "$EXAMPLES_TS_DIR"
 
 # Stage 31: Invariant detection
 step 32 $TOTAL "Invariant Detection" \
@@ -535,19 +567,19 @@ step 32 $TOTAL "Invariant Detection" \
 # Stage 32: Setup + generators via config
 step 33 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
-    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
-    "examples/standalone/ts/03-objects.ts:categorizeUser"
+    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    "$TS_OBJECTS_FN"
 
 # Stage 33: Setup + generators with debug logging
 step 34 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
-    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
-    --log-level debug "examples/standalone/ts/03-objects.ts:categorizeUser"
+    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    --log-level debug "$TS_OBJECTS_FN"
 
 # Stage 34: File-level explore (all exported functions)
 step 35 $TOTAL "File-Level Explore" \
     "Explore all exported functions in a file by passing just the file path" \
-    $SHATTER explore examples/standalone/ts/01-arithmetic.ts
+    $SHATTER explore "$TS_ARITHMETIC_FILE"
 
 # Stage 35: Concolic exploration (Z3-backed)
 step 36 $TOTAL "Concolic CLI Preview (Z3)" \
@@ -557,12 +589,12 @@ step 36 $TOTAL "Concolic CLI Preview (Z3)" \
 # Stage 36: Concolic exploration of string functions (Z3 string ops)
 step 37 $TOTAL "Concolic String CLI Preview (Z3)" \
     "Preview the current Z3-backed CLI path on string-method guards" \
-    $SHATTER explore --concolic "examples/standalone/ts/02-strings.ts:classifyString"
+    $SHATTER explore --concolic "$TS_STRINGS_FN"
 
 # Stage 37: MC/DC coverage analysis
 step 38 $TOTAL "MC/DC Coverage Analysis" \
     "Modified Condition/Decision Coverage: independence pairs, short-circuit masking, and coverage % across AND/OR/three-way compound conditions" \
-    $SHATTER explore --mcdc examples/standalone/ts/13-mcdc-compound.ts
+    $SHATTER explore --mcdc "$TS_MCDC_FILE"
 
 # Stage 38: Spec output to file (--output)
 step 39 $TOTAL "Spec Output to File" \
@@ -590,34 +622,34 @@ step 42 $TOTAL "Clean Re-exploration" \
 # means "some functions are stale or removed" — this is informational, not a failure.
 step 43 $TOTAL "Stale Check" \
     "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
-    bash -c "$SHATTER stale 'examples/standalone/ts/01-arithmetic.ts' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
+    bash -c "$SHATTER stale '"$TS_ARITHMETIC_FILE"' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
 
 # Stage 43: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
 # populated by earlier explore steps. Exit code 0 = no regressions found.
 step 44 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
-    $SHATTER revalidate 'examples/standalone/ts/01-arithmetic.ts'
+    $SHATTER revalidate "$TS_ARITHMETIC_FILE"
 
 # Stage 44: Multi-level setup/teardown
 step 45 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
-    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 30 \
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    "$TS_ARITHMETIC_FN"
 
 # Stage 45: Setup with --fail-on-setup-error
 step 46 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
-    $SHATTER explore --config examples/typescript/.shatter/config.yaml \
+    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 10 --fail-on-setup-error \
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    "$TS_ARITHMETIC_FN"
 
 # Stage 46: Observe command — run observation stage, write ObserveStageOutput JSON
 step 47 $TOTAL "Observe Stage" \
     "Run observation stage only for classifyNumber, write to temp file" \
     $SHATTER observe --output /tmp/shatter-observe.json \
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    "$TS_ARITHMETIC_FN"
 
 # Stage 47: Analyze observe output — offline analysis, no frontend needed
 step 48 $TOTAL "Analyze Observe Output" \
@@ -647,7 +679,7 @@ step 52 $TOTAL "HTML Explore Report" \
 # Stage 52: HTML scan report
 step 53 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
-    $SHATTER scan -o "$HTML_REPORT_DIR/scan-html.html" --stdout examples/standalone/ts
+    $SHATTER scan -o "$HTML_REPORT_DIR/scan-html.html" --stdout "$EXAMPLES_TS_DIR"
 
 # Stage 53: Side-effect capture
 step 54 $TOTAL "Explore with Side-Effect Capture" \
