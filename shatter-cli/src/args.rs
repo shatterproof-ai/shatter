@@ -1253,10 +1253,12 @@ pub(crate) enum CliCommand {
         budget: Option<std::time::Duration>,
     },
 
-    /// Initialize a project for Shatter analysis.
+    /// Initialize a repository for persistent Shatter project state.
     ///
-    /// Creates .shatter/ directory structure and config.yaml with sensible defaults.
-    /// Safe to run on an already-initialized project (idempotent).
+    /// Creates `.shatter/config.yaml` with sensible defaults and establishes the
+    /// repo-local configuration root. Other commands may also create
+    /// `.shatter-cache/` and `shatter-artifacts/` when using the initialized
+    /// project path. Safe to run on an already-initialized project (idempotent).
     #[command(name = "init")]
     Init {
         /// Directory to initialize (default: auto-detected project root).

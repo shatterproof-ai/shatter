@@ -226,7 +226,27 @@ Source code → Analyze → Explore → Cluster → Report
 
 **Options**: `--json` for machine-readable output.
 
-### 2.7 Global Options
+### 2.7 `shatter init`
+
+**Purpose**: Initialize a repository for persistent Shatter project state.
+
+**Syntax**: `shatter init [OPTIONS]`
+
+**Behavior**:
+1. Resolve the target directory (explicit `--directory`, detected project root, or current directory).
+2. Create `.shatter/` if it does not already exist.
+3. Write `.shatter/config.yaml` with starter defaults if it does not already exist.
+4. If the project is already initialized, report the existing `.shatter/` contents without overwriting them.
+
+**Effect on the project tree**:
+- Establishes the repo-local Shatter configuration root at `.shatter/`.
+- Signals that project-local Shatter state is expected to live in this repository.
+- Other commands may also create `.shatter-cache/` and `shatter-artifacts/` when using the initialized-project path.
+
+**Options**:
+- `--directory <DIR>`: Initialize that directory instead of the auto-detected project root.
+
+### 2.8 Global Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -300,6 +320,12 @@ Inputs are generated from multiple sources, in priority order:
 
 Hierarchical `.shatter/config.yaml` files can be placed at any level of the project tree. The nearest config to each target file takes precedence.
 
+Running `shatter init` is the explicit way to opt a repository into persistent
+project-local Shatter state. That installed-project path establishes
+`.shatter/config.yaml` as the repo-local configuration root. Depending on the
+commands you run, Shatter may also persist repo-local cache and artifact data in
+`.shatter-cache/` and `shatter-artifacts/`.
+
 ```yaml
 defaults:
   max_iterations: 50
@@ -321,6 +347,9 @@ opaque_types:
 ### 3.7 Caching
 
 Behavior maps can be cached to disk (`--cache-dir`) to avoid re-exploring unchanged functions across runs. Cache files are JSON, keyed by function identity.
+
+When using the project-initialized path, the default repo-local cache location is
+under `.shatter-cache/`.
 
 ---
 
