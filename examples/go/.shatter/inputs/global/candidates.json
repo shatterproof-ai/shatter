@@ -1,8 +1,0 @@
-[
-  { "args": [0],    "label": "boundary: zero" },
-  { "args": [-1],   "label": "boundary: negative one" },
-  { "args": [1],    "label": "boundary: positive one" },
-  { "args": [""],   "label": "boundary: empty string" },
-  { "args": [null], "label": "boundary: null / nil" },
-  { "args": [9999], "label": "boundary: large number" }
-]

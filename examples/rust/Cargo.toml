@@ -1,9 +1,0 @@
-[package]
-name = "shatter-examples-rust"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-regex = "1"
-serde_json = "1"

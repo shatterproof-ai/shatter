@@ -29,10 +29,16 @@ VERSION=v0.2.0 curl -sSL https://raw.githubusercontent.com/user/shatter/main/ins
 Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and libclang.
 
 ```bash
-git clone https://github.com/user/shatter.git
+git clone --recurse-submodules https://github.com/user/shatter.git
 cd shatter
 cargo build --release
 # Binary is at target/release/shatter
+```
+
+If you already cloned without `--recurse-submodules`, initialize submodules manually:
+
+```bash
+git submodule update --init
 ```
 
 ### Verify
@@ -415,7 +421,7 @@ shatter-cli/      Rust CLI binary
 shatter-ts/       TypeScript frontend (Node.js subprocess)
 shatter-go/       Go frontend (Go binary subprocess)
 shatter-rust/     Rust frontend (stub — protocol handler only)
-examples/         Example target functions for testing
+examples/         Example target functions for testing (git submodule)
 demo/             Walkthrough scripts
 ```
 
