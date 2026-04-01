@@ -690,6 +690,7 @@ pub async fn scan(
         );
 
         // Genetic algorithm follow-up phase: target unsolved branches.
+        let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
         if config.genetic_config.enabled {
             let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
             if !targets.is_empty() {
@@ -718,6 +719,7 @@ pub async fn scan(
                                 func_name,
                             );
                         }
+                        ga_discoveries = ga_result.discoveries;
                     }
                     Err(e) => {
                         log::warn!("[scan] GA error for {}: {e}", func_name);
@@ -729,6 +731,14 @@ pub async fn scan(
         // Run the Analyze stage to produce behavior map and coverage metrics.
         let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
         analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
+
+        // Merge GA discoveries into the behavior map before caching.
+        if !ga_discoveries.is_empty() {
+            let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+            if added > 0 {
+                log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
+            }
+        }
 
         // Persist the behavior map to cache for reuse across runs.
         if let Some(ref cache) = config.cache {
@@ -1983,6 +1993,7 @@ async fn explore_single_function(
     let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
+    let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
     if genetic_config.enabled {
         let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
         if !targets.is_empty() {
@@ -2011,6 +2022,7 @@ async fn explore_single_function(
                             func_name,
                         );
                     }
+                    ga_discoveries = ga_result.discoveries;
                 }
                 Err(e) => {
                     log::warn!("[scan] GA error for {}: {e}", func_name);
@@ -2046,6 +2058,14 @@ async fn explore_single_function(
     // Run the Analyze stage to produce behavior map and coverage metrics.
     let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
     analyze_out.behavior_map.fingerprint = fingerprint;
+
+    // Merge GA discoveries into the behavior map.
+    if !ga_discoveries.is_empty() {
+        let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+        if added > 0 {
+            log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
+        }
+    }
 
     // Compute behavior coverage for each callee (cross-function concern).
     let records: Vec<ExecutionRecord> = exploration
