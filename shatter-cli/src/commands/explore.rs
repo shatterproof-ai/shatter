@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
-use shatter_core::config::{self as shatter_config, ShatterConfig};
+use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
 use shatter_core::executability;
-use shatter_core::explorer::{self, ExploreConfig, ReportOptions};
+use shatter_core::explorer::{self, ExploreConfig, GeneticStats, ReportOptions};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
@@ -80,6 +80,7 @@ pub(crate) async fn run_explore(
     stdout: bool,
     format: crate::args::StdoutFormat,
     jobs: usize,
+    genetic_config: &GeneticConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -811,6 +812,100 @@ pub(crate) async fn run_explore(
                         }
                     }
 
+                    // --- Genetic algorithm follow-up phase ---
+                    let mut ga_stored_cache = false;
+                    let ga_stats: Option<GeneticStats> = if genetic_config.enabled {
+                        let targets = shatter_core::coverage_metrics::extract_targets(func, &result);
+                        if targets.is_empty() {
+                            log::debug!("No unsolved targets for GA on {}", func.name);
+                            None
+                        } else {
+                            let targets_attempted = targets.len();
+                            log::info!(
+                                "Starting GA for {} ({} unsolved target(s))",
+                                func.name, targets_attempted,
+                            );
+                            let seed_inputs: Vec<Vec<serde_json::Value>> = result
+                                .raw_results
+                                .iter()
+                                .map(|(inputs, _, _)| inputs.clone())
+                                .collect();
+                            let ga_fe_config = fe_configs
+                                .get(&target.language)
+                                .expect("fe_config must exist for target language")
+                                .clone();
+                            match Frontend::spawn(&ga_fe_config).await {
+                                Ok(mut ga_frontend) => {
+                                    // Instrument before running GA so execute calls work.
+                                    let mock_symbols_for_ga: Vec<shatter_core::protocol::MockConfig> =
+                                        outcome.mock_symbols.iter().map(|s| {
+                                            shatter_core::protocol::MockConfig {
+                                                symbol: s.clone(),
+                                                return_values: vec![],
+                                                should_track_calls: false,
+                                                default_behavior: shatter_core::protocol::MockBehavior::ReturnGenerated,
+                                            }
+                                        }).collect();
+                                    let _ = ga_frontend.send(ProtoCommand::Instrument {
+                                        file: file_str.to_string(),
+                                        function: func.name.clone(),
+                                        mocks: mock_symbols_for_ga,
+                                        project_root: project_root_str.clone(),
+                                    }).await;
+                                    match shatter_core::genetic_explorer::genetic_explore(
+                                        &mut ga_frontend,
+                                        &func.name,
+                                        seed_inputs,
+                                        targets,
+                                        &func.params,
+                                        genetic_config,
+                                    ).await {
+                                        Ok(ga_result) => {
+                                            let stats = GeneticStats {
+                                                targets_attempted,
+                                                targets_solved: ga_result.targets_solved,
+                                                generations_run: ga_result.generations_run,
+                                                total_executions: ga_result.total_executions,
+                                            };
+                                            if !ga_result.discoveries.is_empty() {
+                                                log::info!(
+                                                    "GA found {} new behavior(s) for {}",
+                                                    ga_result.discoveries.len(),
+                                                    func.name,
+                                                );
+                                                // Persist GA discoveries to cache.
+                                                let mut bmap = BehaviorMap::from_exploration_result(
+                                                    &func.name, &result,
+                                                );
+                                                let added = bmap.merge_ga_discoveries(&ga_result.discoveries);
+                                                if added > 0 && let Some(ref cache) = cache {
+                                                    if let Err(e) = cache.store(&bmap) {
+                                                        log::warn!("failed to cache GA-augmented behavior map for {}: {e}", func.name);
+                                                    } else {
+                                                        ga_stored_cache = true;
+                                                    }
+                                                }
+                                            }
+                                            let _ = ga_frontend.shutdown().await;
+                                            Some(stats)
+                                        }
+                                        Err(e) => {
+                                            log::error!("GA error for {}: {e}", func.name);
+                                            let _ = ga_frontend.shutdown().await;
+                                            None
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to spawn GA frontend for {}: {e}", func.name);
+                                    None
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     if log::log_enabled!(log::Level::Info) {
                         if log::log_enabled!(log::Level::Trace) {
                             let report = {
@@ -846,6 +941,7 @@ pub(crate) async fn run_explore(
                                 wall_time: Some(wall_time),
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
                                 style: report_style.clone(),
+                                genetic_stats: ga_stats,
                             };
                             let report = {
                                 let _report_span = tracing::info_span!("report.render").entered();
@@ -898,15 +994,17 @@ pub(crate) async fn run_explore(
                         }
                     }
 
-                    let behavior_map =
-                        BehaviorMap::from_exploration_result(&func.name, &result);
-                    if let Some(ref cache) = cache {
-                        let cache_result = {
-                            let _cache_store_span = tracing::info_span!("cache.store").entered();
-                            cache.store(&behavior_map)
-                        };
-                        if let Err(e) = cache_result {
-                            log::warn!("failed to cache behavior map for {}: {e}", func.name);
+                    if !ga_stored_cache {
+                        let behavior_map =
+                            BehaviorMap::from_exploration_result(&func.name, &result);
+                        if let Some(ref cache) = cache {
+                            let cache_result = {
+                                let _cache_store_span = tracing::info_span!("cache.store").entered();
+                                cache.store(&behavior_map)
+                            };
+                            if let Err(e) = cache_result {
+                                log::warn!("failed to cache behavior map for {}: {e}", func.name);
+                            }
                         }
                     }
                 }

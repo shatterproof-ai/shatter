@@ -66,6 +66,7 @@ pub(crate) async fn run_scan(
     isolation: shatter_core::explorer::IsolationMode,
     capture_side_effects: bool,
     workers_per_fn: usize,
+    genetic_config: &shatter_core::config::GeneticConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -560,6 +561,7 @@ pub(crate) async fn run_scan(
             capture_side_effects,
             workers_per_fn,
             capabilities: frontend_caps.clone(),
+            genetic_config: genetic_config.clone(),
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -636,6 +638,7 @@ pub(crate) async fn run_scan(
         capture_side_effects,
         workers_per_fn,
         capabilities: frontend_caps,
+        genetic_config: genetic_config.clone(),
     };
 
     let scan_start = Instant::now();

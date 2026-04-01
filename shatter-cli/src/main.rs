@@ -139,10 +139,10 @@ async fn main() -> ExitCode {
             invariants,
             no_boundary_values: _,
             concolic,
-            genetic: _,
-            genetic_population: _,
-            genetic_generations: _,
-            genetic_timeout: _,
+            genetic,
+            genetic_population,
+            genetic_generations,
+            genetic_timeout,
             no_adaptive,
             score_window,
             cold_start,
@@ -204,6 +204,15 @@ async fn main() -> ExitCode {
             // User-provided values always win; multipliers only expand the defaults.
             let budgets = resolve_mcdc_budgets(max_iterations, timeout, solver_timeout, mcdc);
 
+            let default_gc = shatter_core::config::GeneticConfig::default();
+            let genetic_config = shatter_core::config::GeneticConfig {
+                enabled: genetic,
+                population_size: genetic_population.unwrap_or(default_gc.population_size),
+                max_generations: genetic_generations.unwrap_or(default_gc.max_generations),
+                timeout_secs: genetic_timeout.unwrap_or(default_gc.timeout_secs),
+                ..default_gc
+            };
+
             commands::explore::run_explore(
                 &targets,
                 budgets.max_iterations,
@@ -254,6 +263,7 @@ async fn main() -> ExitCode {
                 stdout,
                 format,
                 jobs,
+                &genetic_config,
             )
             .await
         }
@@ -365,10 +375,10 @@ async fn main() -> ExitCode {
             build_timeout,
             release,
             stratum,
-            genetic: _,
-            genetic_population: _,
-            genetic_generations: _,
-            genetic_timeout: _,
+            genetic,
+            genetic_population,
+            genetic_generations,
+            genetic_timeout,
             no_adaptive: _,
             score_window: _,
             cold_start: _,
@@ -407,6 +417,14 @@ async fn main() -> ExitCode {
                     );
                 }
             }
+            let default_gc = shatter_core::config::GeneticConfig::default();
+            let genetic_config = shatter_core::config::GeneticConfig {
+                enabled: genetic,
+                population_size: genetic_population.unwrap_or(default_gc.population_size),
+                max_generations: genetic_generations.unwrap_or(default_gc.max_generations),
+                timeout_secs: genetic_timeout.unwrap_or(default_gc.timeout_secs),
+                ..default_gc
+            };
             commands::scan::run_scan(
                 &directory,
                 language.as_deref(),
@@ -453,6 +471,7 @@ async fn main() -> ExitCode {
                 isolation.into(),
                 capture_side_effects,
                 workers_per_fn,
+                &genetic_config,
             )
             .await
         }
