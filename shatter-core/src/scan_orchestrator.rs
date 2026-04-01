@@ -690,6 +690,7 @@ pub async fn scan(
         );
 
         // Genetic algorithm follow-up phase: target unsolved branches.
+        let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
         if config.genetic_config.enabled {
             let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
             if !targets.is_empty() {
@@ -718,6 +719,7 @@ pub async fn scan(
                                 func_name,
                             );
                         }
+                        ga_discoveries = ga_result.discoveries;
                     }
                     Err(e) => {
                         log::warn!("[scan] GA error for {}: {e}", func_name);
@@ -729,6 +731,14 @@ pub async fn scan(
         // Run the Analyze stage to produce behavior map and coverage metrics.
         let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
         analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
+
+        // Merge GA discoveries into the behavior map before caching.
+        if !ga_discoveries.is_empty() {
+            let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+            if added > 0 {
+                log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
+            }
+        }
 
         // Persist the behavior map to cache for reuse across runs.
         if let Some(ref cache) = config.cache {
@@ -1983,6 +1993,7 @@ async fn explore_single_function(
     let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
+    let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
     if genetic_config.enabled {
         let targets = crate::coverage_metrics::extract_targets(analysis, &exploration);
         if !targets.is_empty() {
@@ -2011,6 +2022,7 @@ async fn explore_single_function(
                             func_name,
                         );
                     }
+                    ga_discoveries = ga_result.discoveries;
                 }
                 Err(e) => {
                     log::warn!("[scan] GA error for {}: {e}", func_name);
@@ -2046,6 +2058,14 @@ async fn explore_single_function(
     // Run the Analyze stage to produce behavior map and coverage metrics.
     let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
     analyze_out.behavior_map.fingerprint = fingerprint;
+
+    // Merge GA discoveries into the behavior map.
+    if !ga_discoveries.is_empty() {
+        let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+        if added > 0 {
+            log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
+        }
+    }
 
     // Compute behavior coverage for each callee (cross-function concern).
     let records: Vec<ExecutionRecord> = exploration
@@ -6124,5 +6144,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression test: GA discoveries must be merged into the behavior map
+    /// produced by the scan pipeline. Before the fix for str-1wg, both scan
+    /// paths logged discoveries but never called `merge_ga_discoveries()`,
+    /// silently discarding GA-found behaviors.
+    #[test]
+    fn scan_ga_discoveries_are_merged_into_behavior_map() {
+        use crate::behavior::{Behavior, BehaviorMap};
+        use crate::execution_record::{BranchDecision, SymConstraint};
+
+        fn make_branch(branch_id: u32, taken: bool) -> BranchDecision {
+            BranchDecision {
+                branch_id,
+                line: branch_id * 10,
+                taken,
+                constraint: SymConstraint::Unknown {
+                    hint: "test".into(),
+                },
+                conditions: None,
+            }
+        }
+
+        // Simulate the behavior map that pipeline::analyze would produce
+        // (containing only concolic-discovered behaviors).
+        let mut behavior_map = BehaviorMap {
+            function_id: "test_fn".into(),
+            behaviors: vec![Behavior {
+                id: 0,
+                input_args: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("concolic")),
+                thrown_error: None,
+                branch_path: vec![make_branch(1, true)],
+                side_effects: vec![],
+                dependency_trace: None,
+                mock_values: vec![],
+            }],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+
+        // Simulate GA discoveries: one new path (branch 2) and one duplicate
+        // (branch 1, already in the map).
+        let ga_discoveries = vec![
+            Behavior {
+                id: 0,
+                input_args: vec![serde_json::json!(99)],
+                return_value: Some(serde_json::json!("ga_new")),
+                thrown_error: None,
+                branch_path: vec![make_branch(2, false)],
+                side_effects: vec![],
+                dependency_trace: None,
+                mock_values: vec![],
+            },
+            Behavior {
+                id: 1,
+                input_args: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("ga_dup")),
+                thrown_error: None,
+                branch_path: vec![make_branch(1, true)],
+                side_effects: vec![],
+                dependency_trace: None,
+                mock_values: vec![],
+            },
+        ];
+
+        // This is the exact pattern used in scan_orchestrator after the fix.
+        let added = behavior_map.merge_ga_discoveries(&ga_discoveries);
+
+        assert_eq!(added, 1, "only the novel GA discovery should be added");
+        assert_eq!(
+            behavior_map.behaviors.len(),
+            2,
+            "1 concolic + 1 GA discovery"
+        );
+        assert_eq!(
+            behavior_map.behaviors[1].return_value,
+            Some(serde_json::json!("ga_new")),
+            "the new GA behavior should be the one with branch 2"
+        );
     }
 }
