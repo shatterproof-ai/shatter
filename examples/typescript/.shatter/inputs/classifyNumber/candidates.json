@@ -1,9 +1,0 @@
-[
-  { "args": [0],    "label": "boundary: zero" },
-  { "args": [1],    "label": "boundary: smallest positive" },
-  { "args": [-1],   "label": "boundary: smallest negative" },
-  { "args": [100],  "label": "boundary: three-digit threshold" },
-  { "args": [-100], "label": "boundary: negative three-digit" },
-  { "args": [9007199254740991], "label": "boundary: MAX_SAFE_INTEGER" },
-  { "args": [42],   "label": "production: typical positive" }
-]

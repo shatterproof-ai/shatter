@@ -34,10 +34,16 @@ The most reliable path today is to build from source.
 Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and `libclang`.
 
 ```bash
-git clone https://github.com/shatterproof-ai/shatter.git
+git clone --recurse-submodules https://github.com/shatterproof-ai/shatter.git
 cd shatter
 cargo build --release
 ./target/release/shatter --help
+```
+
+If you already cloned without `--recurse-submodules`, initialize submodules manually:
+
+```bash
+git submodule update --init
 ```
 
 ### Install a published release

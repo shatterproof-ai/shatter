@@ -172,6 +172,42 @@ Recommended behavior:
 - optionally compare against a curated baseline when one is configured
 - never commit routine perf runs back into the repository
 
+## Git Submodules
+
+The repository uses git submodules for shared content:
+
+| Submodule | Path | Purpose |
+|---|---|---|
+| `agents` | `.agents/` | Shared agent rules and tooling |
+| `examples` | `examples/` | Example target programs for testing, demos, and E2E fixtures |
+
+### CI checkout requirements
+
+CI jobs must initialize submodules before running any tasks. Either:
+
+```bash
+# Option A: clone with submodules
+git clone --recurse-submodules <repo-url>
+
+# Option B: initialize after clone (useful for shallow clones)
+git submodule update --init
+
+# Option C: shallow submodules (faster for CI)
+git clone --recurse-submodules --shallow-submodules <repo-url>
+```
+
+All test tiers, the walkthrough, and the E2E suite require the `examples/` submodule. If `examples/` is empty, tests will fail with file-not-found errors.
+
+### Updating the examples submodule
+
+When examples are updated upstream, update the pinned commit:
+
+```bash
+git submodule update --remote examples
+git add examples
+git commit -m "chore: update examples submodule"
+```
+
 ## Tool Installation Expectations
 
 ### Required baseline tools

@@ -63,6 +63,16 @@ else
     SHATTER_COLOR="never"
 fi
 
+# Ensure the examples submodule is initialized (needed after fresh clone)
+if [[ ! -f "examples/standalone/ts/01-arithmetic.ts" ]]; then
+    echo "${YELLOW}Initializing examples submodule...${RESET}"
+    git submodule update --init examples
+    if [[ ! -f "examples/standalone/ts/01-arithmetic.ts" ]]; then
+        echo "${RED}examples/ submodule is empty. Run: git submodule update --init${RESET}"
+        exit 1
+    fi
+fi
+
 if [[ -n "${SHATTER_BIN:-}" ]]; then
     SHATTER="$SHATTER_BIN"
 elif [[ -x "target/debug/shatter" ]]; then
