@@ -489,6 +489,15 @@ describe("execution timeout enforcement", () => {
   });
 });
 
+describe("sandbox globals", () => {
+  const abortSignalFixture = path.join(FIXTURES_DIR, "abort-signal.ts");
+
+  it("AbortController and AbortSignal are available in sandbox (str-ed25)", async () => {
+    const result = await executeFunction(abortSignalFixture, "useAbortSignal", []);
+    expect(result.return_value).toBe("not-aborted");
+  });
+});
+
 describe("truncation", () => {
   it("truncateMessage returns short strings unchanged", () => {
     expect(truncateMessage("hello", 100)).toBe("hello");

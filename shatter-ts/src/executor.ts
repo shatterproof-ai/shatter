@@ -408,6 +408,8 @@ function loadModule(filePath: string): Record<string, unknown> {
     clearTimeout,
     setInterval,
     clearInterval,
+    AbortController,
+    AbortSignal,
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
   });
@@ -1244,6 +1246,8 @@ export async function executeInstrumented(
     clearTimeout,
     setInterval,
     clearInterval,
+    AbortController,
+    AbortSignal,
     ...(sourceFilePath ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) } : {}),
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
