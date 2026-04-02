@@ -65,3 +65,8 @@ export function goDirection(dir: "north" | "south" | "east"): string {
 export function useFileConsts(x: number): number {
   return x * MAX_RETRIES;
 }
+
+export function clampToFinite(x: 1e308 | 42 | 3.14): number {
+  if (x > 100) return 100;
+  return x;
+}

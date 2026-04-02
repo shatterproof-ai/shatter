@@ -589,6 +589,26 @@ describe("analyzeFile", () => {
       expect(strs).toContain("south");
       expect(strs).toContain("east");
     });
+
+    it("classifies unsafe-integer union members as float, not int (str-flqp)", () => {
+      const results = analyzeFile(path.join(fixtures, "literals.ts"), "clampToFinite");
+      const fn = results[0]!;
+      const lits = fn.literals ?? [];
+      // 1e308 exceeds Number.MAX_SAFE_INTEGER and must be tagged as "float"
+      const floats = lits.filter(
+        (l): l is { type: "float"; value: number } => l.type === "float",
+      );
+      const floatValues = floats.map((l) => l.value);
+      expect(floatValues).toContain(1e308);
+      expect(floatValues).toContain(3.14);
+      // 42 is a safe integer, should be tagged as "int"
+      const intValues = lits
+        .filter((l): l is { type: "int"; value: number } => l.type === "int")
+        .map((l) => l.value);
+      expect(intValues).toContain(42);
+      // 1e308 must NOT be tagged as int
+      expect(intValues).not.toContain(1e308);
+    });
   });
 
   describe("function expression patterns", () => {
