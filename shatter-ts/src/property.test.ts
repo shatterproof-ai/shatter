@@ -6,6 +6,8 @@
  */
 import fc from "fast-check";
 import ts from "typescript";
+import { serializeReplacer } from "./serialize.js";
+import { reconstructValue } from "./reconstruct.js";
 import type {
   BinOpKind,
   UnOpKind,
@@ -1416,6 +1418,70 @@ describe("property: LoopInfo round-trips", () => {
           expect(decoded.loops).toHaveLength(fn.loops.length);
         }
       }),
+    );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  BigInt serialization properties                                   */
+/* ------------------------------------------------------------------ */
+
+const arbBigInt = fc.bigInt();
+
+describe("BigInt serialization properties", () => {
+  it("BigInt survives serialize → parse roundtrip as tagged object", () => {
+    fc.assert(
+      fc.property(arbBigInt, (n) => {
+        const json = JSON.stringify(n, serializeReplacer);
+        const parsed = JSON.parse(json) as { __complex_type: string; value: string };
+        expect(parsed.__complex_type).toBe("big_int");
+        expect(parsed.value).toBe(n.toString());
+      }),
+    );
+  });
+
+  it("BigInt survives full serialize → reconstruct roundtrip", () => {
+    fc.assert(
+      fc.property(arbBigInt, (n) => {
+        const serialized = JSON.parse(JSON.stringify(n, serializeReplacer)) as unknown;
+        const reconstructed = reconstructValue(serialized);
+        expect(reconstructed).toBe(n);
+      }),
+    );
+  });
+
+  it("objects containing BigInt survive serialize → reconstruct", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          label: fc.string(),
+          count: fc.integer(),
+          big: arbBigInt,
+          items: fc.array(arbBigInt, { maxLength: 5 }),
+        }),
+        (obj) => {
+          const json = JSON.stringify(obj, serializeReplacer);
+          const parsed = JSON.parse(json) as unknown;
+          const reconstructed = reconstructValue(parsed) as Record<string, unknown>;
+          expect(reconstructed["label"]).toBe(obj.label);
+          expect(reconstructed["count"]).toBe(obj.count);
+          expect(reconstructed["big"]).toBe(obj.big);
+          expect(reconstructed["items"]).toEqual(obj.items);
+        },
+      ),
+    );
+  });
+
+  it("non-BigInt values are unaffected by serializeReplacer", () => {
+    fc.assert(
+      fc.property(
+        fc.jsonValue(),
+        (val) => {
+          const withReplacer = JSON.stringify(val, serializeReplacer);
+          const without = JSON.stringify(val);
+          expect(withReplacer).toBe(without);
+        },
+      ),
     );
   });
 });
