@@ -800,5 +800,19 @@ mod proptests {
 
             prop_assert!(cache.is_fresh(fid, &fp).unwrap());
         }
+
+        /// Seed inputs survive store → load roundtrip.
+        #[test]
+        fn cached_seed_inputs_survive_roundtrip(map in arb_behavior_map()) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            let original_seeds = map.extract_seed_inputs();
+            cache.store(&map).unwrap();
+            let loaded = cache.load(&map.function_id).unwrap().unwrap();
+            let loaded_seeds = loaded.extract_seed_inputs();
+
+            prop_assert_eq!(original_seeds, loaded_seeds);
+        }
     }
 }

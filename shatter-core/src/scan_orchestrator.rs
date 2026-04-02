@@ -648,12 +648,26 @@ pub async fn scan(
 
         let pool_seeds = crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &input_pool, &callees);
 
-        let candidate_inputs = load_config_candidate_inputs(
+        let mut candidate_inputs = load_config_candidate_inputs(
             func_name,
             &config.config_dir,
             config.max_iterations_per_function,
             config.timeout_per_fn.as_secs(),
         );
+        // Extend with cached seeds from prior exploration runs.
+        if let Some(ref cache) = config.cache
+            && let Ok(Some(cached_map)) = cache.load(func_name)
+        {
+            let cached_seeds = cached_map.extract_seed_inputs();
+            if !cached_seeds.is_empty() {
+                log::debug!(
+                    "[scan] Loaded {} cached seed(s) for {}",
+                    cached_seeds.len(),
+                    func_name,
+                );
+                candidate_inputs.extend(cached_seeds);
+            }
+        }
 
         let explore_config = ExploreConfig {
             file,
@@ -698,11 +712,17 @@ pub async fn scan(
                     "[scan] Starting GA for {} ({} unsolved target(s))",
                     func_name, targets.len(),
                 );
-                let seed_inputs: Vec<Vec<serde_json::Value>> = exploration
+                let mut seed_inputs: Vec<Vec<serde_json::Value>> = exploration
                     .raw_results
                     .iter()
                     .map(|(inputs, _, _)| inputs.clone())
                     .collect();
+                // Extend GA seeds with cached inputs from prior runs.
+                if let Some(ref cache) = config.cache
+                    && let Ok(Some(cached_map)) = cache.load(func_name)
+                {
+                    seed_inputs.extend(cached_map.extract_seed_inputs());
+                }
                 match crate::genetic_explorer::genetic_explore(
                     frontend,
                     func_name,
@@ -1071,6 +1091,7 @@ async fn run_layer_function_mode(
                     deep_fp,
                     &input_pool,
                     &genetic_config,
+                    &cache,
                 ),
             )
             .await;
@@ -1577,12 +1598,26 @@ pub async fn parallel_scan(
                 crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &pool_guard, &callees)
             };
 
-            let candidate_inputs = load_config_candidate_inputs(
+            let mut candidate_inputs = load_config_candidate_inputs(
                 func_name,
                 &config.config_dir,
                 config.max_iterations_per_function,
                 config.timeout_per_fn.as_secs(),
             );
+            // Extend with cached seeds from prior exploration runs.
+            if let Some(ref cache) = config.cache
+                && let Ok(Some(cached_map)) = cache.load(func_name)
+            {
+                let cached_seeds = cached_map.extract_seed_inputs();
+                if !cached_seeds.is_empty() {
+                    log::debug!(
+                        "[scan] Loaded {} cached seed(s) for {}",
+                        cached_seeds.len(),
+                        func_name,
+                    );
+                    candidate_inputs.extend(cached_seeds);
+                }
+            }
 
             let explore_config = ExploreConfig {
                 file,
@@ -1728,6 +1763,7 @@ pub async fn parallel_scan(
                         let fe_config = Arc::clone(&fe_config_persistent);
                         let tasks_remaining = Arc::clone(&tasks_remaining);
                         let genetic_config = config.genetic_config.clone();
+                        let cache = config.cache.clone();
 
                         let handle = tokio::spawn(async move {
                             let mut frontend = pool.checkout().await;
@@ -1745,6 +1781,7 @@ pub async fn parallel_scan(
                                     deep_fp.clone(),
                                     &input_pool,
                                     &genetic_config,
+                                    &cache,
                                 ),
                             )
                             .await;
@@ -1989,6 +2026,7 @@ async fn explore_single_function(
     fingerprint: Option<String>,
     input_pool: &Mutex<InterestingPool>,
     genetic_config: &crate::config::GeneticConfig,
+    cache: &Option<Arc<BehaviorMapCache>>,
 ) -> Result<FunctionResult, ScanError> {
     let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
 
@@ -2001,11 +2039,17 @@ async fn explore_single_function(
                 "[scan] Starting GA for {} ({} unsolved target(s))",
                 func_name, targets.len(),
             );
-            let seed_inputs: Vec<Vec<serde_json::Value>> = exploration
+            let mut seed_inputs: Vec<Vec<serde_json::Value>> = exploration
                 .raw_results
                 .iter()
                 .map(|(inputs, _, _)| inputs.clone())
                 .collect();
+            // Extend GA seeds with cached inputs from prior runs.
+            if let Some(c) = cache
+                && let Ok(Some(cached_map)) = c.load(func_name)
+            {
+                seed_inputs.extend(cached_map.extract_seed_inputs());
+            }
             match crate::genetic_explorer::genetic_explore(
                 frontend,
                 func_name,
