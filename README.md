@@ -76,6 +76,76 @@ initialized project path, including `.shatter-cache/` and `shatter-artifacts/`.
 Use initialization when you want durable project-local configuration, cached
 results, custom generators, or other repeatable Shatter state in the repo.
 
+## Project Configuration
+
+Place a `shatter.config.json` in your project root to set persistent scan
+defaults. All fields are optional — missing fields use built-in defaults. CLI
+flags always override config file values.
+
+```json
+{
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/*.test.ts", "node_modules/**"],
+  "language": "typescript",
+  "max_depth": 5,
+  "max_iterations": 200,
+  "timeout_total": 600,
+  "timeout_per_fn": 60,
+  "timeout_explore": 30.0,
+  "exec_timeout": 15,
+  "parallelism": 4,
+  "output": {
+    "format": "markdown",
+    "paths": ["reports/scan.html", "reports/scan.json"],
+    "stdout": true
+  },
+  "mocks": {
+    "db.query": { "return_values": ["{\"id\": 1}"] }
+  },
+  "cache_dir": ".shatter-cache",
+  "no_cache": false,
+  "seeds_dir": ".shatter/seeds",
+  "capture_side_effects": true,
+  "genetic": {
+    "enabled": true,
+    "population_size": 100
+  }
+}
+```
+
+### Schema Reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `include` | `string[]` | Glob patterns for files to include |
+| `exclude` | `string[]` | Glob patterns for files to exclude |
+| `language` | `string` | Language filter: `typescript`, `go`, or `rust` |
+| `max_depth` | `number` | Maximum directory traversal depth |
+| `max_iterations` | `number` | Max iterations per function (default: 100) |
+| `timeout_total` | `number` | Total scan timeout in seconds (default: 300) |
+| `timeout_per_fn` | `number` | Per-function timeout in seconds (default: 30) |
+| `timeout_explore` | `number` | Per-function exploration wall-clock timeout |
+| `exec_timeout` | `number` | Function execution timeout in seconds (default: 10) |
+| `parallelism` | `number` | Parallel frontend processes (0 = auto) |
+| `output.format` | `string` | Stdout format: `markdown`, `json`, `html`, `text` |
+| `output.paths` | `string[]` | Report file paths (format inferred from extension) |
+| `output.stdout` | `boolean` | Write to stdout alongside output files |
+| `mocks` | `object` | Per-symbol mock overrides (`{ "symbol": { "return_values": [...] } }`) |
+| `cache_dir` | `string` | Behavior map cache directory |
+| `no_cache` | `boolean` | Disable caching entirely |
+| `seeds_dir` | `string` | Cross-function seed pool directory |
+| `capture_side_effects` | `boolean` | Enable rich side-effect capture |
+| `genetic` | `object` | Genetic algorithm settings (`enabled`, `population_size`, etc.) |
+
+### Override Precedence
+
+CLI flags > `shatter.config.json` > `.shatter/config.yaml` > built-in defaults
+
+For list fields (`include`, `exclude`, output `paths`): CLI-provided values
+replace the config entirely (they are not appended). For boolean flags
+(`--no-cache`, `--capture-side-effects`): passing the flag on the CLI sets the
+value to true, overriding the config.
+
 ## Quick Start
 
 See [QUICKSTART.md](QUICKSTART.md) for a copy-paste first run.

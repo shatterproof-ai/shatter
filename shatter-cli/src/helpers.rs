@@ -483,14 +483,20 @@ mod cli_parity_tests {
     }
 
     /// The `scan` subcommand must expose the same governed defaults as `explore`.
+    /// exec_timeout is Option<u64> (resolved via project config chain); when
+    /// no flag is passed, the built-in default in shatter-core matches the
+    /// parity contract.
     #[test]
     fn scan_defaults_match_parity_contract() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
             CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+                // exec_timeout is None when not explicitly passed; the built-in
+                // default (resolved at runtime) matches the parity contract.
                 assert_eq!(
-                    exec_timeout, CLI_EXEC_TIMEOUT_DEFAULT_SECS,
-                    "`scan --exec-timeout` default ({exec_timeout}s) diverges from \
+                    exec_timeout.unwrap_or(shatter_core::config::DEFAULT_SCAN_EXEC_TIMEOUT),
+                    CLI_EXEC_TIMEOUT_DEFAULT_SECS,
+                    "`scan --exec-timeout` resolved default diverges from \
                      parity contract ({CLI_EXEC_TIMEOUT_DEFAULT_SECS}s)"
                 );
                 assert_eq!(
