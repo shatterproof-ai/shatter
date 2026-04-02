@@ -277,6 +277,12 @@ tasks:
       - task: e2e
       - git status --short
 
+  walkthrough:
+    desc: Run the compact demo walkthrough
+    deps: [build]
+    cmds:
+      - bash demo/walkthrough.sh --auto --delay 0
+
   gauntlet:
     desc: Run the broad CLI coverage gauntlet
     deps: [build]
