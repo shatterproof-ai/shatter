@@ -362,6 +362,19 @@ impl BehaviorMap {
 
         added
     }
+
+    /// Extract all input argument vectors from this behavior map's behaviors.
+    ///
+    /// Returns one `Vec<serde_json::Value>` per behavior, suitable for use as
+    /// seed inputs on subsequent exploration runs. Behaviors with empty
+    /// `input_args` (e.g. void-parameter functions) are filtered out.
+    pub fn extract_seed_inputs(&self) -> Vec<Vec<serde_json::Value>> {
+        self.behaviors
+            .iter()
+            .filter(|b| !b.input_args.is_empty())
+            .map(|b| b.input_args.clone())
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1482,5 +1495,77 @@ mod tests {
         assert_eq!(map.behaviors.len(), 3, "2 original + 1 new");
         assert_eq!(map.behaviors[2].id, 2, "new behavior gets next sequential id");
         assert_eq!(map.behaviors[2].branch_path, path_c);
+    }
+
+    #[test]
+    fn extract_seed_inputs_collects_all_input_args() {
+        let path_a = vec![make_branch(1, true)];
+        let path_b = vec![make_branch(2, false)];
+
+        let map = BehaviorMap {
+            function_id: "test".to_string(),
+            behaviors: vec![
+                Behavior {
+                    id: 0,
+                    input_args: vec![json!(1), json!("a")],
+                    return_value: None,
+                    thrown_error: None,
+                    branch_path: path_a,
+                    side_effects: vec![],
+                    dependency_trace: None,
+                    mock_values: vec![],
+                },
+                Behavior {
+                    id: 1,
+                    input_args: vec![json!(2), json!("b")],
+                    return_value: None,
+                    thrown_error: None,
+                    branch_path: path_b,
+                    side_effects: vec![],
+                    dependency_trace: None,
+                    mock_values: vec![],
+                },
+            ],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        let seeds = map.extract_seed_inputs();
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0], vec![json!(1), json!("a")]);
+        assert_eq!(seeds[1], vec![json!(2), json!("b")]);
+    }
+
+    #[test]
+    fn extract_seed_inputs_filters_empty() {
+        let map = BehaviorMap {
+            function_id: "test".to_string(),
+            behaviors: vec![
+                Behavior {
+                    id: 0,
+                    input_args: vec![json!(42)],
+                    return_value: None,
+                    thrown_error: None,
+                    branch_path: vec![],
+                    side_effects: vec![],
+                    dependency_trace: None,
+                    mock_values: vec![],
+                },
+                Behavior {
+                    id: 1,
+                    input_args: vec![],
+                    return_value: None,
+                    thrown_error: None,
+                    branch_path: vec![],
+                    side_effects: vec![],
+                    dependency_trace: None,
+                    mock_values: vec![],
+                },
+            ],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        let seeds = map.extract_seed_inputs();
+        assert_eq!(seeds.len(), 1, "empty input_args should be filtered out");
+        assert_eq!(seeds[0], vec![json!(42)]);
     }
 }

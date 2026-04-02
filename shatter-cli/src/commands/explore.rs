@@ -510,6 +510,26 @@ pub(crate) async fn run_explore(
             };
             let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
 
+            // Build candidate inputs from config, then extend with cached seeds
+            // from prior exploration runs so discovery compounds across runs.
+            let mut candidate_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+                .iter()
+                .map(|input| input.args.clone())
+                .collect();
+            if let Some(ref cache) = cache {
+                if let Ok(Some(cached_map)) = cache.load(&function_id) {
+                    let cached_seeds = cached_map.extract_seed_inputs();
+                    if !cached_seeds.is_empty() {
+                        log::debug!(
+                            "Loaded {} cached seed(s) for {}",
+                            cached_seeds.len(),
+                            func.name,
+                        );
+                        candidate_inputs.extend(cached_seeds);
+                    }
+                }
+            }
+
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
@@ -525,10 +545,7 @@ pub(crate) async fn run_explore(
                 ),
                 capabilities: frontend_caps.clone(),
                 user_seeds: vec![],
-                candidate_inputs: resolved.candidate_inputs
-                    .iter()
-                    .map(|input| input.args.clone())
-                    .collect(),
+                candidate_inputs,
                 pool_seeds: match &pool_path {
                     Some(pp) => match shatter_core::interesting_pool::load_pool(pp) {
                         Ok(Some(pool)) => shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool),
@@ -566,6 +583,21 @@ pub(crate) async fn run_explore(
                 // Literal-derived seeds: string/number constants from static analysis
                 let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(&func.params, &func.literals);
                 seeds.extend(literal_candidates);
+
+                // Add cached seeds from prior exploration runs.
+                if let Some(ref cache) = cache {
+                    if let Ok(Some(cached_map)) = cache.load(&function_id) {
+                        let cached_seeds = cached_map.extract_seed_inputs();
+                        if !cached_seeds.is_empty() {
+                            log::debug!(
+                                "Loaded {} cached seed(s) for concolic on {}",
+                                cached_seeds.len(),
+                                func.name,
+                            );
+                            seeds.extend(cached_seeds);
+                        }
+                    }
+                }
 
                 let cc = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations as usize,
@@ -850,11 +882,18 @@ pub(crate) async fn run_explore(
                                 "Starting GA for {} ({} unsolved target(s))",
                                 func.name, targets_attempted,
                             );
-                            let seed_inputs: Vec<Vec<serde_json::Value>> = result
+                            let mut seed_inputs: Vec<Vec<serde_json::Value>> = result
                                 .raw_results
                                 .iter()
                                 .map(|(inputs, _, _)| inputs.clone())
                                 .collect();
+                            // Extend GA seeds with cached inputs from prior runs.
+                            if let Some(ref cache) = cache {
+                                let ga_function_id = format!("{}:{}", file_str, func.name);
+                                if let Ok(Some(cached_map)) = cache.load(&ga_function_id) {
+                                    seed_inputs.extend(cached_map.extract_seed_inputs());
+                                }
+                            }
                             let ga_fe_config = fe_configs
                                 .get(&target.language)
                                 .expect("fe_config must exist for target language")
