@@ -853,6 +853,15 @@ pub struct ParallelScanResult {
     pub sampling: Option<SamplingContext>,
 }
 
+impl ParallelScanResult {
+    /// Returns true if the scan should be considered a failure:
+    /// functions were attempted but none were successfully explored.
+    pub fn has_scan_failure(&self) -> bool {
+        let attempted = self.function_results.len() + self.skipped.len();
+        attempted > 0 && self.function_results.is_empty()
+    }
+}
+
 /// Minimum number of idle workers to keep warm in the pool.
 /// Prevents reaping the last worker, ensuring fast checkout for the next task.
 const MIN_IDLE_WORKERS: usize = 1;
@@ -6268,5 +6277,52 @@ mod tests {
             Some(serde_json::json!("ga_new")),
             "the new GA behavior should be the one with branch 2"
         );
+    }
+
+    #[test]
+    fn has_scan_failure_all_skipped() {
+        let result = ParallelScanResult {
+            function_results: vec![],
+            test_order: vec!["foo".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "foo".into(),
+                reason: "build failed".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        assert!(result.has_scan_failure(), "0 explored out of 1 attempted must be a failure");
+    }
+
+    #[test]
+    fn has_scan_failure_some_explored() {
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("bar", vec![])],
+            test_order: vec!["bar".into(), "baz".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "baz".into(),
+                reason: "timeout".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        assert!(!result.has_scan_failure(), "1 explored out of 2 attempted is not a total failure");
+    }
+
+    #[test]
+    fn has_scan_failure_nothing_attempted() {
+        let result = ParallelScanResult {
+            function_results: vec![],
+            test_order: vec![],
+            skipped: vec![],
+            workers_used: 0,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        assert!(!result.has_scan_failure(), "0 attempted means nothing to fail");
     }
 }
