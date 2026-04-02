@@ -645,17 +645,20 @@ pub(crate) enum CliCommand {
 
         /// Per-function exploration timeout in seconds. Functions exceeding this
         /// limit are skipped without aborting the scan. Default: 30s.
-        #[arg(long, default_value_t = 30)]
-        timeout_per_fn: u64,
+        /// Overridden by shatter.config.json when not explicitly set.
+        #[arg(long)]
+        timeout_per_fn: Option<u64>,
 
         /// Total scan timeout in seconds. Default: 300s.
-        #[arg(long, default_value_t = 300)]
-        timeout_total: u64,
+        /// Overridden by shatter.config.json when not explicitly set.
+        #[arg(long)]
+        timeout_total: Option<u64>,
 
         /// Number of parallel frontend subprocesses for exploration.
         /// Default: number of available CPUs (0 = auto-detect).
-        #[arg(long, default_value_t = 0)]
-        parallelism: usize,
+        /// Overridden by shatter.config.json when not explicitly set.
+        #[arg(long)]
+        parallelism: Option<usize>,
 
         /// Path to a mock configuration YAML file.
         #[arg(long)]
@@ -717,9 +720,10 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         stratum: Option<String>,
 
-        /// Maximum number of iterations per function.
-        #[arg(long, default_value_t = 100)]
-        max_iterations: u32,
+        /// Maximum number of iterations per function. Default: 100.
+        /// Overridden by shatter.config.json when not explicitly set.
+        #[arg(long)]
+        max_iterations: Option<u32>,
 
         /// Per-function exploration wall-clock timeout in seconds. If both
         /// --max-iterations and --timeout-explore are set, whichever triggers
@@ -741,9 +745,9 @@ pub(crate) enum CliCommand {
         request_timeout: u64,
 
         /// Execution timeout in seconds for each function invocation in the frontend.
-        /// Default: 10s.
-        #[arg(long, default_value_t = 10)]
-        exec_timeout: u64,
+        /// Default: 10s. Overridden by shatter.config.json when not explicitly set.
+        #[arg(long)]
+        exec_timeout: Option<u64>,
 
         /// Build timeout in seconds for compiling instrumented code in the frontend.
         /// Default: 30s.
@@ -1804,7 +1808,7 @@ mod tests {
         match cli.command {
             CliCommand::Scan { request_timeout, timeout_total, .. } => {
                 assert_eq!(request_timeout, 15);
-                assert_eq!(timeout_total, 200);
+                assert_eq!(timeout_total, Some(200));
             }
             _ => panic!("expected Scan command"),
         }
@@ -1999,7 +2003,7 @@ mod tests {
         ]);
         match cli.command {
             CliCommand::Scan { exec_timeout, build_timeout, .. } => {
-                assert_eq!(exec_timeout, 15);
+                assert_eq!(exec_timeout, Some(15));
                 assert_eq!(build_timeout, 30);
             }
             _ => panic!("expected Scan command"),
@@ -2041,12 +2045,12 @@ mod tests {
                 ..
             } => {
                 assert_eq!(directory, "src/");
-                assert_eq!(max_iterations, 100);
-                assert_eq!(timeout_total, 300);
+                assert_eq!(max_iterations, None);
+                assert_eq!(timeout_total, None);
                 assert!(!no_cache);
                 assert_eq!(request_timeout, 30);
-                assert_eq!(parallelism, 0);
-                assert_eq!(timeout_per_fn, 30);
+                assert_eq!(parallelism, None);
+                assert_eq!(timeout_per_fn, None);
                 assert!(!dry_run);
                 assert!(!progress);
             }
@@ -2084,8 +2088,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(directory, "src/");
-                assert_eq!(max_iterations, 50);
-                assert_eq!(timeout_total, 600);
+                assert_eq!(max_iterations, Some(50));
+                assert_eq!(timeout_total, Some(600));
                 assert!(dry_run);
                 assert_eq!(language, Some("typescript".to_string()));
                 assert_eq!(include, vec!["**/*.ts"]);

@@ -20,6 +20,13 @@ use crate::protocol::SetupLevel;
 /// Default setup timeout in seconds, applied when no explicit value is configured.
 pub const DEFAULT_SETUP_TIMEOUT_SECS: u64 = 30;
 
+/// Default scan budget constants — shared between CLI default resolution and project config.
+pub const DEFAULT_SCAN_MAX_ITERATIONS: u32 = 100;
+pub const DEFAULT_SCAN_TIMEOUT_TOTAL: u64 = 300;
+pub const DEFAULT_SCAN_TIMEOUT_PER_FN: u64 = 30;
+pub const DEFAULT_SCAN_EXEC_TIMEOUT: u64 = 10;
+pub const DEFAULT_SCAN_PARALLELISM: usize = 0;
+
 /// Default: adaptive strategy scoring enabled.
 pub const DEFAULT_EXPLORATION_ADAPTIVE: bool = true;
 /// Default sliding window size for outcome-based strategy scoring.
@@ -63,6 +70,12 @@ pub enum ConfigError {
 
     #[error("failed to parse candidate inputs '{path}': {source}")]
     InputParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+
+    #[error("failed to parse project config '{path}': {source}")]
+    ProjectConfigParse {
         path: PathBuf,
         source: serde_json::Error,
     },
@@ -152,6 +165,127 @@ pub struct ShatterConfig {
     pub mock_fixtures: Option<MockFixtureConfig>,
 }
 
+/// Filename for the project-level configuration file.
+pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
+
+/// Project-level configuration loaded from `shatter.config.json`.
+///
+/// Provides persistent scan defaults so users don't need to repeat CLI flags.
+/// All fields are optional — missing fields fall back to CLI defaults.
+/// CLI flags always override values from this config.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectConfig {
+    /// Glob patterns for files to include in scans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+
+    /// Glob patterns for files to exclude from scans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+
+    /// Language filter (typescript, go, or rust).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+
+    /// Maximum directory traversal depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+
+    /// Maximum iterations per function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+
+    /// Total scan wall-clock timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_total: Option<u64>,
+
+    /// Per-function timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_per_fn: Option<u64>,
+
+    /// Per-function exploration wall-clock timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_explore: Option<f64>,
+
+    /// Function execution timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_timeout: Option<u64>,
+
+    /// Number of parallel frontend subprocesses (0 = auto-detect).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism: Option<usize>,
+
+    /// Output preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputConfig>,
+
+    /// Per-symbol mock overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
+
+    /// Behavior map cache directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Disable caching entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_cache: Option<bool>,
+
+    /// Cross-function seed pool directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeds_dir: Option<PathBuf>,
+
+    /// Enable rich side-effect capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_side_effects: Option<bool>,
+
+    /// Genetic algorithm settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genetic: Option<GeneticConfig>,
+}
+
+/// Output preferences for scan reports.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct OutputConfig {
+    /// Default stdout format: "markdown", "json", "html", or "text".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+
+    /// Report file paths (format inferred from extension).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<PathBuf>,
+
+    /// Write report to stdout even when output files are specified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<bool>,
+}
+
+/// Return the expected path for `shatter.config.json` in the given directory.
+pub fn project_config_path(dir: &Path) -> PathBuf {
+    dir.join(PROJECT_CONFIG_FILENAME)
+}
+
+/// Load project config from `shatter.config.json` in `dir`, if it exists.
+///
+/// Returns `Ok(None)` when the file is absent. Returns an error on I/O
+/// failures or invalid JSON.
+pub fn load_project_config(dir: &Path) -> Result<Option<ProjectConfig>, ConfigError> {
+    let path = project_config_path(dir);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&path).map_err(|e| ConfigError::Io {
+        path: path.clone(),
+        source: e,
+    })?;
+    let config: ProjectConfig =
+        serde_json::from_str(&contents).map_err(|e| ConfigError::ProjectConfigParse {
+            path,
+            source: e,
+        })?;
+    Ok(Some(config))
+}
 
 /// Configuration for the genetic algorithm explorer.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -2357,6 +2491,161 @@ defaults:
                 )
         }
 
+        // --- ProjectConfig tests ---
+
+        #[test]
+        fn project_config_parse_full() {
+            let json = r#"{
+                "include": ["src/**/*.ts"],
+                "exclude": ["**/*.test.ts"],
+                "language": "typescript",
+                "max_depth": 5,
+                "max_iterations": 200,
+                "timeout_total": 600,
+                "timeout_per_fn": 60,
+                "timeout_explore": 30.0,
+                "exec_timeout": 15,
+                "parallelism": 4,
+                "output": {
+                    "format": "json",
+                    "paths": ["reports/scan.html"],
+                    "stdout": true
+                },
+                "capture_side_effects": true,
+                "no_cache": true,
+                "cache_dir": ".my-cache",
+                "seeds_dir": ".my-seeds"
+            }"#;
+            let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            assert_eq!(config.include, vec!["src/**/*.ts"]);
+            assert_eq!(config.exclude, vec!["**/*.test.ts"]);
+            assert_eq!(config.language.as_deref(), Some("typescript"));
+            assert_eq!(config.max_depth, Some(5));
+            assert_eq!(config.max_iterations, Some(200));
+            assert_eq!(config.timeout_total, Some(600));
+            assert_eq!(config.timeout_per_fn, Some(60));
+            assert_eq!(config.timeout_explore, Some(30.0));
+            assert_eq!(config.exec_timeout, Some(15));
+            assert_eq!(config.parallelism, Some(4));
+            assert_eq!(config.capture_side_effects, Some(true));
+            assert_eq!(config.no_cache, Some(true));
+            assert_eq!(
+                config.output.as_ref().and_then(|o| o.format.as_deref()),
+                Some("json")
+            );
+            assert_eq!(
+                config.output.as_ref().map(|o| o.paths.len()),
+                Some(1)
+            );
+            assert_eq!(
+                config.output.as_ref().and_then(|o| o.stdout),
+                Some(true)
+            );
+        }
+
+        #[test]
+        fn project_config_parse_minimal() {
+            let json = "{}";
+            let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            assert!(config.include.is_empty());
+            assert!(config.exclude.is_empty());
+            assert!(config.language.is_none());
+            assert!(config.max_iterations.is_none());
+            assert!(config.timeout_total.is_none());
+            assert!(config.output.is_none());
+            assert!(config.mocks.is_none());
+        }
+
+        #[test]
+        fn project_config_load_missing_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let result = load_project_config(tmp.path()).unwrap();
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn project_config_load_valid() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(PROJECT_CONFIG_FILENAME);
+            std::fs::write(&path, r#"{"max_iterations": 50}"#).unwrap();
+            let config = load_project_config(tmp.path()).unwrap().unwrap();
+            assert_eq!(config.max_iterations, Some(50));
+        }
+
+        #[test]
+        fn project_config_load_invalid_json() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(PROJECT_CONFIG_FILENAME);
+            std::fs::write(&path, "not json at all {{{").unwrap();
+            let result = load_project_config(tmp.path());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn project_config_ignores_unknown_fields() {
+            let json = r#"{"unknown_field": true, "max_iterations": 42}"#;
+            let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            assert_eq!(config.max_iterations, Some(42));
+        }
+
+        #[test]
+        fn project_config_json_roundtrip() {
+            let config = ProjectConfig {
+                include: vec!["src/**/*.ts".to_string()],
+                exclude: vec!["**/test/**".to_string()],
+                language: Some("typescript".to_string()),
+                max_iterations: Some(200),
+                timeout_total: Some(600),
+                timeout_per_fn: Some(60),
+                timeout_explore: Some(30.0),
+                exec_timeout: Some(15),
+                parallelism: Some(4),
+                output: Some(OutputConfig {
+                    format: Some("json".to_string()),
+                    paths: vec![std::path::PathBuf::from("report.html")],
+                    stdout: Some(true),
+                }),
+                max_depth: None,
+                mocks: None,
+                cache_dir: None,
+                no_cache: None,
+                seeds_dir: None,
+                capture_side_effects: Some(true),
+                genetic: None,
+            };
+            let json = serde_json::to_string(&config).unwrap();
+            let restored: ProjectConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(config, restored);
+        }
+
+        #[test]
+        fn project_config_with_mocks() {
+            let json = r#"{
+                "mocks": {
+                    "db.query": {
+                        "return_values": [42]
+                    }
+                }
+            }"#;
+            let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            assert!(config.mocks.is_some());
+            assert!(config.mocks.unwrap().contains_key("db.query"));
+        }
+
+        #[test]
+        fn project_config_with_genetic() {
+            let json = r#"{
+                "genetic": {
+                    "enabled": true,
+                    "population_size": 100
+                }
+            }"#;
+            let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            let genetic = config.genetic.unwrap();
+            assert!(genetic.enabled);
+            assert_eq!(genetic.population_size, 100);
+        }
+
         proptest! {
             #[test]
             fn session_setup_config_yaml_roundtrip(config in arb_session_setup_config()) {
@@ -2770,6 +3059,36 @@ mod config_proptests {
             let nd = loaded.nondeterminism.unwrap();
             let count = nd.confirmed.iter().filter(|d| d.function == function && d.path == path).count();
             prop_assert_eq!(count, 1, "must not duplicate on repeated write");
+        }
+
+        /// ProjectConfig roundtrips through JSON serialization.
+        #[test]
+        fn project_config_proptest_roundtrip(
+            max_iterations in proptest::option::of(1u32..10000),
+            timeout_total in proptest::option::of(1u64..3600),
+            timeout_per_fn in proptest::option::of(1u64..600),
+            exec_timeout in proptest::option::of(1u64..120),
+            parallelism in proptest::option::of(0usize..64),
+            capture in proptest::option::of(proptest::bool::ANY),
+        ) {
+            let config = super::ProjectConfig {
+                max_iterations,
+                timeout_total,
+                timeout_per_fn,
+                exec_timeout,
+                parallelism,
+                capture_side_effects: capture,
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&config).expect("serialize");
+            let restored: super::ProjectConfig = serde_json::from_str(&json).expect("deserialize");
+            prop_assert_eq!(config, restored);
+        }
+
+        /// Random bytes never panic when parsed as ProjectConfig — only Ok or Err.
+        #[test]
+        fn project_config_parse_never_panics(data in "[\\x00-\\xff]{0,256}") {
+            let _ = serde_json::from_str::<super::ProjectConfig>(&data);
         }
     }
 }

@@ -433,30 +433,93 @@ async fn main() -> ExitCode {
             } else {
                 yaml_genetic
             };
+
+            // Load project-level config (shatter.config.json) for scan defaults.
+            let project_cfg = shatter_core::config::load_project_config(
+                std::path::Path::new(&directory),
+            )
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to load project config: {e}");
+                None
+            });
+
+            // Resolve CLI options: CLI flag > project config > built-in default.
+            let effective_max_iterations = max_iterations
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.max_iterations))
+                .unwrap_or(shatter_core::config::DEFAULT_SCAN_MAX_ITERATIONS);
+            let effective_timeout_total = timeout_total
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.timeout_total))
+                .unwrap_or(shatter_core::config::DEFAULT_SCAN_TIMEOUT_TOTAL);
+            let effective_timeout_per_fn = timeout_per_fn
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.timeout_per_fn))
+                .unwrap_or(shatter_core::config::DEFAULT_SCAN_TIMEOUT_PER_FN);
+            let effective_exec_timeout = exec_timeout
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.exec_timeout))
+                .unwrap_or(shatter_core::config::DEFAULT_SCAN_EXEC_TIMEOUT);
+            let effective_parallelism = parallelism
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism))
+                .unwrap_or(shatter_core::config::DEFAULT_SCAN_PARALLELISM);
+            // For Vec/bool fields: CLI non-empty/true overrides config.
+            let effective_include = if include.is_empty() {
+                project_cfg.as_ref().map(|c| c.include.clone()).unwrap_or_default()
+            } else {
+                include
+            };
+            let effective_exclude = if exclude.is_empty() {
+                project_cfg.as_ref().map(|c| c.exclude.clone()).unwrap_or_default()
+            } else {
+                exclude
+            };
+            let effective_outputs = if outputs.is_empty() {
+                project_cfg
+                    .as_ref()
+                    .and_then(|c| c.output.as_ref())
+                    .map(|o| o.paths.clone())
+                    .unwrap_or_default()
+            } else {
+                outputs
+            };
+            let effective_stdout = stdout
+                || project_cfg
+                    .as_ref()
+                    .and_then(|c| c.output.as_ref())
+                    .and_then(|o| o.stdout)
+                    .unwrap_or(false);
+            let effective_capture = capture_side_effects
+                || project_cfg
+                    .as_ref()
+                    .and_then(|c| c.capture_side_effects)
+                    .unwrap_or(false);
+            let effective_no_cache = no_cache
+                || project_cfg
+                    .as_ref()
+                    .and_then(|c| c.no_cache)
+                    .unwrap_or(false);
+
             commands::scan::run_scan(
                 &directory,
                 language.as_deref(),
-                &include,
-                &exclude,
+                &effective_include,
+                &effective_exclude,
                 changed,
                 since.as_deref(),
                 until.as_deref(),
                 include_untracked,
                 all,
                 max_depth,
-                max_iterations,
-                timeout_total,
+                effective_max_iterations,
+                effective_timeout_total,
                 cache_dir.as_deref(),
-                no_cache,
+                effective_no_cache,
                 request_timeout,
-                exec_timeout,
+                effective_exec_timeout,
                 build_timeout,
                 release,
-                parallelism,
-                timeout_per_fn,
+                effective_parallelism,
+                effective_timeout_per_fn,
                 timeout_explore,
-                &outputs,
-                stdout,
+                &effective_outputs,
+                effective_stdout,
                 format,
                 progress,
                 emit_tests.as_deref(),
@@ -477,7 +540,7 @@ async fn main() -> ExitCode {
                 no_seeds,
                 parsed_policy,
                 isolation.into(),
-                capture_side_effects,
+                effective_capture,
                 workers_per_fn,
                 &genetic_config,
             )
