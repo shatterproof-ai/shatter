@@ -7,7 +7,10 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use shatter_core::config::GeneticConfig;
+use shatter_core::coverage_metrics::{extract_targets_concolic, TargetBranch, TargetReason};
 use shatter_core::frontend::{Frontend, FrontendConfig, DEFAULT_REQUEST_TIMEOUT};
+use shatter_core::genetic_explorer;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
 use shatter_core::protocol::{
     Command as ProtoCommand, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
@@ -1595,6 +1598,160 @@ async fn mcdc_compound_or_discovers_all_branches() {
         result.mcdc_summary.is_some(),
         "mcdc_summary must be present when ExploreConfig::mcdc is true; got None"
     );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Genetic algorithm integration tests
+// ---------------------------------------------------------------------------
+
+/// Test that the genetic algorithm pipeline runs end-to-end on a function with
+/// an opaque predicate.
+///
+/// `classifyWithHash(s)` has 4 branches including one guarded by a djb2 hash
+/// comparison. This test:
+/// 1. Runs concolic exploration to collect seed inputs and discover branches.
+/// 2. Extracts unsolved targets; if concolic solves everything, constructs
+///    synthetic targets from the analysis to ensure the GA has work to do.
+/// 3. Runs genetic exploration and asserts it produced a valid `GeneticResult`.
+#[tokio::test]
+async fn genetic_opaque_predicate_runs_and_produces_result() {
+    let file = examples_dir().join("22-opaque-predicate.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Step 1: Analyze
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyWithHash").await;
+    assert!(
+        !analysis.params.is_empty(),
+        "classifyWithHash should have at least 1 param"
+    );
+    assert!(
+        analysis.branches.len() >= 3,
+        "classifyWithHash should have at least 3 branches; got {}",
+        analysis.branches.len()
+    );
+
+    // Step 2: Instrument
+    instrument_function(&mut frontend, &file_str, "classifyWithHash").await;
+
+    // Step 3: Concolic exploration (collect seed inputs for GA population)
+    let config = ExploreConfig {
+        max_iterations: 10,
+        max_executions: 30,
+        plateau_threshold: 8,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!("hello")],
+        vec![serde_json::json!("")],
+    ];
+
+    let result = orchestrator::explore(
+        &mut frontend,
+        "classifyWithHash",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    eprintln!("concolic return values: {return_values:?}");
+    eprintln!("concolic unique_paths: {}", result.unique_paths);
+
+    // Step 4: Extract targets from concolic results. If concolic happened to
+    // solve everything (the hash is polynomial arithmetic, which Z3 can
+    // sometimes handle), construct synthetic targets from the analysis so the
+    // GA pipeline is still exercised.
+    let mut targets = extract_targets_concolic(&analysis, &result);
+    if targets.is_empty() {
+        eprintln!("concolic solved all branches — using synthetic targets for GA exercise");
+        targets = analysis
+            .branches
+            .iter()
+            .take(1)
+            .map(|b| TargetBranch {
+                branch_id: b.id,
+                line: b.line,
+                reason: TargetReason::OpaqueConstraint,
+                constraint_hint: Some("synthetic target for GA integration test".to_string()),
+            })
+            .collect();
+    }
+    eprintln!("GA targets: {targets:?}");
+
+    // Collect seed inputs from concolic results for the GA population
+    let ga_seed_inputs: Vec<Vec<serde_json::Value>> = result
+        .raw_results
+        .iter()
+        .map(|(inputs, _mocks, _exec)| inputs.clone())
+        .collect();
+
+    // Step 5: Run genetic exploration
+    let ga_config = GeneticConfig {
+        enabled: true,
+        population_size: 20,
+        max_generations: 10,
+        mutation_rate: 0.3,
+        crossover_rate: 0.7,
+        timeout_secs: 15,
+    };
+
+    let ga_result = genetic_explorer::genetic_explore(
+        &mut frontend,
+        "classifyWithHash",
+        ga_seed_inputs,
+        targets,
+        &analysis.params,
+        &ga_config,
+    )
+    .await
+    .expect("genetic exploration failed");
+
+    // Step 6: Assert the GA ran and produced valid output
+    eprintln!(
+        "GA result: generations={}, executions={}, targets_solved={}, discoveries={}",
+        ga_result.generations_run,
+        ga_result.total_executions,
+        ga_result.targets_solved,
+        ga_result.discoveries.len()
+    );
+
+    assert!(
+        ga_result.generations_run > 0,
+        "GA should have run at least 1 generation"
+    );
+    assert!(
+        ga_result.total_executions > 0,
+        "GA should have executed at least 1 candidate"
+    );
+
+    // If the GA found a target branch, verify the discovery is well-formed
+    if ga_result.targets_solved > 0 {
+        assert!(
+            !ga_result.discoveries.is_empty(),
+            "targets_solved > 0 but discoveries is empty"
+        );
+        for discovery in &ga_result.discoveries {
+            assert!(
+                !discovery.input_args.is_empty(),
+                "discovery should have input arguments"
+            );
+            eprintln!(
+                "GA discovery: inputs={:?}, return={:?}",
+                discovery.input_args, discovery.return_value
+            );
+        }
+    }
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
