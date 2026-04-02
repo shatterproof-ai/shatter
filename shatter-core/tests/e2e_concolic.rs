@@ -1609,7 +1609,7 @@ async fn mcdc_compound_or_discovers_all_branches() {
 /// Test that the genetic algorithm pipeline runs end-to-end on a function with
 /// an opaque predicate.
 ///
-/// `classifyWithHash(s)` has 4 branches including one guarded by a djb2 hash
+/// `classifyWithChecksum(s)` has 4 branches including one guarded by a checksum
 /// comparison. This test:
 /// 1. Runs concolic exploration to collect seed inputs and discover branches.
 /// 2. Extracts unsolved targets; if concolic solves everything, constructs
@@ -1623,19 +1623,19 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
     let mut frontend = spawn_ts_frontend().await;
 
     // Step 1: Analyze
-    let analysis = analyze_function(&mut frontend, &file_str, "classifyWithHash").await;
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyWithChecksum").await;
     assert!(
         !analysis.params.is_empty(),
-        "classifyWithHash should have at least 1 param"
+        "classifyWithChecksum should have at least 1 param"
     );
     assert!(
         analysis.branches.len() >= 3,
-        "classifyWithHash should have at least 3 branches; got {}",
+        "classifyWithChecksum should have at least 3 branches; got {}",
         analysis.branches.len()
     );
 
     // Step 2: Instrument
-    instrument_function(&mut frontend, &file_str, "classifyWithHash").await;
+    instrument_function(&mut frontend, &file_str, "classifyWithChecksum").await;
 
     // Step 3: Concolic exploration (collect seed inputs for GA population)
     let config = ExploreConfig {
@@ -1652,7 +1652,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
 
     let result = orchestrator::explore(
         &mut frontend,
-        "classifyWithHash",
+        "classifyWithChecksum",
         seed_inputs,
         vec![],
         &analysis.params,
@@ -1708,7 +1708,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
 
     let ga_result = genetic_explorer::genetic_explore(
         &mut frontend,
-        "classifyWithHash",
+        "classifyWithChecksum",
         ga_seed_inputs,
         targets,
         &analysis.params,
