@@ -7,7 +7,7 @@ without modifying Shatter source code.
 Each scenario declares:
 
 - `id`: Stable scenario name used in reports and artifact paths.
-- `kind`: High-level scenario type (`walkthrough`, `command`, or `go_test`).
+- `kind`: High-level scenario type (`gauntlet`, `command`, or `go_test`).
 - `description`: Human-readable intent.
 - `command`: Exact argv vector to execute.
 - `workdir`: Repository-relative working directory.
@@ -19,11 +19,11 @@ Each scenario declares:
 - `profilers`: Which external profilers are valid for the scenario.
 - `language`: Optional frontend language for scenario grouping.
 - `sample_ref`: Optional reference into `benchmarks/sample-manifest.json` when
-  the scenario is tied to the walkthrough/test sample corpus.
+  the scenario is tied to the gauntlet/test sample corpus.
 - `timing_target`: Whether the harness should inject structured timing into a
-  direct `shatter` command, the walkthrough script, or neither.
+  direct `shatter` command, the gauntlet script, or neither.
 
-The initial corpus focuses on real user-facing paths from the walkthrough plus
+The initial corpus focuses on real user-facing paths from the gauntlet plus
 one Go-isolated package test that can be profiled with `pprof` without changing
 Shatter source.
 

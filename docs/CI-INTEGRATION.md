@@ -105,13 +105,13 @@ Recommended commands:
 
 ```bash
 npx task e2e
-npx task walkthrough
+npx task gauntlet
 ```
 
 Notes:
 
 - Treat this as a separate job or nightly gate if runtime becomes expensive.
-- The walkthrough should remain outside the aggregate check because it is a
+- The gauntlet should remain outside the aggregate check because it is a
   substantially slower end-to-end workflow.
 
 ## Recommended CI Modes
@@ -148,7 +148,7 @@ npx task e2e
 Optionally add:
 
 ```bash
-npx task walkthrough
+npx task gauntlet
 ```
 
 ### Nightly or scheduled validation
@@ -157,7 +157,7 @@ Use the full quality stack, including:
 
 - aggregate checks
 - E2E tests
-- walkthrough
+- gauntlet
 - future vulnerability scans and dependency freshness checks
 
 ### Weekly perf tracking
@@ -196,7 +196,7 @@ git submodule update --init
 git clone --recurse-submodules --shallow-submodules <repo-url>
 ```
 
-All test tiers, the walkthrough, and the E2E suite require the `examples/` submodule. If `examples/` is empty, tests will fail with file-not-found errors.
+All test tiers, the gauntlet, and the E2E suite require the `examples/` submodule. If `examples/` is empty, tests will fail with file-not-found errors.
 
 ### Updating the examples submodule
 

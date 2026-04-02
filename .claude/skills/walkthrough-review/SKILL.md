@@ -6,7 +6,7 @@ user-invocable: true
 
 ## Purpose
 
-Evaluate whether `demo/walkthrough.sh` output is useful and readable for a human user. Run this after any change that affects what shatter prints — explore reports, log formatting, verbosity flags, cluster summaries, etc.
+Evaluate whether `demo/gauntlet.sh` output is useful and readable for a human user. Run this after any change that affects what shatter prints — explore reports, log formatting, verbosity flags, cluster summaries, etc.
 
 ## What a human wants from this output
 
@@ -54,7 +54,7 @@ When exploring multiple functions, a one-line-per-function summary lets the deve
 ### 1. Run the walkthrough and capture output
 
 ```bash
-./demo/walkthrough.sh --auto --delay 0 2>&1 | tee /tmp/shatter-walkthrough-review.txt
+./demo/gauntlet.sh --auto --delay 0 2>&1 | tee /tmp/shatter-gauntlet-review.txt
 ```
 
 If the walkthrough fails to run (build errors, missing examples), report that and stop — fixing the build is a prerequisite.

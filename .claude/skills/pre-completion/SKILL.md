@@ -90,9 +90,9 @@ Run the appropriate language-specific gates based on what changed, plus E2E test
    - Verify protocol types are consistent across all languages.
    - Run cross-language tests (Full tier).
 
-8. **Walkthrough** (if `cli-output` changed):
+8. **Gauntlet** (if `cli-output` changed):
    ```bash
-   bash demo/walkthrough.sh --auto --delay 0
+   bash demo/gauntlet.sh --auto --delay 0
    ```
    Errors in steps 1-19 indicate regressions — fix before proceeding.
 

@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shatter Walkthrough / Demo
+# Shatter Gauntlet — Broad CLI Coverage
 # Exercises shatter's full pipeline against example code, showing output at each stage.
+# This is the exhaustive coverage run (flag permutations, all commands, stress cases).
+# For the compact demo, see demo/walkthrough.sh.
 #
 # Usage:
-#   ./demo/walkthrough.sh              # Auto-advance: runs all steps continuously
-#   ./demo/walkthrough.sh --interactive # Pauses after each step, press Enter to continue
-#   ./demo/walkthrough.sh --delay 3    # Auto with N-second delay between steps
-#   ./demo/walkthrough.sh --dry-run    # Print commands without executing them
+#   ./demo/gauntlet.sh              # Auto-advance: runs all steps continuously
+#   ./demo/gauntlet.sh --interactive # Pauses after each step, press Enter to continue
+#   ./demo/gauntlet.sh --delay 3    # Auto with N-second delay between steps
+#   ./demo/gauntlet.sh --dry-run    # Print commands without executing them
 
 MODE="auto"
 DELAY=2
@@ -17,7 +19,7 @@ STEP_TIMEOUT=120  # seconds per step; 0 = no limit
 TIMING_DIR=""
 TOTAL_STEP_WALL_MS=0
 
-# Use temporary directories so the walkthrough never pollutes repo-local state
+# Use temporary directories so the gauntlet never pollutes repo-local state
 # and never contends with Cargo's workspace artifact lock (avoids silent stalls
 # when another cargo command is active).
 export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE CARGO_TARGET_DIR
@@ -27,15 +29,15 @@ RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")}"
 GOCACHE="${GOCACHE:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")}"
 CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
-# Isolate Cargo's target directory so the walkthrough doesn't contend with
+# Isolate Cargo's target directory so the gauntlet doesn't contend with
 # concurrent cargo commands (e.g. cargo test) over the shared artifact lock.
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")}"
 
 # HTML reports are written here; intentionally NOT cleaned up so user can inspect after.
-HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough.XXXXXX")"
+HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-gauntlet.XXXXXX")"
 
 # Error tracking: collect failures for a summary at the end.
-ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
+ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-gauntlet-errors.XXXXXX")"
 STEP_ERRORS=0
 EXAMPLES_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-examples.XXXXXX")"
 EXAMPLES_REPO_URL="${SHATTER_EXAMPLES_REPO:-https://github.com/shatterproof-ai/examples.git}"
@@ -91,7 +93,7 @@ if [[ -n "$EXAMPLES_REPO_REF" ]]; then
     fi
 fi
 if [[ ! -f "$(example_path "examples/standalone/ts/01-arithmetic.ts")" ]]; then
-    echo "${RED}clean examples checkout is missing walkthrough fixtures${RESET}"
+    echo "${RED}clean examples checkout is missing gauntlet fixtures${RESET}"
     exit 1
 fi
 
@@ -129,10 +131,10 @@ fi
 
 usage() {
     cat <<EOF
-${BOLD}Shatter Walkthrough${RESET} — exercise shatter's pipeline against example code
+${BOLD}Shatter Gauntlet${RESET} — broad CLI coverage run against example code
 
 ${BOLD}USAGE${RESET}
-    ./demo/walkthrough.sh [OPTIONS]
+    ./demo/gauntlet.sh [OPTIONS]
 
 ${BOLD}OPTIONS${RESET}
     --interactive   Pause after each step (press Enter to continue)
@@ -358,17 +360,17 @@ step() {
 # ─── Example targets ──────────────────────────────────────────────────
 # Standalone examples: self-contained files with no project dependencies.
 # Include one branch-dense "advanced" example in the guided demo. The other
-# new mirrored examples stay in scan coverage to keep the walkthrough readable.
+# new mirrored examples stay in scan coverage to keep the gauntlet readable.
 mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript" | while IFS= read -r sample; do example_path "$sample"; done)
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go" | while IFS= read -r sample; do example_path "$sample"; done)
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust" | while IFS= read -r sample; do example_path "$sample"; done)
 
 TOTAL=60
 
-# ─── Walkthrough ──────────────────────────────────────────────────────
+# ─── Gauntlet ─────────────────────────────────────────────────────────
 
 echo ""
-echo "${BOLD}${GREEN}Shatter Walkthrough${RESET}"
+echo "${BOLD}${GREEN}Shatter Gauntlet${RESET}"
 echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go + ${#RUST_EXAMPLES[@]} Rust example functions${RESET}"
 echo "${DIM}HTML reports will be written to: ${HTML_REPORT_DIR}/${RESET}"
 echo "${DIM}Using clean examples checkout: ${EXAMPLES_ROOT}${RESET}"
@@ -427,8 +429,8 @@ step 9 $TOTAL "Explore Go Functions" \
     $SHATTER explore --max-iterations 3 --timeout-explore 25 -o "$HTML_REPORT_DIR/explore-go.html" --stdout "${GO_EXAMPLES[@]}"
 
 # Rust frontend is a separate binary. The CLI auto-discovers it from PATH or
-# the standard target directories, so just surface which one the walkthrough
-# is using instead of invoking Cargo during the demo.
+# the standard target directories, so just surface which one the gauntlet
+# is using instead of invoking Cargo during the run.
 echo "${DIM}Using Rust frontend: ${SHATTER_RUST_FRONTEND}${RESET}"
 
 # Stage 9: Analyze Rust functions
@@ -481,7 +483,7 @@ step 18 $TOTAL "User-Provided Inputs via Config" \
 
 # Stage 18: Performance stats
 step 19 $TOTAL "Performance Stats" \
-    "Show walkthrough timing summaries using structured timing artifacts" \
+    "Show gauntlet timing summaries using structured timing artifacts" \
     $SHATTER explore "${EXAMPLES[@]}"
 
 # Stage 19: Parallel scan with worker pool
@@ -693,7 +695,7 @@ step 55 $TOTAL "Properties Export" \
 
 # Stage 55: Nondeterminism review (non-interactive: reads from cache populated above).
 # The command runs in non-interactive mode when stdin is not a terminal (as in
-# the walkthrough). With no candidates in the cache it prints a diagnostic
+# the gauntlet). With no candidates in the cache it prints a diagnostic
 # message and exits 0, which is the expected outcome after the standalone scan.
 step 56 $TOTAL "Nondeterminism Review" \
     "Review nondeterminism candidates from the most recent scan (non-interactive: no stdin)" \
@@ -713,7 +715,7 @@ step 58 $TOTAL "Cache Clear" \
 # ─── HTML Report Summary ──────────────────────────────────────────────
 echo ""
 echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo "${BOLD}  Walkthrough wall time: $(format_duration_ms "$TOTAL_STEP_WALL_MS")${RESET}"
+echo "${BOLD}  Gauntlet wall time: $(format_duration_ms "$TOTAL_STEP_WALL_MS")${RESET}"
 echo "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 
@@ -736,8 +738,8 @@ if [[ -s "$ERROR_LOG" ]]; then
     echo "${BOLD}${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     cat "$ERROR_LOG"
     echo ""
-    echo "${BOLD}${GREEN}Walkthrough complete with errors.${RESET}"
+    echo "${BOLD}${GREEN}Gauntlet complete with errors.${RESET}"
     exit 1
 else
-    echo "${BOLD}${GREEN}Walkthrough complete. All steps passed.${RESET}"
+    echo "${BOLD}${GREEN}Gauntlet complete. All steps passed.${RESET}"
 fi

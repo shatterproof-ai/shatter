@@ -1,5 +1,5 @@
 # Stable weekly profiling subset
-walkthrough-auto-warm
+gauntlet-auto-warm
 explore-ts-arithmetic-warm
 scan-standalone-ts-warm
 go-frontend-instrument-tests
