@@ -1,0 +1,88 @@
+# Shatter Walkthrough Manifest
+# Single source of truth for the compact demo (8-15 steps).
+# Consumed by demo/walkthrough.sh (local) and demo/walkthrough-docker.sh (Docker).
+#
+# Target references (targets, targets_first) resolve against
+# benchmarks/sample-manifest.json at runtime via load_sample_group().
+#
+# To add or remove a walkthrough step, edit this file only — both runners
+# pick up the change automatically.
+
+steps:
+  - id: analyze-ts
+    title: "Analyze TypeScript Functions"
+    description: "Discover parameters, types, and branch conditions"
+    command: "explore --analyze-only"
+    targets: walkthrough.typescript
+    language: typescript
+
+  - id: explore-ts
+    title: "Explore TypeScript Functions"
+    description: "Concolic execution: generate inputs to cover all branches"
+    command: "explore"
+    targets: walkthrough.typescript
+    language: typescript
+
+  - id: scan-ts
+    title: "Scan Standalone TypeScript"
+    description: "Scan a directory of standalone TypeScript files"
+    command: "scan"
+    args: ["examples/standalone/ts"]
+    language: typescript
+
+  - id: analyze-go
+    title: "Analyze Go Functions"
+    description: "Discover parameters, types, and branch conditions in Go code"
+    command: "explore --analyze-only"
+    targets: walkthrough.go
+    language: go
+
+  - id: explore-go
+    title: "Explore Go Functions"
+    description: "Concolic execution on Go: generate inputs to cover all branches"
+    command: "explore"
+    targets: walkthrough.go
+    language: go
+
+  - id: analyze-rust
+    title: "Analyze Rust Functions"
+    description: "Discover parameters, types, and branch conditions in Rust code"
+    command: "explore --analyze-only"
+    targets: walkthrough.rust
+    language: rust
+
+  - id: explore-rust
+    title: "Explore Rust Functions"
+    description: "Concolic execution on Rust: generate inputs to cover all branches"
+    command: "explore"
+    targets: walkthrough.rust
+    language: rust
+
+  - id: export-tests
+    title: "Export Generated Tests"
+    description: "Generate Jest test files from explored behavior maps"
+    command: "export-tests --framework jest --module-path ./src/01-arithmetic"
+    targets_literal:
+      - "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
+    language: typescript
+
+  - id: concolic-z3
+    title: "Concolic Exploration (Z3)"
+    description: "Use the Z3-backed concolic explorer to solve branch constraints"
+    command: "explore --concolic"
+    targets_first: walkthrough.typescript
+    language: typescript
+
+  - id: spec-generation
+    title: "Behavioral Specification"
+    description: "Generate a behavioral spec with equivalence classes and pre/postconditions"
+    command: "explore --spec"
+    targets_first: walkthrough.typescript
+    language: typescript
+
+  - id: properties
+    title: "Properties Export"
+    description: "Discover and export behavioral properties and invariants"
+    command: "properties"
+    targets_first: walkthrough.typescript
+    language: typescript
