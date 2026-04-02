@@ -24,6 +24,7 @@ struct FuncExploreOutcome {
     mock_symbols: Vec<String>,
     result: Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
+    genetic_config: GeneticConfig,
 }
 
 /// Run the explore command.
@@ -80,7 +81,10 @@ pub(crate) async fn run_explore(
     stdout: bool,
     format: crate::args::StdoutFormat,
     jobs: usize,
-    genetic_config: &GeneticConfig,
+    cli_genetic: bool,
+    cli_genetic_population: Option<u32>,
+    cli_genetic_generations: Option<u32>,
+    cli_genetic_timeout: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
@@ -381,6 +385,7 @@ pub(crate) async fn run_explore(
             concolic_config: Option<shatter_core::orchestrator::ExploreConfig>,
             seed_inputs: Vec<Vec<serde_json::Value>>,
             user_inputs: Vec<Vec<serde_json::Value>>,
+            genetic_config: GeneticConfig,
         }
 
         let mut work_items: Vec<FuncWorkItem> = Vec::new();
@@ -402,6 +407,23 @@ pub(crate) async fn run_explore(
                 set_overrides,
             )
             .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
+
+            // Merge CLI --genetic flags with config.yaml resolved genetic config.
+            // CLI --genetic explicitly enables; when absent, config.yaml provides defaults.
+            let effective_genetic = if cli_genetic {
+                GeneticConfig {
+                    enabled: true,
+                    population_size: cli_genetic_population
+                        .unwrap_or(resolved.genetic.population_size),
+                    max_generations: cli_genetic_generations
+                        .unwrap_or(resolved.genetic.max_generations),
+                    timeout_secs: cli_genetic_timeout
+                        .unwrap_or(resolved.genetic.timeout_secs),
+                    ..resolved.genetic
+                }
+            } else {
+                resolved.genetic.clone()
+            };
 
             if resolved.skip {
                 log::debug!("Skipping {} (skip=true in config)", func.name);
@@ -584,6 +606,7 @@ pub(crate) async fn run_explore(
                 concolic_config,
                 seed_inputs,
                 user_inputs,
+                genetic_config: effective_genetic,
             });
         }
 
@@ -614,6 +637,7 @@ pub(crate) async fn run_explore(
                             mock_symbols: item.mock_symbols,
                             result: Err(format!("failed to spawn frontend: {e}")),
                             wall_time: func_start.elapsed(),
+                            genetic_config: item.genetic_config,
                         };
                     }
                 };
@@ -692,6 +716,7 @@ pub(crate) async fn run_explore(
                     mock_symbols: item.mock_symbols,
                     result: explore_result.map_err(|e| e.to_string()),
                     wall_time: func_start.elapsed(),
+                    genetic_config: item.genetic_config,
                 }
             });
 
@@ -814,7 +839,7 @@ pub(crate) async fn run_explore(
 
                     // --- Genetic algorithm follow-up phase ---
                     let mut ga_stored_cache = false;
-                    let ga_stats: Option<GeneticStats> = if genetic_config.enabled {
+                    let ga_stats: Option<GeneticStats> = if outcome.genetic_config.enabled {
                         let targets = shatter_core::coverage_metrics::extract_targets(func, &result);
                         if targets.is_empty() {
                             log::debug!("No unsolved targets for GA on {}", func.name);
@@ -858,7 +883,7 @@ pub(crate) async fn run_explore(
                                         seed_inputs,
                                         targets,
                                         &func.params,
-                                        genetic_config,
+                                        &outcome.genetic_config,
                                     ).await {
                                         Ok(ga_result) => {
                                             let stats = GeneticStats {

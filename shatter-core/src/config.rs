@@ -479,6 +479,9 @@ pub struct ResolvedFunctionConfig {
 
     /// Resolved strategy meta-configuration.
     pub exploration: ExplorationConfig,
+
+    /// Resolved genetic algorithm configuration.
+    pub genetic: GeneticConfig,
 }
 
 /// A config file found during hierarchical discovery, paired with its directory.
@@ -892,6 +895,12 @@ fn resolve_from_merged(
         .or_else(|| config.defaults.exploration.clone())
         .unwrap_or_default();
 
+    // Resolve genetic config: function > defaults > built-in defaults.
+    let genetic = func_config
+        .and_then(|fc| fc.genetic.clone())
+        .or_else(|| config.defaults.genetic.clone())
+        .unwrap_or_default();
+
     Ok(ResolvedFunctionConfig {
         max_iterations,
         timeout,
@@ -908,6 +917,7 @@ fn resolve_from_merged(
         param_generators: HashMap::new(),
         mock_overrides,
         exploration,
+        genetic,
     })
 }
 
@@ -2519,6 +2529,52 @@ defaults:
         let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
         assert!(!resolved.exploration.adaptive);
         assert_eq!(resolved.exploration.score_window, 200);
+    }
+
+    #[test]
+    fn genetic_config_from_defaults() {
+        let yaml = r#"
+defaults:
+  genetic:
+    enabled: true
+    population_size: 200
+    max_generations: 500
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        assert!(resolved.genetic.enabled);
+        assert_eq!(resolved.genetic.population_size, 200);
+        assert_eq!(resolved.genetic.max_generations, 500);
+        // timeout_secs falls back to built-in default
+        assert_eq!(resolved.genetic.timeout_secs, GeneticConfig::default().timeout_secs);
+    }
+
+    #[test]
+    fn genetic_config_function_overrides_defaults() {
+        let yaml = r#"
+defaults:
+  genetic:
+    enabled: true
+    population_size: 200
+functions:
+  "src/hot.ts:*":
+    genetic:
+      enabled: false
+      population_size: 50
+"#;
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], 100, 60).unwrap();
+        assert!(!resolved.genetic.enabled);
+        assert_eq!(resolved.genetic.population_size, 50);
+    }
+
+    #[test]
+    fn genetic_config_absent_uses_builtin_defaults() {
+        let yaml = "defaults: {}\n";
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        assert!(!resolved.genetic.enabled);
+        assert_eq!(resolved.genetic, GeneticConfig::default());
     }
 
     #[test]

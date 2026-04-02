@@ -204,15 +204,6 @@ async fn main() -> ExitCode {
             // User-provided values always win; multipliers only expand the defaults.
             let budgets = resolve_mcdc_budgets(max_iterations, timeout, solver_timeout, mcdc);
 
-            let default_gc = shatter_core::config::GeneticConfig::default();
-            let genetic_config = shatter_core::config::GeneticConfig {
-                enabled: genetic,
-                population_size: genetic_population.unwrap_or(default_gc.population_size),
-                max_generations: genetic_generations.unwrap_or(default_gc.max_generations),
-                timeout_secs: genetic_timeout.unwrap_or(default_gc.timeout_secs),
-                ..default_gc
-            };
-
             commands::explore::run_explore(
                 &targets,
                 budgets.max_iterations,
@@ -263,7 +254,10 @@ async fn main() -> ExitCode {
                 stdout,
                 format,
                 jobs,
-                &genetic_config,
+                genetic,
+                genetic_population,
+                genetic_generations,
+                genetic_timeout,
             )
             .await
         }
@@ -417,13 +411,27 @@ async fn main() -> ExitCode {
                     );
                 }
             }
-            let default_gc = shatter_core::config::GeneticConfig::default();
-            let genetic_config = shatter_core::config::GeneticConfig {
-                enabled: genetic,
-                population_size: genetic_population.unwrap_or(default_gc.population_size),
-                max_generations: genetic_generations.unwrap_or(default_gc.max_generations),
-                timeout_secs: genetic_timeout.unwrap_or(default_gc.timeout_secs),
-                ..default_gc
+            // Resolve genetic config: config.yaml defaults merged with CLI overrides.
+            let yaml_genetic = {
+                let scan_dir = std::path::Path::new(&directory);
+                let configs = shatter_core::config::discover_configs(scan_dir)
+                    .unwrap_or_default();
+                let merged = shatter_core::config::merge_configs(&configs);
+                merged.defaults.genetic.unwrap_or_default()
+            };
+            let genetic_config = if genetic {
+                shatter_core::config::GeneticConfig {
+                    enabled: true,
+                    population_size: genetic_population
+                        .unwrap_or(yaml_genetic.population_size),
+                    max_generations: genetic_generations
+                        .unwrap_or(yaml_genetic.max_generations),
+                    timeout_secs: genetic_timeout
+                        .unwrap_or(yaml_genetic.timeout_secs),
+                    ..yaml_genetic
+                }
+            } else {
+                yaml_genetic
             };
             commands::scan::run_scan(
                 &directory,
