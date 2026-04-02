@@ -29,6 +29,14 @@ import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect, TraceEvent } from "./protocol.js";
 import { TimingCollector } from "./timing.js";
 
+/**
+ * Helper to cast a stub to a callable for test assertions.
+ * Avoids `any` while allowing chained property access + calls.
+ */
+function asCallable(v: unknown): (...args: unknown[]) => unknown {
+  return v as (...args: unknown[]) => unknown;
+}
+
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
 const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/standalone/ts");
 
@@ -1011,6 +1019,63 @@ describe("stubbed_import fallback for unresolvable modules", () => {
   it("stub .__esModule returns true for ESM interop", () => {
     const stub = createUnresolvableModuleStub("test-module");
     expect(stub.__esModule).toBe(true);
+  });
+
+  it("stub function call returns chainable stub", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    const result = asCallable(stub)();
+    expect(typeof result).toBe("function");
+    expect(() => (result as Record<string, unknown>).foo).not.toThrow();
+  });
+
+  it("stub method call result is callable and chainable", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    const method = asCallable((stub as Record<string, unknown>).method);
+    const result = method();
+    expect(() => asCallable(result)()).not.toThrow();
+  });
+
+  it("stub is spreadable with spread operator", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect([...(stub as unknown as Iterable<unknown>)]).toEqual([]);
+  });
+
+  it("stub is iterable in for-of without throwing", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    const items: unknown[] = [];
+    for (const x of stub as unknown as Iterable<unknown>) {
+      items.push(x);
+    }
+    expect(items).toEqual([]);
+  });
+
+  it("stub coerces to empty string not 'undefined'", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(`${stub as unknown as string}`).toBe("");
+  });
+
+  it("stub coerces to 0 for numeric hint", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(+(stub as unknown as number)).toBe(0);
+  });
+
+  it("stub supports instanceof without throwing", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(() => ({} instanceof (stub as unknown as { new(): unknown }))).not.toThrow();
+  });
+
+  it("stub chained calls work through executeInstrumented", async () => {
+    const source = `
+      const Fake = require("nonexistent-chain-xyz-stub-test");
+      export function chain(): string {
+        const client = new Fake.Client({ host: "localhost" });
+        const result = client.connect().execute("query");
+        return typeof result;
+      }
+    `;
+    const result = await executeInstrumented(source, "chain", [], []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("function");
   });
 });
 

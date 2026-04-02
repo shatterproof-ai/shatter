@@ -130,23 +130,26 @@ function isModuleNotFoundError(err: unknown, requestedModule: string): boolean {
  * module cannot be resolved at runtime.
  *
  * - Property access returns another recursive Proxy
- * - Function calls return undefined
+ * - Function calls return another recursive Proxy (chainable)
  * - Constructor calls (new) return another recursive Proxy
+ * - Iteration yields nothing (spread/for-of return empty)
+ * - Primitive coercion returns "" or 0 (not "undefined")
  * - `.then` returns undefined to prevent thenable coercion
  * - `.__esModule` returns true for ESM interop
  */
 export function createUnresolvableModuleStub(_moduleName: string): Record<string, unknown> {
   const handler: ProxyHandler<CallableTarget> = {
     get(_target: CallableTarget, prop: string | symbol): unknown {
-      if (prop === Symbol.toPrimitive) return () => undefined;
-      if (prop === Symbol.iterator) return undefined;
+      if (prop === Symbol.toPrimitive) return (hint: string) => hint === "number" ? 0 : "";
+      if (prop === Symbol.iterator) return function* () {};
+      if (prop === Symbol.hasInstance) return () => true;
       if (prop === "then") return undefined;
       if (prop === "__esModule") return true;
       if (prop === "default") return createProxy();
       return createProxy();
     },
-    apply(): undefined {
-      return undefined;
+    apply(): Record<string, unknown> {
+      return createProxy();
     },
     construct(): Record<string, unknown> {
       return createProxy();
