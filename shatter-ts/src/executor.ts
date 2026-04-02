@@ -176,6 +176,10 @@ function wrapRequireWithStubFallback(originalRequire: NodeRequire): NodeRequire 
         logger.warn("module %s could not be resolved; returning stub", modulePath);
         return createUnresolvableModuleStub(modulePath);
       }
+      if (isEsmLoadingError(err)) {
+        logger.warn("ESM loading race for %s; returning stub", modulePath);
+        return createUnresolvableModuleStub(modulePath);
+      }
       throw err;
     }
   }) as NodeRequire;
@@ -253,6 +257,64 @@ export function classifyConnectionFailure(message: string): ConnectionFailureKin
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// ESM dynamic-import serialization
+//
+// TypeScript's CJS transpile preserves `import()` expressions. When the same
+// ESM-only package is also `require()`'d (from a transpiled static import),
+// Node can reject the sync access with "Cannot require() ES Module …
+// because it is not yet fully loaded" because the async `import()` already
+// started loading the module.  Replacing `import(` with `__shatter_import(`
+// in the transpiled output makes all module loading go through synchronous
+// `require()`, eliminating the race.
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace dynamic `import()` expressions in transpiled JS with a synchronous
+ * `require()`-based helper, preventing races between async ESM loading and
+ * synchronous `require()` on the same module.
+ */
+export function transformDynamicImports(jsCode: string): string {
+  return jsCode.replace(/\bimport\s*\(/g, "__shatter_import(");
+}
+
+/**
+ * Build the `__shatter_import` helper injected into VM sandboxes.
+ *
+ * Returns a function with the same signature as `import()`:
+ *   (specifier: string) => Promise<namespace>
+ *
+ * Under the hood it calls `require()` synchronously and wraps the result
+ * in ESM-namespace interop (matching TypeScript's `__importStar` behaviour).
+ */
+export function createShatterImport(
+  requireFn: (id: string) => unknown,
+): (spec: string) => Promise<Record<string, unknown>> {
+  return (spec: string): Promise<Record<string, unknown>> =>
+    Promise.resolve().then(() => {
+      const m = requireFn(spec);
+      if (m != null && typeof m === "object" && (m as Record<string, unknown>).__esModule) {
+        return m as Record<string, unknown>;
+      }
+      const ns: Record<string, unknown> = { __esModule: true, default: m };
+      if (m != null && typeof m === "object") {
+        Object.assign(ns, m as Record<string, unknown>);
+      }
+      return ns;
+    });
+}
+
+/**
+ * Check whether an error is the Node.js ESM "not yet fully loaded" race.
+ * Used as a safety-net catch alongside MODULE_NOT_FOUND handling.
+ */
+function isEsmLoadingError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const msg = (err as Record<string, unknown>)["message"];
+  if (typeof msg !== "string") return false;
+  return msg.includes("not yet fully loaded") || msg.includes("Cannot require() ES Module");
+}
+
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
@@ -290,7 +352,7 @@ export function warmCompiledScriptCache(instrumentedSource: string, cacheKey: st
     },
     fileName: cacheKey,
   });
-  const compiled = new vm.Script(jsResult.outputText, { filename: cacheKey });
+  const compiled = new vm.Script(transformDynamicImports(jsResult.outputText), { filename: cacheKey });
   compiledScriptCache.set(cacheKey, compiled);
 }
 
@@ -412,9 +474,10 @@ function loadModule(filePath: string): Record<string, unknown> {
     AbortSignal,
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
+    __shatter_import: createShatterImport(targetRequire),
   });
 
-  vm.runInContext(result.outputText, sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
+  vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
 
   // After CommonJS execution, module.exports may have been reassigned
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
@@ -932,7 +995,7 @@ export async function executeInstrumented(
     const jsResult = timing
       ? timing.sync("execute.transpile", transpile)
       : transpile();
-    compiledScript = new vm.Script(jsResult.outputText, { filename: sourceFilePath ?? "instrumented.js" });
+    compiledScript = new vm.Script(transformDynamicImports(jsResult.outputText), { filename: sourceFilePath ?? "instrumented.js" });
     if (cacheKey) {
       compiledScriptCache.set(cacheKey, compiledScript);
     }
@@ -1203,6 +1266,10 @@ export async function executeInstrumented(
         }
         return createUnresolvableModuleStub(id);
       }
+      if (isEsmLoadingError(err)) {
+        logger.warn("ESM loading race for %s; returning stub", id);
+        return createUnresolvableModuleStub(id);
+      }
       throw err;
     }
 
@@ -1257,6 +1324,7 @@ export async function executeInstrumented(
     [MOCK_REGISTRY]: mockRegistry,
     [MOCK_CALL_FUNCTION]: mockCallFn,
     [CRYPTO_BOUNDARY_FUNCTION]: cryptoBoundaryFn,
+    __shatter_import: createShatterImport(sandboxRequire),
   });
 
   const loadModule = (): void => {
