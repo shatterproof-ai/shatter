@@ -65,7 +65,7 @@ When a scenario regresses:
 
 ## Profiler Choice
 
-- Use `perf` first for walkthrough, `explore`, `scan`, and mixed-runtime runs.
+- Use `perf` first for gauntlet, `explore`, `scan`, and mixed-runtime runs.
 - Use `pprof` for Go-isolated scenarios such as `go-frontend-instrument-tests`.
 - Keep profiler output paths in the issue so future runs can compare like-for-like.
 

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shatter Docker Walkthrough
-# Runs the walkthrough inside the distributable Docker image, validating the
+# Shatter Docker Gauntlet
+# Runs the gauntlet inside the distributable Docker image, validating the
 # actual artifact users receive.
 #
 # Usage:
-#   ./demo/walkthrough-docker.sh                  # Build image and run all steps
-#   ./demo/walkthrough-docker.sh --image shatter  # Use a pre-built image
-#   ./demo/walkthrough-docker.sh --interactive     # Pause after each step
-#   ./demo/walkthrough-docker.sh --delay 3        # Auto with N-second delay
-#   ./demo/walkthrough-docker.sh --dry-run        # Print commands without executing
+#   ./demo/gauntlet-docker.sh                  # Build image and run all steps
+#   ./demo/gauntlet-docker.sh --image shatter  # Use a pre-built image
+#   ./demo/gauntlet-docker.sh --interactive     # Pause after each step
+#   ./demo/gauntlet-docker.sh --delay 3        # Auto with N-second delay
+#   ./demo/gauntlet-docker.sh --dry-run        # Print commands without executing
 
 MODE="auto"
 DELAY=2
 DRY_RUN=false
 IMAGE=""
-IMAGE_DEFAULT="shatter-walkthrough"
+IMAGE_DEFAULT="shatter-gauntlet"
 
 # Color support (disabled if not a terminal)
 if [[ -t 1 ]]; then
@@ -33,10 +33,10 @@ fi
 
 usage() {
     cat <<EOF
-${BOLD}Shatter Docker Walkthrough${RESET} — exercise shatter's pipeline inside the Docker image
+${BOLD}Shatter Docker Gauntlet${RESET} — broad CLI coverage run inside the Docker image
 
 ${BOLD}USAGE${RESET}
-    ./demo/walkthrough-docker.sh [OPTIONS]
+    ./demo/gauntlet-docker.sh [OPTIONS]
 
 ${BOLD}OPTIONS${RESET}
     --image NAME    Use a pre-built Docker image (skip build)
@@ -52,7 +52,7 @@ ${BOLD}MODES${RESET}
     Dry-run                 Shows what would run
 
 ${BOLD}NOTES${RESET}
-    Some walkthrough steps are skipped in container mode (e.g. cargo build,
+    Some gauntlet steps are skipped in container mode (e.g. cargo build,
     custom build-frontend). The container image includes pre-built binaries.
 EOF
     exit 0
@@ -95,7 +95,7 @@ else
 fi
 
 # ─── Error tracking ──────────────────────────────────────────────────
-ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-docker-walkthrough-errors.XXXXXX")"
+ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-docker-gauntlet-errors.XXXXXX")"
 STEP_ERRORS=0
 CACHE_VOL="shatter-demo-cache-$$"
 
@@ -132,7 +132,7 @@ docker_run() {
         "$@"
 }
 
-# Run a command, capture output, scan for errors — mirrors walkthrough.sh run_cmd().
+# Run a command, capture output, scan for errors — mirrors gauntlet.sh run_cmd().
 run_cmd() {
     echo "${DIM}\$${RESET} ${YELLOW}shatter $*${RESET}"
     echo ""
@@ -214,17 +214,17 @@ PY
 
 # ─── Example targets ─────────────────────────────────────────────────
 # Include one branch-dense "advanced" example in the guided demo. The other
-# new mirrored examples stay in scan coverage to keep the walkthrough readable.
+# new mirrored examples stay in scan coverage to keep the gauntlet readable.
 mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript")
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go")
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust")
 
 TOTAL=42
 
-# ─── Walkthrough ─────────────────────────────────────────────────────
+# ─── Gauntlet ────────────────────────────────────────────────────────
 
 echo ""
-echo "${BOLD}${GREEN}Shatter Docker Walkthrough${RESET}"
+echo "${BOLD}${GREEN}Shatter Docker Gauntlet${RESET}"
 echo "${DIM}Running inside Docker image '${IMAGE}'${RESET}"
 echo "${DIM}Exercising shatter's pipeline against ${#EXAMPLES[@]} TS + ${#GO_EXAMPLES[@]} Go + ${#RUST_EXAMPLES[@]} Rust example functions${RESET}"
 if [[ "$DRY_RUN" == true ]]; then
@@ -440,8 +440,8 @@ if [[ -s "$ERROR_LOG" ]]; then
     echo "${BOLD}${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     cat "$ERROR_LOG"
     echo ""
-    echo "${BOLD}${GREEN}Docker walkthrough complete with errors.${RESET}"
+    echo "${BOLD}${GREEN}Docker gauntlet complete with errors.${RESET}"
     exit 1
 else
-    echo "${BOLD}${GREEN}Docker walkthrough complete. All steps passed.${RESET}"
+    echo "${BOLD}${GREEN}Docker gauntlet complete. All steps passed.${RESET}"
 fi

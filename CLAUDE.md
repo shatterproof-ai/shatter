@@ -46,7 +46,7 @@ See `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills for detaile
 | E2E | `npx task e2e` | After pipeline changes |
 | Smoke | `npx task smoke` | Before closing any issue |
 | Walkthrough | `npx task walkthrough` | After changes to the compact demo path, walkthrough output, or walkthrough example set |
-| Gauntlet | `bash demo/gauntlet.sh --auto --delay 0` | After broad CLI coverage changes, demo-ineligible command additions, or gauntlet/example coverage changes |
+| Gauntlet | `npx task gauntlet` | After broad CLI coverage changes, demo-ineligible command additions, or gauntlet/example coverage changes |
 | Parity | `npx task parity` | After changing frontend capability declarations, protocol registry, or adding a command handler |
 
 **E2E gate**: The E2E concolic tests (`shatter-core/tests/e2e_concolic.rs`) run the real TS frontend subprocess through analyze → instrument → explore → Z3 solve. They are the **only tests that validate the full pipeline end-to-end**. Unit tests alone are insufficient — a module can pass all its own tests while being silently disconnected from the pipeline (see "Completion checklist" below). Run E2E tests after any change to:

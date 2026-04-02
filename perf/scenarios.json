@@ -13,11 +13,11 @@
   "isolation_corpus_note": "isolation_mode fields are placeholders (str-19pm.8). The runner does not yet inject --isolation into commands — that support lands in str-19pm.9. Until then all three mode variants of each scenario run identically, establishing the baseline timing matrix for later comparison. See perf/isolation-corpus.md for the full corpus rationale.",
   "scenarios": [
     {
-      "id": "walkthrough-auto-cold",
-      "kind": "walkthrough",
-      "description": "Full automated walkthrough with isolated cold caches.",
-      "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
-      "timing_target": "walkthrough",
+      "id": "gauntlet-auto-cold",
+      "kind": "gauntlet",
+      "description": "Full automated gauntlet with isolated cold caches.",
+      "command": ["bash", "demo/gauntlet.sh", "--auto", "--delay", "0"],
+      "timing_target": "gauntlet",
       "cache_mode": "cold",
       "warmups": 0,
       "iterations": 3,
@@ -25,11 +25,11 @@
       "profilers": ["perf-stat", "perf-record"]
     },
     {
-      "id": "walkthrough-auto-warm",
-      "kind": "walkthrough",
-      "description": "Repeat walkthrough after the harness has populated build and cache state.",
-      "command": ["bash", "demo/walkthrough.sh", "--auto", "--delay", "0"],
-      "timing_target": "walkthrough",
+      "id": "gauntlet-auto-warm",
+      "kind": "gauntlet",
+      "description": "Repeat gauntlet after the harness has populated build and cache state.",
+      "command": ["bash", "demo/gauntlet.sh", "--auto", "--delay", "0"],
+      "timing_target": "gauntlet",
       "cache_mode": "warm",
       "iterations": 3,
       "timeout_seconds": 900,
@@ -38,7 +38,7 @@
     {
       "id": "explore-ts-arithmetic-cold",
       "kind": "command",
-      "description": "Representative TypeScript explore path from the walkthrough.",
+      "description": "Representative TypeScript explore path from the gauntlet.",
       "command": [
         "target/debug/shatter",
         "explore",
@@ -72,7 +72,7 @@
     {
       "id": "explore-go-language-cold",
       "kind": "command",
-      "description": "Representative Go explore path from the walkthrough.",
+      "description": "Representative Go explore path from the gauntlet.",
       "command": [
         "target/debug/shatter",
         "explore",
@@ -93,7 +93,7 @@
     {
       "id": "explore-rust-language-cold",
       "kind": "command",
-      "description": "Representative Rust frontend explore path from the walkthrough.",
+      "description": "Representative Rust frontend explore path from the gauntlet.",
       "command": [
         "target/debug/shatter",
         "explore",

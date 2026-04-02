@@ -244,7 +244,7 @@ tasks:
       - task: conformance
       - task: parity
 
-  # --- E2E, pre-completion, walkthrough, clean (issue 6) ---
+  # --- E2E, pre-completion, gauntlet, clean (issue 6) ---
 
   e2e:
     desc: Run E2E concolic pipeline tests
@@ -277,11 +277,11 @@ tasks:
       - task: e2e
       - git status --short
 
-  walkthrough:
-    desc: Run the demo walkthrough
+  gauntlet:
+    desc: Run the broad CLI coverage gauntlet
     deps: [build]
     cmds:
-      - bash demo/walkthrough.sh --auto --delay 0
+      - bash demo/gauntlet.sh --auto --delay 0
 
   perf-list:
     desc: List external profiling scenarios

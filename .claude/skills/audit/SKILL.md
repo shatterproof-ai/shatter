@@ -70,7 +70,7 @@ Cross-reference these documents against the actual codebase:
 - `CLAUDE.md` (root + each sub-crate)
 - `AGENTS.md`
 - `GLOSSARY.md`
-- `demo/walkthrough.sh`
+- `demo/gauntlet.sh`
 
 **SPEC.md verification** (most important — this is the living behavioral spec):
 - Every CLI command in SPEC.md section 2 exists in `shatter-cli/src/main.rs` (and vice versa)

@@ -72,11 +72,11 @@ See [CLAUDE.md](CLAUDE.md) and crate-specific `CLAUDE.md` files for the current 
 
 ## Demo
 
-Run the walkthrough:
+Run the gauntlet (broad CLI coverage):
 
 ```bash
-./demo/walkthrough.sh
-./demo/walkthrough.sh --auto
+./demo/gauntlet.sh
+./demo/gauntlet.sh --auto
 ```
 
 ## Contributor Notes
