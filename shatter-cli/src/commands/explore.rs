@@ -516,17 +516,17 @@ pub(crate) async fn run_explore(
                 .iter()
                 .map(|input| input.args.clone())
                 .collect();
-            if let Some(ref cache) = cache {
-                if let Ok(Some(cached_map)) = cache.load(&function_id) {
-                    let cached_seeds = cached_map.extract_seed_inputs();
-                    if !cached_seeds.is_empty() {
-                        log::debug!(
-                            "Loaded {} cached seed(s) for {}",
-                            cached_seeds.len(),
-                            func.name,
-                        );
-                        candidate_inputs.extend(cached_seeds);
-                    }
+            if let Some(ref cache) = cache
+                && let Ok(Some(cached_map)) = cache.load(&function_id)
+            {
+                let cached_seeds = cached_map.extract_seed_inputs();
+                if !cached_seeds.is_empty() {
+                    log::debug!(
+                        "Loaded {} cached seed(s) for {}",
+                        cached_seeds.len(),
+                        func.name,
+                    );
+                    candidate_inputs.extend(cached_seeds);
                 }
             }
 
@@ -585,17 +585,17 @@ pub(crate) async fn run_explore(
                 seeds.extend(literal_candidates);
 
                 // Add cached seeds from prior exploration runs.
-                if let Some(ref cache) = cache {
-                    if let Ok(Some(cached_map)) = cache.load(&function_id) {
-                        let cached_seeds = cached_map.extract_seed_inputs();
-                        if !cached_seeds.is_empty() {
-                            log::debug!(
-                                "Loaded {} cached seed(s) for concolic on {}",
-                                cached_seeds.len(),
-                                func.name,
-                            );
-                            seeds.extend(cached_seeds);
-                        }
+                if let Some(ref cache) = cache
+                    && let Ok(Some(cached_map)) = cache.load(&function_id)
+                {
+                    let cached_seeds = cached_map.extract_seed_inputs();
+                    if !cached_seeds.is_empty() {
+                        log::debug!(
+                            "Loaded {} cached seed(s) for concolic on {}",
+                            cached_seeds.len(),
+                            func.name,
+                        );
+                        seeds.extend(cached_seeds);
                     }
                 }
 

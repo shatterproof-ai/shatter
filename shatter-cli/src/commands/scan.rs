@@ -802,9 +802,16 @@ pub(crate) async fn run_scan(
                     log::error!("Failed to emit test files: {e}");
                 }
             }
+
+            if result.has_scan_failure() {
+                let attempted = result.function_results.len() + result.skipped.len();
+                return Err(format!(
+                    "scan failed: {attempted} function(s) attempted but 0 explored successfully"
+                ).into());
+            }
         }
         Err(e) => {
-            log::error!("Scan error: {e}");
+            return Err(format!("Scan error: {e}").into());
         }
     }
 
