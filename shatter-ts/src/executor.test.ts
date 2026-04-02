@@ -20,6 +20,8 @@ import {
   TIMEOUT_PATTERNS,
   buildRuntimeCryptoBoundary,
   createUnresolvableModuleStub,
+  transformDynamicImports,
+  createShatterImport,
 } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
@@ -1597,5 +1599,112 @@ describe("executeInstrumented script caching", () => {
     expect(r1.return_value).toBe("positive-even");
     expect(r2.return_value).toBe("negative");
     expect(r3.return_value).toBe("zero");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ESM dynamic-import serialization (str-4hay)
+// ---------------------------------------------------------------------------
+
+describe("transformDynamicImports", () => {
+  it("replaces import() with __shatter_import()", () => {
+    expect(transformDynamicImports('import("foo")')).toBe('__shatter_import("foo")');
+  });
+
+  it("handles whitespace between import and parenthesis", () => {
+    expect(transformDynamicImports("import ('foo')")).toBe("__shatter_import('foo')");
+  });
+
+  it("transforms multiple import() calls", () => {
+    const input = 'const a = import("a"); const b = import("b");';
+    const expected = 'const a = __shatter_import("a"); const b = __shatter_import("b");';
+    expect(transformDynamicImports(input)).toBe(expected);
+  });
+
+  it("does not transform require() calls", () => {
+    const input = 'require("foo")';
+    expect(transformDynamicImports(input)).toBe(input);
+  });
+
+  it("does not match partial identifiers like reimport(", () => {
+    const input = 'reimport("foo")';
+    expect(transformDynamicImports(input)).toBe(input);
+  });
+
+  it("leaves code without import() unchanged", () => {
+    const input = 'const x = 1; const y = require("fs");';
+    expect(transformDynamicImports(input)).toBe(input);
+  });
+
+  it("is idempotent: second application is a no-op", () => {
+    const input = 'await import("foo")';
+    const once = transformDynamicImports(input);
+    const twice = transformDynamicImports(once);
+    expect(once).toBe(twice);
+  });
+});
+
+describe("createShatterImport", () => {
+  it("returns a Promise that resolves to the required module", async () => {
+    const mockRequire = (id: string) => ({ value: id });
+    const shatterImport = createShatterImport(mockRequire);
+    const result = await shatterImport("test-mod");
+    expect(result.default).toEqual({ value: "test-mod" });
+    expect(result.__esModule).toBe(true);
+  });
+
+  it("passes through modules with __esModule already set", async () => {
+    const mod = { __esModule: true, foo: "bar" };
+    const shatterImport = createShatterImport(() => mod);
+    const result = await shatterImport("x");
+    expect(result).toBe(mod);
+  });
+
+  it("wraps CJS module exports with default and spread", async () => {
+    const mod = { a: 1, b: 2 };
+    const shatterImport = createShatterImport(() => mod);
+    const result = await shatterImport("x");
+    expect(result.default).toBe(mod);
+    expect(result.a).toBe(1);
+    expect(result.b).toBe(2);
+    expect(result.__esModule).toBe(true);
+  });
+
+  it("propagates require errors as rejected Promise", async () => {
+    const shatterImport = createShatterImport(() => {
+      throw new Error("MODULE_NOT_FOUND");
+    });
+    await expect(shatterImport("missing")).rejects.toThrow("MODULE_NOT_FOUND");
+  });
+});
+
+describe("dynamic import() in user code (str-4hay regression)", () => {
+  it("executes a function with dynamic import() via executeFunction", async () => {
+    const result = await executeFunction(
+      path.join(FIXTURES_DIR, "dynamic-import.ts"),
+      "loadPath",
+      [],
+    );
+    // loadPath does: await import("node:path").then(p => p.join("/tmp","test"))
+    expect(result.return_value).toBe(path.join("/tmp", "test"));
+  });
+
+  it("executes a function with Promise.all of dynamic imports", async () => {
+    const result = await executeFunction(
+      path.join(FIXTURES_DIR, "dynamic-import.ts"),
+      "loadMultiple",
+      [],
+    );
+    // loadMultiple returns [path.sep, typeof fs.readFileSync]
+    expect(result.return_value).toEqual([path.sep, "function"]);
+  });
+
+  it("sync function in a module with dynamic imports still works", async () => {
+    const result = await executeFunction(
+      path.join(FIXTURES_DIR, "dynamic-import.ts"),
+      "syncAdd",
+      [3, 4],
+    );
+    expect(result.return_value).toBe(7);
   });
 });

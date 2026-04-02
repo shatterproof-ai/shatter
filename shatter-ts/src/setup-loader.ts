@@ -11,6 +11,7 @@ import * as vm from "node:vm";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { SetupLevel, SetupContextStack, GeneratorKind } from "./protocol.js";
+import { transformDynamicImports, createShatterImport } from "./executor.js";
 
 /** Default setup timeout in milliseconds (30 seconds). */
 const DEFAULT_SETUP_TIMEOUT_MS = 30_000;
@@ -76,9 +77,10 @@ function loadAndTranspile(filePath: string): Record<string, unknown> {
     clearInterval,
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
+    __shatter_import: createShatterImport(targetRequire),
   });
 
-  vm.runInContext(result.outputText, sandbox, { filename: absolutePath });
+  vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath });
 
   const finalExports = (sandbox as Record<string, unknown>)["module"] as {
     exports: Record<string, unknown>;
