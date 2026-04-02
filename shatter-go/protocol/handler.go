@@ -557,7 +557,7 @@ func convertExternalCalls(calls []instrument.ExternalCall) []ExternalCall {
 	}
 	result := make([]ExternalCall, len(calls))
 	for i, c := range calls {
-		var args []any
+		args := make([]any, 0)
 		if c.Args != nil {
 			json.Unmarshal(c.Args, &args) //nolint:errcheck
 		}

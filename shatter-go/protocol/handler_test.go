@@ -1965,3 +1965,31 @@ func TestLookupPreparedHarnessPrunesInvalid(t *testing.T) {
 		t.Errorf("invalid harness should be pruned from map, len = %d", len(h.preparedHarnesses))
 	}
 }
+
+// TestConvertExternalCallsNilArgs verifies that convertExternalCalls emits
+// "args":[] (not null) when the executor's Args field is nil. Rust's
+// Vec<serde_json::Value> cannot deserialize null, so nil slices cause
+// "missing field `args`" deserialization failures (str-iqnk).
+func TestConvertExternalCallsNilArgs(t *testing.T) {
+	calls := []instrument.ExternalCall{
+		{Symbol: "fmt.Println", Args: nil, ReturnValue: nil},
+	}
+	result := convertExternalCalls(calls)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+
+	data, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jsonStr := string(data)
+
+	// args must be [] not null
+	if strings.Contains(jsonStr, `"args":null`) {
+		t.Errorf("args must not be null in JSON, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"args":[]`) {
+		t.Errorf("args must be empty array [], got: %s", jsonStr)
+	}
+}
