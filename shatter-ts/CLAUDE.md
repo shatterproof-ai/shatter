@@ -29,6 +29,12 @@ Property tests live in `src/property.test.ts` using `fast-check`. Use `fc.letrec
 
 When adding a new AST node type or protocol message, add corresponding fast-check properties.
 
+## BigInt Serialization Contract
+
+TS serializes `bigint` values as `{"__complex_type": "big_int", "value": "<decimal string>"}` in all protocol responses (return values, side effects, global state snapshots). The `serializeReplacer` in `src/serialize.ts` is wired into `sendResponse()` in `main.ts` and into internal `JSON.stringify` calls in `executor.ts` (console capture, before/after state snapshots).
+
+The inverse operation (`reconstructValue` in `src/reconstruct.ts`) converts tagged objects back to native `BigInt` for function inputs. Go and Rust frontends do not produce `bigint` values natively and require no changes — the Rust core accepts tagged objects as `serde_json::Value` and `export.rs` already formats them for test generation.
+
 ## Ite SymExpr Parity Contract
 
 TS is the only frontend that produces `ite` SymExpr nodes. The `ite` variant represents SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust frontends can deserialize `ite` but do not produce it — Go lacks data flow tracking, Rust frontend analyze is a stub. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial` for tracking.

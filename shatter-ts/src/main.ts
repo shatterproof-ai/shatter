@@ -11,9 +11,10 @@ import * as readline from "node:readline";
 import { handleRequest, parseRequest } from "./handlers.js";
 import logger from "./logger.js";
 import { PROTOCOL_VERSION, type Response } from "./protocol.js";
+import { serializeReplacer } from "./serialize.js";
 
 function sendResponse(response: Response): void {
-  const json = JSON.stringify(response);
+  const json = JSON.stringify(response, serializeReplacer);
   process.stdout.write(json + "\n");
   logger.trace({ raw: json }, "Sent");
 }

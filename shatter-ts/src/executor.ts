@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 
 import { reconstructValue } from "./reconstruct.js";
+import { serializeReplacer } from "./serialize.js";
 import type {
   ExecuteResponse,
   ErrorInfo,
@@ -785,7 +786,7 @@ export function truncateSideEffects(
 function createCapturingConsole(sideEffects: SideEffect[]): Console {
   const makeLogger = (level: string) => (...args: unknown[]): void => {
     const message = truncateMessage(args.map((a) =>
-      typeof a === "string" ? a : JSON.stringify(a) ?? String(a)
+      typeof a === "string" ? a : JSON.stringify(a, serializeReplacer) ?? String(a)
     ).join(" "));
     sideEffects.push({ kind: "console_output", level, message });
   };
@@ -1349,7 +1350,7 @@ export async function executeInstrumented(
   const beforeSnapshot = new Map<string, string | undefined>();
   for (const key of exportKeys) {
     try {
-      beforeSnapshot.set(key, JSON.stringify(finalExports.exports[key]));
+      beforeSnapshot.set(key, JSON.stringify(finalExports.exports[key], serializeReplacer));
     } catch {
       // Non-serializable (circular refs, etc.) — skip comparison for this export
       beforeSnapshot.set(key, undefined);
@@ -1399,7 +1400,7 @@ export async function executeInstrumented(
       if (beforeJson === undefined) continue; // non-serializable — skip
       let afterJson: string | undefined;
       try {
-        afterJson = JSON.stringify(finalExports.exports[key]);
+        afterJson = JSON.stringify(finalExports.exports[key], serializeReplacer);
       } catch {
         continue; // became non-serializable
       }
