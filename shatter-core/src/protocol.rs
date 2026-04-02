@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto_registry::{CryptoDirection, OutputSemantics, ParamRole};
@@ -298,6 +299,40 @@ pub enum ResponseResult {
     },
 }
 
+/// Deserialize an `i64` that also accepts JSON floats, truncating via `as i64`.
+///
+/// JavaScript's `Number.isInteger()` returns true for values like
+/// `Number.MAX_VALUE` that have no fractional part but exceed i64 range.
+/// Frontends may tag these as `"int"` with a float JSON value.
+fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct I64LenientVisitor;
+
+    impl<'de> de::Visitor<'de> for I64LenientVisitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer or float")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+            i64::try_from(v).map_err(de::Error::custom)
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<i64, E> {
+            Ok(v as i64)
+        }
+    }
+
+    deserializer.deserialize_any(I64LenientVisitor)
+}
+
 /// A literal constant value extracted from source code during static analysis.
 ///
 /// Used to seed the candidate input pool with values the function itself
@@ -306,6 +341,7 @@ pub enum ResponseResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LiteralValue {
     Int {
+        #[serde(deserialize_with = "deserialize_i64_lenient")]
         value: i64,
     },
     Float {
@@ -2152,6 +2188,21 @@ mod tests {
         round_trip(&LiteralValue::Regex {
             pattern: "\\d+".into(),
         });
+    }
+
+    #[test]
+    fn literal_value_int_accepts_float_json() {
+        // Regression test for str-flqp: TS frontend emits float values
+        // (e.g. Number.MAX_VALUE = 1.7976931348623157e+308) tagged as "int".
+        // The deserializer must accept JSON floats in the Int variant.
+        let json = r#"{"type":"int","value":1.7976931348623157e+308}"#;
+        let lit: LiteralValue = serde_json::from_str(json).expect("should accept float in int");
+        assert!(matches!(lit, LiteralValue::Int { .. }));
+
+        // Also test a normal float that happens to be whole (e.g. 42.0)
+        let json2 = r#"{"type":"int","value":42.0}"#;
+        let lit2: LiteralValue = serde_json::from_str(json2).expect("should accept 42.0 as int");
+        assert!(matches!(lit2, LiteralValue::Int { value: 42 }));
     }
 
     #[test]

@@ -1705,7 +1705,7 @@ function extractLiterals(
   }
 
   function addNumeric(num: number): void {
-    if (Number.isInteger(num)) {
+    if (Number.isSafeInteger(num)) {
       add({ type: "int", value: num });
     } else {
       add({ type: "float", value: num });
