@@ -365,7 +365,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript" | while IFS= 
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go" | while IFS= read -r sample; do example_path "$sample"; done)
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust" | while IFS= read -r sample; do example_path "$sample"; done)
 
-TOTAL=60
+TOTAL=62
 
 # ─── Gauntlet ─────────────────────────────────────────────────────────
 
@@ -561,153 +561,163 @@ step 31 $TOTAL "Scan Dry Run" \
     "Preview which files would be scanned without executing" \
     $SHATTER scan --dry-run --language typescript "$EXAMPLES_TS_DIR"
 
-# Stage 31: Invariant detection
-step 32 $TOTAL "Invariant Detection" \
+# Stage 31: Incremental scan (--since)
+step 32 $TOTAL "Incremental Scan (--since)" \
+    "Scan only files changed since the initial examples commit" \
+    $SHATTER scan --since HEAD~1 "$EXAMPLES_TS_DIR"
+
+# Stage 32: Incremental scan (--changed)
+step 33 $TOTAL "Incremental Scan (--changed)" \
+    "Scan only files with uncommitted changes (expect: no files in clean clone)" \
+    $SHATTER scan --changed "$EXAMPLES_TS_DIR"
+
+# Stage 33: Invariant detection
+step 34 $TOTAL "Invariant Detection" \
     "Detect Daikon-style invariants over explored executions" \
     $SHATTER explore --invariants "${EXAMPLES[0]}"
 
-# Stage 32: Setup + generators via config
-step 33 $TOTAL "Setup + Generators via Config" \
+# Stage 34: Setup + generators via config
+step 35 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
     $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     "$TS_OBJECTS_FN"
 
-# Stage 33: Setup + generators with debug logging
-step 34 $TOTAL "Setup + Generators (Debug)" \
+# Stage 35: Setup + generators with debug logging
+step 36 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
     $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     --log-level debug "$TS_OBJECTS_FN"
 
-# Stage 34: File-level explore (all exported functions)
-step 35 $TOTAL "File-Level Explore" \
+# Stage 36: File-level explore (all exported functions)
+step 37 $TOTAL "File-Level Explore" \
     "Explore all exported functions in a file by passing just the file path" \
     $SHATTER explore "$TS_ARITHMETIC_FILE"
 
-# Stage 35: Concolic exploration (Z3-backed)
-step 36 $TOTAL "Concolic CLI Preview (Z3)" \
+# Stage 37: Concolic exploration (Z3-backed)
+step 38 $TOTAL "Concolic CLI Preview (Z3)" \
     "Preview the current Z3-backed CLI path on a numeric example" \
     $SHATTER explore --concolic -o "$HTML_REPORT_DIR/explore-concolic.html" --stdout "${EXAMPLES[0]}"
 
-# Stage 36: Concolic exploration of string functions (Z3 string ops)
-step 37 $TOTAL "Concolic String CLI Preview (Z3)" \
+# Stage 38: Concolic exploration of string functions (Z3 string ops)
+step 39 $TOTAL "Concolic String CLI Preview (Z3)" \
     "Preview the current Z3-backed CLI path on string-method guards" \
     $SHATTER explore --concolic "$TS_STRINGS_FN"
 
-# Stage 37: MC/DC coverage analysis
-step 38 $TOTAL "MC/DC Coverage Analysis" \
+# Stage 39: MC/DC coverage analysis
+step 40 $TOTAL "MC/DC Coverage Analysis" \
     "Modified Condition/Decision Coverage: independence pairs, short-circuit masking, and coverage % across AND/OR/three-way compound conditions" \
     $SHATTER explore --mcdc "$TS_MCDC_FILE"
 
-# Stage 38: Spec output to file (--output)
-step 39 $TOTAL "Spec Output to File" \
+# Stage 40: Spec output to file (--output)
+step 41 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 39: Incremental re-run (skips fresh functions)
-step 40 $TOTAL "Incremental Re-run" \
+# Stage 41: Incremental re-run (skips fresh functions)
+step 42 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
     $SHATTER explore --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
 
-# Stage 40: Dry-run mode
-step 41 $TOTAL "Dry-Run Mode" \
+# Stage 42: Dry-run mode
+step 43 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
     $SHATTER explore --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
 
-# Stage 41: Clean re-exploration
-step 42 $TOTAL "Clean Re-exploration" \
+# Stage 43: Clean re-exploration
+step 44 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
     $SHATTER explore --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
 
-# Stage 42: Stale command
-# The spec from step 38 only explored classifyNumber. The file also exports
+# Stage 44: Stale command
+# The spec from step 40 only explored classifyNumber. The file also exports
 # compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
 # means "some functions are stale or removed" — this is informational, not a failure.
-step 43 $TOTAL "Stale Check" \
-    "Check staleness relative to spec from step 38 (exit 1 = stale found, expected here)" \
-    bash -c "$SHATTER stale '"$TS_ARITHMETIC_FILE"' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 38)'"
+step 45 $TOTAL "Stale Check" \
+    "Check staleness relative to spec from step 40 (exit 1 = stale found, expected here)" \
+    bash -c "$SHATTER stale '"$TS_ARITHMETIC_FILE"' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 40)'"
 
-# Stage 43: Revalidate command
+# Stage 45: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
 # populated by earlier explore steps. Exit code 0 = no regressions found.
-step 44 $TOTAL "Revalidate" \
+step 46 $TOTAL "Revalidate" \
     "Revalidate cached behaviors for the arithmetic example" \
     $SHATTER revalidate "$TS_ARITHMETIC_FILE"
 
-# Stage 44: Multi-level setup/teardown
-step 45 $TOTAL "Multi-Level Setup/Teardown" \
+# Stage 46: Multi-level setup/teardown
+step 47 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
     $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 30 \
     "$TS_ARITHMETIC_FN"
 
-# Stage 45: Setup with --fail-on-setup-error
-step 46 $TOTAL "Setup Fail-on-Error" \
+# Stage 47: Setup with --fail-on-setup-error
+step 48 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
     $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 10 --fail-on-setup-error \
     "$TS_ARITHMETIC_FN"
 
-# Stage 46: Observe command — run observation stage, write ObserveStageOutput JSON
-step 47 $TOTAL "Observe Stage" \
+# Stage 48: Observe command — run observation stage, write ObserveStageOutput JSON
+step 49 $TOTAL "Observe Stage" \
     "Run observation stage only for classifyNumber, write to temp file" \
     $SHATTER observe --output /tmp/shatter-observe.json \
     "$TS_ARITHMETIC_FN"
 
-# Stage 47: Analyze observe output — offline analysis, no frontend needed
-step 48 $TOTAL "Analyze Observe Output" \
+# Stage 49: Analyze observe output — offline analysis, no frontend needed
+step 50 $TOTAL "Analyze Observe Output" \
     "Read observation output and run offline analysis stage" \
     $SHATTER analyze /tmp/shatter-observe.json
 
-# Stage 48: Solve uncovered branches — offline Z3 constraint solving
-step 49 $TOTAL "Solve Uncovered Branches" \
+# Stage 50: Solve uncovered branches — offline Z3 constraint solving
+step 51 $TOTAL "Solve Uncovered Branches" \
     "Run Z3 constraint solver on observation output to find inputs for uncovered branches" \
     $SHATTER solve /tmp/shatter-observe.json
 
-# Stage 49: Specify from observation — build FunctionSpec markdown
-step 50 $TOTAL "Specify from Observation" \
+# Stage 51: Specify from observation — build FunctionSpec markdown
+step 52 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
     $SHATTER specify /tmp/shatter-observe.json
 
-# Stage 50: Specify YAML — build FunctionSpec with invariant property descriptions
-step 51 $TOTAL "Specify from Observation (YAML)" \
+# Stage 52: Specify YAML — build FunctionSpec with invariant property descriptions
+step 53 $TOTAL "Specify from Observation (YAML)" \
     "Build FunctionSpec as YAML with inferred invariant property descriptions" \
     $SHATTER specify --yaml --invariants /tmp/shatter-observe.json
 
-# Stage 51: HTML explore report
-step 52 $TOTAL "HTML Explore Report" \
+# Stage 53: HTML explore report
+step 54 $TOTAL "HTML Explore Report" \
     "Generate a self-contained HTML report for exploration results" \
     $SHATTER explore -o "$HTML_REPORT_DIR/explore-html.html" --stdout "${EXAMPLES[0]}"
 
-# Stage 52: HTML scan report
-step 53 $TOTAL "HTML Scan Report" \
+# Stage 54: HTML scan report
+step 55 $TOTAL "HTML Scan Report" \
     "Generate a self-contained HTML scan report alongside JSON" \
     $SHATTER scan -o "$HTML_REPORT_DIR/scan-html.html" --stdout "$EXAMPLES_TS_DIR"
 
-# Stage 53: Side-effect capture
-step 54 $TOTAL "Explore with Side-Effect Capture" \
+# Stage 55: Side-effect capture
+step 56 $TOTAL "Explore with Side-Effect Capture" \
     "Opt in to rich side-effect recording (console output, global state changes). Disabled by default for throughput." \
     $SHATTER explore --capture-side-effects "${EXAMPLES[0]}"
 
-# Stage 54: Properties export
-step 55 $TOTAL "Properties Export" \
+# Stage 56: Properties export
+step 57 $TOTAL "Properties Export" \
     "Discover and export behavioral properties and invariants as a YAML spec." \
     $SHATTER properties "${EXAMPLES[0]}"
 
-# Stage 55: Nondeterminism review (non-interactive: reads from cache populated above).
+# Stage 57: Nondeterminism review (non-interactive: reads from cache populated above).
 # The command runs in non-interactive mode when stdin is not a terminal (as in
 # the gauntlet). With no candidates in the cache it prints a diagnostic
 # message and exits 0, which is the expected outcome after the standalone scan.
-step 56 $TOTAL "Nondeterminism Review" \
+step 58 $TOTAL "Nondeterminism Review" \
     "Review nondeterminism candidates from the most recent scan (non-interactive: no stdin)" \
     bash -c "$SHATTER nondeterminism review --cache-dir '$SHATTER_CACHE_DIR' </dev/null; echo '(exit 0 expected: no nondeterminism candidates in standalone arithmetic scan)'"
 
-# Stage 56: Benchmark run (smoke tier, minimal)
-step 57 $TOTAL "Benchmark Run (Smoke)" \
+# Stage 58: Benchmark run (smoke tier, minimal)
+step 59 $TOTAL "Benchmark Run (Smoke)" \
     "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
     $SHATTER bench --tier smoke --repeats 1 --warmups 0
 
-# Stage 57: Cache clear
-step 58 $TOTAL "Cache Clear" \
+# Stage 59: Cache clear
+step 60 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 
