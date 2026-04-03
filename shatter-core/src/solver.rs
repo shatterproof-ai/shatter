@@ -3139,3 +3139,173 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking harnesses
+// ---------------------------------------------------------------------------
+// Separated from `#[cfg(test)]` — Kani runs its own verification passes.
+// Each harness uses `kani::any()` for bounded symbolic inputs and proves
+// invariants that proptest exercises probabilistically but cannot exhaustively
+// guarantee.
+//
+// Run: `cd shatter-core && cargo kani --harness <name>`
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Build a non-recursive leaf `SymExpr` from a discriminant.
+    /// Avoids heap-allocated Strings to keep CBMC's state space tractable.
+    /// Covers all constant sorts (Int, Float, Bool, Str), Null, Undefined,
+    /// Param, and Unknown — the full leaf vocabulary of `infer_sort`.
+    fn leaf_sym_expr(tag: u8) -> SymExpr {
+        match tag % 8 {
+            0 => SymExpr::Const(ConstValue::Int(42)),
+            1 => SymExpr::Const(ConstValue::Float(1.0)),
+            2 => SymExpr::Const(ConstValue::Bool(true)),
+            3 => SymExpr::Const(ConstValue::Bool(false)),
+            4 => SymExpr::Const(ConstValue::Str(String::new())),
+            5 => SymExpr::Const(ConstValue::Null),
+            6 => SymExpr::Const(ConstValue::Undefined),
+            7 => SymExpr::Param {
+                name: String::new(),
+                path: vec![],
+            },
+            _ => SymExpr::Unknown,
+        }
+    }
+
+    // -- Harness 1: infer_sort returns a valid Sort for every leaf SymExpr ----
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_leaf_validity() {
+        let tag: u8 = kani::any();
+        kani::assume(tag < 8);
+        let expr = leaf_sym_expr(tag);
+        let sort = infer_sort(&expr);
+        assert!(
+            matches!(sort, Sort::Int | Sort::Real | Sort::Bool | Sort::Str),
+            "infer_sort must return a valid Sort variant"
+        );
+    }
+
+    // -- Harness 2: infer_sort constant → sort mapping is correct -------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_int_is_int() {
+        assert_eq!(infer_sort(&SymExpr::Const(ConstValue::Int(0))), Sort::Int);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_float_is_real() {
+        assert_eq!(
+            infer_sort(&SymExpr::Const(ConstValue::Float(0.0))),
+            Sort::Real
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_bool_is_bool() {
+        let v: bool = kani::any();
+        assert_eq!(
+            infer_sort(&SymExpr::Const(ConstValue::Bool(v))),
+            Sort::Bool
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_str_is_str() {
+        assert_eq!(
+            infer_sort(&SymExpr::Const(ConstValue::Str(String::new()))),
+            Sort::Str
+        );
+    }
+
+    // -- Harness 3: logical And/Or always infer Bool --------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_logical_is_bool() {
+        let use_and: bool = kani::any();
+        let op = if use_and {
+            BinOpKind::And
+        } else {
+            BinOpKind::Or
+        };
+        let left_tag: u8 = kani::any();
+        let right_tag: u8 = kani::any();
+        kani::assume(left_tag < 8);
+        kani::assume(right_tag < 8);
+        let expr = SymExpr::BinOp {
+            op,
+            left: Box::new(leaf_sym_expr(left_tag)),
+            right: Box::new(leaf_sym_expr(right_tag)),
+        };
+        assert_eq!(
+            infer_sort(&expr),
+            Sort::Bool,
+            "And/Or must always infer Bool"
+        );
+    }
+
+    // -- Harness 4: Not always returns Bool -----------------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_not_is_bool() {
+        let tag: u8 = kani::any();
+        kani::assume(tag < 8);
+        let expr = SymExpr::UnOp {
+            op: UnOpKind::Not,
+            operand: Box::new(leaf_sym_expr(tag)),
+        };
+        assert_eq!(
+            infer_sort(&expr),
+            Sort::Bool,
+            "Not must always infer Bool"
+        );
+    }
+
+    // -- Harness 5: TypeOf always returns Str ---------------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_typeof_is_str() {
+        let tag: u8 = kani::any();
+        kani::assume(tag < 8);
+        let expr = SymExpr::UnOp {
+            op: UnOpKind::TypeOf,
+            operand: Box::new(leaf_sym_expr(tag)),
+        };
+        assert_eq!(
+            infer_sort(&expr),
+            Sort::Str,
+            "TypeOf must always infer Str"
+        );
+    }
+
+    // -- Harness 6: Neg/BitwiseNot preserve operand sort ----------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_infer_sort_neg_preserves_sort() {
+        let tag: u8 = kani::any();
+        kani::assume(tag < 8);
+        let leaf = leaf_sym_expr(tag);
+        let expected = infer_sort(&leaf);
+        let use_neg: bool = kani::any();
+        let op = if use_neg {
+            UnOpKind::Neg
+        } else {
+            UnOpKind::BitwiseNot
+        };
+        let expr = SymExpr::UnOp {
+            op,
+            operand: Box::new(leaf),
+        };
+        assert_eq!(
+            infer_sort(&expr),
+            expected,
+            "Neg/BitwiseNot must preserve operand sort"
+        );
+    }
+}

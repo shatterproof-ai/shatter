@@ -4429,3 +4429,148 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking harnesses
+// ---------------------------------------------------------------------------
+// Proves invariants on the orchestrator's data structures that proptest
+// exercises probabilistically.
+//
+// Run: `cd shatter-core && cargo kani --harness <name>`
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+    use std::cmp::Ordering;
+
+    /// Build a symbolic `WorklistEntry` with bounded fitness and source.
+    /// Uses integer-keyed fitness to avoid f64 state explosion in CBMC.
+    fn symbolic_worklist_entry() -> WorklistEntry {
+        let has_fitness: bool = kani::any();
+        let fitness = if has_fitness {
+            // Use a small integer range mapped to [0.0, 1.0] to keep CBMC tractable.
+            let f_key: u8 = kani::any();
+            kani::assume(f_key <= 10);
+            Some(f_key as f64 / 10.0)
+        } else {
+            None
+        };
+
+        let source_tag: u8 = kani::any();
+        kani::assume(source_tag < 7);
+        let source = match source_tag {
+            0 => InputSource::Seed,
+            1 => InputSource::Fuzzed,
+            2 => InputSource::BoundarySearch,
+            3 => InputSource::Drilled,
+            4 => InputSource::McdcTarget,
+            5 => InputSource::Z3Solved,
+            6 => InputSource::UserProvided,
+            _ => unreachable!(),
+        };
+
+        WorklistEntry {
+            inputs: vec![],
+            source,
+            fitness,
+            mock_values: vec![],
+        }
+    }
+
+    // -- Harness 1: WorklistEntry Ord is reflexive ----------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_worklist_ord_reflexive() {
+        let a = symbolic_worklist_entry();
+        assert_eq!(
+            a.cmp(&a),
+            Ordering::Equal,
+            "an entry must be equal to itself"
+        );
+    }
+
+    // -- Harness 2: WorklistEntry Ord is antisymmetric ------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_worklist_ord_antisymmetric() {
+        let a = symbolic_worklist_entry();
+        let b = symbolic_worklist_entry();
+        if a.cmp(&b) == Ordering::Equal && b.cmp(&a) == Ordering::Equal {
+            assert!(a == b, "equal ordering implies equality");
+        }
+    }
+
+    // -- Harness 3: partial_cmp consistent with cmp ---------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_worklist_partial_cmp_consistent() {
+        let a = symbolic_worklist_entry();
+        let b = symbolic_worklist_entry();
+        assert_eq!(
+            a.partial_cmp(&b),
+            Some(a.cmp(&b)),
+            "partial_cmp must return Some(cmp(...))"
+        );
+    }
+
+    // -- Harness 4: fitness always beats no-fitness ---------------------------
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn prove_fitness_beats_no_fitness() {
+        let a = symbolic_worklist_entry();
+        let b = symbolic_worklist_entry();
+        if a.fitness.is_some() && b.fitness.is_none() {
+            assert_eq!(
+                a.cmp(&b),
+                Ordering::Greater,
+                "entry with fitness must outrank entry without"
+            );
+        }
+        if a.fitness.is_none() && b.fitness.is_some() {
+            assert_eq!(
+                a.cmp(&b),
+                Ordering::Less,
+                "entry without fitness must rank below entry with"
+            );
+        }
+    }
+
+    // -- Harness 5: overlay_solved_values preserves length (empty solved) -----
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn prove_overlay_preserves_length() {
+        let len: usize = kani::any();
+        kani::assume(len >= 1 && len <= 2);
+
+        let mut base_inputs = Vec::with_capacity(len);
+        let mut param_names = Vec::with_capacity(len);
+        for i in 0..len {
+            base_inputs.push(serde_json::Value::Null);
+            param_names.push(format!("p{i}"));
+        }
+
+        let solved = std::collections::HashMap::new();
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        assert_eq!(
+            result.len(),
+            base_inputs.len(),
+            "overlay must preserve input vector length"
+        );
+    }
+
+    // -- Harness 6: overlay with a solved value preserves length --------------
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn prove_overlay_single_solved_preserves_length() {
+        // Fixed 1-param case to keep CBMC state small.
+        let base_inputs = vec![serde_json::json!(0)];
+        let param_names = vec![String::from("x")];
+
+        let mut solved = std::collections::HashMap::new();
+        solved.insert(String::from("x"), ConcreteValue::Int(42));
+
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        assert_eq!(result.len(), 1, "overlay must preserve input vector length");
+        assert_eq!(result[0], serde_json::json!(42));
+    }
+}
