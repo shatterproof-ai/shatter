@@ -174,26 +174,26 @@ Recommended behavior:
 
 ## Git Submodules
 
-The repository uses git submodules for shared content:
+The repository uses a git submodule for shared examples:
 
 | Submodule | Path | Purpose |
 |---|---|---|
-| `agents` | `.agents/` | Shared agent rules and tooling |
 | `examples` | `examples/` | Example target programs for testing, demos, and E2E fixtures |
 
 ### CI checkout requirements
 
-CI jobs must initialize submodules before running any tasks. Either:
+CI jobs must initialize the `examples/` submodule before running any tasks. Either:
 
 ```bash
-# Option A: clone with submodules
-git clone --recurse-submodules <repo-url>
+# Option A: clone, then initialize the examples submodule
+git clone <repo-url>
+cd shatter
+git submodule update --init examples
 
-# Option B: initialize after clone (useful for shallow clones)
-git submodule update --init
-
-# Option C: shallow submodules (faster for CI)
-git clone --recurse-submodules --shallow-submodules <repo-url>
+# Option B: shallow clone the examples submodule after checkout
+git clone <repo-url>
+cd shatter
+git submodule update --init --depth 1 examples
 ```
 
 All test tiers, the gauntlet, and the E2E suite require the `examples/` submodule. If `examples/` is empty, tests will fail with file-not-found errors.

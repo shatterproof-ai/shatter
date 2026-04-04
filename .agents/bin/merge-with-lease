@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bin/merge-with-lease --branch <feature-branch> --verify <command> [options]
+
+Perform a merge into the current target branch using an optimistic-concurrency
+lease on the base ref. The script:
+
+1. Verifies the working tree is clean
+2. Fetches the remote
+3. Fast-forwards the current target branch to the leased base ref
+4. Creates a no-commit merge preview for the feature branch
+5. Runs the supplied verification command against that exact merged state
+6. Re-fetches the remote and aborts if the leased base ref moved
+7. Commits the merge if the lease is still valid
+
+Options:
+  --branch <ref>     Feature branch or ref to merge (required)
+  --verify <cmd>     Verification command to run in the preview merge state (required)
+  --base <ref>       Base ref to lease and re-check (default: origin/main)
+  --target <name>    Expected current branch name (default: main)
+  --push             Push the target branch after committing the merge
+  --help             Show this help text
+
+Examples:
+  bin/merge-with-lease --branch feature/auth --verify "make test-standard"
+  .agents/bin/merge-with-lease --branch worktree/jade --verify "./scripts/verify-agent.sh" --push
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_clean_tree() {
+  git diff --quiet || die "working tree has unstaged changes"
+  git diff --cached --quiet || die "working tree has staged changes"
+  git diff --quiet --submodule=all || die "working tree has submodule changes"
+}
+
+require_branch_exists() {
+  git rev-parse --verify --quiet "$1^{commit}" >/dev/null || die "unknown ref: $1"
+}
+
+branch_ref=""
+verify_cmd=""
+base_ref="origin/main"
+target_branch="main"
+push_after_merge=0
+merge_finalized=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --branch)
+      [[ $# -ge 2 ]] || die "--branch requires a value"
+      branch_ref="$2"
+      shift 2
+      ;;
+    --verify)
+      [[ $# -ge 2 ]] || die "--verify requires a value"
+      verify_cmd="$2"
+      shift 2
+      ;;
+    --base)
+      [[ $# -ge 2 ]] || die "--base requires a value"
+      base_ref="$2"
+      shift 2
+      ;;
+    --target)
+      [[ $# -ge 2 ]] || die "--target requires a value"
+      target_branch="$2"
+      shift 2
+      ;;
+    --push)
+      push_after_merge=1
+      shift
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$branch_ref" ]] || die "--branch is required"
+[[ -n "$verify_cmd" ]] || die "--verify is required"
+
+cleanup() {
+  if [[ $merge_finalized -eq 0 ]] && git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    git merge --abort >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
+
+git rev-parse --show-toplevel >/dev/null 2>&1 || die "not inside a git repository"
+require_clean_tree
+
+current_branch="$(git branch --show-current)"
+[[ "$current_branch" == "$target_branch" ]] || die "current branch is '$current_branch'; expected '$target_branch'"
+
+git fetch origin
+require_branch_exists "$branch_ref"
+require_branch_exists "$base_ref"
+
+lease_sha="$(git rev-parse "$base_ref")"
+git merge-base --is-ancestor "$lease_sha" "$branch_ref" || die "feature branch is not based on the current lease $base_ref; rebase or merge the latest base first"
+
+if [[ "$(git rev-parse HEAD)" != "$lease_sha" ]]; then
+  git merge --ff-only "$base_ref"
+fi
+
+git merge --no-commit --no-ff "$branch_ref"
+
+/bin/bash -lc "$verify_cmd"
+
+git fetch origin
+current_lease_sha="$(git rev-parse "$base_ref")"
+[[ "$current_lease_sha" == "$lease_sha" ]] || die "$base_ref moved from $lease_sha to $current_lease_sha during verification; refresh and retry"
+
+git commit --no-edit
+merge_finalized=1
+
+if [[ $push_after_merge -eq 1 ]]; then
+  remote_name="${base_ref%%/*}"
+  remote_branch="${base_ref#*/}"
+  [[ -n "$remote_name" && -n "$remote_branch" && "$remote_name" != "$remote_branch" ]] || die "--push requires --base in <remote>/<branch> form"
+  git push "$remote_name" "$target_branch:$remote_branch"
+fi
+
+printf 'merge committed on %s with lease %s at %s\n' "$target_branch" "$base_ref" "$lease_sha"
