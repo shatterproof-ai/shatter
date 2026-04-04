@@ -848,6 +848,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut setup_timeout = None;
     let mut session_setup = None;
     let mut execution_profile = None;
+    let mut exploration = None;
 
     // Merge generators and file_setup maps: start from farthest, overlay nearer.
     // This lets a near config override specific keys while inheriting the rest.
@@ -894,6 +895,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
         if execution_profile.is_none() {
             execution_profile = config.defaults.execution_profile.clone();
+        }
+        if exploration.is_none() {
+            exploration = config.defaults.exploration.clone();
         }
     }
 
@@ -957,7 +961,8 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             param_generators,
             mocks: None,
             genetic: None,
-            exploration: None,
+            execution_profile,
+            exploration,
             execution_profile,
         },
         functions,
@@ -2894,6 +2899,53 @@ defaults:
         let yaml = "defaults: {}\n";
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.defaults.exploration.is_none());
+    }
+
+    #[test]
+    fn merge_configs_exploration_near_overrides_far() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                exploration: Some(ExplorationConfig {
+                    adaptive: true,
+                    score_window: 250,
+                    cold_start: 30,
+                    strategy_floor: 0.03,
+                    strategy_weights: None,
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                exploration: Some(ExplorationConfig {
+                    adaptive: false,
+                    score_window: 50,
+                    cold_start: 10,
+                    strategy_floor: 0.10,
+                    strategy_weights: Some(HashMap::from([
+                        ("boundary".to_string(), 0.75),
+                        ("random".to_string(), 0.25),
+                    ])),
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let exploration = merged.defaults.exploration.expect("merged exploration defaults");
+        assert!(!exploration.adaptive);
+        assert_eq!(exploration.score_window, 50);
+        assert_eq!(exploration.cold_start, 10);
+        assert!((exploration.strategy_floor - 0.10).abs() < f64::EPSILON);
+        assert_eq!(
+            exploration.strategy_weights,
+            Some(HashMap::from([
+                ("boundary".to_string(), 0.75),
+                ("random".to_string(), 0.25),
+            ]))
+        );
     }
 
     #[test]
