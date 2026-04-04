@@ -76,6 +76,7 @@ pub(crate) async fn run_export_tests(
                 file: file_str.to_string(),
                 function: target.function.clone(),
                 project_root: project_root_str.clone(),
+                execution_profile: None,
             })
             .await
             .map_err(|e| format!("analyze failed: {e}"))?;
@@ -97,6 +98,7 @@ pub(crate) async fn run_export_tests(
         // Explore each function and generate tests
         let explore_config = ExploreConfig {
             file: file_str.to_string(),
+            execution_profile: None,
             max_iterations,
             seed: None,
             mocks: vec![],

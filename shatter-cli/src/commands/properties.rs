@@ -88,6 +88,7 @@ pub(crate) async fn run_properties(
                 file: file_str.to_string(),
                 function: target.function.clone(),
                 project_root: project_root_str.clone(),
+                execution_profile: None,
             })
             .await
             .map_err(|e| format!("analyze failed: {e}"))?;
@@ -108,6 +109,7 @@ pub(crate) async fn run_properties(
 
         let explore_config = ExploreConfig {
             file: file_str.to_string(),
+            execution_profile: None,
             max_iterations,
             seed: None,
             mocks: vec![],

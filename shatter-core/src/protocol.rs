@@ -51,6 +51,39 @@ pub struct SetupContextStack {
     pub contexts: Vec<SetupContextEntry>,
 }
 
+/// Ordered adapter descriptors that customize how a target should be executed.
+///
+/// The core treats this profile opaquely. Language frontends may interpret
+/// adapter ids and options, but the wire shape remains generic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionProfile {
+    /// Ordered adapter descriptors to apply for this target.
+    pub adapters: Vec<ExecutionAdapter>,
+}
+
+/// Opaque descriptor for one execution adapter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionAdapter {
+    /// Namespaced adapter identifier, for example `ts/react-hooks`.
+    pub id: String,
+    /// Policy for whether this adapter is required, auto-applied, suggested, or disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply: Option<ExecutionAdapterApply>,
+    /// Adapter-local opaque options payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+}
+
+/// Application policy for one execution adapter descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionAdapterApply {
+    Required,
+    Auto,
+    Suggest,
+    Disabled,
+}
+
 // ---------------------------------------------------------------------------
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
@@ -85,6 +118,9 @@ pub enum Command {
         /// Detected project root directory, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
+        /// Opaque execution profile selected for this target, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<ExecutionProfile>,
     },
     /// Instrument a function for symbolic constraint tracking.
     Instrument {
@@ -97,6 +133,9 @@ pub enum Command {
         /// Detected project root directory, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
+        /// Opaque execution profile selected for this target, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<ExecutionProfile>,
     },
     /// Pre-build harness artifacts for a function so repeated execute calls skip compilation.
     ///
@@ -113,6 +152,9 @@ pub enum Command {
         /// Detected project root directory, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
+        /// Opaque execution profile selected for this target, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<ExecutionProfile>,
     },
     /// Execute an instrumented function with specific inputs and mocks.
     Execute {
@@ -134,6 +176,9 @@ pub enum Command {
         /// skips the compile phase and runs the pre-built artifact.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prepare_id: Option<String>,
+        /// Opaque execution profile selected for this target, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<ExecutionProfile>,
     },
     /// Run a setup file to initialize state before function execution.
     Setup {
@@ -149,6 +194,9 @@ pub enum Command {
         /// Parent context stack from enclosing setup levels, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_context: Option<SetupContextStack>,
+        /// Opaque execution profile selected for this target, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<ExecutionProfile>,
     },
     /// Tear down state established by a prior Setup command.
     Teardown {
@@ -867,6 +915,7 @@ mod tests {
                 file: "src/main.ts".into(),
                 function: Some("calculateShipping".into()),
                 project_root: None,
+                execution_profile: None,
             },
         ));
     }
@@ -879,6 +928,7 @@ mod tests {
                 file: "src/main.ts".into(),
                 function: None,
                 project_root: None,
+                execution_profile: None,
             },
         ));
     }
@@ -897,6 +947,7 @@ mod tests {
                     default_behavior: MockBehavior::RepeatLast,
                 }],
                 project_root: None,
+                execution_profile: None,
             },
         ));
     }
@@ -910,6 +961,7 @@ mod tests {
                 function: "calculateShipping".into(),
                 mocks: vec![],
                 project_root: None,
+                execution_profile: None,
             },
         ));
     }
@@ -928,6 +980,7 @@ mod tests {
                     default_behavior: MockBehavior::RepeatLast,
                 }],
                 project_root: Some(".".into()),
+                execution_profile: None,
             },
         ));
     }
@@ -953,6 +1006,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: Some("a1b2c3d4e5f6a7b8".into()),
+                execution_profile: None,
             },
         ));
     }
@@ -968,6 +1022,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -988,6 +1043,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: Some("deadbeef12345678".into()),
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1005,6 +1061,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1586,6 +1643,7 @@ mod tests {
                 file: "main.ts".into(),
                 function: Some("foo".into()),
                 project_root: None,
+                execution_profile: None,
             },
         );
         let json: serde_json::Value = serde_json::to_value(&req).expect("serialize");
@@ -1594,6 +1652,32 @@ mod tests {
         assert_eq!(json["id"], 1);
         assert_eq!(json["file"], "main.ts");
         assert_eq!(json["function"], "foo");
+    }
+
+    #[test]
+    fn analyze_request_with_execution_profile_round_trips() {
+        round_trip(&Request::new(
+            12,
+            Command::Analyze {
+                file: "main.ts".into(),
+                function: Some("useTeamSwitch".into()),
+                project_root: Some("/repo".into()),
+                execution_profile: Some(ExecutionProfile {
+                    adapters: vec![
+                        ExecutionAdapter {
+                            id: "ts/module-resolution/tsconfig-paths".into(),
+                            apply: Some(ExecutionAdapterApply::Auto),
+                            options: None,
+                        },
+                        ExecutionAdapter {
+                            id: "ts/react-hooks".into(),
+                            apply: Some(ExecutionAdapterApply::Suggest),
+                            options: Some(serde_json::json!({"mode": "callable_return"})),
+                        },
+                    ],
+                }),
+            },
+        ));
     }
 
     #[test]
@@ -1635,6 +1719,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1648,6 +1733,7 @@ mod tests {
                 function: "formatDate".into(),
                 mocks: vec![],
                 project_root: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1848,6 +1934,7 @@ mod tests {
                 level: SetupLevel::Function,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1862,6 +1949,7 @@ mod tests {
                 level: SetupLevel::Execution,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1876,6 +1964,7 @@ mod tests {
                 level: SetupLevel::Session,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1890,6 +1979,7 @@ mod tests {
                 level: SetupLevel::File,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             },
         ));
     }
@@ -1909,6 +1999,7 @@ mod tests {
                         context: serde_json::json!({"session_id": "s1"}),
                     }],
                 }),
+                execution_profile: None,
             },
         ));
     }
@@ -2007,6 +2098,7 @@ mod tests {
                 }),
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         ));
     }
@@ -2035,6 +2127,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2055,6 +2148,7 @@ mod tests {
                 setup_context: None,
                 capture: false,
                 prepare_id: None,
+                execution_profile: None,
             },
         ));
     }
@@ -2083,6 +2177,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2104,6 +2199,7 @@ mod tests {
                 setup_context: None,
                 capture: false,
                 prepare_id: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2125,6 +2221,7 @@ mod tests {
                 level: SetupLevel::Function,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2276,6 +2373,7 @@ mod tests {
                 file: "src/main.ts".into(),
                 function: Some("handler".into()),
                 project_root: Some("/home/user/project".into()),
+                execution_profile: None,
             },
         ));
     }
@@ -2288,6 +2386,7 @@ mod tests {
                 file: "main.ts".into(),
                 function: None,
                 project_root: None,
+                execution_profile: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2306,6 +2405,7 @@ mod tests {
                 function: "processData".into(),
                 mocks: vec![],
                 project_root: Some("/home/user/project".into()),
+                execution_profile: None,
             },
         ));
     }

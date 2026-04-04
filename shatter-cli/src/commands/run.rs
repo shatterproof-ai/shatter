@@ -212,6 +212,7 @@ pub(crate) async fn run_run(
                     file: entry.file_path.to_string_lossy().into_owned(),
                     function: Some(entry.name.clone()),
                     project_root: project_root_str.clone(),
+                    execution_profile: None,
                 })
                 .await
                 .map_err(|e| format!("analyze failed for {qualified_name}: {e}"))?;
@@ -232,6 +233,7 @@ pub(crate) async fn run_run(
 
             let explore_config = ExploreConfig {
                 file: entry.file_path.to_string_lossy().into_owned(),
+                execution_profile: None,
                 max_iterations,
                 seed: None,
                 mocks: vec![],

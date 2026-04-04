@@ -26,6 +26,18 @@ export interface SetupContextStack {
   contexts: SetupContextEntry[];
 }
 
+export type ExecutionAdapterApply = "required" | "auto" | "suggest" | "disabled";
+
+export interface ExecutionAdapter {
+  id: string;
+  apply?: ExecutionAdapterApply;
+  options?: unknown;
+}
+
+export interface ExecutionProfile {
+  adapters: ExecutionAdapter[];
+}
+
 export type GeneratorKind = "type_name" | "param_name";
 
 export type Command =
@@ -62,6 +74,7 @@ export interface AnalyzeRequest extends BaseRequest {
   file: string;
   function?: string | null;
   project_root?: string | null;
+  execution_profile?: ExecutionProfile | null;
 }
 
 export interface InstrumentRequest extends BaseRequest {
@@ -70,6 +83,7 @@ export interface InstrumentRequest extends BaseRequest {
   function: string;
   mocks: MockConfig[];
   project_root?: string | null;
+  execution_profile?: ExecutionProfile | null;
 }
 
 export interface PrepareRequest extends BaseRequest {
@@ -78,6 +92,7 @@ export interface PrepareRequest extends BaseRequest {
   function: string;
   mocks: MockConfig[];
   project_root?: string | null;
+  execution_profile?: ExecutionProfile | null;
 }
 
 export interface ExecuteRequest extends BaseRequest {
@@ -90,6 +105,7 @@ export interface ExecuteRequest extends BaseRequest {
   prepare_id?: string | null;
   /** When false, skip side-effect capture (console/process interception) for lower overhead. Defaults to true. */
   capture?: boolean;
+  execution_profile?: ExecutionProfile | null;
 }
 
 export interface SetupRequest extends BaseRequest {
@@ -99,6 +115,7 @@ export interface SetupRequest extends BaseRequest {
   level: SetupLevel;
   parent_context?: SetupContextStack | null;
   project_root?: string | null;
+  execution_profile?: ExecutionProfile | null;
 }
 
 export interface TeardownRequest extends BaseRequest {

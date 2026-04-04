@@ -422,6 +422,7 @@ mod tests {
                 file: "test.ts".into(),
                 function: Some("myFunc".into()),
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("analyze failed");
@@ -448,6 +449,7 @@ mod tests {
                 function: "myFunc".into(),
                 mocks: vec![],
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("instrument failed");
@@ -480,6 +482,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             })
             .await
             .expect("execute failed");
@@ -506,6 +509,7 @@ mod tests {
                 file: "a.ts".into(),
                 function: None,
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("request 1 failed");
@@ -516,6 +520,7 @@ mod tests {
                 file: "b.ts".into(),
                 function: None,
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("request 2 failed");
@@ -542,6 +547,7 @@ mod tests {
                 file: "test.ts".into(),
                 function: Some("fn1".into()),
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("analyze failed");
@@ -553,6 +559,7 @@ mod tests {
                 function: "fn1".into(),
                 mocks: vec![],
                 project_root: None,
+                execution_profile: None,
             })
             .await
             .expect("instrument failed");
@@ -566,6 +573,7 @@ mod tests {
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             })
             .await
             .expect("execute failed");
@@ -606,6 +614,7 @@ mod tests {
                     setup_context: None,
                     capture: true,
                     prepare_id: None,
+                    execution_profile: None,
                 })
                 .entered();
             }

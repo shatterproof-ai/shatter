@@ -165,6 +165,7 @@ pub async fn batch_analyze(
                 file: file_path.to_string_lossy().into_owned(),
                 function: None,
                 project_root: project_root.map(String::from),
+                execution_profile: None,
             })
             .await
             .map_err(|e| BatchAnalyzeError::Frontend {

@@ -19,8 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::SetupLevel;
-use crate::protocol::SetupContextStack;
+use crate::protocol::{ExecutionProfile, SetupContextStack, SetupLevel};
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::explorer::{
     classify_error_intent, frontend_supports, path_hash, send_setup, send_teardown,
@@ -68,6 +67,8 @@ pub struct ObserveConfig {
     pub capabilities: FrontendCapabilities,
     /// Detected project root directory.
     pub project_root: Option<String>,
+    /// Opaque execution profile selected for this function, if any.
+    pub execution_profile: Option<ExecutionProfile>,
     /// Iteration count bucket boundaries for loop-aware path hashing.
     pub loop_buckets: LoopBuckets,
     /// Wall-clock timeout for the entire observation phase.
@@ -90,6 +91,7 @@ impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
             setup_level: ec.setup_level,
             capabilities: ec.capabilities.clone(),
             project_root: ec.project_root.clone(),
+            execution_profile: ec.execution_profile.clone(),
             loop_buckets: ec.loop_buckets.clone(),
             timeout: ec.timeout_explore,
             skip_instrument: false,
@@ -179,6 +181,7 @@ pub async fn observe_single(
     inputs: &[serde_json::Value],
     mocks: &[MockConfig],
     setup_context: Option<&SetupContextStack>,
+    execution_profile: Option<&ExecutionProfile>,
     loop_buckets: &LoopBuckets,
     state: &mut ObserveState,
     capture: bool,
@@ -192,6 +195,7 @@ pub async fn observe_single(
             setup_context: setup_context.cloned(),
             capture,
             prepare_id: prepare_id.map(|s| s.to_string()),
+            execution_profile: execution_profile.cloned(),
         })
         .await?;
 
@@ -264,6 +268,7 @@ pub async fn observe_batch(
     inputs: Vec<Vec<serde_json::Value>>,
     mocks: &[MockConfig],
     setup_context: Option<&SetupContextStack>,
+    execution_profile: Option<&ExecutionProfile>,
     loop_buckets: &LoopBuckets,
     timeout: Option<Duration>,
     capture: bool,
@@ -287,6 +292,7 @@ pub async fn observe_batch(
             &input,
             mocks,
             setup_context,
+            execution_profile,
             loop_buckets,
             &mut state,
             capture,
@@ -339,6 +345,7 @@ pub async fn observe_function(
                 function: analysis.name.clone(),
                 mocks: config.mocks.clone(),
                 project_root: config.project_root.clone(),
+                execution_profile: config.execution_profile.clone(),
             })
             .await?;
 
@@ -385,6 +392,7 @@ pub async fn observe_function(
             &analysis.name,
             config.setup_level,
             config.project_root.clone(),
+            config.execution_profile.clone(),
         )
         .await?;
     }
@@ -406,6 +414,7 @@ pub async fn observe_function(
             inputs,
             &config.mocks,
             setup_context.as_ref(),
+            config.execution_profile.as_ref(),
             &config.loop_buckets,
             config.timeout,
             config.capture_side_effects,
@@ -469,6 +478,7 @@ async fn observe_batch_with_per_execution_setup(
                 &analysis.name,
                 config.setup_level,
                 config.project_root.clone(),
+                config.execution_profile.clone(),
             )
             .await?
         } else {
@@ -477,13 +487,14 @@ async fn observe_batch_with_per_execution_setup(
 
         let obs = observe_single(
             frontend,
-            &analysis.name,
-            &input,
-            &config.mocks,
-            setup_context.as_ref(),
-            &config.loop_buckets,
-            &mut state,
-            config.capture_side_effects,
+                &analysis.name,
+                &input,
+                &config.mocks,
+                setup_context.as_ref(),
+                config.execution_profile.as_ref(),
+                &config.loop_buckets,
+                &mut state,
+                config.capture_side_effects,
             None,
         )
         .await?;
@@ -622,6 +633,7 @@ mod tests {
 
         let explore_config = ExploreConfig {
             file: "test.ts".to_string(),
+            execution_profile: None,
             max_iterations: 100,
             seed: Some(42),
             mocks: vec![],

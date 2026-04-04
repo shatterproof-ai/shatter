@@ -54,6 +54,28 @@ type SetupContextStack struct {
 	Contexts []SetupContextEntry `json:"contexts"`
 }
 
+// ExecutionAdapterApply defines the application policy for an execution adapter.
+type ExecutionAdapterApply string
+
+const (
+	ExecutionAdapterApplyRequired ExecutionAdapterApply = "required"
+	ExecutionAdapterApplyAuto     ExecutionAdapterApply = "auto"
+	ExecutionAdapterApplySuggest  ExecutionAdapterApply = "suggest"
+	ExecutionAdapterApplyDisabled ExecutionAdapterApply = "disabled"
+)
+
+// ExecutionAdapter is an opaque adapter descriptor passed through to frontends.
+type ExecutionAdapter struct {
+	ID      string                `json:"id"`
+	Apply   *ExecutionAdapterApply `json:"apply,omitempty"`
+	Options *json.RawMessage      `json:"options,omitempty"`
+}
+
+// ExecutionProfile is an ordered list of opaque execution adapter descriptors.
+type ExecutionProfile struct {
+	Adapters []ExecutionAdapter `json:"adapters"`
+}
+
 // Request is a message from the core engine to the frontend.
 type Request struct {
 	ProtocolVersion string `json:"protocol_version"`
@@ -67,6 +89,7 @@ type Request struct {
 	File        string  `json:"file,omitempty"`
 	Function    *string `json:"function,omitempty"`
 	ProjectRoot *string `json:"project_root,omitempty"`
+	ExecutionProfile *ExecutionProfile `json:"execution_profile,omitempty"`
 
 	// Instrument/Execute fields
 	Mocks []MockConfig `json:"mocks,omitempty"`

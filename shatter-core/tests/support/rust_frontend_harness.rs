@@ -85,6 +85,7 @@ pub async fn analyze_function(
             file: file.to_string(),
             function: Some(function_name.to_string()),
             project_root: None,
+            execution_profile: None,
         })
         .await
         .expect("analyze command failed");
@@ -106,6 +107,7 @@ pub async fn instrument_function(frontend: &mut Frontend, file: &str, function_n
             function: function_name.to_string(),
             mocks: vec![],
             project_root: None,
+            execution_profile: None,
         })
         .await
         .expect("instrument command failed");

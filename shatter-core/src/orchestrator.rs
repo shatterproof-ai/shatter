@@ -121,6 +121,8 @@ pub struct ExploreConfig {
     pub branch_profile: Option<crate::branch_profile::BranchProfile>,
     /// Strategy meta-configuration for adaptive selection.
     pub meta_config: crate::strategy::MetaConfig,
+    /// Opaque execution profile selected for this function, if any.
+    pub execution_profile: Option<crate::protocol::ExecutionProfile>,
     /// Number of consecutive no-new-coverage observations before suppressing
     /// negation for branches in a converged loop. 0 disables convergence detection.
     pub loop_convergence_window: usize,
@@ -163,6 +165,7 @@ impl Default for ExploreConfig {
             timeout_explore: None,
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
+            execution_profile: None,
             loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
@@ -553,6 +556,7 @@ async fn observe_one(
             setup_context: setup_context.clone(),
             capture: true,
             prepare_id: prepare_id.map(|s| s.to_string()),
+            execution_profile: config.execution_profile.clone(),
         })
         .await?;
 
@@ -1260,6 +1264,7 @@ async fn refine_boundaries_async(
                     setup_context: setup_context.clone(),
                     capture: false,
                     prepare_id: None,
+                    execution_profile: None,
                 })
                 .await
             {
@@ -1464,6 +1469,7 @@ pub async fn explore(
                         setup_context: setup_context.clone(),
                         capture: false,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .await?;
 
@@ -1475,6 +1481,7 @@ pub async fn explore(
                         setup_context: setup_context.clone(),
                         capture: false,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .await?;
 
@@ -1962,6 +1969,7 @@ pub async fn explore(
                         setup_context: setup_context.clone(),
                         capture: true,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .await;
                 if let Ok(resp) = resp
@@ -1994,6 +2002,7 @@ pub async fn explore(
                             setup_context: setup_context.clone(),
                             capture: false,
                             prepare_id: prepare_id.clone(),
+                            execution_profile: config.execution_profile.clone(),
                         })
                         .await;
                     if let Ok(resp) = resp
@@ -2028,6 +2037,7 @@ pub async fn explore(
                                 setup_context: setup_context.clone(),
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
+                                execution_profile: config.execution_profile.clone(),
                             })
                             .await;
 

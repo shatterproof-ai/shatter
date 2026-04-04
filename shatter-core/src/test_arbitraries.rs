@@ -894,6 +894,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                 file,
                 function,
                 project_root: None,
+                execution_profile: None,
             }
         }),
         (
@@ -906,6 +907,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                 function,
                 mocks,
                 project_root: None,
+                execution_profile: None,
             }),
         (
             arb_ident(),
@@ -917,6 +919,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                 function,
                 mocks,
                 project_root: None,
+                execution_profile: None,
             }),
         (
             arb_ident(),
@@ -933,6 +936,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                     setup_context,
                     capture: true,
                     prepare_id,
+                    execution_profile: None,
                 }
             ),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {
@@ -942,6 +946,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                 level,
                 project_root: None,
                 parent_context: None,
+                execution_profile: None,
             }
         }),
         (arb_ident(), arb_setup_level())
