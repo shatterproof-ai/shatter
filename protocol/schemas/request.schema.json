@@ -61,6 +61,10 @@
         "project_root": {
           "type": ["string", "null"],
           "description": "Path to the detected project root directory."
+        },
+        "execution_profile": {
+          "$ref": "#/$defs/execution_profile",
+          "description": "Opaque ordered adapter descriptors selected for this target."
         }
       },
       "required": ["command", "file"]
@@ -85,6 +89,10 @@
         "project_root": {
           "type": ["string", "null"],
           "description": "Path to the detected project root directory."
+        },
+        "execution_profile": {
+          "$ref": "#/$defs/execution_profile",
+          "description": "Opaque ordered adapter descriptors selected for this target."
         }
       },
       "required": ["command", "file", "function", "mocks"]
@@ -109,6 +117,10 @@
         "project_root": {
           "type": ["string", "null"],
           "description": "Path to the detected project root directory."
+        },
+        "execution_profile": {
+          "$ref": "#/$defs/execution_profile",
+          "description": "Opaque ordered adapter descriptors selected for this target."
         }
       },
       "required": ["command", "file", "function", "mocks"]
@@ -138,6 +150,10 @@
           "type": "boolean",
           "description": "When false, the frontend skips side-effect capture (console/process interception) for lower per-execute overhead. Defaults to true. Non-capture outputs (branch_path, lines_executed, return_value, thrown_error) remain correct.",
           "default": true
+        },
+        "execution_profile": {
+          "$ref": "#/$defs/execution_profile",
+          "description": "Opaque ordered adapter descriptors selected for this target."
         }
       },
       "required": ["command", "function", "inputs", "mocks"]
@@ -165,6 +181,10 @@
         "parent_context": {
           "$ref": "setup-context-stack.schema.json",
           "description": "Contexts from enclosing setup levels, outermost first."
+        },
+        "execution_profile": {
+          "$ref": "#/$defs/execution_profile",
+          "description": "Opaque ordered adapter descriptors selected for this target."
         }
       },
       "required": ["command", "file", "scope", "level"]
@@ -217,6 +237,35 @@
         "command": { "const": "shutdown" }
       },
       "required": ["command"]
+    },
+    "execution_profile": {
+      "type": "object",
+      "properties": {
+        "adapters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/execution_adapter" },
+          "description": "Ordered opaque adapter descriptors."
+        }
+      },
+      "required": ["adapters"]
+    },
+    "execution_adapter": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Namespaced adapter identifier, for example ts/react-hooks."
+        },
+        "apply": {
+          "type": "string",
+          "enum": ["required", "auto", "suggest", "disabled"],
+          "description": "Application policy for this adapter."
+        },
+        "options": {
+          "description": "Opaque adapter-local options payload."
+        }
+      },
+      "required": ["id"]
     }
   }
 }

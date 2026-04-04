@@ -64,6 +64,7 @@ pub(crate) async fn run_observe(
             file: file_str.clone(),
             function: Some(function_name.to_string()),
             project_root: project_root_str.clone(),
+            execution_profile: None,
         })
         .await
         .map_err(|e| format!("analyze failed: {e}"))?;
@@ -109,6 +110,7 @@ pub(crate) async fn run_observe(
                 timeout_explore: None,
                 branch_profile: None,
                 meta_config: shatter_core::strategy::MetaConfig::default(),
+                execution_profile: None,
                 loop_convergence_window: 3,
                 refine_budget: None,
                 shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
@@ -120,6 +122,7 @@ pub(crate) async fn run_observe(
                 function: func.name.clone(),
                 mocks: vec![],
                 project_root: project_root_str.clone(),
+                execution_profile: None,
             }).await {
                 log::debug!("instrument failed for concolic path: {e}");
             }
@@ -134,6 +137,7 @@ pub(crate) async fn run_observe(
                     function: func.name.clone(),
                     mocks: vec![],
                     project_root: project_root_str.clone(),
+                    execution_profile: None,
                 }).await {
                     Ok(resp) => match resp.result {
                         ResponseResult::Prepare { prepare_id } => {
@@ -179,6 +183,7 @@ pub(crate) async fn run_observe(
         } else {
             let explore_config = ExploreConfig {
                 file: file_str.clone(),
+                execution_profile: None,
                 max_iterations,
                 seed: None,
                 mocks: vec![],

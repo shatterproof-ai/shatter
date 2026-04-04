@@ -15,7 +15,7 @@ use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
 use crate::mock_fixture::MockFixtureConfig;
-use crate::protocol::SetupLevel;
+use crate::protocol::{ExecutionProfile, SetupLevel};
 
 /// Default setup timeout in seconds, applied when no explicit value is configured.
 pub const DEFAULT_SETUP_TIMEOUT_SECS: u64 = 30;
@@ -483,6 +483,10 @@ pub struct DefaultsConfig {
     /// Strategy meta-configuration for adaptive exploration.
     #[serde(default)]
     pub exploration: Option<ExplorationConfig>,
+
+    /// Ordered opaque execution adapter descriptors for this target family.
+    #[serde(default)]
+    pub execution_profile: Option<ExecutionProfile>,
 }
 
 
@@ -536,6 +540,10 @@ pub struct FunctionConfig {
     /// Strategy meta-configuration, overriding defaults.
     #[serde(default)]
     pub exploration: Option<ExplorationConfig>,
+
+    /// Ordered opaque execution adapter descriptors, overriding defaults.
+    #[serde(default)]
+    pub execution_profile: Option<ExecutionProfile>,
 }
 
 /// A single candidate input for a function.
@@ -616,6 +624,9 @@ pub struct ResolvedFunctionConfig {
 
     /// Resolved genetic algorithm configuration.
     pub genetic: GeneticConfig,
+
+    /// Opaque execution profile to pass through to the frontend, if any.
+    pub execution_profile: Option<ExecutionProfile>,
 }
 
 /// A config file found during hierarchical discovery, paired with its directory.
@@ -836,6 +847,8 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut setup_level = None;
     let mut setup_timeout = None;
     let mut session_setup = None;
+    let mut execution_profile = None;
+    let mut exploration = None;
 
     // Merge generators and file_setup maps: start from farthest, overlay nearer.
     // This lets a near config override specific keys while inheriting the rest.
@@ -879,6 +892,12 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
         if session_setup.is_none() {
             session_setup = config.defaults.session_setup.clone();
+        }
+        if execution_profile.is_none() {
+            execution_profile = config.defaults.execution_profile.clone();
+        }
+        if exploration.is_none() {
+            exploration = config.defaults.exploration.clone();
         }
     }
 
@@ -942,7 +961,8 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             param_generators,
             mocks: None,
             genetic: None,
-            exploration: None,
+            exploration,
+            execution_profile,
         },
         functions,
         opaque_types,
@@ -1035,6 +1055,10 @@ fn resolve_from_merged(
         .or_else(|| config.defaults.genetic.clone())
         .unwrap_or_default();
 
+    let execution_profile = func_config
+        .and_then(|fc| fc.execution_profile.clone())
+        .or_else(|| config.defaults.execution_profile.clone());
+
     Ok(ResolvedFunctionConfig {
         max_iterations,
         timeout,
@@ -1052,6 +1076,7 @@ fn resolve_from_merged(
         mock_overrides,
         exploration,
         genetic,
+        execution_profile,
     })
 }
 
@@ -1181,6 +1206,7 @@ fn compile_pattern(pattern: &str) -> Result<GlobMatcher, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{ExecutionAdapter, ExecutionAdapterApply};
     use std::fs;
     use tempfile::TempDir;
 
@@ -1387,6 +1413,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                execution_profile: None,
             },
         );
 
@@ -1406,6 +1433,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                execution_profile: None,
             },
         );
 
@@ -1432,6 +1460,56 @@ functions:
     }
 
     #[test]
+    fn merge_configs_nearest_wins_for_execution_profile() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                execution_profile: Some(ExecutionProfile {
+                    adapters: vec![ExecutionAdapter {
+                        id: "ts/browser-dom".to_string(),
+                        apply: Some(ExecutionAdapterApply::Suggest),
+                        options: Some(serde_json::json!({"impl": "happy-dom"})),
+                    }],
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                execution_profile: Some(ExecutionProfile {
+                    adapters: vec![
+                        ExecutionAdapter {
+                            id: "ts/module-resolution/tsconfig-paths".to_string(),
+                            apply: Some(ExecutionAdapterApply::Auto),
+                            options: None,
+                        },
+                        ExecutionAdapter {
+                            id: "ts/react-hooks".to_string(),
+                            apply: Some(ExecutionAdapterApply::Suggest),
+                            options: Some(serde_json::json!({"mode": "callable_return"})),
+                        },
+                    ],
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let profile = merged
+            .defaults
+            .execution_profile
+            .expect("execution profile should be present");
+        assert_eq!(profile.adapters.len(), 2);
+        assert_eq!(profile.adapters[0].id, "ts/module-resolution/tsconfig-paths");
+        assert_eq!(profile.adapters[1].id, "ts/react-hooks");
+        assert_eq!(
+            profile.adapters[1].options,
+            Some(serde_json::json!({"mode": "callable_return"}))
+        );
+    }
+
+    #[test]
     fn resolve_function_config_uses_function_override() {
         let mut functions = HashMap::new();
         functions.insert(
@@ -1449,6 +1527,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                execution_profile: None,
             },
         );
 
@@ -1467,6 +1546,59 @@ functions:
         assert_eq!(resolved.max_iterations, 500);
         assert_eq!(resolved.timeout, 120);
         assert!(!resolved.skip);
+    }
+
+    #[test]
+    fn resolve_function_config_prefers_function_execution_profile_over_defaults() {
+        let mut functions = HashMap::new();
+        functions.insert(
+            "src/auth.ts:validateToken".to_string(),
+            FunctionConfig {
+                max_iterations: None,
+                timeout: None,
+                inputs: None,
+                skip: None,
+                setup: None,
+                setup_level: None,
+                setup_timeout: None,
+                generators: None,
+                param_generators: None,
+                mocks: None,
+                genetic: None,
+                exploration: None,
+                execution_profile: Some(ExecutionProfile {
+                    adapters: vec![ExecutionAdapter {
+                        id: "ts/react-hooks".to_string(),
+                        apply: Some(ExecutionAdapterApply::Required),
+                        options: Some(serde_json::json!({"providers": ["teamStore"]})),
+                    }],
+                }),
+            },
+        );
+
+        let config = ShatterConfig {
+            defaults: DefaultsConfig {
+                execution_profile: Some(ExecutionProfile {
+                    adapters: vec![ExecutionAdapter {
+                        id: "ts/browser-dom".to_string(),
+                        apply: Some(ExecutionAdapterApply::Auto),
+                        options: None,
+                    }],
+                }),
+                ..DefaultsConfig::default()
+            },
+            functions,
+            ..ShatterConfig::default()
+        };
+
+        let resolved =
+            resolve_function_config("src/auth.ts:validateToken", &[config], 50, 30).unwrap();
+        let profile = resolved
+            .execution_profile
+            .expect("resolved execution profile should be present");
+        assert_eq!(profile.adapters.len(), 1);
+        assert_eq!(profile.adapters[0].id, "ts/react-hooks");
+        assert_eq!(profile.adapters[0].apply, Some(ExecutionAdapterApply::Required));
     }
 
     #[test]
@@ -1513,6 +1645,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                execution_profile: None,
             },
         );
 
@@ -2486,6 +2619,7 @@ defaults:
                             mocks: None,
                             genetic: None,
                             exploration: None,
+                            execution_profile: None,
                         }
                     },
                 )
@@ -2764,6 +2898,53 @@ defaults:
         let yaml = "defaults: {}\n";
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.defaults.exploration.is_none());
+    }
+
+    #[test]
+    fn merge_configs_exploration_near_overrides_far() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                exploration: Some(ExplorationConfig {
+                    adaptive: true,
+                    score_window: 250,
+                    cold_start: 30,
+                    strategy_floor: 0.03,
+                    strategy_weights: None,
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                exploration: Some(ExplorationConfig {
+                    adaptive: false,
+                    score_window: 50,
+                    cold_start: 10,
+                    strategy_floor: 0.10,
+                    strategy_weights: Some(HashMap::from([
+                        ("boundary".to_string(), 0.75),
+                        ("random".to_string(), 0.25),
+                    ])),
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let exploration = merged.defaults.exploration.expect("merged exploration defaults");
+        assert!(!exploration.adaptive);
+        assert_eq!(exploration.score_window, 50);
+        assert_eq!(exploration.cold_start, 10);
+        assert!((exploration.strategy_floor - 0.10).abs() < f64::EPSILON);
+        assert_eq!(
+            exploration.strategy_weights,
+            Some(HashMap::from([
+                ("boundary".to_string(), 0.75),
+                ("random".to_string(), 0.25),
+            ]))
+        );
     }
 
     #[test]

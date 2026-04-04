@@ -216,6 +216,7 @@ async fn analyze_target(
             file: target.file.clone(),
             function: Some(target.function.clone()),
             project_root: project_root.map(String::from),
+            execution_profile: None,
         })
         .await
         .map_err(|e| format!("{e}"))?;
@@ -246,6 +247,7 @@ async fn run_single_exploration(
 ) -> RunMeasurement {
     let explore_config = ExploreConfig {
         file: target.file.clone(),
+        execution_profile: None,
         max_iterations: config.max_iterations,
         seed: None,
         mocks: vec![],

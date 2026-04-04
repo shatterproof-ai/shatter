@@ -205,6 +205,7 @@ pub(crate) async fn run_explore(
                 file: file_str.to_string(),
                 function: target.function.clone(),
                 project_root: project_root_str.clone(),
+                execution_profile: None,
             })
             .instrument(tracing::info_span!("frontend.analyze"))
             .await
@@ -554,6 +555,7 @@ pub(crate) async fn run_explore(
                     None => vec![],
                 },
                 project_root: project_root_str.clone(),
+                execution_profile: resolved.execution_profile.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                 meta_config: meta_config.clone(),
@@ -609,6 +611,7 @@ pub(crate) async fn run_explore(
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),
+                    execution_profile: explore_config.execution_profile.clone(),
                     loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
                     shrink_budget,
@@ -681,6 +684,7 @@ pub(crate) async fn run_explore(
                         function: item.func.name.clone(),
                         mocks: concolic_config.mocks.clone(),
                         project_root: project_root_owned.clone(),
+                        execution_profile: None,
                     }).await {
                         log::debug!("instrument failed for concolic path: {e}");
                     }
@@ -694,6 +698,7 @@ pub(crate) async fn run_explore(
                             function: item.func.name.clone(),
                             mocks: concolic_config.mocks.clone(),
                             project_root: project_root_owned.clone(),
+                            execution_profile: None,
                         }).await {
                             Ok(resp) => match resp.result {
                                 ResponseResult::Prepare { prepare_id } => {
@@ -915,6 +920,7 @@ pub(crate) async fn run_explore(
                                         function: func.name.clone(),
                                         mocks: mock_symbols_for_ga,
                                         project_root: project_root_str.clone(),
+                                        execution_profile: None,
                                     }).await;
                                     match shatter_core::genetic_explorer::genetic_explore(
                                         &mut ga_frontend,

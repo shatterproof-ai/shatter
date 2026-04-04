@@ -156,6 +156,7 @@ async fn probe_for_base_cases(
                 setup_context: None,
                 capture: true,
                 prepare_id: None,
+                execution_profile: None,
             })
             .await?;
 
@@ -245,6 +246,7 @@ pub async fn explore_recursive(
                     setup_context: None,
                     capture: true,
                     prepare_id: None,
+                    execution_profile: None,
                 })
                 .await?;
 
@@ -380,6 +382,7 @@ pub async fn explore_mutual_group(
                     setup_context: None,
                     capture: true,
                     prepare_id: None,
+                    execution_profile: None,
                 })
                 .await?;
 
@@ -457,6 +460,7 @@ pub async fn explore_mutual_group(
                         setup_context: None,
                         capture: true,
                         prepare_id: None,
+                        execution_profile: None,
                     })
                     .await?;
 

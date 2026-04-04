@@ -191,6 +191,7 @@ async fn execute_individual(
             setup_context: None,
             capture: true,
             prepare_id: None,
+            execution_profile: None,
         })
         .await?;
 

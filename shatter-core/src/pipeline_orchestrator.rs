@@ -378,6 +378,7 @@ async fn run_observe_stage(
             function: input.function_name.clone(),
             mocks: vec![],
             project_root: project_root.clone(),
+            execution_profile: None,
         })
         .await;
 

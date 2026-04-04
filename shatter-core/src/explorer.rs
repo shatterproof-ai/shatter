@@ -29,8 +29,8 @@ use crate::strategy::{
     RandomStrategy, StrategyContext, UserProvidedStrategy,
 };
 use crate::protocol::{
-    Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
-    SetupContextEntry, SetupContextStack,
+    Command as ProtoCommand, ExecuteResult, ExecutionProfile, FunctionAnalysis, MockConfig,
+    ResponseResult, SetupContextEntry, SetupContextStack,
 };
 use crate::setup_manager::SetupManager;
 
@@ -133,6 +133,8 @@ pub struct ExploreConfig {
     pub pool_seeds: Vec<Vec<serde_json::Value>>,
     /// Detected project root directory, passed to frontend commands.
     pub project_root: Option<String>,
+    /// Opaque execution profile selected for this function, if any.
+    pub execution_profile: Option<ExecutionProfile>,
     /// Iteration count bucket boundaries for loop-aware path hashing.
     pub loop_buckets: LoopBuckets,
     /// Per-function exploration wall-clock timeout. Whichever of this or
@@ -611,6 +613,7 @@ pub(crate) async fn send_setup(
     scope: &str,
     level: SetupLevel,
     project_root: Option<String>,
+    execution_profile: Option<ExecutionProfile>,
 ) -> Result<Option<SetupContextStack>, ExploreError> {
     let response = frontend
         .send(ProtoCommand::Setup {
@@ -619,6 +622,7 @@ pub(crate) async fn send_setup(
             level,
             project_root,
             parent_context: None,
+            execution_profile,
         })
         .await?;
     match response.result {
@@ -688,6 +692,7 @@ pub async fn explore_function(
             function: analysis.name.clone(),
             mocks: config.mocks.clone(),
             project_root: config.project_root.clone(),
+            execution_profile: config.execution_profile.clone(),
         })
         .instrument(tracing::info_span!("explore.instrument"))
         .await?;
@@ -732,7 +737,14 @@ pub async fn explore_function(
     if per_function_setup && !skip_setup
         && let Some(ref setup_file) = config.setup_file
     {
-        match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone())
+        match send_setup(
+            frontend,
+            setup_file,
+            &analysis.name,
+            config.setup_level,
+            config.project_root.clone(),
+            config.execution_profile.clone(),
+        )
             .instrument(tracing::info_span!("setup.function"))
             .await?
         {
@@ -790,6 +802,7 @@ pub async fn explore_function(
                 function: analysis.name.clone(),
                 mocks: config.mocks.clone(),
                 project_root: config.project_root.clone(),
+                execution_profile: config.execution_profile.clone(),
             })
             .instrument(tracing::info_span!("explore.prepare"))
             .await
@@ -844,6 +857,7 @@ pub async fn explore_function(
                         setup_context: setup_context.clone(),
                         capture: false,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .await?;
 
@@ -855,6 +869,7 @@ pub async fn explore_function(
                         setup_context: setup_context.clone(),
                         capture: false,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .await?;
 
@@ -989,7 +1004,14 @@ pub async fn explore_function(
         if per_execution_setup && !skip_setup
             && let Some(ref setup_file) = config.setup_file
         {
-            match send_setup(frontend, setup_file, &analysis.name, config.setup_level, config.project_root.clone())
+            match send_setup(
+                frontend,
+                setup_file,
+                &analysis.name,
+                config.setup_level,
+                config.project_root.clone(),
+                config.execution_profile.clone(),
+            )
                 .instrument(tracing::info_span!("setup.execution"))
                 .await?
             {
@@ -1059,6 +1081,7 @@ pub async fn explore_function(
             &inputs,
             &iteration_mocks,
             setup_context.as_ref(),
+            config.execution_profile.as_ref(),
             &config.loop_buckets,
             &mut obs_state,
             config.capture_side_effects,
@@ -1224,6 +1247,7 @@ pub async fn explore_function(
                         setup_context: None,
                         capture: true,
                         prepare_id: prepare_id.clone(),
+                        execution_profile: config.execution_profile.clone(),
                     })
                     .instrument(tracing::info_span!("shrink.execute_round_trip"))
                     .await;
@@ -1259,6 +1283,7 @@ pub async fn explore_function(
                             setup_context: None,
                             capture: false,
                             prepare_id: prepare_id.clone(),
+                            execution_profile: config.execution_profile.clone(),
                         })
                         .instrument(tracing::info_span!("shrink.execute_round_trip"))
                         .await;
@@ -1294,6 +1319,7 @@ pub async fn explore_function(
                                 setup_context: None,
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
+                                execution_profile: config.execution_profile.clone(),
                             })
                             .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;
@@ -2649,6 +2675,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2679,6 +2706,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2709,6 +2737,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2738,6 +2767,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2771,6 +2801,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2800,6 +2831,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2828,6 +2860,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2864,6 +2897,7 @@ mod tests {
             candidate_inputs: vec![candidate_value.clone()],
             pool_seeds: vec![pool_value.clone()],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
@@ -2904,6 +2938,7 @@ mod tests {
             candidate_inputs: vec![],
             pool_seeds: vec![],
             project_root: None,
+            execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
             // Non-adaptive (round-robin) to ensure UserProvidedStrategy is drained
