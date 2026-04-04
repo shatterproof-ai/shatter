@@ -167,3 +167,6 @@ perf/results/
 .dolt/
 *.db
 .claude/worktrees/
+
+# Go compiled binaries
+shatter-go/bin/

@@ -110,6 +110,27 @@
             " "
           ]
         ]
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "resolvePrice",
+            "severity": "unhandled_error"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "element": {
+            "kind": "unknown"
+          },
+          "kind": "array"
+        },
+        "value": [
+          null,
+          true
+        ]
       }
     ],
     "{\"kind\":\"float\"}": [
@@ -747,6 +768,36 @@
           "kind": "float"
         },
         "value": 794.2526433011742
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "classifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 739.3120958473437
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 1,
+            "function": "formatCurrency",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "float"
+        },
+        "value": 1000000.0
       }
     ],
     "{\"kind\":\"int\"}": [
@@ -924,6 +975,51 @@
           "kind": "int"
         },
         "value": -937
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 296
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 316
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 527
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
