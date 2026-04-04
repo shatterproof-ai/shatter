@@ -149,6 +149,28 @@ export function createUnresolvableModuleStub(_moduleName: string): Record<string
       if (prop === "default") return createProxy();
       return createProxy();
     },
+    has(): boolean {
+      return true;
+    },
+    set(): boolean {
+      return true;
+    },
+    deleteProperty(): boolean {
+      return true;
+    },
+    ownKeys(target: CallableTarget): string[] {
+      // Must include non-configurable own keys from the target (prototype)
+      // to satisfy the Proxy invariant, but mark them non-enumerable so
+      // Object.keys() / spread return empty results.
+      return Object.getOwnPropertyNames(target);
+    },
+    getOwnPropertyDescriptor(target: CallableTarget, prop: string | symbol): PropertyDescriptor | undefined {
+      // For keys inherited from the function target (name, length, prototype),
+      // return the real descriptor so Proxy invariants are satisfied.
+      const real = Object.getOwnPropertyDescriptor(target, prop);
+      if (real) return real;
+      return { configurable: true, enumerable: true, value: createProxy() };
+    },
     apply(): Record<string, unknown> {
       return createProxy();
     },

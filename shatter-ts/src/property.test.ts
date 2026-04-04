@@ -1485,3 +1485,51 @@ describe("BigInt serialization properties", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unresolvable module stub shape invariants
+// ---------------------------------------------------------------------------
+
+import { createUnresolvableModuleStub } from "./executor.js";
+
+describe("unresolvable module stub shape invariants", () => {
+  const arbPropName = fc.stringMatching(/^[a-zA-Z_$][a-zA-Z0-9_$]{0,20}$/);
+
+  it("'in' operator returns true for any property name", () => {
+    fc.assert(
+      fc.property(arbPropName, (prop) => {
+        const stub = createUnresolvableModuleStub("fc-test");
+        expect(prop in stub).toBe(true);
+      }),
+    );
+  });
+
+  it("property access always returns a callable and constructable value", () => {
+    fc.assert(
+      fc.property(arbPropName, (prop) => {
+        const stub = createUnresolvableModuleStub("fc-test");
+        const val = (stub as Record<string, unknown>)[prop];
+        if (prop === "then") return; // intentionally undefined
+        if (prop === "__esModule") return; // intentionally boolean
+        expect(typeof val).toBe("function");
+        expect(() => (val as () => unknown)()).not.toThrow();
+        expect(() => new (val as { new(): unknown })()).not.toThrow();
+      }),
+    );
+  });
+
+  it("stub is always callable, constructable, iterable, and coercible", () => {
+    const stub = createUnresolvableModuleStub("fc-test");
+    // callable
+    const called = (stub as unknown as () => unknown)();
+    expect(typeof called).toBe("function");
+    // constructable — result is another callable proxy (typeof "function")
+    const constructed = new (stub as unknown as { new(): unknown })();
+    expect(typeof constructed).toBe("function");
+    // iterable
+    expect([...(stub as unknown as Iterable<unknown>)]).toEqual([]);
+    // coercible
+    expect(`${stub as unknown as string}`).toBe("");
+    expect(+(stub as unknown as number)).toBe(0);
+  });
+});

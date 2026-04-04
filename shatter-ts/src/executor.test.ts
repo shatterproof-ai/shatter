@@ -1064,6 +1064,40 @@ describe("stubbed_import fallback for unresolvable modules", () => {
     expect(() => ({} instanceof (stub as unknown as { new(): unknown }))).not.toThrow();
   });
 
+  it("stub 'in' operator returns true for any property", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect("connect" in stub).toBe(true);
+    expect("nonexistent" in stub).toBe(true);
+    expect(Symbol.iterator in stub).toBe(true);
+  });
+
+  it("stub property assignment does not throw", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(() => { (stub as Record<string, unknown>).options = { timeout: 5000 }; }).not.toThrow();
+  });
+
+  it("stub property deletion does not throw", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(() => { delete (stub as Record<string, unknown>).foo; }).not.toThrow();
+  });
+
+  it("stub Object.keys returns empty array", () => {
+    const stub = createUnresolvableModuleStub("test-module");
+    expect(Object.keys(stub)).toEqual([]);
+  });
+
+  it("stub feature detection via 'in' works through executeInstrumented", async () => {
+    const source = `
+      const Fake = require("nonexistent-feature-detect-stub-test");
+      export function detect(): boolean {
+        return "connect" in Fake && "send" in Fake;
+      }
+    `;
+    const result = await executeInstrumented(source, "detect", [], []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
+  });
+
   it("stub chained calls work through executeInstrumented", async () => {
     const source = `
       const Fake = require("nonexistent-chain-xyz-stub-test");
