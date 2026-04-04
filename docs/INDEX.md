@@ -23,11 +23,13 @@ Where to find what in Shatter's documentation.
 | [docs/GLOSSARY.md](GLOSSARY.md) | Term definitions used across the project | Contributors |
 | [docs/CI-INTEGRATION.md](CI-INTEGRATION.md) | CI pipeline configuration and integration guidance | Contributors |
 | [docs/hooks.md](hooks.md) | Git hooks and automation setup | Contributors |
+| [docs/execution-adapters.md](execution-adapters.md) | Long-term architecture reference for framework-specific execution adapters, heuristics, composition, and cross-language extension points | Contributors and architects |
 
 ## How to Read These Docs
 
 - **Using Shatter?** Start with [README.md](../README.md), then run through [QUICKSTART.md](../QUICKSTART.md). Use [docs/PROJECT-LAYOUT.md](PROJECT-LAYOUT.md) to understand what Shatter writes in your project, and consult [SPEC.md](../SPEC.md) when you need precise command or output behavior.
 - **Building a frontend?** Read [PROTOCOL.md](../PROTOCOL.md) for the wire format, then check existing frontends (`shatter-ts/`, `shatter-go/`) for reference implementations.
+- **Designing framework-specific execution support?** Read [docs/execution-adapters.md](execution-adapters.md) for the long-term execution-adapter architecture, then use [SPEC.md](../SPEC.md) and [PROTOCOL.md](../PROTOCOL.md) to separate implemented behavior from planned subsystem design.
 - **Contributing code?** Start with [CONTRIBUTING.md](../CONTRIBUTING.md), then read [CLAUDE.md](../CLAUDE.md) for quality standards and [AGENTS.md](../AGENTS.md) for workflow. Each sub-crate has its own `CLAUDE.md` with component-specific guidance.
 - **Understanding the vision?** [PLAN.md](../PLAN.md) describes the v2 architecture and roadmap — but check [SPEC.md](../SPEC.md) to know what's actually implemented today.
 
