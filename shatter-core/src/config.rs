@@ -849,6 +849,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut session_setup = None;
     let mut execution_profile = None;
     let mut exploration = None;
+    let mut genetic = None;
 
     // Merge generators and file_setup maps: start from farthest, overlay nearer.
     // This lets a near config override specific keys while inheriting the rest.
@@ -898,6 +899,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
         if exploration.is_none() {
             exploration = config.defaults.exploration.clone();
+        }
+        if genetic.is_none() {
+            genetic = config.defaults.genetic.clone();
         }
     }
 
@@ -960,7 +964,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             generators,
             param_generators,
             mocks: None,
-            genetic: None,
+            genetic,
             exploration,
             execution_profile,
         },
@@ -3017,6 +3021,47 @@ defaults:
         assert_eq!(resolved.genetic.max_generations, 500);
         // timeout_secs falls back to built-in default
         assert_eq!(resolved.genetic.timeout_secs, GeneticConfig::default().timeout_secs);
+    }
+
+    #[test]
+    fn merge_configs_genetic_near_overrides_far() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                genetic: Some(GeneticConfig {
+                    enabled: true,
+                    population_size: 200,
+                    max_generations: 300,
+                    mutation_rate: 0.40,
+                    crossover_rate: 0.50,
+                    timeout_secs: 45,
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                genetic: Some(GeneticConfig {
+                    enabled: false,
+                    population_size: 25,
+                    max_generations: 80,
+                    mutation_rate: 0.10,
+                    crossover_rate: 0.90,
+                    timeout_secs: 15,
+                }),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let genetic = merged.defaults.genetic.expect("merged genetic defaults");
+        assert!(!genetic.enabled);
+        assert_eq!(genetic.population_size, 25);
+        assert_eq!(genetic.max_generations, 80);
+        assert!((genetic.mutation_rate - 0.10).abs() < f64::EPSILON);
+        assert!((genetic.crossover_rate - 0.90).abs() < f64::EPSILON);
+        assert_eq!(genetic.timeout_secs, 15);
     }
 
     #[test]
