@@ -961,7 +961,6 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             param_generators,
             mocks: None,
             genetic: None,
-            execution_profile,
             exploration,
             execution_profile,
         },
