@@ -343,6 +343,7 @@ pub(crate) async fn run_scan(
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: shatter_core::protocol::InvocationModel::Direct,
         });
     }
 

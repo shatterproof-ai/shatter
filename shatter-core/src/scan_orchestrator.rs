@@ -2706,6 +2706,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -3282,6 +3283,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "caller".to_string(),
@@ -3307,6 +3309,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3390,6 +3393,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
@@ -3460,6 +3464,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
@@ -3539,6 +3544,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "fn_b".to_string(),
@@ -3557,6 +3563,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3641,6 +3648,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "slow_b".to_string(),
@@ -3659,6 +3667,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3739,6 +3748,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -4450,6 +4460,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         // Compute the fingerprint parallel_scan will derive from the source file.
@@ -4540,6 +4551,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let warm_fp = compute_expected_deep_fp(&warm_source, &warm_analysis);
@@ -4569,6 +4581,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let mut file_map = HashMap::new();
@@ -4643,6 +4656,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
@@ -4711,6 +4725,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4802,6 +4817,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4903,6 +4919,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         // leaf_a → mid → root: three distinct topological layers.
@@ -4990,6 +5007,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let leaf_names = ["leaf_a", "leaf_b", "leaf_c", "leaf_d"];
@@ -5020,6 +5038,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         });
 
         let mut file_map = HashMap::new();
@@ -5122,6 +5141,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "beta".to_string(),
@@ -5140,6 +5160,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -5221,6 +5242,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "fn_two".to_string(),
@@ -5235,6 +5257,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -5304,6 +5327,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "caller_fn".to_string(),
@@ -5325,6 +5349,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 

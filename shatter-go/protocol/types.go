@@ -249,6 +249,15 @@ type FunctionAnalysis struct {
 	CryptoBoundaries []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
 	Loops            []LoopInfo           `json:"loops,omitempty"`
 	SourceFile       string               `json:"source_file,omitempty"`
+	InvocationModel  *InvocationModel     `json:"invocation_model,omitempty"`
+}
+
+// InvocationModel describes how a discovered target should be invoked.
+type InvocationModel struct {
+	Kind            string            `json:"kind"`
+	AdapterID       string            `json:"adapter_id,omitempty"`
+	SyntheticParams []ParamInfo       `json:"synthetic_params,omitempty"`
+	ScenarioSchema  *json.RawMessage  `json:"scenario_schema,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.
