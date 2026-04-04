@@ -62,6 +62,7 @@ pub(crate) async fn run_revalidate(
             file: file_str.to_string(),
             function: target.function.clone(),
             project_root: project_root_str.clone(),
+            execution_profile: None,
         })
         .await
         .map_err(|e| format!("analyze failed: {e}"))?;
@@ -114,6 +115,7 @@ pub(crate) async fn run_revalidate(
                 function: func_name.to_string(),
                 mocks: vec![],
                 project_root: project_root_str.clone(),
+                execution_profile: None,
             })
             .await
             .map_err(|e| format!("instrument failed for {func_name}: {e}"))?;

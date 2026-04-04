@@ -58,6 +58,7 @@ async fn analyze_function(
             file: file.to_string(),
             function: Some(function_name.to_string()),
             project_root: None,
+            execution_profile: None,
         })
         .await
         .expect("analyze command failed");
@@ -93,6 +94,7 @@ async fn instrument_function_with_mocks(
             function: function_name.to_string(),
             mocks,
             project_root: None,
+            execution_profile: None,
         })
         .await
         .expect("instrument command failed");
@@ -592,6 +594,7 @@ async fn setup_session_context_flows_to_execute() {
             level: SetupLevel::Session,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("setup command failed");
@@ -636,6 +639,7 @@ async fn setup_session_context_flows_to_execute() {
             }),
             capture: true,
             prepare_id: None,
+            execution_profile: None,
         })
         .await
         .expect("execute with setup context failed");
@@ -692,6 +696,7 @@ async fn setup_file_level_scoped_per_file() {
             level: SetupLevel::File,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("setup for auth.ts failed");
@@ -720,6 +725,7 @@ async fn setup_file_level_scoped_per_file() {
             level: SetupLevel::File,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("setup for data.ts failed");
@@ -791,6 +797,7 @@ async fn setup_failure_skips_dependents() {
             level: SetupLevel::Session,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("setup command should complete (even if it fails)");
@@ -863,6 +870,7 @@ async fn setup_teardown_runs_in_reverse_order() {
             level: SetupLevel::Session,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("session setup failed");
@@ -879,6 +887,7 @@ async fn setup_teardown_runs_in_reverse_order() {
             level: SetupLevel::File,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("file setup failed");
@@ -895,6 +904,7 @@ async fn setup_teardown_runs_in_reverse_order() {
             level: SetupLevel::Function,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("function setup failed");
@@ -963,6 +973,7 @@ async fn explorer_explore_function_with_setup() {
 
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
+        execution_profile: None,
         max_iterations: 10,
         seed: Some(42),
         mocks: vec![],
@@ -1026,6 +1037,7 @@ async fn orchestrator_explore_with_setup_context() {
             level: SetupLevel::Function,
             project_root: None,
             parent_context: None,
+            execution_profile: None,
         })
         .await
         .expect("setup command failed");
@@ -1186,6 +1198,7 @@ async fn concolic_mock_status_branches_discovered() {
 
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
+        execution_profile: None,
         max_iterations: 30,
         seed: None,
         mocks,
@@ -1273,6 +1286,7 @@ async fn concolic_mock_result_branches_discovered() {
 
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
+        execution_profile: None,
         max_iterations: 30,
         seed: None,
         mocks,
@@ -1359,6 +1373,7 @@ async fn concolic_mock_loop_branches_discovered() {
 
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
+        execution_profile: None,
         max_iterations: 30,
         seed: None,
         mocks,

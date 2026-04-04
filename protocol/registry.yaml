@@ -23,27 +23,27 @@ commands:
 
   analyze:
     description: Extract type info, branches, and dependencies from a function.
-    fields: [file, function, project_root]
+    fields: [file, function, project_root, execution_profile]
     response_status: analyze
 
   instrument:
     description: Instrument a function for symbolic constraint tracking.
-    fields: [file, function, mocks, project_root]
+    fields: [file, function, mocks, project_root, execution_profile]
     response_status: instrument
 
   prepare:
     description: Pre-build execution artifacts once for reuse across repeated execute calls.
-    fields: [file, function, mocks, project_root]
+    fields: [file, function, mocks, project_root, execution_profile]
     response_status: prepare
 
   execute:
     description: Run an instrumented function with concrete inputs.
-    fields: [function, inputs, mocks, setup_context, capture, prepare_id]
+    fields: [function, inputs, mocks, setup_context, capture, prepare_id, execution_profile]
     response_status: execute
 
   setup:
     description: Initialize state before execution (DB fixtures, env, etc.).
-    fields: [file, scope, level, project_root, parent_context]
+    fields: [file, scope, level, project_root, parent_context, execution_profile]
     response_status: setup
 
   teardown:

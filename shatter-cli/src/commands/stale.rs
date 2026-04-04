@@ -43,6 +43,7 @@ pub(crate) async fn run_stale(
             file: file_str.to_string(),
             function: target.function.clone(),
             project_root: project_root_str,
+            execution_profile: None,
         })
         .await
         .map_err(|e| format!("analyze failed: {e}"))?;
