@@ -1,8 +1,3 @@
-[submodule ".agents"]
-	path = .agents
-	url = git@github.com:ketang/agents.git
-	update = merge
-	branch = main
 [submodule "examples"]
 	path = examples
 	url = https://github.com/shatterproof-ai/examples.git
