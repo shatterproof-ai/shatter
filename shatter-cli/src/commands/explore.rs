@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
@@ -24,11 +25,104 @@ use crate::helpers::*;
 
 /// Result of exploring a single function, collected after parallel execution.
 struct FuncExploreOutcome {
+    work_index: usize,
     func: shatter_core::protocol::FunctionAnalysis,
     mock_symbols: Vec<String>,
     result: Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
     genetic_config: GeneticConfig,
+}
+
+#[derive(Serialize)]
+struct ExploreFunctionArtifact<'a> {
+    version: u32,
+    status: &'a str,
+    file: &'a str,
+    function_name: &'a str,
+    start_line: u32,
+    end_line: u32,
+    wall_time_ms: u64,
+    mock_symbols: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<&'a shatter_core::explorer::ObservationOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+}
+
+fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
+    project_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shatter-artifacts")
+        .join("explore-results")
+}
+
+fn sanitize_artifact_component(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn explore_artifact_path(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) -> PathBuf {
+    let file_component = sanitize_artifact_component(file);
+    let fn_component = sanitize_artifact_component(&func.name);
+    root.join(file_component)
+        .join(format!("{:05}_{}.json", func.start_line, fn_component))
+}
+
+fn write_explore_artifact(
+    root: &Path,
+    file: &str,
+    outcome: &FuncExploreOutcome,
+) -> Result<PathBuf, String> {
+    let status = if outcome.result.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    };
+    let artifact = ExploreFunctionArtifact {
+        version: 1,
+        status,
+        file,
+        function_name: &outcome.func.name,
+        start_line: outcome.func.start_line,
+        end_line: outcome.func.end_line,
+        wall_time_ms: outcome.wall_time.as_millis() as u64,
+        mock_symbols: &outcome.mock_symbols,
+        observation: outcome.result.as_ref().ok(),
+        error: outcome.result.as_ref().err().map(String::as_str),
+    };
+    let path = explore_artifact_path(root, file, &outcome.func);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create explore artifact dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&artifact)
+        .map_err(|e| format!("failed to serialize explore artifact: {e}"))?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("failed to write explore artifact temp file: {e}"))?;
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("failed to finalize explore artifact: {e}"))?;
+    Ok(path)
 }
 
 fn emit_explore_progress(
@@ -722,8 +816,9 @@ pub(crate) async fn run_explore(
         // --- Phase 2: Parallel exploration ---
         let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
         let completed_functions = Arc::new(AtomicUsize::new(0));
-        let mut handles = Vec::new();
+        let mut join_set = tokio::task::JoinSet::new();
         let total_work_items = work_items.len();
+        let artifact_root = explore_artifact_root(project_root_str.as_deref());
 
         let fe_config_for_lang = fe_configs
             .get(&target.language)
@@ -739,7 +834,7 @@ pub(crate) async fn run_explore(
             let progress_index = work_index + 1;
             let progress_total = total_work_items;
 
-            let handle = tokio::spawn(async move {
+            join_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore is never closed");
                 let func_start = Instant::now();
                 emit_explore_progress(
@@ -762,6 +857,7 @@ pub(crate) async fn run_explore(
                             "failed",
                         );
                         return FuncExploreOutcome {
+                            work_index,
                             func: item.func,
                             mock_symbols: item.mock_symbols,
                             result: Err(format!("failed to spawn frontend: {e}")),
@@ -872,6 +968,7 @@ pub(crate) async fn run_explore(
                 let _ = task_frontend.shutdown().await;
 
                 FuncExploreOutcome {
+                    work_index,
                     func: item.func,
                     mock_symbols: item.mock_symbols,
                     result,
@@ -879,19 +976,34 @@ pub(crate) async fn run_explore(
                     genetic_config: item.genetic_config,
                 }
             });
-
-            handles.push(handle);
         }
 
         // --- Phase 3: Collect results and process (sequential, in order) ---
-        for handle in handles {
-            let outcome = match handle.await {
+        let mut outcomes = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            let outcome = match joined {
                 Ok(o) => o,
                 Err(e) => {
                     log::error!("Task join error: {e}");
                     continue;
                 }
             };
+            match write_explore_artifact(&artifact_root, &file_str, &outcome) {
+                Ok(path) => log::info!(
+                    "Wrote explore artifact for {} -> {}",
+                    outcome.func.name,
+                    path.display()
+                ),
+                Err(e) => log::warn!(
+                    "Failed to write explore artifact for {}: {e}",
+                    outcome.func.name
+                ),
+            }
+            outcomes.push(outcome);
+        }
+        outcomes.sort_by_key(|outcome| outcome.work_index);
+
+        for outcome in outcomes {
             let func = &outcome.func;
 
             match outcome.result {
@@ -1429,8 +1541,14 @@ pub(crate) async fn run_explore(
 
 #[cfg(test)]
 mod tests {
-    use super::emit_explore_progress;
+    use super::{
+        FuncExploreOutcome, emit_explore_progress, sanitize_artifact_component,
+        write_explore_artifact,
+    };
+    use shatter_core::config::GeneticConfig;
+    use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
     use shatter_core::report::ProgressEvent;
+    use shatter_core::types::TypeInfo;
     use std::time::Duration;
 
     #[test]
@@ -1449,5 +1567,66 @@ mod tests {
         emit_explore_progress("f", 1, 3, Duration::ZERO, "started");
         emit_explore_progress("f", 2, 3, Duration::from_millis(250), "completed");
         emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed");
+    }
+
+    #[test]
+    fn write_explore_artifact_persists_completed_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = FuncExploreOutcome {
+            work_index: 0,
+            func: FunctionAnalysis {
+                name: "load/user".to_string(),
+                exported: true,
+                start_line: 12,
+                end_line: 20,
+                params: vec![],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                invocation_model: InvocationModel::Direct,
+            },
+            mock_symbols: vec!["dep".to_string()],
+            result: Ok(shatter_core::explorer::ObservationOutput {
+                function_name: "load/user".to_string(),
+                iterations: 1,
+                unique_paths: 1,
+                lines_covered: 3,
+                total_lines: 8,
+                new_path_executions: vec![],
+                raw_results: vec![],
+                discoveries: vec![],
+                nondeterministic_fields: vec![],
+                float_probe_results: vec![],
+                boundary_results: vec![],
+                shrunk_witnesses: std::collections::HashMap::new(),
+                mcdc_summary: None,
+                shrink_stats: shatter_core::shrink::ShrinkStats::default(),
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
+            }),
+            wall_time: Duration::from_millis(25),
+            genetic_config: GeneticConfig::default(),
+        };
+
+        let path =
+            write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["function_name"], "load/user");
+        assert_eq!(value["mock_symbols"][0], "dep");
+        assert_eq!(value["observation"]["function_name"], "load/user");
+    }
+
+    #[test]
+    fn sanitize_artifact_component_replaces_path_separators() {
+        assert_eq!(sanitize_artifact_component("src/user.ts"), "src_user.ts");
+        assert_eq!(sanitize_artifact_component(""), "unknown");
     }
 }
