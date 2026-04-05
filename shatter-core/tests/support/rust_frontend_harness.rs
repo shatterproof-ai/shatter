@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::env;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -29,6 +30,20 @@ fn rust_frontend_path() -> PathBuf {
 pub fn workspace_path(relative: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.join(relative)
+}
+
+/// Resolve the shared examples checkout used by integration tests.
+pub fn examples_root() -> PathBuf {
+    if let Some(path) = env::var_os("SHATTER_EXAMPLES_DIR") {
+        return PathBuf::from(path);
+    }
+
+    let fallback = env::temp_dir().join("shatter-examples-main");
+    assert!(
+        fallback.exists(),
+        "examples checkout not found. Set SHATTER_EXAMPLES_DIR or run python3 scripts/examples_checkout.py."
+    );
+    fallback
 }
 
 /// Serialize Rust frontend integration tests so temp Cargo builds do not

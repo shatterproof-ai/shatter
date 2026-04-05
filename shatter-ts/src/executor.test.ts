@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   executeFunction,
@@ -38,7 +39,8 @@ function asCallable(v: unknown): (...args: unknown[]) => unknown {
 }
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
-const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/standalone/ts");
+const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? path.join(os.tmpdir(), "shatter-examples-main");
+const EXAMPLES_DIR = path.join(EXAMPLES_ROOT, "standalone", "ts");
 
 beforeEach(() => {
   clearModuleCache();
@@ -1610,7 +1612,7 @@ describe("executeInstrumented no-capture fast path", () => {
 
 describe("executeInstrumented script caching", () => {
   const exampleFile = path.join(
-    path.resolve(__dirname, "../../examples/standalone/ts"),
+    EXAMPLES_DIR,
     "01-arithmetic.ts",
   );
 

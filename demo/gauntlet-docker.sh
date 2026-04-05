@@ -17,6 +17,7 @@ DELAY=2
 DRY_RUN=false
 IMAGE=""
 IMAGE_DEFAULT="shatter-gauntlet"
+EXAMPLES_ROOT=""
 
 # Color support (disabled if not a terminal)
 if [[ -t 1 ]]; then
@@ -102,12 +103,23 @@ CACHE_VOL="shatter-demo-cache-$$"
 cleanup() {
     rm -f "$ERROR_LOG"
     docker volume rm "$CACHE_VOL" &>/dev/null || true
+    rm -rf "$EXAMPLES_ROOT" || true
 }
 trap cleanup EXIT
 
 # Create a named volume for cache persistence across steps
 if [[ "$DRY_RUN" != true ]]; then
     docker volume create "$CACHE_VOL" >/dev/null
+fi
+
+echo "${YELLOW}Cloning clean examples checkout...${RESET}"
+if [[ "$DRY_RUN" != true ]]; then
+    if ! EXAMPLES_ROOT="$(python3 "$REPO_ROOT/scripts/examples_checkout.py" --fresh)"; then
+        echo "${RED}failed to prepare examples checkout${RESET}"
+        exit 1
+    fi
+else
+    EXAMPLES_ROOT="/tmp/shatter-examples.dry-run"
 fi
 
 # ─── Helpers ──────────────────────────────────────────────────────────
@@ -125,7 +137,7 @@ banner() {
 # Usage: docker_run [shatter args...]
 docker_run() {
     docker run --rm \
-        -v "${REPO_ROOT}/examples:/repo/examples:ro" \
+        -v "${EXAMPLES_ROOT}:/repo/examples:ro" \
         -v "${CACHE_VOL}:/cache" \
         -e "SHATTER_CACHE_DIR=/cache" \
         "$IMAGE" \

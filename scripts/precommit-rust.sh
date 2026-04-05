@@ -14,7 +14,6 @@ while IFS= read -r file; do
     shatter-rust/*)          has_rust_fe=true ;;
     shatter-rust-runtime/*)  has_rust_rt=true ;;
     Cargo.toml|Cargo.lock)   has_ws=true ;;
-    examples/*)              has_core=true ;;
   esac
 done <<< "${staged_files}"
 

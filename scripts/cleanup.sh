@@ -187,7 +187,8 @@ if [ "$DO_TMP" = true ]; then
 
   # Shatter-generated temp dirs/files
   for f in /tmp/shatter-gen-* /tmp/shatter-demo-* /tmp/shatter-spec* \
-           /tmp/shatter-go-spec* /tmp/shatter-rust-stderr*; do
+           /tmp/shatter-go-spec* /tmp/shatter-rust-stderr* \
+           /tmp/shatter-examples-main /tmp/shatter-examples.*; do
     if [ -e "$f" ]; then
       size=$(dir_size_bytes "$f")
       if [ "$DRY_RUN" = true ]; then
@@ -200,21 +201,11 @@ if [ "$DO_TMP" = true ]; then
     fi
   done
 
-  # Shatter cache dirs in examples (runtime artifacts, not seeds)
-  for cache_dir in "$PROJECT_ROOT"/examples/*/.shatter-cache \
-                   "$PROJECT_ROOT"/examples/*/src/.shatter-cache; do
-    if [ -d "$cache_dir" ]; then
-      remove "$cache_dir" "$(echo "$cache_dir" | sed "s|$PROJECT_ROOT/||")"
-    fi
-  done
-
   # Top-level .shatter-cache
   remove "$PROJECT_ROOT/.shatter-cache" ".shatter-cache"
 
   # Legacy .shatter/cache (from before lifecycle split)
-  for cache_dir in "$PROJECT_ROOT"/examples/*/.shatter/cache \
-                   "$PROJECT_ROOT"/examples/*/src/.shatter/cache \
-                   "$PROJECT_ROOT/.shatter/cache"; do
+  for cache_dir in "$PROJECT_ROOT/.shatter/cache"; do
     if [ -d "$cache_dir" ]; then
       remove "$cache_dir" "$(echo "$cache_dir" | sed "s|$PROJECT_ROOT/||") (legacy)"
     fi

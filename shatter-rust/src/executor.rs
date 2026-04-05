@@ -3748,9 +3748,12 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn find_crate_root_finds_examples() {
         // examples/rust/src/arithmetic.rs is inside a crate.
-        let examples_src = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/rust/src/arithmetic.rs");
-        if std::path::Path::new(examples_src).exists() {
-            let root = find_crate_root(examples_src);
+        let examples_root = std::env::var("SHATTER_EXAMPLES_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("shatter-examples-main"));
+        let examples_src = examples_root.join("rust/src/arithmetic.rs");
+        if examples_src.exists() {
+            let root = find_crate_root(&examples_src.to_string_lossy());
             assert!(root.is_some(), "should find crate root for examples/rust/src");
             let root = root.unwrap();
             assert!(root.join("Cargo.toml").exists());

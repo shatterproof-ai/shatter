@@ -36,16 +36,14 @@ Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and `l
 ```bash
 git clone https://github.com/shatterproof-ai/shatter.git
 cd shatter
-git submodule update --init examples
 cargo build --release
 ./target/release/shatter --help
 ```
 
-If you already cloned without the `examples` submodule, initialize it manually:
-
-```bash
-git submodule update --init examples
-```
+Shatter's demo, smoke, and E2E flows fetch the separate
+`https://github.com/shatterproof-ai/examples` repository into `/tmp` on demand.
+Set `SHATTER_EXAMPLES_DIR` if you want those flows to use an existing checkout
+instead of the default `/tmp/shatter-examples-main` cache.
 
 ### Install a published release
 

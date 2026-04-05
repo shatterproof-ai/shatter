@@ -19,11 +19,11 @@ tasks:
       - Cargo.toml
       - ../Cargo.lock
       - build.rs
-      - ../examples/**/*.ts
-      - ../examples/**/*.go
-      - ../examples/**/*.rs
+      - ../scripts/examples_checkout.py
     cmds:
-      - cargo test -p shatter-core
+      - |
+        examples_root="$(python3 ../scripts/examples_checkout.py)"
+        SHATTER_EXAMPLES_DIR="$examples_root" cargo test -p shatter-core
 
   test-ignored:
     desc: Run shatter-core tests including slow/ignored tests
@@ -34,7 +34,9 @@ tasks:
       - ../Cargo.lock
       - build.rs
     cmds:
-      - cargo test -p shatter-core -- --include-ignored
+      - |
+        examples_root="$(python3 ../scripts/examples_checkout.py)"
+        SHATTER_EXAMPLES_DIR="$examples_root" cargo test -p shatter-core -- --include-ignored
 
   clippy:
     desc: Run clippy on shatter-core

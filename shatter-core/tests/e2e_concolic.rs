@@ -5,6 +5,7 @@
 //! cannot reliably find.
 
 use std::collections::HashSet;
+use std::env;
 use std::path::{Path, PathBuf};
 
 use shatter_core::config::GeneticConfig;
@@ -25,8 +26,16 @@ fn ts_frontend_path() -> PathBuf {
 
 /// Path to standalone TypeScript example files, resolved from the workspace root.
 fn examples_dir() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("../examples/standalone/ts")
+    if let Some(path) = env::var_os("SHATTER_EXAMPLES_DIR") {
+        return PathBuf::from(path).join("standalone/ts");
+    }
+
+    let fallback = env::temp_dir().join("shatter-examples-main/standalone/ts");
+    assert!(
+        fallback.exists(),
+        "examples checkout not found. Set SHATTER_EXAMPLES_DIR or run python3 scripts/examples_checkout.py."
+    );
+    fallback
 }
 
 /// Spawn a real TypeScript frontend subprocess.
@@ -560,8 +569,7 @@ async fn concolic_validateemail_with_literal_seeds() {
 
 /// Path to setup fixture files, resolved from the workspace root.
 fn setup_fixtures_dir() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("../examples/standalone/ts")
+    examples_dir()
 }
 
 /// Build FrontendCapabilities that include "setup" and "teardown".

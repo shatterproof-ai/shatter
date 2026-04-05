@@ -14,13 +14,13 @@
 mod rust_frontend_harness;
 
 use rust_frontend_harness::{
-    analyze_function, collect_return_values, execute_function_raw, instrument_function,
-    spawn_rust_frontend, with_rust_frontend_test_lock, workspace_path,
+    analyze_function, collect_return_values, examples_root, execute_function_raw,
+    instrument_function, spawn_rust_frontend, with_rust_frontend_test_lock,
 };
 
 /// Path to the Rust example source files.
 fn rust_examples_dir() -> std::path::PathBuf {
-    workspace_path("../examples/rust/src")
+    examples_root().join("rust/src")
 }
 
 // ---------------------------------------------------------------------------
