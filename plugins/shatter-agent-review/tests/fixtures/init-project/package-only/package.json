@@ -1,0 +1,6 @@
+{
+  "name": "package-only",
+  "scripts": {
+    "test": "jest"
+  }
+}

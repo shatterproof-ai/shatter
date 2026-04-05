@@ -12,13 +12,14 @@
     "shatter",
     "testing",
     "concolic",
-    "review"
+    "review",
+    "discovery"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Shatter Agent Review",
     "shortDescription": "Run Shatter, explain the most important cases, and draft markdown issue reports.",
-    "longDescription": "A downstream-user plugin for capturing Shatter runs, reviewing the most important observed behaviors in human terms, and writing markdown issue reports with system and project context.",
+    "longDescription": "A downstream-user plugin for discovering repository integration targets, capturing Shatter runs, reviewing the most important observed behaviors in human terms, and writing markdown issue reports with system and project context.",
     "developerName": "Shatterproof AI",
     "category": "Developer Tools",
     "capabilities": [
@@ -27,6 +28,9 @@
     ],
     "websiteURL": "https://github.com/shatterproof-ai/shatter",
     "defaultPrompt": [
+      "Discover where Shatter should integrate in this repository.",
+      "Initialize Shatter in this repository using the project's native task surface.",
+      "Propose reviewable Shatter integration edits for ambiguous command surfaces.",
       "Run Shatter on this target and capture review artifacts.",
       "Review this Shatter run and explain the most important cases.",
       "Write a markdown issue report for these Shatter findings."

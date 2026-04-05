@@ -1,0 +1,6 @@
+{
+  "name": "ambiguous-app",
+  "scripts": {
+    "test": "jest"
+  }
+}
