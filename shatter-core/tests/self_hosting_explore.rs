@@ -17,7 +17,8 @@ mod rust_frontend_harness;
 
 use rust_frontend_harness::{
     analyze_function, collect_return_values, examples_root, execute_function_raw,
-    instrument_function, spawn_rust_frontend, with_rust_frontend_test_lock,
+    instrument_function, is_offline_compile_error, spawn_rust_frontend,
+    with_rust_frontend_test_lock,
 };
 
 fn self_hosting_file() -> PathBuf {
@@ -81,9 +82,22 @@ async fn self_hosting_classify_float() {
 
         let mut results = Vec::new();
         for (inputs, expected) in &test_inputs {
-            let result =
-                execute_function_raw(&mut frontend, &file_str, "classify_float", inputs.clone())
-                    .await;
+            let result = match execute_function_raw(
+                &mut frontend,
+                &file_str,
+                "classify_float",
+                inputs.clone(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping self_hosting_classify_float: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
@@ -168,13 +182,22 @@ async fn self_hosting_coverage_percentages() {
 
         let mut results = Vec::new();
         for (inputs, expected) in &test_inputs {
-            let result = execute_function_raw(
+            let result = match execute_function_raw(
                 &mut frontend,
                 &file_str,
                 "coverage_percentages",
                 inputs.clone(),
             )
-            .await;
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping self_hosting_coverage_percentages: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
@@ -227,9 +250,22 @@ async fn self_hosting_symexpr_ratio() {
 
         let mut results = Vec::new();
         for (inputs, expected) in &test_inputs {
-            let result =
-                execute_function_raw(&mut frontend, &file_str, "symexpr_ratio", inputs.clone())
-                    .await;
+            let result = match execute_function_raw(
+                &mut frontend,
+                &file_str,
+                "symexpr_ratio",
+                inputs.clone(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping self_hosting_symexpr_ratio: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
@@ -343,9 +379,22 @@ async fn self_hosting_executions_agree() {
 
         let mut results = Vec::new();
         for (inputs, expected) in &test_inputs {
-            let result =
-                execute_function_raw(&mut frontend, &file_str, "executions_agree", inputs.clone())
-                    .await;
+            let result = match execute_function_raw(
+                &mut frontend,
+                &file_str,
+                "executions_agree",
+                inputs.clone(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping self_hosting_executions_agree: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value

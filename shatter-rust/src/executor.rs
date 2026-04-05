@@ -3836,6 +3836,15 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         src_file
     }
 
+    fn cargo_build_unavailable(msg: &str) -> bool {
+        msg.contains("cargo")
+            || msg.contains("No such file")
+            || msg.contains("spurious network error")
+            || msg.contains("download of config.json failed")
+            || msg.contains("Could not resolve host")
+            || msg.contains("Could not resolve hostname")
+    }
+
     #[test]
     fn crate_backed_execute_basic() {
         // Execute `add(2, 3)` from a crate-backed source file.
@@ -3876,7 +3885,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             // cargo not available in this CI environment — skip
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_execute_basic: cargo unavailable ({msg})");
             }
@@ -3942,7 +3951,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             (Err(ExecuteError::CompilationFailed(msg)), _)
             | (_, Err(ExecuteError::CompilationFailed(msg)))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})");
             }
@@ -4003,7 +4012,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             (Err(ExecuteError::CompilationFailed(msg)), _)
             | (_, Err(ExecuteError::CompilationFailed(msg)))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})");
             }
@@ -4299,7 +4308,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
                 );
             }
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_bridge_executes_private_function: cargo unavailable ({msg})");
             }

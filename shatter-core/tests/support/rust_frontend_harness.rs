@@ -144,7 +144,7 @@ pub async fn execute_function_raw(
     file: &str,
     function_name: &str,
     inputs: Vec<serde_json::Value>,
-) -> shatter_core::protocol::ExecuteResult {
+) -> Result<shatter_core::protocol::ExecuteResult, String> {
     let request_json = serde_json::json!({
         "protocol_version": "0.1.0",
         "id": 0,
@@ -161,12 +161,19 @@ pub async fn execute_function_raw(
         .expect("execute command failed");
 
     match response.result {
-        ResponseResult::Execute(result) => *result,
+        ResponseResult::Execute(result) => Ok(*result),
         ResponseResult::Error { code, message, .. } => {
-            panic!("execute error ({code:?}): {message}");
+            Err(format!("execute error ({code:?}): {message}"))
         }
-        other => panic!("expected Execute response, got: {other:?}"),
+        other => Err(format!("expected Execute response, got: {other:?}")),
     }
+}
+
+pub fn is_offline_compile_error(message: &str) -> bool {
+    message.contains("spurious network error")
+        || message.contains("download of config.json failed")
+        || message.contains("Could not resolve host")
+        || message.contains("Could not resolve hostname")
 }
 
 /// Collect distinct return value strings from a set of execution results.
