@@ -1,0 +1,6 @@
+{
+  "name": "root-three",
+  "scripts": {
+    "build": "tsc"
+  }
+}

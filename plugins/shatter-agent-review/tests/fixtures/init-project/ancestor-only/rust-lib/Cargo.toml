@@ -1,0 +1,4 @@
+[package]
+name = "ancestor-only-rust-lib"
+version = "0.1.0"
+edition = "2021"
