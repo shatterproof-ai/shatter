@@ -4055,6 +4055,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
             source_file: None,
         }];
 
@@ -4135,6 +4136,7 @@ mod tests {
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
             source_file: None,
         };
 
