@@ -856,6 +856,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut generators: Option<HashMap<String, String>> = None;
     let mut param_generators: Option<HashMap<String, String>> = None;
     let mut file_setup: Option<HashMap<String, String>> = None;
+    let mut mocks: Option<HashMap<String, crate::auto_mock::MockOverride>> = None;
 
     for config in configs.iter().rev() {
         if let Some(ref g) = config.defaults.generators {
@@ -871,6 +872,11 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         if let Some(ref fs) = config.defaults.file_setup {
             file_setup.get_or_insert_with(HashMap::new).extend(
                 fs.iter().map(|(k, v)| (k.clone(), v.clone())),
+            );
+        }
+        if let Some(ref mock_overrides) = config.defaults.mocks {
+            mocks.get_or_insert_with(HashMap::new).extend(
+                mock_overrides.iter().map(|(k, v)| (k.clone(), v.clone())),
             );
         }
     }
@@ -963,7 +969,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             file_setup,
             generators,
             param_generators,
-            mocks: None,
+            mocks,
             genetic,
             exploration,
             execution_profile,
@@ -1397,6 +1403,80 @@ functions:
         let merged = merge_configs(&[near, far]);
         assert_eq!(merged.defaults.max_iterations, Some(500)); // nearest wins
         assert_eq!(merged.defaults.timeout, Some(120)); // falls through to far
+    }
+
+    #[test]
+    fn merge_configs_mocks_near_overrides_far() {
+        let far = ShatterConfig {
+            defaults: DefaultsConfig {
+                mocks: Some(HashMap::from([
+                    (
+                        "db.query".to_string(),
+                        crate::auto_mock::MockOverride {
+                            return_values: Some(vec![serde_json::json!({"rows": [1]})]),
+                            behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                        },
+                    ),
+                    (
+                        "email.send".to_string(),
+                        crate::auto_mock::MockOverride {
+                            return_values: Some(vec![serde_json::json!({"accepted": true})]),
+                            behavior: Some(crate::protocol::MockBehavior::Passthrough),
+                        },
+                    ),
+                ])),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+        let near = ShatterConfig {
+            defaults: DefaultsConfig {
+                mocks: Some(HashMap::from([
+                    (
+                        "db.query".to_string(),
+                        crate::auto_mock::MockOverride {
+                            return_values: Some(vec![serde_json::json!({"rows": [2]})]),
+                            behavior: Some(crate::protocol::MockBehavior::ThrowError),
+                        },
+                    ),
+                    (
+                        "cache.get".to_string(),
+                        crate::auto_mock::MockOverride {
+                            return_values: Some(vec![serde_json::json!("hit")]),
+                            behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                        },
+                    ),
+                ])),
+                ..DefaultsConfig::default()
+            },
+            ..ShatterConfig::default()
+        };
+
+        let merged = merge_configs(&[near, far]);
+        let mocks = merged.defaults.mocks.expect("merged mock defaults");
+
+        assert_eq!(mocks.len(), 3);
+        assert_eq!(
+            mocks.get("db.query"),
+            Some(&crate::auto_mock::MockOverride {
+                return_values: Some(vec![serde_json::json!({"rows": [2]})]),
+                behavior: Some(crate::protocol::MockBehavior::ThrowError),
+            })
+        );
+        assert_eq!(
+            mocks.get("email.send"),
+            Some(&crate::auto_mock::MockOverride {
+                return_values: Some(vec![serde_json::json!({"accepted": true})]),
+                behavior: Some(crate::protocol::MockBehavior::Passthrough),
+            })
+        );
+        assert_eq!(
+            mocks.get("cache.get"),
+            Some(&crate::auto_mock::MockOverride {
+                return_values: Some(vec![serde_json::json!("hit")]),
+                behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+            })
+        );
     }
 
     #[test]
