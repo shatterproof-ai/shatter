@@ -27,6 +27,7 @@ import type {
   BoundOp,
   InductionVar,
   LoopInfo,
+  ExecutionAdapterApply,
 } from "./protocol.js";
 import {
   ALL_ERROR_CODES,
@@ -307,6 +308,30 @@ const arbLoopInfo: fc.Arbitrary<LoopInfo> = fc.record({
   induction_var: arbInductionVar,
 });
 
+const arbExecutionAdapterApply: fc.Arbitrary<ExecutionAdapterApply> = fc.constantFrom(
+  "required", "auto", "suggest", "disabled",
+);
+
+const arbHintConfidence: fc.Arbitrary<"low" | "medium" | "high"> = fc.constantFrom(
+  "low", "medium", "high",
+);
+
+const arbAdapterRelation = fc.record({
+  adapter_id: arbIdent,
+  reason: fc.option(arbShortString, { nil: undefined }),
+});
+
+const arbAdapterHint = fc.record({
+  adapter: fc.record({
+    id: arbIdent,
+    apply: fc.option(arbExecutionAdapterApply, { nil: undefined }),
+  }),
+  confidence: fc.option(arbHintConfidence, { nil: undefined }),
+  reasons: fc.option(fc.array(arbShortString, { maxLength: 3 }), { nil: undefined }),
+  requirements: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), { nil: undefined }),
+  conflicts: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), { nil: undefined }),
+});
+
 const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   name: arbIdent,
   exported: fc.boolean(),
@@ -320,6 +345,7 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   source_file: fc.option(fc.stringMatching(/^\/[a-z][a-z\/]{0,20}\.ts$/), {
     nil: undefined,
   }),
+  adapter_hints: fc.option(fc.array(arbAdapterHint, { maxLength: 3 }), { nil: undefined }),
 });
 
 // ---------------------------------------------------------------------------
