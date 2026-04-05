@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -407,6 +407,146 @@ pub struct SkippedFunction {
     pub category: SkipCategory,
 }
 
+fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+    project_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shatter-artifacts")
+        .join("scan-results")
+        .join(scan_id)
+        .join("functions")
+}
+
+fn sanitize_artifact_component(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn scan_artifact_path(root: &Path, current: usize, function_name: &str) -> PathBuf {
+    root.join(format!(
+        "{:05}_{}.json",
+        current,
+        sanitize_artifact_component(function_name)
+    ))
+}
+
+fn write_scan_artifact_json(
+    root: &Path,
+    current: usize,
+    function_name: &str,
+    value: &serde_json::Value,
+) {
+    let path = scan_artifact_path(root, current, function_name);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        log::warn!("failed to create scan artifact dir: {e}");
+        return;
+    }
+    let Ok(json) = serde_json::to_string_pretty(value) else {
+        log::warn!("failed to serialize scan artifact for {function_name}");
+        return;
+    };
+    let tmp_path = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp_path, json) {
+        log::warn!("failed to write scan artifact temp file for {function_name}: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        log::warn!("failed to finalize scan artifact for {function_name}: {e}");
+        return;
+    }
+    log::info!(
+        "Wrote scan artifact for {} -> {}",
+        function_name,
+        path.display()
+    );
+}
+
+fn write_completed_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    file_path: &str,
+    result: &FunctionResult,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let function_report = crate::report::build_function_report(result, file_path);
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "completed",
+        "current": current,
+        "total": total,
+        "function": function_report,
+    });
+    write_scan_artifact_json(root, current, &result.function_name, &value);
+}
+
+fn write_skipped_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    function_name: &str,
+    reason: &str,
+    category: SkipCategory,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "skipped",
+        "current": current,
+        "total": total,
+        "function_name": function_name,
+        "reason": reason,
+        "category": match category {
+            SkipCategory::Expected => "expected",
+            SkipCategory::Error => "error",
+        },
+    });
+    write_scan_artifact_json(root, current, function_name, &value);
+}
+
+fn write_failed_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    function_name: &str,
+    reason: &str,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "failed",
+        "current": current,
+        "total": total,
+        "function_name": function_name,
+        "reason": reason,
+    });
+    write_scan_artifact_json(root, current, function_name, &value);
+}
+
 /// Build an [`ExecutionRecord`] from an [`ExecuteResult`] and its inputs.
 fn execution_record_from_result(
     function_id: &str,
@@ -596,15 +736,15 @@ pub async fn scan(
             Ok(Some(cp)) if cp.scan_id == scan_id => cp,
             Ok(Some(_)) => {
                 log::info!("checkpoint scan_id mismatch, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id)
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
-            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
+            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
             Err(e) => {
                 log::warn!("failed to load checkpoint: {e}, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id)
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
         },
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
     };
 
     // Load the interesting input pool for cross-function seed sharing.
@@ -1149,6 +1289,7 @@ async fn run_layer_function_mode(
     input_pool: &Arc<Mutex<InterestingPool>>,
     genetic_config: &crate::config::GeneticConfig,
     progress_handler: Option<ProgressHandler>,
+    artifact_root: Option<Arc<PathBuf>>,
     total_functions: usize,
     scan_start: Instant,
 ) -> (Vec<FunctionOutcome>, usize) {
@@ -1159,6 +1300,7 @@ async fn run_layer_function_mode(
         func_name,
         analysis,
         explore_config,
+        file_path: _,
         mocks_used,
         callees,
         deep_fp,
@@ -1172,6 +1314,8 @@ async fn run_layer_function_mode(
         let cache = cache.clone();
         let genetic_config = genetic_config.clone();
         let progress_handler = progress_handler.clone();
+        let artifact_root = artifact_root.clone();
+        let file_path = explore_config.file.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire a concurrency slot before spawning the frontend.
@@ -1235,6 +1379,13 @@ async fn run_layer_function_mode(
                     if let Some(ref cache) = cache {
                         let _ = cache.store(&func_result.behavior_map);
                     }
+                    write_completed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &file_path,
+                        &func_result,
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         &func_name,
@@ -1246,6 +1397,14 @@ async fn run_layer_function_mode(
                     FunctionOutcome::Success(Box::new(func_result))
                 }
                 Ok(Err(e)) => {
+                    let reason = format!("error: {e}");
+                    write_failed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &func_name,
+                        &reason,
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         &func_name,
@@ -1260,6 +1419,14 @@ async fn run_layer_function_mode(
                     }
                 }
                 Err(_) => {
+                    let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
+                    write_failed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &func_name,
+                        &reason,
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         &func_name,
@@ -1315,6 +1482,7 @@ struct ExploreTask {
     func_name: String,
     analysis: FunctionAnalysis,
     explore_config: ExploreConfig,
+    file_path: String,
     mocks_used: Vec<MockUsage>,
     callees: std::collections::HashSet<String>,
     deep_fp: Option<String>,
@@ -1607,15 +1775,15 @@ pub async fn parallel_scan_with_progress(
             Ok(Some(cp)) if cp.scan_id == scan_id => cp,
             Ok(Some(_)) => {
                 log::info!("checkpoint scan_id mismatch, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id)
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
-            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
+            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
             Err(e) => {
                 log::warn!("failed to load checkpoint: {e}, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id)
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
         },
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
     };
 
     let mut all_results: Vec<FunctionResult> = Vec::new();
@@ -1625,6 +1793,7 @@ pub async fn parallel_scan_with_progress(
     let scan_start = Instant::now();
     let total_functions = analyses.len();
     let mut progress_index = 0usize;
+    let artifact_root = Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id));
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
@@ -1640,6 +1809,14 @@ pub async fn parallel_scan_with_progress(
                         reason: "total scan timeout exceeded".into(),
                         category: SkipCategory::Error,
                     });
+                    write_skipped_scan_artifact(
+                        Some(&artifact_root),
+                        progress_index,
+                        total_functions,
+                        func_name,
+                        "total scan timeout exceeded",
+                        SkipCategory::Error,
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         func_name,
@@ -1687,6 +1864,14 @@ pub async fn parallel_scan_with_progress(
                         reason: "no analysis found".into(),
                         category: SkipCategory::Error,
                     });
+                    write_skipped_scan_artifact(
+                        Some(&artifact_root),
+                        current_progress,
+                        total_functions,
+                        func_name,
+                        "no analysis found",
+                        SkipCategory::Error,
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         func_name,
@@ -1721,6 +1906,14 @@ pub async fn parallel_scan_with_progress(
                     reason: "resumed from checkpoint".into(),
                     category: SkipCategory::Expected,
                 });
+                write_skipped_scan_artifact(
+                    Some(&artifact_root),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "resumed from checkpoint",
+                    SkipCategory::Expected,
+                );
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -1746,6 +1939,14 @@ pub async fn parallel_scan_with_progress(
                     reason: "unchanged (fingerprint match)".into(),
                     category: SkipCategory::Expected,
                 });
+                write_skipped_scan_artifact(
+                    Some(&artifact_root),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "unchanged (fingerprint match)",
+                    SkipCategory::Expected,
+                );
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -1839,7 +2040,7 @@ pub async fn parallel_scan_with_progress(
             }
 
             let explore_config = ExploreConfig {
-                file,
+                file: file.clone(),
                 max_iterations: config.max_iterations_per_function,
                 seed: config.seed,
                 mocks,
@@ -1867,6 +2068,7 @@ pub async fn parallel_scan_with_progress(
                 func_name: func_name.clone(),
                 analysis: analysis.clone(),
                 explore_config,
+                file_path: file.clone(),
                 mocks_used,
                 callees,
                 deep_fp: current_deep_fp,
@@ -1913,6 +2115,7 @@ pub async fn parallel_scan_with_progress(
                     &input_pool,
                     &config.genetic_config,
                     progress_handler.clone(),
+                    Some(Arc::clone(&artifact_root)),
                     total_functions,
                     scan_start,
                 )
@@ -1942,6 +2145,7 @@ pub async fn parallel_scan_with_progress(
                                 func_name: task.func_name.clone(),
                                 analysis: task.analysis.clone(),
                                 explore_config: replica_config,
+                                file_path: task.file_path.clone(),
                                 mocks_used: task.mocks_used.clone(),
                                 callees: task.callees.clone(),
                                 deep_fp: task.deep_fp.clone(),
@@ -1974,6 +2178,7 @@ pub async fn parallel_scan_with_progress(
                 // Each task decrements this counter after returning its worker so that
                 // `maybe_grow` can detect tasks still blocked on `checkout()`.
                 let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
+                let write_success_artifact = config.workers_per_fn <= 1;
 
                 // Each task checks out a worker, explores, then returns the worker.
                 // Behavior map storage is deferred to after all handles join so that
@@ -1984,6 +2189,7 @@ pub async fn parallel_scan_with_progress(
                     func_name,
                     analysis,
                     explore_config,
+                    file_path,
                     mocks_used,
                     callees,
                     deep_fp,
@@ -1999,6 +2205,8 @@ pub async fn parallel_scan_with_progress(
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
+                    let artifact_root = Arc::clone(&artifact_root);
+                    let write_success_artifact = write_success_artifact;
 
                     let handle = tokio::spawn(async move {
                         emit_progress(
@@ -2066,6 +2274,15 @@ pub async fn parallel_scan_with_progress(
 
                         match result {
                             Ok(Ok(func_result)) => {
+                                if write_success_artifact {
+                                    write_completed_scan_artifact(
+                                        Some(&artifact_root),
+                                        progress_index,
+                                        total_functions,
+                                        &file_path,
+                                        &func_result,
+                                    );
+                                }
                                 emit_progress(
                                     progress_handler.as_ref(),
                                     &func_name,
@@ -2077,6 +2294,14 @@ pub async fn parallel_scan_with_progress(
                                 FunctionOutcome::Success(Box::new(func_result))
                             }
                             Ok(Err(e)) => {
+                                let reason = format!("error: {e}");
+                                write_failed_scan_artifact(
+                                    Some(&artifact_root),
+                                    progress_index,
+                                    total_functions,
+                                    &func_name,
+                                    &reason,
+                                );
                                 emit_progress(
                                     progress_handler.as_ref(),
                                     &func_name,
@@ -2091,6 +2316,15 @@ pub async fn parallel_scan_with_progress(
                                 }
                             }
                             Err(_) => {
+                                let reason =
+                                    format!("timed out after {:.0}s", timeout.as_secs_f64());
+                                write_failed_scan_artifact(
+                                    Some(&artifact_root),
+                                    progress_index,
+                                    total_functions,
+                                    &func_name,
+                                    &reason,
+                                );
                                 emit_progress(
                                     progress_handler.as_ref(),
                                     &func_name,
@@ -6433,6 +6667,48 @@ mod tests {
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
         }
+    }
+
+    #[test]
+    fn write_completed_scan_artifact_persists_function_report() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let result =
+            make_function_result("scan_fn", vec![(vec![], vec![], make_execute_result(1))]);
+
+        write_completed_scan_artifact(Some(&root), 2, 5, "src/scan.ts", &result);
+
+        let path = scan_artifact_path(&root, 2, "scan_fn");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["current"], 2);
+        assert_eq!(value["function"]["function_name"], "scan_fn");
+        assert_eq!(value["function"]["file_path"], "src/scan.ts");
+    }
+
+    #[test]
+    fn write_skipped_scan_artifact_persists_reason_and_category() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+
+        write_skipped_scan_artifact(
+            Some(&root),
+            3,
+            7,
+            "scan_fn",
+            "resumed from checkpoint",
+            SkipCategory::Expected,
+        );
+
+        let path = scan_artifact_path(&root, 3, "scan_fn");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "skipped");
+        assert_eq!(value["reason"], "resumed from checkpoint");
+        assert_eq!(value["category"], "expected");
     }
 
     #[test]
