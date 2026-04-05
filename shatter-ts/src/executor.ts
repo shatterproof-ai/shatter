@@ -468,7 +468,7 @@ function resolveModuleWithAdapters(
   };
 }
 
-function createAdapterAwareRequire(
+export function createAdapterAwareRequire(
   originalRequire: NodeRequire,
   importerFile: string | undefined,
   resolverAdapters: ResolverAdapter[],

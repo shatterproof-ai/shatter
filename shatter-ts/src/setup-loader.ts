@@ -11,7 +11,7 @@ import * as vm from "node:vm";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { SetupLevel, SetupContextStack, GeneratorKind } from "./protocol.js";
-import { transformDynamicImports, createShatterImport } from "./executor.js";
+import { createAdapterAwareRequire, transformDynamicImports, createShatterImport, type ResolverAdapter } from "./executor.js";
 
 /** Default setup timeout in milliseconds (30 seconds). */
 const DEFAULT_SETUP_TIMEOUT_MS = 30_000;
@@ -46,7 +46,7 @@ export interface GeneratorModule {
 /**
  * Transpile and load a TypeScript/JavaScript file, returning its exports.
  */
-function loadAndTranspile(filePath: string): Record<string, unknown> {
+function loadAndTranspile(filePath: string, resolverAdapters: ResolverAdapter[] = []): Record<string, unknown> {
   const absolutePath = path.resolve(filePath);
   const source = fs.readFileSync(absolutePath, "utf-8");
   const result = ts.transpileModule(source, {
@@ -60,7 +60,11 @@ function loadAndTranspile(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
-  const targetRequire = createRequire(absolutePath);
+  const targetRequire = createAdapterAwareRequire(
+    createRequire(absolutePath),
+    absolutePath,
+    resolverAdapters,
+  );
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
@@ -92,8 +96,8 @@ function loadAndTranspile(filePath: string): Record<string, unknown> {
  * Load a setup module file. The file should export a `setup()` function
  * and optionally a `teardown()` function.
  */
-export function loadSetupModule(file: string): SetupModule {
-  const exports = loadAndTranspile(file);
+export function loadSetupModule(file: string, resolverAdapters: ResolverAdapter[] = []): SetupModule {
+  const exports = loadAndTranspile(file, resolverAdapters);
   return { exports, filePath: path.resolve(file) };
 }
 
@@ -171,8 +175,8 @@ export async function runTeardown(
  * Load a generator module file. The file should export named functions
  * that produce values when called.
  */
-export function loadGeneratorModule(file: string): GeneratorModule {
-  const exports = loadAndTranspile(file);
+export function loadGeneratorModule(file: string, resolverAdapters: ResolverAdapter[] = []): GeneratorModule {
+  const exports = loadAndTranspile(file, resolverAdapters);
   return { exports, filePath: path.resolve(file) };
 }
 
