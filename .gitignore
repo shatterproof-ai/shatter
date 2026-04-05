@@ -170,3 +170,6 @@ perf/results/
 
 # Go compiled binaries
 shatter-go/bin/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
