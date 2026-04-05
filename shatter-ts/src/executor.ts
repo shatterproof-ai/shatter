@@ -107,6 +107,23 @@ const SUBPROCESS_SYMBOLS = new Set([
  */
 type CallableTarget = (() => void) & Record<string, unknown>;
 
+export interface ResolverContext {
+  module_id: string;
+  importer_file?: string;
+  require: NodeRequire;
+}
+
+export type ResolverDecision =
+  | { kind: "continue" }
+  | { kind: "rewrite"; module_id: string }
+  | { kind: "resolved"; value: unknown }
+  | { kind: "stub"; module_id?: string };
+
+export interface ResolverAdapter {
+  id: string;
+  resolveModule(context: ResolverContext): ResolverDecision | null | undefined;
+}
+
 /**
  * Check whether an error is a MODULE_NOT_FOUND error for the requested module
  * (not a transitive dependency failure). Uses duck-typing instead of
@@ -185,37 +202,6 @@ export function createUnresolvableModuleStub(_moduleName: string): Record<string
   }
 
   return createProxy();
-}
-
-/**
- * Wrap a require function with a fallback that returns a Proxy stub
- * for modules that cannot be resolved (MODULE_NOT_FOUND).
- * Used in the non-instrumented loadModule path where there is no
- * discovered_dependencies array to populate.
- */
-function wrapRequireWithStubFallback(originalRequire: NodeRequire): NodeRequire {
-  const wrapped = ((modulePath: string) => {
-    try {
-      return originalRequire(modulePath);
-    } catch (err: unknown) {
-      if (isModuleNotFoundError(err, modulePath)) {
-        logger.warn("module %s could not be resolved; returning stub", modulePath);
-        return createUnresolvableModuleStub(modulePath);
-      }
-      if (isEsmLoadingError(err)) {
-        logger.warn("ESM loading race for %s; returning stub", modulePath);
-        return createUnresolvableModuleStub(modulePath);
-      }
-      throw err;
-    }
-  }) as NodeRequire;
-
-  wrapped.resolve = originalRequire.resolve;
-  wrapped.cache = originalRequire.cache;
-  wrapped.extensions = originalRequire.extensions;
-  wrapped.main = originalRequire.main;
-
-  return wrapped;
 }
 
 const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
@@ -431,24 +417,91 @@ export function setProjectRoot(projectRoot: string | null | undefined): void {
   }
 }
 
-/**
- * Wrap a require function to intercept React module imports for .tsx files.
- * Non-.tsx files get the original require unchanged.
- */
-function wrapRequireWithReactShim(
-  originalRequire: NodeRequire,
-  filePath: string | undefined,
-): NodeRequire {
-  if (!filePath || !filePath.endsWith(".tsx")) return originalRequire;
+function getDefaultResolverAdapters(filePath: string | undefined): ResolverAdapter[] {
+  if (!filePath || !filePath.endsWith(".tsx")) return [];
+  return [{
+    id: "ts/react-shim",
+    resolveModule({ module_id }) {
+      if (REACT_MODULE_NAMES.has(module_id)) {
+        return { kind: "resolved", value: getReactShim(module_id) };
+      }
+      return { kind: "continue" };
+    },
+  }];
+}
 
-  const wrapped = ((modulePath: string) => {
-    if (REACT_MODULE_NAMES.has(modulePath)) {
-      return getReactShim(modulePath);
+function resolveModuleWithAdapters(
+  originalRequire: NodeRequire,
+  modulePath: string,
+  importerFile: string | undefined,
+  resolverAdapters: ResolverAdapter[],
+): { moduleId: string; value: unknown; stubbed: boolean } {
+  let currentModuleId = modulePath;
+  for (const adapter of resolverAdapters) {
+    const decision = adapter.resolveModule({
+      module_id: currentModuleId,
+      importer_file: importerFile,
+      require: originalRequire,
+    });
+    if (decision == null || decision.kind === "continue") {
+      continue;
     }
-    return originalRequire(modulePath);
+    if (decision.kind === "rewrite") {
+      currentModuleId = decision.module_id;
+      continue;
+    }
+    if (decision.kind === "resolved") {
+      return { moduleId: currentModuleId, value: decision.value, stubbed: false };
+    }
+    const stubModuleId = decision.module_id ?? currentModuleId;
+    return {
+      moduleId: stubModuleId,
+      value: createUnresolvableModuleStub(stubModuleId),
+      stubbed: true,
+    };
+  }
+
+  return {
+    moduleId: currentModuleId,
+    value: originalRequire(currentModuleId),
+    stubbed: false,
+  };
+}
+
+function createAdapterAwareRequire(
+  originalRequire: NodeRequire,
+  importerFile: string | undefined,
+  resolverAdapters: ResolverAdapter[],
+  onModuleResolved?: (moduleId: string, stubbed: boolean) => void,
+): NodeRequire {
+  const wrapped = ((modulePath: string) => {
+    try {
+      const resolved = resolveModuleWithAdapters(
+        originalRequire,
+        modulePath,
+        importerFile,
+        resolverAdapters,
+      );
+      if (resolved.stubbed) {
+        logger.warn("module %s could not be resolved; returning stub", resolved.moduleId);
+      }
+      onModuleResolved?.(resolved.moduleId, resolved.stubbed);
+      return resolved.value;
+    } catch (err: unknown) {
+      if (isModuleNotFoundError(err, modulePath)) {
+        logger.warn("module %s could not be resolved; returning stub", modulePath);
+        onModuleResolved?.(modulePath, true);
+        return createUnresolvableModuleStub(modulePath);
+      }
+      if (isEsmLoadingError(err)) {
+        logger.warn("ESM loading race for %s; returning stub", modulePath);
+        onModuleResolved?.(modulePath, true);
+        return createUnresolvableModuleStub(modulePath);
+      }
+      throw err;
+    }
   }) as NodeRequire;
 
-  // Preserve require.resolve and require.cache for compatibility
   wrapped.resolve = originalRequire.resolve;
   wrapped.cache = originalRequire.cache;
   wrapped.extensions = originalRequire.extensions;
@@ -462,9 +515,11 @@ function wrapRequireWithReactShim(
  *
  * Results are cached by absolute file path.
  */
-function loadModule(filePath: string): Record<string, unknown> {
+function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[]): Record<string, unknown> {
   const absolutePath = path.resolve(filePath);
-  const cached = compiledModuleCache.get(absolutePath);
+  const activeResolverAdapters = resolverAdapters ?? getDefaultResolverAdapters(absolutePath);
+  const useCache = resolverAdapters === undefined;
+  const cached = useCache ? compiledModuleCache.get(absolutePath) : undefined;
   if (cached) return cached;
 
   const source = fs.readFileSync(absolutePath, "utf-8");
@@ -479,8 +534,10 @@ function loadModule(filePath: string): Record<string, unknown> {
     fileName: absolutePath,
   });
 
-  const targetRequire = wrapRequireWithStubFallback(
-    wrapRequireWithReactShim(createRequire(absolutePath), absolutePath),
+  const targetRequire = createAdapterAwareRequire(
+    createRequire(absolutePath),
+    absolutePath,
+    activeResolverAdapters,
   );
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
@@ -509,7 +566,9 @@ function loadModule(filePath: string): Record<string, unknown> {
   const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
   const resolvedExports = finalExports.exports;
 
-  compiledModuleCache.set(absolutePath, resolvedExports);
+  if (useCache) {
+    compiledModuleCache.set(absolutePath, resolvedExports);
+  }
   return resolvedExports;
 }
 
@@ -524,13 +583,14 @@ function loadModule(filePath: string): Record<string, unknown> {
 function resolveFunction(
   filePath: string,
   functionRef: string,
+  resolverAdapters?: ResolverAdapter[],
 ): (...args: unknown[]) => unknown {
   // Strip file prefix if present (e.g. "examples/foo.ts:myFunc" → "myFunc")
   const funcName = functionRef.includes(":")
     ? functionRef.split(":").pop()!
     : functionRef;
 
-  const moduleExports = loadModule(filePath);
+  const moduleExports = loadModule(filePath, resolverAdapters);
   const fn = moduleExports[funcName];
 
   if (typeof fn !== "function") {
@@ -915,10 +975,11 @@ export async function executeFunction(
   inputs: unknown[],
   timing?: TimingCollector,
   capture = true,
+  resolverAdapters?: ResolverAdapter[],
 ): Promise<RawExecuteResult> {
   const fn = timing
-    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef))
-    : resolveFunction(filePath, functionRef);
+    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef, resolverAdapters))
+    : resolveFunction(filePath, functionRef, resolverAdapters);
 
   const previousTarget = consoleTarget;
   let metrics: MeasuredExecution;
@@ -997,6 +1058,7 @@ export async function executeInstrumented(
   timing?: TimingCollector,
   capture = true,
   cacheKey?: string,
+  resolverAdapters?: ResolverAdapter[],
 ): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
   // The instrumented source for a given function is fixed after instrumentation,
@@ -1261,7 +1323,7 @@ export async function executeInstrumented(
   const sandboxConsole = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
   const sandboxProc = capture ? createCapturingProcess(sideEffects) : NOOP_PROCESS;
   const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
-  const baseRequire = wrapRequireWithReactShim(rawRequire, sourceFilePath);
+  const activeResolverAdapters = resolverAdapters ?? getDefaultResolverAdapters(sourceFilePath);
 
   // Collect mocked module prefixes for gap detection
   const mockedModulePrefixes = new Set<string>();
@@ -1274,57 +1336,46 @@ export async function executeInstrumented(
 
   // Wrap require to detect unmocked external imports, subprocess APIs,
   // and gracefully stub unresolvable modules instead of crashing.
-  const sandboxRequire = (id: string): unknown => {
-    let result: unknown;
-    try {
-      result = baseRequire(id);
-    } catch (err: unknown) {
-      if (isModuleNotFoundError(err, id)) {
-        logger.warn("module %s could not be resolved; returning stub", id);
-        if (!id.startsWith(".") && !id.startsWith("/") && !seenDiscoveredModules.has(id)) {
-          seenDiscoveredModules.add(id);
-          discoveredDeps.push({
-            symbol: id,
-            source_module: id,
-            kind: "stubbed_import",
-            is_subprocess_spawn: false,
-          });
-        }
-        return createUnresolvableModuleStub(id);
+  const sandboxRequire = createAdapterAwareRequire(
+    rawRequire,
+    sourceFilePath,
+    activeResolverAdapters,
+    (moduleId, stubbed) => {
+      if (moduleId.startsWith(".") || moduleId.startsWith("/") || seenDiscoveredModules.has(moduleId)) {
+        return;
       }
-      if (isEsmLoadingError(err)) {
-        logger.warn("ESM loading race for %s; returning stub", id);
-        return createUnresolvableModuleStub(id);
+      seenDiscoveredModules.add(moduleId);
+
+      if (stubbed) {
+        discoveredDeps.push({
+          symbol: moduleId,
+          source_module: moduleId,
+          kind: "stubbed_import",
+          is_subprocess_spawn: false,
+        });
+        return;
       }
-      throw err;
-    }
 
-    // Skip relative/absolute paths (local modules) and already-seen modules
-    if (!id.startsWith(".") && !id.startsWith("/") && !seenDiscoveredModules.has(id)) {
-      seenDiscoveredModules.add(id);
-
-      const isSubprocessModule = SUBPROCESS_MODULES.has(id);
-      const isMocked = mockedModulePrefixes.has(id);
+      const isSubprocessModule = SUBPROCESS_MODULES.has(moduleId);
+      const isMocked = mockedModulePrefixes.has(moduleId);
 
       if (isSubprocessModule) {
         discoveredDeps.push({
-          symbol: id,
-          source_module: id,
+          symbol: moduleId,
+          source_module: moduleId,
           kind: "subprocess_spawn",
           is_subprocess_spawn: true,
         });
       } else if (!isMocked) {
         discoveredDeps.push({
-          symbol: id,
-          source_module: id,
+          symbol: moduleId,
+          source_module: moduleId,
           kind: "unmocked_import",
           is_subprocess_spawn: false,
         });
       }
-    }
-
-    return result;
-  };
+    },
+  );
   const moduleExports: Record<string, unknown> = {};
   const moduleObj = { exports: moduleExports };
 
