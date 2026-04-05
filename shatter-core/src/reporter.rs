@@ -128,8 +128,11 @@ pub fn generate_markdown_from_behavior_map(
 // ---------------------------------------------------------------------------
 
 fn write_function_heading(out: &mut String, analysis: &FunctionAnalysis) {
-    let params_str = analysis
-        .params
+    let display_params = match &analysis.invocation_model {
+        crate::protocol::InvocationModel::Direct => &analysis.params,
+        crate::protocol::InvocationModel::Adapter { synthetic_params, .. } => synthetic_params,
+    };
+    let params_str = display_params
         .iter()
         .map(|p| format!("{}: {}", p.name, format_type(&p.typ)))
         .collect::<Vec<_>>()
@@ -143,6 +146,10 @@ fn write_function_heading(out: &mut String, analysis: &FunctionAnalysis) {
         params = params_str,
         ret = return_str,
     );
+
+    if let crate::protocol::InvocationModel::Adapter { adapter_id, .. } = &analysis.invocation_model {
+        let _ = writeln!(out, "_Invocation: adapter-owned via `{adapter_id}`_\n");
+    }
 }
 
 fn write_parameters_section(out: &mut String, analysis: &FunctionAnalysis) {
@@ -468,6 +475,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -552,6 +560,28 @@ mod tests {
         };
         let md = generate_markdown(&spec);
         assert!(!md.contains("## Parameters"), "got: {md}");
+    }
+
+    #[test]
+    fn adapter_invocation_uses_synthetic_params_and_note() {
+        let mut analysis = make_analysis("useTeamSwitch", vec![], TypeInfo::Unknown, vec![]);
+        analysis.invocation_model = crate::protocol::InvocationModel::Adapter {
+            adapter_id: "ts/react-hooks".to_string(),
+            synthetic_params: vec![ParamInfo {
+                name: "teamId".to_string(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            scenario_schema: None,
+        };
+        let spec = FunctionSpec {
+            analysis: &analysis,
+            clusters: &[],
+            edge_cases: &[],
+        };
+        let md = generate_markdown(&spec);
+        assert!(md.contains("# Function: useTeamSwitch(teamId: string): unknown"), "got: {md}");
+        assert!(md.contains("_Invocation: adapter-owned via `ts/react-hooks`_"), "got: {md}");
     }
 
     #[test]

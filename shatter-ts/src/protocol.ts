@@ -353,7 +353,17 @@ export interface FunctionAnalysis {
   crypto_boundaries?: CryptoBoundary[];
   loops?: LoopInfo[];
   source_file?: string;
+  invocation_model?: InvocationModel;
 }
+
+export type InvocationModel =
+  | { kind: "direct" }
+  | {
+      kind: "adapter";
+      adapter_id: string;
+      synthetic_params?: ParamInfo[];
+      scenario_schema?: unknown;
+    };
 
 export interface ParamInfo {
   name: string;

@@ -22,8 +22,8 @@ use crate::invariants::{
 use crate::protocol::{
     BoundOp, BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary,
     DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult,
-    ExternalDependency, FunctionAnalysis, GeneratorKind, InductionVar, LiteralValue, LoopInfo,
-    MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
+    ExternalDependency, FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel,
+    LiteralValue, LoopInfo, MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
     RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary, TimingSummary,
     PROTOCOL_VERSION,
 };
@@ -845,6 +845,7 @@ pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
         1..500u32,
         1..500u32,
         prop::collection::vec(arb_literal_value(), 0..=3),
+        arb_invocation_model(),
     )
         .prop_map(
             |(
@@ -857,6 +858,7 @@ pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
                 start_line,
                 end_line,
                 literals,
+                invocation_model,
             )| {
                 FunctionAnalysis {
                     name,
@@ -871,9 +873,26 @@ pub fn arb_function_analysis() -> impl Strategy<Value = FunctionAnalysis> {
                     crypto_boundaries: vec![],
                     loops: vec![],
                     source_file: None,
+                    invocation_model,
                 }
             },
         )
+}
+
+pub fn arb_invocation_model() -> impl Strategy<Value = InvocationModel> {
+    prop_oneof![
+        Just(InvocationModel::Direct),
+        (
+            arb_ident(),
+            prop::collection::vec(arb_param_info(), 0..=3),
+            proptest::option::of(arb_json_value_non_null()),
+        )
+            .prop_map(|(adapter_id, synthetic_params, scenario_schema)| InvocationModel::Adapter {
+                adapter_id,
+                synthetic_params,
+                scenario_schema,
+            }),
+    ]
 }
 
 pub fn arb_function_analysis_with_loops() -> impl Strategy<Value = FunctionAnalysis> {
