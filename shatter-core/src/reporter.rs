@@ -79,6 +79,7 @@ pub fn generate_markdown(spec: &FunctionSpec<'_>) -> String {
 
     write_function_heading(&mut out, spec.analysis);
     write_parameters_section(&mut out, spec.analysis);
+    write_adapter_hints_section(&mut out, spec.analysis);
     write_behavior_sections(&mut out, spec.clusters);
     write_edge_cases_section(&mut out, spec.edge_cases);
     write_dependencies_section(&mut out, &spec.analysis.dependencies);
@@ -164,6 +165,57 @@ fn write_parameters_section(out: &mut String, analysis: &FunctionAnalysis) {
             name = param.name,
             typ = format_type(&param.typ),
         );
+    }
+    out.push('\n');
+}
+
+fn write_adapter_hints_section(out: &mut String, analysis: &FunctionAnalysis) {
+    if analysis.adapter_hints.is_empty() {
+        return;
+    }
+
+    out.push_str("## Adapter Hints\n");
+    for hint in &analysis.adapter_hints {
+        let apply = hint
+            .adapter
+            .apply
+            .as_ref()
+            .map(|policy| format!(" ({})", format!("{policy:?}").to_lowercase()))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- `{}`{} [{}]",
+            hint.adapter.id,
+            apply,
+            format!("{:?}", hint.confidence).to_lowercase(),
+        );
+        if !hint.reasons.is_empty() {
+            let _ = writeln!(out, "  reasons: {}", hint.reasons.join("; "));
+        }
+        if !hint.requirements.is_empty() {
+            let reqs = hint
+                .requirements
+                .iter()
+                .map(|req| match &req.reason {
+                    Some(reason) => format!("{} ({reason})", req.adapter_id),
+                    None => req.adapter_id.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "  requirements: {reqs}");
+        }
+        if !hint.conflicts.is_empty() {
+            let conflicts = hint
+                .conflicts
+                .iter()
+                .map(|conflict| match &conflict.reason {
+                    Some(reason) => format!("{} ({reason})", conflict.adapter_id),
+                    None => conflict.adapter_id.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "  conflicts: {conflicts}");
+        }
     }
     out.push('\n');
 }
@@ -439,7 +491,11 @@ mod tests {
     use super::*;
     use crate::execution_record::{ErrorInfo, ExternalCall};
     use crate::invariants::{ComparisonOp, InvariantKind, InvariantTarget};
-    use crate::protocol::{DependencyKind, ExternalDependency};
+    use crate::nondeterminism::Confidence;
+    use crate::protocol::{
+        AdapterHint, AdapterRelation, DependencyKind, ExecutionAdapter, ExecutionAdapterApply,
+        ExternalDependency,
+    };
     use crate::types::{ParamInfo, TypeInfo};
     use serde_json::json;
 
@@ -475,6 +531,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
@@ -752,6 +809,40 @@ mod tests {
         };
         let md = generate_markdown(&spec);
         assert!(!md.contains("## Dependencies"), "got: {md}");
+    }
+
+    #[test]
+    fn adapter_hints_section_lists_generic_hint_details() {
+        let mut analysis = make_analysis("classify", vec![], TypeInfo::Unknown, vec![]);
+        analysis.adapter_hints = vec![AdapterHint {
+            adapter: ExecutionAdapter {
+                id: "ts/browser-globals".into(),
+                apply: Some(ExecutionAdapterApply::Suggest),
+                options: None,
+            },
+            confidence: Confidence::Medium,
+            reasons: vec!["uses window and document".into()],
+            requirements: vec![AdapterRelation {
+                adapter_id: "ts/dom-runtime".into(),
+                reason: Some("needs DOM globals".into()),
+            }],
+            conflicts: vec![AdapterRelation {
+                adapter_id: "ts/node-only".into(),
+                reason: Some("mutually exclusive runtime".into()),
+            }],
+        }];
+        let spec = FunctionSpec {
+            analysis: &analysis,
+            clusters: &[],
+            edge_cases: &[],
+        };
+
+        let md = generate_markdown(&spec);
+        assert!(md.contains("## Adapter Hints\n"), "got: {md}");
+        assert!(md.contains("`ts/browser-globals` (suggest) [medium]"), "got: {md}");
+        assert!(md.contains("reasons: uses window and document"), "got: {md}");
+        assert!(md.contains("requirements: ts/dom-runtime (needs DOM globals)"), "got: {md}");
+        assert!(md.contains("conflicts: ts/node-only (mutually exclusive runtime)"), "got: {md}");
     }
 
     #[test]

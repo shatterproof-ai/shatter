@@ -34,6 +34,19 @@ export interface ExecutionAdapter {
   options?: unknown;
 }
 
+export interface AdapterRelation {
+  adapter_id: string;
+  reason?: string;
+}
+
+export interface AdapterHint {
+  adapter: ExecutionAdapter;
+  confidence?: "low" | "medium" | "high";
+  reasons?: string[];
+  requirements?: AdapterRelation[];
+  conflicts?: AdapterRelation[];
+}
+
 export interface ExecutionProfile {
   adapters: ExecutionAdapter[];
 }
@@ -353,6 +366,7 @@ export interface FunctionAnalysis {
   crypto_boundaries?: CryptoBoundary[];
   loops?: LoopInfo[];
   source_file?: string;
+  adapter_hints?: AdapterHint[];
   invocation_model?: InvocationModel;
 }
 

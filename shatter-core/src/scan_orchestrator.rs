@@ -3030,6 +3030,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
@@ -3701,6 +3702,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -3727,6 +3729,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
@@ -3811,6 +3814,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
@@ -3882,6 +3886,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
@@ -3959,6 +3964,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -3978,6 +3984,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
@@ -4057,6 +4064,7 @@ mod tests {
             loops: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
             source_file: None,
+            adapter_hints: vec![],
         }];
 
         let mut file_map = HashMap::new();
@@ -4138,6 +4146,7 @@ mod tests {
             loops: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
             source_file: None,
+            adapter_hints: vec![],
         };
 
         let mut skipped_file_map = HashMap::new();
@@ -4282,6 +4291,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -4301,6 +4311,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
@@ -4382,6 +4393,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
@@ -5144,6 +5156,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
@@ -5247,6 +5260,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
@@ -5281,6 +5295,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
@@ -5369,6 +5384,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
@@ -5445,6 +5461,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
@@ -5545,6 +5562,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
@@ -5655,6 +5673,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
@@ -5754,6 +5773,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
@@ -5788,6 +5808,7 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         });
 
@@ -5895,6 +5916,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -5914,6 +5936,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
@@ -6007,6 +6030,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -6026,6 +6050,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
@@ -6104,6 +6129,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
@@ -6130,6 +6156,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
