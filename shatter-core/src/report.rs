@@ -177,7 +177,7 @@ pub struct ScanReport {
 // ---------------------------------------------------------------------------
 
 /// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
-fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
+pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
 
     let discovered_inputs: Vec<DiscoveredInput> = exploration
