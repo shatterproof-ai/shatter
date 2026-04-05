@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use shatter_core::analysis_cache::AnalysisCache;
@@ -73,11 +74,17 @@ pub(crate) async fn run_scan(
     } else if seeds_dir.is_absolute() {
         Some(seeds_dir.join("pool.json"))
     } else {
-        Some(std::path::PathBuf::from(directory).join(seeds_dir).join("pool.json"))
+        Some(
+            std::path::PathBuf::from(directory)
+                .join(seeds_dir)
+                .join("pool.json"),
+        )
     };
     // Validate --emit-tests framework early.
     if let Some(framework) = emit_tests
-        && framework != "jest" && framework != "vitest" && framework != "gotest"
+        && framework != "jest"
+        && framework != "vitest"
+        && framework != "gotest"
     {
         return Err(format!(
             "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
@@ -87,7 +94,9 @@ pub(crate) async fn run_scan(
 
     // Validate --language if specified.
     if let Some(lang) = language_filter
-        && lang != "typescript" && lang != "go" && lang != "rust"
+        && lang != "typescript"
+        && lang != "go"
+        && lang != "rust"
     {
         return Err(format!(
             "unsupported language '{lang}': expected 'typescript', 'go', or 'rust'"
@@ -122,8 +131,10 @@ pub(crate) async fn run_scan(
     // 2. Check out historical file contents into a temp directory
     // 3. Use that as the analysis root with isolated .shatter state
     let _until_temp_dir: Option<tempfile::TempDir> = None;
-    let (effective_root, _until_temp_dir) = if let (Some(base_ref), Some(until_ref)) = (since, until) {
-        use shatter_core::scm::{ScmProvider, detect_provider, validate_ref, show_file_at_ref};
+    let (effective_root, _until_temp_dir) = if let (Some(base_ref), Some(until_ref)) =
+        (since, until)
+    {
+        use shatter_core::scm::{ScmProvider, detect_provider, show_file_at_ref, validate_ref};
 
         // Validate the until ref resolves to a real commit.
         let resolved = validate_ref(&root, until_ref)
@@ -139,8 +150,7 @@ pub(crate) async fn run_scan(
             until_ref,
         );
 
-        let provider = detect_provider(&root)
-            .map_err(|e| format!("SCM detection failed: {e}"))?;
+        let provider = detect_provider(&root).map_err(|e| format!("SCM detection failed: {e}"))?;
         let scm_files = provider
             .diff_files_range(&root, base_ref, until_ref)
             .map_err(|e| format!("SCM file query failed: {e}"))?;
@@ -162,8 +172,13 @@ pub(crate) async fn run_scan(
         let temp_root = temp_dir.path().to_path_buf();
 
         for file in &scm_files {
-            let rel_path = file.strip_prefix(&root)
-                .map_err(|_| format!("file '{}' is not under root '{}'", file.display(), root.display()))?;
+            let rel_path = file.strip_prefix(&root).map_err(|_| {
+                format!(
+                    "file '{}' is not under root '{}'",
+                    file.display(),
+                    root.display()
+                )
+            })?;
 
             let content = match show_file_at_ref(&root, until_ref, rel_path) {
                 Ok(bytes) => bytes,
@@ -197,7 +212,12 @@ pub(crate) async fn run_scan(
 
     // When using --until, isolate .shatter state so HEAD seeds/specs aren't clobbered.
     let scan_pool_path = if until.is_some() && !no_seeds {
-        Some(effective_root.join(".shatter").join("seeds").join("pool.json"))
+        Some(
+            effective_root
+                .join(".shatter")
+                .join("seeds")
+                .join("pool.json"),
+        )
     } else {
         scan_pool_path
     };
@@ -210,8 +230,8 @@ pub(crate) async fn run_scan(
                 .map_err(|e| format!("file discovery failed: {e}"))?
         } else {
             use shatter_core::scm::{ScmProvider, detect_provider};
-            let provider = detect_provider(&root)
-                .map_err(|e| format!("SCM detection failed: {e}"))?;
+            let provider =
+                detect_provider(&root).map_err(|e| format!("SCM detection failed: {e}"))?;
             let scm_files = if let Some(base_ref) = since {
                 provider.diff_files(&root, base_ref)
             } else {
@@ -268,20 +288,28 @@ pub(crate) async fn run_scan(
 
     // Spawn frontends for each language.
     let req_timeout = Duration::from_secs(request_timeout);
-    let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
-        .iter()
-        .map(|(_, lang)| *lang)
-        .collect();
+    let needed_langs: std::collections::HashSet<DiscoveryLanguage> =
+        analyzable_files.iter().map(|(_, lang)| *lang).collect();
 
     let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
     for lang in &needed_langs {
-        let cli_lang = discovery_lang_to_cli_lang(*lang)
-            .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let mut config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+        let cli_lang =
+            discovery_lang_to_cli_lang(*lang).ok_or_else(|| format!("no frontend for {lang:?}"))?;
+        let mut config = frontend_config(
+            cli_lang,
+            req_timeout,
+            log_level,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            None,
+            false,
+            release,
+        )?;
         apply_project_storage(&mut config, project_root_str.as_deref());
-        let frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!("failed to spawn {lang:?} frontend: {e}")
-        })?;
+        let frontend = Frontend::spawn(&config)
+            .await
+            .map_err(|e| format!("failed to spawn {lang:?} frontend: {e}"))?;
         log::debug!(
             "Frontend connected (language={})",
             frontend.language().unwrap_or("unknown")
@@ -297,7 +325,10 @@ pub(crate) async fn run_scan(
             Some(p) => p.join("analysis"),
             None => AnalysisCache::default_dir(&std::env::current_dir()?),
         };
-        Some(AnalysisCache::new(dir).map_err(|e| format!("failed to initialize analysis cache: {e}"))?)
+        Some(
+            AnalysisCache::new(dir)
+                .map_err(|e| format!("failed to initialize analysis cache: {e}"))?,
+        )
     };
 
     // Batch analyze all files.
@@ -381,10 +412,7 @@ pub(crate) async fn run_scan(
     // Parse --stratum spec early so core-sample budget operates on the
     // stratum-filtered set (not the full population).
     let parsed_stratum = if let Some(spec_str) = stratum_spec {
-        Some(
-            shatter_core::stratum::parse_stratum_spec(spec_str)
-                .map_err(|e| e.to_string())?,
-        )
+        Some(shatter_core::stratum::parse_stratum_spec(spec_str).map_err(|e| e.to_string())?)
     } else {
         None
     };
@@ -394,7 +422,11 @@ pub(crate) async fn run_scan(
     let stratum_pre_applied = if let (Some(spec), Some(_)) = (&parsed_stratum, &core_sample_spec) {
         let cg = CallGraph::from_registry(&registry);
         let layers = cg.topological_layers();
-        let max_layer = if layers.is_empty() { 0 } else { layers.len() - 1 };
+        let max_layer = if layers.is_empty() {
+            0
+        } else {
+            layers.len() - 1
+        };
         let range = shatter_core::stratum::resolve_range(spec, max_layer)?;
         // filter_layers returns qualified names (file::func); extract bare names.
         let selected: std::collections::HashSet<String> =
@@ -403,7 +435,8 @@ pub(crate) async fn run_scan(
                 .flat_map(|(_, funcs)| funcs.iter().cloned())
                 .map(|qn| {
                     // Qualified names are "file_path::name"; extract the bare name.
-                    qn.rsplit_once("::").map_or(qn.clone(), |(_, name)| name.to_string())
+                    qn.rsplit_once("::")
+                        .map_or(qn.clone(), |(_, name)| name.to_string())
                 })
                 .collect();
         let before = all_analyses.len();
@@ -425,8 +458,8 @@ pub(crate) async fn run_scan(
         let budget = shatter_core::core_sample::parse_sample_budget(spec)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let cg = CallGraph::from_registry(&registry);
-        let seed = core_sample_seed
-            .unwrap_or_else(|| shatter_core::core_sample::default_seed(directory));
+        let seed =
+            core_sample_seed.unwrap_or_else(|| shatter_core::core_sample::default_seed(directory));
         let cs_config = shatter_core::core_sample::CoreSampleConfig {
             budget,
             seed,
@@ -466,7 +499,8 @@ pub(crate) async fn run_scan(
                     log::info!(
                         "Batch range {start}-{end}: running batch {start} \
                          (run subsequent batches with --batch {}..{})",
-                        start + 1, end,
+                        start + 1,
+                        end,
                     );
                     start
                 }
@@ -548,7 +582,11 @@ pub(crate) async fn run_scan(
             parallelism: effective_parallelism,
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
             cache: None,
-            stratum: if stratum_pre_applied { None } else { parsed_stratum.clone() },
+            stratum: if stratum_pre_applied {
+                None
+            } else {
+                parsed_stratum.clone()
+            },
             mock_overrides: HashMap::new(),
             resume_path: None,
             timeout_total: None,
@@ -597,7 +635,17 @@ pub(crate) async fn run_scan(
     let first_lang = needed_langs.iter().next().copied().unwrap();
     let cli_lang = discovery_lang_to_cli_lang(first_lang)
         .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let mut fe_config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+    let mut fe_config = frontend_config(
+        cli_lang,
+        req_timeout,
+        log_level,
+        exec_timeout,
+        build_timeout,
+        memory_limit,
+        None,
+        false,
+        release,
+    )?;
     apply_project_storage(&mut fe_config, project_root_str.as_deref());
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
@@ -607,7 +655,9 @@ pub(crate) async fn run_scan(
         cfg.defaults.mocks.unwrap_or_default()
     } else {
         // Try loading from the scanned directory's .shatter/config.yaml
-        let config_path = PathBuf::from(directory).join(".shatter").join("config.yaml");
+        let config_path = PathBuf::from(directory)
+            .join(".shatter")
+            .join("config.yaml");
         if config_path.exists() {
             shatter_config::parse_config(&config_path)
                 .ok()
@@ -625,10 +675,18 @@ pub(crate) async fn run_scan(
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
         cache,
-        stratum: if stratum_pre_applied { None } else { parsed_stratum },
+        stratum: if stratum_pre_applied {
+            None
+        } else {
+            parsed_stratum
+        },
         mock_overrides,
         resume_path: resume.map(|p| p.to_path_buf()),
-        timeout_total: if timeout_total == 0 { None } else { Some(Duration::from_secs(timeout_total)) },
+        timeout_total: if timeout_total == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(timeout_total))
+        },
         pool_path: scan_pool_path,
         project_root: project_root_str.clone(),
         config_dir: Some(std::path::PathBuf::from(directory)),
@@ -650,24 +708,35 @@ pub(crate) async fn run_scan(
         total_functions,
     );
 
-    match scan_orchestrator::parallel_scan(&fe_config, &all_analyses, &scan_config).await {
+    let progress_handler = progress.then(|| {
+        Arc::new(|update: scan_orchestrator::ScanProgressUpdate| {
+            let event = report::ProgressEvent::with_status(
+                &update.function_name,
+                update.current,
+                update.total,
+                update.elapsed.as_millis() as u64,
+                update.status.as_str(),
+            );
+            if let Some(json) = event.to_json() {
+                eprintln!("{json}");
+            }
+        }) as scan_orchestrator::ProgressHandler
+    });
+
+    match scan_orchestrator::parallel_scan_with_progress(
+        &fe_config,
+        &all_analyses,
+        &scan_config,
+        progress_handler,
+    )
+    .await
+    {
         Ok(mut result) => {
             result.sampling = sampling_context;
             let elapsed = scan_start.elapsed();
 
-            for (i, fr) in result.function_results.iter().enumerate() {
-                if progress {
-                    let elapsed_ms = elapsed.as_millis() as u64;
-                    let event = report::ProgressEvent::new(
-                        &fr.function_name,
-                        i + 1,
-                        total_functions,
-                        elapsed_ms,
-                    );
-                    if let Some(json) = event.to_json() {
-                        eprintln!("{json}");
-                    }
-                } else {
+            if !progress {
+                for (i, fr) in result.function_results.iter().enumerate() {
                     log::info!(
                         "[{}/{}] {} ({:.1}s elapsed)",
                         i + 1,
@@ -682,37 +751,33 @@ pub(crate) async fn run_scan(
                 let view = crate::render::scan_view(&result);
                 print_markdown(&crate::render::render_scan(&view), use_color);
             } else {
-                print_markdown(&scan_orchestrator::format_parallel_scan_report(&result), use_color);
+                print_markdown(
+                    &scan_orchestrator::format_parallel_scan_report(&result),
+                    use_color,
+                );
             }
 
             // Record batch state and print cumulative progress.
             let batch_state = if let Some(batch_idx) = effective_batch_index {
-
                 let batch_state_path = PathBuf::from(directory)
                     .join(".shatter-cache")
                     .join("batch-state.json");
 
-                let file_paths: Vec<&str> = scan_config
-                    .file_map
-                    .values()
-                    .map(|s| s.as_str())
-                    .collect();
+                let file_paths: Vec<&str> =
+                    scan_config.file_map.values().map(|s| s.as_str()).collect();
                 let scan_id =
                     shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
 
-                let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path) {
+                let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path)
+                {
                     Ok(Some(s)) if s.scan_id == scan_id => s,
                     Ok(Some(_)) => {
                         log::info!("batch state scan_id mismatch, starting fresh");
-                        shatter_core::batch_state::BatchState::new(
-                            scan_id,
-                            total_scope_functions,
-                        )
+                        shatter_core::batch_state::BatchState::new(scan_id, total_scope_functions)
                     }
-                    Ok(None) => shatter_core::batch_state::BatchState::new(
-                        scan_id,
-                        total_scope_functions,
-                    ),
+                    Ok(None) => {
+                        shatter_core::batch_state::BatchState::new(scan_id, total_scope_functions)
+                    }
                     Err(e) => {
                         log::warn!("failed to load batch state: {e}, starting fresh");
                         shatter_core::batch_state::BatchState::new(
@@ -740,16 +805,15 @@ pub(crate) async fn run_scan(
                 None
             };
 
-            let scan_report = report::generate_report(
-                &result,
-                &scan_config.file_map,
-                batch_state.as_ref(),
-            );
+            let scan_report =
+                report::generate_report(&result, &scan_config.file_map, batch_state.as_ref());
 
             // Write to each -o file (format inferred from extension).
             for path in outputs {
                 let content = match crate::args::infer_output_format(path) {
-                    Ok(crate::args::StdoutFormat::Markdown) => report::format_markdown_report(&scan_report),
+                    Ok(crate::args::StdoutFormat::Markdown) => {
+                        report::format_markdown_report(&scan_report)
+                    }
                     Ok(crate::args::StdoutFormat::Json) => {
                         match serde_json::to_string_pretty(&scan_report) {
                             Ok(s) => s,
@@ -759,7 +823,10 @@ pub(crate) async fn run_scan(
                             }
                         }
                     }
-                    Ok(crate::args::StdoutFormat::Html) => report::generate_html_scan_report(&scan_report, project_root_str.as_deref().map(std::path::Path::new)),
+                    Ok(crate::args::StdoutFormat::Html) => report::generate_html_scan_report(
+                        &scan_report,
+                        project_root_str.as_deref().map(std::path::Path::new),
+                    ),
                     Ok(crate::args::StdoutFormat::Text) => report::format_text_report(&scan_report),
                     Err(e) => {
                         log::error!("{e}");
@@ -782,12 +849,17 @@ pub(crate) async fn run_scan(
             // Write to stdout if no files given, or if --stdout is explicit.
             if outputs.is_empty() || stdout {
                 let content = match format {
-                    crate::args::StdoutFormat::Markdown => report::format_markdown_report(&scan_report),
-                    crate::args::StdoutFormat::Json => {
-                        serde_json::to_string_pretty(&scan_report)
-                            .unwrap_or_else(|e| format!("{{\"error\": \"failed to serialize report: {e}\"}}"))
+                    crate::args::StdoutFormat::Markdown => {
+                        report::format_markdown_report(&scan_report)
                     }
-                    crate::args::StdoutFormat::Html => report::generate_html_scan_report(&scan_report, project_root_str.as_deref().map(std::path::Path::new)),
+                    crate::args::StdoutFormat::Json => serde_json::to_string_pretty(&scan_report)
+                        .unwrap_or_else(|e| {
+                            format!("{{\"error\": \"failed to serialize report: {e}\"}}")
+                        }),
+                    crate::args::StdoutFormat::Html => report::generate_html_scan_report(
+                        &scan_report,
+                        project_root_str.as_deref().map(std::path::Path::new),
+                    ),
                     crate::args::StdoutFormat::Text => report::format_text_report(&scan_report),
                 };
                 print_markdown(&content, use_color);
@@ -799,7 +871,12 @@ pub(crate) async fn run_scan(
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("."));
 
-                if let Err(e) = emit_test_files(&result, &scan_config.file_map, framework, &resolved_tests_dir) {
+                if let Err(e) = emit_test_files(
+                    &result,
+                    &scan_config.file_map,
+                    framework,
+                    &resolved_tests_dir,
+                ) {
                     log::error!("Failed to emit test files: {e}");
                 }
             }
@@ -808,7 +885,8 @@ pub(crate) async fn run_scan(
                 let attempted = result.function_results.len() + result.skipped.len();
                 return Err(format!(
                     "scan failed: {attempted} function(s) attempted but 0 explored successfully"
-                ).into());
+                )
+                .into());
             }
         }
         Err(e) => {
@@ -867,7 +945,12 @@ pub(crate) fn print_summary_report(
     writeln!(md).unwrap();
     writeln!(md, "- **Total functions**: {}", registry.len()).unwrap();
     writeln!(md, "- **Total branches**: {total_branches}").unwrap();
-    writeln!(md, "- **Exported functions**: {}", registry.exported_functions().len()).unwrap();
+    writeln!(
+        md,
+        "- **Exported functions**: {}",
+        registry.exported_functions().len()
+    )
+    .unwrap();
     writeln!(md).unwrap();
 
     // Call graph summary
@@ -906,7 +989,8 @@ pub(crate) fn print_summary_report(
                 md,
                 "| {qname} | {} | {}/{} | {pct:.0}% |",
                 result.unique_paths, result.lines_covered, result.total_lines
-            ).unwrap();
+            )
+            .unwrap();
             total_paths += result.unique_paths;
             total_covered += result.lines_covered;
             total_lines += result.total_lines;
@@ -941,7 +1025,10 @@ pub(crate) fn write_analysis_report(
     let mut content = String::new();
     content.push_str("# Analysis Summary\n\n");
     content.push_str(&format!("- Functions: {}\n", registry.len()));
-    content.push_str(&format!("- Call graph edges: {}\n", call_graph.edge_count()));
+    content.push_str(&format!(
+        "- Call graph edges: {}\n",
+        call_graph.edge_count()
+    ));
     content.push_str(&format!("- Cycles: {}\n", call_graph.cycle_groups().len()));
     content.push_str("\n## Functions\n\n");
 
@@ -955,8 +1042,7 @@ pub(crate) fn write_analysis_report(
         ));
     }
 
-    std::fs::write(&summary_path, &content)
-        .map_err(|e| format!("failed to write summary: {e}"))?;
+    std::fs::write(&summary_path, &content).map_err(|e| format!("failed to write summary: {e}"))?;
     log::info!("Wrote analysis report to {}", summary_path.display());
 
     Ok(())

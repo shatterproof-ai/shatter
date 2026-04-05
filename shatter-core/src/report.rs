@@ -919,7 +919,7 @@ pub struct ProgressEvent {
     /// Event type — always "progress".
     #[serde(rename = "type")]
     pub event_type: String,
-    /// Optional progress status such as started, completed, or failed.
+    /// Optional progress status such as started, completed, skipped, or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Name of the function currently being processed.
@@ -1696,10 +1696,10 @@ mod tests {
 
     #[test]
     fn progress_event_with_status_round_trips() {
-        let event = ProgressEvent::with_status("test", 3, 7, 999, "completed");
+        let event = ProgressEvent::with_status("test", 3, 7, 999, "skipped");
         let json = serde_json::to_string(&event).expect("serialize");
         let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.status.as_deref(), Some("completed"));
+        assert_eq!(deserialized.status.as_deref(), Some("skipped"));
         assert_eq!(event, deserialized);
     }
 
