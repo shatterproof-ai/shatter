@@ -1,3 +1,7 @@
+import * as path from "node:path";
+
+import * as ts from "typescript";
+
 import type { ExecutionAdapter, ExecutionProfile } from "./protocol.js";
 import type { ResolverAdapter } from "./executor.js";
 
@@ -27,10 +31,113 @@ function mergeRuntimeHooks(target: RuntimeHooks, next: RuntimeHooks | null | und
   target.resolver_adapters.push(...next.resolver_adapters);
 }
 
+interface TsconfigResolutionState {
+  compilerOptions: ts.CompilerOptions;
+}
+
+const tsconfigStateCache = new Map<string, TsconfigResolutionState>();
+
+function isNonRelativeModule(moduleId: string): boolean {
+  return !moduleId.startsWith(".") && !path.isAbsolute(moduleId);
+}
+
+function findTsconfigPath(context: RuntimeHookContext): string | null {
+  const searchDir = context.project_root
+    ? path.resolve(context.project_root)
+    : context.entry_file
+      ? path.dirname(path.resolve(context.entry_file))
+      : null;
+  if (!searchDir) {
+    return null;
+  }
+
+  return ts.findConfigFile(searchDir, ts.sys.fileExists, "tsconfig.json") ?? null;
+}
+
+function getTsconfigResolutionState(tsconfigPath: string): TsconfigResolutionState {
+  const cached = tsconfigStateCache.get(tsconfigPath);
+  if (cached) {
+    return cached;
+  }
+
+  const readResult = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (readResult.error) {
+    throw new Error(`tsconfig-paths adapter could not read ${tsconfigPath}`);
+  }
+
+  const parsed = ts.parseJsonConfigFileContent(
+    readResult.config,
+    ts.sys,
+    path.dirname(tsconfigPath),
+    undefined,
+    tsconfigPath,
+  );
+  if (parsed.errors.length > 0) {
+    throw new Error(`tsconfig-paths adapter could not parse ${tsconfigPath}`);
+  }
+  if (!parsed.options.paths || Object.keys(parsed.options.paths).length === 0) {
+    throw new Error(`tsconfig-paths adapter requires compilerOptions.paths in ${tsconfigPath}`);
+  }
+
+  const state = { compilerOptions: parsed.options };
+  tsconfigStateCache.set(tsconfigPath, state);
+  return state;
+}
+
+function createTsconfigPathsFactory(): RuntimeHookFactory {
+  return {
+    id: "ts/module-resolution/tsconfig-paths",
+    createRuntimeHooks(_adapter, context) {
+      const tsconfigPath = findTsconfigPath(context);
+      if (!tsconfigPath) {
+        throw new Error("tsconfig-paths adapter could not find tsconfig.json");
+      }
+
+      const state = getTsconfigResolutionState(tsconfigPath);
+      return {
+        resolver_adapters: [
+          {
+            id: "ts/module-resolution/tsconfig-paths",
+            resolveModule({ module_id, importer_file }) {
+              if (!isNonRelativeModule(module_id) || !importer_file) {
+                return { kind: "continue" };
+              }
+
+              const resolved = ts.resolveModuleName(
+                module_id,
+                importer_file,
+                state.compilerOptions,
+                ts.sys,
+              ).resolvedModule;
+              if (!resolved) {
+                return { kind: "continue" };
+              }
+
+              const resolvedFile = resolved.resolvedFileName;
+              if (!path.isAbsolute(resolvedFile) || resolvedFile.endsWith(".d.ts")) {
+                return { kind: "continue" };
+              }
+              if (resolvedFile.includes(`${path.sep}node_modules${path.sep}`)) {
+                return { kind: "continue" };
+              }
+
+              return { kind: "rewrite", module_id: resolvedFile };
+            },
+          },
+        ],
+      };
+    },
+  };
+}
+
+const DEFAULT_RUNTIME_HOOK_FACTORIES: readonly RuntimeHookFactory[] = [
+  createTsconfigPathsFactory(),
+];
+
 export function resolveRuntimeHooks(
   executionProfile: ExecutionProfile | null | undefined,
   context: RuntimeHookContext,
-  factories: readonly RuntimeHookFactory[] = [],
+  factories: readonly RuntimeHookFactory[] = DEFAULT_RUNTIME_HOOK_FACTORIES,
 ): RuntimeHooks {
   const hooks: RuntimeHooks = { resolver_adapters: [] };
   if (!executionProfile) {
