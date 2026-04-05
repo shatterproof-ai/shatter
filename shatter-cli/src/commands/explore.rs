@@ -1587,6 +1587,7 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
                 invocation_model: InvocationModel::Direct,
             },
             mock_symbols: vec!["dep".to_string()],
