@@ -39,16 +39,17 @@ tasks:
   build-examples:
     desc: Build example targets
     sources:
-      - examples/rust/src/**/*.rs
-      - examples/rust/Cargo.toml
-      - examples/generators/wasm-rust/src/**/*.rs
-      - examples/generators/wasm-rust/Cargo.toml
-      - examples/generators/wasm-adversarial/src/**/*.rs
-      - examples/generators/wasm-adversarial/Cargo.toml
+      - scripts/examples_checkout.py
     cmds:
-      - cargo build --manifest-path examples/rust/Cargo.toml
-      - cargo build --manifest-path examples/generators/wasm-rust/Cargo.toml
-      - cargo build --manifest-path examples/generators/wasm-adversarial/Cargo.toml
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        cargo build --manifest-path "$examples_root/rust/Cargo.toml"
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        cargo build --manifest-path "$examples_root/generators/wasm-rust/Cargo.toml"
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        cargo build --manifest-path "$examples_root/generators/wasm-adversarial/Cargo.toml"
 
   # --- Test aggregation (issue 4) ---
 
@@ -252,16 +253,24 @@ tasks:
       - shatter-core/tests/e2e_concolic.rs
       - shatter-core/src/**/*.rs
       - shatter-ts/src/**/*.ts
-      - examples/**/*
+      - scripts/examples_checkout.py
     cmds:
-      - cargo test --test e2e_concolic
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function."
     cmds:
-      - cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
-      - cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "examples/standalone/go/smoke-main.go:SmokeClassify"
-      - cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "examples/standalone/go/01-arithmetic.go:ClassifyNumber"
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/ts/01-arithmetic.ts:classifyNumber"
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/go/smoke-main.go:SmokeClassify"
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/go/01-arithmetic.go:ClassifyNumber"
 
   pre-completion:
     desc: Pre-completion quality gate (smoke + full check + git status)

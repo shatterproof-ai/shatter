@@ -21,6 +21,8 @@ type ZZ = {
     aaaa: number,
 };
 
+const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? join(tmpdir(), 'shatter-examples-main');
+
 describe('scratch space', () => {
     it('does', () => {
         const sourceCode = `
@@ -971,7 +973,7 @@ describe('infinitue', () => {
 describe('complicated', () => {
     it('should pass', async () => {
         //  TODO: duh
-        const testfile: AbsolutePath = resolve(__dirname, '..', '..', '..', 'examples', 'typescript', 'src', 'query-creator.ts') as AbsolutePath;
+        const testfile: AbsolutePath = resolve(EXAMPLES_ROOT, 'typescript', 'src', 'query-creator.ts') as AbsolutePath;
         // const testfile = resolve(__dirname, '..', '..', '..', 'examples', 'typescript', 'src', 'query-creator-short.ts');
         const functionName = "constructSearchQuery";
         await testThisFile(testfile, "./query-creator.ts", functionName, { maxIterations: 500, maxTime: 10_000 });

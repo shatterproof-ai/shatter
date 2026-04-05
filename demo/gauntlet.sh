@@ -39,9 +39,7 @@ HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-gauntlet.XXXXXX")"
 # Error tracking: collect failures for a summary at the end.
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-gauntlet-errors.XXXXXX")"
 STEP_ERRORS=0
-EXAMPLES_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-examples.XXXXXX")"
-EXAMPLES_REPO_URL="${SHATTER_EXAMPLES_REPO:-https://github.com/shatterproof-ai/examples.git}"
-EXAMPLES_REPO_REF="${SHATTER_EXAMPLES_REF:-}"
+EXAMPLES_ROOT=""
 
 cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
 trap cleanup EXIT
@@ -68,6 +66,9 @@ else
     SHATTER_COLOR="never"
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 example_path() {
     local path="$1"
     if [[ "$path" == examples/* ]]; then
@@ -77,20 +78,10 @@ example_path() {
     fi
 }
 
-if [[ -z "$EXAMPLES_REPO_REF" ]]; then
-    EXAMPLES_REPO_REF="$(git ls-tree HEAD examples 2>/dev/null | awk '$1 == "160000" { print $3; exit }')"
-fi
-
 echo "${YELLOW}Cloning clean examples checkout...${RESET}"
-if ! git clone --quiet "$EXAMPLES_REPO_URL" "$EXAMPLES_ROOT"; then
-    echo "${RED}failed to clone examples repository from ${EXAMPLES_REPO_URL}${RESET}"
+if ! EXAMPLES_ROOT="$(python3 "$REPO_ROOT/scripts/examples_checkout.py" --fresh)"; then
+    echo "${RED}failed to prepare examples checkout${RESET}"
     exit 1
-fi
-if [[ -n "$EXAMPLES_REPO_REF" ]]; then
-    if ! git -C "$EXAMPLES_ROOT" checkout --quiet "$EXAMPLES_REPO_REF"; then
-        echo "${RED}failed to checkout examples revision ${EXAMPLES_REPO_REF}${RESET}"
-        exit 1
-    fi
 fi
 if [[ ! -f "$(example_path "examples/standalone/ts/01-arithmetic.ts")" ]]; then
     echo "${RED}clean examples checkout is missing gauntlet fixtures${RESET}"
@@ -117,7 +108,9 @@ else
     exit 1
 fi
 
-if command -v shatter-rust &>/dev/null; then
+if [[ -n "${SHATTER_RUST_FRONTEND:-}" ]]; then
+    SHATTER_RUST_FRONTEND="$SHATTER_RUST_FRONTEND"
+elif command -v shatter-rust &>/dev/null; then
     SHATTER_RUST_FRONTEND="$(command -v shatter-rust)"
 elif [[ -x "target/debug/shatter-rust" ]]; then
     SHATTER_RUST_FRONTEND="$(pwd)/target/debug/shatter-rust"

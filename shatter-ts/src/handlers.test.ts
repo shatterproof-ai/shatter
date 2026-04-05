@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker, preparedKeysSize, preparedTargetsSize } from "./handlers.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
@@ -15,6 +16,9 @@ import {
   type SetupRequest,
   type TeardownRequest,
 } from "./protocol.js";
+
+const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? path.join(os.tmpdir(), "shatter-examples-main");
+const TS_ARITHMETIC = path.join(EXAMPLES_ROOT, "standalone", "ts", "01-arithmetic.ts");
 
 describe("parseRequest", () => {
   it("rejects non-JSON input", () => {
@@ -307,7 +311,7 @@ describe("handleRequest", () => {
     });
 
     it("instruments a real function successfully", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+      const exampleFile = TS_ARITHMETIC;
       const { response, shutdown } = await handleRequest(
         makeRequest({ command: "instrument", file: exampleFile, function: "classifyNumber", mocks: [] })
       );
@@ -321,7 +325,7 @@ describe("handleRequest", () => {
   });
 
   describe("prepare", () => {
-    const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+    const exampleFile = TS_ARITHMETIC;
 
     it("returns instrumentation_failed when instrument has not been called first", async () => {
       const { response } = await handleRequest(
@@ -437,7 +441,7 @@ describe("handleRequest", () => {
     });
 
     it("executes a real function after analyze", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+      const exampleFile = TS_ARITHMETIC;
 
       // First analyze so the handler knows the file
       await handleRequest(
@@ -469,7 +473,7 @@ describe("handleRequest", () => {
     it("executes via file:function format with relative path", async () => {
       // Node.js 24+ requires absolute paths for createRequire().
       // Relative paths in file:function format must be resolved before use.
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), TS_ARITHMETIC);
 
       const { response } = await handleRequest(
         makeRequest({
@@ -487,7 +491,7 @@ describe("handleRequest", () => {
 
     it("executes after analyze with relative path", async () => {
       // Verify lastAnalyzedFile stores an absolute path even when given relative.
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), TS_ARITHMETIC);
 
       await handleRequest(
         makeRequest({
@@ -512,7 +516,7 @@ describe("handleRequest", () => {
     });
 
     it("executes instrumented code with relative path", async () => {
-      const relPath = path.relative(process.cwd(), path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts"));
+      const relPath = path.relative(process.cwd(), TS_ARITHMETIC);
 
       // Instrument with relative path
       await handleRequest(
@@ -835,7 +839,7 @@ describe("handleRequest", () => {
     it("teardown clears instrumented sources and module cache", async () => {
       const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
       const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
-      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+      const exampleFile = TS_ARITHMETIC;
 
       // Instrument a function — populates instrumentedSources cache
       await handleRequest(
@@ -865,7 +869,7 @@ describe("handleRequest", () => {
     });
 
     it("shutdown clears instrumented sources and module cache", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+      const exampleFile = TS_ARITHMETIC;
 
       // Instrument to populate cache
       await handleRequest(
@@ -881,7 +885,7 @@ describe("handleRequest", () => {
     });
 
     it("shutdown clears prepared keys and targets", async () => {
-      const exampleFile = path.resolve(__dirname, "../../examples/standalone/ts/01-arithmetic.ts");
+      const exampleFile = TS_ARITHMETIC;
 
       // Instrument then prepare — populates preparedKeys and preparedTargets.
       await handleRequest(

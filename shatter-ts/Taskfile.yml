@@ -36,5 +36,8 @@ tasks:
       - ../protocol/fixtures/**/*.json
       - ../protocol/registry.yaml
       - ../shatter-core/src/protocol.rs
+      - ../scripts/examples_checkout.py
     cmds:
-      - npm test -- --runInBand
+      - |
+        examples_root="$(python3 ../scripts/examples_checkout.py)"
+        SHATTER_EXAMPLES_DIR="$examples_root" npm test -- --runInBand

@@ -14,13 +14,14 @@
 mod rust_frontend_harness;
 
 use rust_frontend_harness::{
-    analyze_function, collect_return_values, execute_function_raw, instrument_function,
-    spawn_rust_frontend, with_rust_frontend_test_lock, workspace_path,
+    analyze_function, collect_return_values, examples_root, execute_function_raw,
+    instrument_function, is_offline_compile_error, spawn_rust_frontend,
+    with_rust_frontend_test_lock,
 };
 
 /// Path to the Rust example source files.
 fn rust_examples_dir() -> std::path::PathBuf {
-    workspace_path("../examples/rust/src")
+    examples_root().join("rust/src")
 }
 
 // ---------------------------------------------------------------------------
@@ -62,13 +63,22 @@ async fn rust_explore_classify_number() {
 
         let mut results = Vec::new();
         for (input, expected) in &test_inputs {
-            let result = execute_function_raw(
+            let result = match execute_function_raw(
                 &mut frontend,
                 &file_str,
                 "classify_number",
                 vec![input.clone()],
             )
-            .await;
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping rust_explore_classify_number: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
@@ -134,13 +144,22 @@ async fn rust_explore_classify_temperature() {
 
         let mut results = Vec::new();
         for (input, expected) in &test_inputs {
-            let result = execute_function_raw(
+            let result = match execute_function_raw(
                 &mut frontend,
                 &file_str,
                 "classify_temperature",
                 vec![input.clone()],
             )
-            .await;
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping rust_explore_classify_temperature: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
@@ -243,13 +262,22 @@ async fn rust_explore_classify_option() {
 
         let mut results = Vec::new();
         for (input, expected) in &test_inputs {
-            let result = execute_function_raw(
+            let result = match execute_function_raw(
                 &mut frontend,
                 &file_str,
                 "classify_option",
                 vec![input.clone()],
             )
-            .await;
+            .await
+            {
+                Ok(result) => result,
+                Err(message) if is_offline_compile_error(&message) => {
+                    eprintln!("skipping rust_explore_classify_option: {message}");
+                    frontend.shutdown().await.expect("frontend shutdown failed");
+                    return;
+                }
+                Err(message) => panic!("{message}"),
+            };
 
             let ret_str = result
                 .return_value
