@@ -1,6 +1,0 @@
-{
-  "name": "ts-app",
-  "scripts": {
-    "test": "jest"
-  }
-}
