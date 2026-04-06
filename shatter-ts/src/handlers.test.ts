@@ -542,6 +542,31 @@ describe("handleRequest", () => {
         expect(response.branch_path.length).toBeGreaterThan(0);
       }
     });
+
+    it("fails explicitly when execution_profile requests an unsupported adapter", async () => {
+      const fixtureFile = path.resolve(__dirname, "__fixtures__", "primitives.ts");
+      await handleRequest(
+        makeRequest({ command: "analyze", file: fixtureFile, function: "add" })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${fixtureFile}:add`,
+          inputs: [1, 2],
+          mocks: [],
+          execution_profile: {
+            adapters: [{ id: "ts/react-hooks", apply: "required" }],
+          },
+        })
+      );
+
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("ts/react-hooks");
+      }
+    });
   });
 
   describe("async function execution", () => {
@@ -716,6 +741,26 @@ describe("handleRequest", () => {
       if (response.status === "error") {
         expect(response.code).toBe("internal_error");
         expect(response.message).toContain("setup()");
+      }
+    });
+
+    it("fails explicitly when execution_profile requests an unsupported setup adapter", async () => {
+      const setupFile = path.resolve(__dirname, "__fixtures__", "setup-module.ts");
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "setup",
+          file: setupFile,
+          scope: "f",
+          level: "function",
+          execution_profile: {
+            adapters: [{ id: "ts/react-hooks", apply: "required" }],
+          },
+        })
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("ts/react-hooks");
       }
     });
   });
