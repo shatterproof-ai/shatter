@@ -1,6 +1,0 @@
-{
-  "name": "task-app",
-  "scripts": {
-    "test": "jest"
-  }
-}
