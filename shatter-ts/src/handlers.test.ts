@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker, preparedKeysSize, preparedTargetsSize } from "./handlers.js";
@@ -19,6 +20,8 @@ import {
 
 const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? path.join(os.tmpdir(), "shatter-examples-main");
 const TS_ARITHMETIC = path.join(EXAMPLES_ROOT, "standalone", "ts", "01-arithmetic.ts");
+const TSCONFIG_PATHS_DIR = path.resolve(__dirname, "__fixtures__", "tsconfig-paths-handler");
+const TSCONFIG_PATHS_FILE = path.join(TSCONFIG_PATHS_DIR, "src", "target.ts");
 
 describe("parseRequest", () => {
   it("rejects non-JSON input", () => {
@@ -150,10 +153,39 @@ describe("handleRequest", () => {
       command: "analyze",
       file: fixtureFile,
     } as Request);
+
+    fs.mkdirSync(path.join(TSCONFIG_PATHS_DIR, "src", "lib"), { recursive: true });
+    fs.writeFileSync(
+      path.join(TSCONFIG_PATHS_DIR, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@app/*": ["src/*"],
+          },
+        },
+      }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(TSCONFIG_PATHS_DIR, "src", "lib", "math.ts"),
+      `export function add(a: number, b: number): number {
+  return a + b;
+}
+`,
+    );
+    fs.writeFileSync(
+      TSCONFIG_PATHS_FILE,
+      `import { add } from "@app/lib/math";
+export function usesAlias(): number {
+  return add(10, 32);
+}
+`,
+    );
   }, 30000);
 
   afterAll(async () => {
     await terminateWorker();
+    fs.rmSync(TSCONFIG_PATHS_DIR, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -565,6 +597,35 @@ describe("handleRequest", () => {
       if (response.status === "error") {
         expect(response.code).toBe("not_supported");
         expect(response.message).toContain("ts/react-hooks");
+      }
+    });
+
+    it("resolves tsconfig path aliases when execution_profile enables the adapter", async () => {
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: TSCONFIG_PATHS_FILE,
+          function: "usesAlias",
+          project_root: TSCONFIG_PATHS_DIR,
+        })
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${TSCONFIG_PATHS_FILE}:usesAlias`,
+          inputs: [],
+          mocks: [],
+          execution_profile: {
+            adapters: [{ id: "ts/module-resolution/tsconfig-paths", apply: "required" }],
+          },
+        })
+      );
+
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe(42);
+        expect(response.thrown_error).toBeNull();
       }
     });
   });
