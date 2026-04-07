@@ -847,6 +847,11 @@
             "branch_id": 0,
             "function": "SmokeClassify",
             "severity": "rare_path"
+          },
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
