@@ -177,7 +177,7 @@ pub struct ScanReport {
 // ---------------------------------------------------------------------------
 
 /// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
-fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
+pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
 
     let discovered_inputs: Vec<DiscoveredInput> = exploration
@@ -196,9 +196,10 @@ fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionRe
         .behaviors
         .iter()
         .map(|b| {
-            let thrown_error = b.thrown_error.as_ref().map(|e| {
-                format!("{}: {}", e.error_type, e.message)
-            });
+            let thrown_error = b
+                .thrown_error
+                .as_ref()
+                .map(|e| format!("{}: {}", e.error_type, e.message));
             BehaviorClusterSummary {
                 id: b.id,
                 representative_inputs: b.input_args.clone(),
@@ -447,7 +448,10 @@ pub fn write_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, R
 ///
 /// Creates the output directory if it does not exist. Writes to
 /// `<output_dir>/scan-report.md`.
-pub fn write_markdown_report(report: &ScanReport, output_dir: &Path) -> Result<PathBuf, ReportError> {
+pub fn write_markdown_report(
+    report: &ScanReport,
+    output_dir: &Path,
+) -> Result<PathBuf, ReportError> {
     std::fs::create_dir_all(output_dir).map_err(|e| ReportError::Io {
         path: output_dir.to_path_buf(),
         source: e,
@@ -507,10 +511,7 @@ pub fn wrap_explore_html(
 /// `project_root` is used to resolve relative source file paths for the source
 /// code display. Pass `None` to skip source code display.
 #[must_use]
-pub fn generate_html_scan_report(
-    report: &ScanReport,
-    project_root: Option<&Path>,
-) -> String {
+pub fn generate_html_scan_report(report: &ScanReport, project_root: Option<&Path>) -> String {
     crate::html_templates::render_scan_report(report, project_root)
 }
 
@@ -608,7 +609,11 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     let total_branches = report.codebase.total_branches;
     let coverage = report.codebase.overall_coverage;
 
-    let _ = writeln!(out, "- **Functions explored:** {}", report.codebase.total_functions);
+    let _ = writeln!(
+        out,
+        "- **Functions explored:** {}",
+        report.codebase.total_functions
+    );
     let _ = writeln!(out, "- **Total branches:** {total_branches}");
     let _ = writeln!(out, "- **Branches covered:** {total_covered}");
     let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
@@ -668,8 +673,14 @@ fn write_md_summary_table(out: &mut String, report: &ScanReport) {
     }
 
     let _ = writeln!(out, "## Function Summary\n");
-    let _ = writeln!(out, "| Status | Function | File | Coverage | Branches | Lines | Iterations |");
-    let _ = writeln!(out, "|--------|----------|------|----------|----------|-------|------------|");
+    let _ = writeln!(
+        out,
+        "| Status | Function | File | Coverage | Branches | Lines | Iterations |"
+    );
+    let _ = writeln!(
+        out,
+        "|--------|----------|------|----------|----------|-------|------------|"
+    );
 
     for func in &report.functions {
         let status = if func.coverage_pct >= 100.0 {
@@ -684,7 +695,11 @@ fn write_md_summary_table(out: &mut String, report: &ScanReport) {
             out,
             "| {status} | `{name}` | {file} | {cov:.1}% | {covered}/{total} | {lc}/{tl} | {iter} |",
             name = func.function_name,
-            file = if func.file_path.is_empty() { "-" } else { &func.file_path },
+            file = if func.file_path.is_empty() {
+                "-"
+            } else {
+                &func.file_path
+            },
             cov = func.coverage_pct,
             covered = func.branches_covered,
             total = func.branch_count,
@@ -716,7 +731,11 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
             "- **Branches:** {}/{}",
             func.branches_covered, func.branch_count
         );
-        let _ = writeln!(out, "- **Lines:** {}/{}", func.lines_covered, func.total_lines);
+        let _ = writeln!(
+            out,
+            "- **Lines:** {}/{}",
+            func.lines_covered, func.total_lines
+        );
         let _ = writeln!(out, "- **Iterations:** {}", func.iterations);
         let _ = writeln!(
             out,
@@ -740,17 +759,18 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
                     "returns void".to_string()
                 };
                 let inputs = format_json_compact_list(&cluster.representative_inputs);
-                let _ = writeln!(out, "- Cluster {}: {outcome} (inputs: {inputs})", cluster.id);
+                let _ = writeln!(
+                    out,
+                    "- Cluster {}: {outcome} (inputs: {inputs})",
+                    cluster.id
+                );
             }
         }
 
         if !func.refactoring_recommendations.is_empty() {
             let _ = writeln!(out, "\n**Refactoring Recommendations:**\n");
             for rec in &func.refactoring_recommendations {
-                let location = rec
-                    .line
-                    .map(|l| format!(" (line {l})"))
-                    .unwrap_or_default();
+                let location = rec.line.map(|l| format!(" (line {l})")).unwrap_or_default();
                 let _ = writeln!(
                     out,
                     "- `{sym}`{loc}: {reason}. {suggestion}.",
@@ -836,7 +856,10 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
         return;
     }
 
-    let expected: Vec<_> = skipped.iter().filter(|s| s.category == "expected").collect();
+    let expected: Vec<_> = skipped
+        .iter()
+        .filter(|s| s.category == "expected")
+        .collect();
     let errors: Vec<_> = skipped.iter().filter(|s| s.category == "error").collect();
 
     if !expected.is_empty() {
@@ -896,6 +919,9 @@ pub struct ProgressEvent {
     /// Event type — always "progress".
     #[serde(rename = "type")]
     pub event_type: String,
+    /// Optional progress status such as started, completed, skipped, or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     /// Name of the function currently being processed.
     pub function: String,
     /// 1-based index of the current function.
@@ -912,10 +938,26 @@ impl ProgressEvent {
     pub fn new(function: &str, current: usize, total: usize, elapsed_ms: u64) -> Self {
         Self {
             event_type: "progress".to_string(),
+            status: None,
             function: function.to_string(),
             current,
             total,
             elapsed_ms,
+        }
+    }
+
+    /// Create a progress event with an explicit status.
+    #[must_use]
+    pub fn with_status(
+        function: &str,
+        current: usize,
+        total: usize,
+        elapsed_ms: u64,
+        status: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: Some(status.into()),
+            ..Self::new(function, current, total, elapsed_ms)
         }
     }
 
@@ -993,7 +1035,10 @@ mod tests {
         use crate::scan_orchestrator::{MockSource, MockUsage};
         let mocks: Vec<MockUsage> = mocks
             .into_iter()
-            .map(|name| MockUsage { name, source: MockSource::CachedBehaviorMap })
+            .map(|name| MockUsage {
+                name,
+                source: MockSource::CachedBehaviorMap,
+            })
             .collect();
         let new_path_executions: Vec<ExecutionSummary> = (0..unique_paths)
             .map(|i| ExecutionSummary {
@@ -1001,7 +1046,9 @@ mod tests {
                 return_value: Some(serde_json::json!(i * 10)),
                 thrown_error: None,
                 lines_executed: vec![1, 2, 3],
-                is_new_path: true, error_intent: None })
+                is_new_path: true,
+                error_intent: None,
+            })
             .collect();
 
         let behaviors: Vec<Behavior> = (0..unique_paths)
@@ -1028,7 +1075,15 @@ mod tests {
                 new_path_executions,
                 raw_results: vec![],
                 discoveries: vec![],
-                nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                nondeterministic_fields: vec![],
+                float_probe_results: vec![],
+                boundary_results: vec![],
+                shrunk_witnesses: std::collections::HashMap::new(),
+                mcdc_summary: None,
+                shrink_stats: crate::shrink::ShrinkStats::default(),
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -1053,7 +1108,9 @@ mod tests {
             ],
             test_order: vec!["leaf".into(), "caller".into()],
             skipped: vec![],
-            workers_used: 2, workers_reaped: 0, sampling: None,
+            workers_used: 2,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -1110,7 +1167,9 @@ mod tests {
                 reason: "timed out after 30s".to_string(),
                 category: crate::scan_orchestrator::SkipCategory::Error,
             }],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1130,7 +1189,9 @@ mod tests {
             function_results: vec![],
             test_order: vec![],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1152,7 +1213,9 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 2, 7, 10, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1168,7 +1231,9 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 1, 0, 0, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1190,7 +1255,9 @@ mod tests {
                 reason: "error: boom".to_string(),
                 category: crate::scan_orchestrator::SkipCategory::Error,
             }],
-            workers_used: 2, workers_reaped: 0, sampling: None,
+            workers_used: 2,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -1209,7 +1276,9 @@ mod tests {
             function_results: vec![make_function_result("f", 10, 2, 5, 10, vec![])],
             test_order: vec!["f".into()],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1270,8 +1339,7 @@ mod tests {
 
         // Read back and verify
         let contents = std::fs::read_to_string(&path).expect("read file");
-        let deserialized: ScanReport =
-            serde_json::from_str(&contents).expect("parse json");
+        let deserialized: ScanReport = serde_json::from_str(&contents).expect("parse json");
         assert_eq!(deserialized.version, 1);
 
         // Clean up
@@ -1289,7 +1357,9 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: "TypeError".to_string(),
                 message: "cannot read null".to_string(),
-                stack: None, error_category: None }),
+                stack: None,
+                error_category: None,
+            }),
             branch_path: vec![],
             side_effects: vec![],
             dependency_trace: None,
@@ -1303,13 +1373,17 @@ mod tests {
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".to_string()),
                 lines_executed: vec![1],
-                is_new_path: true, error_intent: None });
+                is_new_path: true,
+                error_intent: None,
+            });
 
         let parallel_result = ParallelScanResult {
             function_results: vec![func_result],
             test_order: vec!["risky".into()],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1320,11 +1394,13 @@ mod tests {
 
         let error_cluster = &func.behavior_clusters[1];
         assert!(error_cluster.thrown_error.is_some());
-        assert!(error_cluster
-            .thrown_error
-            .as_ref()
-            .unwrap()
-            .contains("TypeError"));
+        assert!(
+            error_cluster
+                .thrown_error
+                .as_ref()
+                .unwrap()
+                .contains("TypeError")
+        );
 
         let error_input = func
             .discovered_inputs
@@ -1369,7 +1445,9 @@ mod tests {
             ],
             test_order: vec!["a".into(), "b".into()],
             skipped: vec![],
-            workers_used: 1, workers_reaped: 0, sampling: None,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let file_map = HashMap::new();
@@ -1391,7 +1469,9 @@ mod tests {
             ],
             test_order: vec!["leaf".into(), "caller".into()],
             skipped: vec![],
-            workers_used: 2, workers_reaped: 0, sampling: None,
+            workers_used: 2,
+            workers_reaped: 0,
+            sampling: None,
         };
 
         let mut file_map = HashMap::new();
@@ -1418,8 +1498,14 @@ mod tests {
         let report = make_report_with_functions();
         let md = format_markdown_report(&report);
 
-        assert!(md.contains("**Functions explored:** 2"), "bad function count: {md}");
-        assert!(md.contains("**Total branches:** 5"), "bad branch count: {md}");
+        assert!(
+            md.contains("**Functions explored:** 2"),
+            "bad function count: {md}"
+        );
+        assert!(
+            md.contains("**Total branches:** 5"),
+            "bad branch count: {md}"
+        );
     }
 
     #[test]
@@ -1443,7 +1529,10 @@ mod tests {
         let md = format_markdown_report(&report);
 
         // leaf: 5/10 lines = 50% -> WARN, caller: 8/10 = 80% -> WARN
-        assert!(md.contains("WARN"), "should contain WARN status for partial coverage");
+        assert!(
+            md.contains("WARN"),
+            "should contain WARN status for partial coverage"
+        );
     }
 
     #[test]
@@ -1473,9 +1562,18 @@ mod tests {
         let md = format_markdown_report(&report);
 
         assert!(md.contains("# Shatter Scan Report"), "missing heading");
-        assert!(md.contains("**Functions explored:** 0"), "missing zero functions");
-        assert!(md.contains("*No functions were explored.*"), "missing empty message");
-        assert!(!md.contains("## Function Details"), "should not have details section");
+        assert!(
+            md.contains("**Functions explored:** 0"),
+            "missing zero functions"
+        );
+        assert!(
+            md.contains("*No functions were explored.*"),
+            "missing empty message"
+        );
+        assert!(
+            !md.contains("## Function Details"),
+            "should not have details section"
+        );
         assert!(
             !md.contains("## Uncovered Branches"),
             "should not have uncovered section"
@@ -1523,7 +1621,11 @@ mod tests {
             .collect();
 
         // header + separator + 2 data rows = 4 lines
-        assert_eq!(in_table.len(), 4, "table should have 4 rows, got: {in_table:?}");
+        assert_eq!(
+            in_table.len(),
+            4,
+            "table should have 4 rows, got: {in_table:?}"
+        );
 
         for line in &in_table {
             assert!(line.starts_with('|'), "row should start with |: {line}");
@@ -1556,6 +1658,7 @@ mod tests {
         let event = ProgressEvent::new("classifyNumber", 1, 5, 1234);
 
         assert_eq!(event.event_type, "progress");
+        assert_eq!(event.status, None);
         assert_eq!(event.function, "classifyNumber");
         assert_eq!(event.current, 1);
         assert_eq!(event.total, 5);
@@ -1567,11 +1670,20 @@ mod tests {
         let event = ProgressEvent::new("f", 2, 10, 500);
         let json = event.to_json().expect("should serialize");
 
-        assert!(json.contains("\"type\":\"progress\""), "missing type: {json}");
-        assert!(json.contains("\"function\":\"f\""), "missing function: {json}");
+        assert!(
+            json.contains("\"type\":\"progress\""),
+            "missing type: {json}"
+        );
+        assert!(
+            json.contains("\"function\":\"f\""),
+            "missing function: {json}"
+        );
         assert!(json.contains("\"current\":2"), "missing current: {json}");
         assert!(json.contains("\"total\":10"), "missing total: {json}");
-        assert!(json.contains("\"elapsed_ms\":500"), "missing elapsed: {json}");
+        assert!(
+            json.contains("\"elapsed_ms\":500"),
+            "missing elapsed: {json}"
+        );
     }
 
     #[test]
@@ -1583,13 +1695,25 @@ mod tests {
     }
 
     #[test]
+    fn progress_event_with_status_round_trips() {
+        let event = ProgressEvent::with_status("test", 3, 7, 999, "skipped");
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.status.as_deref(), Some("skipped"));
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
     fn report_format_from_str() {
         assert_eq!("json".parse::<ReportFormat>().unwrap(), ReportFormat::Json);
         assert_eq!(
             "markdown".parse::<ReportFormat>().unwrap(),
             ReportFormat::Markdown
         );
-        assert_eq!("md".parse::<ReportFormat>().unwrap(), ReportFormat::Markdown);
+        assert_eq!(
+            "md".parse::<ReportFormat>().unwrap(),
+            ReportFormat::Markdown
+        );
         assert_eq!("both".parse::<ReportFormat>().unwrap(), ReportFormat::Both);
         assert!("invalid".parse::<ReportFormat>().is_err());
     }
@@ -1641,7 +1765,10 @@ mod tests {
     fn html_scan_report_is_valid_structure() {
         let report = make_report_with_functions();
         let html = generate_html_scan_report(&report, None);
-        assert!(html.starts_with("<!DOCTYPE html>"), "must start with doctype");
+        assert!(
+            html.starts_with("<!DOCTYPE html>"),
+            "must start with doctype"
+        );
         assert!(html.contains("<html"), "must have html tag");
         assert!(html.contains("</html>"), "must close html tag");
         assert!(html.contains("</body>"), "must close body tag");
@@ -1669,14 +1796,7 @@ mod tests {
     #[test]
     fn html_scan_report_escapes_special_chars() {
         let mut parallel_result = ParallelScanResult {
-            function_results: vec![make_function_result(
-                "fn<test>&\"",
-                5,
-                2,
-                4,
-                10,
-                vec![],
-            )],
+            function_results: vec![make_function_result("fn<test>&\"", 5, 2, 4, 10, vec![])],
             test_order: vec![],
             skipped: vec![],
             workers_used: 1,
@@ -1731,7 +1851,9 @@ mod tests {
             shrunk_witnesses: std::collections::HashMap::new(),
             mcdc_summary: None,
             shrink_stats: crate::shrink::ShrinkStats::default(),
-            abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
         assert!(fragment.contains("myFunc"), "must contain function name");
@@ -1819,9 +1941,18 @@ mod tests {
 
         let mut func_result = make_function_result("caller", 10, 2, 5, 10, vec![]);
         func_result.mocks_used = vec![
-            MockUsage { name: "cached".to_string(), source: MockSource::CachedBehaviorMap },
-            MockUsage { name: "stubbed".to_string(), source: MockSource::TypeAwareStub },
-            MockUsage { name: "excluded".to_string(), source: MockSource::StratumExcluded },
+            MockUsage {
+                name: "cached".to_string(),
+                source: MockSource::CachedBehaviorMap,
+            },
+            MockUsage {
+                name: "stubbed".to_string(),
+                source: MockSource::TypeAwareStub,
+            },
+            MockUsage {
+                name: "excluded".to_string(),
+                source: MockSource::StratumExcluded,
+            },
         ];
         func_result.behavior_coverage = vec![BehaviorCoverage {
             caller: "caller".to_string(),
@@ -1886,10 +2017,7 @@ mod proptests {
     }
 
     fn arb_mock_usage_report() -> impl Strategy<Value = MockUsageReport> {
-        (
-            "[a-z_]{1,20}",
-            arb_mock_source(),
-        )
+        ("[a-z_]{1,20}", arb_mock_source())
             .prop_flat_map(|(name, source)| {
                 let has_metrics = source == "behavior_map";
                 let coverage = if has_metrics {
@@ -1904,14 +2032,14 @@ mod proptests {
                 };
                 (Just(name), Just(source), coverage, exec_count)
             })
-            .prop_map(|(name, source, mock_coverage_pct, mock_execution_count)| {
-                MockUsageReport {
+            .prop_map(
+                |(name, source, mock_coverage_pct, mock_execution_count)| MockUsageReport {
                     name,
                     source,
                     mock_coverage_pct,
                     mock_execution_count,
-                }
-            })
+                },
+            )
     }
 
     proptest! {

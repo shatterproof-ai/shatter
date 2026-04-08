@@ -230,6 +230,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }]
     }
 

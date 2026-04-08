@@ -31,6 +31,8 @@ PERF_STAT_EVENTS = [
     "cache-misses",
 ]
 
+DEFAULT_EXAMPLES_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
+
 
 @dataclass
 class Scenario:
@@ -64,10 +66,43 @@ def load_sample_refs() -> set[str]:
     return refs
 
 
+def resolve_examples_root() -> Path:
+    explicit = os.environ.get("SHATTER_EXAMPLES_DIR")
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.exists():
+            raise SystemExit(f"SHATTER_EXAMPLES_DIR does not exist: {path}")
+        return path.resolve()
+
+    helper = REPO_ROOT / "scripts" / "examples_checkout.py"
+    completed = subprocess.run(
+        [sys.executable, str(helper)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "failed to prepare examples checkout"
+        raise SystemExit(detail)
+
+    return Path(completed.stdout.strip()).resolve()
+
+
+def remap_examples_arg(value: str, examples_root: Path) -> str:
+    if value.startswith("examples/"):
+        return str(examples_root / value.removeprefix("examples/"))
+    if ":examples/" in value:
+        prefix, suffix = value.split(":examples/", 1)
+        return f"{prefix}:{examples_root / suffix}"
+    return value
+
+
 def load_scenarios() -> dict[str, Scenario]:
     payload = json.loads(SCENARIO_FILE.read_text())
     defaults = payload.get("defaults", {})
     sample_refs = load_sample_refs()
+    examples_root = resolve_examples_root()
     scenarios: dict[str, Scenario] = {}
     for raw in payload["scenarios"]:
         merged_env = dict(defaults.get("env", {}))
@@ -76,7 +111,7 @@ def load_scenarios() -> dict[str, Scenario]:
             id=raw["id"],
             kind=raw["kind"],
             description=raw["description"],
-            command=list(raw["command"]),
+            command=[remap_examples_arg(part, examples_root) for part in raw["command"]],
             workdir=REPO_ROOT / raw.get("workdir", defaults.get("workdir", ".")),
             env=merged_env,
             cache_mode=raw.get("cache_mode", defaults.get("cache_mode", "cold")),
@@ -371,6 +406,7 @@ def run_once(
     env.update(scenario.env)
     env.update(make_cache_env(cache_dir))
     env["SHATTER_PERF_SCENARIO"] = scenario.id
+    env.setdefault("SHATTER_EXAMPLES_DIR", str(resolve_examples_root()))
 
     for key in (
         "SHATTER_CACHE_DIR",

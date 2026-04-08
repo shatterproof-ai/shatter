@@ -1,5 +1,0 @@
-[submodule "examples"]
-	path = examples
-	url = https://github.com/shatterproof-ai/examples.git
-	update = merge
-	branch = main

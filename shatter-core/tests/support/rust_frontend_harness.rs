@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::env;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -29,6 +30,20 @@ fn rust_frontend_path() -> PathBuf {
 pub fn workspace_path(relative: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.join(relative)
+}
+
+/// Resolve the shared examples checkout used by integration tests.
+pub fn examples_root() -> PathBuf {
+    if let Some(path) = env::var_os("SHATTER_EXAMPLES_DIR") {
+        return PathBuf::from(path);
+    }
+
+    let fallback = env::temp_dir().join("shatter-examples-main");
+    assert!(
+        fallback.exists(),
+        "examples checkout not found. Set SHATTER_EXAMPLES_DIR or run python3 scripts/examples_checkout.py."
+    );
+    fallback
 }
 
 /// Serialize Rust frontend integration tests so temp Cargo builds do not
@@ -129,7 +144,7 @@ pub async fn execute_function_raw(
     file: &str,
     function_name: &str,
     inputs: Vec<serde_json::Value>,
-) -> shatter_core::protocol::ExecuteResult {
+) -> Result<shatter_core::protocol::ExecuteResult, String> {
     let request_json = serde_json::json!({
         "protocol_version": "0.1.0",
         "id": 0,
@@ -146,12 +161,19 @@ pub async fn execute_function_raw(
         .expect("execute command failed");
 
     match response.result {
-        ResponseResult::Execute(result) => *result,
+        ResponseResult::Execute(result) => Ok(*result),
         ResponseResult::Error { code, message, .. } => {
-            panic!("execute error ({code:?}): {message}");
+            Err(format!("execute error ({code:?}): {message}"))
         }
-        other => panic!("expected Execute response, got: {other:?}"),
+        other => Err(format!("expected Execute response, got: {other:?}")),
     }
+}
+
+pub fn is_offline_compile_error(message: &str) -> bool {
+    message.contains("spurious network error")
+        || message.contains("download of config.json failed")
+        || message.contains("Could not resolve host")
+        || message.contains("Could not resolve hostname")
 }
 
 /// Collect distinct return value strings from a set of execution results.

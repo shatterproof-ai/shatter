@@ -61,15 +61,26 @@ pub fn detect_project_root(file_path: &Path) -> Option<ProjectRoot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::fs;
+
+    fn examples_root() -> PathBuf {
+        if let Some(path) = env::var_os("SHATTER_EXAMPLES_DIR") {
+            return PathBuf::from(path);
+        }
+
+        let fallback = env::temp_dir().join("shatter-examples-main");
+        assert!(
+            fallback.exists(),
+            "examples checkout not found. Set SHATTER_EXAMPLES_DIR or run python3 scripts/examples_checkout.py."
+        );
+        fallback
+    }
 
     #[test]
     fn detects_typescript_project_via_package_json() {
         // examples/typescript/ has package.json
-        let examples_ts = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/typescript/src/01-simple-branch.ts");
+        let examples_ts = examples_root().join("typescript/src/01-simple-branch.ts");
         let result = detect_project_root(&examples_ts);
         assert!(result.is_some(), "should detect project root");
         let root = result.unwrap();
@@ -80,10 +91,7 @@ mod tests {
     #[test]
     fn detects_go_project_via_go_mod() {
         // examples/go/ has go.mod
-        let examples_go = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/go/01-simple-branch.go");
+        let examples_go = examples_root().join("go/01-simple-branch.go");
         let result = detect_project_root(&examples_go);
         assert!(result.is_some(), "should detect project root");
         let root = result.unwrap();
@@ -102,10 +110,7 @@ mod tests {
 
     #[test]
     fn accepts_directory_as_input() {
-        let examples_ts = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/typescript");
+        let examples_ts = examples_root().join("typescript");
         let result = detect_project_root(&examples_ts);
         assert!(result.is_some());
         assert_eq!(result.unwrap().kind, ProjectKind::TypeScript);

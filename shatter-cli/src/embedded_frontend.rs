@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The esbuild-bundled TypeScript frontend, embedded at compile time.
 const BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-bundle.js"));
@@ -9,6 +10,8 @@ const WORKER_BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-
 
 /// SHA-256 hash of the bundle, used for cache-busting.
 const BUNDLE_HASH: &str = env!("FRONTEND_BUNDLE_HASH");
+
+static EXTRACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Ensure the embedded TS frontend bundle is extracted to disk, returning its path.
 ///
@@ -28,17 +31,10 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
         fs::create_dir_all(cache_dir)
             .map_err(|e| format!("failed to create cache directory {}: {e}", cache_dir.display()))?;
 
-        // Write atomically: write to a temp file then rename to avoid partial reads
-        let tmp_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js.tmp"));
-        fs::write(&tmp_path, BUNDLE)
-            .map_err(|e| format!("failed to write frontend bundle: {e}"))?;
-        fs::rename(&tmp_path, &bundle_path).map_err(|e| {
-            format!(
-                "failed to rename {} -> {}: {e}",
-                tmp_path.display(),
-                bundle_path.display()
-            )
-        })?;
+        // Write atomically: use a unique temp file so concurrent callers do not
+        // race on the same `.tmp` path. If another caller wins the race to the
+        // final destination first, treat that as success.
+        write_atomic_file(cache_dir, &bundle_path, BUNDLE, "frontend bundle")?;
 
         // Clean up old bundles (different hash)
         cleanup_old_bundles(cache_dir, &bundle_path);
@@ -48,19 +44,42 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     // InstrumentationWorker resolves worker.js relative to __dirname.
     let worker_path = cache_dir.join("worker.js");
     if !worker_path.exists() {
-        let tmp_worker = cache_dir.join("worker.js.tmp");
-        fs::write(&tmp_worker, WORKER_BUNDLE)
-            .map_err(|e| format!("failed to write worker bundle: {e}"))?;
-        fs::rename(&tmp_worker, &worker_path).map_err(|e| {
-            format!(
-                "failed to rename {} -> {}: {e}",
-                tmp_worker.display(),
-                worker_path.display()
-            )
-        })?;
+        write_atomic_file(cache_dir, &worker_path, WORKER_BUNDLE, "worker bundle")?;
     }
 
     Ok(bundle_path)
+}
+
+fn write_atomic_file(
+    cache_dir: &Path,
+    destination: &Path,
+    contents: &[u8],
+    label: &str,
+) -> Result<(), String> {
+    let tmp_path = unique_tmp_path(cache_dir, destination);
+    fs::write(&tmp_path, contents).map_err(|e| format!("failed to write {label}: {e}"))?;
+
+    match fs::rename(&tmp_path, destination) {
+        Ok(()) => Ok(()),
+        Err(e) if destination.exists() => {
+            let _ = fs::remove_file(&tmp_path);
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "failed to rename {} -> {}: {e}",
+            tmp_path.display(),
+            destination.display()
+        )),
+    }
+}
+
+fn unique_tmp_path(cache_dir: &Path, destination: &Path) -> PathBuf {
+    let suffix = EXTRACT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("extraction destination must have a UTF-8 file name");
+    cache_dir.join(format!("{file_name}.{}.{}.tmp", std::process::id(), suffix))
 }
 
 /// Return the shatter cache directory (`~/.cache/shatter/`).
@@ -104,6 +123,8 @@ fn cleanup_old_bundles(cache_dir: &Path, current: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn bundle_is_embedded() {
@@ -169,5 +190,32 @@ mod tests {
         assert!(!old_bundle.exists(), "old bundle should have been cleaned up");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_to_is_safe_under_concurrent_calls() {
+        let tmp = std::env::temp_dir().join("shatter-test-concurrent-extract");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let dir = Arc::new(tmp);
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                extract_to(dir.as_path())
+            }));
+        }
+
+        for handle in handles {
+            let path = handle.join().expect("thread panicked").expect("extraction failed");
+            assert!(path.exists(), "bundle path should exist after extraction");
+        }
+
+        let _ = fs::remove_dir_all(dir.as_path());
     }
 }

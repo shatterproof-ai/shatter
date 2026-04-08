@@ -28,9 +28,11 @@ import {
   type Response,
   type ErrorResponse,
   type SetupLevel,
+  type ExecutionProfile,
 } from "./protocol.js";
 import { TimingCollector } from "./timing.js";
 import { InstrumentationWorker } from "./instrumentation-worker.js";
+import { resolveRuntimeHooks } from "./runtime-hooks.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
 
@@ -187,6 +189,22 @@ let timingEnabled = false;
 
 function wantsTimingFromHandshake(request: Request): boolean {
   return request.command === "handshake" && request.capabilities.includes("timing");
+}
+
+function resolveRuntimeHooksForRequest(
+  executionProfile: ExecutionProfile | null | undefined,
+  context: {
+    phase: "execute" | "setup";
+    project_root?: string | null;
+    entry_file?: string;
+    function_name?: string;
+  },
+): ReturnType<typeof resolveRuntimeHooks> {
+  return resolveRuntimeHooks(executionProfile, context);
+}
+
+function setupModuleCacheKey(filePath: string, executionProfile: ExecutionProfile | null | undefined): string {
+  return `${path.resolve(filePath)}\x00${JSON.stringify(executionProfile ?? null)}`;
 }
 
 function maybeTimingCollector(): TimingCollector | undefined {
@@ -411,6 +429,15 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         if (lastProjectRoot !== undefined) {
           executor.setProjectRoot(lastProjectRoot);
         }
+        const runtimeHooks = resolveRuntimeHooksForRequest(request.execution_profile, {
+          phase: "execute",
+          project_root: lastProjectRoot,
+          entry_file: fileForExec,
+          function_name: funcRef.includes(":") ? funcRef.split(":").pop()! : funcRef,
+        });
+        const resolverAdapters = runtimeHooks.resolver_adapters.length > 0
+          ? runtimeHooks.resolver_adapters
+          : undefined;
 
         // Check if we have instrumented source for this function.
         // When prepare_id is set, look up the instrument key from the prepare cache.
@@ -431,12 +458,47 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
-              executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, timing, capture, instrumentKey))
-            : await executor.executeInstrumented(instrumentedSource, funcName, request.inputs, request.mocks ?? [], fileForExec, undefined, capture, instrumentKey);
+              executor.executeInstrumented(
+                instrumentedSource,
+                funcName,
+                request.inputs,
+                request.mocks ?? [],
+                fileForExec,
+                timing,
+                capture,
+                instrumentKey,
+                resolverAdapters,
+              ))
+            : await executor.executeInstrumented(
+              instrumentedSource,
+              funcName,
+              request.inputs,
+              request.mocks ?? [],
+              fileForExec,
+              undefined,
+              capture,
+              instrumentKey,
+              resolverAdapters,
+            );
         } else {
           rawResult = timing
-            ? await timing.async("execute.total", () => executor.executeFunction(fileForExec, funcRef, request.inputs, timing, capture))
-            : await executor.executeFunction(fileForExec, funcRef, request.inputs, undefined, capture);
+            ? await timing.async("execute.total", () =>
+              executor.executeFunction(
+                fileForExec,
+                funcRef,
+                request.inputs,
+                timing,
+                capture,
+                resolverAdapters,
+              ))
+            : await executor.executeFunction(
+              fileForExec,
+              funcRef,
+              request.inputs,
+              undefined,
+              capture,
+              resolverAdapters,
+            );
         }
 
         return {
@@ -445,8 +507,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
+        const code: ErrorResponse["code"] = msg.includes("execution adapter not supported by TypeScript frontend")
+          ? "not_supported"
+          : "internal_error";
         return {
-          response: errorResponse(request.id, "internal_error", `Execute failed: ${msg}`),
+          response: errorResponse(request.id, code, `Execute failed: ${msg}`),
           shutdown: false,
         };
       }
@@ -463,12 +528,19 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
       try {
         const { loadSetupModule, runSetup } = await getSetupLoader();
-        let setupModule = loadedSetupModules.get(request.file);
+        const runtimeHooks = resolveRuntimeHooksForRequest(request.execution_profile, {
+          phase: "setup",
+          project_root: request.project_root ?? null,
+          entry_file: path.resolve(request.file),
+        });
+        const cacheKey = setupModuleCacheKey(request.file, request.execution_profile);
+        let setupModule = loadedSetupModules.get(cacheKey);
         if (!setupModule) {
           setupModule = timing
-            ? timing.sync("setup.module_load", () => loadSetupModule(request.file))
-            : loadSetupModule(request.file);
-          loadedSetupModules.set(request.file, setupModule);
+            ? timing.sync("setup.module_load", () =>
+              loadSetupModule(request.file, runtimeHooks.resolver_adapters))
+            : loadSetupModule(request.file, runtimeHooks.resolver_adapters);
+          loadedSetupModules.set(cacheKey, setupModule);
         }
 
         const setupContext = timing
@@ -490,8 +562,11 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
+        const code: ErrorResponse["code"] = msg.includes("execution adapter not supported by TypeScript frontend")
+          ? "not_supported"
+          : "internal_error";
         return {
-          response: errorResponse(request.id, "internal_error", `Setup failed: ${msg}`),
+          response: errorResponse(request.id, code, `Setup failed: ${msg}`),
           shutdown: false,
         };
       }

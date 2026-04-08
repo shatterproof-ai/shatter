@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
@@ -11,6 +15,7 @@ use shatter_core::explorer::{self, ExploreConfig, GeneticStats, ReportOptions};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::report::ProgressEvent;
 use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use shatter_core::spec::FileSpecBundle;
 use tracing::Instrument;
@@ -20,11 +25,133 @@ use crate::helpers::*;
 
 /// Result of exploring a single function, collected after parallel execution.
 struct FuncExploreOutcome {
+    work_index: usize,
     func: shatter_core::protocol::FunctionAnalysis,
     mock_symbols: Vec<String>,
     result: Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
     genetic_config: GeneticConfig,
+}
+
+#[derive(Serialize)]
+struct ExploreFunctionArtifact<'a> {
+    version: u32,
+    status: &'a str,
+    file: &'a str,
+    function_name: &'a str,
+    start_line: u32,
+    end_line: u32,
+    wall_time_ms: u64,
+    mock_symbols: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<&'a shatter_core::explorer::ObservationOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+}
+
+fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
+    project_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shatter-artifacts")
+        .join("explore-results")
+}
+
+fn sanitize_artifact_component(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn explore_artifact_path(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) -> PathBuf {
+    let file_component = sanitize_artifact_component(file);
+    let fn_component = sanitize_artifact_component(&func.name);
+    root.join(file_component)
+        .join(format!("{:05}_{}.json", func.start_line, fn_component))
+}
+
+fn write_explore_artifact(
+    root: &Path,
+    file: &str,
+    outcome: &FuncExploreOutcome,
+) -> Result<PathBuf, String> {
+    let status = if outcome.result.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    };
+    let artifact = ExploreFunctionArtifact {
+        version: 1,
+        status,
+        file,
+        function_name: &outcome.func.name,
+        start_line: outcome.func.start_line,
+        end_line: outcome.func.end_line,
+        wall_time_ms: outcome.wall_time.as_millis() as u64,
+        mock_symbols: &outcome.mock_symbols,
+        observation: outcome.result.as_ref().ok(),
+        error: outcome.result.as_ref().err().map(String::as_str),
+    };
+    let path = explore_artifact_path(root, file, &outcome.func);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create explore artifact dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&artifact)
+        .map_err(|e| format!("failed to serialize explore artifact: {e}"))?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("failed to write explore artifact temp file: {e}"))?;
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("failed to finalize explore artifact: {e}"))?;
+    Ok(path)
+}
+
+fn emit_explore_progress(
+    function: &str,
+    current: usize,
+    total: usize,
+    elapsed: Duration,
+    status: &str,
+) {
+    let line = match status {
+        "started" => format!("[progress] starting {current}/{total}: {function}"),
+        "completed" => format!(
+            "[progress] completed {current}/{total}: {function} ({:.1}s)",
+            elapsed.as_secs_f64()
+        ),
+        "failed" => format!(
+            "[progress] failed {current}/{total}: {function} ({:.1}s)",
+            elapsed.as_secs_f64()
+        ),
+        other => format!("[progress] {other} {current}/{total}: {function}"),
+    };
+    eprintln!("{line}");
+
+    if let Some(json) =
+        ProgressEvent::with_status(function, current, total, elapsed.as_millis() as u64, status)
+            .to_json()
+    {
+        eprintln!("{json}");
+    }
 }
 
 /// Run the explore command.
@@ -87,7 +214,11 @@ pub(crate) async fn run_explore(
     cli_genetic_timeout: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _explore_span = tracing::info_span!("core.explore_command").entered();
-    let pool_path = if no_seeds { None } else { Some(seeds_dir.join("pool.json")) };
+    let pool_path = if no_seeds {
+        None
+    } else {
+        Some(seeds_dir.join("pool.json"))
+    };
     let loop_buckets = parse_loop_buckets(loop_buckets_str)?;
     let scope_config = match scope_path {
         Some(path) => {
@@ -99,8 +230,8 @@ pub(crate) async fn run_explore(
         None => ScopeConfig::default(),
     };
 
-    let _scope_matcher = ScopeMatcher::new(&scope_config)
-        .map_err(|e| format!("invalid scope config: {e}"))?;
+    let _scope_matcher =
+        ScopeMatcher::new(&scope_config).map_err(|e| format!("invalid scope config: {e}"))?;
 
     let cache = if no_cache {
         None
@@ -155,16 +286,31 @@ pub(crate) async fn run_explore(
     let mut fe_configs: HashMap<crate::args::Language, FrontendConfig> = HashMap::new();
     let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
     for lang in unique_langs {
-        let mut config = frontend_config(lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, timing_enabled, release)?;
+        let mut config = frontend_config(
+            lang,
+            req_timeout,
+            log_level,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            None,
+            timing_enabled,
+            release,
+        )?;
         apply_project_storage(&mut config, storage_project_root.as_deref());
         if mcdc {
-            config.env_vars.push(("SHATTER_MCDC".to_string(), "1".to_string()));
+            config
+                .env_vars
+                .push(("SHATTER_MCDC".to_string(), "1".to_string()));
         }
         fe_configs.insert(lang, config.clone());
-        let frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!("failed to spawn {} frontend: {e}", lang.label())
-        })?;
-        log::debug!("Frontend connected (language={})", frontend.language().unwrap_or("unknown"));
+        let frontend = Frontend::spawn(&config)
+            .await
+            .map_err(|e| format!("failed to spawn {} frontend: {e}", lang.label()))?;
+        log::debug!(
+            "Frontend connected (language={})",
+            frontend.language().unwrap_or("unknown")
+        );
         frontends.insert(lang, frontend);
     }
     log::info!(
@@ -180,10 +326,7 @@ pub(crate) async fn run_explore(
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
-        let func_display = target
-            .function
-            .as_deref()
-            .unwrap_or("(all)");
+        let func_display = target.function.as_deref().unwrap_or("(all)");
 
         let project_root_str = resolve_project_root(project_dir, &target.file);
 
@@ -215,7 +358,8 @@ pub(crate) async fn run_explore(
             ResponseResult::Analyze { functions } => {
                 log::debug!("Found {} function(s):", functions.len());
                 for func in functions {
-                    log::debug!("  - {} ({} params, {} branches)",
+                    log::debug!(
+                        "  - {} ({} params, {} branches)",
                         func.name,
                         func.params.len(),
                         func.branches.len(),
@@ -258,7 +402,8 @@ pub(crate) async fn run_explore(
 
         // Load cached fingerprints for cross-file dependencies.
         let external_fingerprints = {
-            let _cache_load_span = tracing::info_span!("cache.load_external_fingerprints").entered();
+            let _cache_load_span =
+                tracing::info_span!("cache.load_external_fingerprints").entered();
             load_external_fingerprints(&functions, cache.as_ref())
         };
 
@@ -269,7 +414,12 @@ pub(crate) async fn run_explore(
         {
             match shatter_core::spec::read_file_spec_bundle(out) {
                 Ok(existing) => {
-                    match shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing, &external_fingerprints) {
+                    match shatter_core::spec::compute_incremental_plan(
+                        &target.file,
+                        &functions,
+                        &existing,
+                        &external_fingerprints,
+                    ) {
                         Ok(plan) => Some((plan, existing)),
                         Err(e) => {
                             log::debug!("Failed to compute incremental plan: {e}");
@@ -313,7 +463,10 @@ pub(crate) async fn run_explore(
                     }
                 }
             } else {
-                println!("No existing spec to compare against — all {} function(s) are stale.", functions.len());
+                println!(
+                    "No existing spec to compare against — all {} function(s) are stale.",
+                    functions.len()
+                );
                 for func in &functions {
                     println!("  {}", func.name);
                 }
@@ -344,8 +497,12 @@ pub(crate) async fn run_explore(
 
         // Compute deep fingerprints (call-graph-aware) for spec output.
         let deep_fingerprints: std::collections::HashMap<String, String> =
-            shatter_core::fingerprint::compute_deep_fingerprints(&target.file, &functions, &external_fingerprints)
-                .unwrap_or_default();
+            shatter_core::fingerprint::compute_deep_fingerprints(
+                &target.file,
+                &functions,
+                &external_fingerprints,
+            )
+            .unwrap_or_default();
 
         // Track function count for header/footer.
         total_function_count += functions.len();
@@ -374,9 +531,8 @@ pub(crate) async fn run_explore(
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
 
         // Capture capabilities from the shared analysis frontend for ExploreConfig construction.
-        let frontend_caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
-            frontend.capabilities(),
-        );
+        let frontend_caps =
+            shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
 
         // --- Phase 1: Collect work items (fast, sequential) ---
         struct FuncWorkItem {
@@ -418,8 +574,7 @@ pub(crate) async fn run_explore(
                         .unwrap_or(resolved.genetic.population_size),
                     max_generations: cli_genetic_generations
                         .unwrap_or(resolved.genetic.max_generations),
-                    timeout_secs: cli_genetic_timeout
-                        .unwrap_or(resolved.genetic.timeout_secs),
+                    timeout_secs: cli_genetic_timeout.unwrap_or(resolved.genetic.timeout_secs),
                     ..resolved.genetic
                 }
             } else {
@@ -441,9 +596,8 @@ pub(crate) async fn run_explore(
 
             // Generate mocks: passthrough in record mode, auto-mocks otherwise.
             let (auto_mocks, mock_params) = if record {
-                let passthrough = shatter_core::recorded_mocks::build_passthrough_mocks(
-                    &func.dependencies,
-                );
+                let passthrough =
+                    shatter_core::recorded_mocks::build_passthrough_mocks(&func.dependencies);
                 (passthrough, vec![])
             } else {
                 // Check for recorded mock fixtures to seed from prior --record runs.
@@ -451,19 +605,24 @@ pub(crate) async fn run_explore(
                     let artifacts_dir = std::path::Path::new("shatter-artifacts");
                     let legacy_dir = std::path::Path::new(".shatter");
                     let should_replay = replay_recorded
-                        || artifacts_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir()
-                        || legacy_dir.join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR).is_dir();
+                        || artifacts_dir
+                            .join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR)
+                            .is_dir()
+                        || legacy_dir
+                            .join(shatter_core::recorded_mocks::RECORDED_MOCKS_DIR)
+                            .is_dir();
                     if should_replay {
                         // Check new location first, then fall back to legacy .shatter/
                         if let Some(mock_path) = shatter_core::recorded_mocks::find_recorded_mocks(
                             artifacts_dir,
                             &file_str,
                             &func.name,
-                        ).or_else(|| shatter_core::recorded_mocks::find_recorded_mocks(
-                            legacy_dir,
-                            &file_str,
-                            &func.name,
-                        )) {
+                        )
+                        .or_else(|| {
+                            shatter_core::recorded_mocks::find_recorded_mocks(
+                                legacy_dir, &file_str, &func.name,
+                            )
+                        }) {
                             match shatter_core::recorded_mocks::load_recorded_mocks(&mock_path) {
                                 Ok(mock_file) => {
                                     let configs = shatter_core::recorded_mocks::recorded_mocks_to_mock_configs(&mock_file);
@@ -503,17 +662,15 @@ pub(crate) async fn run_explore(
                 // Recorded configs first (higher priority), then auto-generated for remaining deps.
                 let mut mocks = recorded_configs;
                 mocks.extend(auto_generated);
-                let params = shatter_core::auto_mock::build_mock_params(
-                    &func.dependencies,
-                    &mocks,
-                );
+                let params = shatter_core::auto_mock::build_mock_params(&func.dependencies, &mocks);
                 (mocks, params)
             };
             let mock_symbols: Vec<String> = auto_mocks.iter().map(|m| m.symbol.clone()).collect();
 
             // Build candidate inputs from config, then extend with cached seeds
             // from prior exploration runs so discovery compounds across runs.
-            let mut candidate_inputs: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+            let mut candidate_inputs: Vec<Vec<serde_json::Value>> = resolved
+                .candidate_inputs
                 .iter()
                 .map(|input| input.args.clone())
                 .collect();
@@ -549,7 +706,9 @@ pub(crate) async fn run_explore(
                 candidate_inputs,
                 pool_seeds: match &pool_path {
                     Some(pp) => match shatter_core::interesting_pool::load_pool(pp) {
-                        Ok(Some(pool)) => shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool),
+                        Ok(Some(pool)) => {
+                            shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool)
+                        }
                         _ => vec![],
                     },
                     None => vec![],
@@ -569,7 +728,8 @@ pub(crate) async fn run_explore(
             // Build concolic-specific config if needed.
             let (concolic_config, seed_inputs, user_inputs) = if use_concolic {
                 let mut seeds = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
-                let users: Vec<Vec<serde_json::Value>> = resolved.candidate_inputs
+                let users: Vec<Vec<serde_json::Value>> = resolved
+                    .candidate_inputs
                     .iter()
                     .map(|input| input.args.clone())
                     .collect();
@@ -578,12 +738,16 @@ pub(crate) async fn run_explore(
                 if let Some(ref pp) = pool_path
                     && let Ok(Some(pool)) = shatter_core::interesting_pool::load_pool(pp)
                 {
-                    let pool_candidates = shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool);
+                    let pool_candidates =
+                        shatter_core::input_gen::pool_to_candidate_inputs(&func.params, &pool);
                     seeds.extend(pool_candidates);
                 }
 
                 // Literal-derived seeds: string/number constants from static analysis
-                let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(&func.params, &func.literals);
+                let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(
+                    &func.params,
+                    &func.literals,
+                );
                 seeds.extend(literal_candidates);
 
                 // Add cached seeds from prior exploration runs.
@@ -613,7 +777,11 @@ pub(crate) async fn run_explore(
                     meta_config: meta_config.clone(),
                     execution_profile: explore_config.execution_profile.clone(),
                     loop_convergence_window: 3,
-                    refine_budget: if refine_budget > 0 { Some(refine_budget) } else { None },
+                    refine_budget: if refine_budget > 0 {
+                        Some(refine_budget)
+                    } else {
+                        None
+                    },
                     shrink_budget,
                     mcdc,
                 };
@@ -647,27 +815,49 @@ pub(crate) async fn run_explore(
 
         // --- Phase 2: Parallel exploration ---
         let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
-        let mut handles = Vec::new();
+        let completed_functions = Arc::new(AtomicUsize::new(0));
+        let mut join_set = tokio::task::JoinSet::new();
+        let total_work_items = work_items.len();
+        let artifact_root = explore_artifact_root(project_root_str.as_deref());
 
         let fe_config_for_lang = fe_configs
             .get(&target.language)
             .expect("fe_config must exist for target language")
             .clone();
 
-        for item in work_items {
+        for (work_index, item) in work_items.into_iter().enumerate() {
             let sem = Arc::clone(&semaphore);
+            let completed_functions = Arc::clone(&completed_functions);
             let fe_config = fe_config_for_lang.clone();
             let file_str_owned = file_str.to_string();
             let project_root_owned = project_root_str.clone();
+            let progress_index = work_index + 1;
+            let progress_total = total_work_items;
 
-            let handle = tokio::spawn(async move {
+            join_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore is never closed");
                 let func_start = Instant::now();
+                emit_explore_progress(
+                    &item.func.name,
+                    progress_index,
+                    progress_total,
+                    Duration::ZERO,
+                    "started",
+                );
 
                 let mut task_frontend = match Frontend::spawn(&fe_config).await {
                     Ok(fe) => fe,
                     Err(e) => {
+                        let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                        emit_explore_progress(
+                            &item.func.name,
+                            completed,
+                            progress_total,
+                            func_start.elapsed(),
+                            "failed",
+                        );
                         return FuncExploreOutcome {
+                            work_index,
                             func: item.func,
                             mock_symbols: item.mock_symbols,
                             result: Err(format!("failed to spawn frontend: {e}")),
@@ -679,13 +869,16 @@ pub(crate) async fn run_explore(
 
                 let explore_result = if let Some(ref concolic_config) = item.concolic_config {
                     // Concolic path: instrument → prepare → orchestrator::explore
-                    if let Err(e) = task_frontend.send(ProtoCommand::Instrument {
-                        file: file_str_owned.clone(),
-                        function: item.func.name.clone(),
-                        mocks: concolic_config.mocks.clone(),
-                        project_root: project_root_owned.clone(),
-                        execution_profile: None,
-                    }).await {
+                    if let Err(e) = task_frontend
+                        .send(ProtoCommand::Instrument {
+                            file: file_str_owned.clone(),
+                            function: item.func.name.clone(),
+                            mocks: concolic_config.mocks.clone(),
+                            project_root: project_root_owned.clone(),
+                            execution_profile: None,
+                        })
+                        .await
+                    {
                         log::debug!("instrument failed for concolic path: {e}");
                     }
 
@@ -693,13 +886,16 @@ pub(crate) async fn run_explore(
                         task_frontend.capabilities(),
                     );
                     let prepare_id: Option<String> = if caps.commands.contains("prepare") {
-                        match task_frontend.send(ProtoCommand::Prepare {
-                            file: file_str_owned.clone(),
-                            function: item.func.name.clone(),
-                            mocks: concolic_config.mocks.clone(),
-                            project_root: project_root_owned.clone(),
-                            execution_profile: None,
-                        }).await {
+                        match task_frontend
+                            .send(ProtoCommand::Prepare {
+                                file: file_str_owned.clone(),
+                                function: item.func.name.clone(),
+                                mocks: concolic_config.mocks.clone(),
+                                project_root: project_root_owned.clone(),
+                                execution_profile: None,
+                            })
+                            .await
+                        {
                             Ok(resp) => match resp.result {
                                 ResponseResult::Prepare { prepare_id } => {
                                     log::debug!("concolic prepare succeeded: {prepare_id}");
@@ -729,10 +925,14 @@ pub(crate) async fn run_explore(
                         None,
                         prepare_id,
                         item.func.loops.clone(),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(mut concolic_result) => {
-                            concolic_result.total_lines = item.func.end_line.saturating_sub(item.func.start_line) + 1;
-                            let obs: shatter_core::explorer::ObservationOutput = concolic_result.into();
+                            concolic_result.total_lines =
+                                item.func.end_line.saturating_sub(item.func.start_line) + 1;
+                            let obs: shatter_core::explorer::ObservationOutput =
+                                concolic_result.into();
                             Ok(obs)
                         }
                         Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
@@ -741,34 +941,69 @@ pub(crate) async fn run_explore(
                     }
                 } else {
                     // Random path: explore_function handles instrument + prepare internally.
-                    explorer::explore_function(&mut task_frontend, &item.func, &item.explore_config, None)
-                        .instrument(tracing::info_span!("explore.function"))
-                        .await
+                    explorer::explore_function(
+                        &mut task_frontend,
+                        &item.func,
+                        &item.explore_config,
+                        None,
+                    )
+                    .instrument(tracing::info_span!("explore.function"))
+                    .await
                 };
+
+                let result = explore_result.map_err(|e| e.to_string());
+                let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                emit_explore_progress(
+                    &item.func.name,
+                    completed,
+                    progress_total,
+                    func_start.elapsed(),
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                );
 
                 let _ = task_frontend.shutdown().await;
 
                 FuncExploreOutcome {
+                    work_index,
                     func: item.func,
                     mock_symbols: item.mock_symbols,
-                    result: explore_result.map_err(|e| e.to_string()),
+                    result,
                     wall_time: func_start.elapsed(),
                     genetic_config: item.genetic_config,
                 }
             });
-
-            handles.push(handle);
         }
 
         // --- Phase 3: Collect results and process (sequential, in order) ---
-        for handle in handles {
-            let outcome = match handle.await {
+        let mut outcomes = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            let outcome = match joined {
                 Ok(o) => o,
                 Err(e) => {
                     log::error!("Task join error: {e}");
                     continue;
                 }
             };
+            match write_explore_artifact(&artifact_root, &file_str, &outcome) {
+                Ok(path) => log::info!(
+                    "Wrote explore artifact for {} -> {}",
+                    outcome.func.name,
+                    path.display()
+                ),
+                Err(e) => log::warn!(
+                    "Failed to write explore artifact for {}: {e}",
+                    outcome.func.name
+                ),
+            }
+            outcomes.push(outcome);
+        }
+        outcomes.sort_by_key(|outcome| outcome.work_index);
+
+        for outcome in outcomes {
             let func = &outcome.func;
 
             match outcome.result {
@@ -805,9 +1040,7 @@ pub(crate) async fn run_explore(
                         );
                         if !behaviors.is_empty() {
                             let mock_file = shatter_core::recorded_mocks::build_recorded_mock_file(
-                                &func.name,
-                                &file_str,
-                                behaviors,
+                                &func.name, &file_str, behaviors,
                             );
                             let artifacts_dir = std::path::Path::new("shatter-artifacts");
                             match shatter_core::recorded_mocks::save_recorded_mocks(
@@ -835,8 +1068,7 @@ pub(crate) async fn run_explore(
 
                     // Accumulate HTML/markdown fragments for -o report files.
                     {
-                        let location =
-                            format!("{file_str}:{}-{}", func.start_line, func.end_line);
+                        let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
                         html_fragments.push(shatter_core::report::render_explore_fn_html(
                             &result,
                             &location,
@@ -846,13 +1078,16 @@ pub(crate) async fn run_explore(
 
                     // Run the Analyze stage to get coverage metrics and eq classes.
                     let analyze_output = {
-                        let _pipeline_analyze_span = tracing::info_span!("pipeline.analyze").entered();
+                        let _pipeline_analyze_span =
+                            tracing::info_span!("pipeline.analyze").entered();
                         shatter_core::pipeline::analyze(&result, func)
                     };
 
                     // Save raw observation data for offline analysis if requested.
                     if let Some(obs_dir) = observe_output {
-                        let safe_name = func.name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+                        let safe_name = func
+                            .name
+                            .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
                         let obs_path = obs_dir.join(format!("{safe_name}.observe.json"));
                         let stage_json = serde_json::json!({
                             "observation": &result,
@@ -865,19 +1100,26 @@ pub(crate) async fn run_explore(
                         match serde_json::to_string_pretty(&stage_json) {
                             Ok(json) => {
                                 if let Err(e) = std::fs::write(&obs_path, json) {
-                                    log::error!("Failed to write observe output for {}: {e}", func.name);
+                                    log::error!(
+                                        "Failed to write observe output for {}: {e}",
+                                        func.name
+                                    );
                                 } else {
                                     log::info!("Wrote observe output: {}", obs_path.display());
                                 }
                             }
-                            Err(e) => log::error!("Failed to serialize observe output for {}: {e}", func.name),
+                            Err(e) => log::error!(
+                                "Failed to serialize observe output for {}: {e}",
+                                func.name
+                            ),
                         }
                     }
 
                     // --- Genetic algorithm follow-up phase ---
                     let mut ga_stored_cache = false;
                     let ga_stats: Option<GeneticStats> = if outcome.genetic_config.enabled {
-                        let targets = shatter_core::coverage_metrics::extract_targets(func, &result);
+                        let targets =
+                            shatter_core::coverage_metrics::extract_targets(func, &result);
                         if targets.is_empty() {
                             log::debug!("No unsolved targets for GA on {}", func.name);
                             None
@@ -885,7 +1127,8 @@ pub(crate) async fn run_explore(
                             let targets_attempted = targets.len();
                             log::info!(
                                 "Starting GA for {} ({} unsolved target(s))",
-                                func.name, targets_attempted,
+                                func.name,
+                                targets_attempted,
                             );
                             let mut seed_inputs: Vec<Vec<serde_json::Value>> = result
                                 .raw_results
@@ -915,13 +1158,15 @@ pub(crate) async fn run_explore(
                                                 default_behavior: shatter_core::protocol::MockBehavior::ReturnGenerated,
                                             }
                                         }).collect();
-                                    let _ = ga_frontend.send(ProtoCommand::Instrument {
-                                        file: file_str.to_string(),
-                                        function: func.name.clone(),
-                                        mocks: mock_symbols_for_ga,
-                                        project_root: project_root_str.clone(),
-                                        execution_profile: None,
-                                    }).await;
+                                    let _ = ga_frontend
+                                        .send(ProtoCommand::Instrument {
+                                            file: file_str.to_string(),
+                                            function: func.name.clone(),
+                                            mocks: mock_symbols_for_ga,
+                                            project_root: project_root_str.clone(),
+                                            execution_profile: None,
+                                        })
+                                        .await;
                                     match shatter_core::genetic_explorer::genetic_explore(
                                         &mut ga_frontend,
                                         &func.name,
@@ -929,7 +1174,9 @@ pub(crate) async fn run_explore(
                                         targets,
                                         &func.params,
                                         &outcome.genetic_config,
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(ga_result) => {
                                             let stats = GeneticStats {
                                                 targets_attempted,
@@ -947,10 +1194,16 @@ pub(crate) async fn run_explore(
                                                 let mut bmap = BehaviorMap::from_exploration_result(
                                                     &func.name, &result,
                                                 );
-                                                let added = bmap.merge_ga_discoveries(&ga_result.discoveries);
-                                                if added > 0 && let Some(ref cache) = cache {
+                                                let added = bmap
+                                                    .merge_ga_discoveries(&ga_result.discoveries);
+                                                if added > 0
+                                                    && let Some(ref cache) = cache
+                                                {
                                                     if let Err(e) = cache.store(&bmap) {
-                                                        log::warn!("failed to cache GA-augmented behavior map for {}: {e}", func.name);
+                                                        log::warn!(
+                                                            "failed to cache GA-augmented behavior map for {}: {e}",
+                                                            func.name
+                                                        );
                                                     } else {
                                                         ga_stored_cache = true;
                                                     }
@@ -967,7 +1220,10 @@ pub(crate) async fn run_explore(
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to spawn GA frontend for {}: {e}", func.name);
+                                    log::error!(
+                                        "Failed to spawn GA frontend for {}: {e}",
+                                        func.name
+                                    );
                                     None
                                 }
                             }
@@ -1006,7 +1262,10 @@ pub(crate) async fn run_explore(
                             }
                         } else {
                             let report_opts = ReportOptions {
-                                location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
+                                location: Some(format!(
+                                    "{file_str}:{}-{}",
+                                    func.start_line, func.end_line
+                                )),
                                 show_perf,
                                 wall_time: Some(wall_time),
                                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
@@ -1036,7 +1295,8 @@ pub(crate) async fn run_explore(
                     // Spec output: use eq classes from analyze stage
                     if show_spec || detect_invariants {
                         let eq_classes = &analyze_output.eq_classes;
-                        let location = Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
+                        let location =
+                            Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
 
                         // Use deep fingerprint (call-graph-aware) for spec output.
                         let fingerprint = deep_fingerprints.get(&func.name).cloned();
@@ -1045,10 +1305,18 @@ pub(crate) async fn run_explore(
                             let _spec_span = tracing::info_span!("spec.build").entered();
                             if detect_invariants {
                                 shatter_core::spec::build_spec_with_invariants(
-                                    &result, eq_classes, location, fingerprint,
+                                    &result,
+                                    eq_classes,
+                                    location,
+                                    fingerprint,
                                 )
                             } else {
-                                shatter_core::spec::build_spec(&result, eq_classes, location, fingerprint)
+                                shatter_core::spec::build_spec(
+                                    &result,
+                                    eq_classes,
+                                    location,
+                                    fingerprint,
+                                )
                             }
                         };
                         if output_path.is_some() {
@@ -1060,7 +1328,10 @@ pub(crate) async fn run_explore(
                                 Err(e) => log::error!("Error serializing spec: {e}"),
                             }
                         } else {
-                            print_markdown(&shatter_core::spec::format_spec_markdown(&spec), use_color);
+                            print_markdown(
+                                &shatter_core::spec::format_spec_markdown(&spec),
+                                use_color,
+                            );
                         }
                     }
 
@@ -1069,7 +1340,8 @@ pub(crate) async fn run_explore(
                             BehaviorMap::from_exploration_result(&func.name, &result);
                         if let Some(ref cache) = cache {
                             let cache_result = {
-                                let _cache_store_span = tracing::info_span!("cache.store").entered();
+                                let _cache_store_span =
+                                    tracing::info_span!("cache.store").entered();
                                 cache.store(&behavior_map)
                             };
                             if let Err(e) = cache_result {
@@ -1120,7 +1392,6 @@ pub(crate) async fn run_explore(
                 file_spec_bundles.push(bundle);
             }
         }
-
     }
 
     // Shut down all frontend sessions now that all targets are complete.
@@ -1131,7 +1402,10 @@ pub(crate) async fn run_explore(
     }
 
     // Print summary footer (only when streaming to stdout).
-    if header_printed && log::log_enabled!(log::Level::Info) && (report_outputs.is_empty() || stdout) {
+    if header_printed
+        && log::log_enabled!(log::Level::Info)
+        && (report_outputs.is_empty() || stdout)
+    {
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if total_lines > 0 {
                 let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
@@ -1179,8 +1453,9 @@ pub(crate) async fn run_explore(
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create directory: {e}"))?;
                 }
-                std::fs::write(path, html)
-                    .map_err(|e| format!("failed to write HTML report to '{}': {e}", path.display()))?;
+                std::fs::write(path, html).map_err(|e| {
+                    format!("failed to write HTML report to '{}': {e}", path.display())
+                })?;
                 log::info!("Wrote HTML report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Markdown) => {
@@ -1191,8 +1466,12 @@ pub(crate) async fn run_explore(
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create directory: {e}"))?;
                 }
-                std::fs::write(path, &md)
-                    .map_err(|e| format!("failed to write markdown report to '{}': {e}", path.display()))?;
+                std::fs::write(path, &md).map_err(|e| {
+                    format!(
+                        "failed to write markdown report to '{}': {e}",
+                        path.display()
+                    )
+                })?;
                 log::info!("Wrote markdown report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Text) => {
@@ -1204,16 +1483,20 @@ pub(crate) async fn run_explore(
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create directory: {e}"))?;
                 }
-                std::fs::write(path, &text)
-                    .map_err(|e| format!("failed to write text report to '{}': {e}", path.display()))?;
+                std::fs::write(path, &text).map_err(|e| {
+                    format!("failed to write text report to '{}': {e}", path.display())
+                })?;
                 log::info!("Wrote text report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Json) => {
                 // JSON output for explore writes spec bundle
-                log::warn!("JSON output for explore writes spec bundle; use --spec-out for explicit spec output");
+                log::warn!(
+                    "JSON output for explore writes spec bundle; use --spec-out for explicit spec output"
+                );
                 if let Some(first_bundle) = file_spec_bundles.first() {
-                    shatter_core::spec::write_file_spec_bundle(first_bundle, path)
-                        .map_err(|e| format!("failed to write spec bundle to '{}': {e}", path.display()))?;
+                    shatter_core::spec::write_file_spec_bundle(first_bundle, path).map_err(
+                        |e| format!("failed to write spec bundle to '{}': {e}", path.display()),
+                    )?;
                     log::info!("Wrote spec bundle to {}", path.display());
                 }
             }
@@ -1254,4 +1537,97 @@ pub(crate) async fn run_explore(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FuncExploreOutcome, emit_explore_progress, sanitize_artifact_component,
+        write_explore_artifact,
+    };
+    use shatter_core::config::GeneticConfig;
+    use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
+    use shatter_core::report::ProgressEvent;
+    use shatter_core::types::TypeInfo;
+    use std::time::Duration;
+
+    #[test]
+    fn progress_event_with_status_serializes() {
+        let json = ProgressEvent::with_status("classifyNumber", 2, 5, 1234, "completed")
+            .to_json()
+            .expect("serialize");
+        let event: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(event.status.as_deref(), Some("completed"));
+        assert_eq!(event.current, 2);
+        assert_eq!(event.total, 5);
+    }
+
+    #[test]
+    fn emit_explore_progress_accepts_started_completed_and_failed() {
+        emit_explore_progress("f", 1, 3, Duration::ZERO, "started");
+        emit_explore_progress("f", 2, 3, Duration::from_millis(250), "completed");
+        emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed");
+    }
+
+    #[test]
+    fn write_explore_artifact_persists_completed_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = FuncExploreOutcome {
+            work_index: 0,
+            func: FunctionAnalysis {
+                name: "load/user".to_string(),
+                exported: true,
+                start_line: 12,
+                end_line: 20,
+                params: vec![],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: InvocationModel::Direct,
+            },
+            mock_symbols: vec!["dep".to_string()],
+            result: Ok(shatter_core::explorer::ObservationOutput {
+                function_name: "load/user".to_string(),
+                iterations: 1,
+                unique_paths: 1,
+                lines_covered: 3,
+                total_lines: 8,
+                new_path_executions: vec![],
+                raw_results: vec![],
+                discoveries: vec![],
+                nondeterministic_fields: vec![],
+                float_probe_results: vec![],
+                boundary_results: vec![],
+                shrunk_witnesses: std::collections::HashMap::new(),
+                mcdc_summary: None,
+                shrink_stats: shatter_core::shrink::ShrinkStats::default(),
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
+            }),
+            wall_time: Duration::from_millis(25),
+            genetic_config: GeneticConfig::default(),
+        };
+
+        let path =
+            write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["function_name"], "load/user");
+        assert_eq!(value["mock_symbols"][0], "dep");
+        assert_eq!(value["observation"]["function_name"], "load/user");
+    }
+
+    #[test]
+    fn sanitize_artifact_component_replaces_path_separators() {
+        assert_eq!(sanitize_artifact_component("src/user.ts"), "src_user.ts");
+        assert_eq!(sanitize_artifact_component(""), "unknown");
+    }
 }

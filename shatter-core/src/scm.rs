@@ -27,7 +27,8 @@ pub trait ScmProvider {
     /// Files with uncommitted changes (staged + unstaged vs HEAD).
     /// If `include_untracked` is true, also includes untracked files
     /// (excluding gitignored ones).
-    fn changed_files(&self, root: &Path, include_untracked: bool) -> Result<Vec<PathBuf>, ScmError>;
+    fn changed_files(&self, root: &Path, include_untracked: bool)
+    -> Result<Vec<PathBuf>, ScmError>;
 
     /// Files changed between `base_ref` and HEAD (merge-base diff).
     fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError>;
@@ -46,14 +47,20 @@ pub trait ScmProvider {
 pub struct GitProvider;
 
 impl ScmProvider for GitProvider {
-    fn changed_files(&self, root: &Path, include_untracked: bool) -> Result<Vec<PathBuf>, ScmError> {
+    fn changed_files(
+        &self,
+        root: &Path,
+        include_untracked: bool,
+    ) -> Result<Vec<PathBuf>, ScmError> {
+        let repo_root = repo_root(root)?;
+
         // Staged + unstaged changes vs HEAD
         let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
-        let mut files = parse_file_list(&output, root);
+        let mut files = parse_file_list(&output, &repo_root);
 
         // Also include staged-only changes (new files that are staged but not yet committed)
         let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
-        let staged_files = parse_file_list(&staged_output, root);
+        let staged_files = parse_file_list(&staged_output, &repo_root);
         for f in staged_files {
             if !files.contains(&f) {
                 files.push(f);
@@ -61,9 +68,8 @@ impl ScmProvider for GitProvider {
         }
 
         if include_untracked {
-            let untracked_output =
-                run_git(root, &["ls-files", "--others", "--exclude-standard"])?;
-            let untracked = parse_file_list(&untracked_output, root);
+            let untracked_output = run_git(root, &["ls-files", "--others", "--exclude-standard"])?;
+            let untracked = parse_file_list(&untracked_output, &repo_root);
             for f in untracked {
                 if !files.contains(&f) {
                     files.push(f);
@@ -77,10 +83,12 @@ impl ScmProvider for GitProvider {
     }
 
     fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError> {
+        let repo_root = repo_root(root)?;
+
         // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
         let range = format!("{base_ref}...HEAD");
         let output = run_git(root, &["diff", "--name-only", &range])?;
-        let mut files = parse_file_list(&output, root);
+        let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
         Ok(files)
@@ -92,9 +100,10 @@ impl ScmProvider for GitProvider {
         since_ref: &str,
         until_ref: &str,
     ) -> Result<Vec<PathBuf>, ScmError> {
+        let repo_root = repo_root(root)?;
         let range = format!("{since_ref}...{until_ref}");
         let output = run_git(root, &["diff", "--name-only", &range])?;
-        let mut files = parse_file_list(&output, root);
+        let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
         Ok(files)
@@ -137,7 +146,11 @@ pub fn blob_hash(root: &Path, file: &Path) -> Result<String, ScmError> {
 ///
 /// `relative_path` must be relative to the repository root.
 /// Returns the raw bytes of the file as it existed at `git_ref`.
-pub fn show_file_at_ref(root: &Path, git_ref: &str, relative_path: &Path) -> Result<Vec<u8>, ScmError> {
+pub fn show_file_at_ref(
+    root: &Path,
+    git_ref: &str,
+    relative_path: &Path,
+) -> Result<Vec<u8>, ScmError> {
     let path_str = relative_path.to_string_lossy();
     let spec = format!("{git_ref}:{path_str}");
     let output = Command::new("git")
@@ -196,6 +209,12 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn repo_root(root: &Path) -> Result<PathBuf, ScmError> {
+    Ok(PathBuf::from(
+        run_git(root, &["rev-parse", "--show-toplevel"])?.trim(),
+    ))
+}
+
 /// Parse newline-separated file paths from git output into absolute paths.
 fn parse_file_list(output: &str, root: &Path) -> Vec<PathBuf> {
     output
@@ -208,16 +227,30 @@ fn parse_file_list(output: &str, root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn git_ok(cwd: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .expect("git command should run");
+        assert!(status.success(), "git {:?} failed", args);
+    }
 
     #[test]
     fn test_parse_file_list_basic() {
         let output = "src/main.rs\nsrc/lib.rs\n";
         let root = Path::new("/repo");
         let files = parse_file_list(output, root);
-        assert_eq!(files, vec![
-            PathBuf::from("/repo/src/main.rs"),
-            PathBuf::from("/repo/src/lib.rs"),
-        ]);
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("/repo/src/main.rs"),
+                PathBuf::from("/repo/src/lib.rs"),
+            ]
+        );
     }
 
     #[test]
@@ -275,7 +308,10 @@ mod tests {
             .status()
             .expect("git command should run");
 
-        assert!(!status.success(), "git rev-parse should fail in a non-repo dir");
+        assert!(
+            !status.success(),
+            "git rev-parse should fail in a non-repo dir"
+        );
     }
 
     #[test]
@@ -295,6 +331,31 @@ mod tests {
         let result = provider.diff_files(root, "HEAD");
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_diff_files_from_nested_root_returns_repo_root_paths() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        let nested = repo.join("examples/standalone/ts");
+        let changed = nested.join("22-opaque-predicate.ts");
+
+        git_ok(repo, &["init"]);
+        git_ok(repo, &["config", "user.name", "Test User"]);
+        git_ok(repo, &["config", "user.email", "test@example.com"]);
+
+        fs::create_dir_all(&nested).expect("create nested dir");
+        fs::write(&changed, "export const classify = () => 1;\n").expect("write initial file");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-m", "initial"]);
+
+        fs::write(&changed, "export const classify = () => 2;\n").expect("write updated file");
+        git_ok(repo, &["commit", "-am", "change"]);
+
+        let provider = detect_provider(&nested).expect("nested path should still detect git repo");
+        let files = provider.diff_files(&nested, "HEAD~1").expect("diff files");
+
+        assert_eq!(files, vec![changed]);
     }
 
     #[test]

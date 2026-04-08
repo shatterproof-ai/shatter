@@ -306,6 +306,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -377,6 +379,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");

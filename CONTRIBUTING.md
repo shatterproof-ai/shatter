@@ -32,6 +32,11 @@ bd config set beads.role maintainer
 
 The devcontainer performs this setup automatically.
 
+When you need the shared example corpus, the repo's tasks and demo scripts fetch
+`https://github.com/shatterproof-ai/examples` into `/tmp` automatically. Set
+`SHATTER_EXAMPLES_DIR` if you want to point tests or demos at an existing
+checkout instead of the default `/tmp/shatter-examples-main` cache.
+
 ## Project Structure
 
 ```text
@@ -40,7 +45,6 @@ shatter-cli/      Rust CLI binary
 shatter-ts/       TypeScript frontend
 shatter-go/       Go frontend
 shatter-rust/     Rust frontend work in progress
-examples/         Example targets and generators
 demo/             Walkthrough scripts
 docs/             Design notes, glossary, CI, plans
 ```

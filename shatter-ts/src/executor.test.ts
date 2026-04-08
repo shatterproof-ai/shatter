@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   executeFunction,
@@ -23,6 +24,7 @@ import {
   transformDynamicImports,
   createShatterImport,
 } from "./executor.js";
+import type { ResolverAdapter } from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
@@ -38,7 +40,9 @@ function asCallable(v: unknown): (...args: unknown[]) => unknown {
 }
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
-const EXAMPLES_DIR = path.resolve(__dirname, "../../examples/standalone/ts");
+const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? path.join(os.tmpdir(), "shatter-examples-main");
+const EXAMPLES_DIR = path.join(EXAMPLES_ROOT, "standalone", "ts");
+const RESOLVER_CHAIN_FIXTURE = path.join(FIXTURES_DIR, "resolver-adapter-chain.ts");
 
 beforeEach(() => {
   clearModuleCache();
@@ -346,6 +350,60 @@ describe("intra-package module resolution", () => {
     );
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("7");
+  });
+});
+
+describe("resolver adapter chain", () => {
+  beforeAll(() => {
+    fs.writeFileSync(
+      RESOLVER_CHAIN_FIXTURE,
+      `const virtualValue = require("@virtual/value");
+export function readVirtualValue(): number {
+  return virtualValue.answer;
+}
+`,
+    );
+  });
+
+  afterAll(() => {
+    if (fs.existsSync(RESOLVER_CHAIN_FIXTURE)) {
+      fs.unlinkSync(RESOLVER_CHAIN_FIXTURE);
+    }
+  });
+
+  it("applies resolver adapters in order so one hook can rewrite and the next can resolve", async () => {
+    const resolverAdapters: ResolverAdapter[] = [
+      {
+        id: "test.rewrite",
+        resolveModule({ module_id }) {
+          if (module_id === "@virtual/value") {
+            return { kind: "rewrite", module_id: "virtual:value" };
+          }
+          return { kind: "continue" };
+        },
+      },
+      {
+        id: "test.virtualize",
+        resolveModule({ module_id }) {
+          if (module_id === "virtual:value") {
+            return { kind: "resolved", value: { answer: 41 } };
+          }
+          return { kind: "continue" };
+        },
+      },
+    ];
+
+    const result = await executeFunction(
+      RESOLVER_CHAIN_FIXTURE,
+      "readVirtualValue",
+      [],
+      undefined,
+      true,
+      resolverAdapters,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(41);
   });
 });
 
@@ -1011,6 +1069,45 @@ describe("stubbed_import fallback for unresolvable modules", () => {
     expect(deps).toHaveLength(1);
   });
 
+  it("allows resolver adapters to request a stub before default fallback handling", async () => {
+    const source = `
+      const fake = require("adapter-controlled-stub");
+      export function useFake(): string {
+        return typeof fake.anything;
+      }
+    `;
+    const resolverAdapters: ResolverAdapter[] = [{
+      id: "test.stub",
+      resolveModule({ module_id }) {
+        if (module_id === "adapter-controlled-stub") {
+          return { kind: "stub" };
+        }
+        return { kind: "continue" };
+      },
+    }];
+
+    const result = await executeInstrumented(
+      source,
+      "useFake",
+      [],
+      [],
+      undefined,
+      undefined,
+      true,
+      undefined,
+      resolverAdapters,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("function");
+    expect(result.discovered_dependencies).toContainEqual({
+      symbol: "adapter-controlled-stub",
+      source_module: "adapter-controlled-stub",
+      kind: "stubbed_import",
+      is_subprocess_spawn: false,
+    });
+  });
+
   it("stub .then returns undefined to prevent thenable coercion", () => {
     const stub = createUnresolvableModuleStub("test-module");
     expect(stub.then).toBeUndefined();
@@ -1610,7 +1707,7 @@ describe("executeInstrumented no-capture fast path", () => {
 
 describe("executeInstrumented script caching", () => {
   const exampleFile = path.join(
-    path.resolve(__dirname, "../../examples/standalone/ts"),
+    EXAMPLES_DIR,
     "01-arithmetic.ts",
   );
 

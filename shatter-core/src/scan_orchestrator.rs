@@ -14,16 +14,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
 use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
-use crate::types::TypeInfo;
 use crate::cache::BehaviorMapCache;
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
@@ -32,6 +31,7 @@ use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
+use crate::types::TypeInfo;
 
 /// Shared budget surplus within a topological layer.
 ///
@@ -335,6 +335,58 @@ enum FunctionOutcome {
     },
 }
 
+/// Status for a live scan progress update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanProgressStatus {
+    Started,
+    Completed,
+    Skipped,
+    Failed,
+}
+
+impl ScanProgressStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Completed => "completed",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A live progress update emitted during scan execution.
+#[derive(Debug, Clone)]
+pub struct ScanProgressUpdate {
+    pub function_name: String,
+    pub current: usize,
+    pub total: usize,
+    pub elapsed: Duration,
+    pub status: ScanProgressStatus,
+}
+
+pub type ProgressHandler = Arc<dyn Fn(ScanProgressUpdate) + Send + Sync>;
+
+fn emit_progress(
+    progress_handler: Option<&ProgressHandler>,
+    function_name: &str,
+    current: usize,
+    total: usize,
+    elapsed: Duration,
+    status: ScanProgressStatus,
+) {
+    if let Some(handler) = progress_handler {
+        handler(ScanProgressUpdate {
+            function_name: function_name.to_string(),
+            current,
+            total,
+            elapsed,
+            status,
+        });
+    }
+}
+
 /// Whether a skip is benign (expected) or an actual error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipCategory {
@@ -353,6 +405,146 @@ pub struct SkippedFunction {
     pub reason: String,
     /// Whether this skip is expected or an error.
     pub category: SkipCategory,
+}
+
+fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+    project_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shatter-artifacts")
+        .join("scan-results")
+        .join(scan_id)
+        .join("functions")
+}
+
+fn sanitize_artifact_component(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn scan_artifact_path(root: &Path, current: usize, function_name: &str) -> PathBuf {
+    root.join(format!(
+        "{:05}_{}.json",
+        current,
+        sanitize_artifact_component(function_name)
+    ))
+}
+
+fn write_scan_artifact_json(
+    root: &Path,
+    current: usize,
+    function_name: &str,
+    value: &serde_json::Value,
+) {
+    let path = scan_artifact_path(root, current, function_name);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        log::warn!("failed to create scan artifact dir: {e}");
+        return;
+    }
+    let Ok(json) = serde_json::to_string_pretty(value) else {
+        log::warn!("failed to serialize scan artifact for {function_name}");
+        return;
+    };
+    let tmp_path = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp_path, json) {
+        log::warn!("failed to write scan artifact temp file for {function_name}: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        log::warn!("failed to finalize scan artifact for {function_name}: {e}");
+        return;
+    }
+    log::info!(
+        "Wrote scan artifact for {} -> {}",
+        function_name,
+        path.display()
+    );
+}
+
+fn write_completed_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    file_path: &str,
+    result: &FunctionResult,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let function_report = crate::report::build_function_report(result, file_path);
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "completed",
+        "current": current,
+        "total": total,
+        "function": function_report,
+    });
+    write_scan_artifact_json(root, current, &result.function_name, &value);
+}
+
+fn write_skipped_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    function_name: &str,
+    reason: &str,
+    category: SkipCategory,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "skipped",
+        "current": current,
+        "total": total,
+        "function_name": function_name,
+        "reason": reason,
+        "category": match category {
+            SkipCategory::Expected => "expected",
+            SkipCategory::Error => "error",
+        },
+    });
+    write_scan_artifact_json(root, current, function_name, &value);
+}
+
+fn write_failed_scan_artifact(
+    artifact_root: Option<&PathBuf>,
+    current: usize,
+    total: usize,
+    function_name: &str,
+    reason: &str,
+) {
+    let Some(root) = artifact_root else {
+        return;
+    };
+    let value = serde_json::json!({
+        "version": 1,
+        "status": "failed",
+        "current": current,
+        "total": total,
+        "function_name": function_name,
+        "reason": reason,
+    });
+    write_scan_artifact_json(root, current, function_name, &value);
 }
 
 /// Build an [`ExecutionRecord`] from an [`ExecuteResult`] and its inputs.
@@ -404,7 +596,11 @@ fn execution_record_from_result(
 ///   from [`ObservationOutput::raw_results`].
 /// * `callee_maps` — Behavior maps for callees, keyed by symbol name.
 pub fn detect_mock_misses(
-    caller_inputs_and_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
+    caller_inputs_and_results: &[(
+        Vec<serde_json::Value>,
+        Vec<crate::protocol::MockConfig>,
+        crate::protocol::ExecuteResult,
+    )],
     callee_maps: &HashMap<String, BehaviorMap>,
 ) -> Vec<MockMiss> {
     // Track seen (callee, inputs) pairs to avoid duplicates.
@@ -468,7 +664,9 @@ fn compute_fingerprint_for_function(
         analysis.end_line,
     )
     .ok()?;
-    Some(crate::fingerprint::compute_function_fingerprint(&source, analysis))
+    Some(crate::fingerprint::compute_function_fingerprint(
+        &source, analysis,
+    ))
 }
 
 /// Run a multi-function scan in dependency order.
@@ -489,7 +687,11 @@ pub async fn scan(
 
     // Apply stratum filter: only explore functions in selected layers.
     let (filtered_layers, stratum_excluded) = if let Some(ref spec) = config.stratum {
-        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let max_layer = if all_layers.is_empty() {
+            0
+        } else {
+            all_layers.len() - 1
+        };
         let range = crate::stratum::resolve_range(spec, max_layer)?;
         let selected: Vec<Vec<String>> = crate::stratum::filter_layers(&all_layers, &range)
             .into_iter()
@@ -523,24 +725,26 @@ pub async fn scan(
 
     // Load checkpoint for resume support.
     let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
-        &config.file_map.values().map(|s| s.as_str()).collect::<Vec<_>>(),
+        &config
+            .file_map
+            .values()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
     );
     let mut checkpoint = match &config.resume_path {
-        Some(path) => {
-            match crate::checkpoint::ScanCheckpoint::load(path) {
-                Ok(Some(cp)) if cp.scan_id == scan_id => cp,
-                Ok(Some(_)) => {
-                    log::info!("checkpoint scan_id mismatch, starting fresh");
-                    crate::checkpoint::ScanCheckpoint::new(scan_id)
-                }
-                Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
-                Err(e) => {
-                    log::warn!("failed to load checkpoint: {e}, starting fresh");
-                    crate::checkpoint::ScanCheckpoint::new(scan_id)
-                }
+        Some(path) => match crate::checkpoint::ScanCheckpoint::load(path) {
+            Ok(Some(cp)) if cp.scan_id == scan_id => cp,
+            Ok(Some(_)) => {
+                log::info!("checkpoint scan_id mismatch, starting fresh");
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
-        }
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
+            Err(e) => {
+                log::warn!("failed to load checkpoint: {e}, starting fresh");
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
+            }
+        },
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
     };
 
     // Load the interesting input pool for cross-function seed sharing.
@@ -640,13 +844,13 @@ pub async fn scan(
         mocks.extend(auto_mocks);
         mocks_used.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let file = config
-            .file_map
-            .get(func_name)
-            .cloned()
-            .unwrap_or_default();
+        let file = config.file_map.get(func_name).cloned().unwrap_or_default();
 
-        let pool_seeds = crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &input_pool, &callees);
+        let pool_seeds = crate::input_gen::pool_to_candidate_inputs_for_callees(
+            &analysis.params,
+            &input_pool,
+            &callees,
+        );
 
         let mut candidate_inputs = load_config_candidate_inputs(
             func_name,
@@ -678,7 +882,9 @@ pub async fn scan(
             setup_file: None,
             setup_level: crate::protocol::SetupLevel::Function,
             value_sources: vec![],
-            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
+            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(
+                frontend.capabilities(),
+            ),
             user_seeds: vec![],
             candidate_inputs,
             pool_seeds,
@@ -694,7 +900,8 @@ pub async fn scan(
             claim_policy: ClaimPolicy::default(),
         };
 
-        let exploration = explorer::explore_function(frontend, analysis, &explore_config, None).await?;
+        let exploration =
+            explorer::explore_function(frontend, analysis, &explore_config, None).await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -711,7 +918,8 @@ pub async fn scan(
             if !targets.is_empty() {
                 log::info!(
                     "[scan] Starting GA for {} ({} unsolved target(s))",
-                    func_name, targets.len(),
+                    func_name,
+                    targets.len(),
                 );
                 let mut seed_inputs: Vec<Vec<serde_json::Value>> = exploration
                     .raw_results
@@ -731,7 +939,9 @@ pub async fn scan(
                     targets,
                     &analysis.params,
                     &config.genetic_config,
-                ).await {
+                )
+                .await
+                {
                     Ok(ga_result) => {
                         if !ga_result.discoveries.is_empty() {
                             log::info!(
@@ -755,9 +965,13 @@ pub async fn scan(
 
         // Merge GA discoveries into the behavior map before caching.
         if !ga_discoveries.is_empty() {
-            let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+            let added = analyze_out
+                .behavior_map
+                .merge_ga_discoveries(&ga_discoveries);
             if added > 0 {
-                log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
+                log::info!(
+                    "[scan] Merged {added} GA behavior(s) into behavior map for {func_name}"
+                );
             }
         }
 
@@ -801,7 +1015,11 @@ pub async fn scan(
             log::debug!(
                 "{func_name}: {} mock miss(es) detected across {} callee(s)",
                 mock_misses.len(),
-                mock_misses.iter().map(|m| &m.callee_name).collect::<HashSet<_>>().len(),
+                mock_misses
+                    .iter()
+                    .map(|m| &m.callee_name)
+                    .collect::<HashSet<_>>()
+                    .len(),
             );
         }
 
@@ -919,14 +1137,20 @@ impl WorkerPool {
 
         // Deposit prewarmed worker first, then spawn the remaining initial workers.
         let already = if let Some(fe) = prewarmed {
-            sender.send(fe).await.expect("channel has capacity for prewarmed worker");
+            sender
+                .send(fe)
+                .await
+                .expect("channel has capacity for prewarmed worker");
             1
         } else {
             0
         };
         for _ in already..initial {
             let frontend = Frontend::spawn(&config).await?;
-            sender.send(frontend).await.expect("channel has capacity for initial workers");
+            sender
+                .send(frontend)
+                .await
+                .expect("channel has capacity for initial workers");
         }
         Ok(Self {
             sender,
@@ -954,7 +1178,8 @@ impl WorkerPool {
         let floor = (pending + MIN_IDLE_WORKERS).min(self.max_workers);
         let current = self.live_count.load(Ordering::Acquire);
         if current > floor
-            && self.live_count
+            && self
+                .live_count
                 .compare_exchange(current, current - 1, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
@@ -998,7 +1223,8 @@ impl WorkerPool {
         if tasks_remaining <= current || current >= self.max_workers {
             return;
         }
-        if self.live_count
+        if self
+            .live_count
             .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
@@ -1062,25 +1288,61 @@ async fn run_layer_function_mode(
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
     input_pool: &Arc<Mutex<InterestingPool>>,
     genetic_config: &crate::config::GeneticConfig,
+    progress_handler: Option<ProgressHandler>,
+    artifact_root: Option<Arc<PathBuf>>,
+    total_functions: usize,
+    scan_start: Instant,
 ) -> (Vec<FunctionOutcome>, usize) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::new();
 
-    for ExploreTask { func_name, analysis, explore_config, mocks_used, callees, deep_fp } in tasks {
+    for ExploreTask {
+        func_name,
+        analysis,
+        explore_config,
+        file_path: _,
+        mocks_used,
+        callees,
+        deep_fp,
+        progress_index,
+    } in tasks
+    {
         let semaphore = Arc::clone(&semaphore);
         let fe_config = Arc::clone(&fe_config);
         let behavior_maps = Arc::clone(behavior_maps);
         let input_pool = Arc::clone(input_pool);
         let cache = cache.clone();
         let genetic_config = genetic_config.clone();
+        let progress_handler = progress_handler.clone();
+        let artifact_root = artifact_root.clone();
+        let file_path = explore_config.file.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire a concurrency slot before spawning the frontend.
-            let _permit = semaphore.acquire().await.expect("semaphore is never closed");
+            let _permit = semaphore
+                .acquire()
+                .await
+                .expect("semaphore is never closed");
+            emit_progress(
+                progress_handler.as_ref(),
+                &func_name,
+                progress_index,
+                total_functions,
+                scan_start.elapsed(),
+                ScanProgressStatus::Started,
+            );
 
             let mut frontend = match Frontend::spawn(&fe_config).await {
                 Ok(fe) => fe,
                 Err(e) => {
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        &func_name,
+                        progress_index,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Failed,
+                    );
                     return FunctionOutcome::Error {
                         function_name: func_name,
                         error: e.to_string(),
@@ -1117,16 +1379,67 @@ async fn run_layer_function_mode(
                     if let Some(ref cache) = cache {
                         let _ = cache.store(&func_result.behavior_map);
                     }
+                    write_completed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &file_path,
+                        &func_result,
+                    );
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        &func_name,
+                        progress_index,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Completed,
+                    );
                     FunctionOutcome::Success(Box::new(func_result))
                 }
-                Ok(Err(e)) => FunctionOutcome::Error {
-                    function_name: func_name,
-                    error: e.to_string(),
-                },
-                Err(_) => FunctionOutcome::Timeout {
-                    function_name: func_name,
-                    limit: timeout,
-                },
+                Ok(Err(e)) => {
+                    let reason = format!("error: {e}");
+                    write_failed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &func_name,
+                        &reason,
+                    );
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        &func_name,
+                        progress_index,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Failed,
+                    );
+                    FunctionOutcome::Error {
+                        function_name: func_name,
+                        error: e.to_string(),
+                    }
+                }
+                Err(_) => {
+                    let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
+                    write_failed_scan_artifact(
+                        artifact_root.as_deref(),
+                        progress_index,
+                        total_functions,
+                        &func_name,
+                        &reason,
+                    );
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        &func_name,
+                        progress_index,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Failed,
+                    );
+                    FunctionOutcome::Timeout {
+                        function_name: func_name,
+                        limit: timeout,
+                    }
+                }
             }
         });
 
@@ -1169,9 +1482,11 @@ struct ExploreTask {
     func_name: String,
     analysis: FunctionAnalysis,
     explore_config: ExploreConfig,
+    file_path: String,
     mocks_used: Vec<MockUsage>,
     callees: std::collections::HashSet<String>,
     deep_fp: Option<String>,
+    progress_index: usize,
 }
 
 /// Merge outcomes for replicas of the same function into one outcome per function.
@@ -1199,8 +1514,12 @@ fn merge_replica_outcomes(
                 }
                 by_name.entry(name).or_default().push(result);
             }
-            FunctionOutcome::Timeout { ref function_name, .. }
-            | FunctionOutcome::Error { ref function_name, .. } => {
+            FunctionOutcome::Timeout {
+                ref function_name, ..
+            }
+            | FunctionOutcome::Error {
+                ref function_name, ..
+            } => {
                 // Keep the first failure; success from another replica overrides it.
                 let name = function_name.clone();
                 errors.entry(name.clone()).or_insert(outcome);
@@ -1247,10 +1566,16 @@ fn merge_replica_outcomes(
 /// `CoverageMetrics`. Duplicate inputs are deduplicated by input hash inside
 /// `BehaviorMap::from_records`. The fingerprint is taken from the first replica
 /// (all replicas share the same source fingerprint).
-fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnalysis) -> FunctionResult {
+fn merge_replica_results(
+    replicas: Vec<FunctionResult>,
+    analysis: &FunctionAnalysis,
+) -> FunctionResult {
     use crate::explorer::ObservationOutput;
 
-    debug_assert!(!replicas.is_empty(), "merge_replica_results: replicas must not be empty");
+    debug_assert!(
+        !replicas.is_empty(),
+        "merge_replica_results: replicas must not be empty"
+    );
 
     let func_name = replicas[0].function_name.clone();
     let fingerprint = replicas[0].behavior_map.fingerprint.clone();
@@ -1330,7 +1655,8 @@ fn merge_replica_results(replicas: Vec<FunctionResult>, analysis: &FunctionAnaly
         shrunk_witnesses: merged_shrunk,
         mcdc_summary,
         shrink_stats: crate::shrink::ShrinkStats::default(),
-        abandoned_frontiers: vec![], opaque_suggestions: vec![],
+        abandoned_frontiers: vec![],
+        opaque_suggestions: vec![],
         stubbed_modules: merged_stubbed,
     };
 
@@ -1364,6 +1690,15 @@ pub async fn parallel_scan(
     analyses: &[FunctionAnalysis],
     config: &ScanConfig,
 ) -> Result<ParallelScanResult, ScanError> {
+    parallel_scan_with_progress(frontend_config, analyses, config, None).await
+}
+
+pub async fn parallel_scan_with_progress(
+    frontend_config: &FrontendConfig,
+    analyses: &[FunctionAnalysis],
+    config: &ScanConfig,
+    progress_handler: Option<ProgressHandler>,
+) -> Result<ParallelScanResult, ScanError> {
     let call_graph = CallGraph::from_analyses(analyses);
     let order_entries = call_graph.test_order()?;
 
@@ -1373,7 +1708,11 @@ pub async fn parallel_scan(
 
     // Apply stratum filter: only explore functions in selected layers.
     let (layers, stratum_excluded) = if let Some(ref spec) = config.stratum {
-        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let max_layer = if all_layers.is_empty() {
+            0
+        } else {
+            all_layers.len() - 1
+        };
         let range = crate::stratum::resolve_range(spec, max_layer)?;
         let selected: Vec<Vec<String>> = crate::stratum::filter_layers(&all_layers, &range)
             .into_iter()
@@ -1425,24 +1764,26 @@ pub async fn parallel_scan(
 
     // Load checkpoint for resume support.
     let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
-        &config.file_map.values().map(|s| s.as_str()).collect::<Vec<_>>(),
+        &config
+            .file_map
+            .values()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
     );
     let mut checkpoint = match &config.resume_path {
-        Some(path) => {
-            match crate::checkpoint::ScanCheckpoint::load(path) {
-                Ok(Some(cp)) if cp.scan_id == scan_id => cp,
-                Ok(Some(_)) => {
-                    log::info!("checkpoint scan_id mismatch, starting fresh");
-                    crate::checkpoint::ScanCheckpoint::new(scan_id)
-                }
-                Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id),
-                Err(e) => {
-                    log::warn!("failed to load checkpoint: {e}, starting fresh");
-                    crate::checkpoint::ScanCheckpoint::new(scan_id)
-                }
+        Some(path) => match crate::checkpoint::ScanCheckpoint::load(path) {
+            Ok(Some(cp)) if cp.scan_id == scan_id => cp,
+            Ok(Some(_)) => {
+                log::info!("checkpoint scan_id mismatch, starting fresh");
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
             }
-        }
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id),
+            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
+            Err(e) => {
+                log::warn!("failed to load checkpoint: {e}, starting fresh");
+                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
+            }
+        },
+        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
     };
 
     let mut all_results: Vec<FunctionResult> = Vec::new();
@@ -1450,6 +1791,9 @@ pub async fn parallel_scan(
     let mut skipped: Vec<SkippedFunction> = Vec::new();
 
     let scan_start = Instant::now();
+    let total_functions = analyses.len();
+    let mut progress_index = 0usize;
+    let artifact_root = Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id));
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
@@ -1459,11 +1803,28 @@ pub async fn parallel_scan(
             // Skip all functions in this and remaining layers.
             for remaining_layer in &layers[layer_idx..] {
                 for func_name in remaining_layer {
+                    progress_index += 1;
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
                         reason: "total scan timeout exceeded".into(),
                         category: SkipCategory::Error,
                     });
+                    write_skipped_scan_artifact(
+                        Some(&artifact_root),
+                        progress_index,
+                        total_functions,
+                        func_name,
+                        "total scan timeout exceeded",
+                        SkipCategory::Error,
+                    );
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        func_name,
+                        progress_index,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Skipped,
+                    );
                 }
             }
             break;
@@ -1491,6 +1852,8 @@ pub async fn parallel_scan(
         let layer_surplus = Arc::new(BudgetSurplus::new());
 
         for func_name in layer {
+            progress_index += 1;
+            let current_progress = progress_index;
             test_order.push(func_name.clone());
 
             let analysis = match analysis_map.get(func_name.as_str()) {
@@ -1501,13 +1864,28 @@ pub async fn parallel_scan(
                         reason: "no analysis found".into(),
                         category: SkipCategory::Error,
                     });
+                    write_skipped_scan_artifact(
+                        Some(&artifact_root),
+                        current_progress,
+                        total_functions,
+                        func_name,
+                        "no analysis found",
+                        SkipCategory::Error,
+                    );
+                    emit_progress(
+                        progress_handler.as_ref(),
+                        func_name,
+                        current_progress,
+                        total_functions,
+                        scan_start.elapsed(),
+                        ScanProgressStatus::Skipped,
+                    );
                     continue;
                 }
             };
 
             // Compute shallow fingerprint, then deep fingerprint incorporating callees.
-            let shallow_fingerprint =
-                compute_fingerprint_for_function(func_name, analysis, config);
+            let shallow_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
 
             let callees = call_graph.callees(func_name);
             let current_deep_fp = shallow_fingerprint.as_ref().map(|sfp| {
@@ -1528,6 +1906,22 @@ pub async fn parallel_scan(
                     reason: "resumed from checkpoint".into(),
                     category: SkipCategory::Expected,
                 });
+                write_skipped_scan_artifact(
+                    Some(&artifact_root),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "resumed from checkpoint",
+                    SkipCategory::Expected,
+                );
+                emit_progress(
+                    progress_handler.as_ref(),
+                    func_name,
+                    current_progress,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Skipped,
+                );
                 continue;
             }
 
@@ -1545,6 +1939,22 @@ pub async fn parallel_scan(
                     reason: "unchanged (fingerprint match)".into(),
                     category: SkipCategory::Expected,
                 });
+                write_skipped_scan_artifact(
+                    Some(&artifact_root),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "unchanged (fingerprint match)",
+                    SkipCategory::Expected,
+                );
+                emit_progress(
+                    progress_handler.as_ref(),
+                    func_name,
+                    current_progress,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Skipped,
+                );
                 continue;
             }
 
@@ -1597,15 +2007,15 @@ pub async fn parallel_scan(
             mocks.extend(auto_mocks);
             mocks_used.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let file = config
-                .file_map
-                .get(func_name)
-                .cloned()
-                .unwrap_or_default();
+            let file = config.file_map.get(func_name).cloned().unwrap_or_default();
 
             let pool_seeds = {
                 let pool_guard = input_pool.lock().await;
-                crate::input_gen::pool_to_candidate_inputs_for_callees(&analysis.params, &pool_guard, &callees)
+                crate::input_gen::pool_to_candidate_inputs_for_callees(
+                    &analysis.params,
+                    &pool_guard,
+                    &callees,
+                )
             };
 
             let mut candidate_inputs = load_config_candidate_inputs(
@@ -1630,7 +2040,7 @@ pub async fn parallel_scan(
             }
 
             let explore_config = ExploreConfig {
-                file,
+                file: file.clone(),
                 max_iterations: config.max_iterations_per_function,
                 seed: config.seed,
                 mocks,
@@ -1658,9 +2068,11 @@ pub async fn parallel_scan(
                 func_name: func_name.clone(),
                 analysis: analysis.clone(),
                 explore_config,
+                file_path: file.clone(),
                 mocks_used,
                 callees,
                 deep_fp: current_deep_fp,
+                progress_index: current_progress,
             });
         }
 
@@ -1680,215 +2092,300 @@ pub async fn parallel_scan(
         // The pool is created lazily on the first layer with work and persists
         // across subsequent layers, keeping frontend subprocesses warm.
         if !tasks.is_empty() {
-
             // Collect outcomes from either isolation path.
-            let layer_outcomes: Vec<FunctionOutcome> =
-                if config.isolation == IsolationMode::Function {
-                    // Function mode doesn't use the shared pool — shut down
-                    // the speculative pre-spawn if one was created.
-                    if let Some(fe) = prewarmed {
-                        tokio::spawn(async move { let _ = fe.shutdown().await; });
-                    }
-                    // Each function gets a dedicated fresh frontend.
-                    // No shared pool — a Semaphore caps concurrency instead.
-                    let (outcomes, layer_peak) = run_layer_function_mode(
-                        Arc::clone(&fe_config_persistent),
-                        tasks,
-                        effective_parallelism,
-                        config.timeout_per_fn,
-                        &config.cache,
-                        &behavior_maps,
-                        &input_pool,
-                        &config.genetic_config,
-                    )
-                    .await;
-                    peak_workers = peak_workers.max(layer_peak);
-                    outcomes
+            let layer_outcomes: Vec<FunctionOutcome> = if config.isolation
+                == IsolationMode::Function
+            {
+                // Function mode doesn't use the shared pool — shut down
+                // the speculative pre-spawn if one was created.
+                if let Some(fe) = prewarmed {
+                    tokio::spawn(async move {
+                        let _ = fe.shutdown().await;
+                    });
+                }
+                // Each function gets a dedicated fresh frontend.
+                // No shared pool — a Semaphore caps concurrency instead.
+                let (outcomes, layer_peak) = run_layer_function_mode(
+                    Arc::clone(&fe_config_persistent),
+                    tasks,
+                    effective_parallelism,
+                    config.timeout_per_fn,
+                    &config.cache,
+                    &behavior_maps,
+                    &input_pool,
+                    &config.genetic_config,
+                    progress_handler.clone(),
+                    Some(Arc::clone(&artifact_root)),
+                    total_functions,
+                    scan_start,
+                )
+                .await;
+                peak_workers = peak_workers.max(layer_peak);
+                outcomes
+            } else {
+                // Default: shared WorkerPool — workers are reused across functions.
+                // When workers_per_fn > 1, expand each function into multiple tasks
+                // with different seeds so parallel workers explore different paths.
+                // The iteration budget is split evenly across replicas to keep the
+                // total budget constant.
+                let expanded_tasks: Vec<ExploreTask> = if config.workers_per_fn <= 1 {
+                    tasks
                 } else {
-                    // Default: shared WorkerPool — workers are reused across functions.
-                    // When workers_per_fn > 1, expand each function into multiple tasks
-                    // with different seeds so parallel workers explore different paths.
-                    // The iteration budget is split evenly across replicas to keep the
-                    // total budget constant.
-                    let expanded_tasks: Vec<ExploreTask> = if config.workers_per_fn <= 1 {
-                        tasks
-                    } else {
-                        let wpf = config.workers_per_fn;
-                        let mut out = Vec::with_capacity(tasks.len() * wpf);
-                        for (fn_idx, task) in tasks.into_iter().enumerate() {
-                            let per_replica_iters =
-                                (task.explore_config.max_iterations / wpf as u32).max(1);
-                            for replica in 0..wpf {
-                                let mut replica_config = task.explore_config.clone();
-                                replica_config.seed =
-                                    derive_replica_seed(task.explore_config.seed, fn_idx, replica);
-                                replica_config.max_iterations = per_replica_iters;
-                                out.push(ExploreTask {
-                                    func_name: task.func_name.clone(),
-                                    analysis: task.analysis.clone(),
-                                    explore_config: replica_config,
-                                    mocks_used: task.mocks_used.clone(),
-                                    callees: task.callees.clone(),
-                                    deep_fp: task.deep_fp.clone(),
-                                });
-                            }
+                    let wpf = config.workers_per_fn;
+                    let mut out = Vec::with_capacity(tasks.len() * wpf);
+                    for (fn_idx, task) in tasks.into_iter().enumerate() {
+                        let per_replica_iters =
+                            (task.explore_config.max_iterations / wpf as u32).max(1);
+                        for replica in 0..wpf {
+                            let mut replica_config = task.explore_config.clone();
+                            replica_config.seed =
+                                derive_replica_seed(task.explore_config.seed, fn_idx, replica);
+                            replica_config.max_iterations = per_replica_iters;
+                            out.push(ExploreTask {
+                                func_name: task.func_name.clone(),
+                                analysis: task.analysis.clone(),
+                                explore_config: replica_config,
+                                file_path: task.file_path.clone(),
+                                mocks_used: task.mocks_used.clone(),
+                                callees: task.callees.clone(),
+                                deep_fp: task.deep_fp.clone(),
+                                progress_index: task.progress_index,
+                            });
                         }
-                        out
-                    };
+                    }
+                    out
+                };
 
-                    // Reuse the persistent pool if it exists; otherwise create it
-                    // with the speculative pre-spawn from this first layer.
-                    let pool = if let Some(ref existing) = persistent_pool {
-                        Arc::clone(existing)
-                    } else {
-                        let new_pool = Arc::new(
-                            WorkerPool::spawn_capped(
-                                Arc::clone(&fe_config_persistent),
-                                effective_parallelism,
-                                expanded_tasks.len(),
-                                prewarmed,
-                            )
-                            .await
-                            .map_err(ScanError::Frontend)?,
+                // Reuse the persistent pool if it exists; otherwise create it
+                // with the speculative pre-spawn from this first layer.
+                let pool = if let Some(ref existing) = persistent_pool {
+                    Arc::clone(existing)
+                } else {
+                    let new_pool = Arc::new(
+                        WorkerPool::spawn_capped(
+                            Arc::clone(&fe_config_persistent),
+                            effective_parallelism,
+                            expanded_tasks.len(),
+                            prewarmed,
+                        )
+                        .await
+                        .map_err(ScanError::Frontend)?,
+                    );
+                    persistent_pool = Some(Arc::clone(&new_pool));
+                    new_pool
+                };
+
+                // Each task decrements this counter after returning its worker so that
+                // `maybe_grow` can detect tasks still blocked on `checkout()`.
+                let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
+                let write_success_artifact = config.workers_per_fn <= 1;
+
+                // Each task checks out a worker, explores, then returns the worker.
+                // Behavior map storage is deferred to after all handles join so that
+                // replicas for the same function can be merged first.
+                let mut handles = Vec::new();
+
+                for ExploreTask {
+                    func_name,
+                    analysis,
+                    explore_config,
+                    file_path,
+                    mocks_used,
+                    callees,
+                    deep_fp,
+                    progress_index,
+                } in expanded_tasks
+                {
+                    let pool = Arc::clone(&pool);
+                    let behavior_maps = Arc::clone(&behavior_maps);
+                    let input_pool = Arc::clone(&input_pool);
+                    let timeout = config.timeout_per_fn;
+                    let fe_config = Arc::clone(&fe_config_persistent);
+                    let tasks_remaining = Arc::clone(&tasks_remaining);
+                    let genetic_config = config.genetic_config.clone();
+                    let cache = config.cache.clone();
+                    let progress_handler = progress_handler.clone();
+                    let artifact_root = Arc::clone(&artifact_root);
+                    let write_success_artifact = write_success_artifact;
+
+                    let handle = tokio::spawn(async move {
+                        emit_progress(
+                            progress_handler.as_ref(),
+                            &func_name,
+                            progress_index,
+                            total_functions,
+                            scan_start.elapsed(),
+                            ScanProgressStatus::Started,
                         );
-                        persistent_pool = Some(Arc::clone(&new_pool));
-                        new_pool
-                    };
+                        let mut frontend = pool.checkout().await;
 
-                    // Each task decrements this counter after returning its worker so that
-                    // `maybe_grow` can detect tasks still blocked on `checkout()`.
-                    let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
+                        let result = tokio::time::timeout(
+                            timeout,
+                            explore_single_function(
+                                &mut frontend,
+                                &func_name,
+                                &analysis,
+                                &explore_config,
+                                &mocks_used,
+                                &callees,
+                                &behavior_maps,
+                                deep_fp.clone(),
+                                &input_pool,
+                                &genetic_config,
+                                &cache,
+                            ),
+                        )
+                        .await;
 
-                    // Each task checks out a worker, explores, then returns the worker.
-                    // Behavior map storage is deferred to after all handles join so that
-                    // replicas for the same function can be merged first.
-                    let mut handles = Vec::new();
+                        let timed_out = result.is_err();
 
-                    for ExploreTask { func_name, analysis, explore_config, mocks_used, callees, deep_fp }
-                        in expanded_tasks
-                    {
-                        let pool = Arc::clone(&pool);
-                        let behavior_maps = Arc::clone(&behavior_maps);
-                        let input_pool = Arc::clone(&input_pool);
-                        let timeout = config.timeout_per_fn;
-                        let fe_config = Arc::clone(&fe_config_persistent);
-                        let tasks_remaining = Arc::clone(&tasks_remaining);
-                        let genetic_config = config.genetic_config.clone();
-                        let cache = config.cache.clone();
+                        // Decrement the remaining-task counter FIRST so that
+                        // return_or_reap_worker sees the updated pending count when
+                        // deciding whether to reap this worker.
+                        let remaining = tasks_remaining
+                            .fetch_sub(1, Ordering::AcqRel)
+                            .saturating_sub(1);
 
-                        let handle = tokio::spawn(async move {
-                            let mut frontend = pool.checkout().await;
-
-                            let result = tokio::time::timeout(
-                                timeout,
-                                explore_single_function(
-                                    &mut frontend,
-                                    &func_name,
-                                    &analysis,
-                                    &explore_config,
-                                    &mocks_used,
-                                    &callees,
-                                    &behavior_maps,
-                                    deep_fp.clone(),
-                                    &input_pool,
-                                    &genetic_config,
-                                    &cache,
-                                ),
-                            )
-                            .await;
-
-                            let timed_out = result.is_err();
-
-                            // Decrement the remaining-task counter FIRST so that
-                            // return_or_reap_worker sees the updated pending count when
-                            // deciding whether to reap this worker.
-                            let remaining = tasks_remaining.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
-
-                            // After a timeout the frontend's stdout buffer contains a
-                            // stale response that would cause an ID mismatch on the next
-                            // request.  Kill and respawn instead of returning to pool.
-                            // Skip replacement when the pool is already over-provisioned
-                            // relative to remaining tasks — absorb the dead slot instead.
-                            if timed_out || !frontend.is_alive() {
-                                // Drop the poisoned/dead frontend (kills the child process).
-                                drop(frontend);
-                                if pool.needs_replacement(remaining) {
-                                    match Frontend::spawn(&fe_config).await {
-                                        Ok(new_fe) => pool.return_or_reap_worker(new_fe, remaining).await,
-                                        Err(_) => { /* pool shrinks — acceptable degradation */ }
+                        // After a timeout the frontend's stdout buffer contains a
+                        // stale response that would cause an ID mismatch on the next
+                        // request.  Kill and respawn instead of returning to pool.
+                        // Skip replacement when the pool is already over-provisioned
+                        // relative to remaining tasks — absorb the dead slot instead.
+                        if timed_out || !frontend.is_alive() {
+                            // Drop the poisoned/dead frontend (kills the child process).
+                            drop(frontend);
+                            if pool.needs_replacement(remaining) {
+                                match Frontend::spawn(&fe_config).await {
+                                    Ok(new_fe) => {
+                                        pool.return_or_reap_worker(new_fe, remaining).await
                                     }
-                                } else {
-                                    // Over-capacity: absorb the dead slot without spawning.
-                                    pool.reap_dead_slot();
+                                    Err(_) => { /* pool shrinks — acceptable degradation */ }
                                 }
                             } else {
-                                pool.return_or_reap_worker(frontend, remaining).await;
+                                // Over-capacity: absorb the dead slot without spawning.
+                                pool.reap_dead_slot();
                             }
+                        } else {
+                            pool.return_or_reap_worker(frontend, remaining).await;
+                        }
 
-                            // Grow the pool if tasks are still blocked on checkout().
-                            pool.maybe_grow(remaining);
+                        // Grow the pool if tasks are still blocked on checkout().
+                        pool.maybe_grow(remaining);
 
-                            match result {
-                                Ok(Ok(func_result)) => FunctionOutcome::Success(Box::new(func_result)),
-                                Ok(Err(e)) => FunctionOutcome::Error {
+                        match result {
+                            Ok(Ok(func_result)) => {
+                                if write_success_artifact {
+                                    write_completed_scan_artifact(
+                                        Some(&artifact_root),
+                                        progress_index,
+                                        total_functions,
+                                        &file_path,
+                                        &func_result,
+                                    );
+                                }
+                                emit_progress(
+                                    progress_handler.as_ref(),
+                                    &func_name,
+                                    progress_index,
+                                    total_functions,
+                                    scan_start.elapsed(),
+                                    ScanProgressStatus::Completed,
+                                );
+                                FunctionOutcome::Success(Box::new(func_result))
+                            }
+                            Ok(Err(e)) => {
+                                let reason = format!("error: {e}");
+                                write_failed_scan_artifact(
+                                    Some(&artifact_root),
+                                    progress_index,
+                                    total_functions,
+                                    &func_name,
+                                    &reason,
+                                );
+                                emit_progress(
+                                    progress_handler.as_ref(),
+                                    &func_name,
+                                    progress_index,
+                                    total_functions,
+                                    scan_start.elapsed(),
+                                    ScanProgressStatus::Failed,
+                                );
+                                FunctionOutcome::Error {
                                     function_name: func_name,
                                     error: e.to_string(),
-                                },
-                                Err(_) => FunctionOutcome::Timeout {
+                                }
+                            }
+                            Err(_) => {
+                                let reason =
+                                    format!("timed out after {:.0}s", timeout.as_secs_f64());
+                                write_failed_scan_artifact(
+                                    Some(&artifact_root),
+                                    progress_index,
+                                    total_functions,
+                                    &func_name,
+                                    &reason,
+                                );
+                                emit_progress(
+                                    progress_handler.as_ref(),
+                                    &func_name,
+                                    progress_index,
+                                    total_functions,
+                                    scan_start.elapsed(),
+                                    ScanProgressStatus::Failed,
+                                );
+                                FunctionOutcome::Timeout {
                                     function_name: func_name,
                                     limit: timeout,
-                                },
-                            }
-                        });
-
-                        handles.push(handle);
-                    }
-
-                    let mut raw_outcomes = Vec::with_capacity(handles.len());
-                    for handle in handles {
-                        match handle.await {
-                            Ok(outcome) => raw_outcomes.push(outcome),
-                            Err(e) => raw_outcomes.push(FunctionOutcome::Error {
-                                function_name: "(unknown)".into(),
-                                error: format!("task join error: {e}"),
-                            }),
-                        }
-                    }
-
-                    // Merge replicas for any function explored by multiple workers, then
-                    // store the final behavior maps and cache entries for all successes.
-                    let outcomes = if config.workers_per_fn > 1 {
-                        merge_replica_outcomes(raw_outcomes, &analysis_map)
-                    } else {
-                        raw_outcomes
-                    };
-
-                    // Store behavior maps for downstream layers and disk cache.
-                    // Doing this after the join (rather than inside each spawn) is safe
-                    // because same-layer functions have no cross-dependencies.
-                    {
-                        let mut maps = behavior_maps.lock().await;
-                        for outcome in &outcomes {
-                            if let FunctionOutcome::Success(result) = outcome {
-                                maps.insert(
-                                    result.function_name.clone(),
-                                    result.behavior_map.clone(),
-                                );
+                                }
                             }
                         }
-                    }
-                    if let Some(ref cache) = config.cache {
-                        for outcome in &outcomes {
-                            if let FunctionOutcome::Success(result) = outcome {
-                                let _ = cache.store(&result.behavior_map);
-                            }
-                        }
-                    }
+                    });
 
-                    // Pool persists across layers — no per-layer shutdown.
-                    // Workers will be reaped or reused as the next layer demands.
-                    outcomes
+                    handles.push(handle);
+                }
+
+                let mut raw_outcomes = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    match handle.await {
+                        Ok(outcome) => raw_outcomes.push(outcome),
+                        Err(e) => raw_outcomes.push(FunctionOutcome::Error {
+                            function_name: "(unknown)".into(),
+                            error: format!("task join error: {e}"),
+                        }),
+                    }
+                }
+
+                // Merge replicas for any function explored by multiple workers, then
+                // store the final behavior maps and cache entries for all successes.
+                let outcomes = if config.workers_per_fn > 1 {
+                    merge_replica_outcomes(raw_outcomes, &analysis_map)
+                } else {
+                    raw_outcomes
                 };
+
+                // Store behavior maps for downstream layers and disk cache.
+                // Doing this after the join (rather than inside each spawn) is safe
+                // because same-layer functions have no cross-dependencies.
+                {
+                    let mut maps = behavior_maps.lock().await;
+                    for outcome in &outcomes {
+                        if let FunctionOutcome::Success(result) = outcome {
+                            maps.insert(result.function_name.clone(), result.behavior_map.clone());
+                        }
+                    }
+                }
+                if let Some(ref cache) = config.cache {
+                    for outcome in &outcomes {
+                        if let FunctionOutcome::Success(result) = outcome {
+                            let _ = cache.store(&result.behavior_map);
+                        }
+                    }
+                }
+
+                // Pool persists across layers — no per-layer shutdown.
+                // Workers will be reaped or reused as the next layer demands.
+                outcomes
+            };
 
             // Process outcomes from whichever path ran.
             for outcome in layer_outcomes {
@@ -1901,14 +2398,20 @@ pub async fn parallel_scan(
                         }
                         all_results.push(*result);
                     }
-                    FunctionOutcome::Timeout { function_name, limit } => {
+                    FunctionOutcome::Timeout {
+                        function_name,
+                        limit,
+                    } => {
                         skipped.push(SkippedFunction {
                             function_name,
                             reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
                             category: SkipCategory::Error,
                         });
                     }
-                    FunctionOutcome::Error { function_name, error } => {
+                    FunctionOutcome::Error {
+                        function_name,
+                        error,
+                    } => {
                         skipped.push(SkippedFunction {
                             function_name,
                             reason: format!("error: {error}"),
@@ -2048,7 +2551,8 @@ async fn explore_single_function(
         if !targets.is_empty() {
             log::info!(
                 "[scan] Starting GA for {} ({} unsolved target(s))",
-                func_name, targets.len(),
+                func_name,
+                targets.len(),
             );
             let mut seed_inputs: Vec<Vec<serde_json::Value>> = exploration
                 .raw_results
@@ -2068,7 +2572,9 @@ async fn explore_single_function(
                 targets,
                 &analysis.params,
                 genetic_config,
-            ).await {
+            )
+            .await
+            {
                 Ok(ga_result) => {
                     if !ga_result.discoveries.is_empty() {
                         log::info!(
@@ -2116,7 +2622,9 @@ async fn explore_single_function(
 
     // Merge GA discoveries into the behavior map.
     if !ga_discoveries.is_empty() {
-        let added = analyze_out.behavior_map.merge_ga_discoveries(&ga_discoveries);
+        let added = analyze_out
+            .behavior_map
+            .merge_ga_discoveries(&ga_discoveries);
         if added > 0 {
             log::info!("[scan] Merged {added} GA behavior(s) into behavior map for {func_name}");
         }
@@ -2148,7 +2656,11 @@ async fn explore_single_function(
         log::debug!(
             "{func_name}: {} mock miss(es) detected across {} callee(s)",
             mock_misses.len(),
-            mock_misses.iter().map(|m| &m.callee_name).collect::<HashSet<_>>().len(),
+            mock_misses
+                .iter()
+                .map(|m| &m.callee_name)
+                .collect::<HashSet<_>>()
+                .len(),
         );
     }
 
@@ -2187,13 +2699,25 @@ fn format_mocks_used(mocks: &[MockUsage]) -> String {
 
     let mut parts = Vec::new();
     if !cached.is_empty() {
-        parts.push(format!("{} via behavior map ({})", cached.len(), cached.join(", ")));
+        parts.push(format!(
+            "{} via behavior map ({})",
+            cached.len(),
+            cached.join(", ")
+        ));
     }
     if !stubs.is_empty() {
-        parts.push(format!("{} via type-aware stub ({})", stubs.len(), stubs.join(", ")));
+        parts.push(format!(
+            "{} via type-aware stub ({})",
+            stubs.len(),
+            stubs.join(", ")
+        ));
     }
     if !excluded.is_empty() {
-        parts.push(format!("{} stratum-excluded ({})", excluded.len(), excluded.join(", ")));
+        parts.push(format!(
+            "{} stratum-excluded ({})",
+            excluded.len(),
+            excluded.join(", ")
+        ));
     }
     parts.join("; ")
 }
@@ -2211,7 +2735,10 @@ fn format_mock_misses(misses: &[MockMiss]) -> String {
     // Group by callee name for a compact summary.
     let mut by_callee: HashMap<&str, Vec<&MockMiss>> = HashMap::new();
     for miss in misses {
-        by_callee.entry(miss.callee_name.as_str()).or_default().push(miss);
+        by_callee
+            .entry(miss.callee_name.as_str())
+            .or_default()
+            .push(miss);
     }
 
     let mut callee_names: Vec<&str> = by_callee.keys().copied().collect();
@@ -2229,7 +2756,9 @@ fn format_mock_misses(misses: &[MockMiss]) -> String {
                 let s = serde_json::to_string(&m.missed_inputs).unwrap_or_else(|_| "?".into());
                 if s.len() > 60 {
                     let mut end = 60;
-                    while !s.is_char_boundary(end) { end -= 1; }
+                    while !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
                     format!("{}…", &s[..end])
                 } else {
                     s
@@ -2268,8 +2797,16 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         ));
     }
 
-    let expected: Vec<_> = result.skipped.iter().filter(|s| s.category == SkipCategory::Expected).collect();
-    let errors: Vec<_> = result.skipped.iter().filter(|s| s.category == SkipCategory::Error).collect();
+    let expected: Vec<_> = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Expected)
+        .collect();
+    let errors: Vec<_> = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Error)
+        .collect();
 
     out.push_str(&format!(
         "Scan complete: {} function(s) tested, {} skipped, {} error(s) ({} worker(s))\n",
@@ -2344,8 +2881,16 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         ));
     }
 
-    let expected: Vec<_> = result.skipped_functions.iter().filter(|s| s.category == SkipCategory::Expected).collect();
-    let errors: Vec<_> = result.skipped_functions.iter().filter(|s| s.category == SkipCategory::Error).collect();
+    let expected: Vec<_> = result
+        .skipped_functions
+        .iter()
+        .filter(|s| s.category == SkipCategory::Expected)
+        .collect();
+    let errors: Vec<_> = result
+        .skipped_functions
+        .iter()
+        .filter(|s| s.category == SkipCategory::Error)
+        .collect();
 
     out.push_str(&format!(
         "Scan complete: {} function(s) tested\n",
@@ -2355,7 +2900,9 @@ pub fn format_scan_report(result: &ScanResult) -> String {
     for func_result in &result.function_results {
         out.push_str(&format!("\n── {} ──\n", func_result.function_name));
 
-        out.push_str(&explorer::format_exploration_report_verbose(&func_result.exploration));
+        out.push_str(&explorer::format_exploration_report_verbose(
+            &func_result.exploration,
+        ));
 
         if !func_result.mocks_used.is_empty() {
             out.push_str(&format!(
@@ -2398,7 +2945,11 @@ pub fn format_scan_report(result: &ScanResult) -> String {
 }
 
 /// Append "Skipped (expected)" and "Errors" sections to a report string.
-fn format_skip_sections(expected: &[&SkippedFunction], errors: &[&SkippedFunction], out: &mut String) {
+fn format_skip_sections(
+    expected: &[&SkippedFunction],
+    errors: &[&SkippedFunction],
+    out: &mut String,
+) {
     if !expected.is_empty() {
         out.push_str(&format!("\nSkipped (expected, {}):\n", expected.len()));
         for skip in expected {
@@ -2434,13 +2985,11 @@ fn format_type(ty: &TypeInfo) -> String {
                 format!("{{{}}}", field_strs.join(", "))
             }
         }
-        TypeInfo::Union { variants } => {
-            variants
-                .iter()
-                .map(format_type)
-                .collect::<Vec<_>>()
-                .join(" | ")
-        }
+        TypeInfo::Union { variants } => variants
+            .iter()
+            .map(format_type)
+            .collect::<Vec<_>>()
+            .join(" | "),
         TypeInfo::Complex { kind, .. } => format!("{kind:?}"),
         TypeInfo::Opaque { label, .. } => label.clone(),
         TypeInfo::Unknown => "unknown".to_string(),
@@ -2464,7 +3013,11 @@ pub fn format_dry_run_plan(
 
     // Apply stratum filter if specified.
     let selected_layers: Vec<(usize, &Vec<String>)> = if let Some(ref spec) = config.stratum {
-        let max_layer = if all_layers.is_empty() { 0 } else { all_layers.len() - 1 };
+        let max_layer = if all_layers.is_empty() {
+            0
+        } else {
+            all_layers.len() - 1
+        };
         let range = crate::stratum::resolve_range(spec, max_layer)?;
         crate::stratum::filter_layers(&all_layers, &range)
     } else {
@@ -2472,11 +3025,7 @@ pub fn format_dry_run_plan(
     };
 
     // Collect unique source files.
-    let file_count = config
-        .file_map
-        .values()
-        .collect::<HashSet<_>>()
-        .len();
+    let file_count = config.file_map.values().collect::<HashSet<_>>().len();
 
     let selected_function_count: usize = selected_layers.iter().map(|(_, l)| l.len()).sum();
     let total_functions = analyses.len();
@@ -2489,8 +3038,11 @@ pub fn format_dry_run_plan(
     if config.stratum.is_some() {
         out.push_str(&format!(
             "Summary: {} of {} function(s) across {} file(s), {} of {} layer(s) selected\n",
-            selected_function_count, total_functions, file_count,
-            selected_layers.len(), total_layer_count,
+            selected_function_count,
+            total_functions,
+            file_count,
+            selected_layers.len(),
+            total_layer_count,
         ));
     } else {
         out.push_str(&format!(
@@ -2501,7 +3053,11 @@ pub fn format_dry_run_plan(
     out.push_str(&format!(
         "Workers: {} {}\n",
         config.parallelism,
-        if config.parallelism == 1 { "" } else { "(parallel)" },
+        if config.parallelism == 1 {
+            ""
+        } else {
+            "(parallel)"
+        },
     ));
 
     // Estimate time: each layer runs sequentially, functions within a layer run in parallel.
@@ -2509,8 +3065,8 @@ pub fn format_dry_run_plan(
     let timeout_secs = config.timeout_per_fn.as_secs();
     let mut total_estimate_secs: u64 = 0;
     for (_, layer) in &selected_layers {
-        let batches = (layer.len() as u64 + config.parallelism as u64 - 1)
-            / config.parallelism.max(1) as u64;
+        let batches =
+            (layer.len() as u64 + config.parallelism as u64 - 1) / config.parallelism.max(1) as u64;
         total_estimate_secs += batches * timeout_secs;
     }
     let selected_layer_count = selected_layers.len();
@@ -2532,7 +3088,11 @@ pub fn format_dry_run_plan(
         .collect();
 
     for &(layer_idx, layer) in &selected_layers {
-        let parallelizable = if layer.len() > 1 { ", parallelizable" } else { "" };
+        let parallelizable = if layer.len() > 1 {
+            ", parallelizable"
+        } else {
+            ""
+        };
         out.push_str(&format!(
             "\nLayer {} ({} function(s){}):\n",
             layer_idx,
@@ -2674,9 +3234,7 @@ fn load_config_candidate_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{
-        DependencyKind, ExecuteResult, ExternalDependency, PerformanceMetrics,
-    };
+    use crate::protocol::{DependencyKind, ExecuteResult, ExternalDependency, PerformanceMetrics};
     use crate::types::{ParamInfo, TypeInfo};
 
     /// Request timeout for integration tests using the noop frontend.
@@ -2706,6 +3264,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -2729,7 +3289,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
 
@@ -2753,7 +3316,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
 
@@ -2781,7 +3347,17 @@ mod tests {
                         lines_covered: 3,
                         total_lines: 5,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                        raw_results: vec![],
+                        discoveries: vec![],
+                        nondeterministic_fields: vec![],
+                        float_probe_results: vec![],
+                        boundary_results: vec![],
+                        shrunk_witnesses: std::collections::HashMap::new(),
+                        mcdc_summary: None,
+                        shrink_stats: crate::shrink::ShrinkStats::default(),
+                        abandoned_frontiers: vec![],
+                        opaque_suggestions: vec![],
+                        stubbed_modules: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -2804,7 +3380,17 @@ mod tests {
                         lines_covered: 8,
                         total_lines: 10,
                         new_path_executions: vec![],
-                        raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                        raw_results: vec![],
+                        discoveries: vec![],
+                        nondeterministic_fields: vec![],
+                        float_probe_results: vec![],
+                        boundary_results: vec![],
+                        shrunk_witnesses: std::collections::HashMap::new(),
+                        mcdc_summary: None,
+                        shrink_stats: crate::shrink::ShrinkStats::default(),
+                        abandoned_frontiers: vec![],
+                        opaque_suggestions: vec![],
+                        stubbed_modules: vec![],
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -2818,7 +3404,10 @@ mod tests {
                         exercised_behavior_ids: vec![0, 1],
                         total_behaviors: 3,
                     }],
-                    mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
+                    mocks_used: vec![MockUsage {
+                        name: "leaf".into(),
+                        source: MockSource::CachedBehaviorMap,
+                    }],
                     coverage_metrics: Default::default(),
                     mock_misses: vec![],
                     refactoring_recommendations: vec![],
@@ -2848,7 +3437,17 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -2858,9 +3457,9 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
@@ -2965,9 +3564,15 @@ mod tests {
         };
 
         let report = format_scan_report(&result);
-        assert!(report.contains("Skipped (expected, 1):"), "missing expected section: {report}");
+        assert!(
+            report.contains("Skipped (expected, 1):"),
+            "missing expected section: {report}"
+        );
         assert!(report.contains("handleRequest: param \"socket\" → net.Socket (network handle"));
-        assert!(report.contains("Errors (1):"), "missing errors section: {report}");
+        assert!(
+            report.contains("Errors (1):"),
+            "missing errors section: {report}"
+        );
         assert!(report.contains("authenticate: error: unexpected response from frontend"));
     }
 
@@ -2984,7 +3589,17 @@ mod tests {
                     lines_covered: 1,
                     total_lines: 1,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -2994,9 +3609,9 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
@@ -3022,7 +3637,15 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -3032,9 +3655,9 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: Some(SamplingContext {
@@ -3067,7 +3690,15 @@ mod tests {
                     new_path_executions: vec![],
                     raw_results: vec![],
                     discoveries: vec![],
-                    nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -3077,15 +3708,18 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped_functions: vec![],
             sampling: None,
         };
         let report = format_scan_report(&result);
-        assert!(!report.contains("Explored"), "no sampling context should omit Explored header");
+        assert!(
+            !report.contains("Explored"),
+            "no sampling context should omit Explored header"
+        );
     }
 
     // ── build_layers tests ──────────────────────────────────────────
@@ -3174,7 +3808,17 @@ mod tests {
                     lines_covered: 3,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -3184,9 +3828,9 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped: vec![SkippedFunction {
                 function_name: "f2".into(),
@@ -3222,7 +3866,17 @@ mod tests {
                     lines_covered: 5,
                     total_lines: 5,
                     new_path_executions: vec![],
-                    raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                    raw_results: vec![],
+                    discoveries: vec![],
+                    nondeterministic_fields: vec![],
+                    float_probe_results: vec![],
+                    boundary_results: vec![],
+                    shrunk_witnesses: std::collections::HashMap::new(),
+                    mcdc_summary: None,
+                    shrink_stats: crate::shrink::ShrinkStats::default(),
+                    abandoned_frontiers: vec![],
+                    opaque_suggestions: vec![],
+                    stubbed_modules: vec![],
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -3232,9 +3886,9 @@ mod tests {
                 },
                 behavior_coverage: vec![],
                 mocks_used: vec![],
-                    coverage_metrics: Default::default(),
-                    mock_misses: vec![],
-                    refactoring_recommendations: vec![],
+                coverage_metrics: Default::default(),
+                mock_misses: vec![],
+                refactoring_recommendations: vec![],
             }],
             skipped: vec![],
             workers_used: 1,
@@ -3282,6 +3936,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "caller".to_string(),
@@ -3307,6 +3963,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3331,7 +3989,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
-            isolation: IsolationMode::None,
+            isolation: IsolationMode::Function,
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
@@ -3390,6 +4048,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
@@ -3412,7 +4072,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
-            isolation: IsolationMode::None,
+            isolation: IsolationMode::Function,
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
@@ -3460,15 +4120,16 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
         file_map.insert("cached_fn".to_string(), "test.ts".to_string());
 
         let tmp_dir = tempfile::tempdir().expect("create temp dir");
-        let cache = Arc::new(
-            BehaviorMapCache::new(tmp_dir.path().to_path_buf()).expect("create cache"),
-        );
+        let cache =
+            Arc::new(BehaviorMapCache::new(tmp_dir.path().to_path_buf()).expect("create cache"));
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
@@ -3487,7 +4148,7 @@ mod tests {
             timeout_explore: None,
             setup_manager: None,
             policy: crate::scheduler_policy::SchedulerPolicy::default(),
-            isolation: IsolationMode::None,
+            isolation: IsolationMode::Function,
             capture_side_effects: false,
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
@@ -3501,9 +4162,7 @@ mod tests {
         assert_eq!(result.function_results.len(), 1);
 
         // Verify the behavior map was persisted to cache.
-        let loaded = cache
-            .load("cached_fn")
-            .expect("cache load should succeed");
+        let loaded = cache.load("cached_fn").expect("cache load should succeed");
         assert!(loaded.is_some(), "behavior map should be cached on disk");
         assert_eq!(loaded.as_ref().unwrap().function_id, "cached_fn");
     }
@@ -3539,6 +4198,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "fn_b".to_string(),
@@ -3557,6 +4218,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3603,6 +4266,227 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn parallel_scan_emits_started_and_completed_progress() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![FunctionAnalysis {
+            name: "solo".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+            source_file: None,
+            adapter_hints: vec![],
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("solo".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(99),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+        };
+
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let sink_events = Arc::clone(&events);
+        let progress = Arc::new(move |update: ScanProgressUpdate| {
+            sink_events.lock().unwrap().push(update);
+        }) as ProgressHandler;
+
+        let result = parallel_scan_with_progress(&fe_config, &analyses, &config, Some(progress))
+            .await
+            .expect("parallel_scan should succeed");
+
+        assert_eq!(result.function_results.len(), 1);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].status, ScanProgressStatus::Started);
+        assert_eq!(events[1].status, ScanProgressStatus::Completed);
+        assert_eq!(events[0].function_name, "solo");
+        assert_eq!(events[1].function_name, "solo");
+        assert_eq!(events[0].current, 1);
+        assert_eq!(events[1].current, 1);
+        assert_eq!(events[0].total, 1);
+        assert_eq!(events[1].total, 1);
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_emits_skipped_and_failed_progress() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let analysis = FunctionAnalysis {
+            name: "solo".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+            source_file: None,
+            adapter_hints: vec![],
+        };
+
+        let mut skipped_file_map = HashMap::new();
+        skipped_file_map.insert("solo".to_string(), "test.ts".to_string());
+        let skipped_config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(99),
+            file_map: skipped_file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: Some(Duration::ZERO),
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+        };
+
+        let skipped_events = Arc::new(StdMutex::new(Vec::new()));
+        let skipped_sink = Arc::clone(&skipped_events);
+        let skipped_progress = Arc::new(move |update: ScanProgressUpdate| {
+            skipped_sink.lock().unwrap().push(update);
+        }) as ProgressHandler;
+
+        let mut noop_config = FrontendConfig::new(PathBuf::from("bash"));
+        noop_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        noop_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let skipped_result = parallel_scan_with_progress(
+            &noop_config,
+            std::slice::from_ref(&analysis),
+            &skipped_config,
+            Some(skipped_progress),
+        )
+        .await
+        .expect("skip-only scan should succeed");
+
+        assert!(skipped_result.function_results.is_empty());
+        let skipped_events = skipped_events.lock().unwrap();
+        assert_eq!(skipped_events.len(), 1);
+        assert_eq!(skipped_events[0].status, ScanProgressStatus::Skipped);
+        assert_eq!(skipped_events[0].current, 1);
+        assert_eq!(skipped_events[0].total, 1);
+
+        let mut failed_file_map = HashMap::new();
+        failed_file_map.insert("solo".to_string(), "test.ts".to_string());
+        let failed_config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(99),
+            file_map: failed_file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::Function,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+        };
+
+        let failed_events = Arc::new(StdMutex::new(Vec::new()));
+        let failed_sink = Arc::clone(&failed_events);
+        let failed_progress = Arc::new(move |update: ScanProgressUpdate| {
+            failed_sink.lock().unwrap().push(update);
+        }) as ProgressHandler;
+
+        let mut bad_config = FrontendConfig::new(PathBuf::from("/definitely/missing-binary"));
+        bad_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let failed_result = parallel_scan_with_progress(
+            &bad_config,
+            std::slice::from_ref(&analysis),
+            &failed_config,
+            Some(failed_progress),
+        )
+        .await
+        .expect("frontend spawn failure should be reported as a scan result");
+
+        assert!(failed_result.function_results.is_empty());
+        assert_eq!(failed_result.skipped.len(), 1);
+        let failed_events = failed_events.lock().unwrap();
+        assert_eq!(failed_events.len(), 2);
+        assert_eq!(failed_events[0].status, ScanProgressStatus::Started);
+        assert_eq!(failed_events[1].status, ScanProgressStatus::Failed);
+    }
+
     /// Regression test: after a per-function timeout, the tainted frontend
     /// (which still has a stale response buffered in stdout) must be discarded
     /// and replaced.  Without the respawn fix, the second function would fail
@@ -3641,6 +4525,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "slow_b".to_string(),
@@ -3659,6 +4545,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -3739,6 +4627,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }
     }
 
@@ -3848,7 +4738,8 @@ mod tests {
 
         let skipped = vec![SkippedFunction {
             function_name: "broken".into(),
-            reason: "param \"sock\" → net.Socket (network handle — requires live network binding)".into(),
+            reason: "param \"sock\" → net.Socket (network handle — requires live network binding)"
+                .into(),
             category: SkipCategory::Expected,
         }];
 
@@ -3927,9 +4818,9 @@ mod tests {
     /// causing the budget to be computed against the wrong population.
     #[test]
     fn stratum_then_core_sample_budget_on_filtered_set() {
-        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
-        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::batch_analyze::FunctionEntry;
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
         use crate::types::TypeInfo;
         use std::path::PathBuf;
 
@@ -3996,12 +4887,12 @@ mod tests {
         }
 
         let registry = {
-                let mut index = std::collections::HashMap::new();
-                for (i, e) in entries.iter().enumerate() {
-                    index.insert(e.name.clone(), i);
-                }
-                crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
-            };
+            let mut index = std::collections::HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                index.insert(e.name.clone(), i);
+            }
+            crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
+        };
         let cg = CgCallGraph::from_registry(&registry);
 
         // Step 1: Apply stratum filter for layer 0 only (the 10 leaf functions).
@@ -4013,11 +4904,18 @@ mod tests {
             crate::stratum::filter_layers(&layers, &range)
                 .into_iter()
                 .flat_map(|(_, funcs)| funcs.iter().cloned())
-                .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+                .map(|qn| {
+                    qn.rsplit_once("::")
+                        .map_or(qn.clone(), |(_, n)| n.to_string())
+                })
                 .collect();
 
         // Should have exactly 10 leaf functions.
-        assert_eq!(stratum_names.len(), 10, "stratum should select 10 leaf functions");
+        assert_eq!(
+            stratum_names.len(),
+            10,
+            "stratum should select 10 leaf functions"
+        );
 
         // Step 2: Filter entries to stratum set.
         let filtered_entries: Vec<FunctionEntry> = entries
@@ -4029,12 +4927,12 @@ mod tests {
 
         // Step 3: Apply core sample at 50% on the FILTERED set.
         let filtered_registry = {
-                let mut index = std::collections::HashMap::new();
-                for (i, e) in filtered_entries.iter().enumerate() {
-                    index.insert(e.name.clone(), i);
-                }
-                crate::batch_analyze::FunctionRegistry::from_raw(filtered_entries.clone(), index)
-            };
+            let mut index = std::collections::HashMap::new();
+            for (i, e) in filtered_entries.iter().enumerate() {
+                index.insert(e.name.clone(), i);
+            }
+            crate::batch_analyze::FunctionRegistry::from_raw(filtered_entries.clone(), index)
+        };
         let filtered_cg = CgCallGraph::from_registry(&filtered_registry);
         let cs_config = CoreSampleConfig {
             budget: SampleBudget::Percentage(50.0),
@@ -4065,9 +4963,9 @@ mod tests {
     /// Verify core-sample on full population (without stratum) still works.
     #[test]
     fn core_sample_without_stratum_uses_full_population() {
-        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
-        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::batch_analyze::FunctionEntry;
+        use crate::call_graph::CallGraph as CgCallGraph;
+        use crate::core_sample::{self, CoreSampleConfig, SampleBudget};
         use crate::types::TypeInfo;
         use std::path::PathBuf;
 
@@ -4087,12 +4985,12 @@ mod tests {
             .collect();
 
         let registry = {
-                let mut index = std::collections::HashMap::new();
-                for (i, e) in entries.iter().enumerate() {
-                    index.insert(e.name.clone(), i);
-                }
-                crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
-            };
+            let mut index = std::collections::HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                index.insert(e.name.clone(), i);
+            }
+            crate::batch_analyze::FunctionRegistry::from_raw(entries.clone(), index)
+        };
         let cg = CgCallGraph::from_registry(&registry);
         let cs_config = CoreSampleConfig {
             budget: SampleBudget::Percentage(50.0),
@@ -4112,8 +5010,8 @@ mod tests {
     /// Verify stratum-only filtering works (no core-sample).
     #[test]
     fn stratum_only_filters_layers_correctly() {
-        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::batch_analyze::FunctionEntry;
+        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::types::TypeInfo;
         use std::path::PathBuf;
 
@@ -4172,12 +5070,12 @@ mod tests {
         ];
 
         let registry = {
-                let mut index = std::collections::HashMap::new();
-                for (i, e) in entries.iter().enumerate() {
-                    index.insert(e.name.clone(), i);
-                }
-                crate::batch_analyze::FunctionRegistry::from_raw(entries, index)
-            };
+            let mut index = std::collections::HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                index.insert(e.name.clone(), i);
+            }
+            crate::batch_analyze::FunctionRegistry::from_raw(entries, index)
+        };
         let cg = CgCallGraph::from_registry(&registry);
         let layers = cg.topological_layers();
 
@@ -4189,7 +5087,10 @@ mod tests {
             crate::stratum::filter_layers(&layers, &range)
                 .into_iter()
                 .flat_map(|(_, funcs)| funcs.iter().cloned())
-                .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+                .map(|qn| {
+                    qn.rsplit_once("::")
+                        .map_or(qn.clone(), |(_, n)| n.to_string())
+                })
                 .collect();
 
         assert_eq!(selected.len(), 1);
@@ -4200,8 +5101,8 @@ mod tests {
     /// scanning a middle layer whose callees are outside the selected stratum.
     #[test]
     fn stratum_excluded_mock_source_attribution() {
-        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::batch_analyze::FunctionEntry;
+        use crate::call_graph::CallGraph as CgCallGraph;
         use crate::types::TypeInfo;
         use std::path::PathBuf;
 
@@ -4291,19 +5192,34 @@ mod tests {
         // fn_b should be selected; fn_a and fn_c excluded.
         let selected_bare: std::collections::HashSet<String> = selected_set
             .iter()
-            .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+            .map(|qn| {
+                qn.rsplit_once("::")
+                    .map_or(qn.clone(), |(_, n)| n.to_string())
+            })
             .collect();
-        assert!(selected_bare.contains("fn_b"), "fn_b should be in selected stratum");
+        assert!(
+            selected_bare.contains("fn_b"),
+            "fn_b should be in selected stratum"
+        );
         assert!(!selected_bare.contains("fn_a"), "fn_a should be excluded");
         assert!(!selected_bare.contains("fn_c"), "fn_c should be excluded");
 
         // fn_c is a callee of fn_b and excluded — should get StratumExcluded source.
         let excluded_bare: std::collections::HashSet<String> = excluded
             .iter()
-            .map(|qn| qn.rsplit_once("::").map_or(qn.clone(), |(_, n)| n.to_string()))
+            .map(|qn| {
+                qn.rsplit_once("::")
+                    .map_or(qn.clone(), |(_, n)| n.to_string())
+            })
             .collect();
-        assert!(excluded_bare.contains("fn_c"), "fn_c should be in excluded set");
-        assert!(excluded_bare.contains("fn_a"), "fn_a should be in excluded set");
+        assert!(
+            excluded_bare.contains("fn_c"),
+            "fn_c should be in excluded set"
+        );
+        assert!(
+            excluded_bare.contains("fn_a"),
+            "fn_a should be in excluded set"
+        );
 
         // Simulate mock source attribution: fn_c is a dependency of fn_b
         // and is in the excluded set → StratumExcluded.
@@ -4319,14 +5235,32 @@ mod tests {
     #[test]
     fn format_mocks_used_includes_stratum_excluded() {
         let mocks = vec![
-            MockUsage { name: "dep_a".into(), source: MockSource::CachedBehaviorMap },
-            MockUsage { name: "dep_b".into(), source: MockSource::TypeAwareStub },
-            MockUsage { name: "dep_c".into(), source: MockSource::StratumExcluded },
+            MockUsage {
+                name: "dep_a".into(),
+                source: MockSource::CachedBehaviorMap,
+            },
+            MockUsage {
+                name: "dep_b".into(),
+                source: MockSource::TypeAwareStub,
+            },
+            MockUsage {
+                name: "dep_c".into(),
+                source: MockSource::StratumExcluded,
+            },
         ];
         let formatted = format_mocks_used(&mocks);
-        assert!(formatted.contains("behavior map"), "should mention behavior map");
-        assert!(formatted.contains("type-aware stub"), "should mention type-aware stub");
-        assert!(formatted.contains("stratum-excluded"), "should mention stratum-excluded");
+        assert!(
+            formatted.contains("behavior map"),
+            "should mention behavior map"
+        );
+        assert!(
+            formatted.contains("type-aware stub"),
+            "should mention type-aware stub"
+        );
+        assert!(
+            formatted.contains("stratum-excluded"),
+            "should mention stratum-excluded"
+        );
         assert!(formatted.contains("dep_a"));
         assert!(formatted.contains("dep_b"));
         assert!(formatted.contains("dep_c"));
@@ -4353,15 +5287,14 @@ mod tests {
         let config_path = shatter_dir.join("config.yaml");
         std::fs::write(&config_path, config_yaml).unwrap();
 
-        let result = load_config_candidate_inputs(
-            "myFunc",
-            &Some(tmp.path().to_path_buf()),
-            100,
-            30,
-        );
+        let result =
+            load_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec![serde_json::json!(42), serde_json::json!("hello")]);
+        assert_eq!(
+            result[0],
+            vec![serde_json::json!(42), serde_json::json!("hello")]
+        );
         assert_eq!(result[1], vec![serde_json::json!(0), serde_json::json!("")]);
     }
 
@@ -4385,12 +5318,8 @@ mod tests {
         let config_yaml = "functions:\n  otherFunc:\n    inputs: my_inputs.json\n";
         std::fs::write(shatter_dir.join("config.yaml"), config_yaml).unwrap();
 
-        let result = load_config_candidate_inputs(
-            "myFunc",
-            &Some(tmp.path().to_path_buf()),
-            100,
-            30,
-        );
+        let result =
+            load_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
 
         assert!(result.is_empty());
     }
@@ -4414,11 +5343,18 @@ mod tests {
         source_path: &std::path::Path,
         analysis: &FunctionAnalysis,
     ) -> String {
-        let source =
-            crate::fingerprint::extract_function_source(source_path, analysis.start_line, analysis.end_line)
-                .expect("extract source");
+        let source = crate::fingerprint::extract_function_source(
+            source_path,
+            analysis.start_line,
+            analysis.end_line,
+        )
+        .expect("extract source");
         let shallow = crate::fingerprint::compute_function_fingerprint(&source, analysis);
-        crate::fingerprint::compute_deep_fingerprint(&shallow, &HashMap::new(), &std::collections::HashSet::new())
+        crate::fingerprint::compute_deep_fingerprint(
+            &shallow,
+            &HashMap::new(),
+            &std::collections::HashSet::new(),
+        )
     }
 
     /// A warm-cache scan (all functions fingerprint-matching) must spawn zero workers.
@@ -4440,7 +5376,11 @@ mod tests {
         let analysis = FunctionAnalysis {
             name: "warm_fn".to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4450,6 +5390,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         // Compute the fingerprint parallel_scan will derive from the source file.
@@ -4459,7 +5401,9 @@ mod tests {
         // the is_fresh() path and skips the function without spawning a worker.
         let cache_dir = tmp_dir.path().join("cache");
         let cache = Arc::new(BehaviorMapCache::new(cache_dir).unwrap());
-        cache.store(&make_cached_map("warm_fn", &expected_fp)).unwrap();
+        cache
+            .store(&make_cached_map("warm_fn", &expected_fp))
+            .unwrap();
 
         // Use the noop frontend — it would succeed if spawned, but it must NOT be
         // spawned at all for a full-cache-hit scan.
@@ -4470,7 +5414,10 @@ mod tests {
         fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
 
         let mut file_map = HashMap::new();
-        file_map.insert("warm_fn".to_string(), source_file.to_string_lossy().into_owned());
+        file_map.insert(
+            "warm_fn".to_string(),
+            source_file.to_string_lossy().into_owned(),
+        );
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
@@ -4501,7 +5448,10 @@ mod tests {
             .expect("parallel_scan should succeed");
 
         // Key assertion: no workers were ever spawned.
-        assert_eq!(result.workers_used, 0, "warm cache should spawn zero workers");
+        assert_eq!(
+            result.workers_used, 0,
+            "warm cache should spawn zero workers"
+        );
         // Function should appear in skipped (cache hit), not results.
         assert!(result.function_results.is_empty());
         assert_eq!(result.skipped.len(), 1);
@@ -4530,7 +5480,11 @@ mod tests {
         let warm_analysis = FunctionAnalysis {
             name: "warm_fn".to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4540,6 +5494,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let warm_fp = compute_expected_deep_fp(&warm_source, &warm_analysis);
@@ -4559,7 +5515,11 @@ mod tests {
         let stale_analysis = FunctionAnalysis {
             name: "stale_fn".to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "y".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4569,10 +5529,15 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let mut file_map = HashMap::new();
-        file_map.insert("warm_fn".to_string(), warm_source.to_string_lossy().into_owned());
+        file_map.insert(
+            "warm_fn".to_string(),
+            warm_source.to_string_lossy().into_owned(),
+        );
         // stale_fn points to a nonexistent file → fingerprint is None → cache check skipped → always explored.
         file_map.insert("stale_fn".to_string(), "nonexistent.ts".to_string());
 
@@ -4611,9 +5576,15 @@ mod tests {
         assert_eq!(result.skipped.len(), 1);
         assert_eq!(result.skipped[0].function_name, "warm_fn");
         // At least one worker was spawned for the stale function.
-        assert!(result.workers_used >= 1, "stale function requires at least one worker");
+        assert!(
+            result.workers_used >= 1,
+            "stale function requires at least one worker"
+        );
         // Pool was capped: 1 stale task with parallelism=4 → pool size 1.
-        assert_eq!(result.workers_used, 1, "pool should be capped at tasks.len()");
+        assert_eq!(
+            result.workers_used, 1,
+            "pool should be capped at tasks.len()"
+        );
     }
 
     /// A layer with a single stale function and high parallelism must spawn
@@ -4633,7 +5604,11 @@ mod tests {
         let analyses = vec![FunctionAnalysis {
             name: "solo".to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4643,6 +5618,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         }];
 
         let mut file_map = HashMap::new();
@@ -4678,7 +5655,10 @@ mod tests {
             .expect("parallel_scan should succeed");
 
         // Only 1 task → pool capped at 1, not 8.
-        assert_eq!(result.workers_used, 1, "pool should be capped to tasks.len()=1, not parallelism=8");
+        assert_eq!(
+            result.workers_used, 1,
+            "pool should be capped to tasks.len()=1, not parallelism=8"
+        );
         assert_eq!(result.function_results.len(), 1);
     }
 
@@ -4701,7 +5681,11 @@ mod tests {
         let make_fn = |name: &str| FunctionAnalysis {
             name: name.to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4711,6 +5695,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4752,7 +5738,11 @@ mod tests {
             .await
             .expect("parallel_scan should succeed");
 
-        assert_eq!(result.function_results.len(), 4, "all 4 functions must complete");
+        assert_eq!(
+            result.function_results.len(),
+            4,
+            "all 4 functions must complete"
+        );
         // With 4 tasks and max=4 the pool starts at initial_workers(4,4)=1 and must
         // grow as tasks complete.  After all 4 tasks run, live_count should be > 1.
         assert!(
@@ -4792,7 +5782,11 @@ mod tests {
         let make_fn = |name: &str| FunctionAnalysis {
             name: name.to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4802,6 +5796,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
         let analyses = vec![
             make_fn("fn_a"),
@@ -4844,7 +5840,11 @@ mod tests {
             .expect("parallel_scan should succeed");
 
         // All tasks must complete — reaping must never cause deadlock.
-        assert_eq!(result.function_results.len(), 4, "all 4 functions must complete (no deadlock)");
+        assert_eq!(
+            result.function_results.len(),
+            4,
+            "all 4 functions must complete (no deadlock)"
+        );
 
         // Reaping must have fired: with 4 tasks completing near-simultaneously,
         // live_count will exceed remaining tasks at some point.
@@ -4883,7 +5883,11 @@ mod tests {
         let make_fn = |name: &str, deps: Vec<&str>| FunctionAnalysis {
             name: name.to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: deps
                 .into_iter()
@@ -4903,6 +5907,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         // leaf_a → mid → root: three distinct topological layers.
@@ -4946,12 +5952,19 @@ mod tests {
             .expect("parallel_scan should succeed across 3 layers");
 
         // All 3 functions must complete — deadlock would prevent this.
-        assert_eq!(result.function_results.len(), 3, "all 3 functions must complete");
+        assert_eq!(
+            result.function_results.len(),
+            3,
+            "all 3 functions must complete"
+        );
         assert!(result.skipped.is_empty(), "no functions should be skipped");
 
         // Each layer has 1 task → pool is capped at 1 per layer.
         // With the persistent pool the same 1 worker is reused for all 3 layers.
-        assert_eq!(result.workers_used, 1, "single worker reused across all 3 layers");
+        assert_eq!(
+            result.workers_used, 1,
+            "single worker reused across all 3 layers"
+        );
 
         // Dependency order: leaf_a < mid < root.
         let order = &result.test_order;
@@ -4980,7 +5993,11 @@ mod tests {
         let make_leaf = |name: &str| FunctionAnalysis {
             name: name.to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: vec![],
             return_type: TypeInfo::Unknown,
@@ -4990,17 +6007,22 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
         let leaf_names = ["leaf_a", "leaf_b", "leaf_c", "leaf_d"];
-        let mut analyses: Vec<FunctionAnalysis> =
-            leaf_names.iter().map(|n| make_leaf(n)).collect();
+        let mut analyses: Vec<FunctionAnalysis> = leaf_names.iter().map(|n| make_leaf(n)).collect();
 
         // root depends on all 4 leaves → placed in layer 1.
         analyses.push(FunctionAnalysis {
             name: "root".to_string(),
             exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             branches: vec![],
             dependencies: leaf_names
                 .iter()
@@ -5020,6 +6042,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
         });
 
         let mut file_map = HashMap::new();
@@ -5056,7 +6080,11 @@ mod tests {
             .expect("parallel_scan should succeed with shrinking layer transition");
 
         // All 5 functions (4 leaves + root) must complete — no deadlock.
-        assert_eq!(result.function_results.len(), 5, "all 5 functions must complete");
+        assert_eq!(
+            result.function_results.len(),
+            5,
+            "all 5 functions must complete"
+        );
         assert!(result.skipped.is_empty(), "no functions should be skipped");
 
         // root must come after all leaves.
@@ -5122,6 +6150,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "beta".to_string(),
@@ -5140,6 +6170,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -5176,11 +6208,18 @@ mod tests {
             .expect("serial policy scan should succeed");
 
         // All functions must be explored — serial policy doesn't skip anything.
-        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert_eq!(
+            result.function_results.len(),
+            2,
+            "both functions should complete"
+        );
         assert!(result.skipped.is_empty(), "no functions should be skipped");
 
         // Serial enforces 1 effective worker regardless of configured parallelism.
-        assert_eq!(result.workers_used, 1, "serial policy must use exactly 1 worker");
+        assert_eq!(
+            result.workers_used, 1,
+            "serial policy must use exactly 1 worker"
+        );
     }
 
     /// LayerParallel is the default policy.
@@ -5211,7 +6250,11 @@ mod tests {
             FunctionAnalysis {
                 name: "fn_one".to_string(),
                 exported: true,
-                params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
                 branches: vec![],
                 dependencies: vec![],
                 return_type: TypeInfo::Unknown,
@@ -5221,11 +6264,17 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "fn_two".to_string(),
                 exported: true,
-                params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
                 branches: vec![],
                 dependencies: vec![],
                 return_type: TypeInfo::Unknown,
@@ -5235,6 +6284,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -5271,7 +6322,11 @@ mod tests {
             .expect("parallel_scan with Function isolation should succeed");
 
         // Both independent functions must be explored.
-        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert_eq!(
+            result.function_results.len(),
+            2,
+            "both functions should complete"
+        );
         assert!(result.skipped.is_empty(), "no functions should be skipped");
     }
 
@@ -5294,7 +6349,11 @@ mod tests {
             FunctionAnalysis {
                 name: "leaf_fn".to_string(),
                 exported: true,
-                params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
                 branches: vec![],
                 dependencies: vec![],
                 return_type: TypeInfo::Unknown,
@@ -5304,11 +6363,17 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
             FunctionAnalysis {
                 name: "caller_fn".to_string(),
                 exported: true,
-                params: vec![ParamInfo { name: "y".into(), typ: TypeInfo::Int, type_name: None }],
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
                 branches: vec![],
                 dependencies: vec![ExternalDependency {
                     kind: DependencyKind::FunctionCall,
@@ -5325,6 +6390,8 @@ mod tests {
                 crypto_boundaries: vec![],
                 loops: vec![],
                 source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
             },
         ];
 
@@ -5361,7 +6428,11 @@ mod tests {
             .expect("parallel_scan with Function isolation should succeed");
 
         // Both functions must be explored; no errors.
-        assert_eq!(result.function_results.len(), 2, "both functions should complete");
+        assert_eq!(
+            result.function_results.len(),
+            2,
+            "both functions should complete"
+        );
         assert!(result.skipped.is_empty(), "no functions should be skipped");
         // leaf_fn must be explored before caller_fn (dependency order).
         assert_eq!(result.test_order[0], "leaf_fn");
@@ -5410,28 +6481,44 @@ mod tests {
         // floor = min(2 + 1, 3) = 3. current=3 == floor → no reap.
         let w = pool.checkout().await;
         pool.return_or_reap_worker(w, 2).await;
-        assert_eq!(pool.live_count.load(Ordering::Relaxed), 3, "should not reap when at floor");
+        assert_eq!(
+            pool.live_count.load(Ordering::Relaxed),
+            3,
+            "should not reap when at floor"
+        );
         assert_eq!(pool.idle_reaped(), 0);
 
         // Checkout and return with pending=1.
         // floor = min(1 + 1, 3) = 2. current=3 > floor → should reap.
         let w = pool.checkout().await;
         pool.return_or_reap_worker(w, 1).await;
-        assert_eq!(pool.live_count.load(Ordering::Relaxed), 2, "should reap one worker when above floor");
+        assert_eq!(
+            pool.live_count.load(Ordering::Relaxed),
+            2,
+            "should reap one worker when above floor"
+        );
         assert_eq!(pool.idle_reaped(), 1);
 
         // Checkout and return with pending=0.
         // floor = min(0 + 1, 3) = 1. current=2 > floor → should reap.
         let w = pool.checkout().await;
         pool.return_or_reap_worker(w, 0).await;
-        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "should reap to floor");
+        assert_eq!(
+            pool.live_count.load(Ordering::Relaxed),
+            1,
+            "should reap to floor"
+        );
         assert_eq!(pool.idle_reaped(), 2);
 
         // Checkout and return with pending=0 again.
         // floor = 1. current=1 == floor → no reap.
         let w = pool.checkout().await;
         pool.return_or_reap_worker(w, 0).await;
-        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "should not reap below floor");
+        assert_eq!(
+            pool.live_count.load(Ordering::Relaxed),
+            1,
+            "should not reap below floor"
+        );
         assert_eq!(pool.idle_reaped(), 2);
 
         pool.shutdown().await;
@@ -5451,14 +6538,20 @@ mod tests {
         let fe_config = Arc::new(fe_config);
 
         // Pre-spawn a worker.
-        let prewarmed = Frontend::spawn(&fe_config).await.expect("spawn should succeed");
+        let prewarmed = Frontend::spawn(&fe_config)
+            .await
+            .expect("spawn should succeed");
 
         // Create pool with prewarmed worker, needing 1 worker, max 2.
         let pool = WorkerPool::spawn_capped(Arc::clone(&fe_config), 2, 1, Some(prewarmed))
             .await
             .expect("pool should spawn");
 
-        assert_eq!(pool.live_count.load(Ordering::Relaxed), 1, "pool should have 1 worker from prewarmed");
+        assert_eq!(
+            pool.live_count.load(Ordering::Relaxed),
+            1,
+            "pool should have 1 worker from prewarmed"
+        );
 
         // Checkout should succeed without blocking indefinitely.
         let worker = pool.checkout().await;
@@ -5508,7 +6601,11 @@ mod tests {
     /// Build a minimal `FunctionResult` with the given raw results for testing merge.
     fn make_function_result(
         func_name: &str,
-        raw_results: Vec<(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)>,
+        raw_results: Vec<(
+            Vec<serde_json::Value>,
+            Vec<crate::protocol::MockConfig>,
+            crate::protocol::ExecuteResult,
+        )>,
     ) -> FunctionResult {
         use crate::explorer::ObservationOutput;
         let exploration = ObservationOutput {
@@ -5526,7 +6623,9 @@ mod tests {
             shrunk_witnesses: Default::default(),
             mcdc_summary: None,
             shrink_stats: crate::shrink::ShrinkStats::default(),
-            abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let analysis = make_analysis(func_name, vec![]);
         let mut analyze_out = crate::pipeline::analyze(&exploration, &analysis);
@@ -5550,7 +6649,9 @@ mod tests {
                 branch_id,
                 line: 1,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             }],
             scope_events: vec![],
@@ -5563,16 +6664,57 @@ mod tests {
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
             discovered_dependencies: vec![],
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
+    }
+
+    #[test]
+    fn write_completed_scan_artifact_persists_function_report() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let result =
+            make_function_result("scan_fn", vec![(vec![], vec![], make_execute_result(1))]);
+
+        write_completed_scan_artifact(Some(&root), 2, 5, "src/scan.ts", &result);
+
+        let path = scan_artifact_path(&root, 2, "scan_fn");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["current"], 2);
+        assert_eq!(value["function"]["function_name"], "scan_fn");
+        assert_eq!(value["function"]["file_path"], "src/scan.ts");
+    }
+
+    #[test]
+    fn write_skipped_scan_artifact_persists_reason_and_category() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+
+        write_skipped_scan_artifact(
+            Some(&root),
+            3,
+            7,
+            "scan_fn",
+            "resumed from checkpoint",
+            SkipCategory::Expected,
+        );
+
+        let path = scan_artifact_path(&root, 3, "scan_fn");
+        let json = std::fs::read_to_string(path).expect("read artifact");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+
+        assert_eq!(value["status"], "skipped");
+        assert_eq!(value["reason"], "resumed from checkpoint");
+        assert_eq!(value["category"], "expected");
     }
 
     #[test]
     fn merge_replica_results_single_passthrough() {
         // A single-element merge should return an equivalent result.
-        let result = make_function_result("foo", vec![
-            (vec![], vec![], make_execute_result(1)),
-        ]);
+        let result = make_function_result("foo", vec![(vec![], vec![], make_execute_result(1))]);
         let analysis = make_analysis("foo", vec![]);
         let merged = merge_replica_results(vec![result], &analysis);
         assert_eq!(merged.function_name, "foo");
@@ -5723,14 +6865,18 @@ mod tests {
     // --- detect_mock_misses unit tests ---
 
     /// Build a minimal `ExecuteResult` with the given external calls.
-    fn make_execute_result_with_calls(calls: Vec<crate::execution_record::ExternalCall>) -> crate::protocol::ExecuteResult {
+    fn make_execute_result_with_calls(
+        calls: Vec<crate::execution_record::ExternalCall>,
+    ) -> crate::protocol::ExecuteResult {
         use crate::execution_record::{BranchDecision, SymConstraint};
         crate::protocol::ExecuteResult {
             branch_path: vec![BranchDecision {
                 branch_id: 1,
                 line: 1,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             }],
             scope_events: vec![],
@@ -5749,7 +6895,10 @@ mod tests {
     }
 
     /// Build a `BehaviorMap` with the given input_args entries as behaviors.
-    fn make_behavior_map_with_inputs(function_id: &str, known_inputs: Vec<Vec<serde_json::Value>>) -> BehaviorMap {
+    fn make_behavior_map_with_inputs(
+        function_id: &str,
+        known_inputs: Vec<Vec<serde_json::Value>>,
+    ) -> BehaviorMap {
         use crate::behavior::Behavior;
         BehaviorMap {
             function_id: function_id.to_string(),
@@ -5794,7 +6943,10 @@ mod tests {
             return_value: serde_json::json!(99),
         }]);
         let misses = detect_mock_misses(&[(caller_inputs, vec![], exec)], &callee_maps);
-        assert!(misses.is_empty(), "expected no miss when args match behavior map");
+        assert!(
+            misses.is_empty(),
+            "expected no miss when args match behavior map"
+        );
     }
 
     #[test]
@@ -5836,7 +6988,11 @@ mod tests {
             (vec![serde_json::json!(2)], vec![], exec),
         ];
         let misses = detect_mock_misses(&raw, &callee_maps);
-        assert_eq!(misses.len(), 1, "duplicate missed args should be deduplicated");
+        assert_eq!(
+            misses.len(),
+            1,
+            "duplicate missed args should be deduplicated"
+        );
     }
 
     #[test]
@@ -5951,9 +7107,15 @@ mod tests {
                         mcdc_summary: None,
                         shrink_stats: crate::shrink::ShrinkStats::default(),
                         abandoned_frontiers: vec![],
-                        opaque_suggestions: vec![], stubbed_modules: vec![],
+                        opaque_suggestions: vec![],
+                        stubbed_modules: vec![],
                     },
-                    behavior_map: BehaviorMap { function_id: "leaf".into(), behaviors: vec![], fingerprint: None, nondeterministic_fields: vec![] },
+                    behavior_map: BehaviorMap {
+                        function_id: "leaf".into(),
+                        behaviors: vec![],
+                        fingerprint: None,
+                        nondeterministic_fields: vec![],
+                    },
                     behavior_coverage: vec![],
                     mocks_used: vec![],
                     mock_misses: vec![],
@@ -5978,11 +7140,20 @@ mod tests {
                         mcdc_summary: None,
                         shrink_stats: crate::shrink::ShrinkStats::default(),
                         abandoned_frontiers: vec![],
-                        opaque_suggestions: vec![], stubbed_modules: vec![],
+                        opaque_suggestions: vec![],
+                        stubbed_modules: vec![],
                     },
-                    behavior_map: BehaviorMap { function_id: "caller".into(), behaviors: vec![], fingerprint: None, nondeterministic_fields: vec![] },
+                    behavior_map: BehaviorMap {
+                        function_id: "caller".into(),
+                        behaviors: vec![],
+                        fingerprint: None,
+                        nondeterministic_fields: vec![],
+                    },
                     behavior_coverage: vec![],
-                    mocks_used: vec![MockUsage { name: "leaf".into(), source: MockSource::CachedBehaviorMap }],
+                    mocks_used: vec![MockUsage {
+                        name: "leaf".into(),
+                        source: MockSource::CachedBehaviorMap,
+                    }],
                     mock_misses: vec![miss],
                     coverage_metrics: Default::default(),
                     refactoring_recommendations: vec![],
@@ -6295,7 +7466,10 @@ mod tests {
             workers_reaped: 0,
             sampling: None,
         };
-        assert!(result.has_scan_failure(), "0 explored out of 1 attempted must be a failure");
+        assert!(
+            result.has_scan_failure(),
+            "0 explored out of 1 attempted must be a failure"
+        );
     }
 
     #[test]
@@ -6312,7 +7486,10 @@ mod tests {
             workers_reaped: 0,
             sampling: None,
         };
-        assert!(!result.has_scan_failure(), "1 explored out of 2 attempted is not a total failure");
+        assert!(
+            !result.has_scan_failure(),
+            "1 explored out of 2 attempted is not a total failure"
+        );
     }
 
     #[test]
@@ -6325,6 +7502,9 @@ mod tests {
             workers_reaped: 0,
             sampling: None,
         };
-        assert!(!result.has_scan_failure(), "0 attempted means nothing to fail");
+        assert!(
+            !result.has_scan_failure(),
+            "0 attempted means nothing to fail"
+        );
     }
 }

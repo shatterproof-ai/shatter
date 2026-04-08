@@ -172,40 +172,36 @@ Recommended behavior:
 - optionally compare against a curated baseline when one is configured
 - never commit routine perf runs back into the repository
 
-## Git Submodules
+## External Examples Checkout
 
-The repository uses git submodules for shared content:
-
-| Submodule | Path | Purpose |
-|---|---|---|
-| `agents` | `.agents/` | Shared agent rules and tooling |
-| `examples` | `examples/` | Example target programs for testing, demos, and E2E fixtures |
+The repository still uses the `.agents/` git submodule for shared agent rules,
+but the example corpus now lives in the separate
+`https://github.com/shatterproof-ai/examples` repository and is fetched outside
+this repo under `/tmp`.
 
 ### CI checkout requirements
 
-CI jobs must initialize submodules before running any tasks. Either:
+CI jobs should clone the main repository normally, then let the repo tasks fetch
+examples into `/tmp/shatter-examples-main` on demand. For explicit bootstrap:
 
 ```bash
-# Option A: clone with submodules
-git clone --recurse-submodules <repo-url>
-
-# Option B: initialize after clone (useful for shallow clones)
-git submodule update --init
-
-# Option C: shallow submodules (faster for CI)
-git clone --recurse-submodules --shallow-submodules <repo-url>
+git clone <repo-url>
+cd shatter
+python3 scripts/examples_checkout.py
 ```
 
-All test tiers, the gauntlet, and the E2E suite require the `examples/` submodule. If `examples/` is empty, tests will fail with file-not-found errors.
+All test tiers, the gauntlet, and the E2E suite require access to that
+external examples checkout. The default reusable path is
+`/tmp/shatter-examples-main`. Set `SHATTER_EXAMPLES_DIR` when your CI job wants
+to provide a different checkout path explicitly.
 
-### Updating the examples submodule
+### Refreshing the examples checkout
 
-When examples are updated upstream, update the pinned commit:
+Because Shatter now follows the examples repo's latest `main`, refreshing the
+cache is just another helper invocation:
 
 ```bash
-git submodule update --remote examples
-git add examples
-git commit -m "chore: update examples submodule"
+python3 scripts/examples_checkout.py
 ```
 
 ## Tool Installation Expectations

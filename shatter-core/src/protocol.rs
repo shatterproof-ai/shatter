@@ -74,6 +74,35 @@ pub struct ExecutionAdapter {
     pub options: Option<serde_json::Value>,
 }
 
+/// Generic relation between execution adapters used by hinting and policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterRelation {
+    /// Related adapter identifier.
+    pub adapter_id: String,
+    /// Optional human-readable explanation for the relation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Recognizer-generated hint that an adapter may be relevant for a target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdapterHint {
+    /// Adapter descriptor suggested by the frontend.
+    pub adapter: ExecutionAdapter,
+    /// Frontend confidence in the hint.
+    #[serde(default = "default_confidence")]
+    pub confidence: Confidence,
+    /// Human-readable evidence explaining why the hint matched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    /// Adapters that should also be present for this hint to make sense.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<AdapterRelation>,
+    /// Adapters that conflict with this hint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<AdapterRelation>,
+}
+
 /// Application policy for one execution adapter descriptor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -442,6 +471,40 @@ pub struct FunctionAnalysis {
     /// and actually lives in a different source file than the one analyzed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
+    /// Recognizer-generated hints that describe relevant execution adapters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_hints: Vec<AdapterHint>,
+    /// Generic invocation metadata for targets that are not meaningfully called
+    /// as a plain exported function with the analyzed parameter list.
+    #[serde(default, skip_serializing_if = "InvocationModel::is_direct")]
+    pub invocation_model: InvocationModel,
+}
+
+/// Describes how a discovered target should be invoked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InvocationModel {
+    /// The target can be called directly with `FunctionAnalysis.params`.
+    #[default]
+    Direct,
+    /// The target requires adapter-owned invocation and may expose a synthetic
+    /// callable surface or opaque scenario schema instead of the raw export.
+    Adapter {
+        /// Adapter responsible for invoking the target.
+        adapter_id: String,
+        /// Synthetic parameters accepted by the adapter-owned surface.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        synthetic_params: Vec<ParamInfo>,
+        /// Opaque schema or shape descriptor for multi-step scenarios.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario_schema: Option<serde_json::Value>,
+    },
+}
+
+impl InvocationModel {
+    fn is_direct(model: &InvocationModel) -> bool {
+        matches!(model, InvocationModel::Direct)
+    }
 }
 
 /// A branch point found during static analysis.
@@ -878,6 +941,19 @@ fn analyze_result_is_valid(functions: &[FunctionAnalysis]) -> bool {
         if func.params.len() > MAX_PLAUSIBLE_PARAMS {
             return false;
         }
+        if let InvocationModel::Adapter {
+            adapter_id,
+            synthetic_params,
+            ..
+        } = &func.invocation_model
+        {
+            if adapter_id.is_empty() {
+                return false;
+            }
+            if synthetic_params.len() > MAX_PLAUSIBLE_PARAMS {
+                return false;
+            }
+        }
     }
     true
 }
@@ -1142,6 +1218,8 @@ mod tests {
                     crypto_boundaries: vec![],
             loops: vec![],
                     source_file: None,
+                    adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
                 }],
             },
         ));
@@ -1630,6 +1708,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         });
     }
 
@@ -1878,6 +1958,8 @@ mod tests {
                         crypto_boundaries: vec![],
             loops: vec![],
                         source_file: None,
+                        adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
@@ -1916,6 +1998,8 @@ mod tests {
                         crypto_boundaries: vec![],
             loops: vec![],
                         source_file: None,
+                        adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
                     },
                 ],
             },
@@ -2329,6 +2413,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         });
     }
 
@@ -2340,6 +2426,7 @@ mod tests {
             fa.literals.is_empty(),
             "missing field should default to empty"
         );
+        assert_eq!(fa.invocation_model, InvocationModel::Direct);
     }
 
     #[test]
@@ -2357,11 +2444,69 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
             !json.as_object().unwrap().contains_key("literals"),
             "empty literals should not appear in JSON"
+        );
+    }
+
+    #[test]
+    fn function_analysis_with_adapter_invocation_round_trips() {
+        round_trip(&FunctionAnalysis {
+            name: "useTeamSwitch".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 20,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Adapter {
+                adapter_id: "ts/react-hooks".into(),
+                synthetic_params: vec![ParamInfo {
+                    name: "action".into(),
+                    typ: TypeInfo::Str,
+                    type_name: None,
+                }],
+                scenario_schema: Some(serde_json::json!({
+                    "kind": "call_return",
+                    "args": [{"type": "string"}]
+                })),
+            },
+        });
+    }
+
+    #[test]
+    fn direct_invocation_model_omitted_from_json() {
+        let fa = FunctionAnalysis {
+            name: "identity".into(),
+            exported: false,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        };
+        let json = serde_json::to_value(&fa).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("invocation_model"),
+            "direct invocation model should be omitted from JSON"
         );
     }
 
@@ -2493,6 +2638,44 @@ mod tests {
             }],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        });
+    }
+
+    #[test]
+    fn function_analysis_with_adapter_hints_round_trips() {
+        round_trip(&FunctionAnalysis {
+            name: "render".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![AdapterHint {
+                adapter: ExecutionAdapter {
+                    id: "ts/browser-globals".into(),
+                    apply: Some(ExecutionAdapterApply::Suggest),
+                    options: None,
+                },
+                confidence: Confidence::Medium,
+                reasons: vec!["uses window".into()],
+                requirements: vec![AdapterRelation {
+                    adapter_id: "ts/dom-runtime".into(),
+                    reason: Some("needs DOM globals".into()),
+                }],
+                conflicts: vec![AdapterRelation {
+                    adapter_id: "ts/node-only".into(),
+                    reason: Some("server-only runtime".into()),
+                }],
+            }],
+            invocation_model: InvocationModel::Direct,
         });
     }
 
@@ -2511,6 +2694,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -2524,6 +2709,13 @@ mod tests {
         let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
         let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
         assert!(fa.crypto_boundaries.is_empty());
+    }
+
+    #[test]
+    fn missing_adapter_hints_default_to_empty() {
+        let json = r#"{"name":"stub","params":[],"branches":[],"dependencies":[],"return_type":{"kind":"unknown"},"start_line":1,"end_line":1}"#;
+        let fa: FunctionAnalysis = serde_json::from_str(json).expect("deserialize");
+        assert!(fa.adapter_hints.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -2617,6 +2809,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_analyze_result_rejects_empty_adapter_id() {
+        let functions = vec![FunctionAnalysis {
+            name: "hook".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Adapter {
+                adapter_id: String::new(),
+                synthetic_params: vec![],
+                scenario_schema: None,
+            },
+        }];
+
+        assert!(!validate_analyze_result(&functions));
+    }
+
+    #[test]
     fn validate_analyze_result_accepts_valid_function() {
         let functions = vec![FunctionAnalysis {
             name: "foo".into(),
@@ -2631,6 +2849,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         }];
         assert!(validate_analyze_result(&functions));
     }
@@ -2650,6 +2870,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         }];
         assert!(!validate_analyze_result(&functions));
     }
@@ -2669,6 +2891,8 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
         }];
         assert!(!validate_analyze_result(&functions));
     }

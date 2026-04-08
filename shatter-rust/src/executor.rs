@@ -3748,9 +3748,12 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn find_crate_root_finds_examples() {
         // examples/rust/src/arithmetic.rs is inside a crate.
-        let examples_src = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/rust/src/arithmetic.rs");
-        if std::path::Path::new(examples_src).exists() {
-            let root = find_crate_root(examples_src);
+        let examples_root = std::env::var("SHATTER_EXAMPLES_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("shatter-examples-main"));
+        let examples_src = examples_root.join("rust/src/arithmetic.rs");
+        if examples_src.exists() {
+            let root = find_crate_root(&examples_src.to_string_lossy());
             assert!(root.is_some(), "should find crate root for examples/rust/src");
             let root = root.unwrap();
             assert!(root.join("Cargo.toml").exists());
@@ -3833,6 +3836,15 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         src_file
     }
 
+    fn cargo_build_unavailable(msg: &str) -> bool {
+        msg.contains("cargo")
+            || msg.contains("No such file")
+            || msg.contains("spurious network error")
+            || msg.contains("download of config.json failed")
+            || msg.contains("Could not resolve host")
+            || msg.contains("Could not resolve hostname")
+    }
+
     #[test]
     fn crate_backed_execute_basic() {
         // Execute `add(2, 3)` from a crate-backed source file.
@@ -3873,7 +3885,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             // cargo not available in this CI environment — skip
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_execute_basic: cargo unavailable ({msg})");
             }
@@ -3939,7 +3951,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             (Err(ExecuteError::CompilationFailed(msg)), _)
             | (_, Err(ExecuteError::CompilationFailed(msg)))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})");
             }
@@ -4000,7 +4012,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             }
             (Err(ExecuteError::CompilationFailed(msg)), _)
             | (_, Err(ExecuteError::CompilationFailed(msg)))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})");
             }
@@ -4296,7 +4308,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
                 );
             }
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("cargo") || msg.contains("No such file") =>
+                if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_bridge_executes_private_function: cargo unavailable ({msg})");
             }
