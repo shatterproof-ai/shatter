@@ -37,6 +37,7 @@ export interface AnalyzeWorkerResponse {
   readonly type: "analyze";
   readonly functions: FunctionAnalysis[];
   readonly timingPhases?: TimingPhaseSummary[];
+  readonly error?: string;
 }
 
 export interface InstrumentWorkerResponse {
