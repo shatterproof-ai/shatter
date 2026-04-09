@@ -15,6 +15,10 @@ use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
 use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, ScanResult};
 
+/// Maximum number of behavior clusters displayed per function in the Markdown
+/// report. Functions with more clusters show a "... and N more" summary line.
+const MAX_DISPLAY_CLUSTERS: usize = 5;
+
 // ---------------------------------------------------------------------------
 // Per-function report
 // ---------------------------------------------------------------------------
@@ -750,7 +754,9 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
 
         if !func.behavior_clusters.is_empty() {
             let _ = writeln!(out, "\n**Behaviors:**\n");
-            for cluster in &func.behavior_clusters {
+            let total = func.behavior_clusters.len();
+            let display = total.min(MAX_DISPLAY_CLUSTERS);
+            for cluster in &func.behavior_clusters[..display] {
                 let outcome = if let Some(ref err) = cluster.thrown_error {
                     format!("throws {err}")
                 } else if let Some(ref val) = cluster.return_value {
@@ -763,6 +769,13 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
                     out,
                     "- Cluster {}: {outcome} (inputs: {inputs})",
                     cluster.id
+                );
+            }
+            if total > MAX_DISPLAY_CLUSTERS {
+                let _ = writeln!(
+                    out,
+                    "- ... and {} more clusters",
+                    total - MAX_DISPLAY_CLUSTERS
                 );
             }
         }
@@ -1647,6 +1660,89 @@ mod tests {
         assert!(contents.contains("# Shatter Scan Report"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_report_caps_behavior_clusters() {
+        // Create a function with more clusters than MAX_DISPLAY_CLUSTERS
+        let cluster_count = 12;
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result(
+                "many_behaviors",
+                100,
+                cluster_count,
+                50,
+                100,
+                vec![],
+            )],
+            test_order: vec!["many_behaviors".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+        let md = format_markdown_report(&report);
+
+        // Should show exactly MAX_DISPLAY_CLUSTERS cluster lines
+        let cluster_lines: Vec<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("- Cluster "))
+            .collect();
+        assert_eq!(
+            cluster_lines.len(),
+            MAX_DISPLAY_CLUSTERS,
+            "should display exactly {MAX_DISPLAY_CLUSTERS} clusters, got {}: {cluster_lines:?}",
+            cluster_lines.len()
+        );
+
+        // Should show the truncation summary
+        let remaining = cluster_count - MAX_DISPLAY_CLUSTERS;
+        let expected_summary = format!("... and {remaining} more clusters");
+        assert!(
+            md.contains(&expected_summary),
+            "missing truncation summary: {expected_summary}"
+        );
+    }
+
+    #[test]
+    fn markdown_report_no_truncation_when_under_cap() {
+        // Create a function with exactly MAX_DISPLAY_CLUSTERS clusters
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result(
+                "few_behaviors",
+                10,
+                MAX_DISPLAY_CLUSTERS,
+                5,
+                10,
+                vec![],
+            )],
+            test_order: vec!["few_behaviors".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+        let md = format_markdown_report(&report);
+
+        let cluster_lines: Vec<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("- Cluster "))
+            .collect();
+        assert_eq!(
+            cluster_lines.len(),
+            MAX_DISPLAY_CLUSTERS,
+            "should display all clusters when at cap"
+        );
+        assert!(
+            !md.contains("more clusters"),
+            "should not show truncation summary when at cap"
+        );
     }
 
     // -----------------------------------------------------------------------
