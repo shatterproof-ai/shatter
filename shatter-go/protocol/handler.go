@@ -202,12 +202,26 @@ func finalizeResponse(resp Response, timing *frontendtiming.Collector) Response 
 	return resp
 }
 
+// isTestFile reports whether the given file path ends in _test.go.
+// Go test files cause stack overflows during type checking due to recursive
+// types in the testing package, and are not valid targets for exploration.
+func isTestFile(path string) bool {
+	return strings.HasSuffix(path, "_test.go")
+}
+
 func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	timing := h.maybeTimingCollector()
 	if req.File == "" {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
 		resp.Message = "analyze command requires a file path"
+		return resp
+	}
+
+	if isTestFile(req.File) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("_test.go files are not supported targets: %s", req.File)
 		return resp
 	}
 
@@ -259,6 +273,13 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
 		resp.Message = "instrument command requires a file path"
+		return resp
+	}
+
+	if isTestFile(req.File) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("_test.go files are not supported targets: %s", req.File)
 		return resp
 	}
 
@@ -314,6 +335,12 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
 		resp.Message = "prepare command requires a file path (or a prior analyze)"
+		return resp
+	}
+	if isTestFile(file) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("_test.go files are not supported targets: %s", file)
 		return resp
 	}
 	if req.Function == nil || *req.Function == "" {
@@ -395,6 +422,13 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		resp.Status = "error"
 		resp.Code = ErrInvalidRequest
 		resp.Message = "execute command requires a file path (or a prior analyze)"
+		return resp
+	}
+
+	if isTestFile(file) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("_test.go files are not supported targets: %s", file)
 		return resp
 	}
 
