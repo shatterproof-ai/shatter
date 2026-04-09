@@ -90,9 +90,16 @@ mod tests {
 
     #[test]
     fn detects_go_project_via_go_mod() {
-        // examples/go/ has go.mod
-        let examples_go = examples_root().join("go/01-simple-branch.go");
-        let result = detect_project_root(&examples_go);
+        // Self-contained temp fixture — doesn't depend on external example files
+        // that may move or be removed.
+        let tmp = tempfile::tempdir().unwrap();
+        let go_dir = tmp.path().join("mygoproject");
+        fs::create_dir_all(&go_dir).unwrap();
+        fs::write(go_dir.join("go.mod"), "module example.com/test\n\ngo 1.21\n").unwrap();
+        let go_file = go_dir.join("main.go");
+        fs::write(&go_file, "package main\nfunc main() {}\n").unwrap();
+
+        let result = detect_project_root(&go_file);
         assert!(result.is_some(), "should detect project root");
         let root = result.unwrap();
         assert_eq!(root.kind, ProjectKind::Go);
