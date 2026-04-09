@@ -474,6 +474,13 @@ pub(crate) enum CliCommand {
         /// Default: number of available CPUs (0 = auto-detect).
         #[arg(long, short = 'j', default_value_t = 0)]
         jobs: usize,
+
+        /// Finalize a previous explore run from saved artifacts on disk.
+        /// Skips exploration and produces reports/specs from saved per-function
+        /// result files. Use when a prior run wrote artifacts but crashed before
+        /// final assembly.
+        #[arg(long)]
+        from_artifacts: Option<PathBuf>,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,

@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shatter_core::adapter_selection;
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
@@ -34,8 +34,11 @@ struct FuncExploreOutcome {
     genetic_config: GeneticConfig,
 }
 
+const EXPLORE_ARTIFACT_VERSION: u32 = 2;
+
+/// Per-function explore artifact for serialization (borrows from outcome).
 #[derive(Serialize)]
-struct ExploreFunctionArtifact<'a> {
+struct ExploreFunctionArtifactWrite<'a> {
     version: u32,
     status: &'a str,
     file: &'a str,
@@ -44,10 +47,54 @@ struct ExploreFunctionArtifact<'a> {
     end_line: u32,
     wall_time_ms: u64,
     mock_symbols: &'a [String],
+    analysis: &'a shatter_core::protocol::FunctionAnalysis,
     #[serde(skip_serializing_if = "Option::is_none")]
     observation: Option<&'a shatter_core::explorer::ObservationOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+}
+
+/// Per-function explore artifact read from disk. v2 adds the `analysis` field
+/// so that final assembly can be reconstructed from saved artifacts without a
+/// live frontend.
+#[derive(Debug, Deserialize)]
+struct ExploreFunctionArtifact {
+    version: u32,
+    status: String,
+    file: String,
+    function_name: String,
+    start_line: u32,
+    end_line: u32,
+    wall_time_ms: u64,
+    mock_symbols: Vec<String>,
+    analysis: shatter_core::protocol::FunctionAnalysis,
+    observation: Option<shatter_core::explorer::ObservationOutput>,
+    error: Option<String>,
+}
+
+/// Per-function entry in the explore summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExploreSummaryEntry {
+    function_name: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Summary of an entire explore run, written incrementally to enable crash recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExploreSummary {
+    version: u32,
+    status: String,
+    file: String,
+    total_functions: usize,
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+    elapsed_secs: f64,
+    functions: Vec<ExploreSummaryEntry>,
 }
 
 fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
@@ -99,8 +146,8 @@ fn write_explore_artifact(
     } else {
         "failed"
     };
-    let artifact = ExploreFunctionArtifact {
-        version: 1,
+    let artifact = ExploreFunctionArtifactWrite {
+        version: EXPLORE_ARTIFACT_VERSION,
         status,
         file,
         function_name: &outcome.func.name,
@@ -108,22 +155,102 @@ fn write_explore_artifact(
         end_line: outcome.func.end_line,
         wall_time_ms: outcome.wall_time.as_millis() as u64,
         mock_symbols: &outcome.mock_symbols,
+        analysis: &outcome.func,
         observation: outcome.result.as_ref().ok(),
         error: outcome.result.as_ref().err().map(String::as_str),
     };
     let path = explore_artifact_path(root, file, &outcome.func);
+    write_artifact_json(&path, &artifact)?;
+    Ok(path)
+}
+
+fn write_artifact_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create explore artifact dir: {e}"))?;
+            .map_err(|e| format!("failed to create artifact dir: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(&artifact)
-        .map_err(|e| format!("failed to serialize explore artifact: {e}"))?;
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("failed to serialize artifact: {e}"))?;
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, json)
-        .map_err(|e| format!("failed to write explore artifact temp file: {e}"))?;
-    std::fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("failed to finalize explore artifact: {e}"))?;
-    Ok(path)
+    std::fs::write(&tmp_path, &json)
+        .map_err(|e| format!("failed to write artifact temp file: {e}"))?;
+    std::fs::rename(&tmp_path, path)
+        .map_err(|e| format!("failed to finalize artifact: {e}"))?;
+    Ok(())
+}
+
+fn explore_summary_path(root: &Path, file: &str) -> PathBuf {
+    let file_component = sanitize_artifact_component(file);
+    root.join(file_component).join("summary.json")
+}
+
+fn write_explore_summary(root: &Path, file: &str, summary: &ExploreSummary) -> Result<(), String> {
+    let path = explore_summary_path(root, file);
+    write_artifact_json(&path, summary)
+}
+
+fn read_explore_artifact(path: &Path) -> Result<ExploreFunctionArtifact, String> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read artifact {}: {e}", path.display()))?;
+    let artifact: ExploreFunctionArtifact = serde_json::from_str(&json)
+        .map_err(|e| format!("failed to parse artifact {}: {e}", path.display()))?;
+    if artifact.version < EXPLORE_ARTIFACT_VERSION {
+        return Err(format!(
+            "artifact {} is version {} (expected {}); re-run explore to generate v2 artifacts",
+            path.display(),
+            artifact.version,
+            EXPLORE_ARTIFACT_VERSION,
+        ));
+    }
+    Ok(artifact)
+}
+
+/// Load all explore artifacts from a directory tree.
+/// Reads `summary.json` for ordering when available, otherwise scans for `*.json` files.
+fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, String> {
+    if !dir.is_dir() {
+        return Err(format!("artifact directory does not exist: {}", dir.display()));
+    }
+
+    let mut artifacts = Vec::new();
+
+    // Walk all subdirectories looking for artifact JSON files.
+    let mut dirs_to_visit = vec![dir.to_path_buf()];
+    while let Some(current_dir) = dirs_to_visit.pop() {
+        let entries = std::fs::read_dir(&current_dir)
+            .map_err(|e| format!("failed to read directory {}: {e}", current_dir.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                dirs_to_visit.push(path);
+                continue;
+            }
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip summary, temp files, and non-JSON.
+            if file_name == "summary.json"
+                || file_name.ends_with(".tmp")
+                || !file_name.ends_with(".json")
+            {
+                continue;
+            }
+            match read_explore_artifact(&path) {
+                Ok(artifact) => artifacts.push(artifact),
+                Err(e) => log::warn!("Skipping {}: {e}", path.display()),
+            }
+        }
+    }
+
+    // Sort by (file, start_line, end_line) for deterministic ordering.
+    artifacts.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.start_line.cmp(&b.start_line))
+            .then(a.end_line.cmp(&b.end_line))
+    });
+
+    Ok(artifacts)
 }
 
 fn emit_explore_progress(
@@ -153,6 +280,426 @@ fn emit_explore_progress(
     {
         eprintln!("{json}");
     }
+}
+
+/// Options controlling how a single function result is assembled into report output.
+struct AssemblyOpts<'a> {
+    show_spec: bool,
+    spec_as_json: bool,
+    detect_invariants: bool,
+    use_concolic: bool,
+    show_perf: bool,
+    use_color: bool,
+    output_format: crate::args::OutputFormat,
+    report_style: shatter_core::report_style::ReportStyle,
+    project_root: Option<&'a str>,
+    deep_fingerprints: &'a HashMap<String, String>,
+    output_path_set: bool,
+    stdout: bool,
+    report_outputs_empty: bool,
+}
+
+/// Accumulator for per-function assembly results.
+struct AssemblyAccumulator {
+    total_paths: usize,
+    total_covered: usize,
+    total_lines: u32,
+    html_fragments: Vec<String>,
+    md_fragments: Vec<String>,
+    file_specs: Vec<shatter_core::spec::FunctionSpec>,
+}
+
+impl AssemblyAccumulator {
+    fn new() -> Self {
+        Self {
+            total_paths: 0,
+            total_covered: 0,
+            total_lines: 0,
+            html_fragments: Vec::new(),
+            md_fragments: Vec::new(),
+            file_specs: Vec::new(),
+        }
+    }
+}
+
+/// Assemble report/spec output for a single completed function result.
+/// Shared between the live explore path and the finalize-from-artifacts path.
+#[allow(clippy::too_many_arguments)]
+fn assemble_function_result(
+    func: &shatter_core::protocol::FunctionAnalysis,
+    result: &shatter_core::explorer::ObservationOutput,
+    file_str: &str,
+    wall_time: Duration,
+    mock_symbols: &[String],
+    ga_stats: Option<GeneticStats>,
+    opts: &AssemblyOpts<'_>,
+    acc: &mut AssemblyAccumulator,
+) {
+    // Accumulate stats for footer.
+    acc.total_paths += result.unique_paths;
+    acc.total_covered += result.lines_covered;
+    acc.total_lines += result.total_lines;
+
+    // HTML fragment for -o report files.
+    {
+        let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
+        acc.html_fragments
+            .push(shatter_core::report::render_explore_fn_html(
+                result,
+                &location,
+                opts.project_root.map(std::path::Path::new),
+            ));
+    }
+
+    // Run the Analyze stage to get coverage metrics and eq classes.
+    let analyze_output = {
+        let _pipeline_analyze_span = tracing::info_span!("pipeline.analyze").entered();
+        shatter_core::pipeline::analyze(result, func)
+    };
+
+    // Print report to stdout.
+    if log::log_enabled!(log::Level::Info) {
+        if log::log_enabled!(log::Level::Trace) {
+            let report = {
+                let _report_span = tracing::info_span!("report.render").entered();
+                explorer::format_exploration_report_verbose(result)
+            };
+            if opts.report_outputs_empty || opts.stdout {
+                print!("{report}");
+            }
+        } else if opts.output_format == crate::args::OutputFormat::Md {
+            let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
+            let view = crate::render::explore_fn_view(
+                result,
+                crate::render::ExploreRenderOpts {
+                    location: Some(&location),
+                    mocks_used: mock_symbols,
+                    is_concolic: opts.use_concolic,
+                },
+            );
+            let md = {
+                let _report_span = tracing::info_span!("report.render").entered();
+                crate::render::render_explore_fn(&view)
+            };
+            acc.md_fragments.push(md.clone());
+            if opts.report_outputs_empty || opts.stdout {
+                print_markdown(&md, opts.use_color);
+            }
+        } else {
+            let report_opts = ReportOptions {
+                location: Some(format!(
+                    "{file_str}:{}-{}",
+                    func.start_line, func.end_line
+                )),
+                show_perf: opts.show_perf,
+                wall_time: Some(wall_time),
+                coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
+                style: opts.report_style.clone(),
+                genetic_stats: ga_stats,
+            };
+            let report = {
+                let _report_span = tracing::info_span!("report.render").entered();
+                explorer::format_exploration_report(result, &report_opts)
+            };
+            acc.md_fragments.push(report.clone());
+            if opts.report_outputs_empty || opts.stdout {
+                print!("{report}");
+                if !mock_symbols.is_empty() {
+                    println!("  Mocks used: {}", mock_symbols.join(", "));
+                }
+                if opts.use_concolic {
+                    println!("  Explorer: concolic (Z3-backed)");
+                }
+            }
+        }
+        if opts.report_outputs_empty || opts.stdout {
+            println!();
+        }
+    }
+
+    // Spec output: use eq classes from analyze stage.
+    if opts.show_spec || opts.detect_invariants {
+        let eq_classes = &analyze_output.eq_classes;
+        let location = Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
+        let fingerprint = opts.deep_fingerprints.get(&func.name).cloned();
+
+        let spec = {
+            let _spec_span = tracing::info_span!("spec.build").entered();
+            if opts.detect_invariants {
+                shatter_core::spec::build_spec_with_invariants(
+                    result,
+                    eq_classes,
+                    location,
+                    fingerprint,
+                )
+            } else {
+                shatter_core::spec::build_spec(result, eq_classes, location, fingerprint)
+            }
+        };
+        if opts.output_path_set {
+            acc.file_specs.push(spec);
+        } else if opts.spec_as_json {
+            match shatter_core::spec::format_spec_json(&spec) {
+                Ok(json) => println!("{json}"),
+                Err(e) => log::error!("Error serializing spec: {e}"),
+            }
+        } else {
+            print_markdown(
+                &shatter_core::spec::format_spec_markdown(&spec),
+                opts.use_color,
+            );
+        }
+    }
+}
+
+/// Finalize an explore run from saved artifacts on disk. Reads per-function
+/// artifacts, reconstructs reports and specs, and writes output files.
+#[allow(clippy::too_many_arguments)]
+fn finalize_explore(
+    artifact_dir: &Path,
+    output_path: Option<&Path>,
+    report_outputs: &[PathBuf],
+    show_spec: bool,
+    spec_as_json: bool,
+    detect_invariants: bool,
+    use_color: bool,
+    output_format: crate::args::OutputFormat,
+    format: crate::args::StdoutFormat,
+    stdout: bool,
+    show_perf: bool,
+    use_concolic: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifacts = load_explore_artifacts(artifact_dir)?;
+    if artifacts.is_empty() {
+        return Err("no explore artifacts found in the specified directory".into());
+    }
+
+    log::info!(
+        "Loaded {} artifact(s) from {}",
+        artifacts.len(),
+        artifact_dir.display()
+    );
+
+    let report_style = if use_color {
+        shatter_core::report_style::ReportStyle::ansi()
+    } else {
+        shatter_core::report_style::ReportStyle::default()
+    };
+
+    let empty_fingerprints: HashMap<String, String> = HashMap::new();
+    let opts = AssemblyOpts {
+        show_spec: show_spec || detect_invariants || output_path.is_some(),
+        spec_as_json: spec_as_json || output_path.is_some(),
+        detect_invariants,
+        use_concolic,
+        show_perf,
+        use_color,
+        output_format,
+        report_style: report_style.clone(),
+        project_root: None,
+        deep_fingerprints: &empty_fingerprints,
+        output_path_set: output_path.is_some(),
+        stdout,
+        report_outputs_empty: report_outputs.is_empty(),
+    };
+
+    let mut acc = AssemblyAccumulator::new();
+    let mut total_function_count: usize = 0;
+
+    // Print header.
+    if log::log_enabled!(log::Level::Info) {
+        if output_format == crate::args::OutputFormat::Md {
+            print_markdown("# Shatter Explore (finalized from artifacts)\n\n", use_color);
+        } else {
+            print!(
+                "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore (finalized) \u{2550}\u{2550}\u{2550}{reset}\n\n",
+                bold = report_style.bold,
+                reset = report_style.reset,
+            );
+        }
+    }
+
+    for artifact in &artifacts {
+        total_function_count += 1;
+
+        if artifact.status != "completed" {
+            let reason = artifact
+                .error
+                .as_deref()
+                .unwrap_or("unknown");
+            log::info!(
+                "Skipping {} (status={}, reason={})",
+                artifact.function_name,
+                artifact.status,
+                reason,
+            );
+            continue;
+        }
+
+        let observation = match &artifact.observation {
+            Some(obs) => obs,
+            None => {
+                log::warn!(
+                    "Artifact for {} has status=completed but no observation data",
+                    artifact.function_name
+                );
+                continue;
+            }
+        };
+
+        let wall_time = Duration::from_millis(artifact.wall_time_ms);
+
+        assemble_function_result(
+            &artifact.analysis,
+            observation,
+            &artifact.file,
+            wall_time,
+            &artifact.mock_symbols,
+            None, // GA stats not available from artifacts
+            &opts,
+            &mut acc,
+        );
+    }
+
+    // Print summary footer.
+    if log::log_enabled!(log::Level::Info) && (report_outputs.is_empty() || stdout) {
+        if output_format == crate::args::OutputFormat::Md {
+            let coverage_suffix = if acc.total_lines > 0 {
+                let pct = ((acc.total_covered as f64 / acc.total_lines as f64) * 100.0)
+                    .min(100.0)
+                    .round() as u32;
+                format!(
+                    " · **{pct}%** coverage ({}/{} lines)",
+                    acc.total_covered, acc.total_lines
+                )
+            } else {
+                String::new()
+            };
+            print_markdown(
+                &format!(
+                    "\n---\n\n**Summary:** {} path(s) across \
+                     {total_function_count} function(s){coverage_suffix}\n",
+                    acc.total_paths
+                ),
+                use_color,
+            );
+        } else {
+            print!(
+                "{}",
+                explorer::format_explore_footer(
+                    acc.total_paths,
+                    total_function_count,
+                    acc.total_covered,
+                    acc.total_lines,
+                    &report_style,
+                )
+            );
+        }
+    }
+
+    // Write report files.
+    for path in report_outputs {
+        match crate::args::infer_output_format(path) {
+            Ok(crate::args::StdoutFormat::Html) => {
+                let html = shatter_core::report::wrap_explore_html(
+                    &acc.html_fragments,
+                    total_function_count,
+                    acc.total_paths,
+                    acc.total_covered,
+                    acc.total_lines,
+                );
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, html).map_err(|e| {
+                    format!("failed to write HTML report to '{}': {e}", path.display())
+                })?;
+                log::info!("Wrote HTML report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Markdown) => {
+                let md = acc.md_fragments.join("\n\n---\n\n");
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, &md).map_err(|e| {
+                    format!(
+                        "failed to write markdown report to '{}': {e}",
+                        path.display()
+                    )
+                })?;
+                log::info!("Wrote markdown report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Text) => {
+                let md = acc.md_fragments.join("\n\n---\n\n");
+                let text = shatter_core::report::strip_markdown_text(&md);
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+                std::fs::write(path, &text).map_err(|e| {
+                    format!("failed to write text report to '{}': {e}", path.display())
+                })?;
+                log::info!("Wrote text report to {}", path.display());
+            }
+            Ok(crate::args::StdoutFormat::Json) => {
+                if !acc.file_specs.is_empty() {
+                    let bundle = FileSpecBundle {
+                        file: artifacts
+                            .first()
+                            .map(|a| a.file.clone())
+                            .unwrap_or_default(),
+                        functions: acc.file_specs.clone(),
+                    };
+                    shatter_core::spec::write_file_spec_bundle(&bundle, path).map_err(|e| {
+                        format!("failed to write spec bundle to '{}': {e}", path.display())
+                    })?;
+                    log::info!("Wrote spec bundle to {}", path.display());
+                }
+            }
+            Err(e) => {
+                log::error!("{e}");
+            }
+        }
+    }
+
+    // Replay to stdout if report files were also written.
+    if !report_outputs.is_empty() && stdout {
+        let combined = acc.md_fragments.join("\n\n---\n\n");
+        match format {
+            crate::args::StdoutFormat::Text => {
+                print!("{}", shatter_core::report::strip_markdown_text(&combined));
+            }
+            _ => {
+                print_markdown(&combined, use_color);
+            }
+        }
+    }
+
+    // Write spec bundle.
+    if let Some(out) = output_path
+        && !acc.file_specs.is_empty()
+    {
+        let bundle = FileSpecBundle {
+            file: artifacts
+                .first()
+                .map(|a| a.file.clone())
+                .unwrap_or_default(),
+            functions: acc.file_specs,
+        };
+        shatter_core::spec::write_file_spec_bundle(&bundle, out)
+            .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
+        log::info!("Wrote spec bundle to {}", out.display());
+    }
+
+    Ok(())
 }
 
 /// Run the explore command.
@@ -213,7 +760,25 @@ pub(crate) async fn run_explore(
     cli_genetic_population: Option<u32>,
     cli_genetic_generations: Option<u32>,
     cli_genetic_timeout: Option<u32>,
+    from_artifacts: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Early return: finalize from saved artifacts instead of running exploration.
+    if let Some(artifact_dir) = from_artifacts {
+        return finalize_explore(
+            artifact_dir,
+            output_path,
+            report_outputs,
+            show_spec,
+            spec_as_json,
+            detect_invariants,
+            use_color,
+            output_format,
+            format,
+            stdout,
+            show_perf,
+            use_concolic,
+        );
+    }
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds {
         None
@@ -879,6 +1444,31 @@ pub(crate) async fn run_explore(
         let total_work_items = work_items.len();
         let artifact_root = explore_artifact_root(project_root_str.as_deref());
 
+        // Initialize explore summary for crash-recovery.
+        let mut explore_summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "running".to_string(),
+            file: file_str.to_string(),
+            total_functions: total_work_items,
+            completed: 0,
+            failed: 0,
+            skipped: skipped_unexecutable.len(),
+            elapsed_secs: 0.0,
+            functions: skipped_unexecutable
+                .iter()
+                .map(|(name, _)| ExploreSummaryEntry {
+                    function_name: name.clone(),
+                    status: "skipped".to_string(),
+                    artifact: None,
+                    reason: Some("unexecutable parameter types".to_string()),
+                })
+                .collect(),
+        };
+        let target_start = Instant::now();
+        if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
+            log::warn!("Failed to write initial explore summary: {e}");
+        }
+
         let fe_config_for_lang = fe_configs
             .get(&target.language)
             .expect("fe_config must exist for target language")
@@ -1047,17 +1637,45 @@ pub(crate) async fn run_explore(
                     continue;
                 }
             };
-            match write_explore_artifact(&artifact_root, &file_str, &outcome) {
-                Ok(path) => log::info!(
-                    "Wrote explore artifact for {} -> {}",
-                    outcome.func.name,
-                    path.display()
-                ),
-                Err(e) => log::warn!(
-                    "Failed to write explore artifact for {}: {e}",
-                    outcome.func.name
-                ),
+            let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, &outcome) {
+                Ok(path) => {
+                    log::info!(
+                        "Wrote explore artifact for {} -> {}",
+                        outcome.func.name,
+                        path.display()
+                    );
+                    path.strip_prefix(&artifact_root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to write explore artifact for {}: {e}",
+                        outcome.func.name
+                    );
+                    None
+                }
+            };
+
+            // Update summary incrementally for crash recovery.
+            let summary_status = if outcome.result.is_ok() {
+                explore_summary.completed += 1;
+                "completed"
+            } else {
+                explore_summary.failed += 1;
+                "failed"
+            };
+            explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
+            explore_summary.functions.push(ExploreSummaryEntry {
+                function_name: outcome.func.name.clone(),
+                status: summary_status.to_string(),
+                artifact: artifact_relpath,
+                reason: outcome.result.as_ref().err().cloned(),
+            });
+            if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
+                log::warn!("Failed to update explore summary: {e}");
             }
+
             outcomes.push(outcome);
         }
         outcomes.sort_by_key(|outcome| outcome.work_index);
@@ -1120,27 +1738,8 @@ pub(crate) async fn run_explore(
                         }
                     }
 
-                    // Accumulate stats for footer.
-                    total_paths += result.unique_paths;
-                    total_covered += result.lines_covered;
-                    total_lines += result.total_lines;
-
-                    // Accumulate HTML/markdown fragments for -o report files.
-                    {
-                        let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
-                        html_fragments.push(shatter_core::report::render_explore_fn_html(
-                            &result,
-                            &location,
-                            project_root_str.as_deref().map(std::path::Path::new),
-                        ));
-                    }
-
-                    // Run the Analyze stage to get coverage metrics and eq classes.
-                    let analyze_output = {
-                        let _pipeline_analyze_span =
-                            tracing::info_span!("pipeline.analyze").entered();
-                        shatter_core::pipeline::analyze(&result, func)
-                    };
+                    // Harvest interesting inputs into the cross-function pool.
+                    // (Live-only: requires timing relative to other functions.)
 
                     // Save raw observation data for offline analysis if requested.
                     if let Some(obs_dir) = observe_output {
@@ -1291,108 +1890,39 @@ pub(crate) async fn run_explore(
                         None
                     };
 
-                    if log::log_enabled!(log::Level::Info) {
-                        if log::log_enabled!(log::Level::Trace) {
-                            let report = {
-                                let _report_span = tracing::info_span!("report.render").entered();
-                                explorer::format_exploration_report_verbose(&result)
-                            };
-                            if report_outputs.is_empty() || stdout {
-                                print!("{report}");
-                            }
-                        } else if output_format == crate::args::OutputFormat::Md {
-                            let location =
-                                format!("{file_str}:{}-{}", func.start_line, func.end_line);
-                            let view = crate::render::explore_fn_view(
-                                &result,
-                                crate::render::ExploreRenderOpts {
-                                    location: Some(&location),
-                                    mocks_used: mock_symbols,
-                                    is_concolic: use_concolic,
-                                },
-                            );
-                            let md = {
-                                let _report_span = tracing::info_span!("report.render").entered();
-                                crate::render::render_explore_fn(&view)
-                            };
-                            md_fragments.push(md.clone());
-                            if report_outputs.is_empty() || stdout {
-                                print_markdown(&md, use_color);
-                            }
-                        } else {
-                            let report_opts = ReportOptions {
-                                location: Some(format!(
-                                    "{file_str}:{}-{}",
-                                    func.start_line, func.end_line
-                                )),
-                                show_perf,
-                                wall_time: Some(wall_time),
-                                coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
-                                style: report_style.clone(),
-                                genetic_stats: ga_stats,
-                            };
-                            let report = {
-                                let _report_span = tracing::info_span!("report.render").entered();
-                                explorer::format_exploration_report(&result, &report_opts)
-                            };
-                            md_fragments.push(report.clone());
-                            if report_outputs.is_empty() || stdout {
-                                print!("{report}");
-                                if !mock_symbols.is_empty() {
-                                    println!("  Mocks used: {}", mock_symbols.join(", "));
-                                }
-                                if use_concolic {
-                                    println!("  Explorer: concolic (Z3-backed)");
-                                }
-                            }
-                        }
-                        if report_outputs.is_empty() || stdout {
-                            println!();
-                        }
-                    }
-
-                    // Spec output: use eq classes from analyze stage
-                    if show_spec || detect_invariants {
-                        let eq_classes = &analyze_output.eq_classes;
-                        let location =
-                            Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
-
-                        // Use deep fingerprint (call-graph-aware) for spec output.
-                        let fingerprint = deep_fingerprints.get(&func.name).cloned();
-
-                        let spec = {
-                            let _spec_span = tracing::info_span!("spec.build").entered();
-                            if detect_invariants {
-                                shatter_core::spec::build_spec_with_invariants(
-                                    &result,
-                                    eq_classes,
-                                    location,
-                                    fingerprint,
-                                )
-                            } else {
-                                shatter_core::spec::build_spec(
-                                    &result,
-                                    eq_classes,
-                                    location,
-                                    fingerprint,
-                                )
-                            }
-                        };
-                        if output_path.is_some() {
-                            // Collect for file-level bundle output
-                            file_specs.push(spec);
-                        } else if spec_as_json {
-                            match shatter_core::spec::format_spec_json(&spec) {
-                                Ok(json) => println!("{json}"),
-                                Err(e) => log::error!("Error serializing spec: {e}"),
-                            }
-                        } else {
-                            print_markdown(
-                                &shatter_core::spec::format_spec_markdown(&spec),
-                                use_color,
-                            );
-                        }
-                    }
+                    // Shared report/spec assembly (used by both live and finalize paths).
+                    let assembly_opts = AssemblyOpts {
+                        show_spec,
+                        spec_as_json,
+                        detect_invariants,
+                        use_concolic,
+                        show_perf,
+                        use_color,
+                        output_format,
+                        report_style: report_style.clone(),
+                        project_root: project_root_str.as_deref(),
+                        deep_fingerprints: &deep_fingerprints,
+                        output_path_set: output_path.is_some(),
+                        stdout,
+                        report_outputs_empty: report_outputs.is_empty(),
+                    };
+                    let mut func_acc = AssemblyAccumulator::new();
+                    assemble_function_result(
+                        func,
+                        &result,
+                        &file_str,
+                        wall_time,
+                        mock_symbols,
+                        ga_stats,
+                        &assembly_opts,
+                        &mut func_acc,
+                    );
+                    total_paths += func_acc.total_paths;
+                    total_covered += func_acc.total_covered;
+                    total_lines += func_acc.total_lines;
+                    html_fragments.extend(func_acc.html_fragments);
+                    md_fragments.extend(func_acc.md_fragments);
+                    file_specs.extend(func_acc.file_specs);
 
                     if !ga_stored_cache {
                         let behavior_map =
@@ -1426,6 +1956,17 @@ pub(crate) async fn run_explore(
                     log::info!("  {name}: {}", reason.format_human());
                 }
             }
+        }
+
+        // Finalize the explore summary.
+        explore_summary.status = if explore_summary.failed > 0 {
+            "failed".to_string()
+        } else {
+            "completed".to_string()
+        };
+        explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
+        if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
+            log::warn!("Failed to finalize explore summary: {e}");
         }
 
         // Collect file-level spec bundle when --output is set.
@@ -1601,8 +2142,10 @@ pub(crate) async fn run_explore(
 #[cfg(test)]
 mod tests {
     use super::{
-        FuncExploreOutcome, emit_explore_progress, sanitize_artifact_component,
-        write_explore_artifact,
+        ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome, EXPLORE_ARTIFACT_VERSION,
+        emit_explore_progress, explore_summary_path, load_explore_artifacts,
+        read_explore_artifact, sanitize_artifact_component, write_explore_artifact,
+        write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
@@ -1628,60 +2171,243 @@ mod tests {
         emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed");
     }
 
-    #[test]
-    fn write_explore_artifact_persists_completed_result() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let outcome = FuncExploreOutcome {
+    fn sample_func_analysis() -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: "load/user".to_string(),
+            exported: true,
+            start_line: 12,
+            end_line: 20,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        }
+    }
+
+    fn sample_observation() -> shatter_core::explorer::ObservationOutput {
+        shatter_core::explorer::ObservationOutput {
+            function_name: "load/user".to_string(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 8,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: shatter_core::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+        }
+    }
+
+    fn sample_outcome() -> FuncExploreOutcome {
+        FuncExploreOutcome {
             work_index: 0,
-            func: FunctionAnalysis {
-                name: "load/user".to_string(),
-                exported: true,
-                start_line: 12,
-                end_line: 20,
-                params: vec![],
-                branches: vec![],
-                dependencies: vec![],
-                return_type: TypeInfo::Unknown,
-                literals: vec![],
-                crypto_boundaries: vec![],
-                loops: vec![],
-                source_file: None,
-                adapter_hints: vec![],
-                invocation_model: InvocationModel::Direct,
-            },
+            func: sample_func_analysis(),
             mock_symbols: vec!["dep".to_string()],
-            result: Ok(shatter_core::explorer::ObservationOutput {
-                function_name: "load/user".to_string(),
-                iterations: 1,
-                unique_paths: 1,
-                lines_covered: 3,
-                total_lines: 8,
-                new_path_executions: vec![],
-                raw_results: vec![],
-                discoveries: vec![],
-                nondeterministic_fields: vec![],
-                float_probe_results: vec![],
-                boundary_results: vec![],
-                shrunk_witnesses: std::collections::HashMap::new(),
-                mcdc_summary: None,
-                shrink_stats: shatter_core::shrink::ShrinkStats::default(),
-                abandoned_frontiers: vec![],
-                opaque_suggestions: vec![],
-                stubbed_modules: vec![],
-            }),
+            result: Ok(sample_observation()),
             wall_time: Duration::from_millis(25),
             genetic_config: GeneticConfig::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn write_explore_artifact_persists_completed_v2_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = sample_outcome();
 
         let path =
             write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
-        let json = std::fs::read_to_string(path).expect("read artifact");
+        let json = std::fs::read_to_string(&path).expect("read artifact");
         let value: serde_json::Value = serde_json::from_str(&json).expect("json");
 
+        assert_eq!(value["version"], EXPLORE_ARTIFACT_VERSION);
         assert_eq!(value["status"], "completed");
         assert_eq!(value["function_name"], "load/user");
         assert_eq!(value["mock_symbols"][0], "dep");
         assert_eq!(value["observation"]["function_name"], "load/user");
+        // v2: analysis field present
+        assert_eq!(value["analysis"]["name"], "load/user");
+        assert_eq!(value["analysis"]["start_line"], 12);
+    }
+
+    #[test]
+    fn write_then_read_explore_artifact_roundtrips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = sample_outcome();
+
+        let path =
+            write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
+
+        let artifact = read_explore_artifact(&path).expect("read artifact");
+
+        assert_eq!(artifact.version, EXPLORE_ARTIFACT_VERSION);
+        assert_eq!(artifact.status, "completed");
+        assert_eq!(artifact.function_name, "load/user");
+        assert_eq!(artifact.file, "src/user.ts");
+        assert_eq!(artifact.start_line, 12);
+        assert_eq!(artifact.end_line, 20);
+        assert_eq!(artifact.wall_time_ms, 25);
+        assert_eq!(artifact.mock_symbols, vec!["dep"]);
+        assert_eq!(artifact.analysis.name, "load/user");
+        assert!(artifact.observation.is_some());
+        assert!(artifact.error.is_none());
+    }
+
+    #[test]
+    fn load_explore_artifacts_reads_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome1 = sample_outcome();
+        let mut outcome2 = sample_outcome();
+        outcome2.func.name = "validate".to_string();
+        outcome2.func.start_line = 25;
+        outcome2.func.end_line = 30;
+        outcome2.work_index = 1;
+
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome1).expect("write 1");
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome2).expect("write 2");
+
+        let artifacts = load_explore_artifacts(dir.path()).expect("load");
+        assert_eq!(artifacts.len(), 2);
+        // Sorted by start_line
+        assert_eq!(artifacts[0].function_name, "load/user");
+        assert_eq!(artifacts[1].function_name, "validate");
+    }
+
+    #[test]
+    fn load_explore_artifacts_skips_corrupt_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let subdir = dir.path().join("src_user.ts");
+        std::fs::create_dir_all(&subdir).expect("mkdir");
+
+        // Write a valid artifact
+        let outcome = sample_outcome();
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write");
+
+        // Write a corrupt file
+        std::fs::write(subdir.join("00099_corrupt.json"), "not valid json").expect("write corrupt");
+
+        let artifacts = load_explore_artifacts(dir.path()).expect("load");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].function_name, "load/user");
+    }
+
+    #[test]
+    fn load_explore_artifacts_skips_summary_and_tmp_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let subdir = dir.path().join("src_user.ts");
+        std::fs::create_dir_all(&subdir).expect("mkdir");
+
+        let outcome = sample_outcome();
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write");
+
+        // Write summary and tmp files that should be skipped
+        std::fs::write(subdir.join("summary.json"), "{}").expect("write summary");
+        std::fs::write(subdir.join("00001_foo.json.tmp"), "{}").expect("write tmp");
+
+        let artifacts = load_explore_artifacts(dir.path()).expect("load");
+        assert_eq!(artifacts.len(), 1);
+    }
+
+    #[test]
+    fn explore_summary_roundtrips() {
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 3,
+            completed: 2,
+            failed: 1,
+            skipped: 0,
+            elapsed_secs: 1.5,
+            functions: vec![
+                ExploreSummaryEntry {
+                    function_name: "load".to_string(),
+                    status: "completed".to_string(),
+                    artifact: Some("src_user.ts/00012_load.json".to_string()),
+                    reason: None,
+                },
+                ExploreSummaryEntry {
+                    function_name: "save".to_string(),
+                    status: "failed".to_string(),
+                    artifact: Some("src_user.ts/00025_save.json".to_string()),
+                    reason: Some("timeout".to_string()),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string_pretty(&summary).expect("serialize");
+        let parsed: ExploreSummary = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.version, EXPLORE_ARTIFACT_VERSION);
+        assert_eq!(parsed.status, "completed");
+        assert_eq!(parsed.total_functions, 3);
+        assert_eq!(parsed.completed, 2);
+        assert_eq!(parsed.failed, 1);
+        assert_eq!(parsed.functions.len(), 2);
+        assert_eq!(parsed.functions[0].function_name, "load");
+        assert_eq!(
+            parsed.functions[1].reason.as_deref(),
+            Some("timeout")
+        );
+    }
+
+    #[test]
+    fn write_and_read_explore_summary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "running".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 0.0,
+            functions: vec![],
+        };
+
+        write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
+        let path = explore_summary_path(dir.path(), "src/user.ts");
+        assert!(path.exists());
+
+        let json = std::fs::read_to_string(&path).expect("read");
+        let parsed: ExploreSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.status, "running");
+    }
+
+    #[test]
+    fn read_explore_artifact_rejects_v1_missing_analysis() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // v1 artifacts lack the `analysis` field and cannot be deserialized.
+        let v1_json = serde_json::json!({
+            "version": 1,
+            "status": "completed",
+            "file": "src/user.ts",
+            "function_name": "load",
+            "start_line": 1,
+            "end_line": 10,
+            "wall_time_ms": 100,
+            "mock_symbols": [],
+            "observation": null
+        });
+        let path = dir.path().join("00001_load.json");
+        std::fs::write(&path, serde_json::to_string(&v1_json).unwrap()).expect("write");
+
+        let result = read_explore_artifact(&path);
+        assert!(result.is_err(), "v1 artifact should fail to load");
     }
 
     #[test]
