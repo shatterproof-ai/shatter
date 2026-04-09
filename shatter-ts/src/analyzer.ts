@@ -8,6 +8,7 @@
 import * as ts from "typescript";
 import * as path from "node:path";
 import { refineIntegerParams } from "./integer-heuristic.js";
+import { recognizeReactHooks } from "./react-hook-recognizer.js";
 import type {
   FunctionAnalysis,
   ParamInfo,
@@ -224,6 +225,18 @@ export function analyzeFile(
             results.push(fn);
           }
         }
+      }
+    }
+  }
+
+  // Post-processing: attach React hook adapter hints for .tsx/.ts files
+  if (results.length > 0) {
+    const hints = recognizeReactHooks(sourceFile, results);
+    for (let i = 0; i < results.length; i++) {
+      const hint = hints[i];
+      if (hint) {
+        const fn = results[i]!;
+        fn.adapter_hints = fn.adapter_hints ? [...fn.adapter_hints, hint] : [hint];
       }
     }
   }

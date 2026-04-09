@@ -1559,3 +1559,140 @@ describe("unresolvable module stub shape invariants", () => {
     expect(+(stub as unknown as number)).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// React hook recognizer properties
+// ---------------------------------------------------------------------------
+
+import {
+  recognizeReactHooks,
+  isHookName,
+  BUILTIN_REACT_HOOKS,
+  REACT_HOOK_ADAPTER_ID,
+} from "./react-hook-recognizer.js";
+
+describe("React hook recognizer properties", () => {
+  /** Generate inline TS source with a function that optionally calls hooks. */
+  const arbBuiltinHook = fc.constantFrom(...Array.from(BUILTIN_REACT_HOOKS));
+
+  it("isHookName: true iff starts with 'use' + uppercase", () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^use[A-Z][a-zA-Z]{0,20}$/),
+        (name) => {
+          expect(isHookName(name)).toBe(true);
+        },
+      ),
+    );
+  });
+
+  it("isHookName: false for names not matching useXxx pattern", () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[a-z]{1,20}$/),
+        (name) => {
+          // Lowercase-only names that happen to start with "use" but have lowercase 4th char
+          if (name.startsWith("use") && name.length > 3) {
+            expect(isHookName(name)).toBe(false);
+          }
+        },
+      ),
+    );
+  });
+
+  it("function calling builtin hook always gets a hint", () => {
+    fc.assert(
+      fc.property(
+        arbBuiltinHook,
+        fc.constantFrom("useMyHook", "doStuff", "MyComponent"),
+        (hookName, fnName) => {
+          const source = `
+import { ${hookName} } from "react";
+export function ${fnName}(x: number) {
+  const v = ${hookName}(x);
+  return v;
+}
+`;
+          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+          const fns: FunctionAnalysis[] = [{
+            name: fnName,
+            exported: true,
+            params: [{ name: "x", type: { kind: "float" } }],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 3,
+            end_line: 6,
+          }];
+          const hints = recognizeReactHooks(sf, fns);
+          expect(hints[0]).toBeDefined();
+          expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
+          expect(hints[0]!.confidence).toBe("high");
+          expect(hints[0]!.reasons!.length).toBeGreaterThan(0);
+        },
+      ),
+    );
+  });
+
+  it("useXxx name with no hook calls never gets a hint", () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^use[A-Z][a-zA-Z]{1,10}$/),
+        (fnName) => {
+          // File with React import but function doesn't call any hooks
+          const source = `
+import { useState } from "react";
+export function ${fnName}(x: number) {
+  return x * 2;
+}
+`;
+          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+          const fns: FunctionAnalysis[] = [{
+            name: fnName,
+            exported: true,
+            params: [{ name: "x", type: { kind: "float" } }],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 3,
+            end_line: 5,
+          }];
+          const hints = recognizeReactHooks(sf, fns);
+          expect(hints[0]).toBeUndefined();
+        },
+      ),
+    );
+  });
+
+  it("every emitted hint has non-empty reasons", () => {
+    fc.assert(
+      fc.property(
+        arbBuiltinHook,
+        fc.constantFrom("useA", "useB", "Comp"),
+        (hookName, fnName) => {
+          const source = `
+import { ${hookName} } from "react";
+export function ${fnName}(x: number) {
+  return ${hookName}(x);
+}
+`;
+          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+          const fns: FunctionAnalysis[] = [{
+            name: fnName,
+            exported: true,
+            params: [{ name: "x", type: { kind: "float" } }],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 3,
+            end_line: 5,
+          }];
+          const hints = recognizeReactHooks(sf, fns);
+          if (hints[0]) {
+            expect(hints[0].reasons!.length).toBeGreaterThan(0);
+          }
+        },
+      ),
+    );
+  });
+});
