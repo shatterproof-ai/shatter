@@ -2497,8 +2497,6 @@ pub async fn parallel_scan_with_progress(
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
                     let artifact_root = Arc::clone(&artifact_root);
-                    let write_success_artifact = write_success_artifact;
-
                     let handle = tokio::spawn(async move {
                         emit_progress(
                             progress_handler.as_ref(),
