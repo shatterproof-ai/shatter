@@ -45,8 +45,12 @@ pub enum FrontendError {
     Serialize(serde_json::Error),
 
     /// Failed to deserialize a response from JSON.
-    #[error("failed to deserialize response: {0}")]
-    Deserialize(serde_json::Error),
+    #[error("failed to deserialize frontend response ({response_bytes} bytes): {source}\n  hint: {hint}")]
+    Deserialize {
+        source: serde_json::Error,
+        response_bytes: usize,
+        hint: String,
+    },
 
     /// The response ID did not match the request ID.
     #[error("response id {response_id} does not match request id {request_id}")]
@@ -233,7 +237,7 @@ impl Frontend {
             }
 
             let response: Response =
-                serde_json::from_str(line.trim()).map_err(FrontendError::Deserialize)?;
+                serde_json::from_str(line.trim()).map_err(|e| deserialize_error(e, &line))?;
 
             if response.id != id {
                 return Err(FrontendError::IdMismatch {
@@ -293,7 +297,7 @@ impl Frontend {
             }
 
             let response: Response =
-                serde_json::from_str(line.trim()).map_err(FrontendError::Deserialize)?;
+                serde_json::from_str(line.trim()).map_err(|e| deserialize_error(e, &line))?;
 
             if response.id != id {
                 return Err(FrontendError::IdMismatch {
@@ -375,6 +379,32 @@ fn request_span(command: &ProtoCommand) -> tracing::Span {
         ProtoCommand::Teardown { .. } => tracing::info_span!("frontend.request.teardown"),
         ProtoCommand::Generate { .. } => tracing::info_span!("frontend.request.generate"),
         ProtoCommand::Shutdown => tracing::info_span!("frontend.request.shutdown"),
+    }
+}
+
+/// Build a descriptive deserialization error that helps diagnose whether the
+/// failure is from truncation, malformed payload, or a missing/unexpected field.
+fn deserialize_error(source: serde_json::Error, raw_line: &str) -> FrontendError {
+    let response_bytes = raw_line.len();
+    let err_msg = source.to_string();
+    let hint = if !raw_line.trim_end().ends_with('}') {
+        "response appears truncated (does not end with '}')".into()
+    } else if err_msg.contains("missing field") {
+        format!(
+            "frontend response has unexpected shape — a required field is absent; \
+             first 200 chars: {}",
+            &raw_line[..raw_line.len().min(200)]
+        )
+    } else {
+        format!(
+            "invalid JSON payload; first 200 chars: {}",
+            &raw_line[..raw_line.len().min(200)]
+        )
+    };
+    FrontendError::Deserialize {
+        source,
+        response_bytes,
+        hint,
     }
 }
 

@@ -318,7 +318,7 @@ type SymExpr struct {
 	Right    *SymExpr  `json:"right,omitempty"`
 	Operand  *SymExpr  `json:"operand,omitempty"`
 	Receiver  *SymExpr  `json:"receiver,omitempty"`
-	Args      []SymExpr `json:"args,omitempty"`
+	Args      []SymExpr `json:"args"`
 	Condition *SymExpr  `json:"condition,omitempty"`
 	ThenExpr  *SymExpr  `json:"then_expr,omitempty"`
 	ElseExpr  *SymExpr  `json:"else_expr,omitempty"`

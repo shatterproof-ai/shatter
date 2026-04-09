@@ -1,9 +1,11 @@
 package protocol
 
 import (
+	"encoding/json"
 	"go/token"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -980,4 +982,60 @@ func TestLoopRangeProducesNoLoopInfo(t *testing.T) {
 	if len(fn.Loops) != 0 {
 		t.Errorf("loops len = %d, want 0 (range loop)", len(fn.Loops))
 	}
+}
+
+// TestAnalyzeZeroArgCallIncludesArgsField verifies that a branch condition
+// containing a zero-argument function call serializes with "args":[] present
+// in JSON, not omitted. The Rust core deserializes SymExpr::Call with a
+// required args field; omitting it causes "missing field 'args'" errors.
+func TestAnalyzeZeroArgCallIncludesArgsField(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("zero_arg_call.go"), "CheckReady")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	if len(fn.Branches) == 0 {
+		t.Fatal("expected at least one branch")
+	}
+
+	// Find a branch condition that contains a call SymExpr
+	var found bool
+	for _, br := range fn.Branches {
+		if br.Condition != nil && containsCallKind(br.Condition) {
+			found = true
+			// Serialize the condition and verify "args" is present
+			data, err := json.Marshal(br.Condition)
+			if err != nil {
+				t.Fatalf("marshal condition: %v", err)
+			}
+			jsonStr := string(data)
+			if !strings.Contains(jsonStr, `"args"`) {
+				t.Errorf("serialized call SymExpr missing 'args' field: %s", jsonStr)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no branch condition with call kind found in CheckReady")
+	}
+}
+
+func containsCallKind(expr *SymExpr) bool {
+	if expr == nil {
+		return false
+	}
+	if expr.Kind == "call" {
+		return true
+	}
+	if containsCallKind(expr.Left) || containsCallKind(expr.Right) ||
+		containsCallKind(expr.Operand) || containsCallKind(expr.Receiver) ||
+		containsCallKind(expr.Condition) || containsCallKind(expr.ThenExpr) ||
+		containsCallKind(expr.ElseExpr) {
+		return true
+	}
+	for i := range expr.Args {
+		if containsCallKind(&expr.Args[i]) {
+			return true
+		}
+	}
+	return false
 }
