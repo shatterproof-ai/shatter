@@ -411,14 +411,15 @@ async fn main() -> ExitCode {
                     );
                 }
             }
-            // Resolve genetic config: config.yaml defaults merged with CLI overrides.
-            let yaml_genetic = {
-                let scan_dir = std::path::Path::new(&directory);
+            // Resolve hierarchical .shatter/config.yaml defaults for scan budgets.
+            let scan_dir = std::path::Path::new(&directory);
+            let yaml_defaults = {
                 let configs = shatter_core::config::discover_configs(scan_dir)
                     .unwrap_or_default();
                 let merged = shatter_core::config::merge_configs(&configs);
-                merged.defaults.genetic.unwrap_or_default()
+                merged.defaults
             };
+            let yaml_genetic = yaml_defaults.genetic.clone().unwrap_or_default();
             let genetic_config = if genetic {
                 shatter_core::config::GeneticConfig {
                     enabled: true,
@@ -443,15 +444,15 @@ async fn main() -> ExitCode {
                 None
             });
 
-            // Resolve CLI options: CLI flag > project config > built-in default.
+            // Resolve CLI options: CLI flag > YAML config > built-in default.
             let effective_max_iterations = max_iterations
-                .or_else(|| project_cfg.as_ref().and_then(|c| c.max_iterations))
+                .or(yaml_defaults.max_iterations)
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_MAX_ITERATIONS);
             let effective_timeout_total = timeout_total
                 .or_else(|| project_cfg.as_ref().and_then(|c| c.timeout_total))
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_TIMEOUT_TOTAL);
             let effective_timeout_per_fn = timeout_per_fn
-                .or_else(|| project_cfg.as_ref().and_then(|c| c.timeout_per_fn))
+                .or(yaml_defaults.timeout)
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_TIMEOUT_PER_FN);
             let effective_exec_timeout = exec_timeout
                 .or_else(|| project_cfg.as_ref().and_then(|c| c.exec_timeout))

@@ -645,7 +645,7 @@ pub(crate) enum CliCommand {
 
         /// Per-function exploration timeout in seconds. Functions exceeding this
         /// limit are skipped without aborting the scan. Default: 30s.
-        /// Overridden by shatter.config.json when not explicitly set.
+        /// Overridden by .shatter/config.yaml `defaults.timeout` when not explicitly set.
         #[arg(long)]
         timeout_per_fn: Option<u64>,
 
@@ -721,7 +721,7 @@ pub(crate) enum CliCommand {
         stratum: Option<String>,
 
         /// Maximum number of iterations per function. Default: 100.
-        /// Overridden by shatter.config.json when not explicitly set.
+        /// Overridden by .shatter/config.yaml `defaults.max_iterations` when not explicitly set.
         #[arg(long)]
         max_iterations: Option<u32>,
 
