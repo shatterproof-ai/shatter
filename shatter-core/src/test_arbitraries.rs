@@ -20,8 +20,9 @@ use crate::invariants::{
     ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
 };
 use crate::protocol::{
-    BoundOp, BranchInfo, BranchType, Command, ConnectionFailure, CryptoBoundary,
-    DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode, ExecuteResult,
+    AdapterHint, AdapterRelation, BoundOp, BranchInfo, BranchType, Command, ConnectionFailure,
+    CryptoBoundary, DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode,
+    ExecuteResult, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
     ExternalDependency, FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel,
     LiteralValue, LoopInfo, MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
     RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary, TimingSummary,
@@ -1479,4 +1480,70 @@ pub fn arb_specify_stage_output() -> impl Strategy<Value = SpecifyStageOutput> {
                 }
             },
         )
+}
+
+// ---------------------------------------------------------------------------
+// Adapter selection generators
+// ---------------------------------------------------------------------------
+
+pub fn arb_execution_adapter_apply() -> impl Strategy<Value = ExecutionAdapterApply> {
+    prop_oneof![
+        Just(ExecutionAdapterApply::Required),
+        Just(ExecutionAdapterApply::Auto),
+        Just(ExecutionAdapterApply::Suggest),
+        Just(ExecutionAdapterApply::Disabled),
+    ]
+}
+
+pub fn arb_adapter_id() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("ts/react-hooks".to_string()),
+        Just("ts/browser-dom".to_string()),
+        Just("ts/module-resolution".to_string()),
+        Just("ts/import-meta-env".to_string()),
+        Just("go/http-nethttp".to_string()),
+        Just("rust/async-tokio".to_string()),
+    ]
+}
+
+pub fn arb_execution_adapter() -> impl Strategy<Value = ExecutionAdapter> {
+    (
+        arb_adapter_id(),
+        proptest::option::of(arb_execution_adapter_apply()),
+    )
+        .prop_map(|(id, apply)| ExecutionAdapter {
+            id,
+            apply,
+            options: None,
+        })
+}
+
+pub fn arb_adapter_relation() -> impl Strategy<Value = AdapterRelation> {
+    (arb_adapter_id(), proptest::option::of(arb_ident())).prop_map(|(adapter_id, reason)| {
+        AdapterRelation { adapter_id, reason }
+    })
+}
+
+pub fn arb_adapter_hint() -> impl Strategy<Value = AdapterHint> {
+    (
+        arb_execution_adapter(),
+        arb_confidence(),
+        prop::collection::vec(arb_ident(), 0..3),
+        prop::collection::vec(arb_adapter_relation(), 0..2),
+        prop::collection::vec(arb_adapter_relation(), 0..2),
+    )
+        .prop_map(
+            |(adapter, confidence, reasons, requirements, conflicts)| AdapterHint {
+                adapter,
+                confidence,
+                reasons,
+                requirements,
+                conflicts,
+            },
+        )
+}
+
+pub fn arb_execution_profile() -> impl Strategy<Value = ExecutionProfile> {
+    prop::collection::vec(arb_execution_adapter(), 1..4)
+        .prop_map(|adapters| ExecutionProfile { adapters })
 }

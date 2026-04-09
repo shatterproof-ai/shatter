@@ -8,6 +8,7 @@ use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 
+use crate::adapter_selection::AdapterSelectionResult;
 use crate::behavior::BehaviorMap;
 use crate::execution_record::{ErrorInfo, ExecutionRecord};
 use crate::invariants::Invariant;
@@ -51,6 +52,9 @@ pub struct FunctionSpec<'a> {
     pub clusters: &'a [AnnotatedCluster],
     /// Edge case clusters (behaviors with unusual or boundary inputs).
     pub edge_cases: &'a [EdgeCase],
+    /// Adapter selection result, if available. When present, the report
+    /// distinguishes active adapters from suggested adapters.
+    pub adapter_selection: Option<&'a AdapterSelectionResult>,
 }
 
 /// A single edge case to include in the Edge Cases section.
@@ -79,7 +83,11 @@ pub fn generate_markdown(spec: &FunctionSpec<'_>) -> String {
 
     write_function_heading(&mut out, spec.analysis);
     write_parameters_section(&mut out, spec.analysis);
-    write_adapter_hints_section(&mut out, spec.analysis);
+    if let Some(selection) = spec.adapter_selection {
+        write_adapter_selection_section(&mut out, selection);
+    } else {
+        write_adapter_hints_section(&mut out, spec.analysis);
+    }
     write_behavior_sections(&mut out, spec.clusters);
     write_edge_cases_section(&mut out, spec.edge_cases);
     write_dependencies_section(&mut out, &spec.analysis.dependencies);
@@ -120,6 +128,7 @@ pub fn generate_markdown_from_behavior_map(
         analysis,
         clusters: &clusters,
         edge_cases: &[],
+        adapter_selection: None,
     };
     generate_markdown(&spec)
 }
@@ -218,6 +227,39 @@ fn write_adapter_hints_section(out: &mut String, analysis: &FunctionAnalysis) {
         }
     }
     out.push('\n');
+}
+
+fn write_adapter_selection_section(out: &mut String, selection: &AdapterSelectionResult) {
+    if selection.is_empty() {
+        return;
+    }
+
+    if !selection.active.is_empty() {
+        out.push_str("## Active Adapters\n");
+        for active in &selection.active {
+            let _ = writeln!(out, "- `{}` ({})", active.adapter.id, active.provenance);
+            if !active.reasons.is_empty() {
+                let _ = writeln!(out, "  reasons: {}", active.reasons.join("; "));
+            }
+        }
+        out.push('\n');
+    }
+
+    if !selection.suggested.is_empty() {
+        out.push_str("## Suggested Adapters\n");
+        for suggested in &selection.suggested {
+            let _ = writeln!(
+                out,
+                "- `{}` [{}]",
+                suggested.adapter.id,
+                format!("{:?}", suggested.confidence).to_lowercase(),
+            );
+            if !suggested.reasons.is_empty() {
+                let _ = writeln!(out, "  reasons: {}", suggested.reasons.join("; "));
+            }
+        }
+        out.push('\n');
+    }
 }
 
 fn write_behavior_sections(out: &mut String, clusters: &[AnnotatedCluster]) {
@@ -577,6 +619,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(
@@ -600,6 +643,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("## Parameters\n"), "got: {md}");
@@ -614,6 +658,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(!md.contains("## Parameters"), "got: {md}");
@@ -635,6 +680,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("# Function: useTeamSwitch(teamId: string): unknown"), "got: {md}");
@@ -656,6 +702,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[cluster],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
 
@@ -689,6 +736,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[cluster],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
 
@@ -726,6 +774,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[cluster],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("**Calls:** rateService.getExpressRate\n"), "got: {md}");
@@ -748,6 +797,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &edge_cases,
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("## Edge Cases\n"), "got: {md}");
@@ -762,6 +812,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(!md.contains("## Edge Cases"), "got: {md}");
@@ -792,6 +843,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("## Dependencies\n"), "got: {md}");
@@ -806,6 +858,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(!md.contains("## Dependencies"), "got: {md}");
@@ -835,6 +888,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[],
             edge_cases: &[],
+            adapter_selection: None,
         };
 
         let md = generate_markdown(&spec);
@@ -843,6 +897,52 @@ mod tests {
         assert!(md.contains("reasons: uses window and document"), "got: {md}");
         assert!(md.contains("requirements: ts/dom-runtime (needs DOM globals)"), "got: {md}");
         assert!(md.contains("conflicts: ts/node-only (mutually exclusive runtime)"), "got: {md}");
+    }
+
+    #[test]
+    fn adapter_selection_section_distinguishes_active_from_suggested() {
+        use crate::adapter_selection::{
+            AdapterSelectionResult, SelectedAdapter, SelectionProvenance, SuggestedAdapter,
+        };
+
+        let analysis = make_analysis("myFunc", vec![], TypeInfo::Unknown, vec![]);
+        let selection = AdapterSelectionResult {
+            active: vec![SelectedAdapter {
+                adapter: ExecutionAdapter {
+                    id: "ts/module-resolution".into(),
+                    apply: Some(ExecutionAdapterApply::Required),
+                    options: None,
+                },
+                provenance: SelectionProvenance::ExplicitConfig,
+                reasons: vec!["user configured".into()],
+            }],
+            suggested: vec![SuggestedAdapter {
+                adapter: ExecutionAdapter {
+                    id: "ts/react-hooks".into(),
+                    apply: Some(ExecutionAdapterApply::Suggest),
+                    options: None,
+                },
+                confidence: Confidence::Medium,
+                reasons: vec!["imports react".into(), "calls useCallback".into()],
+            }],
+            rejected: vec![],
+        };
+        let spec = FunctionSpec {
+            analysis: &analysis,
+            clusters: &[],
+            edge_cases: &[],
+            adapter_selection: Some(&selection),
+        };
+
+        let md = generate_markdown(&spec);
+        assert!(md.contains("## Active Adapters\n"), "got: {md}");
+        assert!(md.contains("`ts/module-resolution` (config)"), "got: {md}");
+        assert!(md.contains("reasons: user configured"), "got: {md}");
+        assert!(md.contains("## Suggested Adapters\n"), "got: {md}");
+        assert!(md.contains("`ts/react-hooks` [medium]"), "got: {md}");
+        assert!(md.contains("reasons: imports react; calls useCallback"), "got: {md}");
+        // Should NOT contain the old "Adapter Hints" section.
+        assert!(!md.contains("## Adapter Hints"), "got: {md}");
     }
 
     #[test]
@@ -922,6 +1022,7 @@ mod tests {
             analysis: &analysis,
             clusters: &clusters,
             edge_cases: &edge_cases,
+            adapter_selection: None,
         };
 
         let md = generate_markdown(&spec);
@@ -1064,6 +1165,7 @@ mod tests {
             analysis: &analysis,
             clusters: &[cluster],
             edge_cases: &[],
+            adapter_selection: None,
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("**Invariant:** x > 0; x < 100; result >= x\n"), "got: {md}");
