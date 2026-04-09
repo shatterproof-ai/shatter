@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::auto_mock;
@@ -407,7 +408,13 @@ pub struct SkippedFunction {
     pub category: SkipCategory,
 }
 
+/// Root directory for per-function scan artifacts.
 fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+    scan_root(project_root, scan_id).join("functions")
+}
+
+/// Root directory for the entire scan (parent of `functions/`).
+fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
     project_root
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -415,7 +422,6 @@ fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
         .join("shatter-artifacts")
         .join("scan-results")
         .join(scan_id)
-        .join("functions")
 }
 
 fn sanitize_artifact_component(input: &str) -> String {
@@ -545,6 +551,236 @@ fn write_failed_scan_artifact(
         "reason": reason,
     });
     write_scan_artifact_json(root, current, function_name, &value);
+}
+
+// ---------------------------------------------------------------------------
+// Scan summary artifact
+// ---------------------------------------------------------------------------
+
+/// Status of the overall scan run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+/// Per-function entry in the scan summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSummaryEntry {
+    pub function_name: String,
+    pub status: String,
+    /// 1-based index in exploration order.
+    pub index: usize,
+    /// Relative path to the per-function artifact file (if written).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+    /// Reason for skip or failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Top-level scan summary artifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSummary {
+    pub version: u32,
+    pub scan_id: String,
+    pub status: ScanRunStatus,
+    pub total_functions: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub elapsed_secs: f64,
+    pub functions: Vec<ScanSummaryEntry>,
+}
+
+const SCAN_SUMMARY_VERSION: u32 = 1;
+
+/// Write the scan summary to `<scan_root>/summary.json` using atomic rename.
+fn write_scan_summary(scan_root: &Path, summary: &ScanSummary) {
+    let path = scan_root.join("summary.json");
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        log::warn!("failed to create scan summary dir: {e}");
+        return;
+    }
+    let Ok(json) = serde_json::to_string_pretty(summary) else {
+        log::warn!("failed to serialize scan summary");
+        return;
+    };
+    let tmp_path = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        log::warn!("failed to write scan summary temp file: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        log::warn!("failed to finalize scan summary: {e}");
+        return;
+    }
+    log::debug!("Updated scan summary -> {}", path.display());
+}
+
+/// Create an initial summary with status `Running` and no function entries.
+fn new_scan_summary(scan_id: &str, total_functions: usize) -> ScanSummary {
+    ScanSummary {
+        version: SCAN_SUMMARY_VERSION,
+        scan_id: scan_id.to_string(),
+        status: ScanRunStatus::Running,
+        total_functions,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+        elapsed_secs: 0.0,
+        functions: Vec::new(),
+    }
+}
+
+/// Record a completed function in the summary.
+fn summary_record_completed(
+    summary: &mut ScanSummary,
+    function_name: &str,
+    index: usize,
+    elapsed: Duration,
+) {
+    summary.completed += 1;
+    summary.elapsed_secs = elapsed.as_secs_f64();
+    let artifact_filename = format!(
+        "{:05}_{}.json",
+        index,
+        sanitize_artifact_component(function_name)
+    );
+    summary.functions.push(ScanSummaryEntry {
+        function_name: function_name.to_string(),
+        status: "completed".to_string(),
+        index,
+        artifact: Some(format!("functions/{artifact_filename}")),
+        reason: None,
+    });
+}
+
+/// Record a skipped function in the summary.
+fn summary_record_skipped(
+    summary: &mut ScanSummary,
+    function_name: &str,
+    index: usize,
+    reason: &str,
+    category: SkipCategory,
+    elapsed: Duration,
+) {
+    summary.elapsed_secs = elapsed.as_secs_f64();
+    match category {
+        SkipCategory::Expected => summary.skipped += 1,
+        SkipCategory::Error => summary.skipped += 1,
+    }
+    let artifact_filename = format!(
+        "{:05}_{}.json",
+        index,
+        sanitize_artifact_component(function_name)
+    );
+    summary.functions.push(ScanSummaryEntry {
+        function_name: function_name.to_string(),
+        status: "skipped".to_string(),
+        index,
+        artifact: Some(format!("functions/{artifact_filename}")),
+        reason: Some(reason.to_string()),
+    });
+}
+
+/// Record a failed function in the summary.
+fn summary_record_failed(
+    summary: &mut ScanSummary,
+    function_name: &str,
+    index: usize,
+    reason: &str,
+    elapsed: Duration,
+) {
+    summary.failed += 1;
+    summary.elapsed_secs = elapsed.as_secs_f64();
+    let artifact_filename = format!(
+        "{:05}_{}.json",
+        index,
+        sanitize_artifact_component(function_name)
+    );
+    summary.functions.push(ScanSummaryEntry {
+        function_name: function_name.to_string(),
+        status: "failed".to_string(),
+        index,
+        artifact: Some(format!("functions/{artifact_filename}")),
+        reason: Some(reason.to_string()),
+    });
+}
+
+/// Finalize the summary status based on outcomes.
+fn summary_finalize(summary: &mut ScanSummary, elapsed: Duration) {
+    summary.elapsed_secs = elapsed.as_secs_f64();
+    summary.status = if summary.failed > 0 && summary.completed == 0 {
+        ScanRunStatus::Failed
+    } else {
+        ScanRunStatus::Completed
+    };
+}
+
+/// Build a `ScanSummary` retroactively from a finished [`ScanResult`].
+///
+/// Used by the non-parallel `scan()` path which doesn't incrementally update
+/// the summary during execution.
+fn build_summary_from_scan_result(
+    scan_id: &str,
+    result: &ScanResult,
+    elapsed: Duration,
+) -> ScanSummary {
+    let total = result.function_results.len() + result.skipped_functions.len();
+    let mut summary = new_scan_summary(scan_id, total);
+    let mut index = 0usize;
+    // Function results and skipped functions are in test order.
+    // Interleave them by maintaining separate iterators.
+    let mut skip_iter = result.skipped_functions.iter().peekable();
+    for fr in &result.function_results {
+        // Emit any skipped functions that appear before this result in test order.
+        while let Some(sf) = skip_iter.peek() {
+            if result
+                .test_order
+                .iter()
+                .position(|n| n == &sf.function_name)
+                <= result
+                    .test_order
+                    .iter()
+                    .position(|n| n == &fr.function_name)
+            {
+                let sf = skip_iter.next().expect("peeked");
+                index += 1;
+                summary_record_skipped(
+                    &mut summary,
+                    &sf.function_name,
+                    index,
+                    &sf.reason,
+                    sf.category,
+                    elapsed,
+                );
+            } else {
+                break;
+            }
+        }
+        index += 1;
+        summary_record_completed(&mut summary, &fr.function_name, index, elapsed);
+    }
+    // Remaining skipped functions.
+    for sf in skip_iter {
+        index += 1;
+        summary_record_skipped(
+            &mut summary,
+            &sf.function_name,
+            index,
+            &sf.reason,
+            sf.category,
+            elapsed,
+        );
+    }
+    summary_finalize(&mut summary, elapsed);
+    summary
 }
 
 /// Build an [`ExecutionRecord`] from an [`ExecuteResult`] and its inputs.
@@ -754,6 +990,8 @@ pub async fn scan(
         .and_then(|p| interesting_pool::load_pool(p).ok().flatten())
         .unwrap_or_default();
     input_pool.epoch += 1;
+
+    let scan_start = Instant::now();
 
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
@@ -1047,12 +1285,19 @@ pub async fn scan(
         log::warn!("failed to save interesting pool: {e}");
     }
 
-    Ok(ScanResult {
+    let result = ScanResult {
         function_results,
         test_order,
         skipped_functions,
         sampling: None,
-    })
+    };
+
+    // Write the scan summary artifact.
+    let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
+    let summary = build_summary_from_scan_result(&scan_id, &result, scan_start.elapsed());
+    write_scan_summary(&scan_root_dir, &summary);
+
+    Ok(result)
 }
 
 /// Result of a parallel scan across multiple functions.
@@ -1794,6 +2039,9 @@ pub async fn parallel_scan_with_progress(
     let total_functions = analyses.len();
     let mut progress_index = 0usize;
     let artifact_root = Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id));
+    let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
+    let mut summary = new_scan_summary(&scan_id, total_functions);
+    write_scan_summary(&scan_root_dir, &summary);
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
@@ -1817,6 +2065,14 @@ pub async fn parallel_scan_with_progress(
                         "total scan timeout exceeded",
                         SkipCategory::Error,
                     );
+                    summary_record_skipped(
+                        &mut summary,
+                        func_name,
+                        progress_index,
+                        "total scan timeout exceeded",
+                        SkipCategory::Error,
+                        scan_start.elapsed(),
+                    );
                     emit_progress(
                         progress_handler.as_ref(),
                         func_name,
@@ -1827,6 +2083,8 @@ pub async fn parallel_scan_with_progress(
                     );
                 }
             }
+            summary.status = ScanRunStatus::Interrupted;
+            write_scan_summary(&scan_root_dir, &summary);
             break;
         }
 
@@ -1872,6 +2130,15 @@ pub async fn parallel_scan_with_progress(
                         "no analysis found",
                         SkipCategory::Error,
                     );
+                    summary_record_skipped(
+                        &mut summary,
+                        func_name,
+                        current_progress,
+                        "no analysis found",
+                        SkipCategory::Error,
+                        scan_start.elapsed(),
+                    );
+                    write_scan_summary(&scan_root_dir, &summary);
                     emit_progress(
                         progress_handler.as_ref(),
                         func_name,
@@ -1914,6 +2181,15 @@ pub async fn parallel_scan_with_progress(
                     "resumed from checkpoint",
                     SkipCategory::Expected,
                 );
+                summary_record_skipped(
+                    &mut summary,
+                    func_name,
+                    current_progress,
+                    "resumed from checkpoint",
+                    SkipCategory::Expected,
+                    scan_start.elapsed(),
+                );
+                write_scan_summary(&scan_root_dir, &summary);
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -1947,6 +2223,15 @@ pub async fn parallel_scan_with_progress(
                     "unchanged (fingerprint match)",
                     SkipCategory::Expected,
                 );
+                summary_record_skipped(
+                    &mut summary,
+                    func_name,
+                    current_progress,
+                    "unchanged (fingerprint match)",
+                    SkipCategory::Expected,
+                    scan_start.elapsed(),
+                );
+                write_scan_summary(&scan_root_dir, &summary);
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -2092,6 +2377,12 @@ pub async fn parallel_scan_with_progress(
         // The pool is created lazily on the first layer with work and persists
         // across subsequent layers, keeping frontend subprocesses warm.
         if !tasks.is_empty() {
+            // Build a map from function name to progress index for summary updates.
+            let fn_progress_index: HashMap<String, usize> = tasks
+                .iter()
+                .map(|t| (t.func_name.clone(), t.progress_index))
+                .collect();
+
             // Collect outcomes from either isolation path.
             let layer_outcomes: Vec<FunctionOutcome> = if config.isolation
                 == IsolationMode::Function
@@ -2391,6 +2682,16 @@ pub async fn parallel_scan_with_progress(
             for outcome in layer_outcomes {
                 match outcome {
                     FunctionOutcome::Success(result) => {
+                        let idx = fn_progress_index
+                            .get(&result.function_name)
+                            .copied()
+                            .unwrap_or(0);
+                        summary_record_completed(
+                            &mut summary,
+                            &result.function_name,
+                            idx,
+                            scan_start.elapsed(),
+                        );
                         // Record deep FP for this function so downstream layers
                         // can incorporate it into their deep fingerprints.
                         if let Some(ref fp) = result.behavior_map.fingerprint {
@@ -2402,9 +2703,21 @@ pub async fn parallel_scan_with_progress(
                         function_name,
                         limit,
                     } => {
+                        let idx = fn_progress_index
+                            .get(&function_name)
+                            .copied()
+                            .unwrap_or(0);
+                        let reason = format!("timed out after {:.0}s", limit.as_secs_f64());
+                        summary_record_failed(
+                            &mut summary,
+                            &function_name,
+                            idx,
+                            &reason,
+                            scan_start.elapsed(),
+                        );
                         skipped.push(SkippedFunction {
                             function_name,
-                            reason: format!("timed out after {:.0}s", limit.as_secs_f64()),
+                            reason,
                             category: SkipCategory::Error,
                         });
                     }
@@ -2412,14 +2725,28 @@ pub async fn parallel_scan_with_progress(
                         function_name,
                         error,
                     } => {
+                        let idx = fn_progress_index
+                            .get(&function_name)
+                            .copied()
+                            .unwrap_or(0);
+                        let reason = format!("error: {error}");
+                        summary_record_failed(
+                            &mut summary,
+                            &function_name,
+                            idx,
+                            &reason,
+                            scan_start.elapsed(),
+                        );
                         skipped.push(SkippedFunction {
                             function_name,
-                            reason: format!("error: {error}"),
+                            reason,
                             category: SkipCategory::Error,
                         });
                     }
                 }
             }
+            // Update the summary after each layer.
+            write_scan_summary(&scan_root_dir, &summary);
         } else {
             // No tasks in this layer (all cache hits). Shut down the speculative
             // pre-spawn if one was created (only on the first layer before the
@@ -2460,6 +2787,10 @@ pub async fn parallel_scan_with_progress(
             log::warn!("failed to save interesting pool: {e}");
         }
     }
+
+    // Finalize the scan summary.
+    summary_finalize(&mut summary, scan_start.elapsed());
+    write_scan_summary(&scan_root_dir, &summary);
 
     Ok(ParallelScanResult {
         function_results: all_results,
@@ -7506,5 +7837,182 @@ mod tests {
             !result.has_scan_failure(),
             "0 attempted means nothing to fail"
         );
+    }
+
+    // --- Scan summary tests ---
+
+    #[test]
+    fn scan_summary_new_has_running_status() {
+        let summary = new_scan_summary("test-scan-id", 5);
+        assert_eq!(summary.version, SCAN_SUMMARY_VERSION);
+        assert_eq!(summary.scan_id, "test-scan-id");
+        assert_eq!(summary.status, ScanRunStatus::Running);
+        assert_eq!(summary.total_functions, 5);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.skipped, 0);
+        assert!(summary.functions.is_empty());
+    }
+
+    #[test]
+    fn scan_summary_record_completed_increments_count() {
+        let mut summary = new_scan_summary("s1", 3);
+        summary_record_completed(&mut summary, "fn_a", 1, Duration::from_secs(2));
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.functions.len(), 1);
+        assert_eq!(summary.functions[0].status, "completed");
+        assert_eq!(summary.functions[0].function_name, "fn_a");
+        assert_eq!(summary.functions[0].index, 1);
+        assert!(summary.functions[0].artifact.is_some());
+        assert!(summary.functions[0].reason.is_none());
+    }
+
+    #[test]
+    fn scan_summary_record_skipped_increments_count() {
+        let mut summary = new_scan_summary("s1", 3);
+        summary_record_skipped(
+            &mut summary,
+            "fn_b",
+            2,
+            "cache hit",
+            SkipCategory::Expected,
+            Duration::from_secs(1),
+        );
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.functions[0].status, "skipped");
+        assert_eq!(summary.functions[0].reason.as_deref(), Some("cache hit"));
+    }
+
+    #[test]
+    fn scan_summary_record_failed_increments_count() {
+        let mut summary = new_scan_summary("s1", 3);
+        summary_record_failed(&mut summary, "fn_c", 3, "timeout", Duration::from_secs(5));
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.functions[0].status, "failed");
+        assert_eq!(summary.functions[0].reason.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn scan_summary_finalize_completed_when_has_successes() {
+        let mut summary = new_scan_summary("s1", 2);
+        summary_record_completed(&mut summary, "fn_a", 1, Duration::from_secs(1));
+        summary_record_failed(&mut summary, "fn_b", 2, "error", Duration::from_secs(2));
+        summary_finalize(&mut summary, Duration::from_secs(3));
+        // Has at least one success, so status is Completed (not Failed).
+        assert_eq!(summary.status, ScanRunStatus::Completed);
+    }
+
+    #[test]
+    fn scan_summary_finalize_failed_when_no_successes() {
+        let mut summary = new_scan_summary("s1", 2);
+        summary_record_failed(&mut summary, "fn_a", 1, "err1", Duration::from_secs(1));
+        summary_record_failed(&mut summary, "fn_b", 2, "err2", Duration::from_secs(2));
+        summary_finalize(&mut summary, Duration::from_secs(3));
+        assert_eq!(summary.status, ScanRunStatus::Failed);
+    }
+
+    #[test]
+    fn write_scan_summary_produces_valid_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let mut summary = new_scan_summary("test-id", 2);
+        summary_record_completed(&mut summary, "fn_a", 1, Duration::from_secs(1));
+        summary_record_skipped(
+            &mut summary,
+            "fn_b",
+            2,
+            "cached",
+            SkipCategory::Expected,
+            Duration::from_secs(2),
+        );
+        summary_finalize(&mut summary, Duration::from_secs(2));
+        write_scan_summary(&root, &summary);
+
+        let path = root.join("summary.json");
+        assert!(path.exists(), "summary.json should exist");
+        let json = std::fs::read_to_string(&path).expect("read");
+        let parsed: ScanSummary = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed.scan_id, "test-id");
+        assert_eq!(parsed.status, ScanRunStatus::Completed);
+        assert_eq!(parsed.completed, 1);
+        assert_eq!(parsed.skipped, 1);
+        assert_eq!(parsed.functions.len(), 2);
+    }
+
+    #[test]
+    fn write_scan_summary_atomic_no_tmp_left() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let summary = new_scan_summary("test-id", 0);
+        write_scan_summary(&root, &summary);
+
+        let tmp = root.join("summary.json.tmp");
+        assert!(!tmp.exists(), "temp file should not persist after rename");
+    }
+
+    #[test]
+    fn scan_summary_artifact_references_match_function_artifacts() {
+        let mut summary = new_scan_summary("s1", 2);
+        summary_record_completed(&mut summary, "myFunc", 3, Duration::from_secs(1));
+
+        let entry = &summary.functions[0];
+        // The artifact path should match what scan_artifact_path would produce.
+        let expected = format!(
+            "functions/{:05}_{}.json",
+            3,
+            sanitize_artifact_component("myFunc")
+        );
+        assert_eq!(entry.artifact.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn scan_summary_roundtrip_serde() {
+        let mut summary = new_scan_summary("rt-test", 3);
+        summary_record_completed(&mut summary, "a", 1, Duration::from_secs(1));
+        summary_record_failed(&mut summary, "b", 2, "crash", Duration::from_secs(2));
+        summary_record_skipped(
+            &mut summary,
+            "c",
+            3,
+            "cached",
+            SkipCategory::Expected,
+            Duration::from_secs(3),
+        );
+        summary_finalize(&mut summary, Duration::from_secs(3));
+
+        let json = serde_json::to_string(&summary).expect("serialize");
+        let parsed: ScanSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.scan_id, "rt-test");
+        assert_eq!(parsed.status, ScanRunStatus::Completed);
+        assert_eq!(parsed.completed, 1);
+        assert_eq!(parsed.failed, 1);
+        assert_eq!(parsed.skipped, 1);
+        assert_eq!(parsed.functions.len(), 3);
+    }
+
+    #[test]
+    fn build_summary_from_scan_result_captures_all_functions() {
+        let results = vec![
+            make_function_result("fn_a", vec![(vec![], vec![], make_execute_result(1))]),
+            make_function_result("fn_b", vec![(vec![], vec![], make_execute_result(2))]),
+        ];
+        let skipped = vec![SkippedFunction {
+            function_name: "fn_c".into(),
+            reason: "opaque types".into(),
+            category: SkipCategory::Expected,
+        }];
+        let scan_result = ScanResult {
+            function_results: results,
+            test_order: vec!["fn_a".into(), "fn_b".into(), "fn_c".into()],
+            skipped_functions: skipped,
+            sampling: None,
+        };
+        let summary =
+            build_summary_from_scan_result("scan-1", &scan_result, Duration::from_secs(10));
+        assert_eq!(summary.status, ScanRunStatus::Completed);
+        assert_eq!(summary.completed, 2);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.functions.len(), 3);
     }
 }
