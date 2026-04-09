@@ -315,7 +315,7 @@ fn write_performance(out: &mut String, cluster: &AnnotatedCluster) {
         return;
     }
     let times: Vec<f64> = cluster.specimens.iter().map(|s| s.wall_time_ms).collect();
-    let heaps: Vec<u64> = cluster.specimens.iter().map(|s| s.heap_used_bytes).collect();
+    let heaps: Vec<i64> = cluster.specimens.iter().map(|s| s.heap_used_bytes).collect();
 
     let avg_time = times.iter().sum::<f64>() / times.len() as f64;
     let max_heap = heaps.iter().copied().max().unwrap_or(0);
@@ -323,7 +323,7 @@ fn write_performance(out: &mut String, cluster: &AnnotatedCluster) {
     let _ = writeln!(
         out,
         "**Performance:** {avg_time:.1}ms avg, {heap}",
-        heap = format_bytes(max_heap),
+        heap = format_bytes(max_heap.max(0) as u64),
     );
 }
 

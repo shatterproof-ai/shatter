@@ -789,11 +789,11 @@ pub struct PerformanceMetrics {
     /// Wall clock time in milliseconds.
     pub wall_time_ms: f64,
     /// CPU time in microseconds.
-    pub cpu_time_us: u64,
-    /// Heap memory used in bytes.
-    pub heap_used_bytes: u64,
-    /// Heap memory allocated in bytes.
-    pub heap_allocated_bytes: u64,
+    pub cpu_time_us: i64,
+    /// Heap memory used in bytes (may be negative when GC reclaims between measurements).
+    pub heap_used_bytes: i64,
+    /// Heap memory allocated in bytes (may be negative when GC reclaims between measurements).
+    pub heap_allocated_bytes: i64,
 }
 
 /// Optional timing summary emitted by a frontend command.
@@ -2900,5 +2900,22 @@ mod tests {
     #[test]
     fn validate_analyze_result_accepts_empty_list() {
         assert!(validate_analyze_result(&[]));
+    }
+
+    #[test]
+    fn execute_response_with_negative_heap_bytes_deserializes() {
+        // Regression test for str-x426: Go frontend sends negative heap_used_bytes
+        // when GC reclaims memory between before/after measurements. Rust was using
+        // u64, which rejects negative integers.
+        let json = r#"{"protocol_version":"0.1.0","id":5,"status":"execute","return_value":"positive","thrown_error":null,"branch_path":[{"branch_id":1,"line":13,"taken":true}],"lines_executed":[12,13,14],"calls_to_external":[],"path_constraints":[],"side_effects":[],"performance":{"wall_time_ms":1.5,"cpu_time_us":1200,"heap_used_bytes":-24576,"heap_allocated_bytes":-8192}}"#;
+        let resp: Response =
+            serde_json::from_str(json).expect("should deserialize negative heap bytes");
+        assert_eq!(resp.id, 5);
+        if let ResponseResult::Execute(result) = &resp.result {
+            assert_eq!(result.performance.heap_used_bytes, -24576);
+            assert_eq!(result.performance.heap_allocated_bytes, -8192);
+        } else {
+            panic!("expected Execute response");
+        }
     }
 }

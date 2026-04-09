@@ -179,9 +179,9 @@ pub struct ExecutionRecord {
 
     // Performance
     pub wall_time_ms: f64,
-    pub cpu_time_us: u64,
-    pub heap_used_bytes: u64,
-    pub heap_allocated_bytes: u64,
+    pub cpu_time_us: i64,
+    pub heap_used_bytes: i64,
+    pub heap_allocated_bytes: i64,
 
     // Metadata
     pub timestamp: String,
