@@ -39,7 +39,7 @@ def clone_checkout(repo_url: str, checkout_dir: Path) -> Path:
 
 
 def refresh_checkout(checkout_dir: Path) -> Path:
-    if not checkout_dir.join(".git").exists():
+    if not (checkout_dir / ".git").exists():
         raise SystemExit(
             f"examples checkout path exists but is not a git repository: {checkout_dir}"
         )
