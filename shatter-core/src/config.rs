@@ -173,6 +173,9 @@ pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
 /// Provides persistent scan defaults so users don't need to repeat CLI flags.
 /// All fields are optional — missing fields fall back to CLI defaults.
 /// CLI flags always override values from this config.
+///
+/// Note: `max_iterations` and per-function timeout are configured in
+/// `.shatter/config.yaml` (hierarchical), not here. See `DefaultsConfig`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectConfig {
@@ -192,17 +195,9 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
 
-    /// Maximum iterations per function.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_iterations: Option<u32>,
-
     /// Total scan wall-clock timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_total: Option<u64>,
-
-    /// Per-function timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_per_fn: Option<u64>,
 
     /// Per-function exploration wall-clock timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2718,9 +2713,7 @@ defaults:
                 "exclude": ["**/*.test.ts"],
                 "language": "typescript",
                 "max_depth": 5,
-                "max_iterations": 200,
                 "timeout_total": 600,
-                "timeout_per_fn": 60,
                 "timeout_explore": 30.0,
                 "exec_timeout": 15,
                 "parallelism": 4,
@@ -2739,9 +2732,7 @@ defaults:
             assert_eq!(config.exclude, vec!["**/*.test.ts"]);
             assert_eq!(config.language.as_deref(), Some("typescript"));
             assert_eq!(config.max_depth, Some(5));
-            assert_eq!(config.max_iterations, Some(200));
             assert_eq!(config.timeout_total, Some(600));
-            assert_eq!(config.timeout_per_fn, Some(60));
             assert_eq!(config.timeout_explore, Some(30.0));
             assert_eq!(config.exec_timeout, Some(15));
             assert_eq!(config.parallelism, Some(4));
@@ -2768,7 +2759,6 @@ defaults:
             assert!(config.include.is_empty());
             assert!(config.exclude.is_empty());
             assert!(config.language.is_none());
-            assert!(config.max_iterations.is_none());
             assert!(config.timeout_total.is_none());
             assert!(config.output.is_none());
             assert!(config.mocks.is_none());
@@ -2785,9 +2775,9 @@ defaults:
         fn project_config_load_valid() {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join(PROJECT_CONFIG_FILENAME);
-            std::fs::write(&path, r#"{"max_iterations": 50}"#).unwrap();
+            std::fs::write(&path, r#"{"timeout_total": 600}"#).unwrap();
             let config = load_project_config(tmp.path()).unwrap().unwrap();
-            assert_eq!(config.max_iterations, Some(50));
+            assert_eq!(config.timeout_total, Some(600));
         }
 
         #[test]
@@ -2801,9 +2791,9 @@ defaults:
 
         #[test]
         fn project_config_ignores_unknown_fields() {
-            let json = r#"{"unknown_field": true, "max_iterations": 42}"#;
+            let json = r#"{"unknown_field": true, "timeout_total": 42}"#;
             let config: ProjectConfig = serde_json::from_str(json).unwrap();
-            assert_eq!(config.max_iterations, Some(42));
+            assert_eq!(config.timeout_total, Some(42));
         }
 
         #[test]
@@ -2812,9 +2802,7 @@ defaults:
                 include: vec!["src/**/*.ts".to_string()],
                 exclude: vec!["**/test/**".to_string()],
                 language: Some("typescript".to_string()),
-                max_iterations: Some(200),
                 timeout_total: Some(600),
-                timeout_per_fn: Some(60),
                 timeout_explore: Some(30.0),
                 exec_timeout: Some(15),
                 parallelism: Some(4),
@@ -3370,17 +3358,13 @@ mod config_proptests {
         /// ProjectConfig roundtrips through JSON serialization.
         #[test]
         fn project_config_proptest_roundtrip(
-            max_iterations in proptest::option::of(1u32..10000),
             timeout_total in proptest::option::of(1u64..3600),
-            timeout_per_fn in proptest::option::of(1u64..600),
             exec_timeout in proptest::option::of(1u64..120),
             parallelism in proptest::option::of(0usize..64),
             capture in proptest::option::of(proptest::bool::ANY),
         ) {
             let config = super::ProjectConfig {
-                max_iterations,
                 timeout_total,
-                timeout_per_fn,
                 exec_timeout,
                 parallelism,
                 capture_side_effects: capture,
