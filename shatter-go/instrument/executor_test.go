@@ -1777,6 +1777,82 @@ func TestExecuteFunctionModuleBackedWithSiblingHelper(t *testing.T) {
 	}
 }
 
+// TestExecuteFunctionModuleBackedWithIntraModuleImport verifies that a Go file
+// importing another package from the same module can be explored. The harness
+// must add a replace directive so intra-module imports resolve against the
+// original project source tree.
+func TestExecuteFunctionModuleBackedWithIntraModuleImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	scratchBase := t.TempDir()
+	cacheBase := t.TempDir()
+	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
+	t.Setenv("SHATTER_HARNESS_CACHE", cacheBase)
+	t.Cleanup(CloseAllHarnesses)
+
+	// Create a multi-package module:
+	//   projRoot/
+	//     go.mod          (module example.com/myproject)
+	//     mathutil/
+	//       mathutil.go   (package mathutil; func Double(n int) int)
+	//     app/
+	//       app.go        (package app; import "example.com/myproject/mathutil")
+	projRoot := t.TempDir()
+	gomod := "module example.com/myproject\n\ngo 1.23\n"
+	if err := os.WriteFile(filepath.Join(projRoot, "go.mod"), []byte(gomod), 0644); err != nil {
+		t.Fatalf("writing go.mod: %v", err)
+	}
+
+	// mathutil sub-package
+	mathutilDir := filepath.Join(projRoot, "mathutil")
+	if err := os.MkdirAll(mathutilDir, 0755); err != nil {
+		t.Fatalf("mkdir mathutil: %v", err)
+	}
+	mathutilSrc := `package mathutil
+
+func Double(n int) int {
+	return n * 2
+}
+`
+	if err := os.WriteFile(filepath.Join(mathutilDir, "mathutil.go"), []byte(mathutilSrc), 0644); err != nil {
+		t.Fatalf("writing mathutil.go: %v", err)
+	}
+
+	// app package that imports mathutil
+	appDir := filepath.Join(projRoot, "app")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatalf("mkdir app: %v", err)
+	}
+	appSrc := `package app
+
+import "example.com/myproject/mathutil"
+
+func Quadruple(n int) int {
+	return mathutil.Double(mathutil.Double(n))
+}
+`
+	targetPath := filepath.Join(appDir, "app.go")
+	if err := os.WriteFile(targetPath, []byte(appSrc), 0644); err != nil {
+		t.Fatalf("writing app.go: %v", err)
+	}
+
+	result, err := ExecuteFunction(targetPath, "Quadruple", []json.RawMessage{
+		json.RawMessage("3"),
+	}, false)
+	if err != nil {
+		t.Fatalf("ExecuteFunction: %v", err)
+	}
+	var got int
+	if err := json.Unmarshal(result.ReturnValue, &got); err != nil {
+		t.Fatalf("parsing return value: %v", err)
+	}
+	if got != 12 {
+		t.Errorf("expected 12 (3*2*2), got %d", got)
+	}
+}
+
 // BenchmarkExecuteWithPreparedHarness measures the cost of repeated execute calls
 // when the harness has been pre-built via PrepareHarness. The compile step runs
 // once before b.ResetTimer() so the benchmark captures only the execute overhead.
