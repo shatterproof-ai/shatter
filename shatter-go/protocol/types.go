@@ -205,6 +205,46 @@ type TypeInfo struct {
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`       // complex
 }
 
+// MarshalJSON ensures that object-kind TypeInfo always emits "fields" as []
+// instead of omitting it when the slice is nil/empty. The Rust deserializer
+// requires the key for the Object variant.
+func (ti TypeInfo) MarshalJSON() ([]byte, error) {
+	// For object kind, ensure Fields is non-nil so it serializes as [].
+	// We use a struct without omitempty on Fields for this case.
+	if ti.Kind == "object" {
+		if ti.Fields == nil {
+			ti.Fields = []ObjectField{}
+		}
+		type objectTypeInfo struct {
+			Kind          string                 `json:"kind"`
+			Label         string                 `json:"label,omitempty"`
+			StaticOpacity string                 `json:"static_opacity,omitempty"`
+			MediumOpacity string                 `json:"medium_opacity,omitempty"`
+			Element       *TypeInfo              `json:"element,omitempty"`
+			Fields        []ObjectField          `json:"fields"`
+			Variants      []TypeInfo             `json:"variants,omitempty"`
+			Inner         *TypeInfo              `json:"inner,omitempty"`
+			ComplexKind   string                 `json:"complex_kind,omitempty"`
+			Metadata      map[string]interface{} `json:"metadata,omitempty"`
+		}
+		return json.Marshal(objectTypeInfo{
+			Kind:          ti.Kind,
+			Label:         ti.Label,
+			StaticOpacity: ti.StaticOpacity,
+			MediumOpacity: ti.MediumOpacity,
+			Element:       ti.Element,
+			Fields:        ti.Fields,
+			Variants:      ti.Variants,
+			Inner:         ti.Inner,
+			ComplexKind:   ti.ComplexKind,
+			Metadata:      ti.Metadata,
+		})
+	}
+	// Non-object kinds: use default serialization with omitempty on Fields.
+	type typeInfoAlias TypeInfo
+	return json.Marshal(typeInfoAlias(ti))
+}
+
 // ParamInfo describes a function parameter.
 type ParamInfo struct {
 	Name     string   `json:"name"`

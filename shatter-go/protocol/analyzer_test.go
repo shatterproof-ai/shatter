@@ -1200,3 +1200,52 @@ func TestSymExprArgsNeverNull(t *testing.T) {
 	var caseExpr ast.Expr = &ast.BasicLit{Kind: token.INT, Value: "1"}
 	checkArgsNotNull(t, "buildSwitchCaseSymExpr", buildSwitchCaseSymExpr(tag, caseExpr, params))
 }
+
+// --- Fields never-null tests (str-db91) ---
+
+// TestFieldsNeverNullInJSON verifies that TypeInfo with kind "object" always
+// serializes "fields" as an array, never omits it. A missing "fields" key
+// causes Rust deserialization errors.
+func TestFieldsNeverNullInJSON(t *testing.T) {
+	// Struct with zero exported fields — structTypeInfo should still emit fields:[]
+	ti := TypeInfo{Kind: "object", Fields: []ObjectField{}}
+	data, err := json.Marshal(ti)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"fields"`) {
+		t.Errorf("empty-fields object TypeInfo missing 'fields' key: %s", data)
+	}
+	if strings.Contains(string(data), `"fields":null`) {
+		t.Errorf("fields serialized as null instead of []: %s", data)
+	}
+}
+
+// TestStructTypeInfoFieldsNeverNull verifies structTypeInfo always produces
+// non-nil Fields, even for zero-field structs.
+func TestStructTypeInfoFieldsNeverNull(t *testing.T) {
+	// Analyze a function that takes EmptyStruct (zero fields)
+	results, err := AnalyzeFile(testdataPath("unexported_fields.go"), "ProcessEmpty")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	fn := results[0]
+	if len(fn.Params) == 0 {
+		t.Fatal("no params")
+	}
+	p := fn.Params[0]
+	if p.Type.Kind != "object" {
+		t.Fatalf("param type kind = %q, want object", p.Type.Kind)
+	}
+	// Serialize and verify fields key is present
+	data, err := json.Marshal(p.Type)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"fields"`) {
+		t.Errorf("fields key missing from serialized TypeInfo: %s", data)
+	}
+}
