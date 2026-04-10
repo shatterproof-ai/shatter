@@ -173,6 +173,29 @@ Use `shatter --help` and `shatter <command> --help` for the current CLI surface.
 - `shatter diff` and `shatter spec-diff`: compare current behavior against a saved baseline
 - `shatter observe`, `analyze`, `solve`, and `specify`: lower-level pipeline commands for offline and staged workflows
 
+## Live Output and Resume
+
+When running `shatter scan`, you can track progress in real time with
+`--progress`, which emits structured NDJSON events to stderr as each function
+starts, completes, skips, or fails.
+
+If a scan is interrupted (Ctrl-C, timeout, crash), partial results are
+preserved automatically. Use `--resume auto` on the next run to skip
+already-completed functions and continue from where the scan left off.
+
+```bash
+# First run — interrupted
+shatter scan --resume auto --progress src/
+^C
+
+# Second run — picks up where it left off
+shatter scan --resume auto --progress src/
+```
+
+See [SPEC.md, Section 6](SPEC.md#6-live-output-and-resume) for the full
+progress event format, partial artifact layout, checkpoint structure, and
+resume semantics.
+
 ## How Shatter Works
 
 Shatter combines concrete execution with symbolic reasoning:
