@@ -147,6 +147,78 @@ describe("adapter-import-meta-env fixture", () => {
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe(false);
   });
+
+  it("getApiBase returns env value when adapter provides it", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { VITE_API_BASE: "https://adapter.example.com" } },
+        }],
+      },
+      { phase: "execute", entry_file: fixture },
+    );
+    const result = await executeFunction(
+      fixture,
+      "getApiBase",
+      ["https://fallback.example.com"],
+      undefined,
+      true,
+      undefined,
+      runtimeHooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("https://adapter.example.com");
+  });
+
+  it("isProduction returns true when adapter sets MODE=production", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { MODE: "production" } },
+        }],
+      },
+      { phase: "execute", entry_file: fixture },
+    );
+    const result = await executeFunction(
+      fixture,
+      "isProduction",
+      [],
+      undefined,
+      true,
+      undefined,
+      runtimeHooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
+  });
+
+  it("getFeatureFlag returns true when adapter sets the flag", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { VITE_FLAG_DARK_MODE: "true" } },
+        }],
+      },
+      { phase: "execute", entry_file: fixture },
+    );
+    const result = await executeFunction(
+      fixture,
+      "getFeatureFlag",
+      ["DARK_MODE"],
+      undefined,
+      true,
+      undefined,
+      runtimeHooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

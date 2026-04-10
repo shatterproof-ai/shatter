@@ -84,6 +84,7 @@ export function usesAlias(): number {
                 },
               },
             ],
+            sandbox_providers: [],
           };
         },
       },
@@ -102,6 +103,7 @@ export function usesAlias(): number {
                 },
               },
             ],
+            sandbox_providers: [],
           };
         },
       },
@@ -183,5 +185,152 @@ export function usesAlias(): number {
 
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe(42);
+  });
+});
+
+describe("import-meta-env adapter", () => {
+  const IMPORT_META_FIXTURE = path.join(FIXTURES_DIR, "adapter-import-meta-env.ts");
+
+  it("produces sandbox providers with Vite defaults when no options given", () => {
+    const hooks = resolveRuntimeHooks(
+      { adapters: [{ id: "ts/runtime/import-meta-env", apply: "required" }] },
+      { phase: "execute" },
+    );
+    expect(hooks.sandbox_providers).toHaveLength(1);
+    expect(hooks.sandbox_providers[0]!.id).toBe("ts/runtime/import-meta-env");
+  });
+
+  it("augments sandbox with Vite env defaults", () => {
+    const hooks = resolveRuntimeHooks(
+      { adapters: [{ id: "ts/runtime/import-meta-env", apply: "required" }] },
+      { phase: "execute" },
+    );
+    const sandbox: Record<string, unknown> = {
+      __shatter_import_meta: { url: "", env: {} },
+    };
+    hooks.sandbox_providers[0]!.augmentSandbox(sandbox);
+
+    const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+    expect(meta.env["MODE"]).toBe("development");
+    expect(meta.env["DEV"]).toBe(true);
+    expect(meta.env["PROD"]).toBe(false);
+    expect(meta.env["SSR"]).toBe(false);
+    expect(meta.env["BASE_URL"]).toBe("/");
+  });
+
+  it("merges user-provided env values over defaults", () => {
+    const hooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { VITE_API_BASE: "https://api.example.com", MODE: "production" } },
+        }],
+      },
+      { phase: "execute" },
+    );
+    const sandbox: Record<string, unknown> = {
+      __shatter_import_meta: { url: "", env: {} },
+    };
+    hooks.sandbox_providers[0]!.augmentSandbox(sandbox);
+
+    const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+    expect(meta.env["MODE"]).toBe("production");
+    expect(meta.env["VITE_API_BASE"]).toBe("https://api.example.com");
+    expect(meta.env["DEV"]).toBe(true); // defaults still present
+  });
+
+  it("does not produce resolver adapters", () => {
+    const hooks = resolveRuntimeHooks(
+      { adapters: [{ id: "ts/runtime/import-meta-env", apply: "required" }] },
+      { phase: "execute" },
+    );
+    expect(hooks.resolver_adapters).toEqual([]);
+  });
+
+  it("composes with tsconfig-paths adapter", () => {
+    const hooks = resolveRuntimeHooks(
+      {
+        adapters: [
+          { id: "ts/module-resolution/tsconfig-paths", apply: "disabled" },
+          { id: "ts/runtime/import-meta-env", apply: "required" },
+        ],
+      },
+      { phase: "execute" },
+    );
+    expect(hooks.resolver_adapters).toEqual([]);
+    expect(hooks.sandbox_providers).toHaveLength(1);
+  });
+
+  it("executes fixture with env values via sandbox providers", async () => {
+    const hooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { VITE_API_BASE: "https://test.api.com" } },
+        }],
+      },
+      { phase: "execute", entry_file: IMPORT_META_FIXTURE },
+    );
+    const result = await executeFunction(
+      IMPORT_META_FIXTURE,
+      "getApiBase",
+      ["https://fallback.com"],
+      undefined,
+      true,
+      undefined,
+      hooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("https://test.api.com");
+  });
+
+  it("executes isProduction with MODE=production", async () => {
+    const hooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { MODE: "production" } },
+        }],
+      },
+      { phase: "execute", entry_file: IMPORT_META_FIXTURE },
+    );
+    const result = await executeFunction(
+      IMPORT_META_FIXTURE,
+      "isProduction",
+      [],
+      undefined,
+      true,
+      undefined,
+      hooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
+  });
+
+  it("executes getFeatureFlag with env flag set", async () => {
+    const hooks = resolveRuntimeHooks(
+      {
+        adapters: [{
+          id: "ts/runtime/import-meta-env",
+          apply: "required",
+          options: { env: { VITE_FLAG_DARK_MODE: "true" } },
+        }],
+      },
+      { phase: "execute", entry_file: IMPORT_META_FIXTURE },
+    );
+    const result = await executeFunction(
+      IMPORT_META_FIXTURE,
+      "getFeatureFlag",
+      ["DARK_MODE"],
+      undefined,
+      true,
+      undefined,
+      hooks.sandbox_providers,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
   });
 });

@@ -34,6 +34,7 @@ import type {
   RuntimeCryptoBoundary,
 } from "./protocol.js";
 import { detectRuntimeHints } from "./runtime-hints.js";
+import type { SandboxProvider } from "./runtime-hooks.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
@@ -523,10 +524,10 @@ export function createAdapterAwareRequire(
  *
  * Results are cached by absolute file path.
  */
-function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[]): Record<string, unknown> {
+function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[], sandboxProviders?: SandboxProvider[]): Record<string, unknown> {
   const absolutePath = path.resolve(filePath);
   const activeResolverAdapters = resolverAdapters ?? getDefaultResolverAdapters(absolutePath);
-  const useCache = resolverAdapters === undefined;
+  const useCache = resolverAdapters === undefined && sandboxProviders === undefined;
   const cached = useCache ? compiledModuleCache.get(absolutePath) : undefined;
   if (cached) return cached;
 
@@ -569,6 +570,12 @@ function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[]): Rec
     __shatter_import_meta: { url: "", env: {} },
   });
 
+  if (sandboxProviders) {
+    for (const provider of sandboxProviders) {
+      provider.augmentSandbox(sandbox as Record<string, unknown>);
+    }
+  }
+
   vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
 
   // After CommonJS execution, module.exports may have been reassigned
@@ -593,13 +600,14 @@ function resolveFunction(
   filePath: string,
   functionRef: string,
   resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
 ): (...args: unknown[]) => unknown {
   // Strip file prefix if present (e.g. "examples/foo.ts:myFunc" → "myFunc")
   const funcName = functionRef.includes(":")
     ? functionRef.split(":").pop()!
     : functionRef;
 
-  const moduleExports = loadModule(filePath, resolverAdapters);
+  const moduleExports = loadModule(filePath, resolverAdapters, sandboxProviders);
   const fn = moduleExports[funcName];
 
   if (typeof fn !== "function") {
@@ -986,10 +994,11 @@ export async function executeFunction(
   timing?: TimingCollector,
   capture = true,
   resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
 ): Promise<RawExecuteResult> {
   const fn = timing
-    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef, resolverAdapters))
-    : resolveFunction(filePath, functionRef, resolverAdapters);
+    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef, resolverAdapters, sandboxProviders))
+    : resolveFunction(filePath, functionRef, resolverAdapters, sandboxProviders);
 
   const previousTarget = consoleTarget;
   let metrics: MeasuredExecution;
@@ -1071,6 +1080,7 @@ export async function executeInstrumented(
   capture = true,
   cacheKey?: string,
   resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
 ): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
   // The instrumented source for a given function is fixed after instrumentation,
@@ -1416,6 +1426,12 @@ export async function executeInstrumented(
     __shatter_import: createShatterImport(sandboxRequire),
     __shatter_import_meta: { url: sourceFilePath ?? "", env: {} },
   });
+
+  if (sandboxProviders) {
+    for (const provider of sandboxProviders) {
+      provider.augmentSandbox(sandbox as Record<string, unknown>);
+    }
+  }
 
   const loadModule = (): void => {
     compiledScript.runInContext(sandbox, { timeout: getExecTimeoutMs() });
