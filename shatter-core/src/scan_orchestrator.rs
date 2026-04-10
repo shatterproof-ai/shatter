@@ -1089,6 +1089,15 @@ pub async fn scan(
             continue;
         }
 
+        // Invalidate stale cache entry before re-exploring.
+        if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp) {
+            match cache.invalidate_if_stale(func_name, dfp) {
+                Ok(true) => log::info!("invalidated stale behavior map for {func_name}"),
+                Err(e) => log::warn!("failed to invalidate stale cache for {func_name}: {e}"),
+                _ => {}
+            }
+        }
+
         // Try loading a cached behavior map for callees that aren't yet in memory.
         if let Some(ref cache) = config.cache {
             for dep in &analysis.dependencies {
@@ -2279,6 +2288,15 @@ pub async fn parallel_scan_with_progress(
                     ScanProgressStatus::Skipped,
                 );
                 continue;
+            }
+
+            // Invalidate stale cache entry before re-exploring.
+            if let (Some(cache), Some(dfp)) = (&config.cache, &current_deep_fp) {
+                match cache.invalidate_if_stale(func_name, dfp) {
+                    Ok(true) => log::info!("invalidated stale behavior map for {func_name}"),
+                    Err(e) => log::warn!("failed to invalidate stale cache for {func_name}: {e}"),
+                    _ => {}
+                }
             }
 
             // Try loading cached behavior maps for callees not yet in memory.

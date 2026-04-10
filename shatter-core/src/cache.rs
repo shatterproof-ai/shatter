@@ -133,6 +133,19 @@ impl BehaviorMapCache {
         Ok(())
     }
 
+    /// Remove the cached behavior map for a single function.
+    ///
+    /// Returns `Ok(true)` if a file was removed, `Ok(false)` if no cached
+    /// entry existed. Other I/O errors propagate.
+    pub fn remove(&self, function_id: &str) -> Result<bool, CacheError> {
+        let path = self.path_for(function_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(CacheError::Io(e)),
+        }
+    }
+
     /// Check whether a cached behavior map exists and its fingerprint matches.
     ///
     /// Returns `true` if the cache contains a version-compatible map for
@@ -147,6 +160,33 @@ impl BehaviorMapCache {
                 .fingerprint
                 .as_deref()
                 .is_some_and(|fp| fp == current_fingerprint)),
+            None => Ok(false),
+        }
+    }
+
+    /// Check fingerprint and remove the cached entry if stale.
+    ///
+    /// Returns `Ok(true)` if a stale entry was removed, `Ok(false)` if the
+    /// entry is fresh or missing. Combines the freshness check with cleanup
+    /// so callers don't need to coordinate `is_fresh` + `remove` separately.
+    pub fn invalidate_if_stale(
+        &self,
+        function_id: &str,
+        current_fingerprint: &str,
+    ) -> Result<bool, CacheError> {
+        match self.load(function_id)? {
+            Some(map) => {
+                let is_fresh = map
+                    .fingerprint
+                    .as_deref()
+                    .is_some_and(|fp| fp == current_fingerprint);
+                if is_fresh {
+                    Ok(false)
+                } else {
+                    self.remove(function_id)?;
+                    Ok(true)
+                }
+            }
             None => Ok(false),
         }
     }
@@ -326,6 +366,19 @@ impl SpecCache {
         fs::rename(&tmp_path, &path)?;
 
         Ok(())
+    }
+
+    /// Remove the cached spec for a single function.
+    ///
+    /// Returns `Ok(true)` if a file was removed, `Ok(false)` if no cached
+    /// entry existed. Other I/O errors propagate.
+    pub fn remove(&self, function_id: &str) -> Result<bool, CacheError> {
+        let path = self.path_for(function_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(CacheError::Io(e)),
+        }
     }
 
     /// Check whether a cached spec exists and its fingerprint matches.
@@ -642,6 +695,93 @@ mod tests {
         assert_eq!(loaded, None);
     }
 
+    // --- BehaviorMapCache::remove tests ---
+
+    #[test]
+    fn remove_deletes_cached_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("myFunc");
+        cache.store(&map).unwrap();
+        assert!(cache.load("myFunc").unwrap().is_some());
+
+        assert!(cache.remove("myFunc").unwrap());
+        assert_eq!(cache.load("myFunc").unwrap(), None);
+    }
+
+    #[test]
+    fn remove_returns_false_for_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        assert!(!cache.remove("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn remove_leaves_other_functions_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map_a = sample_map("src/a.ts:funcA");
+        let map_b = sample_map("src/b.ts:funcB");
+        cache.store(&map_a).unwrap();
+        cache.store(&map_b).unwrap();
+
+        cache.remove("src/a.ts:funcA").unwrap();
+
+        assert_eq!(cache.load("src/a.ts:funcA").unwrap(), None);
+        assert_eq!(cache.load("src/b.ts:funcB").unwrap(), Some(map_b));
+    }
+
+    // --- BehaviorMapCache::invalidate_if_stale tests ---
+
+    #[test]
+    fn invalidate_if_stale_removes_when_fingerprint_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("myFunc");
+        map.fingerprint = Some("old_fp".to_string());
+        cache.store(&map).unwrap();
+
+        assert!(cache.invalidate_if_stale("myFunc", "new_fp").unwrap());
+        assert_eq!(cache.load("myFunc").unwrap(), None);
+    }
+
+    #[test]
+    fn invalidate_if_stale_keeps_fresh_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("myFunc");
+        map.fingerprint = Some("same_fp".to_string());
+        cache.store(&map).unwrap();
+
+        assert!(!cache.invalidate_if_stale("myFunc", "same_fp").unwrap());
+        assert!(cache.load("myFunc").unwrap().is_some());
+    }
+
+    #[test]
+    fn invalidate_if_stale_returns_false_for_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        assert!(!cache.invalidate_if_stale("nonexistent", "any_fp").unwrap());
+    }
+
+    #[test]
+    fn invalidate_if_stale_removes_when_no_cached_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("myFunc"); // fingerprint is None
+        cache.store(&map).unwrap();
+
+        assert!(cache.invalidate_if_stale("myFunc", "any_fp").unwrap());
+        assert_eq!(cache.load("myFunc").unwrap(), None);
+    }
+
     // --- SpecCache tests ---
 
     #[test]
@@ -711,6 +851,35 @@ mod tests {
             .join("TokenValidator")
             .join("validate.spec.json");
         assert!(expected.exists());
+    }
+
+    #[test]
+    fn spec_remove_deletes_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let spec = sample_spec("myFunc");
+        cache.store("myFunc", &spec).unwrap();
+        assert!(cache.load("myFunc").unwrap().is_some());
+
+        assert!(cache.remove("myFunc").unwrap());
+        assert_eq!(cache.load("myFunc").unwrap(), None);
+    }
+
+    #[test]
+    fn spec_remove_leaves_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
+
+        let spec_a = sample_spec("funcA");
+        let spec_b = sample_spec("funcB");
+        cache.store("src/a.ts:funcA", &spec_a).unwrap();
+        cache.store("src/b.ts:funcB", &spec_b).unwrap();
+
+        cache.remove("src/a.ts:funcA").unwrap();
+
+        assert_eq!(cache.load("src/a.ts:funcA").unwrap(), None);
+        assert_eq!(cache.load("src/b.ts:funcB").unwrap(), Some(spec_b));
     }
 
     #[test]
@@ -799,6 +968,45 @@ mod proptests {
             cache.store(fid, &spec).unwrap();
 
             prop_assert!(cache.is_fresh(fid, &fp).unwrap());
+        }
+
+        /// Remove then load always returns None.
+        #[test]
+        fn remove_then_load_is_none(map in arb_behavior_map()) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&map).unwrap();
+            cache.remove(&map.function_id).unwrap();
+            let loaded = cache.load(&map.function_id).unwrap();
+
+            prop_assert_eq!(loaded, None);
+        }
+
+        /// invalidate_if_stale removes when fingerprint differs, keeps when matching.
+        #[test]
+        fn invalidate_stale_is_consistent(
+            mut map in arb_behavior_map(),
+            fp1 in "[a-f0-9]{64}",
+            fp2 in "[a-f0-9]{64}",
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            map.fingerprint = Some(fp1.clone());
+            cache.store(&map).unwrap();
+
+            // Same fingerprint: entry stays.
+            let invalidated = cache.invalidate_if_stale(&map.function_id, &fp1).unwrap();
+            prop_assert!(!invalidated);
+            prop_assert!(cache.load(&map.function_id).unwrap().is_some());
+
+            // Different fingerprint: entry removed (if fp1 != fp2).
+            if fp1 != fp2 {
+                let invalidated = cache.invalidate_if_stale(&map.function_id, &fp2).unwrap();
+                prop_assert!(invalidated);
+                prop_assert!(cache.load(&map.function_id).unwrap().is_none());
+            }
         }
 
         /// Seed inputs survive store → load roundtrip.
