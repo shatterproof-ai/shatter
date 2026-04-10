@@ -1161,6 +1161,61 @@ func TestPropertyComputePrepareIDMocksSensitive(t *testing.T) {
 // TestPropertySymExprArgsNeverNull generates random Go source with functions
 // containing branches, runs AnalyzeFile, marshals every SymExpr in the result
 // to JSON, and verifies "args" is never null — always [] or a populated array.
+// TestPropertyObjectFieldsNeverMissing verifies that any TypeInfo with
+// kind "object" always serializes the "fields" key (never omitted),
+// preventing Rust deserialization errors (str-db91).
+func TestPropertyObjectFieldsNeverMissing(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		goTypes := []string{"int", "int64", "float64", "string", "bool"}
+
+		// Generate a struct with 0-3 exported fields
+		nFields := rapid.IntRange(0, 3).Draw(t, "nFields")
+		var fieldDecls []string
+		for i := 0; i < nFields; i++ {
+			name := fmt.Sprintf("F%d", i)
+			goType := rapid.SampledFrom(goTypes).Draw(t, fmt.Sprintf("ft%d", i))
+			fieldDecls = append(fieldDecls, fmt.Sprintf("\t%s %s", name, goType))
+		}
+
+		structBody := ""
+		if len(fieldDecls) > 0 {
+			structBody = strings.Join(fieldDecls, "\n") + "\n"
+		}
+
+		src := fmt.Sprintf("package p\n\ntype S struct {\n%s}\n\nfunc Foo(s S) int { return 0 }\n", structBody)
+
+		dir, err := os.MkdirTemp("", "shatter-go-prop-fields-*")
+		if err != nil {
+			t.Fatalf("mkdirtemp: %v", err)
+		}
+		defer os.RemoveAll(dir)
+		fpath := filepath.Join(dir, "test.go")
+		if err := os.WriteFile(fpath, []byte(src), 0o644); err != nil {
+			t.Fatalf("write temp file: %v", err)
+		}
+
+		results, err := AnalyzeFile(fpath, "Foo")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 function, got %d", len(results))
+		}
+
+		fa := results[0]
+		data, err := json.Marshal(fa)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		jsonStr := string(data)
+
+		// Every "kind":"object" must have a "fields" key following it
+		if strings.Contains(jsonStr, `"kind":"object"`) && !strings.Contains(jsonStr, `"fields"`) {
+			t.Fatalf("object TypeInfo missing 'fields' key in JSON:\n%s\nsource:\n%s", jsonStr, src)
+		}
+	})
+}
+
 func TestPropertySymExprArgsNeverNull(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		goTypes := []string{"int", "int64", "float64", "string", "bool"}

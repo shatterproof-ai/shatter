@@ -118,6 +118,7 @@ pub enum TypeInfo {
         element: Box<TypeInfo>,
     },
     Object {
+        #[serde(default)]
         fields: Vec<(String, TypeInfo)>,
     },
     Union {
