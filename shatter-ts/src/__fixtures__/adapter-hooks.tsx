@@ -1,0 +1,57 @@
+/**
+ * Adapter fixture: React hooks requiring adapter intervention.
+ *
+ * These functions call React hooks that need a React runtime shim to execute
+ * without crashing. The adapter layer must provide the shim before execution.
+ *
+ * useToggle: calls useState → needs react-hook adapter.
+ *   - initial === true  → starts toggled on
+ *   - initial === false → starts toggled off
+ *
+ * useGreeting: calls useMemo → needs react-hook adapter.
+ *   - name is truthy  → personalized greeting
+ *   - name is falsy   → default greeting
+ *
+ * useDebounced: calls useState + useEffect → needs react-hook adapter.
+ *   - delay > 0 → debounced update path
+ *   - delay <= 0 → immediate update path
+ *
+ * plainHelper: no hooks → should NOT trigger react-hook adapter.
+ */
+
+import { useState, useEffect, useMemo } from "react";
+
+export function useToggle(initial: boolean) {
+  const [on, setOn] = useState(initial);
+  if (on) {
+    return { state: "on", toggle: () => setOn(false) };
+  }
+  return { state: "off", toggle: () => setOn(true) };
+}
+
+export function useGreeting(name: string) {
+  const greeting = useMemo(() => {
+    if (name) {
+      return `Hello, ${name}!`;
+    }
+    return "Hello, stranger!";
+  }, [name]);
+  return greeting;
+}
+
+export function useDebounced(value: number, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    if (delay > 0) {
+      const timer = setTimeout(() => setDebounced(value), delay);
+      return () => clearTimeout(timer);
+    }
+    setDebounced(value);
+    return undefined;
+  }, [value, delay]);
+  return debounced;
+}
+
+export function plainHelper(x: number): number {
+  return x * 2;
+}
