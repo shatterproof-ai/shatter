@@ -285,9 +285,15 @@ export function classifyConnectionFailure(message: string): ConnectionFailureKin
  * Replace dynamic `import()` expressions in transpiled JS with a synchronous
  * `require()`-based helper, preventing races between async ESM loading and
  * synchronous `require()` on the same module.
+ *
+ * Also replaces `import.meta` references with `__shatter_import_meta` so
+ * Vite-style code (e.g. `import.meta.env.VITE_API_URL`) can execute in the
+ * VM sandbox without "Cannot use 'import.meta' outside a module" errors.
  */
 export function transformDynamicImports(jsCode: string): string {
-  return jsCode.replace(/\bimport\s*\(/g, "__shatter_import(");
+  return jsCode
+    .replace(/\bimport\.meta\b/g, "__shatter_import_meta")
+    .replace(/\bimport\s*\(/g, "__shatter_import(");
 }
 
 /**
@@ -558,6 +564,7 @@ function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[]): Rec
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
     __shatter_import: createShatterImport(targetRequire),
+    __shatter_import_meta: { url: "", env: {} },
   });
 
   vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
@@ -1402,6 +1409,7 @@ export async function executeInstrumented(
     [MOCK_CALL_FUNCTION]: mockCallFn,
     [CRYPTO_BOUNDARY_FUNCTION]: cryptoBoundaryFn,
     __shatter_import: createShatterImport(sandboxRequire),
+    __shatter_import_meta: { url: sourceFilePath ?? "", env: {} },
   });
 
   const loadModule = (): void => {

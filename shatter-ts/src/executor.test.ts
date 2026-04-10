@@ -1913,3 +1913,48 @@ describe("dynamic import() in user code (str-4hay regression)", () => {
     expect(result.return_value).toBe(7);
   });
 });
+
+describe("import.meta polyfill", () => {
+  it("executeFunction does not crash on import.meta.env references", async () => {
+    const result = await executeFunction(
+      path.join(FIXTURES_DIR, "import-meta.ts"),
+      "getApiUrl",
+      ["https://fallback.example.com"],
+    );
+    // import.meta.env is stubbed, so VITE_API_URL is undefined → fallback returned
+    expect(result.return_value).toBe("https://fallback.example.com");
+  });
+
+  it("executeInstrumented does not crash on import.meta.env references", async () => {
+    const fixture = path.join(FIXTURES_DIR, "import-meta.ts");
+    const source = fs.readFileSync(fixture, "utf-8");
+    const instrumentResult = instrumentFunction(source, "getApiUrl", fixture);
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "getApiUrl",
+      ["https://fallback.example.com"],
+    );
+    expect(result.return_value).toBe("https://fallback.example.com");
+  });
+
+  it("transformDynamicImports replaces import.meta with __shatter_import_meta", () => {
+    expect(transformDynamicImports("import.meta.env.VITE_API_URL")).toBe(
+      "__shatter_import_meta.env.VITE_API_URL",
+    );
+  });
+
+  it("transformDynamicImports handles import.meta.url", () => {
+    expect(transformDynamicImports("const u = import.meta.url;")).toBe(
+      "const u = __shatter_import_meta.url;",
+    );
+  });
+
+  it("transformDynamicImports does not replace import.meta inside __shatter_import_meta", () => {
+    const input = "__shatter_import_meta.env.FOO";
+    expect(transformDynamicImports(input)).toBe(input);
+  });
+});
