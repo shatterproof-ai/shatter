@@ -139,6 +139,13 @@ pub fn classify_severity(thrown_error: Option<&ErrorInfo>, is_crash: bool) -> Se
 /// Default maximum entries per type bucket.
 pub const DEFAULT_BUCKET_CAP: usize = 50;
 
+/// Maximum distinct representatives (witnessing entries) retained per behavior
+/// class (`BehaviorSig`). Once this many entries across the pool witness the
+/// same `(function_id, branch_id, severity)`, further attempts to introduce
+/// *new* witnesses for that class are dropped. The first representatives for
+/// a class are preserved — they are never displaced by this cap.
+pub const MAX_REPRESENTATIVES_PER_BEHAVIOR: usize = 10;
+
 /// Coverage tier for eviction decisions.
 ///
 /// Tier 1 entries are sole witnesses to at least one behavior; tier 0 entries
@@ -264,11 +271,53 @@ impl InterestingPool {
             .unwrap_or(&[])
     }
 
+    /// Count how many entries across all buckets witness `sig`.
+    ///
+    /// A `PoolEntry` witnesses a behavior class iff its `behaviors` vector
+    /// contains a `BehaviorObservation` whose `BehaviorSig` equals `sig`.
+    fn witness_count(&self, sig: &BehaviorSig) -> usize {
+        self.buckets
+            .values()
+            .flat_map(|bucket| bucket.iter())
+            .filter(|e| e.behaviors.iter().any(|o| BehaviorSig::from(o) == *sig))
+            .count()
+    }
+
     /// Insert an entry into the pool, evicting if the bucket is at capacity.
     ///
     /// Returns `true` if the entry was inserted (or merged), `false` if
-    /// it was rejected because all existing entries have higher priority.
-    pub fn insert(&mut self, entry: PoolEntry) -> bool {
+    /// it was rejected because all existing entries have higher priority,
+    /// or because every observation in the entry was dropped by the
+    /// per-behavior-class cap (`MAX_REPRESENTATIVES_PER_BEHAVIOR`).
+    pub fn insert(&mut self, mut entry: PoolEntry) -> bool {
+        // Per-behavior cap: drop any observation whose behavior class already
+        // has the maximum number of distinct witnesses, unless an entry with
+        // the same value already witnesses that class (in which case the merge
+        // is a no-op and does not add a new witness). We compute this *before*
+        // the per-type-bucket mutable borrow to keep the witness scan cheap
+        // and avoid aliasing.
+        let existing_sigs_for_value: HashSet<BehaviorSig> = self
+            .buckets
+            .get(&type_key(&entry.ty))
+            .and_then(|bucket| bucket.iter().find(|e| e.value == entry.value))
+            .map(|existing| existing.behaviors.iter().map(BehaviorSig::from).collect())
+            .unwrap_or_default();
+
+        entry.behaviors.retain(|obs| {
+            let sig = BehaviorSig::from(obs);
+            if existing_sigs_for_value.contains(&sig) {
+                // Value-merge into an entry that already witnesses this class:
+                // preserving the observation is a no-op (dedup by sig happens
+                // below), so it cannot add a new witness. Keep it.
+                return true;
+            }
+            self.witness_count(&sig) < MAX_REPRESENTATIVES_PER_BEHAVIOR
+        });
+
+        if entry.behaviors.is_empty() {
+            return false;
+        }
+
         let key = type_key(&entry.ty);
         let bucket = self.buckets.entry(key).or_default();
 
@@ -950,5 +999,321 @@ mod tests {
         // But only one entry in the bucket (merged)
         assert_eq!(pool.buckets[&key].len(), 1);
         assert_eq!(pool.buckets[&key][0].behaviors.len(), 2);
+    }
+
+    // -- MAX_REPRESENTATIVES_PER_BEHAVIOR cap tests --
+
+    /// Build a pool large enough that the per-bucket cap never interferes
+    /// with per-behavior-cap tests.
+    fn uncapped_pool() -> InterestingPool {
+        InterestingPool {
+            bucket_cap: 10_000,
+            ..Default::default()
+        }
+    }
+
+    fn behavior_entry(value: i64, function: &str, branch_id: u32, severity: Severity) -> PoolEntry {
+        PoolEntry {
+            value: serde_json::json!(value),
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: function.into(),
+                branch_id,
+                severity,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn insert_caps_representatives_per_behavior() {
+        let mut pool = uncapped_pool();
+        // Attempt to insert MAX + 5 distinct values all witnessing the same class.
+        let attempts = MAX_REPRESENTATIVES_PER_BEHAVIOR + 5;
+        for i in 0..attempts {
+            let inserted =
+                pool.insert(behavior_entry(i as i64, "foo", 1, Severity::UnhandledError));
+            if i < MAX_REPRESENTATIVES_PER_BEHAVIOR {
+                assert!(inserted, "entry {i} under cap should insert");
+            } else {
+                assert!(!inserted, "entry {i} over cap should be rejected");
+            }
+        }
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::UnhandledError,
+        };
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn insert_first_representatives_preserved_after_cap_hits() {
+        let mut pool = uncapped_pool();
+        // Insert the first batch of representatives and record their values.
+        let mut pioneers = Vec::new();
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::RarePath));
+            pioneers.push(serde_json::json!(i as i64));
+        }
+        // Keep trying to push more — these must all be rejected.
+        for i in 100..120 {
+            assert!(!pool.insert(behavior_entry(i, "foo", 1, Severity::RarePath)));
+        }
+        // Every pioneer value is still present.
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        for pioneer in &pioneers {
+            assert!(
+                bucket.iter().any(|e| &e.value == pioneer),
+                "pioneer {pioneer:?} should still be present",
+            );
+        }
+    }
+
+    #[test]
+    fn insert_below_cap_never_silently_drops() {
+        let mut pool = uncapped_pool();
+        let under_cap = MAX_REPRESENTATIVES_PER_BEHAVIOR - 1;
+        for i in 0..under_cap {
+            assert!(pool.insert(behavior_entry(i as i64, "bar", 2, Severity::HandledError)));
+        }
+        let sig = BehaviorSig {
+            function_id: "bar".into(),
+            branch_id: 2,
+            severity: Severity::HandledError,
+        };
+        assert_eq!(pool.witness_count(&sig), under_cap);
+    }
+
+    #[test]
+    fn insert_allows_distinct_behaviors_independently() {
+        let mut pool = uncapped_pool();
+        // Fill class A to cap.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "A", 1, Severity::Crash));
+        }
+        // A different class B should still accept new witnesses.
+        let inserted = pool.insert(behavior_entry(
+            1_000,
+            "B",
+            1,
+            Severity::Crash,
+        ));
+        assert!(inserted);
+        let sig_b = BehaviorSig {
+            function_id: "B".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        assert_eq!(pool.witness_count(&sig_b), 1);
+    }
+
+    #[test]
+    fn insert_rejects_when_all_observations_capped() {
+        let mut pool = uncapped_pool();
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 9, Severity::Crash));
+        }
+        // Entry with only a capped observation and a novel value — dropped.
+        let e = behavior_entry(999, "foo", 9, Severity::Crash);
+        assert!(!pool.insert(e));
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 9,
+            severity: Severity::Crash,
+        };
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn insert_merges_capped_class_into_existing_witness() {
+        // An entry whose value already exists in the pool and already
+        // witnesses the capped class should still be able to merge
+        // unrelated observations that are themselves below cap.
+        let mut pool = uncapped_pool();
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        // Re-insert the very first witness with a brand-new, uncapped class
+        // and the *already-present* capped class. The capped class is
+        // preserved (value-merge → no new witness). The uncapped class
+        // is added.
+        let mut merged = behavior_entry(0, "foo", 1, Severity::Crash);
+        merged.behaviors.push(BehaviorObservation {
+            function: "bar".into(),
+            branch_id: 7,
+            severity: Severity::RarePath,
+        });
+        assert!(pool.insert(merged));
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let first = bucket.iter().find(|e| e.value == serde_json::json!(0)).unwrap();
+        assert_eq!(first.behaviors.len(), 2);
+    }
+
+    #[test]
+    fn save_load_roundtrip_with_capped_class() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("seeds/pool.json");
+        let mut pool = uncapped_pool();
+        pool.epoch = 7;
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR + 3 {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::UnhandledError));
+        }
+        save_pool(&pool, &path).expect("save pool");
+        let loaded = load_pool(&path).expect("load pool").expect("pool exists");
+
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::UnhandledError,
+        };
+        assert_eq!(loaded.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert_eq!(loaded.epoch, 7);
+    }
+
+    // -- Property-based tests for the per-behavior cap --
+
+    use proptest::prelude::*;
+
+    /// Small value space (0..20) and small behavior-sig space (3 funcs × 3
+    /// branches × 2 severities = 18 classes). With 40 attempts many classes
+    /// will hit the cap.
+    fn arb_insert_op() -> impl Strategy<Value = (i64, String, u32, Severity)> {
+        (
+            0i64..20,
+            prop_oneof![Just("f0".to_string()), Just("f1".to_string()), Just("f2".to_string())],
+            0u32..3,
+            prop_oneof![Just(Severity::RarePath), Just(Severity::UnhandledError)],
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Cap invariant: no behavior class ever exceeds
+        /// `MAX_REPRESENTATIVES_PER_BEHAVIOR` witnesses in the pool.
+        #[test]
+        fn prop_witness_count_never_exceeds_cap(
+            ops in proptest::collection::vec(arb_insert_op(), 0..40usize),
+        ) {
+            let mut pool = InterestingPool {
+                bucket_cap: 10_000,
+                ..Default::default()
+            };
+            for (value, func, branch, severity) in &ops {
+                let _ = pool.insert(behavior_entry(*value, func, *branch, *severity));
+            }
+            // Collect every unique BehaviorSig that appears in the pool.
+            let mut sigs = std::collections::HashSet::new();
+            for bucket in pool.buckets.values() {
+                for entry in bucket {
+                    for obs in &entry.behaviors {
+                        sigs.insert(BehaviorSig::from(obs));
+                    }
+                }
+            }
+            for sig in &sigs {
+                prop_assert!(
+                    pool.witness_count(sig) <= MAX_REPRESENTATIVES_PER_BEHAVIOR,
+                    "class {:?} exceeded cap",
+                    sig,
+                );
+            }
+        }
+
+        /// Pioneer invariant: the first entry whose insertion is reported
+        /// successful for a given class stays in the pool, even if later
+        /// attempts for that class are rejected.
+        #[test]
+        fn prop_first_representative_preserved(
+            ops in proptest::collection::vec(arb_insert_op(), 0..40usize),
+        ) {
+            let mut pool = InterestingPool {
+                bucket_cap: 10_000,
+                ..Default::default()
+            };
+            // Track the first (value, class) pair that was actually inserted
+            // for each class.
+            let mut pioneers: HashMap<BehaviorSig, serde_json::Value> = HashMap::new();
+            for (value, func, branch, severity) in &ops {
+                let sig = BehaviorSig {
+                    function_id: func.clone(),
+                    branch_id: *branch,
+                    severity: *severity,
+                };
+                let before = pool.witness_count(&sig);
+                let inserted = pool.insert(behavior_entry(*value, func, *branch, *severity));
+                let after = pool.witness_count(&sig);
+                // Only record a pioneer when this call actually added a new
+                // witness for the class. Value-dedup merges don't count.
+                if inserted && after > before && !pioneers.contains_key(&sig) {
+                    pioneers.insert(sig, serde_json::json!(*value));
+                }
+            }
+            for (sig, pioneer_value) in &pioneers {
+                let present = pool
+                    .buckets
+                    .values()
+                    .flat_map(|b| b.iter())
+                    .any(|e| {
+                        e.value == *pioneer_value
+                            && e.behaviors.iter().any(|o| BehaviorSig::from(o) == *sig)
+                    });
+                prop_assert!(
+                    present,
+                    "pioneer {:?} for class {:?} was lost",
+                    pioneer_value,
+                    sig,
+                );
+            }
+        }
+
+        /// Under-cap preservation: if a class receives strictly fewer than
+        /// `MAX_REPRESENTATIVES_PER_BEHAVIOR` distinct-value insertions, every
+        /// such distinct value still witnesses the class at the end.
+        #[test]
+        fn prop_under_cap_never_silently_drops(
+            ops in proptest::collection::vec(arb_insert_op(), 0..40usize),
+        ) {
+            let mut pool = InterestingPool {
+                bucket_cap: 10_000,
+                ..Default::default()
+            };
+            // Group unique values attempted per class.
+            let mut attempts_per_class: HashMap<BehaviorSig, HashSet<i64>> = HashMap::new();
+            for (value, func, branch, severity) in &ops {
+                let sig = BehaviorSig {
+                    function_id: func.clone(),
+                    branch_id: *branch,
+                    severity: *severity,
+                };
+                attempts_per_class.entry(sig).or_default().insert(*value);
+            }
+            for (value, func, branch, severity) in &ops {
+                let _ = pool.insert(behavior_entry(*value, func, *branch, *severity));
+            }
+            for (sig, values) in &attempts_per_class {
+                if values.len() < MAX_REPRESENTATIVES_PER_BEHAVIOR {
+                    for v in values {
+                        let jv = serde_json::json!(*v);
+                        let witnesses = pool
+                            .buckets
+                            .values()
+                            .flat_map(|b| b.iter())
+                            .any(|e| {
+                                e.value == jv
+                                    && e.behaviors.iter().any(|o| BehaviorSig::from(o) == *sig)
+                            });
+                        prop_assert!(
+                            witnesses,
+                            "under-cap class {:?} lost distinct value {}",
+                            sig,
+                            v,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
