@@ -7,6 +7,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use shatter_core::adapter_selection;
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
@@ -395,6 +396,30 @@ pub(crate) async fn run_explore(
                         func.branches.len(),
                         colors.reset
                     );
+
+                    // Show adapter selection results.
+                    if let Ok(selection) =
+                        adapter_selection::select_adapters(None, &func.adapter_hints)
+                    {
+                        for active in &selection.active {
+                            println!(
+                                "  {}adapter [active]: {} ({}){}",
+                                colors.bold,
+                                active.adapter.id,
+                                active.provenance,
+                                colors.reset,
+                            );
+                        }
+                        for suggested in &selection.suggested {
+                            println!(
+                                "  {}adapter [suggested]: {} [{:?}]{}",
+                                colors.dim,
+                                suggested.adapter.id,
+                                suggested.confidence,
+                                colors.reset,
+                            );
+                        }
+                    }
                 }
             }
             continue;
@@ -565,6 +590,40 @@ pub(crate) async fn run_explore(
             )
             .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
 
+            // Run adapter selection policy: merge config profile with frontend hints.
+            let adapter_selection_result = adapter_selection::select_adapters(
+                resolved.execution_profile.as_ref(),
+                &func.adapter_hints,
+            )
+            .map_err(|e| format!("adapter selection error for {}: {e}", func.name))?;
+
+            let resolved_execution_profile = adapter_selection_result.to_execution_profile();
+
+            for active in &adapter_selection_result.active {
+                log::info!(
+                    "  {} adapter [active]: {} ({})",
+                    func.name,
+                    active.adapter.id,
+                    active.provenance,
+                );
+            }
+            for suggested in &adapter_selection_result.suggested {
+                log::info!(
+                    "  {} adapter [suggested]: {} [{:?}]",
+                    func.name,
+                    suggested.adapter.id,
+                    suggested.confidence,
+                );
+            }
+            for rejected in &adapter_selection_result.rejected {
+                log::warn!(
+                    "  {} adapter [rejected]: {} — {}",
+                    func.name,
+                    rejected.adapter_id,
+                    rejected.reason,
+                );
+            }
+
             // Merge CLI --genetic flags with config.yaml resolved genetic config.
             // CLI --genetic explicitly enables; when absent, config.yaml provides defaults.
             let effective_genetic = if cli_genetic {
@@ -714,7 +773,7 @@ pub(crate) async fn run_explore(
                     None => vec![],
                 },
                 project_root: project_root_str.clone(),
-                execution_profile: resolved.execution_profile.clone(),
+                execution_profile: resolved_execution_profile.clone(),
                 loop_buckets: loop_buckets.clone(),
                 timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                 meta_config: meta_config.clone(),

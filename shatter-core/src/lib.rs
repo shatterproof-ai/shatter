@@ -1,5 +1,6 @@
 //\! Shatter core engine: concolic execution and constraint solving.
 
+pub mod adapter_selection;
 pub mod analysis_cache;
 pub mod array_mutation;
 pub mod auto_mock;
