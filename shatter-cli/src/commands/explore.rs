@@ -761,6 +761,9 @@ pub(crate) async fn run_explore(
     cli_genetic_generations: Option<u32>,
     cli_genetic_timeout: Option<u32>,
     from_artifacts: Option<&Path>,
+    time_limit: Option<f64>,
+    coverage_threshold: Option<f64>,
+    max_executions: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Early return: finalize from saved artifacts instead of running exploration.
     if let Some(artifact_dir) = from_artifacts {
@@ -1475,7 +1478,21 @@ pub(crate) async fn run_explore(
             .expect("fe_config must exist for target language")
             .clone();
 
+        let time_limit_dur = time_limit.map(Duration::from_secs_f64);
+        let run_start = Instant::now();
+
         for (work_index, item) in work_items.into_iter().enumerate() {
+            // --time-limit: stop launching new functions if time limit exceeded.
+            if let Some(limit) = time_limit_dur
+                && run_start.elapsed() >= limit
+            {
+                log::info!(
+                    "Time limit ({:.1}s) reached, skipping remaining functions",
+                    limit.as_secs_f64()
+                );
+                break;
+            }
+
             let sem = Arc::clone(&semaphore);
             let completed_functions = Arc::clone(&completed_functions);
             let fe_config = fe_config_for_lang.clone();
@@ -1630,6 +1647,11 @@ pub(crate) async fn run_explore(
 
         // --- Phase 3: Collect results and process (sequential, in order) ---
         let mut outcomes = Vec::new();
+        let mut total_executions_count: u64 = 0;
+        let mut total_branches_seen: usize = 0;
+        let mut total_branches_covered: usize = 0;
+        let mut stop_early = false;
+
         while let Some(joined) = join_set.join_next().await {
             let outcome = match joined {
                 Ok(o) => o,
@@ -1638,6 +1660,14 @@ pub(crate) async fn run_explore(
                     continue;
                 }
             };
+
+            // Update running stop-flag counters from this function's results.
+            if let Ok(ref obs) = outcome.result {
+                total_executions_count += obs.iterations as u64;
+                total_branches_seen += obs.total_lines as usize;
+                total_branches_covered += obs.unique_paths;
+            }
+
             let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, &outcome) {
                 Ok(path) => {
                     log::info!(
@@ -1678,6 +1708,46 @@ pub(crate) async fn run_explore(
             }
 
             outcomes.push(outcome);
+
+            // Check stop flags after collecting each result.
+            if let Some(limit) = time_limit_dur
+                && run_start.elapsed() >= limit
+            {
+                log::info!(
+                    "Time limit ({:.1}s) reached, stopping result collection",
+                    limit.as_secs_f64()
+                );
+                stop_early = true;
+            }
+            if let Some(max_exec) = max_executions
+                && total_executions_count >= max_exec
+            {
+                log::info!(
+                    "Max executions ({max_exec}) reached ({total_executions_count} total), \
+                     stopping result collection"
+                );
+                stop_early = true;
+            }
+            if let Some(threshold) = coverage_threshold
+                && total_branches_seen > 0
+            {
+                let coverage_pct =
+                    total_branches_covered as f64 / total_branches_seen as f64 * 100.0;
+                if coverage_pct >= threshold {
+                    log::info!(
+                        "Coverage threshold ({threshold:.1}%) reached ({coverage_pct:.1}% \
+                         actual), stopping result collection"
+                    );
+                    stop_early = true;
+                }
+            }
+            if stop_early {
+                break;
+            }
+        }
+        // Drain remaining tasks so spawned frontends are cleaned up.
+        if stop_early {
+            join_set.abort_all();
         }
         outcomes.sort_by_key(|outcome| outcome.work_index);
 
