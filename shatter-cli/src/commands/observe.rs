@@ -209,7 +209,7 @@ pub(crate) async fn run_observe(
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
             };
-            explorer::explore_function(&mut frontend, &func, &explore_config, None).await
+            explorer::explore_function(&mut frontend, &func, &explore_config, None, None).await
         };
 
     shutdown_frontend(frontend).await;

@@ -124,7 +124,7 @@ pub(crate) async fn run_export_tests(
         for func in &functions {
             log::info!("Exploring {}...", func.name);
 
-            match explorer::explore_function(&mut frontend, func, &explore_config, None).await {
+            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await {
                 Ok(result) => {
                     let behavior_map = BehaviorMap::from_exploration_result(&func.name, &result);
 

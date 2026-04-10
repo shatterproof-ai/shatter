@@ -1192,7 +1192,7 @@ pub async fn scan(
         };
 
         let exploration =
-            explorer::explore_function(frontend, analysis, &explore_config, None).await?;
+            explorer::explore_function(frontend, analysis, &explore_config, None, None).await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -2909,7 +2909,7 @@ async fn explore_single_function(
     genetic_config: &crate::config::GeneticConfig,
     cache: &Option<Arc<BehaviorMapCache>>,
 ) -> Result<FunctionResult, ScanError> {
-    let exploration = explorer::explore_function(frontend, analysis, explore_config, None).await?;
+    let exploration = explorer::explore_function(frontend, analysis, explore_config, None, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();

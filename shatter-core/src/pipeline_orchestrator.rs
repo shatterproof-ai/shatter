@@ -449,6 +449,7 @@ async fn run_random_observe(
         &input.analysis,
         &config,
         None,
+        None,
     )
     .await?;
 

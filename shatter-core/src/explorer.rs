@@ -163,6 +163,27 @@ pub struct ExploreConfig {
     pub claim_policy: crate::scan_orchestrator::ClaimPolicy,
 }
 
+/// Default interval between periodic progress summaries.
+pub const PROGRESS_SUMMARY_INTERVAL_SECS: u64 = 15;
+
+/// Snapshot of exploration progress emitted periodically during the explore loop.
+#[derive(Debug, Clone)]
+pub struct ExploreProgressSnapshot {
+    /// Name of the function being explored.
+    pub function_name: String,
+    /// Wall-clock time since exploration started.
+    pub elapsed: Duration,
+    /// Number of iterations (executions) completed so far.
+    pub iterations: u32,
+    /// Number of unique execution paths discovered.
+    pub paths_found: usize,
+    /// Total branches reported by static analysis (if known).
+    pub total_branches: Option<usize>,
+}
+
+/// Callback type for receiving periodic exploration progress summaries.
+pub type ProgressCallback = dyn Fn(&ExploreProgressSnapshot) + Send + Sync;
+
 /// Summary of a single function execution during exploration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionSummary {
@@ -686,6 +707,7 @@ pub async fn explore_function(
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
     mut setup_mgr: Option<&mut SetupManager>,
+    progress_cb: Option<&ProgressCallback>,
 ) -> Result<ObservationOutput, ExploreError> {
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
@@ -953,6 +975,7 @@ pub async fn explore_function(
         capabilities: config.capabilities.clone(),
     };
     let explore_start = Instant::now();
+    let mut last_summary_time = Instant::now();
     let mut effective_budget = config.max_iterations;
     // Track recent path discoveries for surplus claim decisions.
     // Ring buffer: true = new path, false = duplicate.
@@ -1003,6 +1026,21 @@ pub async fn explore_function(
         }
 
         iterations += 1;
+
+        // --- Periodic progress summary ---
+        if let Some(cb) = progress_cb {
+            let since_last = last_summary_time.elapsed();
+            if since_last >= Duration::from_secs(PROGRESS_SUMMARY_INTERVAL_SECS) {
+                cb(&ExploreProgressSnapshot {
+                    function_name: analysis.name.clone(),
+                    elapsed: explore_start.elapsed(),
+                    iterations,
+                    paths_found: obs_state.seen_paths.len(),
+                    total_branches: Some(analysis.branches.len()),
+                });
+                last_summary_time = Instant::now();
+            }
+        }
 
         // --- Per-execution setup ---
         if per_execution_setup && !skip_setup
@@ -2690,7 +2728,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("should succeed with noop frontend");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 3);
@@ -2721,7 +2759,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("per_function setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
@@ -2752,7 +2790,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("per_execution setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
@@ -2782,7 +2820,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("should succeed without setup capability");
         assert_eq!(result.iterations, 2);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2816,7 +2854,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("generators should succeed");
         assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
@@ -2846,7 +2884,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("no generators should succeed");
         assert_eq!(result.iterations, 3);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2875,7 +2913,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("user seeds should succeed");
         assert_eq!(result.iterations, 5);
         // The user-provided seed should appear in raw_results within the budget.
@@ -2912,7 +2950,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("candidate inputs should succeed");
         // Both candidate_inputs and pool_seeds should be executed within the budget.
         // MetaStrategy uses adaptive selection so strict ordering is not guaranteed;
@@ -2958,7 +2996,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
-        let result = explore_function(&mut frontend, &analysis, &config, None)
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await.expect("should succeed with noop frontend");
         assert!(!result.raw_results.is_empty(), "raw_results should be populated");
 
