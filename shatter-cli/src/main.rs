@@ -172,6 +172,7 @@ async fn main() -> ExitCode {
             stdout,
             format,
             jobs,
+            from_artifacts,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
@@ -258,6 +259,7 @@ async fn main() -> ExitCode {
                 genetic_population,
                 genetic_generations,
                 genetic_timeout,
+                from_artifacts.as_deref(),
             )
             .await
         }
