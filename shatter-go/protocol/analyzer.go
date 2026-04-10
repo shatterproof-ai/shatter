@@ -515,10 +515,23 @@ func hasNativeHandleField(named *types.Named) bool {
 }
 
 func goTypeToTypeInfo(t types.Type) TypeInfo {
-	return goTypeToTypeInfoWithContext(t, nil)
+	return goTypeToTypeInfoRec(t, nil, make(map[types.Type]bool))
 }
 
 func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
+	return goTypeToTypeInfoRec(t, fc, make(map[types.Type]bool))
+}
+
+func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]bool) TypeInfo {
+	// Cycle detection: if we've already started resolving this type, return a
+	// stub to break the infinite recursion (e.g., type A struct { B *B } where
+	// B struct { A *A }).
+	if visited[t] {
+		return TypeInfo{Kind: "object", Label: t.String()}
+	}
+	visited[t] = true
+	defer delete(visited, t)
+
 	// Check for opaque resource types (channels, sockets, file handles, etc.)
 	if label, ok := isOpaqueGoType(t); ok {
 		return TypeInfo{Kind: "opaque", Label: label}
@@ -573,17 +586,17 @@ func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
 	case *types.Basic:
 		return basicTypeInfo(typ)
 	case *types.Slice:
-		elem := goTypeToTypeInfoWithContext(typ.Elem(), fc)
+		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Array:
-		elem := goTypeToTypeInfoWithContext(typ.Elem(), fc)
+		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Map:
-		return mapTypeInfo(typ)
+		return mapTypeInfoRec(typ, fc, visited)
 	case *types.Struct:
-		return structTypeInfo(typ)
+		return structTypeInfoRec(typ, fc, visited)
 	case *types.Pointer:
-		inner := goTypeToTypeInfoWithContext(typ.Elem(), fc)
+		inner := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
 		return TypeInfo{Kind: "nullable", Inner: &inner}
 	case *types.Chan:
 		return TypeInfo{Kind: "opaque", Label: "chan " + typ.Elem().String()}
@@ -661,8 +674,12 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 }
 
 func mapTypeInfo(m *types.Map) TypeInfo {
-	keyType := goTypeToTypeInfo(m.Key())
-	valType := goTypeToTypeInfo(m.Elem())
+	return mapTypeInfoRec(m, nil, make(map[types.Type]bool))
+}
+
+func mapTypeInfoRec(m *types.Map, fc *fileContext, visited map[types.Type]bool) TypeInfo {
+	keyType := goTypeToTypeInfoRec(m.Key(), fc, visited)
+	valType := goTypeToTypeInfoRec(m.Elem(), fc, visited)
 	return TypeInfo{
 		Kind: "object",
 		Fields: []ObjectField{
@@ -673,12 +690,16 @@ func mapTypeInfo(m *types.Map) TypeInfo {
 }
 
 func structTypeInfo(s *types.Struct) TypeInfo {
+	return structTypeInfoRec(s, nil, make(map[types.Type]bool))
+}
+
+func structTypeInfoRec(s *types.Struct, fc *fileContext, visited map[types.Type]bool) TypeInfo {
 	fields := make([]ObjectField, s.NumFields())
 	for i := 0; i < s.NumFields(); i++ {
 		f := s.Field(i)
 		fields[i] = ObjectField{
 			Name: f.Name(),
-			Type: goTypeToTypeInfo(f.Type()),
+			Type: goTypeToTypeInfoRec(f.Type(), fc, visited),
 		}
 	}
 	return TypeInfo{Kind: "object", Fields: fields}
