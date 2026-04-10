@@ -4,6 +4,7 @@ import * as ts from "typescript";
 
 import type { ExecutionAdapter, ExecutionProfile } from "./protocol.js";
 import type { ResolverAdapter } from "./executor.js";
+import { ADAPTER_ID_IMPORT_META_ENV } from "./runtime-hints.js";
 
 export type RuntimeHookPhase = "execute" | "setup";
 
@@ -14,8 +15,14 @@ export interface RuntimeHookContext {
   function_name?: string;
 }
 
+export interface SandboxProvider {
+  id: string;
+  augmentSandbox(sandbox: Record<string, unknown>): void;
+}
+
 export interface RuntimeHooks {
   resolver_adapters: ResolverAdapter[];
+  sandbox_providers: SandboxProvider[];
 }
 
 export interface RuntimeHookFactory {
@@ -29,6 +36,7 @@ export interface RuntimeHookFactory {
 function mergeRuntimeHooks(target: RuntimeHooks, next: RuntimeHooks | null | undefined): void {
   if (!next) return;
   target.resolver_adapters.push(...next.resolver_adapters);
+  target.sandbox_providers.push(...next.sandbox_providers);
 }
 
 interface TsconfigResolutionState {
@@ -125,6 +133,47 @@ function createTsconfigPathsFactory(): RuntimeHookFactory {
             },
           },
         ],
+        sandbox_providers: [],
+      };
+    },
+  };
+}
+
+/** Vite's standard import.meta.env defaults. */
+const VITE_ENV_DEFAULTS: Record<string, string | boolean> = {
+  MODE: "development",
+  DEV: true,
+  PROD: false,
+  SSR: false,
+  BASE_URL: "/",
+};
+
+interface ImportMetaEnvOptions {
+  env?: Record<string, string>;
+}
+
+function createImportMetaEnvFactory(): RuntimeHookFactory {
+  return {
+    id: ADAPTER_ID_IMPORT_META_ENV,
+    createRuntimeHooks(adapter) {
+      const userEnv = (adapter.options as ImportMetaEnvOptions | undefined)?.env ?? {};
+      const mergedEnv: Record<string, string | boolean> = { ...VITE_ENV_DEFAULTS, ...userEnv };
+
+      return {
+        resolver_adapters: [],
+        sandbox_providers: [
+          {
+            id: ADAPTER_ID_IMPORT_META_ENV,
+            augmentSandbox(sandbox) {
+              const meta = sandbox["__shatter_import_meta"] as
+                | { env?: Record<string, string | boolean> }
+                | undefined;
+              if (meta) {
+                meta.env = { ...mergedEnv, ...meta.env };
+              }
+            },
+          },
+        ],
       };
     },
   };
@@ -132,6 +181,7 @@ function createTsconfigPathsFactory(): RuntimeHookFactory {
 
 const DEFAULT_RUNTIME_HOOK_FACTORIES: readonly RuntimeHookFactory[] = [
   createTsconfigPathsFactory(),
+  createImportMetaEnvFactory(),
 ];
 
 export function resolveRuntimeHooks(
@@ -139,7 +189,7 @@ export function resolveRuntimeHooks(
   context: RuntimeHookContext,
   factories: readonly RuntimeHookFactory[] = DEFAULT_RUNTIME_HOOK_FACTORIES,
 ): RuntimeHooks {
-  const hooks: RuntimeHooks = { resolver_adapters: [] };
+  const hooks: RuntimeHooks = { resolver_adapters: [], sandbox_providers: [] };
   if (!executionProfile) {
     return hooks;
   }

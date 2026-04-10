@@ -64,6 +64,7 @@ import {
   ADAPTER_ID_BROWSER_GLOBALS,
   ADAPTER_ID_IMPORT_META_ENV,
 } from "./runtime-hints.js";
+import { resolveRuntimeHooks } from "./runtime-hooks.js";
 import { buildSymExpr, buildSymExprWithFlow, flattenConditions } from "./instrumentor.js";
 import type { FlattenedConditions } from "./instrumentor.js";
 import type { ConditionOutcome } from "./protocol.js";
@@ -1915,5 +1916,114 @@ describe("detectRuntimeHints properties", () => {
       error_category: "unknown",
     });
     expect(hints).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SandboxProvider composition properties
+// ---------------------------------------------------------------------------
+
+describe("SandboxProvider composition properties", () => {
+  const arbEnvRecord = fc.dictionary(
+    fc.stringMatching(/^[A-Z][A-Z0-9_]{0,30}$/),
+    fc.string({ minLength: 0, maxLength: 100 }),
+    { minKeys: 0, maxKeys: 10 },
+  );
+
+  it("all user-provided env keys appear in the augmented sandbox", () => {
+    fc.assert(
+      fc.property(arbEnvRecord, (envValues) => {
+        const hooks = resolveRuntimeHooks(
+          {
+            adapters: [{
+              id: "ts/runtime/import-meta-env",
+              apply: "required",
+              options: { env: envValues },
+            }],
+          },
+          { phase: "execute" },
+        );
+        const sandbox: Record<string, unknown> = {
+          __shatter_import_meta: { url: "", env: {} },
+        };
+        for (const provider of hooks.sandbox_providers) {
+          provider.augmentSandbox(sandbox);
+        }
+        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        for (const key of Object.keys(envValues)) {
+          expect(meta.env[key]).toBe(envValues[key]);
+        }
+      }),
+    );
+  });
+
+  it("Vite defaults are always present after augmentation", () => {
+    fc.assert(
+      fc.property(arbEnvRecord, (envValues) => {
+        const hooks = resolveRuntimeHooks(
+          {
+            adapters: [{
+              id: "ts/runtime/import-meta-env",
+              apply: "required",
+              options: { env: envValues },
+            }],
+          },
+          { phase: "execute" },
+        );
+        const sandbox: Record<string, unknown> = {
+          __shatter_import_meta: { url: "", env: {} },
+        };
+        for (const provider of hooks.sandbox_providers) {
+          provider.augmentSandbox(sandbox);
+        }
+        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        // Vite defaults should be present (possibly overridden by user values)
+        expect("MODE" in meta.env).toBe(true);
+        expect("DEV" in meta.env).toBe(true);
+        expect("PROD" in meta.env).toBe(true);
+        expect("SSR" in meta.env).toBe(true);
+        expect("BASE_URL" in meta.env).toBe(true);
+      }),
+    );
+  });
+
+  it("multiple sandbox providers compose additively", () => {
+    fc.assert(
+      fc.property(arbEnvRecord, arbEnvRecord, (env1, env2) => {
+        const hooks = resolveRuntimeHooks(
+          {
+            adapters: [
+              {
+                id: "ts/runtime/import-meta-env",
+                apply: "required",
+                options: { env: env1 },
+              },
+              {
+                id: "ts/runtime/import-meta-env",
+                apply: "required",
+                options: { env: env2 },
+              },
+            ],
+          },
+          { phase: "execute" },
+        );
+        expect(hooks.sandbox_providers).toHaveLength(2);
+
+        const sandbox: Record<string, unknown> = {
+          __shatter_import_meta: { url: "", env: {} },
+        };
+        for (const provider of hooks.sandbox_providers) {
+          provider.augmentSandbox(sandbox);
+        }
+        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        // All keys from both env records should be present
+        for (const key of Object.keys(env1)) {
+          expect(key in meta.env).toBe(true);
+        }
+        for (const key of Object.keys(env2)) {
+          expect(key in meta.env).toBe(true);
+        }
+      }),
+    );
   });
 });

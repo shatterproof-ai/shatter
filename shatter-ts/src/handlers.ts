@@ -438,6 +438,9 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         const resolverAdapters = runtimeHooks.resolver_adapters.length > 0
           ? runtimeHooks.resolver_adapters
           : undefined;
+        const sandboxProviders = runtimeHooks.sandbox_providers.length > 0
+          ? runtimeHooks.sandbox_providers
+          : undefined;
 
         // Check if we have instrumented source for this function.
         // When prepare_id is set, look up the instrument key from the prepare cache.
@@ -468,6 +471,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
                 capture,
                 instrumentKey,
                 resolverAdapters,
+                sandboxProviders,
               ))
             : await executor.executeInstrumented(
               instrumentedSource,
@@ -479,6 +483,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               capture,
               instrumentKey,
               resolverAdapters,
+              sandboxProviders,
             );
         } else {
           rawResult = timing
@@ -490,6 +495,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
                 timing,
                 capture,
                 resolverAdapters,
+                sandboxProviders,
               ))
             : await executor.executeFunction(
               fileForExec,
@@ -498,6 +504,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               undefined,
               capture,
               resolverAdapters,
+              sandboxProviders,
             );
         }
 
