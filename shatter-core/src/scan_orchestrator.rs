@@ -211,6 +211,13 @@ pub struct ScanConfig {
     pub capabilities: crate::orchestrator::FrontendCapabilities,
     /// Configuration for the optional genetic algorithm follow-up phase.
     pub genetic_config: crate::config::GeneticConfig,
+    /// When `Some`, explore each function in fixed-size iteration batches
+    /// using round-robin scheduling within each layer. Functions are explored
+    /// one at a time; non-exhausted functions are re-enqueued for another
+    /// batch. When `None` (default), existing parallel execution is used.
+    ///
+    /// This is an internal tuning parameter — not exposed via CLI.
+    pub batch_size: Option<u32>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -1570,6 +1577,240 @@ impl WorkerPool {
     }
 }
 
+/// Execute a layer of function tasks using round-robin batch scheduling.
+///
+/// Each function is explored one at a time for a fixed number of iterations
+/// (the batch size). Non-exhausted functions are re-enqueued for another
+/// batch. A single frontend process is reused across all batches.
+///
+/// This mode is activated when `ScanConfig::batch_size` is `Some`. It
+/// provides the scheduling primitive for continuous explore runs: downstream
+/// features (reranking, cooldown, persistence) hook into the batch boundary.
+#[allow(clippy::too_many_arguments)]
+async fn run_layer_batched(
+    fe_config: Arc<FrontendConfig>,
+    tasks: Vec<ExploreTask>,
+    batch_size: u32,
+    timeout: Duration,
+    cache: &Option<Arc<BehaviorMapCache>>,
+    behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
+    input_pool: &Arc<Mutex<InterestingPool>>,
+    genetic_config: &crate::config::GeneticConfig,
+    progress_handler: Option<ProgressHandler>,
+    artifact_root: Option<Arc<PathBuf>>,
+    total_functions: usize,
+    scan_start: Instant,
+) -> Vec<FunctionOutcome> {
+    use crate::batch_scheduler::{BatchOutcome, BatchScheduler};
+
+    let task_count = tasks.len();
+    // Each function's per-batch budget is capped at batch_size; the total
+    // budget comes from the original ExploreConfig.max_iterations.
+    let per_function_budgets: Vec<Option<u32>> = tasks
+        .iter()
+        .map(|t| t.explore_config.max_iterations)
+        .collect();
+
+    let mut scheduler = BatchScheduler::with_individual_budgets(
+        &per_function_budgets,
+        batch_size,
+    );
+
+    let mut outcomes: Vec<Option<FunctionOutcome>> = (0..task_count).map(|_| None).collect();
+
+    // Spawn a single frontend for the batched loop. Wrapped in Option
+    // so we can replace it after timeout/death without ownership issues.
+    let mut frontend: Option<Frontend> = match Frontend::spawn(&fe_config).await {
+        Ok(fe) => Some(fe),
+        Err(e) => {
+            for (i, task) in tasks.iter().enumerate() {
+                outcomes[i] = Some(FunctionOutcome::Error {
+                    function_name: task.func_name.clone(),
+                    error: format!("failed to spawn frontend: {e}"),
+                });
+            }
+            return outcomes.into_iter().flatten().collect();
+        }
+    };
+
+    while let Some(batch_config) = scheduler.next_batch() {
+        let task = &tasks[batch_config.task_index];
+
+        // Ensure we have a live frontend.
+        let needs_respawn = match frontend.as_mut() {
+            Some(fe) => !fe.is_alive(),
+            None => true,
+        };
+        if needs_respawn {
+            drop(frontend.take());
+            match Frontend::spawn(&fe_config).await {
+                Ok(fe) => frontend = Some(fe),
+                Err(e) => {
+                    scheduler.record_outcome(BatchOutcome {
+                        task_index: batch_config.task_index,
+                        iterations_used: 0,
+                        exhausted: true,
+                    });
+                    outcomes[batch_config.task_index] = Some(FunctionOutcome::Error {
+                        function_name: task.func_name.clone(),
+                        error: format!("frontend respawn failed: {e}"),
+                    });
+                    break;
+                }
+            }
+        }
+        let fe = frontend.as_mut().expect("frontend must be live here");
+
+        emit_progress(
+            progress_handler.as_ref(),
+            &task.func_name,
+            task.progress_index,
+            total_functions,
+            scan_start.elapsed(),
+            ScanProgressStatus::Started,
+        );
+
+        // Adjust the explore config's iteration cap to the batch size.
+        let mut batch_explore_config = task.explore_config.clone();
+        batch_explore_config.max_iterations = Some(batch_config.batch_size);
+
+        let result = tokio::time::timeout(
+            timeout,
+            explore_single_function(
+                fe,
+                &task.func_name,
+                &task.analysis,
+                &batch_explore_config,
+                &task.mocks_used,
+                &task.callees,
+                behavior_maps,
+                task.deep_fp.clone(),
+                input_pool,
+                genetic_config,
+                cache,
+            ),
+        )
+        .await;
+
+        // If the frontend died or timed out, mark it for replacement
+        // on the next iteration.
+        if result.is_err() || !fe.is_alive() {
+            drop(frontend.take());
+        }
+
+        match result {
+            Ok(Ok(func_result)) => {
+                let iterations_used = func_result.exploration.iterations;
+                let exhausted = iterations_used < batch_config.batch_size;
+
+                if let Some(ref artifact_root) = artifact_root {
+                    write_completed_scan_artifact(
+                        Some(artifact_root),
+                        task.progress_index,
+                        total_functions,
+                        &task.file_path,
+                        &func_result,
+                    );
+                }
+                emit_progress(
+                    progress_handler.as_ref(),
+                    &task.func_name,
+                    task.progress_index,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Completed,
+                );
+
+                {
+                    let mut maps = behavior_maps.lock().await;
+                    maps.insert(func_result.function_name.clone(), func_result.behavior_map.clone());
+                }
+                if let Some(c) = cache {
+                    let _ = c.store(&func_result.behavior_map);
+                }
+
+                outcomes[batch_config.task_index] =
+                    Some(FunctionOutcome::Success(Box::new(func_result)));
+
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: batch_config.task_index,
+                    iterations_used,
+                    exhausted,
+                });
+            }
+            Ok(Err(e)) => {
+                let reason = format!("error: {e}");
+                if let Some(ref artifact_root) = artifact_root {
+                    write_failed_scan_artifact(
+                        Some(artifact_root),
+                        task.progress_index,
+                        total_functions,
+                        &task.func_name,
+                        &reason,
+                    );
+                }
+                emit_progress(
+                    progress_handler.as_ref(),
+                    &task.func_name,
+                    task.progress_index,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Failed,
+                );
+
+                outcomes[batch_config.task_index] = Some(FunctionOutcome::Error {
+                    function_name: task.func_name.clone(),
+                    error: e.to_string(),
+                });
+
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: batch_config.task_index,
+                    iterations_used: 0,
+                    exhausted: true,
+                });
+            }
+            Err(_) => {
+                let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
+                if let Some(ref artifact_root) = artifact_root {
+                    write_failed_scan_artifact(
+                        Some(artifact_root),
+                        task.progress_index,
+                        total_functions,
+                        &task.func_name,
+                        &reason,
+                    );
+                }
+                emit_progress(
+                    progress_handler.as_ref(),
+                    &task.func_name,
+                    task.progress_index,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Failed,
+                );
+
+                outcomes[batch_config.task_index] = Some(FunctionOutcome::Timeout {
+                    function_name: task.func_name.clone(),
+                    limit: timeout,
+                });
+
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: batch_config.task_index,
+                    iterations_used: 0,
+                    exhausted: true,
+                });
+            }
+        }
+    }
+
+    // Shut down the dedicated frontend if it's still alive.
+    if let Some(fe) = frontend {
+        let _ = fe.shutdown().await;
+    }
+
+    outcomes.into_iter().flatten().collect()
+}
+
 /// Execute a layer of function tasks in Function isolation mode.
 ///
 /// Each function gets a dedicated fresh frontend process. Concurrency is capped
@@ -2422,9 +2663,31 @@ pub async fn parallel_scan_with_progress(
                 .collect();
 
             // Collect outcomes from either isolation path.
-            let layer_outcomes: Vec<FunctionOutcome> = if config.isolation
-                == IsolationMode::Function
-            {
+            let layer_outcomes: Vec<FunctionOutcome> = if let Some(bs) = config.batch_size {
+                // Batched mode: round-robin one-function-at-a-time scheduling.
+                // Shut down the speculative pre-spawn — batched mode manages
+                // its own single frontend.
+                if let Some(fe) = prewarmed {
+                    tokio::spawn(async move {
+                        let _ = fe.shutdown().await;
+                    });
+                }
+                run_layer_batched(
+                    Arc::clone(&fe_config_persistent),
+                    tasks,
+                    bs,
+                    config.timeout_per_fn,
+                    &config.cache,
+                    &behavior_maps,
+                    &input_pool,
+                    &config.genetic_config,
+                    progress_handler.clone(),
+                    Some(Arc::clone(&artifact_root)),
+                    total_functions,
+                    scan_start,
+                )
+                .await
+            } else if config.isolation == IsolationMode::Function {
                 // Function mode doesn't use the shared pool — shut down
                 // the speculative pre-spawn if one was created.
                 if let Some(fe) = prewarmed {
@@ -4362,6 +4625,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4445,6 +4709,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4521,6 +4786,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4617,6 +4883,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4694,6 +4961,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -4775,6 +5043,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let skipped_events = Arc::new(StdMutex::new(Vec::new()));
@@ -4829,6 +5098,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let failed_events = Arc::new(StdMutex::new(Vec::new()));
@@ -4950,6 +5220,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5038,6 +5309,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5096,6 +5368,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5139,6 +5412,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -5171,6 +5445,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -5813,6 +6088,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -5935,6 +6211,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -6020,6 +6297,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6104,6 +6382,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6205,6 +6484,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6317,6 +6597,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6445,6 +6726,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6573,6 +6855,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6687,6 +6970,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6793,6 +7077,7 @@ mod tests {
             workers_per_fn: 1,
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
