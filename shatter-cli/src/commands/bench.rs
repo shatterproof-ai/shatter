@@ -248,7 +248,7 @@ async fn run_single_exploration(
     let explore_config = ExploreConfig {
         file: target.file.clone(),
         execution_profile: None,
-        max_iterations: config.max_iterations,
+        max_iterations: Some(config.max_iterations),
         seed: None,
         mocks: vec![],
         mock_params: vec![],

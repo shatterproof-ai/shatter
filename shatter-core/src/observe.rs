@@ -634,7 +634,7 @@ mod tests {
         let explore_config = ExploreConfig {
             file: "test.ts".to_string(),
             execution_profile: None,
-            max_iterations: 100,
+            max_iterations: Some(100),
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],

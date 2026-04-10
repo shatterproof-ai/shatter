@@ -708,7 +708,7 @@ fn finalize_explore(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_explore(
     targets: &[String],
-    max_iterations: u32,
+    max_iterations: Option<u32>,
     timeout: u64,
     timeout_explore: Option<f64>,
     scope_path: Option<&Path>,
@@ -900,8 +900,9 @@ pub(crate) async fn run_explore(
             log::debug!("Project root: {root}");
         }
         log::debug!(
-            "Exploring {file_str}:{func_display} [language={}, max_iterations={max_iterations}]",
-            target.language.label()
+            "Exploring {file_str}:{func_display} [language={}, max_iterations={}]",
+            target.language.label(),
+            max_iterations.map_or("unlimited".to_string(), |n| n.to_string()),
         );
 
         let frontend = frontends
@@ -1390,8 +1391,8 @@ pub(crate) async fn run_explore(
                 }
 
                 let cc = shatter_core::orchestrator::ExploreConfig {
-                    max_iterations: explore_config.max_iterations as usize,
-                    max_executions: (explore_config.max_iterations as usize) * 5,
+                    max_iterations: explore_config.max_iterations.map(|n| n as usize),
+                    max_executions: explore_config.max_iterations.map(|n| (n as usize) * 5),
                     plateau_threshold: if mcdc { 60 } else { 20 },
                     mocks: explore_config.mocks.clone(),
                     mock_params: explore_config.mock_params.clone(),

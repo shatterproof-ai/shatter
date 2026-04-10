@@ -234,7 +234,7 @@ pub(crate) async fn run_run(
             let explore_config = ExploreConfig {
                 file: entry.file_path.to_string_lossy().into_owned(),
                 execution_profile: None,
-                max_iterations,
+                max_iterations: Some(max_iterations),
                 seed: None,
                 mocks: vec![],
                 mock_params: vec![],

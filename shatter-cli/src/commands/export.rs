@@ -99,7 +99,7 @@ pub(crate) async fn run_export_tests(
         let explore_config = ExploreConfig {
             file: file_str.to_string(),
             execution_profile: None,
-            max_iterations,
+            max_iterations: Some(max_iterations),
             seed: None,
             mocks: vec![],
             mock_params: vec![],
