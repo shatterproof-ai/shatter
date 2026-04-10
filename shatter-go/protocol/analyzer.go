@@ -858,9 +858,9 @@ func analyzeForStmtInductionVar(fset *token.FileSet, stmt *ast.ForStmt, params m
 			return nil
 		}
 		if post.Tok == token.INC {
-			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(1)}
+			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(1), Args: []SymExpr{}}
 		} else if post.Tok == token.DEC {
-			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(-1)}
+			stepExpr = &SymExpr{Kind: "const", Type: "int", Value: int64(-1), Args: []SymExpr{}}
 		} else {
 			return nil
 		}
@@ -876,7 +876,7 @@ func analyzeForStmtInductionVar(fset *token.FileSet, stmt *ast.ForStmt, params m
 			stepExpr = rhsSym
 		} else if post.Tok == token.SUB_ASSIGN {
 			// Negate the RHS to express subtraction as a negative step.
-			stepExpr = &SymExpr{Kind: "un_op", Op: "neg", Operand: rhsSym}
+			stepExpr = &SymExpr{Kind: "un_op", Op: "neg", Operand: rhsSym, Args: []SymExpr{}}
 		} else {
 			return nil
 		}
@@ -895,7 +895,7 @@ func analyzeForStmtInductionVar(fset *token.FileSet, stmt *ast.ForStmt, params m
 	if len(initAssign.Rhs) == 1 {
 		initExpr = buildSymExpr(initAssign.Rhs[0], params)
 	} else {
-		initExpr = &SymExpr{Kind: "unknown"}
+		initExpr = &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 	}
 	boundExpr := buildSymExpr(boundExprAST, params)
 
@@ -1062,7 +1062,7 @@ func buildSymExpr(expr ast.Expr, params map[string]bool) *SymExpr {
 	case *ast.ParenExpr:
 		return buildSymExpr(e.X, params)
 	default:
-		return &SymExpr{Kind: "unknown"}
+		return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 	}
 }
 
@@ -1075,6 +1075,7 @@ func buildBinOp(expr *ast.BinaryExpr, params map[string]bool) *SymExpr {
 		Op:    op,
 		Left:  left,
 		Right: right,
+		Args:  []SymExpr{},
 	}
 }
 
@@ -1093,6 +1094,7 @@ func buildUnOp(expr *ast.UnaryExpr, params map[string]bool) *SymExpr {
 		Kind:    "un_op",
 		Op:      op,
 		Operand: operand,
+		Args:    []SymExpr{},
 	}
 }
 
@@ -1102,10 +1104,11 @@ func identSymExpr(ident *ast.Ident, params map[string]bool) *SymExpr {
 			Kind: "param",
 			Name: ident.Name,
 			Path: []string{},
+			Args: []SymExpr{},
 		}
 	}
 	// Not a param — treat as unknown variable reference
-	return &SymExpr{Kind: "unknown"}
+	return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 }
 
 func selectorSymExpr(sel *ast.SelectorExpr, params map[string]bool) *SymExpr {
@@ -1116,9 +1119,10 @@ func selectorSymExpr(sel *ast.SelectorExpr, params map[string]bool) *SymExpr {
 			Kind: "param",
 			Name: name,
 			Path: path,
+			Args: []SymExpr{},
 		}
 	}
-	return &SymExpr{Kind: "unknown"}
+	return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 }
 
 func flattenSelector(sel *ast.SelectorExpr) (root string, path []string) {
@@ -1138,21 +1142,21 @@ func litSymExpr(lit *ast.BasicLit) *SymExpr {
 	case token.INT:
 		n, err := strconv.ParseInt(lit.Value, 0, 64)
 		if err != nil {
-			return &SymExpr{Kind: "unknown"}
+			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 		}
-		return &SymExpr{Kind: "const", Type: "int", Value: n}
+		return &SymExpr{Kind: "const", Type: "int", Value: n, Args: []SymExpr{}}
 	case token.FLOAT:
 		f, err := strconv.ParseFloat(lit.Value, 64)
 		if err != nil {
-			return &SymExpr{Kind: "unknown"}
+			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 		}
-		return &SymExpr{Kind: "const", Type: "float", Value: f}
+		return &SymExpr{Kind: "const", Type: "float", Value: f, Args: []SymExpr{}}
 	case token.STRING, token.CHAR:
 		// Strip quotes for the value
 		val := strings.Trim(lit.Value, "`\"'")
-		return &SymExpr{Kind: "const", Type: "str", Value: val}
+		return &SymExpr{Kind: "const", Type: "str", Value: val, Args: []SymExpr{}}
 	default:
-		return &SymExpr{Kind: "unknown"}
+		return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 	}
 }
 
@@ -1167,13 +1171,15 @@ func callSymExpr(call *ast.CallExpr, params map[string]bool) *SymExpr {
 		name = "unknown"
 	}
 
+	// Always initialize args as an empty slice (even for zero-arg calls)
+	// to ensure it serializes as [] not null, preventing Rust deserialization errors.
 	args := make([]SymExpr, len(call.Args))
 	for i, arg := range call.Args {
 		sym := buildSymExpr(arg, params)
 		if sym != nil {
 			args[i] = *sym
 		} else {
-			args[i] = SymExpr{Kind: "unknown"}
+			args[i] = SymExpr{Kind: "unknown", Args: []SymExpr{}}
 		}
 	}
 	return &SymExpr{
@@ -1194,6 +1200,7 @@ func buildSwitchCaseSymExpr(tag ast.Expr, caseExpr ast.Expr, params map[string]b
 		Op:    "eq",
 		Left:  left,
 		Right: right,
+		Args:  []SymExpr{},
 	}
 }
 

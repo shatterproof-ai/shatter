@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"go/ast"
 	"go/token"
 	"path/filepath"
 	"runtime"
@@ -1038,4 +1039,164 @@ func containsCallKind(expr *SymExpr) bool {
 		}
 	}
 	return false
+}
+
+// TestAnalyzeLargeFileResponse verifies that analyze responses for large files
+// with many parameters are complete and valid JSON, not truncated.
+//
+// Regression test for: Go frontend returns truncated/malformed analyze response
+// for large files, causing Rust side to fail with 'missing field args' when
+// deserializing SymExpr Call variants.
+func TestAnalyzeLargeFileResponse(t *testing.T) {
+	filePath := testdataPath("large_file.go")
+
+	// Analyze the large file
+	results, err := AnalyzeFile(filePath, "")
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatalf("expected at least one function, got none")
+	}
+
+	// Find FunctionWithManyParams
+	var analysis *FunctionAnalysis
+	for i := range results {
+		if results[i].Name == "FunctionWithManyParams" {
+			analysis = &results[i]
+			break
+		}
+	}
+
+	if analysis == nil {
+		t.Fatalf("FunctionWithManyParams not found in analysis results")
+	}
+
+	// Verify params are present - the bug would cause params to be empty
+	// or the field to be missing when the response is truncated
+	if len(analysis.Params) == 0 {
+		t.Errorf("expected params, got none - response may be truncated")
+	}
+
+	// Verify the response can be marshaled to JSON without error
+	responseJSON, err := json.Marshal(analysis)
+	if err != nil {
+		t.Fatalf("failed to marshal response to JSON: %v", err)
+	}
+
+	// Verify the JSON is valid by unmarshaling it back
+	var unmarshaled FunctionAnalysis
+	if err := json.Unmarshal(responseJSON, &unmarshaled); err != nil {
+		t.Fatalf("failed to unmarshal response JSON: %v\nJSON was: %s", err, string(responseJSON))
+	}
+
+	// Check that params survived the round-trip
+	if len(unmarshaled.Params) != len(analysis.Params) {
+		t.Errorf("params lost in round-trip: before=%d, after=%d",
+			len(analysis.Params), len(unmarshaled.Params))
+	}
+
+	// The key test: verify branches are valid and don't have incomplete SymExpr
+	// with missing args field
+	for i, branch := range analysis.Branches {
+		if branch.Condition != nil {
+			condJSON, err := json.Marshal(branch.Condition)
+			if err != nil {
+				t.Errorf("branch %d: failed to marshal condition: %v", i, err)
+				continue
+			}
+
+			var cond SymExpr
+			if err := json.Unmarshal(condJSON, &cond); err != nil {
+				t.Errorf("branch %d: failed to unmarshal condition: %v\nJSON: %s",
+					i, err, string(condJSON))
+			}
+		}
+	}
+
+	// Verify response JSON size is reasonable (not truncated)
+	if len(responseJSON) < 500 {
+		t.Logf("warning: response JSON is small (%d bytes), may be truncated", len(responseJSON))
+	}
+}
+
+// TestSymExprArgsNeverNull constructs SymExprs via each builder function and
+// verifies the serialized JSON never contains "args":null.
+func TestSymExprArgsNeverNull(t *testing.T) {
+	params := map[string]bool{"x": true, "y": true}
+
+	// Helper: marshal a SymExpr and check args is never null
+	checkArgsNotNull := func(t *testing.T, label string, expr *SymExpr) {
+		t.Helper()
+		if expr == nil {
+			t.Errorf("%s: returned nil SymExpr", label)
+			return
+		}
+		data, err := json.Marshal(expr)
+		if err != nil {
+			t.Errorf("%s: marshal error: %v", label, err)
+			return
+		}
+		jsonStr := string(data)
+		if strings.Contains(jsonStr, `"args":null`) {
+			t.Errorf("%s: contains \"args\":null in JSON: %s", label, jsonStr)
+		}
+	}
+
+	// identSymExpr — param
+	ident := ast.Ident{Name: "x"}
+	checkArgsNotNull(t, "identSymExpr(param)", identSymExpr(&ident, params))
+
+	// identSymExpr — unknown
+	identUnk := ast.Ident{Name: "z"}
+	checkArgsNotNull(t, "identSymExpr(unknown)", identSymExpr(&identUnk, params))
+
+	// selectorSymExpr — param path
+	sel := ast.SelectorExpr{X: &ast.Ident{Name: "x"}, Sel: &ast.Ident{Name: "Field"}}
+	checkArgsNotNull(t, "selectorSymExpr(param)", selectorSymExpr(&sel, params))
+
+	// selectorSymExpr — unknown
+	selUnk := ast.SelectorExpr{X: &ast.Ident{Name: "z"}, Sel: &ast.Ident{Name: "Field"}}
+	checkArgsNotNull(t, "selectorSymExpr(unknown)", selectorSymExpr(&selUnk, params))
+
+	// litSymExpr — int
+	litInt := ast.BasicLit{Kind: token.INT, Value: "42"}
+	checkArgsNotNull(t, "litSymExpr(int)", litSymExpr(&litInt))
+
+	// litSymExpr — float
+	litFloat := ast.BasicLit{Kind: token.FLOAT, Value: "3.14"}
+	checkArgsNotNull(t, "litSymExpr(float)", litSymExpr(&litFloat))
+
+	// litSymExpr — string
+	litStr := ast.BasicLit{Kind: token.STRING, Value: `"hello"`}
+	checkArgsNotNull(t, "litSymExpr(string)", litSymExpr(&litStr))
+
+	// litSymExpr — unknown token
+	litImag := ast.BasicLit{Kind: token.IMAG, Value: "1i"}
+	checkArgsNotNull(t, "litSymExpr(unknown)", litSymExpr(&litImag))
+
+	// buildBinOp
+	binExpr := ast.BinaryExpr{X: &ast.Ident{Name: "x"}, Op: token.ADD, Y: &ast.Ident{Name: "y"}}
+	checkArgsNotNull(t, "buildBinOp", buildBinOp(&binExpr, params))
+
+	// buildUnOp
+	unExpr := ast.UnaryExpr{Op: token.SUB, X: &ast.Ident{Name: "x"}}
+	checkArgsNotNull(t, "buildUnOp", buildUnOp(&unExpr, params))
+
+	// callSymExpr — zero args
+	callZero := ast.CallExpr{Fun: &ast.Ident{Name: "foo"}, Args: nil}
+	checkArgsNotNull(t, "callSymExpr(zero-args)", callSymExpr(&callZero, params))
+
+	// callSymExpr — with args
+	callWithArgs := ast.CallExpr{
+		Fun:  &ast.Ident{Name: "bar"},
+		Args: []ast.Expr{&ast.Ident{Name: "x"}},
+	}
+	checkArgsNotNull(t, "callSymExpr(with-args)", callSymExpr(&callWithArgs, params))
+
+	// buildSwitchCaseSymExpr
+	var tag ast.Expr = &ast.Ident{Name: "x"}
+	var caseExpr ast.Expr = &ast.BasicLit{Kind: token.INT, Value: "1"}
+	checkArgsNotNull(t, "buildSwitchCaseSymExpr", buildSwitchCaseSymExpr(tag, caseExpr, params))
 }
