@@ -5,6 +5,17 @@ use std::collections::HashSet;
 use crate::types::ComplexKind;
 use serde::{Deserialize, Serialize};
 
+/// Deserialize a `Vec<T>` that tolerates both missing fields (via `serde(default)`)
+/// and explicit JSON `null` (this function). Used for `SymExpr::Call::args` because
+/// Go frontends may serialize empty slices as `null` or omit the field entirely.
+fn deserialize_vec_or_null<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<Vec<T>>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
+}
+
 /// A symbolic expression representing a constraint on function inputs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -37,6 +48,7 @@ pub enum SymExpr {
     Call {
         name: String,
         receiver: Option<Box<SymExpr>>,
+        #[serde(default, deserialize_with = "deserialize_vec_or_null")]
         args: Vec<SymExpr>,
     },
 
@@ -624,5 +636,35 @@ mod tests {
             extract_param_names(&expr),
             HashSet::from(["config".into()])
         );
+    }
+
+    #[test]
+    fn call_deserializes_without_args_field() {
+        // Go frontend may omit "args" when the slice is empty (omitempty).
+        // The serde(default) on args ensures this still deserializes.
+        let json = r#"{"kind":"call","name":"isReady"}"#;
+        let expr: SymExpr = serde_json::from_str(json).expect("should deserialize call without args");
+        match expr {
+            SymExpr::Call { name, args, .. } => {
+                assert_eq!(name, "isReady");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_deserializes_with_null_args_field() {
+        // When Go serializes Args without omitempty and the slice is nil,
+        // the JSON has "args":null. Verify this also deserializes.
+        let json = r#"{"kind":"call","name":"isReady","args":null}"#;
+        let expr: SymExpr = serde_json::from_str(json).expect("should deserialize call with null args");
+        match expr {
+            SymExpr::Call { name, args, .. } => {
+                assert_eq!(name, "isReady");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
     }
 }

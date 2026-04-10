@@ -94,12 +94,12 @@ func genBranchInfo() *rapid.Generator[BranchInfo] {
 func genSymExprLeaf() *rapid.Generator[SymExpr] {
 	return rapid.OneOf(
 		rapid.Map(rapid.Int64Range(-1000, 1000), func(v int64) SymExpr {
-			return SymExpr{Kind: "const", Type: "int", Value: v}
+			return SymExpr{Kind: "const", Type: "int", Value: v, Args: []SymExpr{}}
 		}),
 		rapid.Map(genIdent(), func(name string) SymExpr {
-			return SymExpr{Kind: "param", Name: name, Path: []string{}}
+			return SymExpr{Kind: "param", Name: name, Path: []string{}, Args: []SymExpr{}}
 		}),
-		rapid.Just(SymExpr{Kind: "unknown"}),
+		rapid.Just(SymExpr{Kind: "unknown", Args: []SymExpr{}}),
 	)
 }
 
@@ -1154,6 +1154,92 @@ func TestPropertyComputePrepareIDMocksSensitive(t *testing.T) {
 		idWith := computePrepareID(file, fn, []instrument.MockConfig{mock})
 		if idWithout == idWith {
 			t.Fatalf("adding mock did not change ID: file=%q fn=%q mock=%q id=%q", file, fn, mock.Symbol, idWithout)
+		}
+	})
+}
+
+// TestPropertySymExprArgsNeverNull generates random Go source with functions
+// containing branches, runs AnalyzeFile, marshals every SymExpr in the result
+// to JSON, and verifies "args" is never null — always [] or a populated array.
+func TestPropertySymExprArgsNeverNull(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		goTypes := []string{"int", "int64", "float64", "string", "bool"}
+
+		nParams := rapid.IntRange(1, 3).Draw(t, "nParams")
+		var paramDecls []string
+		var paramNames []string
+		for i := 0; i < nParams; i++ {
+			name := sanitizeGoIdent(
+				rapid.StringMatching(`[a-z][a-z0-9]{0,4}`).Draw(t, fmt.Sprintf("p%d", i)),
+			)
+			goType := rapid.SampledFrom(goTypes).Draw(t, fmt.Sprintf("t%d", i))
+			paramDecls = append(paramDecls, fmt.Sprintf("%s %s", name, goType))
+			paramNames = append(paramNames, name)
+		}
+
+		// Build a function body with branches referencing params
+		nBranches := rapid.IntRange(1, 3).Draw(t, "nBranches")
+		var body string
+		for i := 0; i < nBranches; i++ {
+			pIdx := rapid.IntRange(0, nParams-1).Draw(t, fmt.Sprintf("bi%d", i))
+			pName := paramNames[pIdx]
+			// Generate various branch patterns
+			pattern := rapid.IntRange(0, 3).Draw(t, fmt.Sprintf("pat%d", i))
+			switch pattern {
+			case 0:
+				body += fmt.Sprintf("\tif %s > 0 { _ = 1 }\n", pName)
+			case 1:
+				body += fmt.Sprintf("\tif %s == 0 { _ = 1 }\n", pName)
+			case 2:
+				body += fmt.Sprintf("\tswitch %s {\n\tcase 0:\n\t\t_ = 1\n\tdefault:\n\t\t_ = 2\n\t}\n", pName)
+			case 3:
+				body += fmt.Sprintf("\tif %s != 0 && %s > 0 { _ = 1 }\n", pName, pName)
+			}
+		}
+
+		src := fmt.Sprintf("package p\n\nfunc Foo(%s) int {\n%s\treturn 0\n}\n",
+			strings.Join(paramDecls, ", "), body)
+
+		dir, err := os.MkdirTemp("", "shatter-go-prop-args-*")
+		if err != nil {
+			t.Fatalf("mkdirtemp: %v", err)
+		}
+		defer os.RemoveAll(dir)
+		fpath := filepath.Join(dir, "test.go")
+		if err := os.WriteFile(fpath, []byte(src), 0o644); err != nil {
+			t.Fatalf("write temp file: %v", err)
+		}
+
+		results, err := AnalyzeFile(fpath, "Foo")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 function, got %d", len(results))
+		}
+
+		fa := results[0]
+		// Marshal the entire analysis to JSON and check for "args":null
+		data, err := json.Marshal(fa)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		jsonStr := string(data)
+		if strings.Contains(jsonStr, `"args":null`) {
+			t.Fatalf("found \"args\":null in serialized FunctionAnalysis JSON:\n%s\nsource:\n%s", jsonStr, src)
+		}
+
+		// Also verify each branch condition individually
+		for i, branch := range fa.Branches {
+			if branch.Condition != nil {
+				condData, err := json.Marshal(branch.Condition)
+				if err != nil {
+					t.Fatalf("branch %d: marshal condition: %v", i, err)
+				}
+				if strings.Contains(string(condData), `"args":null`) {
+					t.Fatalf("branch %d: \"args\":null in condition JSON: %s", i, string(condData))
+				}
+			}
 		}
 	})
 }
