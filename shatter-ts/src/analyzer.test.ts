@@ -884,4 +884,49 @@ describe("analyzeFile", () => {
       expect(["union", "nullable", "unknown"]).toContain(inputType.kind);
     });
   });
+
+  describe("React hook adapter hints", () => {
+    it("emits high confidence react-hook hint for useCounter", () => {
+      const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "useCounter");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.adapter_hints).toBeDefined();
+      expect(fn.adapter_hints).toHaveLength(1);
+      expect(fn.adapter_hints![0]!.adapter.id).toBe("react-hook");
+      expect(fn.adapter_hints![0]!.confidence).toBe("high");
+      expect(fn.adapter_hints![0]!.reasons!.length).toBeGreaterThan(0);
+    });
+
+    it("emits high confidence react-hook hint for useFormattedName", () => {
+      const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "useFormattedName");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.adapter_hints).toBeDefined();
+      expect(fn.adapter_hints).toHaveLength(1);
+      expect(fn.adapter_hints![0]!.confidence).toBe("high");
+    });
+
+    it("emits react-hook hint for StatusCard (calls hooks)", () => {
+      const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "StatusCard");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      // StatusCard calls useState — should get a hint even without useXxx name
+      expect(fn.adapter_hints).toBeDefined();
+      expect(fn.adapter_hints).toHaveLength(1);
+      expect(fn.adapter_hints![0]!.confidence).toBe("high");
+    });
+
+    it("does not emit hint for useFormatting (name only, no hook calls)", () => {
+      const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "useFormatting");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.adapter_hints).toBeUndefined();
+    });
+
+    it("does not emit hints for non-React .ts files", () => {
+      const results = analyzeFile(path.join(fixtures, "primitives.ts"), "add");
+      expect(results).toHaveLength(1);
+      expect(results[0]!.adapter_hints).toBeUndefined();
+    });
+  });
 });
