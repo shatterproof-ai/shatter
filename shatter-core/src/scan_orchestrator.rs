@@ -2960,16 +2960,16 @@ async fn explore_single_function(
     }
 
     // Donate unused budget to the layer surplus so other functions can use it.
-    if let Some(ref surplus) = explore_config.budget_surplus {
-        if let Some(allocated) = explore_config.max_iterations {
-            let used = exploration.iterations;
-            let unused = allocated.saturating_sub(used);
-            if unused > 0 {
-                surplus.donate(unused);
-                log::debug!(
-                    "{func_name}: donated {unused} unused iterations to surplus (used {used}/{allocated})"
-                );
-            }
+    if let Some(ref surplus) = explore_config.budget_surplus
+        && let Some(allocated) = explore_config.max_iterations
+    {
+        let used = exploration.iterations;
+        let unused = allocated.saturating_sub(used);
+        if unused > 0 {
+            surplus.donate(unused);
+            log::debug!(
+                "{func_name}: donated {unused} unused iterations to surplus (used {used}/{allocated})"
+            );
         }
     }
 

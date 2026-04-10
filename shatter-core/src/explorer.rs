@@ -837,7 +837,7 @@ pub async fn explore_function(
     let float_indices = crate::float_probe::float_param_indices(&analysis.params);
     let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
     let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
-    if !float_indices.is_empty() && config.max_iterations.map_or(true, |m| probe_budget < m as usize) {
+    if !float_indices.is_empty() && config.max_iterations.is_none_or(|m| probe_budget < m as usize) {
         for &idx in &float_indices {
             let pairs = crate::float_probe::generate_probe_pairs(
                 &analysis.params,
@@ -960,39 +960,39 @@ pub async fn explore_function(
     let mut recent_hits: Vec<bool> = Vec::with_capacity(claim_window);
 
     loop {
-        if let Some(budget) = effective_budget {
-            if iterations >= budget {
-                // Initial budget exhausted — try to claim surplus if still productive.
-                if let Some(ref surplus) = config.budget_surplus {
-                    let base = config.max_iterations.unwrap_or(budget);
-                    let recent_new = recent_hits
-                        .iter()
-                        .rev()
-                        .take(claim_window)
-                        .filter(|&&hit| hit)
-                        .count() as u32;
-                    if config.claim_policy.should_claim(recent_new) {
-                        let chunk = (base / 4).max(1);
-                        let max_claimable = config.claim_policy.max_claimable(surplus.available());
-                        let requested = chunk.min(max_claimable);
-                        let claimed = surplus.try_claim(requested, 1);
-                        if claimed > 0 {
-                            effective_budget = Some(budget + claimed);
-                            log::debug!(
-                                "{}: claimed {} surplus iterations (budget now {})",
-                                analysis.name,
-                                claimed,
-                                budget + claimed
-                            );
-                        } else {
-                            break;
-                        }
+        if let Some(budget) = effective_budget
+            && iterations >= budget
+        {
+            // Initial budget exhausted — try to claim surplus if still productive.
+            if let Some(ref surplus) = config.budget_surplus {
+                let base = config.max_iterations.unwrap_or(budget);
+                let recent_new = recent_hits
+                    .iter()
+                    .rev()
+                    .take(claim_window)
+                    .filter(|&&hit| hit)
+                    .count() as u32;
+                if config.claim_policy.should_claim(recent_new) {
+                    let chunk = (base / 4).max(1);
+                    let max_claimable = config.claim_policy.max_claimable(surplus.available());
+                    let requested = chunk.min(max_claimable);
+                    let claimed = surplus.try_claim(requested, 1);
+                    if claimed > 0 {
+                        effective_budget = Some(budget + claimed);
+                        log::debug!(
+                            "{}: claimed {} surplus iterations (budget now {})",
+                            analysis.name,
+                            claimed,
+                            budget + claimed
+                        );
                     } else {
                         break;
                     }
                 } else {
                     break;
                 }
+            } else {
+                break;
             }
         }
 

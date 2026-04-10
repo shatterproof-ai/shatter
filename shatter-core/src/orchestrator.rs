@@ -507,15 +507,15 @@ async fn observe_one(
     prepare_id: Option<&str>,
 ) -> Result<ObserveOneResult, ExploreError> {
     // Check termination budgets.
-    if let Some(max) = config.max_iterations {
-        if budget.unique_paths >= max {
-            return Ok(ObserveOneResult::Terminated(TerminationReason::MaxIterations));
-        }
+    if let Some(max) = config.max_iterations
+        && budget.unique_paths >= max
+    {
+        return Ok(ObserveOneResult::Terminated(TerminationReason::MaxIterations));
     }
-    if let Some(max) = config.max_executions {
-        if budget.total_executions >= max {
-            return Ok(ObserveOneResult::Terminated(TerminationReason::MaxExecutions));
-        }
+    if let Some(max) = config.max_executions
+        && budget.total_executions >= max
+    {
+        return Ok(ObserveOneResult::Terminated(TerminationReason::MaxExecutions));
     }
     if let Some(timeout) = config.timeout_explore
         && budget.explore_start.elapsed() >= timeout
