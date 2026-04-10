@@ -164,8 +164,8 @@ async fn concolic_classifynumber_discovers_all_branches() {
 
     // Step 3: Run concolic exploration with the orchestrator.
     let config = ExploreConfig {
-        max_iterations: 20,
-        max_executions: 100,
+        max_iterations: Some(20),
+        max_executions: Some(100),
         plateau_threshold: 15,
         ..Default::default()
     };
@@ -251,8 +251,8 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
     instrument_function(&mut frontend, &file_str, "compareMagnitudes").await;
 
     let config = ExploreConfig {
-        max_iterations: 30,
-        max_executions: 200,
+        max_iterations: Some(30),
+        max_executions: Some(200),
         plateau_threshold: 20,
         ..Default::default()
     };
@@ -327,8 +327,8 @@ async fn concolic_safedivide_discovers_error_paths() {
     instrument_function(&mut frontend, &file_str, "safeDivide").await;
 
     let config = ExploreConfig {
-        max_iterations: 20,
-        max_executions: 100,
+        max_iterations: Some(20),
+        max_executions: Some(100),
         plateau_threshold: 15,
         ..Default::default()
     };
@@ -407,8 +407,8 @@ async fn concolic_validateemail_discovers_string_paths() {
 
     // Step 3: Run concolic exploration with generous limits for string-heavy function.
     let config = ExploreConfig {
-        max_iterations: 50,
-        max_executions: 300,
+        max_iterations: Some(50),
+        max_executions: Some(300),
         plateau_threshold: 30,
         ..Default::default()
     };
@@ -496,8 +496,8 @@ async fn concolic_validateemail_with_literal_seeds() {
     instrument_function(&mut frontend, &file_str, "validateEmail").await;
 
     let config = ExploreConfig {
-        max_iterations: 50,
-        max_executions: 300,
+        max_iterations: Some(50),
+        max_executions: Some(300),
         plateau_threshold: 30,
         ..Default::default()
     };
@@ -982,7 +982,7 @@ async fn explorer_explore_function_with_setup() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
         execution_profile: None,
-        max_iterations: 10,
+        max_iterations: Some(10),
         seed: Some(42),
         mocks: vec![],
         mock_params: vec![],
@@ -1066,8 +1066,8 @@ async fn orchestrator_explore_with_setup_context() {
 
     // Run orchestrator with the setup context.
     let config = ExploreConfig {
-        max_iterations: 10,
-        max_executions: 50,
+        max_iterations: Some(10),
+        max_executions: Some(50),
         plateau_threshold: 8,
         ..Default::default()
     };
@@ -1207,7 +1207,7 @@ async fn concolic_mock_status_branches_discovered() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
         execution_profile: None,
-        max_iterations: 30,
+        max_iterations: Some(30),
         seed: None,
         mocks,
         mock_params,
@@ -1295,7 +1295,7 @@ async fn concolic_mock_result_branches_discovered() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
         execution_profile: None,
-        max_iterations: 30,
+        max_iterations: Some(30),
         seed: None,
         mocks,
         mock_params,
@@ -1382,7 +1382,7 @@ async fn concolic_mock_loop_branches_discovered() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
         execution_profile: None,
-        max_iterations: 30,
+        max_iterations: Some(30),
         seed: None,
         mocks,
         mock_params,
@@ -1478,8 +1478,8 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
     // Use moderate budgets — compoundAnd has only 2 conditions, so convergence
     // should be fast.
     let config = ExploreConfig {
-        max_iterations: 30,
-        max_executions: 150,
+        max_iterations: Some(30),
+        max_executions: Some(150),
         plateau_threshold: 20,
         mcdc: true,
         ..Default::default()
@@ -1567,8 +1567,8 @@ async fn mcdc_compound_or_discovers_all_branches() {
     instrument_function(&mut frontend, &file_str, "compoundOr").await;
 
     let config = ExploreConfig {
-        max_iterations: 20,
-        max_executions: 100,
+        max_iterations: Some(20),
+        max_executions: Some(100),
         plateau_threshold: 15,
         mcdc: true,
         ..Default::default()
@@ -1662,8 +1662,8 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
 
     // Step 3: Concolic exploration (collect seed inputs for GA population)
     let config = ExploreConfig {
-        max_iterations: 10,
-        max_executions: 30,
+        max_iterations: Some(10),
+        max_executions: Some(30),
         plateau_threshold: 8,
         ..Default::default()
     };

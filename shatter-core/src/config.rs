@@ -578,8 +578,8 @@ pub struct NondeterminismConfig {
 /// Resolved configuration for a specific function, after merging hierarchical configs.
 #[derive(Debug, Clone)]
 pub struct ResolvedFunctionConfig {
-    /// Maximum iterations (from config or CLI default).
-    pub max_iterations: u32,
+    /// Maximum iterations. `None` means unbounded (run until timeout/interrupt).
+    pub max_iterations: Option<u32>,
 
     /// Timeout in seconds (from config or CLI default).
     pub timeout: u64,
@@ -984,7 +984,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
 pub fn resolve_function_config(
     function_id: &str,
     configs: &[ShatterConfig],
-    cli_max_iterations: u32,
+    cli_max_iterations: Option<u32>,
     cli_timeout: u64,
 ) -> Result<ResolvedFunctionConfig, ConfigError> {
     let merged = merge_configs(configs);
@@ -995,7 +995,7 @@ pub fn resolve_function_config(
 fn resolve_from_merged(
     function_id: &str,
     config: &ShatterConfig,
-    cli_max_iterations: u32,
+    cli_max_iterations: Option<u32>,
     cli_timeout: u64,
 ) -> Result<ResolvedFunctionConfig, ConfigError> {
     // Find the first matching function pattern.
@@ -1009,11 +1009,12 @@ fn resolve_from_merged(
         }
     }
 
-    // Resolution order: function config > defaults > CLI flags
+    // Resolution order: function config > defaults > CLI flags.
+    // Any layer that provides a concrete value wins; if all are None, stays unbounded.
     let max_iterations = func_config
         .and_then(|fc| fc.max_iterations)
         .or(config.defaults.max_iterations)
-        .unwrap_or(cli_max_iterations);
+        .or(cli_max_iterations);
 
     let timeout = func_config
         .and_then(|fc| fc.timeout)
@@ -1097,7 +1098,7 @@ pub fn resolve_function_config_with_inputs(
     function_id: &str,
     start_dir: &Path,
     explicit_inputs: Option<&Path>,
-    cli_max_iterations: u32,
+    cli_max_iterations: Option<u32>,
     cli_timeout: u64,
     set_overrides: &[String],
 ) -> Result<ResolvedFunctionConfig, ConfigError> {
@@ -1621,8 +1622,8 @@ functions:
         };
 
         let resolved =
-            resolve_function_config("src/auth.ts:validateToken", &[config], 50, 30).unwrap();
-        assert_eq!(resolved.max_iterations, 500);
+            resolve_function_config("src/auth.ts:validateToken", &[config], Some(50), 30).unwrap();
+        assert_eq!(resolved.max_iterations, Some(500));
         assert_eq!(resolved.timeout, 120);
         assert!(!resolved.skip);
     }
@@ -1671,7 +1672,7 @@ functions:
         };
 
         let resolved =
-            resolve_function_config("src/auth.ts:validateToken", &[config], 50, 30).unwrap();
+            resolve_function_config("src/auth.ts:validateToken", &[config], Some(50), 30).unwrap();
         let profile = resolved
             .execution_profile
             .expect("resolved execution profile should be present");
@@ -1693,16 +1694,16 @@ functions:
         };
 
         let resolved =
-            resolve_function_config("some/func", &[config], 50, 30).unwrap();
-        assert_eq!(resolved.max_iterations, 200); // from config defaults
+            resolve_function_config("some/func", &[config], Some(50), 30).unwrap();
+        assert_eq!(resolved.max_iterations, Some(200)); // from config defaults
         assert_eq!(resolved.timeout, 30); // from CLI (config default is None)
     }
 
     #[test]
     fn resolve_function_config_uses_cli_defaults_when_no_config() {
         let resolved =
-            resolve_function_config("any/func", &[], 100, 60).unwrap();
-        assert_eq!(resolved.max_iterations, 100);
+            resolve_function_config("any/func", &[], Some(100), 60).unwrap();
+        assert_eq!(resolved.max_iterations, Some(100));
         assert_eq!(resolved.timeout, 60);
     }
 
@@ -1735,12 +1736,12 @@ functions:
         };
 
         let resolved =
-            resolve_function_config("src/generated/api.ts:handler", &[config.clone()], 100, 60)
+            resolve_function_config("src/generated/api.ts:handler", &[config.clone()], Some(100), 60)
                 .unwrap();
         assert!(resolved.skip);
 
         let resolved2 =
-            resolve_function_config("src/auth.ts:login", &[config], 100, 60).unwrap();
+            resolve_function_config("src/auth.ts:login", &[config], Some(100), 60).unwrap();
         assert!(!resolved2.skip);
     }
 
@@ -1776,7 +1777,7 @@ functions:
             "myFunc",
             root.path(),
             None,
-            50,
+            Some(50),
             30,
             &[],
         )
@@ -1815,7 +1816,7 @@ functions:
             "myFunc",
             root.path(),
             Some(&explicit_path),
-            50,
+            Some(50),
             30,
             &[],
         )
@@ -1863,8 +1864,8 @@ functions:
         assert_eq!(merged.defaults.timeout, Some(30)); // falls through
 
         let resolved =
-            resolve_function_config("src/auth/login.ts:validateToken", &configs, 100, 60).unwrap();
-        assert_eq!(resolved.max_iterations, 500); // from sub defaults
+            resolve_function_config("src/auth/login.ts:validateToken", &configs, Some(100), 60).unwrap();
+        assert_eq!(resolved.max_iterations, Some(500)); // from sub defaults
         assert_eq!(resolved.timeout, 120); // from function pattern
     }
 
@@ -2094,7 +2095,7 @@ functions:
             "myFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -2128,7 +2129,7 @@ defaults:
             "anyFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -2167,7 +2168,7 @@ functions:
             "myFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -2197,7 +2198,7 @@ functions:
             "anyFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -2215,7 +2216,7 @@ functions:
     #[test]
     fn resolve_function_config_setup_level_defaults_to_function() {
         let resolved =
-            resolve_function_config("any/func", &[], 100, 60).unwrap();
+            resolve_function_config("any/func", &[], Some(100), 60).unwrap();
         assert_eq!(resolved.setup_level, SetupLevel::Function);
         assert_eq!(resolved.setup_timeout, DEFAULT_SETUP_TIMEOUT_SECS);
     }
@@ -2587,7 +2588,7 @@ defaults:
             "anyFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -2620,7 +2621,7 @@ defaults:
             "anyFunc",
             root.path(),
             None,
-            100,
+            Some(100),
             60,
             &[],
         )
@@ -3054,7 +3055,7 @@ functions:
       score_window: 50
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], 100, 60).unwrap();
+        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
         assert!(!resolved.exploration.adaptive);
         assert_eq!(resolved.exploration.score_window, 50);
     }
@@ -3068,7 +3069,7 @@ defaults:
     score_window: 200
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], Some(100), 60).unwrap();
         assert!(!resolved.exploration.adaptive);
         assert_eq!(resolved.exploration.score_window, 200);
     }
@@ -3083,7 +3084,7 @@ defaults:
     max_generations: 500
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], Some(100), 60).unwrap();
         assert!(resolved.genetic.enabled);
         assert_eq!(resolved.genetic.population_size, 200);
         assert_eq!(resolved.genetic.max_generations, 500);
@@ -3146,7 +3147,7 @@ functions:
       population_size: 50
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], 100, 60).unwrap();
+        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
         assert!(!resolved.genetic.enabled);
         assert_eq!(resolved.genetic.population_size, 50);
     }
@@ -3155,7 +3156,7 @@ functions:
     fn genetic_config_absent_uses_builtin_defaults() {
         let yaml = "defaults: {}\n";
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("any:func", &[config], 100, 60).unwrap();
+        let resolved = resolve_function_config("any:func", &[config], Some(100), 60).unwrap();
         assert!(!resolved.genetic.enabled);
         assert_eq!(resolved.genetic, GeneticConfig::default());
     }

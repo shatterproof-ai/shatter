@@ -123,8 +123,8 @@ async fn float_probe_classifies_integer_treating() {
     instrument_function(&mut frontend, &file_str, "integerBucket").await;
 
     let config = ExploreConfig {
-        max_iterations: 50,
-        max_executions: 100,
+        max_iterations: Some(50),
+        max_executions: Some(100),
         ..Default::default()
     };
 
@@ -172,8 +172,8 @@ async fn float_probe_classifies_float_sensitive() {
     instrument_function(&mut frontend, &file_str, "precisionCheck").await;
 
     let config = ExploreConfig {
-        max_iterations: 50,
-        max_executions: 100,
+        max_iterations: Some(50),
+        max_executions: Some(100),
         ..Default::default()
     };
 
@@ -217,8 +217,8 @@ async fn float_probe_skips_non_float_params() {
     instrument_function(&mut frontend, &file_str, "greet").await;
 
     let config = ExploreConfig {
-        max_iterations: 20,
-        max_executions: 50,
+        max_iterations: Some(20),
+        max_executions: Some(50),
         ..Default::default()
     };
 

@@ -309,8 +309,8 @@ pub(crate) const DEFAULT_TIMEOUT: u64 = 60;
 
 /// Resolved exploration budget, accounting for MC/DC multipliers.
 pub(crate) struct ResolvedBudgets {
-    /// Effective max-iterations (user value or MC/DC-scaled default).
-    pub max_iterations: u32,
+    /// Effective max-iterations. `None` means unbounded (run until timeout/interrupt).
+    pub max_iterations: Option<u32>,
     /// Effective wall-clock timeout in seconds (user value or MC/DC-scaled default).
     pub timeout: u64,
     /// Effective per-query solver timeout in seconds (user value, or 10s under MC/DC, or None).
@@ -323,6 +323,7 @@ pub(crate) struct ResolvedBudgets {
 /// When `mcdc` is true and a parameter is `None` (not user-provided), the MC/DC
 /// default is used (5× for iterations, 5× for timeout, 10 s for solver timeout).
 /// When a parameter is `Some`, the user-provided value is used unchanged.
+/// When `mcdc` is false and `max_iterations` is `None`, returns `None` (unbounded).
 pub(crate) fn resolve_mcdc_budgets(
     max_iterations: Option<u32>,
     timeout: Option<u64>,
@@ -330,7 +331,11 @@ pub(crate) fn resolve_mcdc_budgets(
     mcdc: bool,
 ) -> ResolvedBudgets {
     ResolvedBudgets {
-        max_iterations: max_iterations.unwrap_or(if mcdc { DEFAULT_MAX_ITERATIONS * 5 } else { DEFAULT_MAX_ITERATIONS }),
+        max_iterations: match max_iterations {
+            Some(n) => Some(n),
+            None if mcdc => Some(DEFAULT_MAX_ITERATIONS * 5),
+            None => None,
+        },
         timeout: timeout.unwrap_or(if mcdc { DEFAULT_TIMEOUT * 5 } else { DEFAULT_TIMEOUT }),
         solver_timeout: if mcdc && solver_timeout.is_none() { Some(10) } else { solver_timeout },
     }
@@ -343,15 +348,15 @@ mod mcdc_budget_tests {
     #[test]
     fn mcdc_default_budgets_are_scaled() {
         let b = resolve_mcdc_budgets(None, None, None, true);
-        assert_eq!(b.max_iterations, DEFAULT_MAX_ITERATIONS * 5, "max_iterations should be 5x");
+        assert_eq!(b.max_iterations, Some(DEFAULT_MAX_ITERATIONS * 5), "max_iterations should be 5x");
         assert_eq!(b.timeout, DEFAULT_TIMEOUT * 5, "timeout should be 5x");
         assert_eq!(b.solver_timeout, Some(10), "solver_timeout should default to 10s under mcdc");
     }
 
     #[test]
-    fn non_mcdc_default_budgets_are_unscaled() {
+    fn non_mcdc_default_budgets_are_unbounded() {
         let b = resolve_mcdc_budgets(None, None, None, false);
-        assert_eq!(b.max_iterations, DEFAULT_MAX_ITERATIONS);
+        assert_eq!(b.max_iterations, None, "no --max-iterations means unbounded");
         assert_eq!(b.timeout, DEFAULT_TIMEOUT);
         assert_eq!(b.solver_timeout, None);
     }
@@ -359,7 +364,7 @@ mod mcdc_budget_tests {
     #[test]
     fn user_provided_values_override_mcdc_defaults() {
         let b = resolve_mcdc_budgets(Some(42), Some(30), Some(5), true);
-        assert_eq!(b.max_iterations, 42, "user-provided max_iterations must not be multiplied");
+        assert_eq!(b.max_iterations, Some(42), "user-provided max_iterations must not be multiplied");
         assert_eq!(b.timeout, 30, "user-provided timeout must not be multiplied");
         assert_eq!(b.solver_timeout, Some(5), "user-provided solver_timeout must not be changed");
     }
@@ -368,7 +373,7 @@ mod mcdc_budget_tests {
     fn partial_user_override_with_mcdc() {
         // User provides max_iterations but not timeout or solver_timeout
         let b = resolve_mcdc_budgets(Some(200), None, None, true);
-        assert_eq!(b.max_iterations, 200, "user value wins");
+        assert_eq!(b.max_iterations, Some(200), "user value wins");
         assert_eq!(b.timeout, DEFAULT_TIMEOUT * 5, "unspecified timeout gets mcdc scaling");
         assert_eq!(b.solver_timeout, Some(10), "unspecified solver_timeout gets mcdc default");
     }

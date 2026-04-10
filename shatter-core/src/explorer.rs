@@ -105,7 +105,8 @@ pub struct ExploreConfig {
     /// Path to the source file being explored (needed for instrumentation).
     pub file: String,
     /// Maximum number of iterations (execute calls) per function.
-    pub max_iterations: u32,
+    /// `None` means unbounded — explore runs until timeout or interruption.
+    pub max_iterations: Option<u32>,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
     /// Mock configurations to pass to Execute commands.
@@ -775,7 +776,7 @@ pub async fn explore_function(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
 
     let mut prefetched = if use_generators {
-        prefetch_custom_values(&config.value_sources, frontend, config.max_iterations as usize)
+        prefetch_custom_values(&config.value_sources, frontend, config.max_iterations.unwrap_or(100) as usize)
             .instrument(tracing::info_span!("input_gen.prefetch"))
             .await
             .unwrap_or_else(|e| {
@@ -836,7 +837,7 @@ pub async fn explore_function(
     let float_indices = crate::float_probe::float_param_indices(&analysis.params);
     let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
     let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
-    if !float_indices.is_empty() && probe_budget < config.max_iterations as usize {
+    if !float_indices.is_empty() && config.max_iterations.is_none_or(|m| probe_budget < m as usize) {
         for &idx in &float_indices {
             let pairs = crate::float_probe::generate_probe_pairs(
                 &analysis.params,
@@ -959,9 +960,12 @@ pub async fn explore_function(
     let mut recent_hits: Vec<bool> = Vec::with_capacity(claim_window);
 
     loop {
-        if iterations >= effective_budget {
+        if let Some(budget) = effective_budget
+            && iterations >= budget
+        {
             // Initial budget exhausted — try to claim surplus if still productive.
             if let Some(ref surplus) = config.budget_surplus {
+                let base = config.max_iterations.unwrap_or(budget);
                 let recent_new = recent_hits
                     .iter()
                     .rev()
@@ -969,17 +973,17 @@ pub async fn explore_function(
                     .filter(|&&hit| hit)
                     .count() as u32;
                 if config.claim_policy.should_claim(recent_new) {
-                    let chunk = (config.max_iterations / 4).max(1);
+                    let chunk = (base / 4).max(1);
                     let max_claimable = config.claim_policy.max_claimable(surplus.available());
                     let requested = chunk.min(max_claimable);
                     let claimed = surplus.try_claim(requested, 1);
                     if claimed > 0 {
-                        effective_budget += claimed;
+                        effective_budget = Some(budget + claimed);
                         log::debug!(
                             "{}: claimed {} surplus iterations (budget now {})",
                             analysis.name,
                             claimed,
-                            effective_budget
+                            budget + claimed
                         );
                     } else {
                         break;
@@ -2669,7 +2673,7 @@ mod tests {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(3), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
@@ -2700,7 +2704,7 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
@@ -2731,7 +2735,7 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Execution,
             value_sources: vec![], capabilities: caps,
@@ -2761,7 +2765,7 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
@@ -2790,7 +2794,7 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 2, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![ValueSource::CustomGenerator {
@@ -2825,7 +2829,7 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 3, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(3), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: caps,
@@ -2854,7 +2858,7 @@ mod tests {
         let analysis = stub_analysis();
         let user_seed_value = vec![serde_json::json!(999)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 5, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(5), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
@@ -2891,7 +2895,7 @@ mod tests {
         let candidate_value = vec![serde_json::json!(777)];
         let pool_value = vec![serde_json::json!(888)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 10, seed: Some(42), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(10), seed: Some(42), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),
@@ -2932,7 +2936,7 @@ mod tests {
         let analysis = stub_analysis();
         let non_boundary_seed = vec![serde_json::json!(42)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: 2, seed: Some(99), mocks: vec![],
+            file: "test.ts".into(), max_iterations: Some(2), seed: Some(99), mocks: vec![],
             mock_params: vec![],
             setup_file: None, setup_level: SetupLevel::Function,
             value_sources: vec![], capabilities: FrontendCapabilities::default(),

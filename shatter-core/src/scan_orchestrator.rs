@@ -1166,7 +1166,7 @@ pub async fn scan(
 
         let explore_config = ExploreConfig {
             file,
-            max_iterations: config.max_iterations_per_function,
+            max_iterations: Some(config.max_iterations_per_function),
             seed: config.seed,
             mocks,
             mock_params: vec![],
@@ -2364,7 +2364,7 @@ pub async fn parallel_scan_with_progress(
 
             let explore_config = ExploreConfig {
                 file: file.clone(),
-                max_iterations: config.max_iterations_per_function,
+                max_iterations: Some(config.max_iterations_per_function),
                 seed: config.seed,
                 mocks,
                 mock_params: vec![],
@@ -2464,7 +2464,7 @@ pub async fn parallel_scan_with_progress(
                     let mut out = Vec::with_capacity(tasks.len() * wpf);
                     for (fn_idx, task) in tasks.into_iter().enumerate() {
                         let per_replica_iters =
-                            (task.explore_config.max_iterations / wpf as u32).max(1);
+                            task.explore_config.max_iterations.map(|m| (m / wpf as u32).max(1));
                         for replica in 0..wpf {
                             let mut replica_config = task.explore_config.clone();
                             replica_config.seed =
@@ -2960,8 +2960,9 @@ async fn explore_single_function(
     }
 
     // Donate unused budget to the layer surplus so other functions can use it.
-    if let Some(ref surplus) = explore_config.budget_surplus {
-        let allocated = explore_config.max_iterations;
+    if let Some(ref surplus) = explore_config.budget_surplus
+        && let Some(allocated) = explore_config.max_iterations
+    {
         let used = exploration.iterations;
         let unused = allocated.saturating_sub(used);
         if unused > 0 {
@@ -3570,7 +3571,7 @@ fn load_config_candidate_inputs(
         func_name,
         dir,
         None,
-        max_iterations,
+        Some(max_iterations),
         timeout_secs,
         &[],
     ) {

@@ -98,9 +98,11 @@ impl FrontendCapabilities {
 #[derive(Debug, Clone)]
 pub struct ExploreConfig {
     /// Maximum number of unique paths to explore before stopping.
-    pub max_iterations: usize,
+    /// `None` means unbounded — explore runs until timeout or interruption.
+    pub max_iterations: Option<usize>,
     /// Maximum total executions (including duplicated paths) before stopping.
-    pub max_executions: usize,
+    /// `None` means unbounded.
+    pub max_executions: Option<usize>,
     /// Stop after this many consecutive executions without discovering a new path.
     /// Set to 0 to disable plateau detection.
     pub plateau_threshold: usize,
@@ -156,8 +158,8 @@ const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
 impl Default for ExploreConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 100,
-            max_executions: DEFAULT_MAX_EXECUTIONS,
+            max_iterations: Some(100),
+            max_executions: Some(DEFAULT_MAX_EXECUTIONS),
             plateau_threshold: 20,
             mocks: vec![],
             mock_params: vec![],
@@ -505,10 +507,14 @@ async fn observe_one(
     prepare_id: Option<&str>,
 ) -> Result<ObserveOneResult, ExploreError> {
     // Check termination budgets.
-    if budget.unique_paths >= config.max_iterations {
+    if let Some(max) = config.max_iterations
+        && budget.unique_paths >= max
+    {
         return Ok(ObserveOneResult::Terminated(TerminationReason::MaxIterations));
     }
-    if budget.total_executions >= config.max_executions {
+    if let Some(max) = config.max_executions
+        && budget.total_executions >= max
+    {
         return Ok(ObserveOneResult::Terminated(TerminationReason::MaxExecutions));
     }
     if let Some(timeout) = config.timeout_explore
@@ -3061,8 +3067,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 10,
-            max_executions: 50,
+            max_iterations: Some(10),
+            max_executions: Some(50),
             plateau_threshold: 5,
             ..Default::default()
         };
@@ -3104,8 +3110,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 20,
-            max_executions: 100,
+            max_iterations: Some(20),
+            max_executions: Some(100),
             plateau_threshold: 10,
             ..Default::default()
         };
@@ -3148,8 +3154,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 20,
-            max_executions: 100,
+            max_iterations: Some(20),
+            max_executions: Some(100),
             plateau_threshold: 10,
             ..Default::default()
         };
@@ -3187,8 +3193,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 100,
-            max_executions: 100,
+            max_iterations: Some(100),
+            max_executions: Some(100),
             // Low threshold so plateau triggers quickly.
             plateau_threshold: 3,
             ..Default::default()
@@ -3230,8 +3236,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 100,
-            max_executions: 3,
+            max_iterations: Some(100),
+            max_executions: Some(3),
             plateau_threshold: 0, // disable plateau
             ..Default::default()
         };
@@ -3267,8 +3273,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 1,
-            max_executions: 100,
+            max_iterations: Some(1),
+            max_executions: Some(100),
             plateau_threshold: 0,
             ..Default::default()
         };
@@ -3353,8 +3359,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 1000,
-            max_executions: 10000,
+            max_iterations: Some(1000),
+            max_executions: Some(10000),
             plateau_threshold: 0,
             timeout_explore: Some(Duration::from_millis(1)),
             ..Default::default()
@@ -3396,8 +3402,8 @@ mod tests {
         let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
 
         let explore_config = ExploreConfig {
-            max_iterations: 50,
-            max_executions: 50,
+            max_iterations: Some(50),
+            max_executions: Some(50),
             plateau_threshold: 0, // disable plateau so we rely on worklist exhaustion
             ..Default::default()
         };
