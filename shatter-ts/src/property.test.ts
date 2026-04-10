@@ -57,6 +57,13 @@ import {
   ErrorInfo,
 } from "./protocol.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
+import {
+  detectRuntimeHints,
+  ADAPTER_ID_REACT_HOOKS,
+  ADAPTER_ID_TSCONFIG_PATHS,
+  ADAPTER_ID_BROWSER_GLOBALS,
+  ADAPTER_ID_IMPORT_META_ENV,
+} from "./runtime-hints.js";
 import { buildSymExpr, buildSymExprWithFlow, flattenConditions } from "./instrumentor.js";
 import type { FlattenedConditions } from "./instrumentor.js";
 import type { ConditionOutcome } from "./protocol.js";
@@ -1821,5 +1828,92 @@ describe("Browser globals recognizer properties", () => {
         },
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime hint signal properties
+// ---------------------------------------------------------------------------
+
+const KNOWN_ADAPTER_IDS = [
+  ADAPTER_ID_REACT_HOOKS,
+  ADAPTER_ID_TSCONFIG_PATHS,
+  ADAPTER_ID_BROWSER_GLOBALS,
+  ADAPTER_ID_IMPORT_META_ENV,
+];
+
+describe("detectRuntimeHints properties", () => {
+  it("never crashes on arbitrary ErrorInfo", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints = detectRuntimeHints(error);
+        expect(Array.isArray(hints)).toBe(true);
+      }),
+    );
+  });
+
+  it("all returned hints have non-empty adapter.id", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints = detectRuntimeHints(error);
+        for (const hint of hints) {
+          expect(hint.adapter.id.length).toBeGreaterThan(0);
+        }
+      }),
+    );
+  });
+
+  it("all returned hints have valid confidence levels", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints = detectRuntimeHints(error);
+        for (const hint of hints) {
+          expect(["low", "medium", "high"]).toContain(hint.confidence);
+        }
+      }),
+    );
+  });
+
+  it("all returned hints have non-empty reasons", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints = detectRuntimeHints(error);
+        for (const hint of hints) {
+          expect(hint.reasons).toBeDefined();
+          expect(hint.reasons!.length).toBeGreaterThan(0);
+        }
+      }),
+    );
+  });
+
+  it("all returned adapter IDs are from the known set", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints = detectRuntimeHints(error);
+        for (const hint of hints) {
+          expect(KNOWN_ADAPTER_IDS).toContain(hint.adapter.id);
+        }
+      }),
+    );
+  });
+
+  it("is deterministic — same input always produces same output", () => {
+    fc.assert(
+      fc.property(arbErrorInfo, (error) => {
+        const hints1 = detectRuntimeHints(error);
+        const hints2 = detectRuntimeHints(error);
+        expect(hints1).toEqual(hints2);
+      }),
+    );
+  });
+
+  it("returns empty array when error is null-ish fields", () => {
+    const hints = detectRuntimeHints({
+      error_type: "",
+      message: "",
+      stack: null,
+      error_category: "unknown",
+    });
+    expect(hints).toHaveLength(0);
   });
 });
