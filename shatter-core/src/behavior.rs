@@ -229,6 +229,17 @@ pub struct BehaviorMap {
 }
 
 impl BehaviorMap {
+    /// Attach a fingerprint to this map for staleness detection.
+    ///
+    /// Callers should set this to the current
+    /// [`compute_function_fingerprint`](crate::fingerprint::compute_function_fingerprint)
+    /// output before persisting the map, so that
+    /// [`BehaviorMapCache::is_fresh`](crate::cache::BehaviorMapCache::is_fresh)
+    /// can detect when the underlying function body has changed.
+    pub fn set_fingerprint(&mut self, fingerprint: impl Into<String>) {
+        self.fingerprint = Some(fingerprint.into());
+    }
+
     /// Build a behavior map from execution records, deduplicating by `input_hash`.
     pub fn from_records(function_id: impl Into<String>, records: &[ExecutionRecord]) -> Self {
         let mut seen_hashes = HashSet::new();
@@ -664,6 +675,23 @@ mod tests {
     use crate::explorer::{ExecutionSummary, ObservationOutput};
     use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics};
     use crate::types::TypeInfo;
+
+    #[test]
+    fn set_fingerprint_stamps_and_replaces() {
+        let mut map = BehaviorMap {
+            function_id: "stamp_test".to_string(),
+            behaviors: vec![],
+            fingerprint: None,
+            nondeterministic_fields: vec![],
+        };
+        assert!(map.fingerprint.is_none());
+
+        map.set_fingerprint("first");
+        assert_eq!(map.fingerprint.as_deref(), Some("first"));
+
+        map.set_fingerprint(String::from("second"));
+        assert_eq!(map.fingerprint.as_deref(), Some("second"));
+    }
 
     /// Helper: build a minimal execution record with the given parameters and return value.
     fn make_record(

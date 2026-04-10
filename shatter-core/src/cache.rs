@@ -114,8 +114,35 @@ impl BehaviorMapCache {
     }
 
     /// Store a behavior map to disk using atomic write (temp file + rename).
+    ///
+    /// Persists whatever fingerprint is already on `map` (may be `None`). Prefer
+    /// [`store_with_fingerprint`](Self::store_with_fingerprint) for any caller
+    /// that knows the current function fingerprint — that path guarantees the
+    /// stored entry carries a fingerprint and is therefore eligible for
+    /// body-change invalidation by [`is_fresh`](Self::is_fresh).
     pub fn store(&self, map: &BehaviorMap) -> Result<(), CacheError> {
-        let path = self.path_for(&map.function_id);
+        self.write_entry(&map.function_id, map)
+    }
+
+    /// Store a behavior map with an explicit fingerprint for staleness tracking.
+    ///
+    /// Overwrites `map.fingerprint` with `fingerprint` before serializing, so the
+    /// persisted entry always carries the caller's current fingerprint regardless
+    /// of what was on the in-memory `BehaviorMap`. This is the only store path
+    /// that lets [`is_fresh`](Self::is_fresh) detect body changes; callers that
+    /// have the current fingerprint available (explore, scan) should use this.
+    pub fn store_with_fingerprint(
+        &self,
+        map: &BehaviorMap,
+        fingerprint: &str,
+    ) -> Result<(), CacheError> {
+        let mut stamped = map.clone();
+        stamped.set_fingerprint(fingerprint);
+        self.write_entry(&stamped.function_id.clone(), &stamped)
+    }
+
+    fn write_entry(&self, function_id: &str, map: &BehaviorMap) -> Result<(), CacheError> {
+        let path = self.path_for(function_id);
         let entry = BehaviorMapCacheEntry {
             protocol_version: PROTOCOL_VERSION.to_string(),
             behavior_map: map.clone(),
@@ -133,22 +160,50 @@ impl BehaviorMapCache {
         Ok(())
     }
 
-    /// Check whether a cached behavior map exists and its fingerprint matches.
+    /// Check whether a cached behavior map is fresh under `current_fingerprint`,
+    /// and drop the on-disk entry when it is stale.
     ///
-    /// Returns `true` if the cache contains a version-compatible map for
-    /// `function_id` whose fingerprint equals `current_fingerprint`.
+    /// Returns `true` iff the cache contains a version-compatible map for
+    /// `function_id` whose stored fingerprint equals `current_fingerprint`.
+    ///
+    /// Side effect: when a map is loaded but its stored fingerprint is either
+    /// missing (legacy entry written before the fingerprint contract) or
+    /// differs from `current_fingerprint`, the backing file is unlinked before
+    /// returning `false`. This is the mechanism by which function-body changes
+    /// drop stale behavior maps: the caller computes a new fingerprint from the
+    /// current source, `is_fresh` sees the mismatch, and the disk entry is
+    /// removed so subsequent loads are cache misses. A failure to unlink is
+    /// logged via `log::warn!` but does not propagate as an error — the caller
+    /// still gets the correct `false` freshness answer and will re-explore.
+    ///
+    /// Unrelated functions stored under different `function_id`s are untouched
+    /// because [`path_for`](Self::path_for) maps each function ID to its own
+    /// file under a hierarchical directory structure.
     pub fn is_fresh(
         &self,
         function_id: &str,
         current_fingerprint: &str,
     ) -> Result<bool, CacheError> {
-        match self.load(function_id)? {
-            Some(map) => Ok(map
-                .fingerprint
-                .as_deref()
-                .is_some_and(|fp| fp == current_fingerprint)),
-            None => Ok(false),
+        let path = self.path_for(function_id);
+        let map = match self.load(function_id)? {
+            Some(m) => m,
+            None => return Ok(false),
+        };
+        let fresh = map
+            .fingerprint
+            .as_deref()
+            .is_some_and(|fp| fp == current_fingerprint);
+        if !fresh
+            && path.exists()
+            && let Err(e) = fs::remove_file(&path)
+        {
+            log::warn!(
+                "failed to drop stale behavior map {} at {}: {e}",
+                function_id,
+                path.display()
+            );
         }
+        Ok(fresh)
     }
 
     /// Load all cached behavior maps whose function_id starts with `file_prefix:`.
@@ -588,6 +643,154 @@ mod tests {
     }
 
     #[test]
+    fn store_with_fingerprint_stamps_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        // Start with no fingerprint on the in-memory map — store_with_fingerprint
+        // must attach it before persisting.
+        let map = sample_map("stampedFn");
+        assert!(map.fingerprint.is_none());
+
+        cache.store_with_fingerprint(&map, "stamp-fp").unwrap();
+
+        let loaded = cache.load("stampedFn").unwrap().unwrap();
+        assert_eq!(loaded.fingerprint.as_deref(), Some("stamp-fp"));
+        assert!(cache.is_fresh("stampedFn", "stamp-fp").unwrap());
+    }
+
+    #[test]
+    fn store_with_fingerprint_overwrites_existing_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut map = sample_map("overwriteFn");
+        map.fingerprint = Some("old-fp".to_string());
+        cache.store_with_fingerprint(&map, "new-fp").unwrap();
+
+        let loaded = cache.load("overwriteFn").unwrap().unwrap();
+        assert_eq!(loaded.fingerprint.as_deref(), Some("new-fp"));
+    }
+
+    #[test]
+    fn is_fresh_drops_stale_entry_on_body_change() {
+        // Regression: str-bo4z.1 — body change must drop the cached map so
+        // subsequent loads do not silently return stale behaviors.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("src/auth.ts:validateToken");
+        cache
+            .store_with_fingerprint(&map, "fingerprint-before-edit")
+            .unwrap();
+
+        // The file exists before the staleness check.
+        let path = dir
+            .path()
+            .join("src")
+            .join("auth.ts")
+            .join("validateToken.json");
+        assert!(path.exists(), "stored entry file should exist pre-check");
+
+        // A new fingerprint simulates a body change.
+        assert!(
+            !cache
+                .is_fresh("src/auth.ts:validateToken", "fingerprint-after-edit")
+                .unwrap()
+        );
+
+        // Side effect: the stale file is dropped.
+        assert!(
+            !path.exists(),
+            "is_fresh should have removed the stale entry"
+        );
+
+        // A subsequent load is now a clean cache miss.
+        assert_eq!(cache.load("src/auth.ts:validateToken").unwrap(), None);
+    }
+
+    #[test]
+    fn is_fresh_preserves_unrelated_function_on_body_change() {
+        // Regression: str-bo4z.1 — invalidating one function must not cascade
+        // into unrelated siblings, even when they share a file prefix.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let changed = sample_map("src/auth.ts:validateToken");
+        let unchanged = sample_map("src/auth.ts:hashPassword");
+        cache
+            .store_with_fingerprint(&changed, "changed-fp")
+            .unwrap();
+        cache
+            .store_with_fingerprint(&unchanged, "unchanged-fp")
+            .unwrap();
+
+        // Invalidate only validateToken by checking with a mismatched fingerprint.
+        assert!(
+            !cache
+                .is_fresh("src/auth.ts:validateToken", "different-fp")
+                .unwrap()
+        );
+
+        // hashPassword's cached entry is untouched: still fresh, still loadable.
+        assert!(
+            cache
+                .is_fresh("src/auth.ts:hashPassword", "unchanged-fp")
+                .unwrap()
+        );
+        let preserved = cache
+            .load("src/auth.ts:hashPassword")
+            .unwrap()
+            .expect("unrelated function should still be cached");
+        assert_eq!(preserved.function_id, "src/auth.ts:hashPassword");
+        assert_eq!(preserved.fingerprint.as_deref(), Some("unchanged-fp"));
+    }
+
+    #[test]
+    fn is_fresh_drops_legacy_none_fingerprint_entry() {
+        // Legacy writers (the plain `store` path) persist maps with
+        // fingerprint=None. These must be treated as stale and cleaned up the
+        // first time a fingerprinted freshness check visits them, so the cache
+        // self-heals without requiring a separate migration step.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("legacyFn");
+        assert!(map.fingerprint.is_none());
+        cache.store(&map).unwrap();
+
+        let path = dir.path().join("legacyFn.json");
+        assert!(path.exists());
+
+        assert!(!cache.is_fresh("legacyFn", "any-fp").unwrap());
+        assert!(
+            !path.exists(),
+            "legacy None-fingerprint entry should be dropped"
+        );
+    }
+
+    #[test]
+    fn is_fresh_keeps_fresh_entry_on_disk() {
+        // The delete-on-stale side effect must not touch fresh entries — a
+        // matching fingerprint leaves the file in place so repeat checks stay
+        // cheap.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("keeperFn");
+        cache.store_with_fingerprint(&map, "keep-fp").unwrap();
+
+        let path = dir.path().join("keeperFn.json");
+        assert!(path.exists());
+
+        assert!(cache.is_fresh("keeperFn", "keep-fp").unwrap());
+        assert!(path.exists(), "fresh entry should not be deleted");
+
+        // And a second check still returns true.
+        assert!(cache.is_fresh("keeperFn", "keep-fp").unwrap());
+    }
+
+    #[test]
     fn store_and_load_preserves_nondeterministic_fields() {
         use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
 
@@ -813,6 +1016,39 @@ mod proptests {
             let loaded_seeds = loaded.extract_seed_inputs();
 
             prop_assert_eq!(original_seeds, loaded_seeds);
+        }
+
+        /// str-bo4z.1 invariant: store_with_fingerprint always stamps the map,
+        /// and a subsequent is_fresh check under a mismatched fingerprint
+        /// invalidates the on-disk entry without touching unrelated siblings.
+        #[test]
+        fn body_change_drops_only_affected_entry(
+            map in arb_behavior_map(),
+            fp_a in "[a-f0-9]{64}",
+            fp_b in "[a-f0-9]{64}",
+        ) {
+            prop_assume!(fp_a != fp_b);
+            let dir = tempfile::tempdir().unwrap();
+            let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+
+            // A sibling map with a distinct function_id and fingerprint.
+            let mut sibling = map.clone();
+            sibling.function_id = format!("{}__sibling", map.function_id);
+            let sibling_fp = "sibling-fingerprint";
+
+            cache.store_with_fingerprint(&map, &fp_a).unwrap();
+            cache.store_with_fingerprint(&sibling, sibling_fp).unwrap();
+
+            // is_fresh with a new fingerprint reports stale and drops the entry.
+            prop_assert!(!cache.is_fresh(&map.function_id, &fp_b).unwrap());
+            prop_assert_eq!(cache.load(&map.function_id).unwrap(), None);
+
+            // The sibling is untouched.
+            prop_assert!(cache.is_fresh(&sibling.function_id, sibling_fp).unwrap());
+            let reloaded = cache.load(&sibling.function_id).unwrap();
+            prop_assert!(reloaded.is_some());
+            let reloaded_map = reloaded.unwrap();
+            prop_assert_eq!(reloaded_map.fingerprint.as_deref(), Some(sibling_fp));
         }
     }
 }
