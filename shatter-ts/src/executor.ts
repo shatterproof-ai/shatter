@@ -18,6 +18,7 @@ import type {
   ExecuteResponse,
   ErrorInfo,
   ErrorCategory,
+  AdapterHint,
   PerformanceMetrics,
   BranchDecision,
   SymConstraint,
@@ -32,6 +33,7 @@ import type {
   ConditionOutcome,
   RuntimeCryptoBoundary,
 } from "./protocol.js";
+import { detectRuntimeHints } from "./runtime-hints.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
@@ -709,6 +711,7 @@ interface RawExecuteResult {
   discovered_dependencies: DiscoveredDependency[];
   connection_failures: ConnectionFailure[];
   runtime_crypto_boundaries: RuntimeCryptoBoundary[];
+  adapter_hints: AdapterHint[];
 }
 
 /**
@@ -1021,6 +1024,7 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
+      adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
     };
   } else {
     // No-capture fast path: skip all capture infrastructure.
@@ -1045,6 +1049,7 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
+      adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
     };
   }
 }
@@ -1512,6 +1517,7 @@ export async function executeInstrumented(
     discovered_dependencies: discoveredDeps,
     connection_failures: connectionFailures,
     runtime_crypto_boundaries: cryptoBoundaries,
+    adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
   };
 }
 
@@ -1561,6 +1567,10 @@ export function buildExecuteResponse(
 
   if (rawResult.runtime_crypto_boundaries.length > 0) {
     response.runtime_crypto_boundaries = rawResult.runtime_crypto_boundaries;
+  }
+
+  if (rawResult.adapter_hints.length > 0) {
+    response.adapter_hints = rawResult.adapter_hints;
   }
 
   return response;

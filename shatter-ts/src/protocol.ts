@@ -243,6 +243,8 @@ export interface ExecuteResponse extends BaseResponse {
    *  When non-empty, the function called a known encrypt or decrypt API;
    *  the core engine can use this for boundary splitting. */
   runtime_crypto_boundaries?: RuntimeCryptoBoundary[];
+  /** Runtime-detected adapter hints for failures that suggest a missing adapter. */
+  adapter_hints?: AdapterHint[];
 }
 
 export interface SetupResponse extends BaseResponse {
