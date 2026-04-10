@@ -12,9 +12,22 @@ const BINARY_HASH: &str = env!("GO_FRONTEND_HASH");
 ///
 /// The binary is written to `~/.cache/shatter/go-frontend-<hash>`. If the file
 /// already exists (matching hash), extraction is skipped.
+///
+/// If the primary cache directory is unwritable, falls back to a temp directory.
 pub fn ensure_extracted() -> Result<PathBuf, String> {
     let cache_dir = cache_dir()?;
-    extract_to(&cache_dir)
+    ensure_extracted_with_fallback(&cache_dir)
+}
+
+/// Try extracting to `primary_cache`; on failure, fall back to a temp directory.
+fn ensure_extracted_with_fallback(primary_cache: &Path) -> Result<PathBuf, String> {
+    match extract_to(primary_cache) {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            let fallback = std::env::temp_dir().join("shatter-cache");
+            extract_to(&fallback)
+        }
+    }
 }
 
 /// Extract the binary to a specific cache directory. Returns the path to the binary.
@@ -142,6 +155,47 @@ mod tests {
         assert_eq!(path1, path2);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_to_falls_back_when_cache_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join("shatter-test-unwritable-go");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Make the cache directory read-only
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = extract_to(&tmp);
+
+        // Restore permissions for cleanup
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert!(result.is_err(), "expected failure on unwritable cache dir (pre-fix behavior)");
+    }
+
+    #[test]
+    fn ensure_extracted_falls_back_on_unwritable_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join("shatter-test-fallback-go");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Make it unwritable
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = ensure_extracted_with_fallback(&tmp);
+
+        // Restore permissions for cleanup
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        let path = result.expect("extraction should succeed via fallback");
+        assert!(path.exists(), "extracted binary should exist at fallback location");
     }
 
     #[test]
