@@ -539,9 +539,9 @@ pub fn arb_performance_metrics() -> impl Strategy<Value = PerformanceMetrics> {
     // Use integer-valued f64 for wall_time_ms to avoid JSON round-trip precision loss.
     (
         0..10000u64,
-        0..10_000_000u64,
-        0..100_000_000u64,
-        0..100_000_000u64,
+        0..10_000_000i64,
+        -100_000i64..100_000_000i64,
+        -100_000i64..100_000_000i64,
     )
         .prop_map(
             |(wall_ms, cpu_time_us, heap_used_bytes, heap_allocated_bytes)| PerformanceMetrics {
