@@ -506,7 +506,264 @@ func TestClassifyNumber(t *testing.T) {
 
 ---
 
-## 6. Known Limitations
+## 6. Live Output and Resume
+
+### 6.1 Live Progress Output
+
+During `shatter scan`, the CLI can emit structured progress events to stderr
+so users and downstream tooling can track which function is being explored in
+real time.
+
+**Enabling progress output**: Pass `--progress` to `shatter scan`.
+
+When enabled, one NDJSON event is emitted to **stderr** for each function as
+its status changes. Without `--progress`, the CLI prints a summary after the
+scan completes instead.
+
+**Progress event format** (one JSON object per line on stderr):
+
+```json
+{"type":"progress","status":"started","function":"calculateShipping","current":1,"total":12,"elapsed_ms":42}
+{"type":"progress","status":"completed","function":"calculateShipping","current":1,"total":12,"elapsed_ms":1503}
+{"type":"progress","status":"started","function":"validateOrder","current":2,"total":12,"elapsed_ms":1510}
+{"type":"progress","status":"skipped","function":"fetchUser","current":3,"total":12,"elapsed_ms":1520}
+{"type":"progress","status":"failed","function":"processPayment","current":4,"total":12,"elapsed_ms":2100}
+```
+
+**Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"progress"` |
+| `status` | string | One of `started`, `completed`, `skipped`, `failed` |
+| `function` | string | Fully qualified function name |
+| `current` | number | 1-based index of this function in the scan order |
+| `total` | number | Total number of functions in the scan |
+| `elapsed_ms` | number | Milliseconds elapsed since the scan started |
+
+**Status lifecycle**: Each function transitions through exactly one of these
+sequences:
+
+- `started` → `completed` (normal exploration)
+- `started` → `failed` (exploration error)
+- `skipped` (no `started` event — function was skipped before exploration began)
+
+**Skip reasons**: Functions are skipped for several reasons, categorized as
+either benign (expected) or error:
+
+- **Benign**: opaque types detected, cache hit (behavior map already cached),
+  checkpoint resume (already completed in a previous run)
+- **Error**: analysis failure, instrumentation failure, timeout exceeded
+
+Without `--progress`, the CLI logs function progress at the `info` log level:
+
+```
+[1/12] calculateShipping (1.5s elapsed)
+[2/12] validateOrder (3.2s elapsed)
+```
+
+### 6.2 Partial Artifact Layout
+
+During a scan, Shatter writes partial results incrementally so that
+intermediate state survives interruptions.
+
+**Checkpoint file** (resume state):
+
+```
+shatter-artifacts/scan-results/<scan-id-prefix>/checkpoint.json
+```
+
+The `<scan-id-prefix>` is the first 16 hex characters of a SHA-256 hash
+computed from the sorted list of source file paths in the scan. The checkpoint
+is a lightweight JSON index — the actual behavior map data lives in the
+behavior map cache.
+
+**Checkpoint structure**:
+
+```json
+{
+  "version": "1",
+  "scan_id": "a1b2c3d4e5f6...",
+  "completed": {
+    "calculateShipping": "deep_fp_abc123...",
+    "validateOrder": "deep_fp_def456..."
+  },
+  "layer_index": 2,
+  "timestamp": "1712678400",
+  "config_hash": "cfg_hash_789..."
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `version` | Format version (currently `"1"`) |
+| `scan_id` | Stable hash of the scan's input file set |
+| `completed` | Map of function name → deep fingerprint for finished functions |
+| `layer_index` | Index of the last fully completed dependency layer |
+| `timestamp` | Unix timestamp of last save |
+| `config_hash` | Hash of scan config (iterations, timeouts, parallelism) for drift detection |
+
+**Behavior map cache** (per-function results):
+
+```
+.shatter-cache/behavior-maps/<function-name>.json
+```
+
+Each file contains the complete behavior map for one function: observed
+input→output mappings, execution paths, and side effects. These are written
+after each function completes exploration, so a partial scan leaves behind
+all results gathered before the interruption.
+
+**Write order**: The checkpoint is saved atomically (temp file + rename) after
+each dependency layer completes. Within a layer, individual behavior maps are
+written to the cache as each function finishes. This means:
+
+1. Functions in completed layers are fully persisted.
+2. Functions in the interrupted layer may or may not have cached behavior maps
+   depending on how far the layer progressed.
+3. The checkpoint only records functions whose behavior maps are confirmed
+   cached.
+
+### 6.3 Resume Semantics
+
+`--resume` allows an interrupted scan to continue from where it left off,
+skipping functions that were already explored.
+
+**Usage**:
+
+```bash
+# Auto-discover checkpoint from the standard artifact directory
+shatter scan --resume auto src/
+
+# Explicit checkpoint path
+shatter scan --resume /path/to/checkpoint.json src/
+```
+
+**How resume works**:
+
+1. Load the checkpoint file (JSON).
+2. **Hard compatibility check**: Compare the checkpoint's `scan_id` against the
+   current scan's file set. If they differ (files were added or removed), the
+   checkpoint is discarded and the scan starts fresh.
+3. **Soft config drift check**: Compare the `config_hash`. If scan configuration
+   changed (different iteration counts, timeouts, parallelism), a warning is
+   logged but the checkpoint is still used — completed functions are reused,
+   and pending functions use the new configuration.
+4. For each function in the scan order, check three conditions:
+   - The function appears in the checkpoint's `completed` map
+   - The stored deep fingerprint matches the current source code fingerprint
+   - The behavior map still exists in the cache
+5. If all three hold, skip the function (status: `skipped`, reason: "resumed
+   from checkpoint"). If any condition fails, re-explore the function.
+
+**What "deep fingerprint" means**: A fingerprint computed from the function's
+source code (line range extracted from the file). If the source changes between
+runs, the fingerprint changes and the function is re-explored even if the
+checkpoint lists it as completed.
+
+**What is preserved on resume**:
+
+- All behavior maps from previously completed functions
+- The scan dependency order (recalculated, but deterministic for the same file set)
+- Mock configurations derived from completed callee behavior maps
+
+**What is re-explored on resume**:
+
+- Functions whose source code changed since the checkpoint was written
+- Functions whose cached behavior maps were deleted
+- Functions that were in progress when the scan was interrupted (partially
+  completed layers)
+- All functions in layers above the last completed layer
+
+**Limitations**:
+
+1. Resume requires the same set of source files. Adding or removing files from
+   the scan scope invalidates the checkpoint.
+2. Config drift is a soft warning only — changing `--max-iterations` between
+   runs means resumed functions used the old iteration count while new functions
+   use the new count.
+3. The checkpoint does not store the order of function completion within a layer.
+   On resume, functions within a layer may be explored in a different order.
+4. Resume does not work across different `--parallelism` settings in a way that
+   preserves deterministic behavior — the results are still correct, but the
+   exploration order within layers may differ.
+
+### 6.4 Examples
+
+**Live output with `--progress`**:
+
+```bash
+$ shatter scan --progress src/
+{"type":"progress","status":"started","function":"add","current":1,"total":4,"elapsed_ms":15}
+{"type":"progress","status":"completed","function":"add","current":1,"total":4,"elapsed_ms":312}
+{"type":"progress","status":"started","function":"multiply","current":2,"total":4,"elapsed_ms":315}
+{"type":"progress","status":"completed","function":"multiply","current":2,"total":4,"elapsed_ms":890}
+{"type":"progress","status":"started","function":"calculateTotal","current":3,"total":4,"elapsed_ms":893}
+{"type":"progress","status":"completed","function":"calculateTotal","current":3,"total":4,"elapsed_ms":2105}
+{"type":"progress","status":"skipped","function":"formatOutput","current":4,"total":4,"elapsed_ms":2108}
+
+Scan complete: 3 function(s) tested, 1 skipped, 0 error(s) (4 worker(s))
+
+-- add --
+  Iterations: 100
+  Unique paths: 1
+  ...
+```
+
+**Final output without `--progress`** (default):
+
+```bash
+$ shatter scan src/
+[1/4] add (0.3s elapsed)
+[2/4] multiply (0.9s elapsed)
+[3/4] calculateTotal (2.1s elapsed)
+[4/4] formatOutput (2.1s elapsed)
+
+Scan complete: 3 function(s) tested, 1 skipped, 0 error(s) (4 worker(s))
+
+-- add --
+  Iterations: 100
+  Unique paths: 1
+  ...
+```
+
+**Interrupted and resumed scan**:
+
+```bash
+# First run — interrupted after 2 functions
+$ shatter scan --resume auto src/
+[1/4] add (0.3s elapsed)
+[2/4] multiply (0.9s elapsed)
+^C  # interrupted
+
+# Checkpoint saved at shatter-artifacts/scan-results/<id>/checkpoint.json
+# Behavior maps for add and multiply cached in .shatter-cache/behavior-maps/
+
+# Second run — resumes from checkpoint
+$ shatter scan --resume auto src/
+# add: skipped (resumed from checkpoint)
+# multiply: skipped (resumed from checkpoint)
+[3/4] calculateTotal (0.5s elapsed)
+[4/4] formatOutput (1.2s elapsed)
+
+Scan complete: 2 function(s) tested, 2 skipped, 0 error(s) (4 worker(s))
+```
+
+**Resume after source change**:
+
+```bash
+# Edit multiply.ts, then resume
+$ shatter scan --resume auto src/
+# add: skipped (resumed from checkpoint, fingerprint matches)
+# multiply: re-explored (source fingerprint changed)
+[2/4] multiply (0.6s elapsed)
+[3/4] calculateTotal (1.1s elapsed)
+[4/4] formatOutput (1.8s elapsed)
+```
+
+---
+
+## 7. Known Limitations
 
 1. **Explorer is primarily random**: The concolic loop currently uses random input generation with boundary value seeding. Z3 constraint solving is integrated but the symbolic path negation loop is not yet driving exploration systematically.
 2. **Provenance is always "observed"**: Since the explorer doesn't use Z3 for path constraint solving, all preconditions and postconditions are marked `observed`, never `proven`.
@@ -518,8 +775,9 @@ func TestClassifyNumber(t *testing.T) {
 
 ---
 
-## 7. Changelog
+## 8. Changelog
 
 | Date | Change | Section |
 |------|--------|---------|
+| 2026-04-09 | Added live output, partial artifacts, and resume documentation | 6 |
 | 2026-02-28 | Initial specification created | All |
