@@ -1696,3 +1696,130 @@ export function ${fnName}(x: number) {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Browser globals recognizer properties
+// ---------------------------------------------------------------------------
+
+import {
+  recognizeBrowserGlobals,
+  BROWSER_GLOBALS_ADAPTER_ID,
+} from "./browser-globals-recognizer.js";
+
+const KNOWN_BROWSER_GLOBALS = [
+  "window", "document", "navigator", "location", "history",
+  "localStorage", "sessionStorage",
+  "ResizeObserver", "IntersectionObserver", "MutationObserver",
+  "matchMedia", "requestAnimationFrame", "cancelAnimationFrame",
+  "XMLHttpRequest", "alert", "confirm", "prompt",
+] as const;
+
+describe("Browser globals recognizer properties", () => {
+  it("always emits a hint when a known browser global is referenced", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...KNOWN_BROWSER_GLOBALS),
+        (globalName) => {
+          const source = `export function testFn() {\n  ${globalName};\n}`;
+          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
+          const fns: FunctionAnalysis[] = [{
+            name: "testFn",
+            exported: true,
+            params: [],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 1,
+            end_line: 3,
+          }];
+          const hints = recognizeBrowserGlobals(sf, fns);
+          expect(hints[0]).toBeDefined();
+          expect(hints[0]!.adapter.id).toBe(BROWSER_GLOBALS_ADAPTER_ID);
+          expect(hints[0]!.reasons!.length).toBeGreaterThan(0);
+          expect(hints[0]!.reasons![0]).toContain(globalName);
+        },
+      ),
+    );
+  });
+
+  it("never emits a hint for functions without browser globals", () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[a-z][a-zA-Z]{2,10}$/),
+        fc.stringMatching(/^[a-z][a-zA-Z]{2,10}$/),
+        (fnName, varName) => {
+          // Filter out names that happen to be browser globals
+          fc.pre(!KNOWN_BROWSER_GLOBALS.includes(varName as typeof KNOWN_BROWSER_GLOBALS[number]));
+          fc.pre(!KNOWN_BROWSER_GLOBALS.includes(fnName as typeof KNOWN_BROWSER_GLOBALS[number]));
+          fc.pre(varName !== "fetch");
+
+          const source = `export function ${fnName}() {\n  const x = "${varName}";\n  return x;\n}`;
+          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
+          const fns: FunctionAnalysis[] = [{
+            name: fnName,
+            exported: true,
+            params: [],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 1,
+            end_line: 4,
+          }];
+          const hints = recognizeBrowserGlobals(sf, fns);
+          expect(hints[0]).toBeUndefined();
+        },
+      ),
+    );
+  });
+
+  it("confidence is always high for non-ambiguous globals", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...KNOWN_BROWSER_GLOBALS),
+        (globalName) => {
+          const source = `export function testFn() {\n  ${globalName};\n}`;
+          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
+          const fns: FunctionAnalysis[] = [{
+            name: "testFn",
+            exported: true,
+            params: [],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" },
+            start_line: 1,
+            end_line: 3,
+          }];
+          const hints = recognizeBrowserGlobals(sf, fns);
+          expect(hints[0]!.confidence).toBe("high");
+        },
+      ),
+    );
+  });
+
+  it("output array length matches input array length", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 5 }),
+        (count) => {
+          const fnDefs = Array.from({ length: count }, (_, i) =>
+            `export function fn${i}() {\n  return ${i};\n}`,
+          );
+          const source = fnDefs.join("\n");
+          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
+          const fns: FunctionAnalysis[] = Array.from({ length: count }, (_, i) => ({
+            name: `fn${i}`,
+            exported: true,
+            params: [],
+            branches: [],
+            dependencies: [],
+            return_type: { kind: "unknown" as const },
+            start_line: i * 3 + 1,
+            end_line: i * 3 + 3,
+          }));
+          const hints = recognizeBrowserGlobals(sf, fns);
+          expect(hints).toHaveLength(count);
+        },
+      ),
+    );
+  });
+});

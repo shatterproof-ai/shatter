@@ -8,6 +8,7 @@
 import * as ts from "typescript";
 import * as path from "node:path";
 import { refineIntegerParams } from "./integer-heuristic.js";
+import { recognizeBrowserGlobals } from "./browser-globals-recognizer.js";
 import { recognizeReactHooks } from "./react-hook-recognizer.js";
 import type {
   FunctionAnalysis,
@@ -229,11 +230,20 @@ export function analyzeFile(
     }
   }
 
-  // Post-processing: attach React hook adapter hints for .tsx/.ts files
+  // Post-processing: attach adapter hints for .tsx/.ts files
   if (results.length > 0) {
-    const hints = recognizeReactHooks(sourceFile, results);
+    const reactHints = recognizeReactHooks(sourceFile, results);
     for (let i = 0; i < results.length; i++) {
-      const hint = hints[i];
+      const hint = reactHints[i];
+      if (hint) {
+        const fn = results[i]!;
+        fn.adapter_hints = fn.adapter_hints ? [...fn.adapter_hints, hint] : [hint];
+      }
+    }
+
+    const browserHints = recognizeBrowserGlobals(sourceFile, results);
+    for (let i = 0; i < results.length; i++) {
+      const hint = browserHints[i];
       if (hint) {
         const fn = results[i]!;
         fn.adapter_hints = fn.adapter_hints ? [...fn.adapter_hints, hint] : [hint];
