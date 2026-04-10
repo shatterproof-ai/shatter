@@ -1993,3 +1993,58 @@ func TestConvertExternalCallsNilArgs(t *testing.T) {
 		t.Errorf("args must be empty array [], got: %s", jsonStr)
 	}
 }
+
+// --- Regression: _test.go files must be rejected, not crash the frontend ---
+
+func TestAnalyzeTestFileReturnsNotSupported(t *testing.T) {
+	file := testdataPath("sample_test.go")
+	req := reqJSON(2, "analyze", fmt.Sprintf(`"file":"%s"`, file))
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrNotSupported {
+		t.Errorf("code = %q, want %s", resp.Code, ErrNotSupported)
+	}
+	if !strings.Contains(resp.Message, "_test.go") {
+		t.Errorf("message should mention _test.go, got %q", resp.Message)
+	}
+}
+
+func TestInstrumentTestFileReturnsNotSupported(t *testing.T) {
+	file := testdataPath("sample_test.go")
+	req := reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s"`, file))
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrNotSupported {
+		t.Errorf("code = %q, want %s", resp.Code, ErrNotSupported)
+	}
+}
+
+func TestExecuteTestFileReturnsNotSupported(t *testing.T) {
+	file := testdataPath("sample_test.go")
+	fn := "TestAdd"
+	req := reqJSON(2, "execute", fmt.Sprintf(`"file":"%s","function":"%s","inputs":[]`, file, fn))
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrNotSupported {
+		t.Errorf("code = %q, want %s", resp.Code, ErrNotSupported)
+	}
+}
+
+func TestPrepareTestFileReturnsNotSupported(t *testing.T) {
+	file := testdataPath("sample_test.go")
+	fn := "TestAdd"
+	req := reqJSON(2, "prepare", fmt.Sprintf(`"file":"%s","function":"%s"`, file, fn))
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Errorf("status = %q, want error", resp.Status)
+	}
+	if resp.Code != ErrNotSupported {
+		t.Errorf("code = %q, want %s", resp.Code, ErrNotSupported)
+	}
+}
