@@ -154,6 +154,9 @@ async fn main() -> ExitCode {
             dry_run,
             loop_buckets,
             timeout_explore,
+            time_limit,
+            coverage_threshold,
+            max_executions,
             seeds_dir,
             no_seeds,
             setup_timeout,
@@ -260,6 +263,9 @@ async fn main() -> ExitCode {
                 genetic_generations,
                 genetic_timeout,
                 from_artifacts.as_deref(),
+                time_limit,
+                coverage_threshold,
+                max_executions,
             )
             .await
         }

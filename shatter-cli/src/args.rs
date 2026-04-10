@@ -246,6 +246,23 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         timeout_explore: Option<f64>,
 
+        /// Total wall-clock time limit in seconds for the entire explore run.
+        /// Stops launching new functions once this limit is reached.
+        /// Unlike --timeout-explore (per-function), this bounds the whole run.
+        #[arg(long, value_name = "SECONDS")]
+        time_limit: Option<f64>,
+
+        /// Stop exploration when aggregate branch coverage reaches this
+        /// percentage (0.0–100.0). Checked after each function completes.
+        #[arg(long, value_name = "PERCENT")]
+        coverage_threshold: Option<f64>,
+
+        /// Maximum total execute calls across all functions. Unlike
+        /// --max-iterations (per-function iteration cap), this is a global
+        /// budget shared across the entire explore run.
+        #[arg(long, value_name = "COUNT")]
+        max_executions: Option<u64>,
+
         /// Path to a scope configuration YAML file (shatter.scope.yaml).
         #[arg(long)]
         scope: Option<PathBuf>,
