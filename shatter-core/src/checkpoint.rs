@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,6 +38,11 @@ pub struct ScanCheckpoint {
     pub layer_index: usize,
     /// RFC 3339 timestamp of last save.
     pub timestamp: String,
+    /// Hash of scan configuration (iterations, timeouts, parallelism, isolation).
+    /// Used for soft drift detection — a mismatch logs a warning but does not
+    /// invalidate the checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_hash: Option<String>,
 }
 
 impl ScanCheckpoint {
@@ -49,6 +54,19 @@ impl ScanCheckpoint {
             completed: HashMap::new(),
             layer_index: 0,
             timestamp: String::new(),
+            config_hash: None,
+        }
+    }
+
+    /// Create a new empty checkpoint with a config hash for drift detection.
+    pub fn new_with_config(scan_id: String, config_hash: String) -> Self {
+        Self {
+            version: "1".to_string(),
+            scan_id,
+            completed: HashMap::new(),
+            layer_index: 0,
+            timestamp: String::new(),
+            config_hash: Some(config_hash),
         }
     }
 
@@ -97,6 +115,67 @@ impl ScanCheckpoint {
             hasher.update(b"\n");
         }
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Check whether this checkpoint is compatible with the current scan.
+    ///
+    /// Returns `None` if compatible, or `Some(reason)` if the checkpoint
+    /// should be discarded. This is a hard check — scan_id mismatch means
+    /// the file set changed and cached results are not trustworthy.
+    pub fn check_compatibility(&self, current_scan_id: &str) -> Option<String> {
+        if self.scan_id != current_scan_id {
+            Some(format!(
+                "checkpoint scan_id mismatch: expected {}, found {}",
+                current_scan_id, self.scan_id
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Check whether the scan configuration has drifted since the checkpoint
+    /// was saved. Returns `None` if no drift, or `Some(reason)` describing
+    /// the change.
+    ///
+    /// This is a soft warning — config drift does not invalidate the
+    /// checkpoint because completed functions' results are still valid
+    /// (the source code hasn't changed). The user may want to re-explore
+    /// with different iteration counts, but skipping already-completed
+    /// functions is still correct.
+    pub fn check_config_drift(&self, current_config_hash: &str) -> Option<String> {
+        match &self.config_hash {
+            Some(stored) if stored != current_config_hash => Some(format!(
+                "scan config changed since checkpoint (stored: {}, current: {}); \
+                 completed functions will be reused, pending functions use new config",
+                &stored[..stored.len().min(12)],
+                &current_config_hash[..current_config_hash.len().min(12)]
+            )),
+            _ => None,
+        }
+    }
+
+    /// Auto-discover a checkpoint file in the standard artifact directory.
+    ///
+    /// Looks for `checkpoint.json` in
+    /// `<project_root>/shatter-artifacts/scan-results/<scan_id>/`.
+    /// Returns `Some(path)` if found, `None` otherwise.
+    pub fn auto_discover(project_root: Option<&str>, scan_id: &str) -> Option<PathBuf> {
+        let path = Self::default_path(project_root, scan_id);
+        if path.exists() {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    /// Default checkpoint file path in the artifact directory.
+    pub fn default_path(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+        let root = project_root.unwrap_or(".");
+        PathBuf::from(root)
+            .join("shatter-artifacts")
+            .join("scan-results")
+            .join(&scan_id[..scan_id.len().min(16)])
+            .join("checkpoint.json")
     }
 
     /// Check whether a function should be treated as already completed.
@@ -257,5 +336,120 @@ mod tests {
         let mut cp = ScanCheckpoint::new("id".into());
         cp.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    // --- New tests for str-7pkp.8 ---
+
+    #[test]
+    fn round_trip_with_config_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scan.checkpoint");
+
+        let mut cp = ScanCheckpoint::new_with_config("scan-1".into(), "cfg_abc123".into());
+        cp.mark_completed("funcA", "fp_a");
+        cp.save(&path).unwrap();
+
+        let loaded = ScanCheckpoint::load(&path).unwrap().unwrap();
+        assert_eq!(loaded.config_hash, Some("cfg_abc123".to_string()));
+        assert_eq!(loaded.completed.len(), 1);
+    }
+
+    #[test]
+    fn backward_compatible_load_without_config_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scan.checkpoint");
+
+        // Write a checkpoint without config_hash (simulates old format).
+        let json = r#"{
+            "version": "1",
+            "scan_id": "old-scan",
+            "completed": {"f": "fp"},
+            "layer_index": 2,
+            "timestamp": "12345"
+        }"#;
+        fs::write(&path, json).unwrap();
+
+        let loaded = ScanCheckpoint::load(&path).unwrap().unwrap();
+        assert_eq!(loaded.scan_id, "old-scan");
+        assert_eq!(loaded.config_hash, None);
+        assert_eq!(loaded.completed.len(), 1);
+    }
+
+    #[test]
+    fn check_compatibility_matching() {
+        let cp = ScanCheckpoint::new("scan-abc".into());
+        assert!(cp.check_compatibility("scan-abc").is_none());
+    }
+
+    #[test]
+    fn check_compatibility_mismatched() {
+        let cp = ScanCheckpoint::new("scan-abc".into());
+        let reason = cp.check_compatibility("scan-xyz").unwrap();
+        assert!(reason.contains("mismatch"));
+        assert!(reason.contains("scan-xyz"));
+        assert!(reason.contains("scan-abc"));
+    }
+
+    #[test]
+    fn check_config_drift_no_stored_hash() {
+        let cp = ScanCheckpoint::new("id".into());
+        // No config_hash stored → no drift detected.
+        assert!(cp.check_config_drift("any_hash").is_none());
+    }
+
+    #[test]
+    fn check_config_drift_matching() {
+        let cp = ScanCheckpoint::new_with_config("id".into(), "hash_a".into());
+        assert!(cp.check_config_drift("hash_a").is_none());
+    }
+
+    #[test]
+    fn check_config_drift_changed() {
+        let cp = ScanCheckpoint::new_with_config("id".into(), "hash_a".into());
+        let reason = cp.check_config_drift("hash_b").unwrap();
+        assert!(reason.contains("config changed"));
+    }
+
+    #[test]
+    fn auto_discover_finds_existing_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let scan_id = "abcdef1234567890abcdef";
+        let truncated = &scan_id[..16];
+
+        // Create the expected directory structure.
+        let checkpoint_dir = dir
+            .path()
+            .join("shatter-artifacts")
+            .join("scan-results")
+            .join(truncated);
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+        fs::write(checkpoint_dir.join("checkpoint.json"), "{}").unwrap();
+
+        let result =
+            ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), scan_id);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn auto_discover_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let result =
+            ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), "nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn default_path_structure() {
+        let path = ScanCheckpoint::default_path(Some("/proj"), "abcdef1234567890rest");
+        assert_eq!(
+            path,
+            PathBuf::from("/proj/shatter-artifacts/scan-results/abcdef1234567890/checkpoint.json")
+        );
+    }
+
+    #[test]
+    fn default_path_with_no_project_root() {
+        let path = ScanCheckpoint::default_path(None, "abcdef1234567890rest");
+        assert!(path.starts_with("./shatter-artifacts"));
     }
 }
