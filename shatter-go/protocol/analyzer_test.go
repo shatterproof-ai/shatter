@@ -1200,3 +1200,46 @@ func TestSymExprArgsNeverNull(t *testing.T) {
 	var caseExpr ast.Expr = &ast.BasicLit{Kind: token.INT, Value: "1"}
 	checkArgsNotNull(t, "buildSwitchCaseSymExpr", buildSwitchCaseSymExpr(tag, caseExpr, params))
 }
+
+// --- Cyclic struct regression tests (str-ipk1) ---
+
+func TestAnalyzeCyclicStructDoesNotCrash(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("cyclic.go"), "ProcessCyclic")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	fn := results[0]
+	if fn.Name != "ProcessCyclic" {
+		t.Errorf("name = %q, want ProcessCyclic", fn.Name)
+	}
+	if len(fn.Params) != 1 {
+		t.Fatalf("params len = %d, want 1", len(fn.Params))
+	}
+	if fn.Params[0].Type.Kind != "object" {
+		t.Errorf("param type kind = %q, want object", fn.Params[0].Type.Kind)
+	}
+}
+
+func TestAnalyzeSelfRefStructDoesNotCrash(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("cyclic.go"), "ProcessSelfRef")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	fn := results[0]
+	if fn.Name != "ProcessSelfRef" {
+		t.Errorf("name = %q, want ProcessSelfRef", fn.Name)
+	}
+	if len(fn.Params) != 1 {
+		t.Fatalf("params len = %d, want 1", len(fn.Params))
+	}
+	// Pointer to self-referential struct should be nullable wrapping object
+	if fn.Params[0].Type.Kind != "nullable" {
+		t.Errorf("param type kind = %q, want nullable", fn.Params[0].Type.Kind)
+	}
+}
