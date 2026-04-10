@@ -256,7 +256,7 @@ pub(crate) async fn run_run(
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
                 };
 
-            match explorer::explore_function(frontend, &func_analysis, &explore_config, None).await {
+            match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None).await {
                 Ok(result) => {
                     log::debug!(
                         "{}: {} path(s), {}/{} lines",

@@ -137,7 +137,7 @@ pub(crate) async fn run_properties(
         for func in &functions {
             log::info!("Exploring {}...", func.name);
 
-            match explorer::explore_function(&mut frontend, func, &explore_config, None).await {
+            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await {
                 Ok(result) => {
                     // Run the pipeline analyze stage to derive equivalence classes
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);

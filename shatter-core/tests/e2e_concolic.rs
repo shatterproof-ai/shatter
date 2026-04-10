@@ -1010,6 +1010,7 @@ async fn explorer_explore_function_with_setup() {
         &analysis,
         &config,
         Some(&mut mgr),
+        None,
     )
     .await
     .expect("explore_function with setup should succeed");
@@ -1234,6 +1235,7 @@ async fn concolic_mock_status_branches_discovered() {
         &analysis,
         &config,
         None,
+        None,
     )
     .await
     .expect("explore_function failed");
@@ -1321,6 +1323,7 @@ async fn concolic_mock_result_branches_discovered() {
         &mut frontend,
         &analysis,
         &config,
+        None,
         None,
     )
     .await
@@ -1412,6 +1415,7 @@ async fn concolic_mock_loop_branches_discovered() {
         &mut frontend,
         &analysis,
         &config,
+        None,
         None,
     )
     .await

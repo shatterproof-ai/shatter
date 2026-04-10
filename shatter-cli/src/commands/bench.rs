@@ -282,7 +282,7 @@ async fn run_single_exploration(
 
     let wall_start = Instant::now();
     let result = tracing::dispatcher::with_default(&dispatch, || async {
-        explorer::explore_function(frontend, analysis, &explore_config, None)
+        explorer::explore_function(frontend, analysis, &explore_config, None, None)
             .instrument(tracing::info_span!("bench.explore"))
             .await
     })

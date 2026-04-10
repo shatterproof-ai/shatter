@@ -12,7 +12,9 @@ use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::BehaviorMapCache;
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
 use shatter_core::executability;
-use shatter_core::explorer::{self, ExploreConfig, GeneticStats, ReportOptions};
+use shatter_core::explorer::{
+    self, ExploreConfig, ExploreProgressSnapshot, GeneticStats, ProgressCallback, ReportOptions,
+};
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
@@ -1474,6 +1476,35 @@ pub(crate) async fn run_explore(
             .expect("fe_config must exist for target language")
             .clone();
 
+        // Periodic progress callback: prints a one-line summary to stderr every
+        // PROGRESS_SUMMARY_INTERVAL_SECS. Suppressed by --quiet (log_level Warn+).
+        let periodic_progress: Option<Arc<Box<ProgressCallback>>> =
+            if log_level >= LogLevel::Info {
+                Some(Arc::new(Box::new(
+                    |snapshot: &ExploreProgressSnapshot| {
+                        let secs = snapshot.elapsed.as_secs();
+                        let branches = snapshot
+                            .total_branches
+                            .map_or("?".to_string(), |t| t.to_string());
+                        let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
+                            snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        };
+                        eprintln!(
+                            "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
+                            snapshot.function_name,
+                            snapshot.iterations,
+                            snapshot.paths_found,
+                            branches,
+                            rate,
+                        );
+                    },
+                )))
+            } else {
+                None
+            };
+
         for (work_index, item) in work_items.into_iter().enumerate() {
             let sem = Arc::clone(&semaphore);
             let completed_functions = Arc::clone(&completed_functions);
@@ -1482,6 +1513,7 @@ pub(crate) async fn run_explore(
             let project_root_owned = project_root_str.clone();
             let progress_index = work_index + 1;
             let progress_total = total_work_items;
+            let periodic_progress_clone = periodic_progress.clone();
 
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore is never closed");
@@ -1590,11 +1622,14 @@ pub(crate) async fn run_explore(
                     }
                 } else {
                     // Random path: explore_function handles instrument + prepare internally.
+                    let cb_ref: Option<&ProgressCallback> =
+                        periodic_progress_clone.as_ref().map(|arc| arc.as_ref().as_ref());
                     explorer::explore_function(
                         &mut task_frontend,
                         &item.func,
                         &item.explore_config,
                         None,
+                        cb_ref,
                     )
                     .instrument(tracing::info_span!("explore.function"))
                     .await
