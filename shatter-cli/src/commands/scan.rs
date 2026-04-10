@@ -50,7 +50,7 @@ pub(crate) async fn run_scan(
     emit_tests: Option<&str>,
     tests_dir: Option<&Path>,
     dry_run: bool,
-    resume: Option<&Path>,
+    resume: Option<&str>,
     mock_config: Option<&Path>,
     core_sample_spec: Option<&str>,
     core_sample_seed: Option<u64>,
@@ -669,6 +669,36 @@ pub(crate) async fn run_scan(
         }
     };
 
+    // Resolve --resume: "auto" discovers from artifact dir, otherwise treat as path.
+    let resolved_resume_path: Option<std::path::PathBuf> = match resume {
+        Some("auto") => {
+            let file_paths: Vec<&str> = file_map.values().map(|s| s.as_str()).collect();
+            let sid = shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
+            match shatter_core::checkpoint::ScanCheckpoint::auto_discover(
+                project_root_str.as_deref(),
+                &sid,
+            ) {
+                Some(p) => {
+                    log::info!("auto-discovered checkpoint at {}", p.display());
+                    Some(p)
+                }
+                None => {
+                    let default = shatter_core::checkpoint::ScanCheckpoint::default_path(
+                        project_root_str.as_deref(),
+                        &sid,
+                    );
+                    log::info!(
+                        "no existing checkpoint found, will create at {}",
+                        default.display()
+                    );
+                    Some(default)
+                }
+            }
+        }
+        Some(path) => Some(std::path::PathBuf::from(path)),
+        None => None,
+    };
+
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         seed: None,
@@ -682,7 +712,7 @@ pub(crate) async fn run_scan(
             parsed_stratum
         },
         mock_overrides,
-        resume_path: resume.map(|p| p.to_path_buf()),
+        resume_path: resolved_resume_path,
         timeout_total: if timeout_total == 0 {
             None
         } else {

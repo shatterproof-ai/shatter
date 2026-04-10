@@ -698,9 +698,10 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         dry_run: bool,
 
-        /// Resume a previous scan from a state file.
+        /// Resume a previous scan from a checkpoint file, or pass "auto" to
+        /// discover the checkpoint from the scan artifact directory.
         #[arg(long)]
-        resume: Option<PathBuf>,
+        resume: Option<String>,
 
         /// Emit progress events to stderr during scan.
         #[arg(long)]
@@ -2550,7 +2551,7 @@ mod tests {
                 ..
             } => {
                 assert!(progress);
-                assert_eq!(resume, Some(PathBuf::from("/tmp/state.json")));
+                assert_eq!(resume, Some("/tmp/state.json".to_string()));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
             }
             _ => panic!("expected Scan command"),

@@ -905,6 +905,74 @@ fn compute_fingerprint_for_function(
     ))
 }
 
+/// Compute a hash of the scan configuration fields that affect exploration
+/// behavior (iterations, timeouts, parallelism, isolation). Used for soft
+/// config drift detection on resume — a mismatch warns but does not
+/// invalidate the checkpoint.
+fn scan_config_hash(config: &ScanConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"scan_config_v1:");
+    hasher.update(config.max_iterations_per_function.to_le_bytes());
+    hasher.update(config.timeout_per_fn.as_secs().to_le_bytes());
+    if let Some(t) = config.timeout_total {
+        hasher.update(t.as_secs().to_le_bytes());
+    }
+    hasher.update(config.parallelism.to_le_bytes());
+    if let Some(t) = config.timeout_explore {
+        hasher.update(t.as_secs().to_le_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Compute scan ID from the file paths in a ScanConfig.
+fn compute_scan_id(config: &ScanConfig) -> String {
+    let file_paths: Vec<&str> = config.file_map.values().map(|s| s.as_str()).collect();
+    crate::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths)
+}
+
+/// Load an existing checkpoint or create a fresh one. Checks compatibility
+/// (hard: scan_id mismatch → discard) and config drift (soft: warning only).
+fn load_or_create_checkpoint(
+    resume_path: Option<&Path>,
+    scan_id: &str,
+    config_hash: &str,
+) -> crate::checkpoint::ScanCheckpoint {
+    let Some(path) = resume_path else {
+        return crate::checkpoint::ScanCheckpoint::new_with_config(
+            scan_id.to_string(),
+            config_hash.to_string(),
+        );
+    };
+
+    match crate::checkpoint::ScanCheckpoint::load(path) {
+        Ok(Some(cp)) => {
+            if let Some(reason) = cp.check_compatibility(scan_id) {
+                log::info!("{reason}, starting fresh");
+                return crate::checkpoint::ScanCheckpoint::new_with_config(
+                    scan_id.to_string(),
+                    config_hash.to_string(),
+                );
+            }
+            if let Some(drift) = cp.check_config_drift(config_hash) {
+                log::warn!("{drift}");
+            }
+            cp
+        }
+        Ok(None) => crate::checkpoint::ScanCheckpoint::new_with_config(
+            scan_id.to_string(),
+            config_hash.to_string(),
+        ),
+        Err(e) => {
+            log::warn!("failed to load checkpoint: {e}, starting fresh");
+            crate::checkpoint::ScanCheckpoint::new_with_config(
+                scan_id.to_string(),
+                config_hash.to_string(),
+            )
+        }
+    }
+}
+
 /// Run a multi-function scan in dependency order.
 ///
 /// Builds a call graph from the analyses, determines test order (leaves first),
@@ -960,28 +1028,13 @@ pub async fn scan(
     let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
 
     // Load checkpoint for resume support.
-    let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
-        &config
-            .file_map
-            .values()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>(),
+    let scan_id = compute_scan_id(config);
+    let cfg_hash = scan_config_hash(config);
+    let mut checkpoint = load_or_create_checkpoint(
+        config.resume_path.as_deref(),
+        &scan_id,
+        &cfg_hash,
     );
-    let mut checkpoint = match &config.resume_path {
-        Some(path) => match crate::checkpoint::ScanCheckpoint::load(path) {
-            Ok(Some(cp)) if cp.scan_id == scan_id => cp,
-            Ok(Some(_)) => {
-                log::info!("checkpoint scan_id mismatch, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
-            }
-            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
-            Err(e) => {
-                log::warn!("failed to load checkpoint: {e}, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
-            }
-        },
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
-    };
 
     // Load the interesting input pool for cross-function seed sharing.
     let mut input_pool = config
@@ -2008,28 +2061,13 @@ pub async fn parallel_scan_with_progress(
     let mut deep_fingerprints: HashMap<String, String> = HashMap::new();
 
     // Load checkpoint for resume support.
-    let scan_id = crate::checkpoint::ScanCheckpoint::compute_scan_id(
-        &config
-            .file_map
-            .values()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>(),
+    let scan_id = compute_scan_id(config);
+    let cfg_hash = scan_config_hash(config);
+    let mut checkpoint = load_or_create_checkpoint(
+        config.resume_path.as_deref(),
+        &scan_id,
+        &cfg_hash,
     );
-    let mut checkpoint = match &config.resume_path {
-        Some(path) => match crate::checkpoint::ScanCheckpoint::load(path) {
-            Ok(Some(cp)) if cp.scan_id == scan_id => cp,
-            Ok(Some(_)) => {
-                log::info!("checkpoint scan_id mismatch, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
-            }
-            Ok(None) => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
-            Err(e) => {
-                log::warn!("failed to load checkpoint: {e}, starting fresh");
-                crate::checkpoint::ScanCheckpoint::new(scan_id.clone())
-            }
-        },
-        None => crate::checkpoint::ScanCheckpoint::new(scan_id.clone()),
-    };
 
     let mut all_results: Vec<FunctionResult> = Vec::new();
     let mut test_order: Vec<String> = Vec::new();
