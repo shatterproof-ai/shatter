@@ -434,45 +434,74 @@ function analyzeParameter(
   return { name, type: typ };
 }
 
+/** Maximum type recursion depth before bailing out to {kind: "unknown"}. */
+const MAX_TYPE_DEPTH = 32;
+
 /**
  * Convert a TypeScript compiler type to our protocol TypeInfo.
  *
  * Pass `sourceFile` to enable static analysis heuristics for user-defined
  * types (abstract classes, interfaces with no implementors, etc.).
+ *
+ * The `seen` set tracks types currently being converted to break cycles
+ * caused by self-referential or mutually recursive types.
  */
 export function convertType(
   type: ts.Type,
   checker: ts.TypeChecker,
   sourceFile?: ts.SourceFile | null,
+  seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
+  // Cycle detection: if we're already converting this type, bail out
+  if (seen.has(type)) {
+    return { kind: "unknown" };
+  }
+
+  // Depth guard: the seen set size is bounded by recursion depth
+  if (seen.size >= MAX_TYPE_DEPTH) {
+    return { kind: "unknown" };
+  }
+
+  // Track this type to detect cycles — add before any recursive branch,
+  // delete after we return. Primitive branches return early before recursing.
+  seen.add(type);
+
   // Handle union types first (before flag checks, since unions have compound flags)
   if (type.isUnion()) {
-    return convertUnionType(type, checker, sourceFile);
+    const result = convertUnionType(type, checker, sourceFile, seen);
+    seen.delete(type);
+    return result;
   }
 
   const flags = type.getFlags();
 
   if (flags & ts.TypeFlags.String || flags & ts.TypeFlags.StringLiteral) {
+    seen.delete(type);
     return { kind: "str" };
   }
 
   if (flags & ts.TypeFlags.Number || flags & ts.TypeFlags.NumberLiteral) {
+    seen.delete(type);
     return { kind: "float" };
   }
 
   if (flags & ts.TypeFlags.BigInt || flags & ts.TypeFlags.BigIntLiteral) {
+    seen.delete(type);
     return { kind: "complex", complex_kind: "big_int" };
   }
 
   if (flags & ts.TypeFlags.Boolean || flags & ts.TypeFlags.BooleanLiteral) {
+    seen.delete(type);
     return { kind: "bool" };
   }
 
   if (flags & ts.TypeFlags.Void || flags & ts.TypeFlags.Undefined) {
+    seen.delete(type);
     return { kind: "unknown" };
   }
 
   if (flags & ts.TypeFlags.Null) {
+    seen.delete(type);
     return { kind: "unknown" };
   }
 
@@ -480,13 +509,15 @@ export function convertType(
   if (checker.isArrayType(type)) {
     const typeArgs = (type as ts.TypeReference).typeArguments;
     const element = typeArgs?.[0]
-      ? convertType(typeArgs[0], checker, sourceFile)
+      ? convertType(typeArgs[0], checker, sourceFile, seen)
       : { kind: "unknown" as const };
+    seen.delete(type);
     return { kind: "array", element };
   }
 
   // Check for enum types
   if (flags & ts.TypeFlags.Enum || flags & ts.TypeFlags.EnumLiteral) {
+    seen.delete(type);
     return { kind: "str" };
   }
 
@@ -495,6 +526,7 @@ export function convertType(
     // Check for Node.js opaque resource types first
     const opaqueLabel = isOpaqueType(type, checker);
     if (opaqueLabel) {
+      seen.delete(type);
       return { kind: "opaque", label: opaqueLabel };
     }
 
@@ -503,6 +535,7 @@ export function convertType(
     if (name) {
       const complexKind = complexKindFromSymbol(name);
       if (complexKind) {
+        seen.delete(type);
         return { kind: "complex", complex_kind: complexKind };
       }
     }
@@ -511,6 +544,7 @@ export function convertType(
     if (sourceFile) {
       const staticResult = detectStaticOpacity(type as ts.ObjectType, checker, sourceFile);
       if (staticResult) {
+        seen.delete(type);
         return { kind: "opaque", label: staticResult.label, static_opacity: staticResult.reason };
       }
     }
@@ -518,18 +552,23 @@ export function convertType(
     // Medium-confidence opaque detection: infra npm packages, closeable types, native handles
     const mediumResult = detectMediumOpacity(type as ts.ObjectType, checker, sourceFile ?? null);
     if (mediumResult) {
+      seen.delete(type);
       return { kind: "opaque", label: mediumResult.label, medium_opacity: mediumResult.reason };
     }
 
     // Generic object types (interfaces, type literals, classes)
-    return convertObjectType(type as ts.ObjectType, checker, sourceFile);
+    const result = convertObjectType(type as ts.ObjectType, checker, sourceFile, seen);
+    seen.delete(type);
+    return result;
   }
 
   // ESSymbol / UniqueESSymbol
   if (flags & ts.TypeFlags.ESSymbol || flags & ts.TypeFlags.UniqueESSymbol) {
+    seen.delete(type);
     return { kind: "complex", complex_kind: "symbol" };
   }
 
+  seen.delete(type);
   return { kind: "unknown" };
 }
 
@@ -537,6 +576,7 @@ function convertUnionType(
   type: ts.UnionType,
   checker: ts.TypeChecker,
   sourceFile?: ts.SourceFile | null,
+  seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
   const variants = type.types;
 
@@ -551,10 +591,10 @@ function convertUnionType(
   if (nullishVariants.length > 0 && nonNullVariants.length > 0) {
     const inner =
       nonNullVariants.length === 1
-        ? convertType(nonNullVariants[0]!, checker, sourceFile)
+        ? convertType(nonNullVariants[0]!, checker, sourceFile, seen)
         : {
             kind: "union" as const,
-            variants: nonNullVariants.map((v) => convertType(v, checker, sourceFile)),
+            variants: nonNullVariants.map((v) => convertType(v, checker, sourceFile, seen)),
           };
     return { kind: "nullable", inner };
   }
@@ -568,7 +608,7 @@ function convertUnionType(
   }
 
   // Regular union
-  const converted = variants.map((v) => convertType(v, checker, sourceFile));
+  const converted = variants.map((v) => convertType(v, checker, sourceFile, seen));
   return { kind: "union", variants: converted };
 }
 
@@ -1465,6 +1505,7 @@ function convertObjectType(
   type: ts.ObjectType,
   checker: ts.TypeChecker,
   sourceFile?: ts.SourceFile | null,
+  seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
   // Skip callable signatures (function types)
   const callSignatures = type.getCallSignatures();
@@ -1494,7 +1535,7 @@ function convertObjectType(
 
     // Do not pass sourceFile into field types to avoid false positives on
     // fields whose types happen to match heuristic patterns out of context.
-    const converted = convertType(propType, checker);
+    const converted = convertType(propType, checker, undefined, seen);
     const fieldType =
       isOptional && converted.kind !== "nullable"
         ? { kind: "nullable" as const, inner: converted }

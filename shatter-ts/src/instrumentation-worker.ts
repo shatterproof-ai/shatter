@@ -79,6 +79,9 @@ export class InstrumentationWorker {
     };
 
     const response = await this.send(request) as AnalyzeWorkerResponse;
+    if (response.error) {
+      throw new Error(response.error);
+    }
     return {
       functions: response.functions,
       timingPhases: response.timingPhases,

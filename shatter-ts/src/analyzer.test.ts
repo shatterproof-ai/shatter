@@ -847,4 +847,41 @@ describe("analyzeFile", () => {
       }
     });
   });
+
+  describe("recursive types", () => {
+    it("handles self-referential types without stack overflow", () => {
+      const results = analyzeFile(path.join(fixtures, "recursive-types.ts"), "traverseTree");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.name).toBe("traverseTree");
+      expect(fn.params).toHaveLength(1);
+      // The root param should be an object — recursive fields should bottom out
+      // at {kind: "unknown"} rather than causing infinite recursion
+      const rootType = fn.params[0]!.type;
+      expect(rootType.kind).toBe("object");
+    });
+
+    it("handles mutually recursive types without stack overflow", () => {
+      const results = analyzeFile(path.join(fixtures, "recursive-types.ts"), "processOdd");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type.kind).toBe("object");
+    });
+
+    it("handles recursive generic types without stack overflow", () => {
+      const results = analyzeFile(path.join(fixtures, "recursive-types.ts"), "readDeep");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type.kind).toBe("object");
+    });
+
+    it("handles recursive union types (JsonValue) without stack overflow", () => {
+      const results = analyzeFile(path.join(fixtures, "recursive-types.ts"), "parseJson");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      // JsonValue is a union — it should resolve without infinite recursion
+      const inputType = fn.params[0]!.type;
+      expect(["union", "nullable", "unknown"]).toContain(inputType.kind);
+    });
+  });
 });
