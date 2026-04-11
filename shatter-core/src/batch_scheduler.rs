@@ -221,6 +221,53 @@ impl BatchScheduler {
         self.queue.push_back(entry);
     }
 
+    /// Append a brand-new function to the queue mid-flight.
+    ///
+    /// Use this when the caller's task list grows after construction —
+    /// for example, when target discovery runs concurrently with batch
+    /// execution and a new function appears that needs scheduling. The
+    /// new entry starts with rank 0 and zero batches completed, exactly
+    /// like an entry installed by [`BatchScheduler::new`] or
+    /// [`BatchScheduler::with_individual_budgets`].
+    ///
+    /// `task_index` must be unique across both the queue and the
+    /// in-flight set; the caller owns the indexing scheme and is
+    /// responsible for picking a fresh value (typically `current_len`).
+    /// `budget` matches the per-function budget semantics of the other
+    /// constructors: `None` is unbounded, `Some(n)` caps total iterations
+    /// across batches, `Some(0)` is silently inert (the entry is dropped
+    /// on the next [`next_batch`] selection scan, mirroring how
+    /// [`record_outcome`] handles a fully-spent budget).
+    ///
+    /// FIFO tie-break is preserved: among rank-0 entries, the new entry
+    /// is picked after every existing rank-0 entry, because it is pushed
+    /// to the tail of the queue.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `task_index` is already in flight (returned by an
+    /// earlier [`next_batch`] without a matching [`record_outcome`]) or
+    /// already present in the queue. Both conditions indicate a caller
+    /// bug — duplicate task indices would corrupt the in-flight tracking
+    /// and lead to silently mis-routed outcomes.
+    ///
+    /// [`next_batch`]: BatchScheduler::next_batch
+    /// [`record_outcome`]: BatchScheduler::record_outcome
+    pub fn enqueue(&mut self, task_index: usize, budget: Option<u32>) {
+        if self.in_flight.contains_key(&task_index) {
+            panic!("enqueue task_index {task_index} is already in flight");
+        }
+        if self.queue.iter().any(|e| e.task_index == task_index) {
+            panic!("enqueue task_index {task_index} is already in the queue");
+        }
+        self.queue.push_back(Entry {
+            task_index,
+            remaining: budget,
+            batches_completed: 0,
+            rank: 0,
+        });
+    }
+
     /// Returns `true` when all functions have been exhausted and there is
     /// no batch in flight.
     pub fn is_complete(&self) -> bool {
@@ -636,6 +683,168 @@ mod tests {
             rank: 0,
         });
     }
+
+    // ---------------- str-b2my.17: enqueue() ----------------
+
+    #[test]
+    fn enqueue_appends_to_empty_scheduler() {
+        // Construct empty, enqueue one task, expect to receive it.
+        let mut s = BatchScheduler::new(0, None, 50);
+        assert!(s.is_complete(), "empty scheduler is complete");
+
+        s.enqueue(0, Some(100));
+        assert!(!s.is_complete(), "enqueue must un-complete the scheduler");
+        assert_eq!(s.pending_count(), 1);
+
+        let b = s.next_batch().expect("enqueued task must be schedulable");
+        assert_eq!(b.task_index, 0);
+        assert_eq!(b.batch_number, 0, "fresh enqueue starts at batch 0");
+        assert_eq!(b.batch_size, 50);
+    }
+
+    #[test]
+    fn enqueue_after_drain_reactivates_scheduler() {
+        // Run a 1-task scheduler to completion, then enqueue a new task.
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        assert!(s.is_complete(), "scheduler drained");
+        assert!(s.next_batch().is_none());
+
+        // Enqueue a new task with a fresh index — scheduler should resume.
+        s.enqueue(99, Some(30));
+        assert!(!s.is_complete());
+        let b2 = s.next_batch().expect("re-activated by enqueue");
+        assert_eq!(b2.task_index, 99);
+        assert_eq!(b2.batch_size, 30, "budget < batch_size clamps");
+        assert_eq!(b2.batch_number, 0);
+    }
+
+    #[test]
+    fn enqueue_mid_flight_does_not_disturb_in_flight() {
+        // Pop task 0, leaving it in flight. Enqueue task 99 while 0 is in
+        // flight. Pop again — must return 99 (the only queued entry).
+        // Then complete 0; the in_flight tracking must not have been corrupted.
+        let mut s = BatchScheduler::new(1, None, 50);
+        let b0 = s.next_batch().unwrap();
+        assert_eq!(b0.task_index, 0);
+        assert_eq!(s.in_flight_count(), 1);
+
+        s.enqueue(99, None);
+        assert_eq!(s.in_flight_count(), 1, "enqueue must not touch in_flight");
+        assert_eq!(s.pending_count(), 1);
+
+        let b99 = s.next_batch().unwrap();
+        assert_eq!(b99.task_index, 99);
+        assert_eq!(s.in_flight_count(), 2);
+
+        // Both can record outcomes in any order.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        s.record_outcome(BatchOutcome {
+            task_index: 99,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn enqueue_respects_fifo_tie_break_with_existing_rank_zero() {
+        // Existing tasks 0, 1 at rank 0. Enqueue task 99 at rank 0.
+        // It must be picked AFTER 0 and 1 in the same round.
+        let mut s = BatchScheduler::new(2, None, 50);
+        s.enqueue(99, None);
+        assert_eq!(s.pending_count(), 3);
+
+        let order: Vec<usize> = (0..3)
+            .map(|_| {
+                let b = s.next_batch().unwrap();
+                let ti = b.task_index;
+                s.record_outcome(BatchOutcome {
+                    task_index: ti,
+                    iterations_used: 50,
+                    exhausted: true,
+                    rank: 0,
+                });
+                ti
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![0, 1, 99],
+            "enqueue appends to tail; FIFO order preserved"
+        );
+    }
+
+    #[test]
+    fn enqueue_with_individual_budgets_then_enqueue_more() {
+        // Build via with_individual_budgets, enqueue extras, ensure all run.
+        let mut s = BatchScheduler::with_individual_budgets(&[Some(50), Some(50)], 50);
+        s.enqueue(2, Some(50));
+        s.enqueue(3, Some(50));
+        assert_eq!(s.pending_count(), 4);
+
+        let mut seen = std::collections::HashSet::new();
+        while let Some(b) = s.next_batch() {
+            seen.insert(b.task_index);
+            s.record_outcome(BatchOutcome {
+                task_index: b.task_index,
+                iterations_used: 50,
+                exhausted: true,
+                rank: 0,
+            });
+        }
+        assert_eq!(seen, [0, 1, 2, 3].into_iter().collect());
+    }
+
+    #[test]
+    fn enqueue_unbounded_keeps_cycling_with_existing_unbounded() {
+        // 1 unbounded existing task. Enqueue another unbounded task.
+        // Confirm round-robin between them for several rounds.
+        let mut s = BatchScheduler::new(1, None, 10);
+        s.enqueue(7, None);
+
+        let mut order = Vec::new();
+        for i in 0..6 {
+            let b = s.next_batch().unwrap();
+            order.push(b.task_index);
+            s.record_outcome(BatchOutcome {
+                task_index: b.task_index,
+                iterations_used: 10,
+                exhausted: i >= 4,
+                rank: 0,
+            });
+        }
+        assert_eq!(order, vec![0, 7, 0, 7, 0, 7]);
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    #[should_panic(expected = "already in flight")]
+    fn enqueue_panics_on_in_flight_duplicate() {
+        let mut s = BatchScheduler::new(1, None, 50);
+        let _ = s.next_batch().unwrap(); // task 0 now in flight
+        s.enqueue(0, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "already in the queue")]
+    fn enqueue_panics_on_queued_duplicate() {
+        let mut s = BatchScheduler::new(2, None, 50);
+        // Both 0 and 1 are in the queue. Enqueueing 1 must panic.
+        s.enqueue(1, None);
+    }
 }
 
 #[cfg(test)]
@@ -790,6 +999,93 @@ mod proptests {
                 max_rank,
                 "next pick must be a task tied with the maximum rank"
             );
+        }
+
+        /// str-b2my.17: dynamic enqueue. Start with `initial` tasks, then
+        /// enqueue `extras` more (with disjoint task_indices). Every
+        /// enqueued task must eventually be scheduled at least once, and
+        /// total assigned iterations must respect each task's budget.
+        #[test]
+        fn enqueue_grows_schedulable_set(
+            initial in 0_usize..6,
+            extras in 1_usize..6,
+            budget in 1_u32..200,
+            batch_size in 1_u32..100,
+        ) {
+            let mut scheduler = BatchScheduler::new(initial, Some(budget), batch_size);
+
+            // Enqueue extras with disjoint indices (initial..initial+extras).
+            for i in 0..extras {
+                scheduler.enqueue(initial + i, Some(budget));
+            }
+
+            let total_tasks = initial + extras;
+            let mut per_task_seen: Vec<bool> = vec![false; total_tasks];
+            let mut per_task_assigned: Vec<u64> = vec![0; total_tasks];
+
+            while let Some(config) = scheduler.next_batch() {
+                prop_assert!(
+                    config.task_index < total_tasks,
+                    "task_index {} out of range {}", config.task_index, total_tasks,
+                );
+                per_task_seen[config.task_index] = true;
+                per_task_assigned[config.task_index] += config.batch_size as u64;
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: config.task_index,
+                    iterations_used: config.batch_size,
+                    exhausted: false,
+                    rank: 0,
+                });
+            }
+
+            for (i, seen) in per_task_seen.iter().enumerate() {
+                prop_assert!(*seen, "task {} (of {}) was never scheduled", i, total_tasks);
+            }
+            for (i, assigned) in per_task_assigned.iter().enumerate() {
+                prop_assert!(
+                    *assigned <= budget as u64,
+                    "task {} assigned {} > budget {}", i, assigned, budget,
+                );
+            }
+            prop_assert!(scheduler.is_complete());
+        }
+
+        /// Enqueue mid-flight: while one task is in flight, enqueue a new
+        /// one. The in-flight task's outcome must still be recordable, and
+        /// the new task must be schedulable.
+        #[test]
+        fn enqueue_mid_flight_preserves_in_flight(
+            initial in 1_usize..5,
+            new_index_offset in 1_usize..20,
+            batch_size in 1_u32..50,
+        ) {
+            let mut scheduler = BatchScheduler::new(initial, None, batch_size);
+
+            // Pop one task — it's now in flight.
+            let in_flight = scheduler.next_batch().unwrap();
+            let new_index = initial + new_index_offset;
+            scheduler.enqueue(new_index, None);
+
+            // The new task must be schedulable while the other is in flight.
+            let popped_new = scheduler.next_batch().unwrap();
+            prop_assert!(
+                popped_new.task_index != in_flight.task_index,
+                "fresh pick must not collide with in-flight task",
+            );
+
+            // Record both outcomes — neither should panic.
+            scheduler.record_outcome(BatchOutcome {
+                task_index: in_flight.task_index,
+                iterations_used: batch_size,
+                exhausted: true,
+                rank: 0,
+            });
+            scheduler.record_outcome(BatchOutcome {
+                task_index: popped_new.task_index,
+                iterations_used: batch_size,
+                exhausted: true,
+                rank: 0,
+            });
         }
     }
 }
