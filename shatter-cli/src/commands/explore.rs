@@ -26,7 +26,8 @@ use tracing::Instrument;
 use crate::args::*;
 use crate::helpers::*;
 
-/// Result of exploring a single function, collected after parallel execution.
+/// Result of exploring a single function (final, after all its batches are merged).
+/// Used by the sequential Phase 3 processing loop.
 struct FuncExploreOutcome {
     work_index: usize,
     func: shatter_core::protocol::FunctionAnalysis,
@@ -36,7 +37,211 @@ struct FuncExploreOutcome {
     genetic_config: GeneticConfig,
 }
 
+/// Result of a single batch (one slice of iterations for one function), returned
+/// from the tokio task that ran it. Multiple BatchOutcomes for the same
+/// work_index are merged into a single FuncExploreOutcome by the accumulator.
+struct BatchExploreOutcome {
+    work_index: usize,
+    result: Result<shatter_core::explorer::ObservationOutput, String>,
+    wall_time: Duration,
+    /// Per-batch iteration cap the scheduler issued to this task. Used to
+    /// decide whether the batch converged early (fewer iters used → mark
+    /// exhausted, don't re-enqueue) or hit the cap (re-enqueue for another
+    /// slice).
+    batch_iteration_cap: u32,
+}
+
 const EXPLORE_ARTIFACT_VERSION: u32 = 2;
+
+/// Internal iteration budget per round-robin batch when broad-scope explore
+/// cycles across many functions. The scheduler re-enqueues non-exhausted
+/// functions at the tail after each batch, so long runs surface early coverage
+/// on every function instead of deep coverage on a few.
+///
+/// 500 is large enough that the fixed per-batch overhead (frontend spawn,
+/// instrument, prepare) amortizes well, and small enough to preserve round-
+/// robin fairness across moderately-sized broad-scope runs.
+///
+/// Not exposed through the user-facing CLI — tuning happens here.
+const EXPLORE_BATCH_ITERATIONS: u32 = 500;
+
+/// Decide whether a completed batch has exhausted its function.
+///
+/// A function is exhausted — and should NOT be re-enqueued — when either
+/// (a) the batch errored (re-running won't help this run), or
+/// (b) the orchestrator converged early, using strictly fewer iterations
+///     than the batch cap (nothing left to explore).
+/// Otherwise the scheduler re-queues the task for another slice. This is
+/// the sole criterion separating true round-robin batching from the
+/// degenerate "one batch per function" mode, so it is extracted as a
+/// free function to be unit-tested without spinning up a frontend.
+fn batch_is_exhausted(
+    result: &Result<shatter_core::explorer::ObservationOutput, String>,
+    batch_iteration_cap: u32,
+) -> bool {
+    match result {
+        Err(_) => true,
+        Ok(obs) => obs.iterations < batch_iteration_cap,
+    }
+}
+
+/// Accumulates `ObservationOutput`s from multiple round-robin batches that all
+/// explored the same function, and collapses them into a single merged output
+/// for the downstream Phase 3 processing loop.
+///
+/// Merge rules per field:
+/// - `iterations`: sum across batches (each batch ran a disjoint slice)
+/// - `unique_paths`: recomputed after merge from deduped `discoveries`
+/// - `lines_covered` / `total_lines`: max (line sets are not carried through,
+///   so we conservatively take the largest single-batch observation)
+/// - `discoveries`: deduped by `branch_id`, earliest batch wins (HashMap insert
+///   with `or_insert`)
+/// - Collection fields (`raw_results`, `new_path_executions`,
+///   `nondeterministic_fields`, `float_probe_results`, `boundary_results`,
+///   `abandoned_frontiers`, `opaque_suggestions`): concatenated. Downstream
+///   consumers already tolerate duplicates; deduping here would require
+///   introspecting every contained type's identity.
+/// - `shrunk_witnesses`: HashMap merge by key; on collision keep the smaller
+///   (more-shrunk) witness.
+/// - `mcdc_summary`: component-wise max of (total, independent, opaque).
+/// - `shrink_stats`: last-wins. The field is a set of aggregate counters; the
+///   last batch's stats reflect the most recent shrink phase.
+/// - `stubbed_modules`: concatenated, then sorted + deduped on finalization.
+///
+/// If *every* batch for a function errored, `into_result` returns the last
+/// error so the failure is surfaced in the explore summary.
+struct ExploreResultAccumulator {
+    function_name: String,
+    total_iterations: u32,
+    max_lines_covered: usize,
+    total_lines: u32,
+    raw_results: Vec<(
+        Vec<serde_json::Value>,
+        Vec<shatter_core::protocol::MockConfig>,
+        shatter_core::protocol::ExecuteResult,
+    )>,
+    discoveries: HashMap<u32, shatter_core::coverage_metrics::DiscoveryMethod>,
+    new_path_executions: Vec<shatter_core::explorer::ExecutionSummary>,
+    nondeterministic_fields: Vec<shatter_core::nondeterminism::NondeterministicField>,
+    float_probe_results: Vec<shatter_core::float_probe::FloatProbeResult>,
+    boundary_results: Vec<shatter_core::boundary_search::BoundaryResult>,
+    shrunk_witnesses: HashMap<u64, Vec<serde_json::Value>>,
+    mcdc_summary: Option<(usize, usize, usize)>,
+    shrink_stats: shatter_core::shrink::ShrinkStats,
+    abandoned_frontiers: Vec<(u32, u32)>,
+    opaque_suggestions: Vec<shatter_core::executability::OpaqueSuggestion>,
+    stubbed_modules: Vec<String>,
+    last_error: Option<String>,
+    successful_batches: u32,
+    batches_merged: u32,
+}
+
+impl ExploreResultAccumulator {
+    fn new(function_name: String) -> Self {
+        Self {
+            function_name,
+            total_iterations: 0,
+            max_lines_covered: 0,
+            total_lines: 0,
+            raw_results: Vec::new(),
+            discoveries: HashMap::new(),
+            new_path_executions: Vec::new(),
+            nondeterministic_fields: Vec::new(),
+            float_probe_results: Vec::new(),
+            boundary_results: Vec::new(),
+            shrunk_witnesses: HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: shatter_core::shrink::ShrinkStats::default(),
+            abandoned_frontiers: Vec::new(),
+            opaque_suggestions: Vec::new(),
+            stubbed_modules: Vec::new(),
+            last_error: None,
+            successful_batches: 0,
+            batches_merged: 0,
+        }
+    }
+
+    fn merge(&mut self, result: Result<shatter_core::explorer::ObservationOutput, String>) {
+        self.batches_merged += 1;
+        match result {
+            Ok(obs) => {
+                self.successful_batches += 1;
+                if self.function_name.is_empty() {
+                    self.function_name = obs.function_name;
+                }
+                self.total_iterations = self.total_iterations.saturating_add(obs.iterations);
+                self.max_lines_covered = self.max_lines_covered.max(obs.lines_covered);
+                self.total_lines = self.total_lines.max(obs.total_lines);
+                self.raw_results.extend(obs.raw_results);
+                for (branch_id, method) in obs.discoveries {
+                    self.discoveries.entry(branch_id).or_insert(method);
+                }
+                self.new_path_executions.extend(obs.new_path_executions);
+                self.nondeterministic_fields
+                    .extend(obs.nondeterministic_fields);
+                self.float_probe_results.extend(obs.float_probe_results);
+                self.boundary_results.extend(obs.boundary_results);
+                for (k, v) in obs.shrunk_witnesses {
+                    self.shrunk_witnesses
+                        .entry(k)
+                        .and_modify(|cur| {
+                            if v.len() < cur.len() {
+                                *cur = v.clone();
+                            }
+                        })
+                        .or_insert(v);
+                }
+                self.mcdc_summary = match (self.mcdc_summary, obs.mcdc_summary) {
+                    (Some(cur), Some(new)) => Some((
+                        cur.0.max(new.0),
+                        cur.1.max(new.1),
+                        cur.2.max(new.2),
+                    )),
+                    (None, new) => new,
+                    (cur, None) => cur,
+                };
+                self.shrink_stats = obs.shrink_stats;
+                self.abandoned_frontiers.extend(obs.abandoned_frontiers);
+                self.opaque_suggestions.extend(obs.opaque_suggestions);
+                self.stubbed_modules.extend(obs.stubbed_modules);
+            }
+            Err(e) => {
+                self.last_error = Some(e);
+            }
+        }
+    }
+
+    fn into_result(self) -> Result<shatter_core::explorer::ObservationOutput, String> {
+        if self.successful_batches == 0 {
+            return Err(self
+                .last_error
+                .unwrap_or_else(|| "no batches executed".to_string()));
+        }
+        let mut stubbed = self.stubbed_modules;
+        stubbed.sort();
+        stubbed.dedup();
+        let unique_paths = self.discoveries.len();
+        Ok(shatter_core::explorer::ObservationOutput {
+            function_name: self.function_name,
+            iterations: self.total_iterations,
+            unique_paths,
+            lines_covered: self.max_lines_covered,
+            total_lines: self.total_lines,
+            new_path_executions: self.new_path_executions,
+            raw_results: self.raw_results,
+            discoveries: self.discoveries.into_iter().collect(),
+            nondeterministic_fields: self.nondeterministic_fields,
+            float_probe_results: self.float_probe_results,
+            boundary_results: self.boundary_results,
+            shrunk_witnesses: self.shrunk_witnesses,
+            mcdc_summary: self.mcdc_summary,
+            shrink_stats: self.shrink_stats,
+            abandoned_frontiers: self.abandoned_frontiers,
+            opaque_suggestions: self.opaque_suggestions,
+            stubbed_modules: stubbed,
+        })
+    }
+}
 
 /// Per-function explore artifact for serialization (borrows from outcome).
 #[derive(Serialize)]
@@ -1131,6 +1336,11 @@ pub(crate) async fn run_explore(
             shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
 
         // --- Phase 1: Collect work items (fast, sequential) ---
+        // Clone is required because the round-robin batch scheduler re-
+        // enqueues a work item each batch until its budget is exhausted.
+        // Every dispatched batch gets a fresh clone with per-batch
+        // max_iterations overridden to the scheduler's slice size.
+        #[derive(Clone)]
         struct FuncWorkItem {
             func: shatter_core::protocol::FunctionAnalysis,
             explore_config: ExploreConfig,
@@ -1483,6 +1693,37 @@ pub(crate) async fn run_explore(
         let time_limit_dur = time_limit.map(Duration::from_secs_f64);
         let run_start = Instant::now();
 
+        // Round-robin batch scheduler. Each batch explores one function for up
+        // to EXPLORE_BATCH_ITERATIONS iterations; the scheduler re-enqueues a
+        // function after each batch until its per-function budget is
+        // exhausted. Budgets come from each function's configured
+        // max_iterations (None = unbounded, Some(n) = hard cap). Multi-batch
+        // outputs for the same function are merged by per-function
+        // ExploreResultAccumulator entries.
+        //
+        // Re-exploration tax: today's orchestrator::explore() does not
+        // resume-from-state — every batch starts fresh and rediscovers prior
+        // paths via the seed/discoveries fast path. Larger
+        // EXPLORE_BATCH_ITERATIONS amortizes this overhead; 500 balances
+        // per-batch setup cost against round-robin fairness.
+        let scheduler_budgets: Vec<Option<u32>> = work_items
+            .iter()
+            .map(|w| w.explore_config.max_iterations)
+            .collect();
+        let mut batch_scheduler =
+            shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
+                &scheduler_budgets,
+                EXPLORE_BATCH_ITERATIONS,
+            );
+        let mut batches_launched: u32 = 0;
+        let mut batches_completed: u32 = 0;
+        let mut accumulators: Vec<ExploreResultAccumulator> = work_items
+            .iter()
+            .map(|w| ExploreResultAccumulator::new(w.func.name.clone()))
+            .collect();
+        let mut func_wall_time: Vec<Duration> = vec![Duration::ZERO; total_work_items];
+        let mut func_first_error: Vec<Option<String>> = vec![None; total_work_items];
+
         // Periodic progress callback: prints a one-line summary to stderr every
         // PROGRESS_SUMMARY_INTERVAL_SECS. Suppressed by --quiet (log_level Warn+).
         let periodic_progress: Option<Arc<Box<ProgressCallback>>> =
@@ -1512,81 +1753,91 @@ pub(crate) async fn run_explore(
                 None
             };
 
-        for (work_index, item) in work_items.into_iter().enumerate() {
-            // --time-limit: stop launching new functions if time limit exceeded.
-            if let Some(limit) = time_limit_dur
-                && run_start.elapsed() >= limit
-            {
-                log::info!(
-                    "Time limit ({:.1}s) reached, skipping remaining functions",
-                    limit.as_secs_f64()
-                );
-                break;
-            }
+        // --- Phase 2: Interleaved round-robin batch launch + collection ---
+        //
+        // The loop keeps up to `effective_jobs` batches in flight at once.
+        // After each join_next(), we merge the outcome into the owning
+        // function's accumulator and record its exhaustion state back to the
+        // scheduler, which may re-enqueue the function for another batch if
+        // budget remains and it didn't converge early.
+        let mut total_executions_count: u64 = 0;
+        let mut total_branches_seen: usize = 0;
+        let mut total_branches_covered: usize = 0;
+        let mut stop_early = false;
+        let mut stop_reason: Option<String> = None;
 
-            let sem = Arc::clone(&semaphore);
-            let completed_functions = Arc::clone(&completed_functions);
-            let fe_config = fe_config_for_lang.clone();
-            let file_str_owned = file_str.to_string();
-            let project_root_owned = project_root_str.clone();
-            let progress_index = work_index + 1;
-            let progress_total = total_work_items;
-            let periodic_progress_clone = periodic_progress.clone();
-
-            join_set.spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore is never closed");
-                let func_start = Instant::now();
-                emit_explore_progress(
-                    &item.func.name,
-                    progress_index,
-                    progress_total,
-                    Duration::ZERO,
-                    "started",
-                );
-
-                let mut task_frontend = match Frontend::spawn(&fe_config).await {
-                    Ok(fe) => fe,
-                    Err(e) => {
-                        let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
-                        emit_explore_progress(
-                            &item.func.name,
-                            completed,
-                            progress_total,
-                            func_start.elapsed(),
-                            "failed",
-                        );
-                        return FuncExploreOutcome {
-                            work_index,
-                            func: item.func,
-                            mock_symbols: item.mock_symbols,
-                            result: Err(format!("failed to spawn frontend: {e}")),
-                            wall_time: func_start.elapsed(),
-                            genetic_config: item.genetic_config,
-                        };
-                    }
+        loop {
+            // Launch sub-loop: fill in-flight slots up to --jobs.
+            while join_set.len() < effective_jobs && !stop_early {
+                if let Some(limit) = time_limit_dur
+                    && run_start.elapsed() >= limit
+                {
+                    stop_early = true;
+                    stop_reason = Some(format!("time limit ({:.1}s)", limit.as_secs_f64()));
+                    break;
+                }
+                let batch_config = match batch_scheduler.next_batch() {
+                    Some(b) => b,
+                    None => break,
                 };
+                let work_index = batch_config.task_index;
+                let batch_iters = batch_config.batch_size;
+                let mut item = work_items[work_index].clone();
+                // Clamp per-batch iteration caps so orchestrator::explore /
+                // explore_function stop at the scheduler's assigned slice
+                // rather than running to the function's full configured cap.
+                item.explore_config.max_iterations = Some(batch_iters);
+                if let Some(ref mut cc) = item.concolic_config {
+                    cc.max_iterations = Some(batch_iters as usize);
+                    cc.max_executions = Some((batch_iters as usize) * 5);
+                }
 
-                let explore_result = if let Some(ref concolic_config) = item.concolic_config {
-                    // Concolic path: instrument → prepare → orchestrator::explore
-                    if let Err(e) = task_frontend
-                        .send(ProtoCommand::Instrument {
-                            file: file_str_owned.clone(),
-                            function: item.func.name.clone(),
-                            mocks: concolic_config.mocks.clone(),
-                            project_root: project_root_owned.clone(),
-                            execution_profile: None,
-                        })
-                        .await
-                    {
-                        log::debug!("instrument failed for concolic path: {e}");
-                    }
+                batches_launched += 1;
 
-                    let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
-                        task_frontend.capabilities(),
+                let sem = Arc::clone(&semaphore);
+                let completed_functions = Arc::clone(&completed_functions);
+                let fe_config = fe_config_for_lang.clone();
+                let file_str_owned = file_str.to_string();
+                let project_root_owned = project_root_str.clone();
+                let progress_index = work_index + 1;
+                let progress_total = total_work_items;
+                let periodic_progress_clone = periodic_progress.clone();
+
+                join_set.spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore is never closed");
+                    let func_start = Instant::now();
+                    emit_explore_progress(
+                        &item.func.name,
+                        progress_index,
+                        progress_total,
+                        Duration::ZERO,
+                        "started",
                     );
-                    let prepare_id: Option<String> = if caps.commands.contains("prepare") {
-                        match task_frontend
-                            .send(ProtoCommand::Prepare {
+
+                    let mut task_frontend = match Frontend::spawn(&fe_config).await {
+                        Ok(fe) => fe,
+                        Err(e) => {
+                            let completed =
+                                completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                            emit_explore_progress(
+                                &item.func.name,
+                                completed,
+                                progress_total,
+                                func_start.elapsed(),
+                                "failed",
+                            );
+                            return BatchExploreOutcome {
+                                work_index,
+                                result: Err(format!("failed to spawn frontend: {e}")),
+                                wall_time: func_start.elapsed(),
+                                batch_iteration_cap: batch_iters,
+                            };
+                        }
+                    };
+
+                    let explore_result = if let Some(ref concolic_config) = item.concolic_config {
+                        if let Err(e) = task_frontend
+                            .send(ProtoCommand::Instrument {
                                 file: file_str_owned.clone(),
                                 function: item.func.name.clone(),
                                 mocks: concolic_config.mocks.clone(),
@@ -1595,173 +1846,179 @@ pub(crate) async fn run_explore(
                             })
                             .await
                         {
-                            Ok(resp) => match resp.result {
-                                ResponseResult::Prepare { prepare_id } => {
-                                    log::debug!("concolic prepare succeeded: {prepare_id}");
-                                    Some(prepare_id)
-                                }
-                                other => {
-                                    log::debug!("concolic prepare unexpected response: {other:?}");
+                            log::debug!("instrument failed for concolic path: {e}");
+                        }
+
+                        let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
+                            task_frontend.capabilities(),
+                        );
+                        let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+                            match task_frontend
+                                .send(ProtoCommand::Prepare {
+                                    file: file_str_owned.clone(),
+                                    function: item.func.name.clone(),
+                                    mocks: concolic_config.mocks.clone(),
+                                    project_root: project_root_owned.clone(),
+                                    execution_profile: None,
+                                })
+                                .await
+                            {
+                                Ok(resp) => match resp.result {
+                                    ResponseResult::Prepare { prepare_id } => {
+                                        log::debug!("concolic prepare succeeded: {prepare_id}");
+                                        Some(prepare_id)
+                                    }
+                                    other => {
+                                        log::debug!(
+                                            "concolic prepare unexpected response: {other:?}"
+                                        );
+                                        None
+                                    }
+                                },
+                                Err(e) => {
+                                    log::debug!("concolic prepare failed, falling back: {e}");
                                     None
                                 }
-                            },
-                            Err(e) => {
-                                log::debug!("concolic prepare failed, falling back: {e}");
-                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        match shatter_core::orchestrator::explore(
+                            &mut task_frontend,
+                            &item.func.name,
+                            item.seed_inputs,
+                            item.user_inputs,
+                            &item.func.params,
+                            concolic_config,
+                            None,
+                            prepare_id,
+                            item.func.loops.clone(),
+                        )
+                        .await
+                        {
+                            Ok(mut concolic_result) => {
+                                concolic_result.total_lines =
+                                    item.func.end_line.saturating_sub(item.func.start_line) + 1;
+                                let obs: shatter_core::explorer::ObservationOutput =
+                                    concolic_result.into();
+                                Ok(obs)
+                            }
+                            Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+                                Err(shatter_core::explorer::ExploreError::Frontend(fe))
                             }
                         }
                     } else {
-                        None
+                        let cb_ref: Option<&ProgressCallback> = periodic_progress_clone
+                            .as_ref()
+                            .map(|arc| arc.as_ref().as_ref());
+                        explorer::explore_function(
+                            &mut task_frontend,
+                            &item.func,
+                            &item.explore_config,
+                            None,
+                            cb_ref,
+                        )
+                        .instrument(tracing::info_span!("explore.function"))
+                        .await
                     };
 
-                    match shatter_core::orchestrator::explore(
-                        &mut task_frontend,
+                    let result = explore_result.map_err(|e| e.to_string());
+                    let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                    emit_explore_progress(
                         &item.func.name,
-                        item.seed_inputs,
-                        item.user_inputs,
-                        &item.func.params,
-                        concolic_config,
-                        None,
-                        prepare_id,
-                        item.func.loops.clone(),
-                    )
-                    .await
-                    {
-                        Ok(mut concolic_result) => {
-                            concolic_result.total_lines =
-                                item.func.end_line.saturating_sub(item.func.start_line) + 1;
-                            let obs: shatter_core::explorer::ObservationOutput =
-                                concolic_result.into();
-                            Ok(obs)
-                        }
-                        Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
-                            Err(shatter_core::explorer::ExploreError::Frontend(fe))
-                        }
+                        completed,
+                        progress_total,
+                        func_start.elapsed(),
+                        if result.is_ok() { "completed" } else { "failed" },
+                    );
+
+                    let _ = task_frontend.shutdown().await;
+
+                    BatchExploreOutcome {
+                        work_index,
+                        result,
+                        wall_time: func_start.elapsed(),
+                        batch_iteration_cap: batch_iters,
                     }
-                } else {
-                    // Random path: explore_function handles instrument + prepare internally.
-                    let cb_ref: Option<&ProgressCallback> =
-                        periodic_progress_clone.as_ref().map(|arc| arc.as_ref().as_ref());
-                    explorer::explore_function(
-                        &mut task_frontend,
-                        &item.func,
-                        &item.explore_config,
-                        None,
-                        cb_ref,
-                    )
-                    .instrument(tracing::info_span!("explore.function"))
-                    .await
-                };
+                });
+            }
 
-                let result = explore_result.map_err(|e| e.to_string());
-                let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
-                emit_explore_progress(
-                    &item.func.name,
-                    completed,
-                    progress_total,
-                    func_start.elapsed(),
-                    if result.is_ok() {
-                        "completed"
-                    } else {
-                        "failed"
-                    },
-                );
+            if join_set.is_empty() {
+                break;
+            }
 
-                let _ = task_frontend.shutdown().await;
-
-                FuncExploreOutcome {
-                    work_index,
-                    func: item.func,
-                    mock_symbols: item.mock_symbols,
-                    result,
-                    wall_time: func_start.elapsed(),
-                    genetic_config: item.genetic_config,
-                }
-            });
-        }
-
-        // --- Phase 3: Collect results and process (sequential, in order) ---
-        let mut outcomes = Vec::new();
-        let mut total_executions_count: u64 = 0;
-        let mut total_branches_seen: usize = 0;
-        let mut total_branches_covered: usize = 0;
-        let mut stop_early = false;
-
-        while let Some(joined) = join_set.join_next().await {
-            let outcome = match joined {
-                Ok(o) => o,
-                Err(e) => {
+            let batch_outcome = match join_set.join_next().await {
+                Some(Ok(o)) => o,
+                Some(Err(e)) => {
                     log::error!("Task join error: {e}");
                     continue;
                 }
+                None => break,
             };
 
-            // Update running stop-flag counters from this function's results.
-            if let Ok(ref obs) = outcome.result {
-                total_executions_count += obs.iterations as u64;
+            let work_index = batch_outcome.work_index;
+            let iters_used = batch_outcome
+                .result
+                .as_ref()
+                .map(|obs| obs.iterations)
+                .unwrap_or(0);
+            let exhausted =
+                batch_is_exhausted(&batch_outcome.result, batch_outcome.batch_iteration_cap);
+
+            batch_scheduler.record_outcome(shatter_core::batch_scheduler::BatchOutcome {
+                task_index: work_index,
+                iterations_used: iters_used,
+                exhausted,
+            });
+            batches_completed += 1;
+
+            total_executions_count += iters_used as u64;
+            if let Ok(ref obs) = batch_outcome.result {
                 total_branches_seen += obs.total_lines as usize;
                 total_branches_covered += obs.unique_paths;
             }
 
-            let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, &outcome) {
-                Ok(path) => {
-                    log::info!(
-                        "Wrote explore artifact for {} -> {}",
-                        outcome.func.name,
-                        path.display()
-                    );
-                    path.strip_prefix(&artifact_root)
-                        .ok()
-                        .map(|p| p.to_string_lossy().to_string())
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to write explore artifact for {}: {e}",
-                        outcome.func.name
-                    );
-                    None
-                }
-            };
-
-            // Update summary incrementally for crash recovery.
-            let summary_status = if outcome.result.is_ok() {
-                explore_summary.completed += 1;
-                "completed"
-            } else {
-                explore_summary.failed += 1;
-                "failed"
-            };
-            explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
-            explore_summary.functions.push(ExploreSummaryEntry {
-                function_name: outcome.func.name.clone(),
-                status: summary_status.to_string(),
-                artifact: artifact_relpath,
-                reason: outcome.result.as_ref().err().cloned(),
-            });
-            if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
-                log::warn!("Failed to update explore summary: {e}");
+            if log_level >= LogLevel::Info {
+                let paths = batch_outcome
+                    .result
+                    .as_ref()
+                    .map(|obs| obs.unique_paths)
+                    .unwrap_or(0);
+                let status = if batch_outcome.result.is_ok() { "ok" } else { "err" };
+                eprintln!(
+                    "[batch {}/{}] {}: {} iters, {} paths, {:.1}s ({})",
+                    batches_completed,
+                    batches_launched,
+                    accumulators[work_index].function_name,
+                    iters_used,
+                    paths,
+                    batch_outcome.wall_time.as_secs_f64(),
+                    status,
+                );
             }
 
-            outcomes.push(outcome);
+            func_wall_time[work_index] += batch_outcome.wall_time;
+            if let Err(ref e) = batch_outcome.result
+                && func_first_error[work_index].is_none()
+            {
+                func_first_error[work_index] = Some(e.clone());
+            }
+            accumulators[work_index].merge(batch_outcome.result);
 
-            // Check stop flags after collecting each result.
             if let Some(limit) = time_limit_dur
                 && run_start.elapsed() >= limit
             {
-                log::info!(
-                    "Time limit ({:.1}s) reached, stopping result collection",
-                    limit.as_secs_f64()
-                );
                 stop_early = true;
+                stop_reason = Some(format!("time limit ({:.1}s)", limit.as_secs_f64()));
             }
             if let Some(max_exec) = max_executions
                 && total_executions_count >= max_exec
             {
-                log::info!(
-                    "Max executions ({max_exec}) reached ({total_executions_count} total), \
-                     stopping result collection"
-                );
                 stop_early = true;
+                stop_reason = Some(format!(
+                    "max executions ({max_exec}, {total_executions_count} total)"
+                ));
             }
             if let Some(threshold) = coverage_threshold
                 && total_branches_seen > 0
@@ -1769,22 +2026,89 @@ pub(crate) async fn run_explore(
                 let coverage_pct =
                     total_branches_covered as f64 / total_branches_seen as f64 * 100.0;
                 if coverage_pct >= threshold {
-                    log::info!(
-                        "Coverage threshold ({threshold:.1}%) reached ({coverage_pct:.1}% \
-                         actual), stopping result collection"
-                    );
                     stop_early = true;
+                    stop_reason = Some(format!(
+                        "coverage threshold ({threshold:.1}%, {coverage_pct:.1}% actual)"
+                    ));
                 }
             }
-            if stop_early {
-                break;
-            }
         }
-        // Drain remaining tasks so spawned frontends are cleaned up.
+
+        if let Some(reason) = &stop_reason {
+            log::info!("Stop flag reached: {reason}; draining in-flight batches");
+        }
+        // Drain remaining in-flight tasks so spawned frontends are cleaned up.
         if stop_early {
             join_set.abort_all();
         }
+        while let Some(joined) = join_set.join_next().await {
+            if let Ok(batch_outcome) = joined {
+                let work_index = batch_outcome.work_index;
+                func_wall_time[work_index] += batch_outcome.wall_time;
+                accumulators[work_index].merge(batch_outcome.result);
+            }
+        }
+
+        // --- Phase 3a: Flush accumulators → outcomes + write per-function artifacts ---
+        let mut outcomes: Vec<FuncExploreOutcome> = Vec::with_capacity(total_work_items);
+        for (work_index, accum) in accumulators.into_iter().enumerate() {
+            // Skip functions that never had a batch launched (only possible if
+            // stop_early fired before any batch for this work_index dispatched).
+            if accum.batches_merged == 0 {
+                continue;
+            }
+            let result = accum.into_result();
+            outcomes.push(FuncExploreOutcome {
+                work_index,
+                func: work_items[work_index].func.clone(),
+                mock_symbols: work_items[work_index].mock_symbols.clone(),
+                result,
+                wall_time: func_wall_time[work_index],
+                genetic_config: work_items[work_index].genetic_config.clone(),
+            });
+        }
         outcomes.sort_by_key(|outcome| outcome.work_index);
+
+        for outcome in &outcomes {
+            let artifact_relpath =
+                match write_explore_artifact(&artifact_root, &file_str, outcome) {
+                    Ok(path) => {
+                        log::info!(
+                            "Wrote explore artifact for {} -> {}",
+                            outcome.func.name,
+                            path.display()
+                        );
+                        path.strip_prefix(&artifact_root)
+                            .ok()
+                            .map(|p| p.to_string_lossy().to_string())
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to write explore artifact for {}: {e}",
+                            outcome.func.name
+                        );
+                        None
+                    }
+                };
+
+            let summary_status = if outcome.result.is_ok() {
+                explore_summary.completed += 1;
+                "completed"
+            } else {
+                explore_summary.failed += 1;
+                "failed"
+            };
+            explore_summary.functions.push(ExploreSummaryEntry {
+                function_name: outcome.func.name.clone(),
+                status: summary_status.to_string(),
+                artifact: artifact_relpath,
+                reason: outcome.result.as_ref().err().cloned(),
+            });
+        }
+        explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
+        if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
+            log::warn!("Failed to update explore summary: {e}");
+        }
 
         for outcome in outcomes {
             let func = &outcome.func;
@@ -2248,10 +2572,10 @@ pub(crate) async fn run_explore(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome, EXPLORE_ARTIFACT_VERSION,
-        emit_explore_progress, explore_summary_path, load_explore_artifacts,
-        read_explore_artifact, sanitize_artifact_component, write_explore_artifact,
-        write_explore_summary,
+        ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
+        EXPLORE_ARTIFACT_VERSION, batch_is_exhausted, emit_explore_progress,
+        explore_summary_path, load_explore_artifacts, read_explore_artifact,
+        sanitize_artifact_component, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
@@ -2327,6 +2651,247 @@ mod tests {
             wall_time: Duration::from_millis(25),
             genetic_config: GeneticConfig::default(),
         }
+    }
+
+    // --- ExploreResultAccumulator unit tests (str-b2my.6) ---
+
+    fn obs_with(
+        iterations: u32,
+        lines_covered: usize,
+        total_lines: u32,
+        discoveries: Vec<(u32, shatter_core::coverage_metrics::DiscoveryMethod)>,
+        stubbed: Vec<String>,
+    ) -> shatter_core::explorer::ObservationOutput {
+        shatter_core::explorer::ObservationOutput {
+            function_name: "load/user".to_string(),
+            iterations,
+            unique_paths: discoveries.len(),
+            lines_covered,
+            total_lines,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: shatter_core::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: stubbed,
+        }
+    }
+
+    #[test]
+    fn accumulator_additive_sums_iterations() {
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+        let mut acc = ExploreResultAccumulator::new("load/user".to_string());
+        acc.merge(Ok(obs_with(
+            200,
+            2,
+            10,
+            vec![(1, DiscoveryMethod::Z3)],
+            vec![],
+        )));
+        acc.merge(Ok(obs_with(
+            500,
+            3,
+            10,
+            vec![(2, DiscoveryMethod::Random)],
+            vec![],
+        )));
+        acc.merge(Ok(obs_with(
+            50,
+            1,
+            10,
+            vec![(3, DiscoveryMethod::Z3)],
+            vec![],
+        )));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.iterations, 750);
+        assert_eq!(obs.unique_paths, 3);
+    }
+
+    #[test]
+    fn accumulator_union_dedupes_discoveries_first_wins() {
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+        let mut acc = ExploreResultAccumulator::new("load/user".to_string());
+        acc.merge(Ok(obs_with(
+            100,
+            1,
+            10,
+            vec![(5, DiscoveryMethod::Z3)],
+            vec![],
+        )));
+        // Second batch re-discovers branch 5 via Random — first-wins keeps Z3.
+        acc.merge(Ok(obs_with(
+            100,
+            1,
+            10,
+            vec![
+                (5, DiscoveryMethod::Random),
+                (7, DiscoveryMethod::Random),
+            ],
+            vec![],
+        )));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.unique_paths, 2);
+        let by_id: std::collections::HashMap<u32, DiscoveryMethod> =
+            obs.discoveries.into_iter().collect();
+        assert_eq!(by_id.get(&5), Some(&DiscoveryMethod::Z3));
+        assert_eq!(by_id.get(&7), Some(&DiscoveryMethod::Random));
+    }
+
+    #[test]
+    fn accumulator_monotone_max_on_coverage() {
+        let mut acc = ExploreResultAccumulator::new("load/user".to_string());
+        acc.merge(Ok(obs_with(100, 2, 10, vec![], vec![])));
+        acc.merge(Ok(obs_with(100, 7, 10, vec![], vec![])));
+        acc.merge(Ok(obs_with(100, 5, 10, vec![], vec![])));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.lines_covered, 7);
+        assert_eq!(obs.total_lines, 10);
+    }
+
+    #[test]
+    fn batch_is_exhausted_covers_all_four_branches() {
+        // (a) Error → exhausted, regardless of cap.
+        let err: Result<shatter_core::explorer::ObservationOutput, String> =
+            Err("boom".to_string());
+        assert!(batch_is_exhausted(&err, 500));
+
+        // (b) Ok with iters < cap → converged early → exhausted.
+        assert!(batch_is_exhausted(
+            &Ok(obs_with(499, 0, 0, vec![], vec![])),
+            500
+        ));
+        assert!(batch_is_exhausted(
+            &Ok(obs_with(0, 0, 0, vec![], vec![])),
+            500
+        ));
+
+        // (c) Ok with iters == cap → NOT exhausted → scheduler re-enqueues.
+        assert!(!batch_is_exhausted(
+            &Ok(obs_with(500, 0, 0, vec![], vec![])),
+            500
+        ));
+
+        // (d) Ok with iters > cap (defensive; shouldn't happen but must not
+        //     flip the polarity) → NOT exhausted.
+        assert!(!batch_is_exhausted(
+            &Ok(obs_with(600, 0, 0, vec![], vec![])),
+            500
+        ));
+    }
+
+    #[test]
+    fn scheduler_and_accumulator_drive_multi_batch_round_robin() {
+        use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+
+        // Two unbounded functions, batch cap = 500. Simulate what the
+        // run_explore launch loop does on each tick: pop a batch,
+        // synthesise a completed ObservationOutput, run batch_is_exhausted
+        // → record_outcome → merge. This exercises the critical re-enqueue
+        // branch (exhausted: false) that separates round-robin from
+        // Option-A degenerate mode.
+        const CAP: u32 = 500;
+        let mut scheduler = BatchScheduler::with_individual_budgets(&[None, None], CAP);
+        let mut accs = vec![
+            ExploreResultAccumulator::new("fn_a".to_string()),
+            ExploreResultAccumulator::new("fn_b".to_string()),
+        ];
+
+        // Scripted per-batch outcomes: (iterations, discoveries).
+        // fn_a: three full-cap batches then converges early on batch 4.
+        // fn_b: two full-cap batches then converges early on batch 3.
+        let scripts: Vec<Vec<(u32, Vec<(u32, DiscoveryMethod)>)>> = vec![
+            vec![
+                (500, vec![(1, DiscoveryMethod::Z3)]),
+                (500, vec![(2, DiscoveryMethod::Z3)]),
+                (500, vec![(1, DiscoveryMethod::Random)]), // re-discover branch 1
+                (200, vec![(3, DiscoveryMethod::Z3)]),     // early convergence
+            ],
+            vec![
+                (500, vec![(10, DiscoveryMethod::Z3)]),
+                (500, vec![(11, DiscoveryMethod::Random)]),
+                (100, vec![]), // early convergence, no new branches
+            ],
+        ];
+        let mut cursors = vec![0usize, 0usize];
+        let mut order: Vec<usize> = Vec::new();
+        let mut not_exhausted_count = 0u32;
+
+        while let Some(batch_cfg) = scheduler.next_batch() {
+            order.push(batch_cfg.task_index);
+            let cursor = &mut cursors[batch_cfg.task_index];
+            let (iters, discoveries) = scripts[batch_cfg.task_index][*cursor].clone();
+            *cursor += 1;
+
+            let result: Result<shatter_core::explorer::ObservationOutput, String> =
+                Ok(obs_with(iters, 1, 5, discoveries, vec![]));
+            let exhausted = batch_is_exhausted(&result, batch_cfg.batch_size);
+            if !exhausted {
+                not_exhausted_count += 1;
+            }
+            accs[batch_cfg.task_index].merge(result);
+            scheduler.record_outcome(BatchOutcome {
+                task_index: batch_cfg.task_index,
+                iterations_used: iters,
+                exhausted,
+            });
+        }
+
+        // Round-robin: a,b,a,b,a,b,a — fn_b early-converges on its 3rd batch
+        // (position 6), leaving fn_a's 4th batch at position 7.
+        assert_eq!(order, vec![0, 1, 0, 1, 0, 1, 0]);
+        // record_outcome(exhausted: false) fires for the 5 full-cap batches
+        // (fn_a batches 1..=3 and fn_b batches 1..=2).
+        assert_eq!(not_exhausted_count, 5);
+        assert!(scheduler.is_complete());
+
+        // Accumulator semantics: fn_a summed 1700 iters across 4 batches and
+        // unique_paths is the cardinality of the discovery-id union
+        // (branches 1, 2, 3 — branch 1 re-discovered, not double-counted).
+        let fn_a = accs.remove(0).into_result().expect("fn_a merged");
+        assert_eq!(fn_a.iterations, 1700);
+        assert_eq!(fn_a.unique_paths, 3);
+
+        let fn_b = accs.remove(0).into_result().expect("fn_b merged");
+        assert_eq!(fn_b.iterations, 1100);
+        assert_eq!(fn_b.unique_paths, 2);
+    }
+
+    #[test]
+    fn accumulator_dedupes_stubbed_modules_and_reports_error_when_no_success() {
+        let mut acc = ExploreResultAccumulator::new("load/user".to_string());
+        acc.merge(Ok(obs_with(
+            10,
+            1,
+            5,
+            vec![],
+            vec!["fs".to_string(), "net".to_string()],
+        )));
+        acc.merge(Ok(obs_with(
+            10,
+            1,
+            5,
+            vec![],
+            vec!["net".to_string(), "crypto".to_string()],
+        )));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(
+            obs.stubbed_modules,
+            vec!["crypto".to_string(), "fs".to_string(), "net".to_string()],
+        );
+
+        // All-errors accumulator surfaces the last error.
+        let mut fail_acc = ExploreResultAccumulator::new("f".to_string());
+        fail_acc.merge(Err("boom".to_string()));
+        fail_acc.merge(Err("fatal".to_string()));
+        let err = fail_acc.into_result().expect_err("should fail");
+        assert_eq!(err, "fatal");
     }
 
     #[test]

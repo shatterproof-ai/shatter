@@ -6,6 +6,7 @@ pub mod array_mutation;
 pub mod auto_mock;
 pub mod bench;
 pub mod batch_analyze;
+pub mod batch_scheduler;
 pub mod boundary_search;
 pub mod branch_profile;
 pub mod batch_state;

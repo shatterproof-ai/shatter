@@ -602,6 +602,7 @@ pub(crate) async fn run_scan(
             workers_per_fn,
             capabilities: frontend_caps.clone(),
             genetic_config: genetic_config.clone(),
+            batch_size: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -729,6 +730,7 @@ pub(crate) async fn run_scan(
         workers_per_fn,
         capabilities: frontend_caps,
         genetic_config: genetic_config.clone(),
+        batch_size: None,
     };
 
     let scan_start = Instant::now();
