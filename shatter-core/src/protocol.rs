@@ -1216,10 +1216,10 @@ mod tests {
                     end_line: 45,
                     literals: vec![],
                     crypto_boundaries: vec![],
-            loops: vec![],
+                    loops: vec![],
                     source_file: None,
                     adapter_hints: vec![],
-            invocation_model: InvocationModel::Direct,
+                    invocation_model: InvocationModel::Direct,
                 }],
             },
         ));
@@ -1956,10 +1956,10 @@ mod tests {
                         end_line: 3,
                         literals: vec![],
                         crypto_boundaries: vec![],
-            loops: vec![],
+                        loops: vec![],
                         source_file: None,
                         adapter_hints: vec![],
-            invocation_model: InvocationModel::Direct,
+                        invocation_model: InvocationModel::Direct,
                     },
                     FunctionAnalysis {
                         name: "divide".into(),
@@ -1996,10 +1996,10 @@ mod tests {
                         end_line: 10,
                         literals: vec![],
                         crypto_boundaries: vec![],
-            loops: vec![],
+                        loops: vec![],
                         source_file: None,
                         adapter_hints: vec![],
-            invocation_model: InvocationModel::Direct,
+                        invocation_model: InvocationModel::Direct,
                     },
                 ],
             },
@@ -2215,10 +2215,12 @@ mod tests {
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
-        assert!(!json
-            .as_object()
-            .expect("object")
-            .contains_key("setup_context"));
+        assert!(
+            !json
+                .as_object()
+                .expect("object")
+                .contains_key("setup_context")
+        );
     }
 
     #[test]

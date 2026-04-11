@@ -241,8 +241,11 @@ impl InterestingPool {
             .map(|b| b.severity as u32)
             .max()
             .unwrap_or(0);
-        let distinct_fns: std::collections::HashSet<&str> =
-            entry.behaviors.iter().map(|b| b.function.as_str()).collect();
+        let distinct_fns: std::collections::HashSet<&str> = entry
+            .behaviors
+            .iter()
+            .map(|b| b.function.as_str())
+            .collect();
         let breadth = (1.0 + distinct_fns.len() as f64).log2();
         max_severity as f64 * breadth
     }
@@ -265,10 +268,7 @@ impl InterestingPool {
     /// [`BehaviorObservation`] metadata so callers can filter by source function.
     pub fn entries_for_type(&self, ty: &TypeInfo) -> &[PoolEntry] {
         let key = type_key(ty);
-        self.buckets
-            .get(&key)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        self.buckets.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Count how many entries across all buckets witness `sig`.
@@ -408,7 +408,10 @@ pub fn save_pool(pool: &InterestingPool, path: &std::path::Path) -> Result<(), s
 }
 
 /// Best-effort save: skips if another process holds the lock.
-pub fn save_pool_best_effort(pool: &InterestingPool, path: &std::path::Path) -> Result<bool, std::io::Error> {
+pub fn save_pool_best_effort(
+    pool: &InterestingPool,
+    path: &std::path::Path,
+) -> Result<bool, std::io::Error> {
     match crate::file_lock::FileLock::try_acquire(path)? {
         Some(_lock) => {
             save_pool_unlocked(pool, path)?;
@@ -418,7 +421,10 @@ pub fn save_pool_best_effort(pool: &InterestingPool, path: &std::path::Path) -> 
     }
 }
 
-fn save_pool_unlocked(pool: &InterestingPool, path: &std::path::Path) -> Result<(), std::io::Error> {
+fn save_pool_unlocked(
+    pool: &InterestingPool,
+    path: &std::path::Path,
+) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -434,8 +440,7 @@ fn save_pool_unlocked(pool: &InterestingPool, path: &std::path::Path) -> Result<
         "buckets": sorted,
     });
 
-    let content = serde_json::to_string_pretty(&wrapper)
-        .map_err(std::io::Error::other)?;
+    let content = serde_json::to_string_pretty(&wrapper).map_err(std::io::Error::other)?;
 
     // Atomic write: temp file + rename
     let tmp_path = path.with_extension("tmp");
@@ -543,9 +548,10 @@ pub fn harvest_from_exploration(
         // For multi-param functions with compound types, also store the full
         // input vector so correlated multi-arg patterns are preserved.
         if params.len() > 1
-            && inputs.iter().zip(params.iter()).any(|(_, p)| {
-                matches!(p.typ, TypeInfo::Object { .. } | TypeInfo::Array { .. })
-            })
+            && inputs
+                .iter()
+                .zip(params.iter())
+                .any(|(_, p)| matches!(p.typ, TypeInfo::Object { .. } | TypeInfo::Array { .. }))
         {
             let compound_type = TypeInfo::Array {
                 element: Box::new(TypeInfo::Unknown),
@@ -643,7 +649,10 @@ mod tests {
             stack: None,
             error_category: None,
         };
-        assert_eq!(classify_severity(Some(&err), false), Severity::UnhandledError);
+        assert_eq!(
+            classify_severity(Some(&err), false),
+            Severity::UnhandledError
+        );
     }
 
     #[test]
@@ -670,7 +679,10 @@ mod tests {
             stack: None,
             error_category: None,
         };
-        assert_eq!(classify_severity(Some(&err), false), Severity::UnhandledError);
+        assert_eq!(
+            classify_severity(Some(&err), false),
+            Severity::UnhandledError
+        );
     }
 
     // -- InterestingPool tests --
@@ -834,7 +846,9 @@ mod tests {
                 branch_id,
                 line: 1,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             }],
             lines_executed: vec![],
@@ -843,7 +857,10 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -860,7 +877,9 @@ mod tests {
                 branch_id,
                 line: 1,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             }],
             lines_executed: vec![],
@@ -869,7 +888,10 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -1110,12 +1132,7 @@ mod tests {
             pool.insert(behavior_entry(i as i64, "A", 1, Severity::Crash));
         }
         // A different class B should still accept new witnesses.
-        let inserted = pool.insert(behavior_entry(
-            1_000,
-            "B",
-            1,
-            Severity::Crash,
-        ));
+        let inserted = pool.insert(behavior_entry(1_000, "B", 1, Severity::Crash));
         assert!(inserted);
         let sig_b = BehaviorSig {
             function_id: "B".into(),
@@ -1163,7 +1180,10 @@ mod tests {
         });
         assert!(pool.insert(merged));
         let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
-        let first = bucket.iter().find(|e| e.value == serde_json::json!(0)).unwrap();
+        let first = bucket
+            .iter()
+            .find(|e| e.value == serde_json::json!(0))
+            .unwrap();
         assert_eq!(first.behaviors.len(), 2);
     }
 
@@ -1198,7 +1218,11 @@ mod tests {
     fn arb_insert_op() -> impl Strategy<Value = (i64, String, u32, Severity)> {
         (
             0i64..20,
-            prop_oneof![Just("f0".to_string()), Just("f1".to_string()), Just("f2".to_string())],
+            prop_oneof![
+                Just("f0".to_string()),
+                Just("f1".to_string()),
+                Just("f2".to_string())
+            ],
             0u32..3,
             prop_oneof![Just(Severity::RarePath), Just(Severity::UnhandledError)],
         )

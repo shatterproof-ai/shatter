@@ -51,16 +51,39 @@ const QUEUE_FILENAME: &str = "events.jsonl";
 
 /// Known CLI subcommands, kept in sync with clap definitions.
 const KNOWN_SUBCOMMANDS: &[&str] = &[
-    "explore", "scan", "export", "spec", "run", "analyze", "init", "stale",
-    "telemetry", "help", "version",
+    "explore",
+    "scan",
+    "export",
+    "spec",
+    "run",
+    "analyze",
+    "init",
+    "stale",
+    "telemetry",
+    "help",
+    "version",
 ];
 
 /// Known CLI flag enum values that are safe to keep unredacted.
 const KNOWN_ENUM_VALUES: &[&str] = &[
-    "json", "yaml", "text", "table", "concolic", "random", "hybrid",
-    "typescript", "go", "rust", "ts",
-    "brief", "detailed", "full",
-    "on", "off", "status", "reset",
+    "json",
+    "yaml",
+    "text",
+    "table",
+    "concolic",
+    "random",
+    "hybrid",
+    "typescript",
+    "go",
+    "rust",
+    "ts",
+    "brief",
+    "detailed",
+    "full",
+    "on",
+    "off",
+    "status",
+    "reset",
 ];
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -245,7 +268,11 @@ pub fn sanitize_args(args: &[String]) -> Vec<String> {
     for arg in args {
         // Rule 1: Split --flag=value
         if let Some((flag, value)) = split_flag_value(arg) {
-            result.push(format!("{}={}", flag, sanitize_value(&value, &known_subcommands, &known_enums)));
+            result.push(format!(
+                "{}={}",
+                flag,
+                sanitize_value(&value, &known_subcommands, &known_enums)
+            ));
             continue;
         }
 
@@ -269,13 +296,15 @@ pub fn sanitize_args(args: &[String]) -> Vec<String> {
 }
 
 /// Classify and sanitize a single value token (rules 4-7).
-fn sanitize_value(value: &str, _subcommands: &HashSet<&str>, known_enums: &HashSet<&str>) -> String {
+fn sanitize_value(
+    value: &str,
+    _subcommands: &HashSet<&str>,
+    known_enums: &HashSet<&str>,
+) -> String {
     // Rule 4: Path detection — contains path separator or looks like a file
     if looks_like_path(value) {
         let path = Path::new(value);
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_string());
+        let ext = path.extension().map(|e| e.to_string_lossy().to_string());
         let meta = probe_path_metadata(path);
         // Format: <path>.ext with metadata annotation
         let ext_suffix = ext.as_deref().unwrap_or("");
@@ -395,15 +424,12 @@ pub fn queue_event(event: &TelemetryEvent) -> Result<(), TelemetryError> {
             return Err(TelemetryError::Io {
                 context: "locking queue file".into(),
                 source: e,
-            })
+            });
         }
     }
 
     // Check size cap
-    let current_size = file
-        .metadata()
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let current_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     if current_size >= TELEMETRY_MAX_QUEUE_BYTES {
         // Silently drop — queue is full
         file.unlock().ok();
@@ -417,10 +443,12 @@ pub fn queue_event(event: &TelemetryEvent) -> Result<(), TelemetryError> {
     line.push('\n');
 
     let mut writer = BufWriter::new(&file);
-    writer.write_all(line.as_bytes()).map_err(|e| TelemetryError::Io {
-        context: "writing event to queue".into(),
-        source: e,
-    })?;
+    writer
+        .write_all(line.as_bytes())
+        .map_err(|e| TelemetryError::Io {
+            context: "writing event to queue".into(),
+            source: e,
+        })?;
     writer.flush().map_err(|e| TelemetryError::Io {
         context: "flushing queue file".into(),
         source: e,
@@ -496,11 +524,10 @@ pub fn write_config(config: &TelemetryConfig) -> Result<(), TelemetryError> {
             source: e,
         })?;
     }
-    let contents =
-        serde_yaml::to_string(config).map_err(|e| TelemetryError::ConfigSerialize {
-            context: "serializing telemetry config".into(),
-            source: e,
-        })?;
+    let contents = serde_yaml::to_string(config).map_err(|e| TelemetryError::ConfigSerialize {
+        context: "serializing telemetry config".into(),
+        source: e,
+    })?;
     std::fs::write(&path, contents).map_err(|e| TelemetryError::Io {
         context: "writing telemetry config".into(),
         source: e,
@@ -631,10 +658,7 @@ pub fn salt_file_path() -> Result<PathBuf, TelemetryError> {
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryError {
     #[error("telemetry I/O error ({context}): {source}")]
-    Io {
-        context: String,
-        source: io::Error,
-    },
+    Io { context: String, source: io::Error },
 
     #[error("telemetry serialization error ({context}): {source}")]
     Serialize {
@@ -740,9 +764,8 @@ mod tests {
 
     #[test]
     fn no_env_defaults_enabled() {
-        let lookup = |_name: &str| -> Result<String, env::VarError> {
-            Err(env::VarError::NotPresent)
-        };
+        let lookup =
+            |_name: &str| -> Result<String, env::VarError> { Err(env::VarError::NotPresent) };
         assert!(is_enabled_with(lookup));
     }
 

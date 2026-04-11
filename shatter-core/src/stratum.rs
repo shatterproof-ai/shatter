@@ -99,9 +99,7 @@ fn parse_layer_index(s: &str) -> Result<LayerIndex, String> {
             negative: true,
         })
     } else {
-        let value: usize = s
-            .parse()
-            .map_err(|_| format!("invalid layer index: {s}"))?;
+        let value: usize = s.parse().map_err(|_| format!("invalid layer index: {s}"))?;
         Ok(LayerIndex {
             value,
             negative: false,
@@ -162,20 +160,35 @@ mod tests {
     #[test]
     fn parse_single_positive() {
         let spec = parse_stratum_spec("3").unwrap();
-        assert!(matches!(spec.kind, SpecKind::Single(LayerIndex { value: 3, negative: false })));
+        assert!(matches!(
+            spec.kind,
+            SpecKind::Single(LayerIndex {
+                value: 3,
+                negative: false
+            })
+        ));
     }
 
     #[test]
     fn parse_single_negative() {
         let spec = parse_stratum_spec("-0").unwrap();
-        assert!(matches!(spec.kind, SpecKind::Single(LayerIndex { value: 0, negative: true })));
+        assert!(matches!(
+            spec.kind,
+            SpecKind::Single(LayerIndex {
+                value: 0,
+                negative: true
+            })
+        ));
     }
 
     #[test]
     fn parse_range_both_bounds() {
         let spec = parse_stratum_spec("1..3").unwrap();
         match spec.kind {
-            SpecKind::Range { start: Some(s), end: Some(e) } => {
+            SpecKind::Range {
+                start: Some(s),
+                end: Some(e),
+            } => {
                 assert_eq!(s.value, 1);
                 assert!(!s.negative);
                 assert_eq!(e.value, 3);
@@ -189,7 +202,10 @@ mod tests {
     fn parse_range_open_start() {
         let spec = parse_stratum_spec("..3").unwrap();
         match spec.kind {
-            SpecKind::Range { start: None, end: Some(e) } => {
+            SpecKind::Range {
+                start: None,
+                end: Some(e),
+            } => {
                 assert_eq!(e.value, 3);
             }
             _ => panic!("expected range with open start"),
@@ -200,7 +216,10 @@ mod tests {
     fn parse_range_open_end() {
         let spec = parse_stratum_spec("3..").unwrap();
         match spec.kind {
-            SpecKind::Range { start: Some(s), end: None } => {
+            SpecKind::Range {
+                start: Some(s),
+                end: None,
+            } => {
                 assert_eq!(s.value, 3);
             }
             _ => panic!("expected range with open end"),
@@ -211,7 +230,10 @@ mod tests {
     fn parse_range_negative_indices() {
         let spec = parse_stratum_spec("-2..-0").unwrap();
         match spec.kind {
-            SpecKind::Range { start: Some(s), end: Some(e) } => {
+            SpecKind::Range {
+                start: Some(s),
+                end: Some(e),
+            } => {
                 assert!(s.negative);
                 assert_eq!(s.value, 2);
                 assert!(e.negative);

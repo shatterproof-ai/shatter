@@ -27,15 +27,15 @@ use std::collections::HashMap;
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
-use crate::mcdc::McdcTable;
-use crate::explorer::{apply_live_first_overrides, update_live_first_states};
-use crate::mock_value_space::LiveFirstState;
 use crate::drilling;
 use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
-use crate::frontier::{Frontier, FrontierSet, frontier_score};
+use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::frontend::{Frontend, FrontendError};
+use crate::frontier::{Frontier, FrontierSet, frontier_score};
 use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
+use crate::mcdc::McdcTable;
+use crate::mock_value_space::LiveFirstState;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::strategy::{
@@ -72,9 +72,9 @@ impl FrontendCapabilities {
             if let Some(kind_str) = cap.strip_prefix("complex_type:") {
                 // ComplexKind uses serde rename_all = "snake_case", so we
                 // deserialize the bare string as a JSON string value.
-                if let Ok(kind) = serde_json::from_value::<ComplexKind>(
-                    serde_json::Value::String(kind_str.to_string()),
-                ) {
+                if let Ok(kind) = serde_json::from_value::<ComplexKind>(serde_json::Value::String(
+                    kind_str.to_string(),
+                )) {
                     complex_types.insert(kind);
                 }
                 // Silently ignore unknown complex type names
@@ -145,7 +145,6 @@ pub const DEFAULT_SHRINK_BUDGET: usize = 20;
 
 /// Default maximum total executions before stopping exploration.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 500;
-
 
 /// Fitness boost for branches in the first loop iteration.
 const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
@@ -510,20 +509,28 @@ async fn observe_one(
     if let Some(max) = config.max_iterations
         && budget.unique_paths >= max
     {
-        return Ok(ObserveOneResult::Terminated(TerminationReason::MaxIterations));
+        return Ok(ObserveOneResult::Terminated(
+            TerminationReason::MaxIterations,
+        ));
     }
     if let Some(max) = config.max_executions
         && budget.total_executions >= max
     {
-        return Ok(ObserveOneResult::Terminated(TerminationReason::MaxExecutions));
+        return Ok(ObserveOneResult::Terminated(
+            TerminationReason::MaxExecutions,
+        ));
     }
     if let Some(timeout) = config.timeout_explore
         && budget.explore_start.elapsed() >= timeout
     {
-        return Ok(ObserveOneResult::Terminated(TerminationReason::TimeoutExplore));
+        return Ok(ObserveOneResult::Terminated(
+            TerminationReason::TimeoutExplore,
+        ));
     }
     if config.plateau_threshold > 0 && budget.plateau_counter >= config.plateau_threshold {
-        return Ok(ObserveOneResult::Terminated(TerminationReason::CoveragePlateau));
+        return Ok(ObserveOneResult::Terminated(
+            TerminationReason::CoveragePlateau,
+        ));
     }
 
     // Triage: predict whether this input will produce a novel path.
@@ -731,11 +738,7 @@ impl LoopInvariantDetector {
     /// Record branch `taken` values for each (loop_id, branch_id) pair in the trace.
     /// After recording, update the invariant cache: confirm new invariants,
     /// revoke ones that now vary.
-    pub(crate) fn observe(
-        &mut self,
-        scope_events: &[TraceEvent],
-        _branch_path: &[BranchDecision],
-    ) {
+    pub(crate) fn observe(&mut self, scope_events: &[TraceEvent], _branch_path: &[BranchDecision]) {
         if scope_events.is_empty() {
             return;
         }
@@ -833,18 +836,20 @@ impl LoopInvariantDetector {
 /// Map each branch in scope_events to its enclosing loop ID(s).
 /// Retained for unit tests.
 #[cfg(test)]
-pub(crate) fn extract_loop_context(
-    scope_events: &[TraceEvent],
-) -> HashMap<u32, HashSet<u32>> {
+pub(crate) fn extract_loop_context(scope_events: &[TraceEvent]) -> HashMap<u32, HashSet<u32>> {
     let mut loop_stack: Vec<u32> = Vec::new();
     let mut context: HashMap<u32, HashSet<u32>> = HashMap::new();
 
     for ev in scope_events {
         match ev {
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id } } => {
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id },
+            } => {
                 loop_stack.push(*loop_id);
             }
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } } => {
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id },
+            } => {
                 loop_stack.retain(|id| id != loop_id);
             }
             TraceEvent::Branch { decision } => {
@@ -925,7 +930,10 @@ impl LoopCoverageTracker {
 
         // Update stale counts.
         for &loop_id in &loops_in_trace {
-            let had_new = new_coverage_per_loop.get(&loop_id).copied().unwrap_or(false);
+            let had_new = new_coverage_per_loop
+                .get(&loop_id)
+                .copied()
+                .unwrap_or(false);
             if had_new {
                 self.stale_count.insert(loop_id, 0);
                 self.converged.remove(&loop_id);
@@ -1007,7 +1015,11 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
         return output;
     }
 
-    let solvable: Vec<SymExpr> = input.solvable_with_idx.iter().map(|(_, e)| e.clone()).collect();
+    let solvable: Vec<SymExpr> = input
+        .solvable_with_idx
+        .iter()
+        .map(|(_, e)| e.clone())
+        .collect();
 
     if solvable.is_empty() {
         return output;
@@ -1019,16 +1031,27 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
             continue;
         }
         // Skip branches in converged loops.
-        let branch_id = input.obs.result.branch_path.get(branch_idx).map_or(0, |bd| bd.branch_id);
+        let branch_id = input
+            .obs
+            .result
+            .branch_path
+            .get(branch_idx)
+            .map_or(0, |bd| bd.branch_id);
         if let Some(loop_ids) = input.loop_context.get(&branch_id)
             && loop_ids.iter().any(|id| input.converged_loops.contains(id))
         {
             continue;
         }
 
-        match solver::solve_for_new_path(&solvable, solve_idx, input.solver_timeout_ms, &input.param_infos) {
+        match solver::solve_for_new_path(
+            &solvable,
+            solve_idx,
+            input.solver_timeout_ms,
+            &input.param_infos,
+        ) {
             Ok(SolveResult::Sat(values)) => {
-                let new_inputs = overlay_solved_values(&input.obs.inputs, &values, &input.param_names);
+                let new_inputs =
+                    overlay_solved_values(&input.obs.inputs, &values, &input.param_names);
                 output.candidates.push(WorklistEntry {
                     inputs: new_inputs,
                     source: InputSource::Z3Solved,
@@ -1051,7 +1074,6 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
 
     output
 }
-
 
 /// Solve/Generate phase: produce boundary-search and drilling candidates.
 ///
@@ -1088,8 +1110,7 @@ fn solve_and_generate(
         for (i, constraint_opt) in sym_constraints.iter().enumerate() {
             if constraint_opt.is_none() && i < obs.result.branch_path.len() {
                 let bd = &obs.result.branch_path[i];
-                let opposite_seen =
-                    seen_branch_sides.contains(&(bd.branch_id, !bd.taken));
+                let opposite_seen = seen_branch_sides.contains(&(bd.branch_id, !bd.taken));
 
                 if opposite_seen
                     && let Some((tw, fw)) =
@@ -1111,15 +1132,12 @@ fn solve_and_generate(
                         output.boundary_count += 1;
                     }
                     boundary_branches += 1;
-                    if boundary_branches
-                        >= boundary_search::MAX_BOUNDARY_BRANCHES_PER_ROUND
-                    {
+                    if boundary_branches >= boundary_search::MAX_BOUNDARY_BRANCHES_PER_ROUND {
                         break;
                     }
                 }
             }
         }
-
     }
 
     // Parameter drilling: for stalled frontiers, generate targeted mutations.
@@ -1140,8 +1158,7 @@ fn solve_and_generate(
         stalled.truncate(drilling::MAX_FRONTIERS_PER_ROUND);
 
         for frontier in &stalled {
-            let count =
-                drilling::DRILL_MUTATIONS_PER_PARAM * frontier.blocking_params.len().max(1);
+            let count = drilling::DRILL_MUTATIONS_PER_PARAM * frontier.blocking_params.len().max(1);
             let drilled = drilling::generate_drilled_inputs(
                 &frontier.best_prefix,
                 &frontier.blocking_params,
@@ -1187,10 +1204,8 @@ fn solve_and_generate(
     // Candidates from observations with first/second iteration branches get higher
     // worklist priority, ensuring boundary paths are explored before deep interior.
     for obs in observations.iter().filter(|o| o.is_new_path) {
-        let positions = classify_iteration_positions(
-            &obs.result.scope_events,
-            &obs.result.branch_path,
-        );
+        let positions =
+            classify_iteration_positions(&obs.result.scope_events, &obs.result.branch_path);
         let best_boost: Option<f64> = positions
             .iter()
             .filter_map(|pos| match pos {
@@ -1205,7 +1220,9 @@ fn solve_and_generate(
         if let Some(boost) = best_boost {
             for candidate in &mut output.candidates {
                 candidate.fitness = Some(
-                    candidate.fitness.map_or(boost, |existing| existing.max(boost)),
+                    candidate
+                        .fitness
+                        .map_or(boost, |existing| existing.max(boost)),
                 );
             }
         }
@@ -1255,8 +1272,7 @@ async fn refine_boundaries_async(
         let mut executions_used = 0;
 
         for _ in 0..budget_per_boundary {
-            let candidates =
-                boundary_search::interpolate_inputs(&tw, &fw, param_infos, 1);
+            let candidates = boundary_search::interpolate_inputs(&tw, &fw, param_infos, 1);
             if candidates.is_empty() {
                 break; // Converged.
             }
@@ -1422,7 +1438,11 @@ pub async fn explore(
     let strategies: Vec<Box<dyn InputStrategy>> = vec![
         Box::new(UserProvidedStrategy::new(combined_seed)),
         Box::new(BoundarySeeds::new(param_infos)),
-        Box::new(Z3SolverStrategy::new(config.solver_timeout_ms, param_infos.to_vec(), loops)),
+        Box::new(Z3SolverStrategy::new(
+            config.solver_timeout_ms,
+            param_infos.to_vec(),
+            loops,
+        )),
         Box::new(FuzzerStrategy::new(None)),
     ];
     let mut meta_strategy = MetaStrategy::new(strategies, config.meta_config.clone());
@@ -1431,7 +1451,6 @@ pub async fn explore(
         literals: vec![],
         capabilities: FrontendCapabilities::default(),
     };
-
 
     // MC/DC tracking state: only allocated when MC/DC mode is enabled.
     let mut mcdc_table: Option<McdcTable> = if config.mcdc {
@@ -1675,8 +1694,7 @@ pub async fn explore(
         // fitness scoring.
         for decision in &obs.result.branch_path {
             seen_branch_sides.insert((decision.branch_id, decision.taken));
-            let opposite_seen =
-                seen_branch_sides.contains(&(decision.branch_id, !decision.taken));
+            let opposite_seen = seen_branch_sides.contains(&(decision.branch_id, !decision.taken));
             if opposite_seen {
                 frontier_set.remove(decision.branch_id);
                 target_branches.remove(&decision.branch_id);
@@ -1688,8 +1706,7 @@ pub async fn explore(
                 // progress.
                 let blocking =
                     drilling::identify_blocking_params(&decision.constraint, param_infos);
-                let depth =
-                    drilling::branch_depth(&obs.result.branch_path, decision.branch_id);
+                let depth = drilling::branch_depth(&obs.result.branch_path, decision.branch_id);
                 let rarity_boost = config
                     .branch_profile
                     .as_ref()
@@ -1741,94 +1758,96 @@ pub async fn explore(
             let sym_constraints = extract_sym_constraints(&obs.result);
             for decision in &obs.result.branch_path {
                 if let Some(ref conditions) = decision.conditions
-                    && let Some(dec_mcdc) = table.decisions.get(&decision.branch_id) {
-                        // Build the prefix constraints up to (not including) this decision.
-                        let decision_pos = obs.result.branch_path
+                    && let Some(dec_mcdc) = table.decisions.get(&decision.branch_id)
+                {
+                    // Build the prefix constraints up to (not including) this decision.
+                    let decision_pos = obs
+                        .result
+                        .branch_path
+                        .iter()
+                        .position(|d| std::ptr::eq(d, decision));
+                    let prefix_constraints: Vec<SymExpr> = if let Some(pos) = decision_pos {
+                        sym_constraints[..pos]
                             .iter()
-                            .position(|d| std::ptr::eq(d, decision));
-                        let prefix_constraints: Vec<SymExpr> = if let Some(pos) = decision_pos {
-                            sym_constraints[..pos]
-                                .iter()
-                                .filter_map(|c| c.clone())
-                                .collect()
-                        } else {
-                            vec![]
-                        };
+                            .filter_map(|c| c.clone())
+                            .collect()
+                    } else {
+                        vec![]
+                    };
 
-                        // Collect per-condition SymExprs from the ConditionOutcome constraints.
-                        let condition_exprs: Vec<SymExpr> = conditions.iter().filter_map(|co| {
-                            match &co.constraint {
-                                crate::execution_record::SymConstraint::Expr { expr } => {
-                                    Some(expr.clone())
-                                }
-                                crate::execution_record::SymConstraint::Unknown { .. } => None,
+                    // Collect per-condition SymExprs from the ConditionOutcome constraints.
+                    let condition_exprs: Vec<SymExpr> = conditions
+                        .iter()
+                        .filter_map(|co| match &co.constraint {
+                            crate::execution_record::SymConstraint::Expr { expr } => {
+                                Some(expr.clone())
                             }
-                        }).collect();
+                            crate::execution_record::SymConstraint::Unknown { .. } => None,
+                        })
+                        .collect();
 
-                        let observed_values: Vec<Option<bool>> = conditions.iter().map(|co| {
-                            if co.masked { None } else { co.value }
-                        }).collect();
+                    let observed_values: Vec<Option<bool>> = conditions
+                        .iter()
+                        .map(|co| if co.masked { None } else { co.value })
+                        .collect();
 
-                        for (i, &is_independent) in dec_mcdc.independent.iter().enumerate() {
-                            if !is_independent {
-                                let goal = McdcGoal {
-                                    branch_id: decision.branch_id,
-                                    target_condition_index: i,
-                                    prefix_constraints: prefix_constraints.clone(),
-                                    condition_exprs: condition_exprs.clone(),
-                                    observed_values: observed_values.clone(),
-                                };
-                                tracing::debug!(
-                                    branch_id = goal.branch_id,
-                                    condition_index = goal.target_condition_index,
-                                    "mcdc_goal: condition lacks independence pair, invoking solver"
-                                );
-                                // Call the MC/DC targeted solver to find inputs that
-                                // flip the target condition while holding all others constant.
-                                match solver::solve_for_mcdc_independence(
-                                    &goal.prefix_constraints,
-                                    &goal.condition_exprs,
-                                    &goal.observed_values,
-                                    goal.target_condition_index,
-                                    config.solver_timeout_ms,
-                                    param_infos,
-                                ) {
-                                    Ok(SolveResult::Sat(values)) => {
-                                        let new_inputs = overlay_solved_values(
-                                            &obs.inputs,
-                                            &values,
-                                            &param_names,
-                                        );
-                                        supplementary.push(WorklistEntry {
-                                            inputs: new_inputs,
-                                            source: InputSource::McdcTarget,
-                                            fitness: None,
-                                            mock_values: obs.mock_values.clone(),
-                                        });
-                                        tracing::debug!(
-                                            branch_id = goal.branch_id,
-                                            condition_index = goal.target_condition_index,
-                                            "mcdc_goal: solver SAT — added supplementary entry"
-                                        );
-                                    }
-                                    Ok(SolveResult::Unsat) => {
-                                        tracing::debug!(
-                                            branch_id = goal.branch_id,
-                                            condition_index = goal.target_condition_index,
-                                            "mcdc_goal: solver UNSAT — independence pair infeasible"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            branch_id = goal.branch_id,
-                                            condition_index = goal.target_condition_index,
-                                            error = %e,
-                                            "mcdc_goal: solver error"
-                                        );
-                                    }
+                    for (i, &is_independent) in dec_mcdc.independent.iter().enumerate() {
+                        if !is_independent {
+                            let goal = McdcGoal {
+                                branch_id: decision.branch_id,
+                                target_condition_index: i,
+                                prefix_constraints: prefix_constraints.clone(),
+                                condition_exprs: condition_exprs.clone(),
+                                observed_values: observed_values.clone(),
+                            };
+                            tracing::debug!(
+                                branch_id = goal.branch_id,
+                                condition_index = goal.target_condition_index,
+                                "mcdc_goal: condition lacks independence pair, invoking solver"
+                            );
+                            // Call the MC/DC targeted solver to find inputs that
+                            // flip the target condition while holding all others constant.
+                            match solver::solve_for_mcdc_independence(
+                                &goal.prefix_constraints,
+                                &goal.condition_exprs,
+                                &goal.observed_values,
+                                goal.target_condition_index,
+                                config.solver_timeout_ms,
+                                param_infos,
+                            ) {
+                                Ok(SolveResult::Sat(values)) => {
+                                    let new_inputs =
+                                        overlay_solved_values(&obs.inputs, &values, &param_names);
+                                    supplementary.push(WorklistEntry {
+                                        inputs: new_inputs,
+                                        source: InputSource::McdcTarget,
+                                        fitness: None,
+                                        mock_values: obs.mock_values.clone(),
+                                    });
+                                    tracing::debug!(
+                                        branch_id = goal.branch_id,
+                                        condition_index = goal.target_condition_index,
+                                        "mcdc_goal: solver SAT — added supplementary entry"
+                                    );
+                                }
+                                Ok(SolveResult::Unsat) => {
+                                    tracing::debug!(
+                                        branch_id = goal.branch_id,
+                                        condition_index = goal.target_condition_index,
+                                        "mcdc_goal: solver UNSAT — independence pair infeasible"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        branch_id = goal.branch_id,
+                                        condition_index = goal.target_condition_index,
+                                        error = %e,
+                                        "mcdc_goal: solver error"
+                                    );
                                 }
                             }
                         }
+                    }
                 }
             }
         }
@@ -1865,7 +1884,8 @@ pub async fn explore(
 
         // Abandon frontiers that have exceeded the stall threshold.
         {
-            let newly_abandoned = frontier_set.abandon_stalled(crate::frontier::FRONTIER_STALL_THRESHOLD);
+            let newly_abandoned =
+                frontier_set.abandon_stalled(crate::frontier::FRONTIER_STALL_THRESHOLD);
             for f in &newly_abandoned {
                 tracing::info!(
                     branch_id = f.branch_id,
@@ -1926,14 +1946,17 @@ pub async fn explore(
         // that the highest-value witnesses are shrunk first. Tie-break by ascending
         // path hash for fully deterministic ordering independent of HashMap iteration.
         let paths_considered = path_witnesses.len();
-        let mut to_shrink: Vec<(u64, Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>)> =
-            path_witnesses
-                .into_iter()
-                .filter(|(_, (inputs, _))| {
-                    crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
-                })
-                .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
-                .collect();
+        let mut to_shrink: Vec<(
+            u64,
+            Vec<serde_json::Value>,
+            Vec<crate::protocol::MockConfig>,
+        )> = path_witnesses
+            .into_iter()
+            .filter(|(_, (inputs, _))| {
+                crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
+            })
+            .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
+            .collect();
         to_shrink.sort_by(|(ph_a, inputs_a, _), (ph_b, inputs_b, _)| {
             let ca = crate::shrink::witness_complexity(inputs_a);
             let cb = crate::shrink::witness_complexity(inputs_b);
@@ -2115,7 +2138,6 @@ pub async fn explore(
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2145,7 +2167,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -2159,18 +2184,14 @@ mod tests {
                 branch_id: 0,
                 line: 10,
                 taken: true,
-                constraint: SymConstraint::Unknown {
-                    hint: "x".into(),
-                },
+                constraint: SymConstraint::Unknown { hint: "x".into() },
                 conditions: None,
             },
             BranchDecision {
                 branch_id: 1,
                 line: 20,
                 taken: false,
-                constraint: SymConstraint::Unknown {
-                    hint: "y".into(),
-                },
+                constraint: SymConstraint::Unknown { hint: "y".into() },
                 conditions: None,
             },
         ];
@@ -2183,18 +2204,14 @@ mod tests {
             branch_id: 0,
             line: 10,
             taken: true,
-            constraint: SymConstraint::Unknown {
-                hint: "x".into(),
-            },
+            constraint: SymConstraint::Unknown { hint: "x".into() },
             conditions: None,
         }];
         let path_b = vec![BranchDecision {
             branch_id: 0,
             line: 10,
             taken: false,
-            constraint: SymConstraint::Unknown {
-                hint: "x".into(),
-            },
+            constraint: SymConstraint::Unknown { hint: "x".into() },
             conditions: None,
         }];
         assert_ne!(hash_branch_path(&path_a), hash_branch_path(&path_b));
@@ -2249,10 +2266,22 @@ mod tests {
 
     #[test]
     fn concrete_to_json_primitives() {
-        assert_eq!(concrete_to_json(&ConcreteValue::Int(42)), serde_json::json!(42));
-        assert_eq!(concrete_to_json(&ConcreteValue::Float(2.5)), serde_json::json!(2.5));
-        assert_eq!(concrete_to_json(&ConcreteValue::Str("hello".into())), serde_json::json!("hello"));
-        assert_eq!(concrete_to_json(&ConcreteValue::Bool(true)), serde_json::json!(true));
+        assert_eq!(
+            concrete_to_json(&ConcreteValue::Int(42)),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            concrete_to_json(&ConcreteValue::Float(2.5)),
+            serde_json::json!(2.5)
+        );
+        assert_eq!(
+            concrete_to_json(&ConcreteValue::Str("hello".into())),
+            serde_json::json!("hello")
+        );
+        assert_eq!(
+            concrete_to_json(&ConcreteValue::Bool(true)),
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -2366,7 +2395,8 @@ mod tests {
         // Then negating it gives x == 42. ✓
         //
         // For this test, let's just use solve_constraints directly to verify Z3 can find x=42.
-        let result = solver::solve_constraints(&[x_eq_42], None, &[]).expect("solver should not error");
+        let result =
+            solver::solve_constraints(&[x_eq_42], None, &[]).expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -2398,8 +2428,8 @@ mod tests {
         };
 
         // Negate constraint[0] to flip the branch: NOT(NOT(x == 42)) → x == 42.
-        let result =
-            solver::solve_for_new_path(&[not_x_eq_42], 0, None, &[]).expect("solver should not error");
+        let result = solver::solve_for_new_path(&[not_x_eq_42], 0, None, &[])
+            .expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -2453,8 +2483,8 @@ mod tests {
         let constraints = [not_x_gt_10, not_x_eq_42, x_lt_100];
 
         // Negate constraint[0]: flip NOT(x>10) → x>10. With prefix empty, just x>10.
-        let result =
-            solver::solve_for_new_path(&constraints, 0, None, &[]).expect("should solve for branch 0");
+        let result = solver::solve_for_new_path(&constraints, 0, None, &[])
+            .expect("should solve for branch 0");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -2468,8 +2498,8 @@ mod tests {
 
         // Negate constraint[1]: keep prefix NOT(x>10) i.e. x<=10, then flip NOT(x==42) → x==42.
         // But x<=10 AND x==42 is UNSAT (can't be both ≤10 and =42).
-        let result =
-            solver::solve_for_new_path(&constraints, 1, None, &[]).expect("should solve for branch 1");
+        let result = solver::solve_for_new_path(&constraints, 1, None, &[])
+            .expect("should solve for branch 1");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x==42 should be unsat"
@@ -2477,8 +2507,8 @@ mod tests {
 
         // Negate constraint[2]: keep prefix NOT(x>10), NOT(x==42), flip x<100 → x>=100.
         // x<=10 AND x!=42 AND x>=100 is UNSAT.
-        let result =
-            solver::solve_for_new_path(&constraints, 2, None, &[]).expect("should solve for branch 2");
+        let result = solver::solve_for_new_path(&constraints, 2, None, &[])
+            .expect("should solve for branch 2");
         assert!(
             matches!(result, SolveResult::Unsat),
             "x<=10 AND x>=100 should be unsat"
@@ -2738,7 +2768,10 @@ mod tests {
         // for unknown constraints without boundary witnesses.
         assert_eq!(output.fuzz_count, 0);
         assert_eq!(output.z3_count, 0);
-        assert!(output.candidates.is_empty(), "no candidates without boundary witnesses");
+        assert!(
+            output.candidates.is_empty(),
+            "no candidates without boundary witnesses"
+        );
     }
 
     /// `solve_and_generate` no longer handles Z3 solving — that moved to
@@ -2797,8 +2830,16 @@ mod tests {
         );
 
         // Z3 solving moved to Z3SolverStrategy.feedback() — solve_and_generate produces 0.
-        assert_eq!(output.z3_count, 0, "Z3 moved to MetaStrategy; solve_and_generate produces no Z3 candidates");
-        assert!(!output.candidates.iter().any(|e| e.source == InputSource::Z3Solved));
+        assert_eq!(
+            output.z3_count, 0,
+            "Z3 moved to MetaStrategy; solve_and_generate produces no Z3 candidates"
+        );
+        assert!(
+            !output
+                .candidates
+                .iter()
+                .any(|e| e.source == InputSource::Z3Solved)
+        );
     }
 
     // -- z3_solve_step unit tests --
@@ -2821,7 +2862,9 @@ mod tests {
                 branch_id: 0,
                 line: 5,
                 taken: false,
-                constraint: SymConstraint::Expr { expr: x_gt_10.clone() },
+                constraint: SymConstraint::Expr {
+                    expr: x_gt_10.clone(),
+                },
                 conditions: None,
             }]),
             source: InputSource::Seed,
@@ -2839,10 +2882,13 @@ mod tests {
 
         // `taken=false` means the path condition is NOT(x>10), so negating at index 0
         // produces x>10 — solver should return a value > 10.
-        let solvable_with_idx = vec![(0usize, SymExpr::UnOp {
-            op: crate::sym_expr::UnOpKind::Not,
-            operand: Box::new(x_gt_10),
-        })];
+        let solvable_with_idx = vec![(
+            0usize,
+            SymExpr::UnOp {
+                op: crate::sym_expr::UnOpKind::Not,
+                operand: Box::new(x_gt_10),
+            },
+        )];
 
         let input = Z3SolveInput {
             obs,
@@ -2856,10 +2902,18 @@ mod tests {
         };
 
         let output = z3_solve_step(input);
-        assert!(output.z3_count > 0, "z3_solve_step should produce Z3 candidates");
+        assert!(
+            output.z3_count > 0,
+            "z3_solve_step should produce Z3 candidates"
+        );
         assert!(!output.candidates.is_empty());
         assert!(output.stall_branch_ids.is_empty());
-        assert!(output.candidates.iter().all(|c| c.source == InputSource::Z3Solved));
+        assert!(
+            output
+                .candidates
+                .iter()
+                .all(|c| c.source == InputSource::Z3Solved)
+        );
     }
 
     /// `z3_solve_step` skips duplicate-path observations (is_new_path=false).
@@ -2897,7 +2951,10 @@ mod tests {
     fn z3_solve_step_skips_converged_loop_branches() {
         let x_gt_0 = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
 
@@ -2907,7 +2964,9 @@ mod tests {
                 branch_id: 42,
                 line: 1,
                 taken: true,
-                constraint: SymConstraint::Expr { expr: x_gt_0.clone() },
+                constraint: SymConstraint::Expr {
+                    expr: x_gt_0.clone(),
+                },
                 conditions: None,
             }]),
             source: InputSource::Seed,
@@ -3010,9 +3069,7 @@ mod tests {
 
     #[test]
     fn meta_strategy_feedback_reaches_fuzzer() {
-        let strategies: Vec<Box<dyn InputStrategy>> = vec![
-            Box::new(FuzzerStrategy::new(Some(42))),
-        ];
+        let strategies: Vec<Box<dyn InputStrategy>> = vec![Box::new(FuzzerStrategy::new(Some(42)))];
         let mut meta = MetaStrategy::new(strategies, Default::default());
 
         let ctx = StrategyContext {
@@ -3078,7 +3135,11 @@ mod tests {
             "stub",
             vec![vec![serde_json::json!(0)]],
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3122,7 +3183,11 @@ mod tests {
             "f",
             vec![vec![serde_json::json!(0)]],
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3140,7 +3205,10 @@ mod tests {
             result.unique_paths
         );
         assert!(result.total_executions >= 2);
-        assert!(result.z3_generated > 0, "Z3 should have generated at least one input");
+        assert!(
+            result.z3_generated > 0,
+            "Z3 should have generated at least one input"
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -3160,16 +3228,19 @@ mod tests {
             ..Default::default()
         };
 
-        let seeds: Vec<Vec<serde_json::Value>> = (0..5)
-            .map(|i| vec![serde_json::json!(i)])
-            .collect();
+        let seeds: Vec<Vec<serde_json::Value>> =
+            (0..5).map(|i| vec![serde_json::json!(i)]).collect();
 
         let result = explore(
             &mut frontend,
             "f",
             seeds,
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3181,7 +3252,10 @@ mod tests {
         // Field still present in ExploreResult (compile check).
         assert_eq!(result.pipeline_overlaps, 0);
         // Exploration must still make progress despite pipelining removal.
-        assert!(result.unique_paths >= 1, "expected at least one unique path");
+        assert!(
+            result.unique_paths >= 1,
+            "expected at least one unique path"
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -3201,16 +3275,18 @@ mod tests {
         };
 
         // Provide multiple identical seeds so the worklist doesn't empty first.
-        let seeds = (0..10)
-            .map(|i| vec![serde_json::json!(i)])
-            .collect();
+        let seeds = (0..10).map(|i| vec![serde_json::json!(i)]).collect();
 
         let result = explore(
             &mut frontend,
             "stub",
             seeds,
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3222,7 +3298,10 @@ mod tests {
         // All seeds produce the same empty branch path, so after the first unique path
         // we get plateau_threshold consecutive duplicates.
         assert_eq!(result.unique_paths, 1);
-        assert_eq!(result.termination_reason, TerminationReason::CoveragePlateau);
+        assert_eq!(
+            result.termination_reason,
+            TerminationReason::CoveragePlateau
+        );
         // 1 new path + 3 duplicates to trigger plateau = 4 total executions.
         assert_eq!(result.total_executions, 4);
 
@@ -3242,16 +3321,18 @@ mod tests {
             ..Default::default()
         };
 
-        let seeds = (0..10)
-            .map(|i| vec![serde_json::json!(i)])
-            .collect();
+        let seeds = (0..10).map(|i| vec![serde_json::json!(i)]).collect();
 
         let result = explore(
             &mut frontend,
             "stub",
             seeds,
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3285,7 +3366,11 @@ mod tests {
             "f",
             vec![vec![serde_json::json!(0)], vec![serde_json::json!(20)]],
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3366,16 +3451,18 @@ mod tests {
             ..Default::default()
         };
 
-        let seeds = (0..100)
-            .map(|i| vec![serde_json::json!(i)])
-            .collect();
+        let seeds = (0..100).map(|i| vec![serde_json::json!(i)]).collect();
 
         let result = explore(
             &mut frontend,
             "stub",
             seeds,
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3412,16 +3499,19 @@ mod tests {
         // the path discovered by the first execution. Seeds are always sampled
         // (executed) when triage predicts Skip, so redundant seeds still run
         // but produce no new unique paths.
-        let seeds: Vec<Vec<serde_json::Value>> = (0..20)
-            .map(|_| vec![serde_json::json!(5)])
-            .collect();
+        let seeds: Vec<Vec<serde_json::Value>> =
+            (0..20).map(|_| vec![serde_json::json!(5)]).collect();
 
         let result = explore(
             &mut frontend,
             "f",
             seeds,
             vec![],
-            &[ParamInfo { name: "x".into(), typ: crate::types::TypeInfo::Int, type_name: None }],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
             &explore_config,
             None,
             None,
@@ -3747,7 +3837,8 @@ mod tests {
                 side_effects: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -3777,9 +3868,15 @@ mod tests {
 
         // Observation with 1-iteration loop: branch is FirstExit → gets BOUNDARY_FITNESS_FIRST.
         let scope_with_loop = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: branch.clone() },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: branch.clone(),
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
         ];
         let out_boundary = call_solve(make_obs(scope_with_loop));
         assert!(
@@ -3787,10 +3884,17 @@ mod tests {
             "boundary observation should produce drill candidates (stalled frontier triggers drilling)"
         );
         assert!(
-            out_boundary.candidates.iter().all(|c| c.fitness == Some(BOUNDARY_FITNESS_FIRST)),
+            out_boundary
+                .candidates
+                .iter()
+                .all(|c| c.fitness == Some(BOUNDARY_FITNESS_FIRST)),
             "all candidates from a boundary (FirstExit) observation should get BOUNDARY_FITNESS_FIRST boost; \
              got fitnesses: {:?}",
-            out_boundary.candidates.iter().map(|c| c.fitness).collect::<Vec<_>>(),
+            out_boundary
+                .candidates
+                .iter()
+                .map(|c| c.fitness)
+                .collect::<Vec<_>>(),
         );
 
         // Observation with no loop context: branch is NonLoop → no boost, fitness stays None.
@@ -3803,7 +3907,11 @@ mod tests {
             out_no_boost.candidates.iter().all(|c| c.fitness.is_none()),
             "candidates from a non-loop observation should have no fitness boost; \
              got fitnesses: {:?}",
-            out_no_boost.candidates.iter().map(|c| c.fitness).collect::<Vec<_>>(),
+            out_no_boost
+                .candidates
+                .iter()
+                .map(|c| c.fitness)
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -3815,15 +3923,49 @@ mod tests {
     fn invariant_detector_marks_constant_branch() {
         let mut detector = LoopInvariantDetector::new();
         let events = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
         ];
         let bp = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+                conditions: None,
+            },
         ];
         detector.observe(&events, &bp);
         let skip = detector.skip_indices(&events, &bp);
@@ -3835,27 +3977,77 @@ mod tests {
     fn invariant_detector_revokes_on_variation() {
         let mut detector = LoopInvariantDetector::new();
         let events1 = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
         ];
         let bp1 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
-            BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 10,
+                line: 5,
+                taken: true,
+                constraint: SymConstraint::default(),
+                conditions: None,
+            },
         ];
         detector.observe(&events1, &bp1);
         assert!(!detector.skip_indices(&events1, &bp1).is_empty());
 
         let events2 = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: false,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
         ];
-        let bp2 = vec![
-            BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None },
-        ];
+        let bp2 = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: false,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         detector.observe(&events2, &bp2);
         let skip = detector.skip_indices(&events1, &bp1);
         assert!(skip.is_empty());
@@ -3864,9 +4056,13 @@ mod tests {
     #[test]
     fn invariant_detector_empty_events_no_skip() {
         let detector = LoopInvariantDetector::new();
-        let bp = vec![
-            BranchDecision { branch_id: 1, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None },
-        ];
+        let bp = vec![BranchDecision {
+            branch_id: 1,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         assert!(detector.skip_indices(&[], &bp).is_empty());
     }
 
@@ -3897,7 +4093,10 @@ mod tests {
         for &thresh in &thresholds {
             let expr = SymExpr::BinOp {
                 op: BinOpKind::Gt,
-                left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+                left: Box::new(SymExpr::Param {
+                    name: "x".into(),
+                    path: vec![],
+                }),
                 right: Box::new(SymExpr::Const(ConstValue::Int(thresh))),
             };
             let bd = BranchDecision {
@@ -3907,11 +4106,17 @@ mod tests {
                 constraint: SymConstraint::Expr { expr },
                 conditions: None,
             };
-            scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } });
-            scope_evts.push(TraceEvent::Branch { decision: bd.clone() });
+            scope_evts.push(TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            });
+            scope_evts.push(TraceEvent::Branch {
+                decision: bd.clone(),
+            });
             bp.push(bd);
         }
-        scope_evts.push(TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } });
+        scope_evts.push(TraceEvent::Scope {
+            event: ScopeEvent::LoopExit { loop_id: 1 },
+        });
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
@@ -3933,7 +4138,8 @@ mod tests {
                 side_effects: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -3944,7 +4150,9 @@ mod tests {
         };
 
         // Build solvable_with_idx from branch path: all taken=true so path cond = expr.
-        let solvable_with_idx: Vec<(usize, SymExpr)> = bp.iter().enumerate()
+        let solvable_with_idx: Vec<(usize, SymExpr)> = bp
+            .iter()
+            .enumerate()
             .filter_map(|(i, bd)| match &bd.constraint {
                 SymConstraint::Expr { expr } => Some((i, expr.clone())),
                 SymConstraint::Unknown { .. } => None,
@@ -4007,7 +4215,13 @@ mod tests {
         loop_context.insert(10, [1].into_iter().collect());
 
         // First observation: new coverage.
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
+        let bp1 = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         tracker.observe(&loop_context, &bp1);
         assert!(!tracker.should_skip_branch(10, &loop_context));
 
@@ -4026,12 +4240,24 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp1 = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
+        let bp1 = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         tracker.observe(&loop_context, &bp1);
         tracker.observe(&loop_context, &bp1); // stale=1
 
         // New coverage resets stale count.
-        let bp2 = vec![BranchDecision { branch_id: 10, line: 5, taken: false, constraint: SymConstraint::default(), conditions: None }];
+        let bp2 = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: false,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         tracker.observe(&loop_context, &bp2);
         assert!(!tracker.should_skip_branch(10, &loop_context));
     }
@@ -4042,7 +4268,13 @@ mod tests {
         let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
         loop_context.insert(10, [1].into_iter().collect());
 
-        let bp = vec![BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None }];
+        let bp = vec![BranchDecision {
+            branch_id: 10,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::default(),
+            conditions: None,
+        }];
         for _ in 0..10 {
             tracker.observe(&loop_context, &bp);
         }
@@ -4061,21 +4293,32 @@ mod tests {
         use crate::sym_expr::SymExpr;
         let x_gt_10 = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(10))),
         };
         let loop_branch = BranchDecision {
             branch_id: 0,
             line: 5,
             taken: true,
-            constraint: SymConstraint::Expr { expr: x_gt_10.clone() },
+            constraint: SymConstraint::Expr {
+                expr: x_gt_10.clone(),
+            },
             conditions: None,
         };
         // scope_events encode branch 0 as inside loop 1.
         let scope_events_with_loop = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: loop_branch.clone() },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: loop_branch.clone(),
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
         ];
         let param_infos = vec![ParamInfo {
             name: "x".into(),
@@ -4098,7 +4341,8 @@ mod tests {
                     side_effects: vec![],
                     capture_truncation: None,
                     discovered_dependencies: vec![],
-                    connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                    connection_failures: vec![],
+                    runtime_crypto_boundaries: vec![],
                     performance: empty_perf(),
                 },
                 source: InputSource::Seed,
@@ -4155,10 +4399,16 @@ mod tests {
         }
 
         // Without convergence: all 5 observations attempt Z3.
-        assert_eq!(z3_count_no_conv, 5, "window=0 should attempt Z3 for all 5 observations");
+        assert_eq!(
+            z3_count_no_conv, 5,
+            "window=0 should attempt Z3 for all 5 observations"
+        );
         // With window=3: obs 1 adds new coverage (stale=0); obs 2-4 are stale (stale=1,2,3→converged);
         // obs 5 is already converged → skipped. Z3 runs for obs 1-3, skipped for 4-5. Net: 3.
-        assert_eq!(z3_count_conv, 3, "window=3 should skip obs 4 and 5 after loop converges");
+        assert_eq!(
+            z3_count_conv, 3,
+            "window=3 should skip obs 4 and 5 after loop converges"
+        );
         assert!(
             z3_count_conv < z3_count_no_conv,
             "convergence should reduce Z3 candidates for saturated loop branches"
@@ -4168,10 +4418,30 @@ mod tests {
     #[test]
     fn extract_loop_context_maps_branches_to_loops() {
         let events = vec![
-            TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 10, line: 5, taken: true, constraint: SymConstraint::default(), conditions: None } },
-            TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: 1 } },
-            TraceEvent::Branch { decision: BranchDecision { branch_id: 20, line: 15, taken: false, constraint: SymConstraint::default(), conditions: None } },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopEnter { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 10,
+                    line: 5,
+                    taken: true,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
+            TraceEvent::Scope {
+                event: ScopeEvent::LoopExit { loop_id: 1 },
+            },
+            TraceEvent::Branch {
+                decision: BranchDecision {
+                    branch_id: 20,
+                    line: 15,
+                    taken: false,
+                    constraint: SymConstraint::default(),
+                    conditions: None,
+                },
+            },
         ];
         let ctx = extract_loop_context(&events);
         assert!(ctx.get(&10).unwrap().contains(&1));

@@ -122,13 +122,22 @@ impl fmt::Display for RefactoringSuggestion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ExtractToParameter => {
-                write!(f, "Extract to a named function parameter for dependency injection")
+                write!(
+                    f,
+                    "Extract to a named function parameter for dependency injection"
+                )
             }
             Self::WrapInNamedFunction => {
-                write!(f, "Wrap in a function that can be replaced in test configuration")
+                write!(
+                    f,
+                    "Wrap in a function that can be replaced in test configuration"
+                )
             }
             Self::MoveBehindInterface => {
-                write!(f, "Move behind an interface/trait for substitution in tests")
+                write!(
+                    f,
+                    "Move behind an interface/trait for substitution in tests"
+                )
             }
         }
     }
@@ -262,10 +271,8 @@ pub fn assess_mockability(dep: &ExternalDependency) -> MockabilityAssessment {
         MockDifficulty::Hard
     };
 
-    let suggestions: Vec<RefactoringSuggestion> = reasons
-        .iter()
-        .map(|r| suggestion_for_reason(*r))
-        .collect();
+    let suggestions: Vec<RefactoringSuggestion> =
+        reasons.iter().map(|r| suggestion_for_reason(*r)).collect();
 
     MockabilityAssessment {
         symbol: dep.symbol.clone(),
@@ -297,11 +304,7 @@ pub fn generate_recommendations(deps: &[ExternalDependency]) -> Vec<RefactoringR
             continue;
         }
 
-        for (reason, suggestion) in assessment
-            .reasons
-            .iter()
-            .zip(assessment.suggestions.iter())
-        {
+        for (reason, suggestion) in assessment.reasons.iter().zip(assessment.suggestions.iter()) {
             recs.push(RefactoringRecommendation {
                 symbol: dep.symbol.clone(),
                 source_module: dep.source_module.clone(),
@@ -368,20 +371,23 @@ mod tests {
         );
         let assessment = assess_mockability(&dep);
         assert_eq!(assessment.difficulty, MockDifficulty::Hard);
-        assert!(assessment.reasons.contains(&HardToMockReason::DynamicDispatch));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::DynamicDispatch)
+        );
     }
 
     #[test]
     fn detects_computed_access_as_dynamic_dispatch() {
-        let dep = make_dep(
-            "obj[key]",
-            "my-lib",
-            DependencyKind::FunctionCall,
-            vec![10],
-        );
+        let dep = make_dep("obj[key]", "my-lib", DependencyKind::FunctionCall, vec![10]);
         let assessment = assess_mockability(&dep);
         assert_eq!(assessment.difficulty, MockDifficulty::Hard);
-        assert!(assessment.reasons.contains(&HardToMockReason::DynamicDispatch));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::DynamicDispatch)
+        );
     }
 
     #[test]
@@ -393,7 +399,11 @@ mod tests {
             vec![5],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::DynamicDispatch));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::DynamicDispatch)
+        );
     }
 
     // --- Closure callback detection ---
@@ -407,7 +417,11 @@ mod tests {
             vec![20],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::ClosureCallback));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::ClosureCallback)
+        );
     }
 
     #[test]
@@ -419,7 +433,11 @@ mod tests {
             vec![15],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::ClosureCallback));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::ClosureCallback)
+        );
     }
 
     // --- Subprocess spawning detection ---
@@ -434,7 +452,11 @@ mod tests {
         );
         let assessment = assess_mockability(&dep);
         assert_eq!(assessment.difficulty, MockDifficulty::Hard);
-        assert!(assessment.reasons.contains(&HardToMockReason::SubprocessSpawning));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::SubprocessSpawning)
+        );
     }
 
     #[test]
@@ -446,19 +468,22 @@ mod tests {
             vec![25],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::SubprocessSpawning));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::SubprocessSpawning)
+        );
     }
 
     #[test]
     fn detects_spawn_symbol_without_module() {
-        let dep = make_dep(
-            "cp.spawn",
-            "utils",
-            DependencyKind::MethodCall,
-            vec![30],
-        );
+        let dep = make_dep("cp.spawn", "utils", DependencyKind::MethodCall, vec![30]);
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::SubprocessSpawning));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::SubprocessSpawning)
+        );
     }
 
     // --- Multi-layer indirection detection ---
@@ -472,7 +497,11 @@ mod tests {
             vec![10, 25, 42, 60],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.reasons.contains(&HardToMockReason::MultiLayerIndirection));
+        assert!(
+            assessment
+                .reasons
+                .contains(&HardToMockReason::MultiLayerIndirection)
+        );
     }
 
     #[test]
@@ -484,19 +513,18 @@ mod tests {
             vec![10],
         );
         let assessment = assess_mockability(&dep);
-        assert!(!assessment.reasons.contains(&HardToMockReason::MultiLayerIndirection));
+        assert!(
+            !assessment
+                .reasons
+                .contains(&HardToMockReason::MultiLayerIndirection)
+        );
     }
 
     // --- Easy dependency classification ---
 
     #[test]
     fn simple_function_call_is_easy() {
-        let dep = make_dep(
-            "readFile",
-            "fs",
-            DependencyKind::FunctionCall,
-            vec![10],
-        );
+        let dep = make_dep("readFile", "fs", DependencyKind::FunctionCall, vec![10]);
         let assessment = assess_mockability(&dep);
         assert_eq!(assessment.difficulty, MockDifficulty::Easy);
         assert!(assessment.reasons.is_empty());
@@ -507,14 +535,13 @@ mod tests {
 
     #[test]
     fn dynamic_dispatch_suggests_extract_to_parameter() {
-        let dep = make_dep(
-            "obj[key]",
-            "lib",
-            DependencyKind::FunctionCall,
-            vec![10],
-        );
+        let dep = make_dep("obj[key]", "lib", DependencyKind::FunctionCall, vec![10]);
         let assessment = assess_mockability(&dep);
-        assert!(assessment.suggestions.contains(&RefactoringSuggestion::ExtractToParameter));
+        assert!(
+            assessment
+                .suggestions
+                .contains(&RefactoringSuggestion::ExtractToParameter)
+        );
     }
 
     #[test]
@@ -526,7 +553,11 @@ mod tests {
             vec![18],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.suggestions.contains(&RefactoringSuggestion::WrapInNamedFunction));
+        assert!(
+            assessment
+                .suggestions
+                .contains(&RefactoringSuggestion::WrapInNamedFunction)
+        );
     }
 
     #[test]
@@ -538,7 +569,11 @@ mod tests {
             vec![10, 25, 42],
         );
         let assessment = assess_mockability(&dep);
-        assert!(assessment.suggestions.contains(&RefactoringSuggestion::MoveBehindInterface));
+        assert!(
+            assessment
+                .suggestions
+                .contains(&RefactoringSuggestion::MoveBehindInterface)
+        );
     }
 
     // --- Batch assessment ---
@@ -547,7 +582,12 @@ mod tests {
     fn assess_all_returns_all_deps() {
         let deps = vec![
             make_dep("readFile", "fs", DependencyKind::FunctionCall, vec![10]),
-            make_dep("exec", "child_process", DependencyKind::FunctionCall, vec![18]),
+            make_dep(
+                "exec",
+                "child_process",
+                DependencyKind::FunctionCall,
+                vec![18],
+            ),
         ];
         let assessments = assess_all(&deps);
         assert_eq!(assessments.len(), 2);
@@ -559,9 +599,12 @@ mod tests {
 
     #[test]
     fn generate_recommendations_skips_easy() {
-        let deps = vec![
-            make_dep("readFile", "fs", DependencyKind::FunctionCall, vec![10]),
-        ];
+        let deps = vec![make_dep(
+            "readFile",
+            "fs",
+            DependencyKind::FunctionCall,
+            vec![10],
+        )];
         let recs = generate_recommendations(&deps);
         assert!(recs.is_empty());
     }
@@ -569,7 +612,12 @@ mod tests {
     #[test]
     fn generate_recommendations_for_hard_deps() {
         let deps = vec![
-            make_dep("exec", "child_process", DependencyKind::FunctionCall, vec![18]),
+            make_dep(
+                "exec",
+                "child_process",
+                DependencyKind::FunctionCall,
+                vec![18],
+            ),
             make_dep("obj[key]", "lib", DependencyKind::FunctionCall, vec![42]),
         ];
         let recs = generate_recommendations(&deps);
@@ -577,12 +625,18 @@ mod tests {
 
         assert_eq!(recs[0].symbol, "exec");
         assert_eq!(recs[0].reason, HardToMockReason::SubprocessSpawning);
-        assert_eq!(recs[0].suggestion, RefactoringSuggestion::WrapInNamedFunction);
+        assert_eq!(
+            recs[0].suggestion,
+            RefactoringSuggestion::WrapInNamedFunction
+        );
         assert_eq!(recs[0].line, Some(18));
 
         assert_eq!(recs[1].symbol, "obj[key]");
         assert_eq!(recs[1].reason, HardToMockReason::DynamicDispatch);
-        assert_eq!(recs[1].suggestion, RefactoringSuggestion::ExtractToParameter);
+        assert_eq!(
+            recs[1].suggestion,
+            RefactoringSuggestion::ExtractToParameter
+        );
     }
 
     #[test]
@@ -654,8 +708,7 @@ mod tests {
             first_call_site: Some(18),
         };
         let json = serde_json::to_string(&assessment).expect("serialize");
-        let deserialized: MockabilityAssessment =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: MockabilityAssessment = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(assessment, deserialized);
     }
 

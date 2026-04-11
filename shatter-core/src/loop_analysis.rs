@@ -48,8 +48,10 @@ fn constraint_matches_loop_condition(expr: &SymExpr, loop_info: &LoopInfo) -> bo
 
     match expr {
         SymExpr::BinOp { op, left, right } if *op == expected_op => {
-            let left_is_iv = matches!(left.as_ref(), SymExpr::Param { name, .. } if name == iv_name);
-            let right_is_iv = matches!(right.as_ref(), SymExpr::Param { name, .. } if name == iv_name);
+            let left_is_iv =
+                matches!(left.as_ref(), SymExpr::Param { name, .. } if name == iv_name);
+            let right_is_iv =
+                matches!(right.as_ref(), SymExpr::Param { name, .. } if name == iv_name);
             left_is_iv || right_is_iv
         }
         _ => false,
@@ -483,7 +485,9 @@ mod tests {
         // Should have 2 constraints: the non-loop one + 1 collapsed loop constraint
         assert_eq!(rewritten.len(), 2);
         assert_eq!(rewritten[0], Some(non_loop_constraint));
-        let direct = rewritten[1].as_ref().expect("should have direct constraint");
+        let direct = rewritten[1]
+            .as_ref()
+            .expect("should have direct constraint");
         match direct {
             SymExpr::BinOp { op, .. } => assert_eq!(*op, BinOpKind::Eq),
             other => panic!("expected BinOp(eq), got {:?}", other),
@@ -513,11 +517,16 @@ mod tests {
     #[test]
     fn rewrite_idempotent() {
         let backedge = make_backedge_constraint("i", "n");
-        let constraints = vec![Some(backedge.clone()), Some(backedge.clone()), Some(backedge)];
+        let constraints = vec![
+            Some(backedge.clone()),
+            Some(backedge.clone()),
+            Some(backedge),
+        ];
         let loop_info = make_loop_info(0, "i");
         let result = make_execute_result_with_loops(&[(0, 3)]);
 
-        let first_rewrite = rewrite_loop_constraints(&constraints, std::slice::from_ref(&loop_info), &result);
+        let first_rewrite =
+            rewrite_loop_constraints(&constraints, std::slice::from_ref(&loop_info), &result);
         let second_rewrite = rewrite_loop_constraints(&first_rewrite, &[loop_info], &result);
         assert_eq!(first_rewrite, second_rewrite);
     }

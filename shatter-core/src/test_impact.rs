@@ -242,9 +242,7 @@ impl CoverageMap {
 // ---------------------------------------------------------------------------
 
 /// Build the reverse index: file → [test_ids] from the forward map.
-pub fn build_reverse_index(
-    entries: &BTreeMap<String, TestEntry>,
-) -> HashMap<String, Vec<String>> {
+pub fn build_reverse_index(entries: &BTreeMap<String, TestEntry>) -> HashMap<String, Vec<String>> {
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
     for (test_id, entry) in entries {
         for file in entry.files.keys() {
@@ -267,11 +265,7 @@ pub fn build_reverse_index(
 // ---------------------------------------------------------------------------
 
 /// Write a tier marker after successful test run.
-pub fn write_tier_marker(
-    shatter_dir: &Path,
-    tier: &str,
-    git_commit: &str,
-) -> Result<(), TiaError> {
+pub fn write_tier_marker(shatter_dir: &Path, tier: &str, git_commit: &str) -> Result<(), TiaError> {
     let dir = shatter_dir.join(TIER_MARKER_DIR);
     std::fs::create_dir_all(&dir)?;
 
@@ -288,11 +282,10 @@ pub fn write_tier_marker(
 }
 
 /// Read a tier marker, returning None if it doesn't exist.
-pub fn read_tier_marker(
-    shatter_dir: &Path,
-    tier: &str,
-) -> Result<Option<TierMarker>, TiaError> {
-    let path = shatter_dir.join(TIER_MARKER_DIR).join(format!("{tier}.yaml"));
+pub fn read_tier_marker(shatter_dir: &Path, tier: &str) -> Result<Option<TierMarker>, TiaError> {
+    let path = shatter_dir
+        .join(TIER_MARKER_DIR)
+        .join(format!("{tier}.yaml"));
     if !path.exists() {
         return Ok(None);
     }
@@ -323,9 +316,7 @@ fn now_iso8601() -> String {
         .args(["--iso-8601=seconds"])
         .output();
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => "unknown".to_string(),
     }
 }
@@ -360,8 +351,18 @@ mod tests {
         let reverse = build_reverse_index(&entries);
         assert_eq!(reverse.get("src/foo.rs").map(|v| v.len()), Some(2));
         assert_eq!(reverse.get("src/bar.rs").map(|v| v.len()), Some(1));
-        assert!(reverse.get("src/foo.rs").unwrap().contains(&"test_a".to_string()));
-        assert!(reverse.get("src/foo.rs").unwrap().contains(&"test_b".to_string()));
+        assert!(
+            reverse
+                .get("src/foo.rs")
+                .unwrap()
+                .contains(&"test_a".to_string())
+        );
+        assert!(
+            reverse
+                .get("src/foo.rs")
+                .unwrap()
+                .contains(&"test_b".to_string())
+        );
     }
 
     #[test]
@@ -497,10 +498,7 @@ mod tests {
         map.save(&shatter_dir).unwrap();
         let loaded = CoverageMap::load(&shatter_dir).unwrap();
         assert_eq!(map.data, loaded.data);
-        assert_eq!(
-            loaded.reverse.get("src/main.rs").map(|v| v.len()),
-            Some(1)
-        );
+        assert_eq!(loaded.reverse.get("src/main.rs").map(|v| v.len()), Some(1));
     }
 
     #[test]
@@ -542,24 +540,17 @@ mod proptests {
     use proptest::prelude::*;
 
     fn arb_test_entry() -> impl Strategy<Value = TestEntry> {
-        prop::collection::btree_map(
-            "[a-z/]{1,20}\\.rs",
-            "[0-9a-f]{6,12}",
-            0..=5,
-        )
-        .prop_map(|files| TestEntry { files })
+        prop::collection::btree_map("[a-z/]{1,20}\\.rs", "[0-9a-f]{6,12}", 0..=5)
+            .prop_map(|files| TestEntry { files })
     }
 
     fn arb_coverage_map_data() -> impl Strategy<Value = CoverageMapData> {
-        prop::collection::btree_map(
-            "[a-z_:]{1,30}",
-            arb_test_entry(),
-            0..=10,
-        )
-        .prop_map(|entries| CoverageMapData {
-            version: COVERAGE_MAP_VERSION,
-            recorded_at: "2026-01-01T00:00:00Z".to_string(),
-            entries,
+        prop::collection::btree_map("[a-z_:]{1,30}", arb_test_entry(), 0..=10).prop_map(|entries| {
+            CoverageMapData {
+                version: COVERAGE_MAP_VERSION,
+                recorded_at: "2026-01-01T00:00:00Z".to_string(),
+                entries,
+            }
         })
     }
 

@@ -5,7 +5,7 @@
 //! constraint solving kicks in.
 
 use rand::Rng;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::orchestrator::FrontendCapabilities;
 use crate::string_mutation;
@@ -39,18 +39,54 @@ const HEURISTIC_TOKEN: &str = "sk_test_abc123def456ghi789jkl012mno345";
 /// Ordered by specificity: more specific patterns first to avoid false positives.
 /// E.g. "first_name" before "name", "filepath" before "path" before "name".
 const NAME_HEURISTICS: &[NameHeuristic] = &[
-    NameHeuristic { substrings: &["email", "mail"], value: HEURISTIC_EMAIL },
-    NameHeuristic { substrings: &["url", "uri", "href", "link"], value: HEURISTIC_URL },
-    NameHeuristic { substrings: &["phone", "tel", "mobile"], value: HEURISTIC_PHONE },
-    NameHeuristic { substrings: &["first_name", "firstname"], value: HEURISTIC_FIRST_NAME },
-    NameHeuristic { substrings: &["last_name", "lastname"], value: HEURISTIC_LAST_NAME },
-    NameHeuristic { substrings: &["path", "file", "filename"], value: HEURISTIC_PATH },
-    NameHeuristic { substrings: &["name"], value: HEURISTIC_NAME },
-    NameHeuristic { substrings: &["date", "timestamp", "created_at", "updated_at"], value: HEURISTIC_DATE },
-    NameHeuristic { substrings: &["uuid"], value: HEURISTIC_UUID },
-    NameHeuristic { substrings: &["id"], value: HEURISTIC_UUID },
-    NameHeuristic { substrings: &["ip", "addr"], value: HEURISTIC_IP },
-    NameHeuristic { substrings: &["token", "key", "secret"], value: HEURISTIC_TOKEN },
+    NameHeuristic {
+        substrings: &["email", "mail"],
+        value: HEURISTIC_EMAIL,
+    },
+    NameHeuristic {
+        substrings: &["url", "uri", "href", "link"],
+        value: HEURISTIC_URL,
+    },
+    NameHeuristic {
+        substrings: &["phone", "tel", "mobile"],
+        value: HEURISTIC_PHONE,
+    },
+    NameHeuristic {
+        substrings: &["first_name", "firstname"],
+        value: HEURISTIC_FIRST_NAME,
+    },
+    NameHeuristic {
+        substrings: &["last_name", "lastname"],
+        value: HEURISTIC_LAST_NAME,
+    },
+    NameHeuristic {
+        substrings: &["path", "file", "filename"],
+        value: HEURISTIC_PATH,
+    },
+    NameHeuristic {
+        substrings: &["name"],
+        value: HEURISTIC_NAME,
+    },
+    NameHeuristic {
+        substrings: &["date", "timestamp", "created_at", "updated_at"],
+        value: HEURISTIC_DATE,
+    },
+    NameHeuristic {
+        substrings: &["uuid"],
+        value: HEURISTIC_UUID,
+    },
+    NameHeuristic {
+        substrings: &["id"],
+        value: HEURISTIC_UUID,
+    },
+    NameHeuristic {
+        substrings: &["ip", "addr"],
+        value: HEURISTIC_IP,
+    },
+    NameHeuristic {
+        substrings: &["token", "key", "secret"],
+        value: HEURISTIC_TOKEN,
+    },
 ];
 
 /// Return a realistic heuristic string if `name` matches a known pattern.
@@ -88,7 +124,11 @@ pub fn generate_random_value(
         TypeInfo::Object { fields } => generate_object(fields, rng, caps),
         TypeInfo::Union { variants } => generate_union(variants, rng, caps),
         TypeInfo::Nullable { inner } => generate_nullable(inner, rng, caps),
-        TypeInfo::Complex { kind, metadata, inner } => {
+        TypeInfo::Complex {
+            kind,
+            metadata,
+            inner,
+        } => {
             if caps.is_some_and(|c| c.supports_complex(*kind)) {
                 generate_complex_value(*kind, metadata, inner.as_deref(), rng)
             } else {
@@ -182,10 +222,10 @@ fn generate_array(
 fn generate_bounded_array_length(rng: &mut impl Rng) -> usize {
     let choice: u8 = rng.random_range(0..20);
     match choice {
-        0..5 => 0,   // 25%: empty
-        5..10 => 1,  // 25%: single element
-        10..14 => 2, // 20%: two elements
-        14..17 => 3, // 15%: three elements
+        0..5 => 0,                    // 25%: empty
+        5..10 => 1,                   // 25%: single element
+        10..14 => 2,                  // 20%: two elements
+        14..17 => 3,                  // 15%: three elements
         _ => rng.random_range(4..=5), // 15%: larger
     }
 }
@@ -278,14 +318,14 @@ fn generate_complex_value(
 fn generate_date(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..12);
     let epoch_ms: i64 = match choice {
-        0 => 0,                        // Unix epoch
-        1 => -1,                       // Just before epoch
-        2 => 2_147_483_647_000,        // Y2K38 (2038-01-19T03:14:07Z) in ms
-        3 => 1_704_067_200_000,        // 2024-01-01T00:00:00Z
-        4 => 946_684_800_000,          // 2000-01-01T00:00:00Z (Y2K)
-        5 => -62_135_596_800_000,      // 0001-01-01T00:00:00Z (far past)
-        6 => 253_402_300_799_000,      // 9999-12-31T23:59:59Z (far future)
-        7 => 1_609_459_200_000,        // 2021-01-01T00:00:00Z
+        0 => 0,                   // Unix epoch
+        1 => -1,                  // Just before epoch
+        2 => 2_147_483_647_000,   // Y2K38 (2038-01-19T03:14:07Z) in ms
+        3 => 1_704_067_200_000,   // 2024-01-01T00:00:00Z
+        4 => 946_684_800_000,     // 2000-01-01T00:00:00Z (Y2K)
+        5 => -62_135_596_800_000, // 0001-01-01T00:00:00Z (far past)
+        6 => 253_402_300_799_000, // 9999-12-31T23:59:59Z (far future)
+        7 => 1_609_459_200_000,   // 2021-01-01T00:00:00Z
         8 => {
             // Random month boundary: 1st of a random month in 2020-2025
             let year = rng.random_range(2020..=2025);
@@ -294,8 +334,8 @@ fn generate_date(rng: &mut impl Rng) -> Value {
             let days_since_epoch = (year - 1970) * 365 + (month - 1) * 30;
             days_since_epoch as i64 * 86_400_000
         }
-        9 => -86_400_000,             // One day before epoch
-        10 => 86_400_000,             // One day after epoch
+        9 => -86_400_000, // One day before epoch
+        10 => 86_400_000, // One day after epoch
         _ => {
             // Random date between 1970 and 2030
             rng.random_range(0..1_893_456_000_000_i64)
@@ -308,15 +348,15 @@ fn generate_date(rng: &mut impl Rng) -> Value {
 fn generate_duration(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..10);
     let ms: i64 = match choice {
-        0 => 0,                        // Zero duration
-        1 => -1,                       // Negative
-        2 => 1,                        // 1ms
-        3 => 1_000,                    // 1 second
-        4 => 60_000,                   // 1 minute
-        5 => 3_600_000,               // 1 hour
-        6 => 86_400_000,              // 1 day
-        7 => -86_400_000,             // Negative 1 day
-        8 => 9_007_199_254_740_991,   // MAX_SAFE_INTEGER
+        0 => 0,                     // Zero duration
+        1 => -1,                    // Negative
+        2 => 1,                     // 1ms
+        3 => 1_000,                 // 1 second
+        4 => 60_000,                // 1 minute
+        5 => 3_600_000,             // 1 hour
+        6 => 86_400_000,            // 1 day
+        7 => -86_400_000,           // Negative 1 day
+        8 => 9_007_199_254_740_991, // MAX_SAFE_INTEGER
         _ => rng.random_range(-86_400_000..=86_400_000),
     };
     json!({"__complex_type": "duration", "ms": ms})
@@ -326,10 +366,10 @@ fn generate_duration(rng: &mut impl Rng) -> Value {
 fn generate_time(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..6);
     let (h, m, s, ms) = match choice {
-        0 => (0, 0, 0, 0),           // Midnight
-        1 => (12, 0, 0, 0),          // Noon
-        2 => (23, 59, 59, 999),      // End of day
-        3 => (0, 0, 1, 0),           // Just after midnight
+        0 => (0, 0, 0, 0),      // Midnight
+        1 => (12, 0, 0, 0),     // Noon
+        2 => (23, 59, 59, 999), // End of day
+        3 => (0, 0, 1, 0),      // Just after midnight
         _ => (
             rng.random_range(0..24) as u8,
             rng.random_range(0..60) as u8,
@@ -343,8 +383,14 @@ fn generate_time(rng: &mut impl Rng) -> Value {
 /// Generate a RegExp value.
 fn generate_regexp(rng: &mut impl Rng) -> Value {
     let patterns = [
-        (".*", ""), ("\\d+", "g"), ("[a-z]+", "i"), ("^\\s+$", ""),
-        ("\\w{3,}", "gi"), ("^$", ""), (".", ""), ("\\d{3}-\\d{4}", ""),
+        (".*", ""),
+        ("\\d+", "g"),
+        ("[a-z]+", "i"),
+        ("^\\s+$", ""),
+        ("\\w{3,}", "gi"),
+        ("^$", ""),
+        (".", ""),
+        ("\\d{3}-\\d{4}", ""),
     ];
     let idx = rng.random_range(0..patterns.len());
     let (source, flags) = patterns[idx];
@@ -379,7 +425,13 @@ fn generate_error(
             let classes = ["Error", "TypeError", "RangeError", "SyntaxError"];
             classes[rng.random_range(0..classes.len())]
         });
-    let messages = ["", "oops", "invalid argument", "out of range", "unexpected token"];
+    let messages = [
+        "",
+        "oops",
+        "invalid argument",
+        "out of range",
+        "unexpected token",
+    ];
     let msg = messages[rng.random_range(0..messages.len())];
     json!({"__complex_type": "error", "class": class, "message": msg})
 }
@@ -399,7 +451,11 @@ fn generate_bigint(rng: &mut impl Rng) -> Value {
             let neg = rng.random_bool(0.3);
             let mut s = if neg { "-".to_string() } else { String::new() };
             for i in 0..digits {
-                let d = if i == 0 { rng.random_range(1..=9) } else { rng.random_range(0..=9) };
+                let d = if i == 0 {
+                    rng.random_range(1..=9)
+                } else {
+                    rng.random_range(0..=9)
+                };
                 s.push(char::from(b'0' + d as u8));
             }
             s
@@ -410,7 +466,13 @@ fn generate_bigint(rng: &mut impl Rng) -> Value {
 
 /// Generate a BigDecimal value.
 fn generate_big_decimal(rng: &mut impl Rng) -> Value {
-    let vals = ["0", "0.01", "-0.01", "3.14159265358979323846", "1000000.000001"];
+    let vals = [
+        "0",
+        "0.01",
+        "-0.01",
+        "3.14159265358979323846",
+        "1000000.000001",
+    ];
     let idx = rng.random_range(0..vals.len());
     json!({"__complex_type": "big_decimal", "value": vals[idx]})
 }
@@ -448,13 +510,16 @@ fn generate_ip_address(rng: &mut impl Rng) -> Value {
         1 => (4, "127.0.0.1".to_string()),
         2 => (4, "255.255.255.255".to_string()),
         3 => (6, "::1".to_string()),
-        4 => (4, format!(
-            "{}.{}.{}.{}",
-            rng.random_range(1..=254),
-            rng.random_range(0..=255),
-            rng.random_range(0..=255),
-            rng.random_range(1..=254),
-        )),
+        4 => (
+            4,
+            format!(
+                "{}.{}.{}.{}",
+                rng.random_range(1..=254),
+                rng.random_range(0..=255),
+                rng.random_range(0..=255),
+                rng.random_range(1..=254),
+            ),
+        ),
         _ => (4, "192.168.1.1".to_string()),
     };
     json!({"__complex_type": "ip_address", "version": version, "value": value})
@@ -463,8 +528,14 @@ fn generate_ip_address(rng: &mut impl Rng) -> Value {
 /// Generate a Path value.
 fn generate_path(rng: &mut impl Rng) -> Value {
     let paths = [
-        "", "/", "/usr/local/bin", "relative/path", "../parent/file.txt",
-        "/path with spaces/file", "/tmp/test.txt", ".",
+        "",
+        "/",
+        "/usr/local/bin",
+        "relative/path",
+        "../parent/file.txt",
+        "/path with spaces/file",
+        "/tmp/test.txt",
+        ".",
     ];
     let idx = rng.random_range(0..paths.len());
     json!({"__complex_type": "path", "value": paths[idx]})
@@ -475,11 +546,11 @@ fn generate_buffer(rng: &mut impl Rng) -> Value {
     // Pre-computed base64 boundary values to avoid base64 crate dependency
     let choice: u8 = rng.random_range(0..5);
     let encoded = match choice {
-        0 => "",                    // empty buffer
-        1 => "AA==",               // single zero byte
-        2 => "SGVsbG8=",           // "Hello"
-        3 => "/////w==",           // 4x 0xFF
-        _ => "AQIDBA==",           // [1,2,3,4]
+        0 => "",         // empty buffer
+        1 => "AA==",     // single zero byte
+        2 => "SGVsbG8=", // "Hello"
+        3 => "/////w==", // 4x 0xFF
+        _ => "AQIDBA==", // [1,2,3,4]
     };
     json!({"__complex_type": "buffer", "encoding": "base64", "value": encoded})
 }
@@ -495,16 +566,17 @@ fn generate_symbol(rng: &mut impl Rng) -> Value {
 fn generate_char(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..8);
     let (ch, cp): (&str, u32) = match choice {
-        0 => ("\0", 0),           // NUL
-        1 => (" ", 32),           // space
-        2 => ("a", 97),           // lowercase
-        3 => ("Z", 90),           // uppercase
-        4 => ("0", 48),           // digit
-        5 => ("\u{20AC}", 8364),  // currency symbol (euro)
+        0 => ("\0", 0),             // NUL
+        1 => (" ", 32),             // space
+        2 => ("a", 97),             // lowercase
+        3 => ("Z", 90),             // uppercase
+        4 => ("0", 48),             // digit
+        5 => ("\u{20AC}", 8364),    // currency symbol (euro)
         6 => ("\u{1F389}", 127881), // emoji (party popper)
         _ => {
             let cp = rng.random_range(32..=126) as u32; // printable ASCII
-            let ch_str: String = char::from_u32(cp).map_or_else(|| "?".to_string(), |c| c.to_string());
+            let ch_str: String =
+                char::from_u32(cp).map_or_else(|| "?".to_string(), |c| c.to_string());
             return json!({"__complex_type": "char", "value": ch_str, "codepoint": cp});
         }
     };
@@ -527,8 +599,10 @@ fn generate_go_byte(rng: &mut impl Rng) -> Value {
 /// Generate an Email value.
 fn generate_email(rng: &mut impl Rng) -> Value {
     let emails = [
-        "user@example.com", "test+tag@example.com",
-        "a@b.co", "very.long.email.address@subdomain.example.org",
+        "user@example.com",
+        "test+tag@example.com",
+        "a@b.co",
+        "very.long.email.address@subdomain.example.org",
     ];
     let idx = rng.random_range(0..emails.len());
     json!({"__complex_type": "email", "value": emails[idx]})
@@ -536,7 +610,15 @@ fn generate_email(rng: &mut impl Rng) -> Value {
 
 /// Generate a SemVer value.
 fn generate_semver(rng: &mut impl Rng) -> Value {
-    let versions = ["0.0.0", "0.0.1", "0.1.0", "1.0.0", "2.1.3", "1.0.0-alpha", "1.0.0+build.1"];
+    let versions = [
+        "0.0.0",
+        "0.0.1",
+        "0.1.0",
+        "1.0.0",
+        "2.1.3",
+        "1.0.0-alpha",
+        "1.0.0+build.1",
+    ];
     let idx = rng.random_range(0..versions.len());
     json!({"__complex_type": "sem_ver", "value": versions[idx]})
 }
@@ -545,10 +627,10 @@ fn generate_semver(rng: &mut impl Rng) -> Value {
 fn generate_color(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..5);
     let (r, g, b, a) = match choice {
-        0 => (0, 0, 0, 255),         // black
-        1 => (255, 255, 255, 255),   // white
-        2 => (255, 0, 0, 255),       // red
-        3 => (0, 0, 0, 0),           // transparent
+        0 => (0, 0, 0, 255),       // black
+        1 => (255, 255, 255, 255), // white
+        2 => (255, 0, 0, 255),     // red
+        3 => (0, 0, 0, 0),         // transparent
         _ => (
             rng.random_range(0..=255),
             rng.random_range(0..=255),
@@ -563,10 +645,10 @@ fn generate_color(rng: &mut impl Rng) -> Value {
 fn generate_geo_point(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..5);
     let (lat, lng) = match choice {
-        0 => (0.0, 0.0),                    // origin
-        1 => (90.0, 0.0),                   // north pole
-        2 => (-90.0, 0.0),                  // south pole
-        3 => (37.7749, -122.4194),          // San Francisco
+        0 => (0.0, 0.0),           // origin
+        1 => (90.0, 0.0),          // north pole
+        2 => (-90.0, 0.0),         // south pole
+        3 => (37.7749, -122.4194), // San Francisco
         _ => (
             rng.random_range(-90.0..=90.0_f64),
             rng.random_range(-180.0..=180.0_f64),
@@ -587,8 +669,12 @@ fn generate_money(rng: &mut impl Rng) -> Value {
 /// Generate a MimeType value.
 fn generate_mime_type(rng: &mut impl Rng) -> Value {
     let types = [
-        "text/plain", "application/json", "image/png", "text/html",
-        "application/octet-stream", "multipart/form-data",
+        "text/plain",
+        "application/json",
+        "image/png",
+        "text/html",
+        "application/octet-stream",
+        "multipart/form-data",
     ];
     let idx = rng.random_range(0..types.len());
     json!({"__complex_type": "mime_type", "value": types[idx]})
@@ -605,10 +691,10 @@ fn generate_locale(rng: &mut impl Rng) -> Value {
 fn generate_range(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..5);
     let (start, end, inclusive) = match choice {
-        0 => (5, 5, false),       // empty range
-        1 => (5, 6, false),       // single element
-        2 => (0, 10, false),      // normal
-        3 => (-10, 10, true),     // negative to positive, inclusive
+        0 => (5, 5, false),   // empty range
+        1 => (5, 6, false),   // single element
+        2 => (0, 10, false),  // normal
+        3 => (-10, 10, true), // negative to positive, inclusive
         _ => (
             rng.random_range(-100..=100) as i64,
             rng.random_range(-100..=100) as i64,
@@ -623,8 +709,8 @@ fn generate_complex_number(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..5);
     let (real, imag) = match choice {
         0 => (0.0, 0.0),
-        1 => (1.0, 0.0),     // purely real
-        2 => (0.0, 1.0),     // purely imaginary
+        1 => (1.0, 0.0), // purely real
+        2 => (0.0, 1.0), // purely imaginary
         3 => (-1.0, -1.0),
         _ => (
             rng.random_range(-100.0..=100.0_f64),
@@ -654,10 +740,10 @@ fn generate_rational(rng: &mut impl Rng) -> Value {
 fn generate_bitset(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..4);
     let (bits, length): (&str, u32) = match choice {
-        0 => ("00000000", 8),   // all zeros
-        1 => ("11111111", 8),   // all ones
-        2 => ("10000000", 8),   // single bit
-        _ => ("10101010", 8),   // alternating
+        0 => ("00000000", 8), // all zeros
+        1 => ("11111111", 8), // all ones
+        2 => ("10000000", 8), // single bit
+        _ => ("10101010", 8), // alternating
     };
     json!({"__complex_type": "bit_set", "bits": bits, "length": length})
 }
@@ -884,7 +970,10 @@ impl PrefetchedValues {
                 }
             })
             .collect();
-        self.entries.entry((file, name)).or_default().extend(entries);
+        self.entries
+            .entry((file, name))
+            .or_default()
+            .extend(entries);
     }
 
     /// Insert a fully-formed generated entry with metadata.
@@ -970,15 +1059,24 @@ pub async fn prefetch_custom_values(
                 .await?;
 
             match response.result {
-                crate::protocol::ResponseResult::Generate { value, generator_id, recipe } => {
+                crate::protocol::ResponseResult::Generate {
+                    value,
+                    generator_id,
+                    recipe,
+                } => {
                     let effective_recipe = recipe.as_ref().unwrap_or(&value);
-                    let composite = crate::canonical_json::composite_id(&generator_id, effective_recipe);
-                    store.insert_entry(file.clone(), name.clone(), GeneratedEntry {
-                        value,
-                        generator_id,
-                        recipe,
-                        composite_id: composite,
-                    });
+                    let composite =
+                        crate::canonical_json::composite_id(&generator_id, effective_recipe);
+                    store.insert_entry(
+                        file.clone(),
+                        name.clone(),
+                        GeneratedEntry {
+                            value,
+                            generator_id,
+                            recipe,
+                            composite_id: composite,
+                        },
+                    );
                 }
                 crate::protocol::ResponseResult::Error { message, .. } => {
                     // Log but don't fail -- we'll fall back to built-in generation.
@@ -1013,8 +1111,12 @@ pub fn generate_inputs_with_custom(
         .map(|(param, source)| {
             // Check param-name heuristic for Str params before falling back.
             let heuristic = if matches!(param.typ, TypeInfo::Str) {
-                heuristic_string_for_name(&param.name)
-                    .or_else(|| param.type_name.as_deref().and_then(heuristic_string_for_name))
+                heuristic_string_for_name(&param.name).or_else(|| {
+                    param
+                        .type_name
+                        .as_deref()
+                        .and_then(heuristic_string_for_name)
+                })
             } else {
                 None
             };
@@ -1053,7 +1155,12 @@ pub fn generate_inputs_with_custom(
 /// type-valid for the given `TypeInfo`. Buffer complex types receive AFL-style
 /// binary mutation (bit flip, byte arithmetic, block insert/delete). All other
 /// complex types, opaque types, and unknown types are returned unchanged.
-pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+pub fn mutate_value(
+    value: &Value,
+    typ: &TypeInfo,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
     match typ {
         TypeInfo::Int => mutate_int(value, rng),
         TypeInfo::Float => mutate_float(value, rng),
@@ -1063,10 +1170,15 @@ pub fn mutate_value(value: &Value, typ: &TypeInfo, dictionary: &[&str], rng: &mu
         TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
         TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
         TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
-        TypeInfo::Complex { kind: ComplexKind::Buffer, .. } => mutate_buffer(value, rng),
-        TypeInfo::Complex { kind, metadata, inner } => {
-            mutate_complex(value, *kind, metadata, inner.as_deref(), dictionary, rng)
-        }
+        TypeInfo::Complex {
+            kind: ComplexKind::Buffer,
+            ..
+        } => mutate_buffer(value, rng),
+        TypeInfo::Complex {
+            kind,
+            metadata,
+            inner,
+        } => mutate_complex(value, *kind, metadata, inner.as_deref(), dictionary, rng),
         TypeInfo::Opaque { .. } | TypeInfo::Unknown => value.clone(),
     }
 }
@@ -1359,7 +1471,12 @@ fn mutate_string(value: &Value, dictionary: &[&str], rng: &mut impl Rng) -> Valu
 }
 
 /// Mutate an array value.
-fn mutate_array(value: &Value, element: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+fn mutate_array(
+    value: &Value,
+    element: &TypeInfo,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
     let arr = match value.as_array() {
         Some(a) => a.clone(),
         None => return generate_array(element, rng, None),
@@ -1448,7 +1565,12 @@ fn mutate_object(
 }
 
 /// Mutate a union value by applying mutation with a random variant's type.
-fn mutate_union(value: &Value, variants: &[TypeInfo], dictionary: &[&str], rng: &mut impl Rng) -> Value {
+fn mutate_union(
+    value: &Value,
+    variants: &[TypeInfo],
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
     if variants.is_empty() {
         return value.clone();
     }
@@ -1457,7 +1579,12 @@ fn mutate_union(value: &Value, variants: &[TypeInfo], dictionary: &[&str], rng: 
 }
 
 /// Mutate a nullable value: 20% chance to flip null/non-null, otherwise mutate inner.
-fn mutate_nullable(value: &Value, inner: &TypeInfo, dictionary: &[&str], rng: &mut impl Rng) -> Value {
+fn mutate_nullable(
+    value: &Value,
+    inner: &TypeInfo,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
     if rng.random_range(0..5) == 0 {
         // Flip null / non-null
         if value.is_null() {
@@ -1514,7 +1641,9 @@ fn mutate_complex(
         ComplexKind::Email => mutate_string_complex(value, "email", "value", dictionary, rng),
         ComplexKind::Path => mutate_string_complex(value, "path", "value", dictionary, rng),
         ComplexKind::RegExp => mutate_string_complex(value, "reg_exp", "source", dictionary, rng),
-        ComplexKind::MimeType => mutate_string_complex(value, "mime_type", "value", dictionary, rng),
+        ComplexKind::MimeType => {
+            mutate_string_complex(value, "mime_type", "value", dictionary, rng)
+        }
         ComplexKind::Locale => mutate_string_complex(value, "locale", "value", dictionary, rng),
         // Opaque kinds: regenerate rather than mutate.
         ComplexKind::Buffer => mutate_buffer(value, rng), // shouldn't reach here, but handle it
@@ -1538,7 +1667,13 @@ fn mutate_date(value: &Value, rng: &mut impl Rng) -> Value {
         }
         1 => {
             // Boundary values
-            let boundaries = [0_i64, -1, 2_147_483_647_000, 253_402_300_799_000, -62_135_596_800_000];
+            let boundaries = [
+                0_i64,
+                -1,
+                2_147_483_647_000,
+                253_402_300_799_000,
+                -62_135_596_800_000,
+            ];
             boundaries[rng.random_range(0..boundaries.len())]
         }
         _ => {
@@ -1709,10 +1844,7 @@ fn mutate_ip_address(value: &Value, rng: &mut impl Rng) -> Value {
         // Mutate one octet
         let parts: Vec<&str> = addr.split('.').collect();
         if parts.len() == 4 {
-            let mut octets: Vec<u8> = parts
-                .iter()
-                .map(|p| p.parse().unwrap_or(0))
-                .collect();
+            let mut octets: Vec<u8> = parts.iter().map(|p| p.parse().unwrap_or(0)).collect();
             let idx = rng.random_range(0..4);
             let op: u8 = rng.random_range(0..3);
             octets[idx] = match op {
@@ -1820,11 +1952,22 @@ fn mutate_range(value: &Value, rng: &mut impl Rng) -> Value {
     };
     let start = obj.get("start").and_then(|v| v.as_i64()).unwrap_or(0);
     let end = obj.get("end").and_then(|v| v.as_i64()).unwrap_or(10);
-    let inclusive = obj.get("inclusive").and_then(|v| v.as_bool()).unwrap_or(false);
+    let inclusive = obj
+        .get("inclusive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let op: u8 = rng.random_range(0..3);
     let (ns, ne, ni) = match op {
-        0 => (start.saturating_add(rng.random_range(-5..=5)), end, inclusive),
-        1 => (start, end.saturating_add(rng.random_range(-5..=5)), inclusive),
+        0 => (
+            start.saturating_add(rng.random_range(-5..=5)),
+            end,
+            inclusive,
+        ),
+        1 => (
+            start,
+            end.saturating_add(rng.random_range(-5..=5)),
+            inclusive,
+        ),
         _ => (start, end, !inclusive),
     };
     json!({"__complex_type": "range", "start": ns, "end": ne, "inclusive": ni})
@@ -1882,7 +2025,11 @@ fn mutate_char(value: &Value, rng: &mut impl Rng) -> Value {
         0 => {
             // Nearby codepoint
             let delta = rng.random_range(1..=10_u32);
-            if rng.random_bool(0.5) { cp.saturating_add(delta) } else { cp.saturating_sub(delta) }
+            if rng.random_bool(0.5) {
+                cp.saturating_add(delta)
+            } else {
+                cp.saturating_sub(delta)
+            }
         }
         1 => {
             // Random printable ASCII
@@ -1998,7 +2145,10 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let chars: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
     for chunk in chars.chunks(4) {
         let decode_char = |c: u8| -> Option<u32> {
-            BASE64_ALPHABET.iter().position(|&x| x == c).map(|p| p as u32)
+            BASE64_ALPHABET
+                .iter()
+                .position(|&x| x == c)
+                .map(|p| p as u32)
         };
         let c0 = decode_char(chunk[0])?;
         let c1 = decode_char(*chunk.get(1).unwrap_or(&b'A'))?;
@@ -2765,7 +2915,13 @@ fn generate_mock_return_values(
     caps: Option<&FrontendCapabilities>,
 ) -> (Vec<Value>, MockBehavior) {
     // Result complex type: alternates ok/err variants using the tagged wire format.
-    if matches!(return_type, TypeInfo::Complex { kind: ComplexKind::Result, .. }) {
+    if matches!(
+        return_type,
+        TypeInfo::Complex {
+            kind: ComplexKind::Result,
+            ..
+        }
+    ) {
         let values = (0..count)
             .map(|i| {
                 if i % 2 == 0 {
@@ -2822,7 +2978,13 @@ fn partition_error_variants(variants: &[TypeInfo]) -> (Vec<usize>, Vec<usize>) {
     let mut error_indices = Vec::new();
     let mut success_indices = Vec::new();
     for (i, v) in variants.iter().enumerate() {
-        if matches!(v, TypeInfo::Complex { kind: ComplexKind::Error, .. }) {
+        if matches!(
+            v,
+            TypeInfo::Complex {
+                kind: ComplexKind::Error,
+                ..
+            }
+        ) {
             error_indices.push(i);
         } else {
             success_indices.push(i);
@@ -3080,17 +3242,16 @@ mod tests {
                 saw_value = true;
             }
         }
-        assert!(saw_null && saw_value, "expected both null and non-null values");
+        assert!(
+            saw_null && saw_value,
+            "expected both null and non-null values"
+        );
     }
 
     #[test]
     fn empty_union_produces_null() {
         let mut rng = seeded_rng();
-        let val = generate_random_value(
-            &TypeInfo::Union { variants: vec![] },
-            &mut rng,
-            None,
-        );
+        let val = generate_random_value(&TypeInfo::Union { variants: vec![] }, &mut rng, None);
         assert!(val.is_null());
     }
 
@@ -3098,9 +3259,21 @@ mod tests {
     fn generate_random_inputs_matches_param_count() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "c".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
         ];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert_eq!(inputs.len(), 3);
@@ -3172,7 +3345,10 @@ mod tests {
             let val = generate_date(&mut rng);
             let obj = val.as_object().expect("date should be an object");
             assert_eq!(obj.get("__complex_type").unwrap(), "date");
-            assert!(obj.get("value").unwrap().is_i64(), "value should be epoch ms");
+            assert!(
+                obj.get("value").unwrap().is_i64(),
+                "value should be epoch ms"
+            );
         }
     }
 
@@ -3212,9 +3388,7 @@ mod tests {
         use crate::types::ComplexKind;
 
         let mut rng = seeded_rng();
-        let caps = FrontendCapabilities::from_raw(&[
-            "complex_type:date".into(),
-        ]);
+        let caps = FrontendCapabilities::from_raw(&["complex_type:date".into()]);
         let typ = TypeInfo::Complex {
             kind: ComplexKind::Date,
             metadata: serde_json::Map::new(),
@@ -3235,7 +3409,9 @@ mod tests {
         };
         let val = generate_random_value(&typ, &mut rng, None);
         assert!(
-            val.as_object().and_then(|o| o.get("__complex_type")).is_none(),
+            val.as_object()
+                .and_then(|o| o.get("__complex_type"))
+                .is_none(),
             "without caps, should not produce tagged complex: {val}"
         );
     }
@@ -3280,7 +3456,10 @@ mod tests {
     fn resolve_value_sources_param_generator_takes_precedence() {
         let params = test_params();
         let mut param_gens = std::collections::HashMap::new();
-        param_gens.insert("authToken".to_string(), std::path::PathBuf::from("/gen/token.ts"));
+        param_gens.insert(
+            "authToken".to_string(),
+            std::path::PathBuf::from("/gen/token.ts"),
+        );
 
         let mut type_gens = std::collections::HashMap::new();
         type_gens.insert("User".to_string(), std::path::PathBuf::from("/gen/user.ts"));
@@ -3307,9 +3486,15 @@ mod tests {
             type_name: Some("User".into()),
         }];
         let mut param_gens = std::collections::HashMap::new();
-        param_gens.insert("user".to_string(), std::path::PathBuf::from("/gen/param_user.ts"));
+        param_gens.insert(
+            "user".to_string(),
+            std::path::PathBuf::from("/gen/param_user.ts"),
+        );
         let mut type_gens = std::collections::HashMap::new();
-        type_gens.insert("User".to_string(), std::path::PathBuf::from("/gen/type_user.ts"));
+        type_gens.insert(
+            "User".to_string(),
+            std::path::PathBuf::from("/gen/type_user.ts"),
+        );
 
         let sources = resolve_value_sources(&params, &param_gens, &type_gens);
         assert!(matches!(&sources[0], ValueSource::CustomGenerator {
@@ -3442,7 +3627,11 @@ mod tests {
         ];
 
         let mut store = PrefetchedValues::new();
-        store.insert("/gen/user.ts".into(), "User".into(), vec![json!({"name": "Alice"})]);
+        store.insert(
+            "/gen/user.ts".into(),
+            "User".into(),
+            vec![json!({"name": "Alice"})],
+        );
 
         let mut rng = seeded_rng();
         let inputs = generate_inputs_with_custom(&params, &sources, &mut store, &mut rng, None);
@@ -3477,8 +3666,16 @@ mod tests {
     #[test]
     fn generate_inputs_with_custom_all_builtin_matches_generate_random_inputs() {
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
         ];
         let sources = vec![ValueSource::BuiltIn, ValueSource::BuiltIn];
         let mut store = PrefetchedValues::new();
@@ -3486,9 +3683,8 @@ mod tests {
         let mut rng1 = seeded_rng();
         let mut rng2 = seeded_rng();
 
-        let custom_inputs = generate_inputs_with_custom(
-            &params, &sources, &mut store, &mut rng1, None,
-        );
+        let custom_inputs =
+            generate_inputs_with_custom(&params, &sources, &mut store, &mut rng1, None);
         let random_inputs = generate_random_inputs(&params, &mut rng2, None);
 
         assert_eq!(custom_inputs, random_inputs);
@@ -3509,8 +3705,14 @@ mod tests {
 
     #[test]
     fn literals_to_candidates_str_matches_str_param() {
-        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
-        let literals = vec![LiteralValue::Str { value: "express".into() }];
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let literals = vec![LiteralValue::Str {
+            value: "express".into(),
+        }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!("express"));
@@ -3518,7 +3720,11 @@ mod tests {
 
     #[test]
     fn literals_to_candidates_int_does_not_match_str_param() {
-        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
         let literals = vec![LiteralValue::Int { value: 42 }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert!(candidates.is_empty());
@@ -3526,7 +3732,11 @@ mod tests {
 
     #[test]
     fn literals_to_candidates_deduplicates_same_value() {
-        let params = vec![ParamInfo { name: "n".into(), typ: TypeInfo::Int, type_name: None }];
+        let params = vec![ParamInfo {
+            name: "n".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let literals = vec![
             LiteralValue::Int { value: 100 },
             LiteralValue::Int { value: 100 },
@@ -3537,7 +3747,11 @@ mod tests {
 
     #[test]
     fn literals_to_candidates_int_matches_float_param() {
-        let params = vec![ParamInfo { name: "x".into(), typ: TypeInfo::Float, type_name: None }];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Float,
+            type_name: None,
+        }];
         let literals = vec![LiteralValue::Int { value: 5 }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
@@ -3547,10 +3761,20 @@ mod tests {
     #[test]
     fn literals_to_candidates_multi_param_uses_defaults() {
         let params = vec![
-            ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "n".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo {
+                name: "s".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "n".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
         ];
-        let literals = vec![LiteralValue::Str { value: "express".into() }];
+        let literals = vec![LiteralValue::Str {
+            value: "express".into(),
+        }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!("express"));
@@ -3562,10 +3786,14 @@ mod tests {
     fn literals_to_candidates_nullable_unwraps() {
         let params = vec![ParamInfo {
             name: "s".into(),
-            typ: TypeInfo::Nullable { inner: Box::new(TypeInfo::Str) },
+            typ: TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Str),
+            },
             type_name: None,
         }];
-        let literals = vec![LiteralValue::Str { value: "hello".into() }];
+        let literals = vec![LiteralValue::Str {
+            value: "hello".into(),
+        }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!("hello"));
@@ -3573,22 +3801,34 @@ mod tests {
 
     #[test]
     fn literals_to_candidates_empty_params_returns_empty() {
-        let literals = vec![LiteralValue::Str { value: "test".into() }];
+        let literals = vec![LiteralValue::Str {
+            value: "test".into(),
+        }];
         let candidates = literals_to_candidate_inputs(&[], &literals);
         assert!(candidates.is_empty());
     }
 
     #[test]
     fn literals_to_candidates_empty_literals_returns_empty() {
-        let params = vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let candidates = literals_to_candidate_inputs(&params, &[]);
         assert!(candidates.is_empty());
     }
 
     #[test]
     fn literals_to_candidates_regex_matches_str_param() {
-        let params = vec![ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None }];
-        let literals = vec![LiteralValue::Regex { pattern: "\\d{5}".into() }];
+        let params = vec![ParamInfo {
+            name: "s".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let literals = vec![LiteralValue::Regex {
+            pattern: "\\d{5}".into(),
+        }];
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!("\\d{5}"));
@@ -3604,11 +3844,19 @@ mod tests {
         let mut saw_max = false;
         for _ in 0..500 {
             let mutated = mutate_value(&json!(42), &TypeInfo::Int, &[], &mut rng);
-            let n = mutated.as_i64().or_else(|| mutated.as_u64().map(|u| u as i64));
+            let n = mutated
+                .as_i64()
+                .or_else(|| mutated.as_u64().map(|u| u as i64));
             if let Some(n) = n {
-                if n == 0 { saw_zero = true; }
-                if n == i64::MIN { saw_min = true; }
-                if n == i64::MAX { saw_max = true; }
+                if n == 0 {
+                    saw_zero = true;
+                }
+                if n == i64::MIN {
+                    saw_min = true;
+                }
+                if n == i64::MAX {
+                    saw_max = true;
+                }
             }
         }
         assert!(saw_zero, "should produce 0 boundary");
@@ -3647,8 +3895,14 @@ mod tests {
     #[test]
     fn mutate_bool_flips() {
         let mut rng = seeded_rng();
-        assert_eq!(mutate_value(&json!(true), &TypeInfo::Bool, &[], &mut rng), json!(false));
-        assert_eq!(mutate_value(&json!(false), &TypeInfo::Bool, &[], &mut rng), json!(true));
+        assert_eq!(
+            mutate_value(&json!(true), &TypeInfo::Bool, &[], &mut rng),
+            json!(false)
+        );
+        assert_eq!(
+            mutate_value(&json!(false), &TypeInfo::Bool, &[], &mut rng),
+            json!(true)
+        );
     }
 
     #[test]
@@ -3662,10 +3916,18 @@ mod tests {
         for _ in 0..500 {
             let mutated = mutate_value(&json!(original), &TypeInfo::Str, &[], &mut rng);
             let s = mutated.as_str().unwrap_or("");
-            if s.is_empty() { saw_empty = true; }
-            if s.len() >= 1000 { saw_long = true; }
-            if s.len() < original.len() && !s.is_empty() { saw_shorter = true; }
-            if s.len() > original.len() && s.len() < 1000 { saw_longer = true; }
+            if s.is_empty() {
+                saw_empty = true;
+            }
+            if s.len() >= 1000 {
+                saw_long = true;
+            }
+            if s.len() < original.len() && !s.is_empty() {
+                saw_shorter = true;
+            }
+            if s.len() > original.len() && s.len() < 1000 {
+                saw_longer = true;
+            }
         }
         assert!(saw_shorter, "should produce shorter strings (deletion)");
         assert!(saw_longer, "should produce longer strings (insertion)");
@@ -3692,9 +3954,15 @@ mod tests {
         for _ in 0..500 {
             let mutated = mutate_value(&json!("hello"), &TypeInfo::Str, dictionary, &mut rng);
             let s = mutated.as_str().unwrap_or("");
-            if s.contains('@') { saw_at = true; }
-            if s.contains("://") { saw_scheme = true; }
-            if s.contains(".com") { saw_dotcom = true; }
+            if s.contains('@') {
+                saw_at = true;
+            }
+            if s.contains("://") {
+                saw_scheme = true;
+            }
+            if s.contains(".com") {
+                saw_dotcom = true;
+            }
         }
         assert!(saw_at, "should inject '@' from dictionary");
         assert!(saw_scheme, "should inject '://' from dictionary");
@@ -3722,7 +3990,10 @@ mod tests {
     fn duplicate_substring_single_char_is_safe() {
         let mut rng = StdRng::seed_from_u64(0);
         let result = duplicate_substring("x", &mut rng);
-        assert_eq!(result, "xx", "single-char duplication should double the string");
+        assert_eq!(
+            result, "xx",
+            "single-char duplication should double the string"
+        );
     }
 
     #[test]
@@ -3765,19 +4036,26 @@ mod tests {
         let mut saw_longer = false;
         for _ in 0..500 {
             let mutated = mutate_value(&json!(original), &TypeInfo::Str, &[], &mut rng);
-            let s = mutated.as_str().expect("mutate_value(Str) must return a string");
+            let s = mutated
+                .as_str()
+                .expect("mutate_value(Str) must return a string");
             if s.len() > original.len() && s.len() < 1000 {
                 saw_longer = true;
                 break;
             }
         }
-        assert!(saw_longer, "substring duplication operator should produce longer strings");
+        assert!(
+            saw_longer,
+            "substring duplication operator should produce longer strings"
+        );
     }
 
     #[test]
     fn mutate_array_type_valid() {
         let mut rng = seeded_rng();
-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        };
         for _ in 0..100 {
             let mutated = mutate_value(&json!([1, 2, 3]), &typ, &[], &mut rng);
             assert!(mutated.is_array(), "expected array, got {mutated}");
@@ -3787,7 +4065,9 @@ mod tests {
     #[test]
     fn mutate_array_empty_can_grow() {
         let mut rng = seeded_rng();
-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        };
         let mutated = mutate_value(&json!([]), &typ, &[], &mut rng);
         let arr = mutated.as_array().expect("expected array");
         assert_eq!(arr.len(), 1, "empty array mutation should add an element");
@@ -3813,8 +4093,16 @@ mod tests {
     fn mutate_inputs_rate_zero_returns_identical() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
         ];
         let inputs = vec![json!(42), json!("hello")];
         let mutated = mutate_inputs(&inputs, &params, 0.0, &[], &mut rng);
@@ -3825,8 +4113,16 @@ mod tests {
     fn mutate_inputs_rate_one_mutates_all() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Bool, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
         ];
         let inputs = vec![json!(true), json!(false)];
         let mutated = mutate_inputs(&inputs, &params, 1.0, &[], &mut rng);
@@ -3846,14 +4142,20 @@ mod tests {
     fn mutate_value_opaque_returns_unchanged() {
         let mut rng = seeded_rng();
         let val = json!(null);
-        let typ = TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None };
+        let typ = TypeInfo::Opaque {
+            label: "net.Socket".into(),
+            static_opacity: None,
+            medium_opacity: None,
+        };
         assert_eq!(mutate_value(&val, &typ, &[], &mut rng), val);
     }
 
     #[test]
     fn mutate_nullable_can_flip_to_null() {
         let mut rng = StdRng::seed_from_u64(0);
-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Int),
+        };
         let mut saw_null = false;
         let mut saw_value = false;
         for _ in 0..100 {
@@ -3871,7 +4173,9 @@ mod tests {
     #[test]
     fn mutate_nullable_can_flip_from_null() {
         let mut rng = StdRng::seed_from_u64(0);
-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Int),
+        };
         let mut saw_non_null = false;
         for _ in 0..100 {
             let mutated = mutate_value(&Value::Null, &typ, &[], &mut rng);
@@ -3903,8 +4207,16 @@ mod tests {
     fn crossover_inputs_respects_rate_zero() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
         ];
         let parent_a = vec![json!(1), json!("hello")];
         let parent_b = vec![json!(2), json!("world")];
@@ -3917,10 +4229,26 @@ mod tests {
     #[test]
     fn crossover_inputs_produces_mixed_children() {
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
-            ParamInfo { name: "d".into(), typ: TypeInfo::Float, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "c".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "d".into(),
+                typ: TypeInfo::Float,
+                type_name: None,
+            },
         ];
         let parent_a = vec![json!(1), json!("aaa"), json!(true), json!(1.0)];
         let parent_b = vec![json!(2), json!("bbb"), json!(false), json!(2.0)];
@@ -3930,8 +4258,16 @@ mod tests {
         for seed in 0..100_u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
-            let from_a = c1.iter().zip(parent_a.iter()).filter(|(c, a)| c == a).count();
-            let from_b = c1.iter().zip(parent_b.iter()).filter(|(c, b)| c == b).count();
+            let from_a = c1
+                .iter()
+                .zip(parent_a.iter())
+                .filter(|(c, a)| c == a)
+                .count();
+            let from_b = c1
+                .iter()
+                .zip(parent_b.iter())
+                .filter(|(c, b)| c == b)
+                .count();
             if from_a > 0 && from_b > 0 {
                 saw_mix = true;
                 break;
@@ -3973,12 +4309,16 @@ mod tests {
             let mut rng = StdRng::seed_from_u64(seed);
             let (c1, _c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
             let obj = c1[0].as_object().expect("expected object child");
-            let from_a = [obj.get("x") == Some(&json!(1)),
-                          obj.get("y") == Some(&json!(2)),
-                          obj.get("z") == Some(&json!(3))];
-            let from_b = [obj.get("x") == Some(&json!(10)),
-                          obj.get("y") == Some(&json!(20)),
-                          obj.get("z") == Some(&json!(30))];
+            let from_a = [
+                obj.get("x") == Some(&json!(1)),
+                obj.get("y") == Some(&json!(2)),
+                obj.get("z") == Some(&json!(3)),
+            ];
+            let from_b = [
+                obj.get("x") == Some(&json!(10)),
+                obj.get("y") == Some(&json!(20)),
+                obj.get("z") == Some(&json!(30)),
+            ];
             let a_count = from_a.iter().filter(|&&v| v).count();
             let b_count = from_b.iter().filter(|&&v| v).count();
             if a_count > 0 && b_count > 0 {
@@ -3986,7 +4326,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_field_mix, "expected field-level crossover to mix object fields");
+        assert!(
+            saw_field_mix,
+            "expected field-level crossover to mix object fields"
+        );
     }
 
     #[test]
@@ -4017,15 +4360,30 @@ mod tests {
                 }
             }
         }
-        assert!(saw_prefix_suffix, "expected single-point crossover with prefix/suffix split");
+        assert!(
+            saw_prefix_suffix,
+            "expected single-point crossover with prefix/suffix split"
+        );
     }
 
     #[test]
     fn crossover_inputs_preserves_types() {
         let params = vec![
-            ParamInfo { name: "i".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "s".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo {
+                name: "i".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "s".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
         ];
         let parent_a = vec![json!(1), json!("hello"), json!(true)];
         let parent_b = vec![json!(2), json!("world"), json!(false)];
@@ -4033,10 +4391,18 @@ mod tests {
         for seed in 0..100_u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let (c1, c2) = crossover_inputs(&parent_a, &parent_b, &params, 1.0, &mut rng);
-            assert!(c1[0].is_i64() || c1[0].is_u64(), "child1[0] not int: {}", c1[0]);
+            assert!(
+                c1[0].is_i64() || c1[0].is_u64(),
+                "child1[0] not int: {}",
+                c1[0]
+            );
             assert!(c1[1].is_string(), "child1[1] not string: {}", c1[1]);
             assert!(c1[2].is_boolean(), "child1[2] not bool: {}", c1[2]);
-            assert!(c2[0].is_i64() || c2[0].is_u64(), "child2[0] not int: {}", c2[0]);
+            assert!(
+                c2[0].is_i64() || c2[0].is_u64(),
+                "child2[0] not int: {}",
+                c2[0]
+            );
             assert!(c2[1].is_string(), "child2[1] not string: {}", c2[1]);
             assert!(c2[2].is_boolean(), "child2[2] not bool: {}", c2[2]);
         }
@@ -4046,9 +4412,21 @@ mod tests {
     fn crossover_inputs_length_matches_params() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo {
+                name: "a".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "c".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
         ];
         let parent_a = vec![json!(1), json!("x"), json!(true)];
         let parent_b = vec![json!(2), json!("y"), json!(false)];
@@ -4083,7 +4461,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_mix, "expected string crossover to combine chars from both parents");
+        assert!(
+            saw_mix,
+            "expected string crossover to combine chars from both parents"
+        );
     }
 
     #[test]
@@ -4134,8 +4515,16 @@ mod tests {
     #[test]
     fn crossover_string_nonstring_types_unchanged() {
         let params = vec![
-            ParamInfo { name: "i".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+            ParamInfo {
+                name: "i".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "b".into(),
+                typ: TypeInfo::Bool,
+                type_name: None,
+            },
         ];
         let parent_a = vec![json!(42), json!(true)];
         let parent_b = vec![json!(99), json!(false)];
@@ -4178,9 +4567,7 @@ mod tests {
 
     #[test]
     fn pool_to_candidate_inputs_produces_candidates() {
-        use crate::interesting_pool::{
-            BehaviorObservation, InterestingPool, PoolEntry, Severity,
-        };
+        use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(42),
@@ -4194,8 +4581,16 @@ mod tests {
             last_hit_epoch: 0,
         });
         let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-            ParamInfo { name: "y".into(), typ: TypeInfo::Str, type_name: None },
+            ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "y".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
         ];
         let candidates = pool_to_candidate_inputs(&params, &pool);
         assert_eq!(candidates.len(), 1);
@@ -4205,18 +4600,18 @@ mod tests {
     #[test]
     fn pool_to_candidate_inputs_empty_pool_returns_empty() {
         let pool = crate::interesting_pool::InterestingPool::default();
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let candidates = pool_to_candidate_inputs(&params, &pool);
         assert!(candidates.is_empty());
     }
 
     #[test]
     fn pool_to_candidate_inputs_deduplicates() {
-        use crate::interesting_pool::{
-            BehaviorObservation, InterestingPool, PoolEntry, Severity,
-        };
+        use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(7),
@@ -4240,11 +4635,17 @@ mod tests {
             discovered_epoch: 0,
             last_hit_epoch: 0,
         });
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let candidates = pool_to_candidate_inputs(&params, &pool);
-        assert_eq!(candidates.len(), 1, "duplicate values should be deduplicated");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "duplicate values should be deduplicated"
+        );
     }
 
     // -- Call-graph-aware pool-to-candidate tests --
@@ -4272,12 +4673,24 @@ mod tests {
     fn callgraph_pool_prioritizes_callee_values() {
         use crate::interesting_pool::Severity;
         let mut pool = crate::interesting_pool::InterestingPool::default();
-        pool.insert(make_pool_entry(json!(10), TypeInfo::Int, "callee_b", Severity::RarePath));
-        pool.insert(make_pool_entry(json!(20), TypeInfo::Int, "unrelated_d", Severity::Crash));
+        pool.insert(make_pool_entry(
+            json!(10),
+            TypeInfo::Int,
+            "callee_b",
+            Severity::RarePath,
+        ));
+        pool.insert(make_pool_entry(
+            json!(20),
+            TypeInfo::Int,
+            "unrelated_d",
+            Severity::Crash,
+        ));
 
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let callees: std::collections::HashSet<String> =
             ["callee_b".to_string()].into_iter().collect();
 
@@ -4293,15 +4706,27 @@ mod tests {
         use crate::interesting_pool::Severity;
         let mut pool = crate::interesting_pool::InterestingPool::default();
         // 1 callee value
-        pool.insert(make_pool_entry(json!(1), TypeInfo::Int, "callee_b", Severity::RarePath));
+        pool.insert(make_pool_entry(
+            json!(1),
+            TypeInfo::Int,
+            "callee_b",
+            Severity::RarePath,
+        ));
         // 25 non-callee values (exceeds NON_CALLEE_SEED_CAP of 10)
         for i in 100..125 {
-            pool.insert(make_pool_entry(json!(i), TypeInfo::Int, "unrelated", Severity::RarePath));
+            pool.insert(make_pool_entry(
+                json!(i),
+                TypeInfo::Int,
+                "unrelated",
+                Severity::RarePath,
+            ));
         }
 
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let callees: std::collections::HashSet<String> =
             ["callee_b".to_string()].into_iter().collect();
 
@@ -4316,11 +4741,18 @@ mod tests {
     fn callgraph_pool_empty_callees_falls_back() {
         use crate::interesting_pool::Severity;
         let mut pool = crate::interesting_pool::InterestingPool::default();
-        pool.insert(make_pool_entry(json!(42), TypeInfo::Int, "foo", Severity::RarePath));
+        pool.insert(make_pool_entry(
+            json!(42),
+            TypeInfo::Int,
+            "foo",
+            Severity::RarePath,
+        ));
 
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let empty_callees: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         let from_callgraph = pool_to_candidate_inputs_for_callees(&params, &pool, &empty_callees);
@@ -4338,16 +4770,26 @@ mod tests {
             value: json!(7),
             ty: TypeInfo::Int,
             behaviors: vec![
-                BehaviorObservation { function: "callee_b".into(), branch_id: 1, severity: Severity::RarePath },
-                BehaviorObservation { function: "unrelated".into(), branch_id: 2, severity: Severity::Crash },
+                BehaviorObservation {
+                    function: "callee_b".into(),
+                    branch_id: 1,
+                    severity: Severity::RarePath,
+                },
+                BehaviorObservation {
+                    function: "unrelated".into(),
+                    branch_id: 2,
+                    severity: Severity::Crash,
+                },
             ],
             discovered_epoch: 0,
             last_hit_epoch: 0,
         });
 
-        let params = vec![
-            ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let callees: std::collections::HashSet<String> =
             ["callee_b".to_string()].into_iter().collect();
 
@@ -4364,14 +4806,23 @@ mod tests {
     #[test]
     fn heuristic_email() {
         assert_eq!(heuristic_string_for_name("email"), Some(HEURISTIC_EMAIL));
-        assert_eq!(heuristic_string_for_name("user_email"), Some(HEURISTIC_EMAIL));
-        assert_eq!(heuristic_string_for_name("mail_address"), Some(HEURISTIC_EMAIL));
+        assert_eq!(
+            heuristic_string_for_name("user_email"),
+            Some(HEURISTIC_EMAIL)
+        );
+        assert_eq!(
+            heuristic_string_for_name("mail_address"),
+            Some(HEURISTIC_EMAIL)
+        );
     }
 
     #[test]
     fn heuristic_url() {
         assert_eq!(heuristic_string_for_name("url"), Some(HEURISTIC_URL));
-        assert_eq!(heuristic_string_for_name("redirect_uri"), Some(HEURISTIC_URL));
+        assert_eq!(
+            heuristic_string_for_name("redirect_uri"),
+            Some(HEURISTIC_URL)
+        );
         assert_eq!(heuristic_string_for_name("href"), Some(HEURISTIC_URL));
         assert_eq!(heuristic_string_for_name("link"), Some(HEURISTIC_URL));
     }
@@ -4380,31 +4831,58 @@ mod tests {
     fn heuristic_phone() {
         assert_eq!(heuristic_string_for_name("phone"), Some(HEURISTIC_PHONE));
         assert_eq!(heuristic_string_for_name("tel"), Some(HEURISTIC_PHONE));
-        assert_eq!(heuristic_string_for_name("mobile_number"), Some(HEURISTIC_PHONE));
+        assert_eq!(
+            heuristic_string_for_name("mobile_number"),
+            Some(HEURISTIC_PHONE)
+        );
     }
 
     #[test]
     fn heuristic_name_specificity() {
-        assert_eq!(heuristic_string_for_name("first_name"), Some(HEURISTIC_FIRST_NAME));
-        assert_eq!(heuristic_string_for_name("firstname"), Some(HEURISTIC_FIRST_NAME));
-        assert_eq!(heuristic_string_for_name("last_name"), Some(HEURISTIC_LAST_NAME));
-        assert_eq!(heuristic_string_for_name("lastname"), Some(HEURISTIC_LAST_NAME));
+        assert_eq!(
+            heuristic_string_for_name("first_name"),
+            Some(HEURISTIC_FIRST_NAME)
+        );
+        assert_eq!(
+            heuristic_string_for_name("firstname"),
+            Some(HEURISTIC_FIRST_NAME)
+        );
+        assert_eq!(
+            heuristic_string_for_name("last_name"),
+            Some(HEURISTIC_LAST_NAME)
+        );
+        assert_eq!(
+            heuristic_string_for_name("lastname"),
+            Some(HEURISTIC_LAST_NAME)
+        );
         assert_eq!(heuristic_string_for_name("name"), Some(HEURISTIC_NAME));
-        assert_eq!(heuristic_string_for_name("display_name"), Some(HEURISTIC_NAME));
+        assert_eq!(
+            heuristic_string_for_name("display_name"),
+            Some(HEURISTIC_NAME)
+        );
     }
 
     #[test]
     fn heuristic_date() {
         assert_eq!(heuristic_string_for_name("date"), Some(HEURISTIC_DATE));
         assert_eq!(heuristic_string_for_name("timestamp"), Some(HEURISTIC_DATE));
-        assert_eq!(heuristic_string_for_name("created_at"), Some(HEURISTIC_DATE));
-        assert_eq!(heuristic_string_for_name("updated_at"), Some(HEURISTIC_DATE));
+        assert_eq!(
+            heuristic_string_for_name("created_at"),
+            Some(HEURISTIC_DATE)
+        );
+        assert_eq!(
+            heuristic_string_for_name("updated_at"),
+            Some(HEURISTIC_DATE)
+        );
     }
 
     #[test]
     fn heuristic_uuid_and_id() {
         assert_eq!(heuristic_string_for_name("uuid"), Some(HEURISTIC_UUID));
-        assert_eq!(heuristic_string_for_name("request_id"), Some(HEURISTIC_UUID));
+        assert_eq!(
+            heuristic_string_for_name("request_id"),
+            Some(HEURISTIC_UUID)
+        );
         assert_eq!(heuristic_string_for_name("id"), Some(HEURISTIC_UUID));
     }
 
@@ -4434,7 +4912,10 @@ mod tests {
         assert_eq!(heuristic_string_for_name("Email"), Some(HEURISTIC_EMAIL));
         assert_eq!(heuristic_string_for_name("EMAIL"), Some(HEURISTIC_EMAIL));
         assert_eq!(heuristic_string_for_name("eMaIl"), Some(HEURISTIC_EMAIL));
-        assert_eq!(heuristic_string_for_name("USER_EMAIL"), Some(HEURISTIC_EMAIL));
+        assert_eq!(
+            heuristic_string_for_name("USER_EMAIL"),
+            Some(HEURISTIC_EMAIL)
+        );
     }
 
     #[test]
@@ -4448,8 +4929,16 @@ mod tests {
     fn generate_random_inputs_uses_heuristic_for_str() {
         let mut rng = seeded_rng();
         let params = vec![
-            ParamInfo { name: "email".into(), typ: TypeInfo::Str, type_name: None },
-            ParamInfo { name: "count".into(), typ: TypeInfo::Int, type_name: None },
+            ParamInfo {
+                name: "email".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            },
+            ParamInfo {
+                name: "count".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
         ];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert_eq!(inputs[0], json!(HEURISTIC_EMAIL));
@@ -4459,9 +4948,11 @@ mod tests {
     #[test]
     fn generate_random_inputs_falls_back_for_unknown_name() {
         let mut rng = seeded_rng();
-        let params = vec![
-            ParamInfo { name: "foo".into(), typ: TypeInfo::Str, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "foo".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert!(inputs[0].is_string());
         assert_ne!(inputs[0].as_str(), Some(HEURISTIC_EMAIL));
@@ -4470,13 +4961,11 @@ mod tests {
     #[test]
     fn generate_random_inputs_checks_type_name_fallback() {
         let mut rng = seeded_rng();
-        let params = vec![
-            ParamInfo {
-                name: "x".into(),
-                typ: TypeInfo::Str,
-                type_name: Some("Email".into()),
-            },
-        ];
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Str,
+            type_name: Some("Email".into()),
+        }];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert_eq!(inputs[0], json!(HEURISTIC_EMAIL));
     }
@@ -4484,9 +4973,11 @@ mod tests {
     #[test]
     fn heuristic_does_not_affect_non_str_types() {
         let mut rng = seeded_rng();
-        let params = vec![
-            ParamInfo { name: "email".into(), typ: TypeInfo::Int, type_name: None },
-        ];
+        let params = vec![ParamInfo {
+            name: "email".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
         let inputs = generate_random_inputs(&params, &mut rng, None);
         assert!(inputs[0].is_i64() || inputs[0].is_u64());
     }
@@ -4498,17 +4989,26 @@ mod tests {
     #[test]
     fn shrink_int_42() {
         let candidates = shrink_candidates(&json!(42), &TypeInfo::Int);
-        assert!(candidates.contains(&json!(21)), "should contain halved value");
+        assert!(
+            candidates.contains(&json!(21)),
+            "should contain halved value"
+        );
         assert!(candidates.contains(&json!(0)), "should contain 0");
         assert!(candidates.contains(&json!(1)), "should contain 1");
         assert!(candidates.contains(&json!(-1)), "should contain -1");
-        assert!(!candidates.contains(&json!(42)), "should not contain original");
+        assert!(
+            !candidates.contains(&json!(42)),
+            "should not contain original"
+        );
     }
 
     #[test]
     fn shrink_int_zero() {
         let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
-        assert!(!candidates.contains(&json!(0)), "should not contain original");
+        assert!(
+            !candidates.contains(&json!(0)),
+            "should not contain original"
+        );
         assert!(candidates.contains(&json!(1)));
         assert!(candidates.contains(&json!(-1)));
     }
@@ -4550,7 +5050,9 @@ mod tests {
 
     #[test]
     fn shrink_array_three_elements() {
-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        };
         let candidates = shrink_candidates(&json!([1, 2, 3]), &typ);
         assert!(candidates.contains(&json!([1, 2])), "remove last");
         assert!(candidates.contains(&json!([2, 3])), "remove first");
@@ -4559,21 +5061,27 @@ mod tests {
 
     #[test]
     fn shrink_array_empty() {
-        let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        };
         let candidates = shrink_candidates(&json!([]), &typ);
         assert!(candidates.is_empty());
     }
 
     #[test]
     fn shrink_nullable_non_null() {
-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Int),
+        };
         let candidates = shrink_candidates(&json!(42), &typ);
         assert!(candidates.contains(&Value::Null), "should contain null");
     }
 
     #[test]
     fn shrink_nullable_null() {
-        let typ = TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) };
+        let typ = TypeInfo::Nullable {
+            inner: Box::new(TypeInfo::Int),
+        };
         let candidates = shrink_candidates(&Value::Null, &typ);
         assert!(candidates.is_empty());
     }
@@ -4581,10 +5089,7 @@ mod tests {
     #[test]
     fn shrink_object_removes_fields() {
         let typ = TypeInfo::Object {
-            fields: vec![
-                ("a".into(), TypeInfo::Int),
-                ("b".into(), TypeInfo::Str),
-            ],
+            fields: vec![("a".into(), TypeInfo::Int), ("b".into(), TypeInfo::Str)],
         };
         let val = json!({"a": 10, "b": "hi"});
         let candidates = shrink_candidates(&val, &typ);
@@ -4624,7 +5129,9 @@ mod tests {
             match typ {
                 TypeInfo::Int => value.is_i64() || value.is_u64(),
                 // NaN and Infinity serialize to JSON null — accept null for Float.
-                TypeInfo::Float => value.is_f64() || value.is_i64() || value.is_u64() || value.is_null(),
+                TypeInfo::Float => {
+                    value.is_f64() || value.is_i64() || value.is_u64() || value.is_null()
+                }
                 TypeInfo::Str => value.is_string(),
                 TypeInfo::Bool => value.is_boolean(),
                 TypeInfo::Array { .. } => value.is_array(),
@@ -5596,8 +6103,11 @@ mod tests {
         // Even indices (0, 2) use success variants (Str), odd indices (1, 3) use error variants.
         // Without frontend capabilities, Error complex types fall back to unknown generation,
         // so we verify the alternating pattern by checking that success slots are strings.
-        assert!(configs[0].return_values[0].is_string(),
-            "expected string at index 0, got {:?}", configs[0].return_values[0]);
+        assert!(
+            configs[0].return_values[0].is_string(),
+            "expected string at index 0, got {:?}",
+            configs[0].return_values[0]
+        );
         assert_eq!(configs[0].default_behavior, MockBehavior::ReturnGenerated);
     }
 
@@ -5630,7 +6140,10 @@ mod tests {
         let mutated = mutate_mock_values(&configs, &params, 1.0, &[], &mut rng);
 
         assert_eq!(mutated[0].symbol, "query");
-        assert_eq!(mutated[0].return_values.len(), configs[0].return_values.len());
+        assert_eq!(
+            mutated[0].return_values.len(),
+            configs[0].return_values.len()
+        );
     }
 
     #[test]
@@ -5673,7 +6186,10 @@ mod tests {
 
         let configs = generate_mock_values(&params, &mut rng, None);
         let val = &configs[0].return_values[0];
-        assert!(val.get("status").is_some(), "network mock should have status field");
+        assert!(
+            val.get("status").is_some(),
+            "network mock should have status field"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5750,12 +6266,18 @@ mod tests {
         for _ in 0..100 {
             let mutated = mutate_value(&input, &typ, &[], &mut rng);
             let obj = mutated.as_object().expect("buffer mutant should be object");
-            assert_eq!(obj.get("__complex_type").and_then(|v| v.as_str()), Some("buffer"));
+            assert_eq!(
+                obj.get("__complex_type").and_then(|v| v.as_str()),
+                Some("buffer")
+            );
             assert_eq!(obj.get("encoding").and_then(|v| v.as_str()), Some("base64"));
             assert!(obj.contains_key("value"), "missing value field");
             // value must be valid base64
             let encoded = obj.get("value").and_then(|v| v.as_str()).unwrap();
-            assert!(base64_decode(encoded).is_some(), "value is not valid base64: {encoded}");
+            assert!(
+                base64_decode(encoded).is_some(),
+                "value is not valid base64: {encoded}"
+            );
         }
     }
 
@@ -5790,7 +6312,10 @@ mod tests {
         let mut rng = seeded_rng();
         for _ in 0..50 {
             let mutated = mutate_value(&input, &typ, &[], &mut rng);
-            assert!(mutated.is_object(), "expected object from empty buffer mutation");
+            assert!(
+                mutated.is_object(),
+                "expected object from empty buffer mutation"
+            );
             // Empty buffer can only grow (insertion), result must be valid.
             extract_buffer_bytes(&mutated); // panics if invalid
         }
@@ -5837,7 +6362,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_single_bit_flip, "should produce a single-bit-flip mutation");
+        assert!(
+            saw_single_bit_flip,
+            "should produce a single-bit-flip mutation"
+        );
     }
 
     #[test]
@@ -5858,7 +6386,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_growth, "should sometimes grow the buffer via block insertion");
+        assert!(
+            saw_growth,
+            "should sometimes grow the buffer via block insertion"
+        );
     }
 
     #[test]
@@ -5879,7 +6410,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_shrink, "should sometimes shrink the buffer via block deletion");
+        assert!(
+            saw_shrink,
+            "should sometimes shrink the buffer via block deletion"
+        );
     }
 
     #[test]
@@ -5919,7 +6453,10 @@ mod tests {
         for bad in &malformed_inputs {
             for _ in 0..10 {
                 let mutated = mutate_value(bad, &typ, &[], &mut rng);
-                assert!(mutated.is_object(), "expected object for malformed input: {bad}");
+                assert!(
+                    mutated.is_object(),
+                    "expected object for malformed input: {bad}"
+                );
             }
         }
     }
@@ -5931,7 +6468,10 @@ mod tests {
         let val = json!("hello world");
         for _ in 0..50 {
             let mutated = mutate_value(&val, &TypeInfo::Str, &[], &mut rng);
-            assert!(mutated.is_string(), "Str mutation should always produce a string");
+            assert!(
+                mutated.is_string(),
+                "Str mutation should always produce a string"
+            );
         }
     }
 

@@ -11,7 +11,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::protocol::ExecuteResult;
 use crate::types::{ParamInfo, TypeInfo};
@@ -195,7 +195,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -215,7 +218,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -265,52 +271,82 @@ mod tests {
 
     #[test]
     fn executions_agree_same_return() {
-        assert!(executions_agree(&make_exec(json!("hello")), &make_exec(json!("hello"))));
+        assert!(executions_agree(
+            &make_exec(json!("hello")),
+            &make_exec(json!("hello"))
+        ));
     }
 
     #[test]
     fn executions_disagree_different_return() {
-        assert!(!executions_agree(&make_exec(json!("hello")), &make_exec(json!("world"))));
+        assert!(!executions_agree(
+            &make_exec(json!("hello")),
+            &make_exec(json!("world"))
+        ));
     }
 
     #[test]
     fn executions_agree_same_error_type() {
-        assert!(executions_agree(&make_error_exec("TypeError"), &make_error_exec("TypeError")));
+        assert!(executions_agree(
+            &make_error_exec("TypeError"),
+            &make_error_exec("TypeError")
+        ));
     }
 
     #[test]
     fn executions_disagree_different_error_type() {
-        assert!(!executions_agree(&make_error_exec("TypeError"), &make_error_exec("RangeError")));
+        assert!(!executions_agree(
+            &make_error_exec("TypeError"),
+            &make_error_exec("RangeError")
+        ));
     }
 
     #[test]
     fn executions_disagree_return_vs_error() {
-        assert!(!executions_agree(&make_exec(json!("ok")), &make_error_exec("TypeError")));
+        assert!(!executions_agree(
+            &make_exec(json!("ok")),
+            &make_error_exec("TypeError")
+        ));
     }
 
     #[test]
     fn classify_all_agree() {
-        assert_eq!(classify(5, 5, AGREEMENT_THRESHOLD), FloatClassification::IntegerTreating);
+        assert_eq!(
+            classify(5, 5, AGREEMENT_THRESHOLD),
+            FloatClassification::IntegerTreating
+        );
     }
 
     #[test]
     fn classify_none_agree() {
-        assert_eq!(classify(0, 5, AGREEMENT_THRESHOLD), FloatClassification::FloatSensitive);
+        assert_eq!(
+            classify(0, 5, AGREEMENT_THRESHOLD),
+            FloatClassification::FloatSensitive
+        );
     }
 
     #[test]
     fn classify_at_threshold() {
-        assert_eq!(classify(4, 5, AGREEMENT_THRESHOLD), FloatClassification::IntegerTreating);
+        assert_eq!(
+            classify(4, 5, AGREEMENT_THRESHOLD),
+            FloatClassification::IntegerTreating
+        );
     }
 
     #[test]
     fn classify_below_threshold() {
-        assert_eq!(classify(3, 5, AGREEMENT_THRESHOLD), FloatClassification::FloatSensitive);
+        assert_eq!(
+            classify(3, 5, AGREEMENT_THRESHOLD),
+            FloatClassification::FloatSensitive
+        );
     }
 
     #[test]
     fn classify_zero_probes() {
-        assert_eq!(classify(0, 0, AGREEMENT_THRESHOLD), FloatClassification::Inconclusive);
+        assert_eq!(
+            classify(0, 0, AGREEMENT_THRESHOLD),
+            FloatClassification::Inconclusive
+        );
     }
 
     #[test]
@@ -320,13 +356,17 @@ mod tests {
                 param_index: 1,
                 param_name: "x".into(),
                 classification: FloatClassification::IntegerTreating,
-                agreements: 5, total_probes: 5, divergent_values: vec![],
+                agreements: 5,
+                total_probes: 5,
+                divergent_values: vec![],
             },
             FloatProbeResult {
                 param_index: 3,
                 param_name: "y".into(),
                 classification: FloatClassification::FloatSensitive,
-                agreements: 1, total_probes: 5, divergent_values: vec![1.5, 2.5],
+                agreements: 1,
+                total_probes: 5,
+                divergent_values: vec![1.5, 2.5],
             },
         ];
         let map = build_bias_map(&results);

@@ -46,9 +46,7 @@ pub(crate) fn run_review(
     let cwd = std::env::current_dir()?;
     let root = project_dir
         .map(PathBuf::from)
-        .or_else(|| {
-            project::detect_project_root(&cwd).map(|r| r.path)
-        })
+        .or_else(|| project::detect_project_root(&cwd).map(|r| r.path))
         .unwrap_or_else(|| cwd.clone());
 
     let config_path = root.join(".shatter").join("config.yaml");
@@ -118,16 +116,15 @@ pub(crate) fn run_review(
 
     // Sort: high confidence first, then by function ID for stability.
     candidates.sort_by(|a, b| {
-        b.field.confidence.cmp(&a.field.confidence)
+        b.field
+            .confidence
+            .cmp(&a.field.confidence)
             .then_with(|| a.function_id.cmp(&b.function_id))
             .then_with(|| a.field.field_path.cmp(&b.field.field_path))
     });
 
     let total = candidates.len();
-    println!(
-        "{} nondeterminism candidate(s) to review.",
-        total
-    );
+    println!("{} nondeterminism candidate(s) to review.", total);
     println!("Commands: [y] confirm  [n] reject  [s] skip  [?] show evidence  [q] quit");
     println!();
 
@@ -158,7 +155,10 @@ pub(crate) fn run_review(
             // EOF (Ctrl-D) → quit.
             if bytes_read == 0 {
                 println!();
-                println!("Session ended. Saving {} change(s).", confirmed.len() + rejected.len());
+                println!(
+                    "Session ended. Saving {} change(s).",
+                    confirmed.len() + rejected.len()
+                );
                 persist_decisions(&config_path, &confirmed, &rejected)?;
                 return Ok(());
             }
@@ -197,7 +197,10 @@ pub(crate) fn run_review(
                     // Stay on the same candidate.
                 }
                 "q" | "Q" => {
-                    println!("Quit. Saving {} change(s).", confirmed.len() + rejected.len());
+                    println!(
+                        "Quit. Saving {} change(s).",
+                        confirmed.len() + rejected.len()
+                    );
                     persist_decisions(&config_path, &confirmed, &rejected)?;
                     return Ok(());
                 }
@@ -381,7 +384,9 @@ mod tests {
     fn run_review_all_already_decided_emits_message() {
         use shatter_core::behavior::BehaviorMap;
         use shatter_core::cache::BehaviorMapCache;
-        use shatter_core::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+        use shatter_core::nondeterminism::{
+            Confidence, NondeterminismEvidence, NondeterministicField,
+        };
 
         let tmp = tempfile::tempdir().unwrap();
         let project_dir = tmp.path();
@@ -423,7 +428,9 @@ mod tests {
 
         assert!(config_path.exists());
         let loaded = shatter_core::config::parse_config(&config_path).unwrap();
-        let nd = loaded.nondeterminism.expect("nondeterminism section present");
+        let nd = loaded
+            .nondeterminism
+            .expect("nondeterminism section present");
         assert_eq!(nd.confirmed.len(), 1);
         assert_eq!(nd.confirmed[0].function, "createUser");
     }
@@ -445,7 +452,9 @@ mod tests {
         shatter_core::config::update_nondeterminism_config(&config_path, &[decl], &[]).unwrap();
 
         let loaded = shatter_core::config::parse_config(&config_path).unwrap();
-        let nd = loaded.nondeterminism.expect("nondeterminism section present");
+        let nd = loaded
+            .nondeterminism
+            .expect("nondeterminism section present");
         assert_eq!(nd.confirmed.len(), 1, "should not duplicate");
     }
 }

@@ -86,7 +86,11 @@ pub fn structural_similarity(a: &Value, b: &Value) -> SimilarityResult {
 
     collect_diff(a, b, "", &mut matched, &mut total, &mut changed_paths);
 
-    let score = if total == 0 { 1.0 } else { matched as f64 / total as f64 };
+    let score = if total == 0 {
+        1.0
+    } else {
+        matched as f64 / total as f64
+    };
 
     SimilarityResult {
         score,
@@ -208,16 +212,56 @@ const INPUT_ECHO_DISCOUNT: f64 = 0.5;
 /// Default patterns ordered by confidence descending. First match wins,
 /// so more specific patterns (higher confidence) come first.
 pub const NAME_PATTERNS: &[NamePattern] = &[
-    NamePattern { pattern: "uuid",      match_kind: MatchKind::Suffix,    confidence: 0.95 },
-    NamePattern { pattern: "token",     match_kind: MatchKind::Suffix,    confidence: 0.90 },
-    NamePattern { pattern: "nonce",     match_kind: MatchKind::Suffix,    confidence: 0.90 },
-    NamePattern { pattern: "random",    match_kind: MatchKind::Substring, confidence: 0.85 },
-    NamePattern { pattern: "timestamp", match_kind: MatchKind::Suffix,    confidence: 0.80 },
-    NamePattern { pattern: "_at",       match_kind: MatchKind::Suffix,    confidence: 0.80 },
-    NamePattern { pattern: "date",      match_kind: MatchKind::Suffix,    confidence: 0.70 },
-    NamePattern { pattern: "hostname",  match_kind: MatchKind::Suffix,    confidence: 0.65 },
-    NamePattern { pattern: "pid",       match_kind: MatchKind::Suffix,    confidence: 0.60 },
-    NamePattern { pattern: "id",        match_kind: MatchKind::Suffix,    confidence: 0.60 },
+    NamePattern {
+        pattern: "uuid",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.95,
+    },
+    NamePattern {
+        pattern: "token",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.90,
+    },
+    NamePattern {
+        pattern: "nonce",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.90,
+    },
+    NamePattern {
+        pattern: "random",
+        match_kind: MatchKind::Substring,
+        confidence: 0.85,
+    },
+    NamePattern {
+        pattern: "timestamp",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.80,
+    },
+    NamePattern {
+        pattern: "_at",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.80,
+    },
+    NamePattern {
+        pattern: "date",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.70,
+    },
+    NamePattern {
+        pattern: "hostname",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.65,
+    },
+    NamePattern {
+        pattern: "pid",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.60,
+    },
+    NamePattern {
+        pattern: "id",
+        match_kind: MatchKind::Suffix,
+        confidence: 0.60,
+    },
 ];
 
 /// Result of a successful name-heuristic match.
@@ -249,9 +293,9 @@ pub fn check_name_heuristics(
         };
 
         if matched {
-            let is_echo = input_param_names.iter().any(|p| {
-                p.eq_ignore_ascii_case(segment)
-            });
+            let is_echo = input_param_names
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(segment));
             let confidence = if is_echo {
                 pat.confidence * INPUT_ECHO_DISCOUNT
             } else {
@@ -307,27 +351,23 @@ static RE_UUID_V4: LazyLock<Regex> = LazyLock::new(|| {
         .expect("uuid_v4 regex")
 });
 
-static RE_ISO8601: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").expect("iso8601 regex")
-});
+static RE_ISO8601: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").expect("iso8601 regex"));
 
 static RE_JWT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$").expect("jwt regex")
 });
 
-static RE_HEX_LOWER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^[0-9a-f]+$").expect("hex regex")
-});
+static RE_HEX_LOWER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^[0-9a-f]+$").expect("hex regex"));
 
 /// ISO date without time component (e.g. "2026-03-06").
-static RE_DATE_ISO_ONLY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("date_iso regex")
-});
+static RE_DATE_ISO_ONLY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("date_iso regex"));
 
 /// US-style date format MM/DD/YYYY.
-static RE_DATE_US: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{2}/\d{2}/\d{4}$").expect("date_us regex")
-});
+static RE_DATE_US: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{2}/\d{2}/\d{4}$").expect("date_us regex"));
 
 /// English locale date (e.g. "March 6, 2026" or "6 March 2026").
 static RE_DATE_LOCALE: LazyLock<Regex> = LazyLock::new(|| {
@@ -487,7 +527,9 @@ pub fn detect_within_run_nondeterminism(
 
             if orig_returns != reexec_returns {
                 // One returns normally, the other throws (or vice versa).
-                let entry = field_stats.entry(FIELD_PATH_OUTCOME.to_string()).or_insert((0, 0));
+                let entry = field_stats
+                    .entry(FIELD_PATH_OUTCOME.to_string())
+                    .or_insert((0, 0));
                 entry.0 += 1;
                 entry.1 += 1;
                 continue;
@@ -518,7 +560,7 @@ pub fn detect_within_run_nondeterminism(
             // Both threw — compare error type and message.
             if let (Some(orig_err), Some(reexec_err)) =
                 (&original.thrown_error, &reexec.thrown_error)
-            && (orig_err.error_type != reexec_err.error_type
+                && (orig_err.error_type != reexec_err.error_type
                     || orig_err.message != reexec_err.message)
             {
                 let entry = field_stats
@@ -575,10 +617,7 @@ pub fn detect_within_run_nondeterminism(
 ///
 /// Picks the first (canonical) input, then the one with the most different JSON
 /// serialization length to maximize diversity.
-pub fn select_sample_indices(
-    inputs: &[Vec<serde_json::Value>],
-    max_samples: usize,
-) -> Vec<usize> {
+pub fn select_sample_indices(inputs: &[Vec<serde_json::Value>], max_samples: usize) -> Vec<usize> {
     if inputs.is_empty() || max_samples == 0 {
         return vec![];
     }
@@ -648,10 +687,7 @@ pub fn check_cross_run_patterns(values: &[Value]) -> Vec<ValuePatternMatch> {
 ///
 /// Returns a match when the field name contains a known environment pattern
 /// (e.g. "hostname", "pid") AND the value is a short string or small integer.
-pub fn check_env_value_heuristic(
-    field_name: &str,
-    value: &Value,
-) -> Option<ValuePatternMatch> {
+pub fn check_env_value_heuristic(field_name: &str, value: &Value) -> Option<ValuePatternMatch> {
     let segment = field_name.rsplit('.').next().unwrap_or(field_name);
     let lower = segment.to_ascii_lowercase();
 
@@ -709,8 +745,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&field).expect("serialize");
-        let restored: NondeterministicField =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: NondeterministicField = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(field, restored);
     }
 
@@ -1045,8 +1080,10 @@ mod tests {
             assert!(
                 window[0].confidence >= window[1].confidence,
                 "NAME_PATTERNS not ordered by confidence: {} ({}) before {} ({})",
-                window[0].pattern, window[0].confidence,
-                window[1].pattern, window[1].confidence,
+                window[0].pattern,
+                window[0].confidence,
+                window[1].pattern,
+                window[1].confidence,
             );
         }
     }
@@ -1094,20 +1131,30 @@ mod tests {
     fn pattern_iso8601_with_offset() {
         let v = json!("2026-03-05T14:30:00+05:30");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME)
+        );
     }
 
     #[test]
     fn pattern_iso8601_rejects_date_only() {
         let v = json!("2026-03-05");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().all(|m| m.pattern_name != PATTERN_ISO8601_DATETIME));
+        assert!(
+            matches
+                .iter()
+                .all(|m| m.pattern_name != PATTERN_ISO8601_DATETIME)
+        );
     }
 
     #[test]
     fn pattern_jwt_token() {
         // Real JWT structure: header.payload.signature (all base64url).
-        let v = json!("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U");
+        let v = json!(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        );
         let matches = check_value_patterns(&v);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].pattern_name, PATTERN_JWT);
@@ -1225,7 +1272,10 @@ mod tests {
             scope_events: vec![],
             side_effects: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -1245,7 +1295,10 @@ mod tests {
             scope_events: vec![],
             side_effects: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -1262,7 +1315,10 @@ mod tests {
         let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
         assert!(report.nondeterministic_fields.is_empty());
         assert_eq!(report.inputs_sampled, 1);
-        assert_eq!(report.reexecutions_performed, NONDETERMINISM_REEXECUTION_COUNT);
+        assert_eq!(
+            report.reexecutions_performed,
+            NONDETERMINISM_REEXECUTION_COUNT
+        );
     }
 
     #[test]
@@ -1282,7 +1338,10 @@ mod tests {
             vec![NondeterminismEvidence::ObservedWithinRun]
         );
         // Changed in all 3 re-executions → High confidence.
-        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::High);
+        assert_eq!(
+            report.nondeterministic_fields[0].confidence,
+            Confidence::High
+        );
     }
 
     #[test]
@@ -1352,7 +1411,10 @@ mod tests {
 
         let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
         assert_eq!(report.nondeterministic_fields.len(), 1);
-        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::Low);
+        assert_eq!(
+            report.nondeterministic_fields[0].confidence,
+            Confidence::Low
+        );
     }
 
     #[test]
@@ -1390,7 +1452,10 @@ mod tests {
         assert_eq!(report.nondeterministic_fields[0].field_path, "return.b");
         assert_eq!(report.inputs_sampled, NONDETERMINISM_SAMPLES_PER_CLASS);
         // Both re-executions showed change → 2/2 = High.
-        assert_eq!(report.nondeterministic_fields[0].confidence, Confidence::High);
+        assert_eq!(
+            report.nondeterministic_fields[0].confidence,
+            Confidence::High
+        );
     }
 
     #[test]
@@ -1450,7 +1515,9 @@ mod tests {
         let inputs = vec![
             vec![json!(1)],
             vec![json!(2)],
-            vec![json!("a very long string that differs significantly in length")],
+            vec![json!(
+                "a very long string that differs significantly in length"
+            )],
         ];
         let indices = select_sample_indices(&inputs, NONDETERMINISM_SAMPLES_PER_CLASS);
         assert_eq!(indices.len(), NONDETERMINISM_SAMPLES_PER_CLASS);
@@ -1480,21 +1547,33 @@ mod tests {
     fn pattern_date_locale_month_first() {
         let v = json!("March 6, 2026");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.pattern_name == PATTERN_LOCALE_DATE)
+        );
     }
 
     #[test]
     fn pattern_date_locale_day_first() {
         let v = json!("6 March 2026");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.pattern_name == PATTERN_LOCALE_DATE)
+        );
     }
 
     #[test]
     fn pattern_date_locale_case_insensitive() {
         let v = json!("JANUARY 1, 2026");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_LOCALE_DATE));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.pattern_name == PATTERN_LOCALE_DATE)
+        );
     }
 
     #[test]
@@ -1510,7 +1589,11 @@ mod tests {
         // Full ISO 8601 datetime should match iso8601_datetime, NOT date_only.
         let v = json!("2026-03-06T12:00:00Z");
         let matches = check_value_patterns(&v);
-        assert!(matches.iter().any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.pattern_name == PATTERN_ISO8601_DATETIME)
+        );
         assert!(matches.iter().all(|m| m.pattern_name != PATTERN_DATE_ONLY));
     }
 

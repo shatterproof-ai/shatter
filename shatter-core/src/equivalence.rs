@@ -340,7 +340,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -355,14 +358,19 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: error_type.into(),
                 message: message.into(),
-                stack: None, error_category: None }),
+                stack: None,
+                error_category: None,
+            }),
             branch_path,
             lines_executed: vec![],
             calls_to_external: vec![],
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -371,8 +379,14 @@ mod tests {
     fn same_branches_different_returns_same_class() {
         let path = vec![make_branch(0, true), make_branch(1, false)];
         let executions = vec![
-            entry(vec![json!(5)], make_result(Some(json!("five")), path.clone())),
-            entry(vec![json!(7)], make_result(Some(json!("seven")), path.clone())),
+            entry(
+                vec![json!(5)],
+                make_result(Some(json!("five")), path.clone()),
+            ),
+            entry(
+                vec![json!(7)],
+                make_result(Some(json!("seven")), path.clone()),
+            ),
             entry(vec![json!(3)], make_result(Some(json!("three")), path)),
         ];
 
@@ -402,11 +416,11 @@ mod tests {
                 vec![json!(999999)],
                 make_result(Some(json!("big")), path.clone()),
             ),
-            entry(vec![json!(1)], make_result(Some(json!("small")), path.clone())),
             entry(
-                vec![json!(50000)],
-                make_result(Some(json!("medium")), path),
+                vec![json!(1)],
+                make_result(Some(json!("small")), path.clone()),
             ),
+            entry(vec![json!(50000)], make_result(Some(json!("medium")), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -463,28 +477,38 @@ mod tests {
 
         let classes = group_into_classes(&executions);
         assert_eq!(classes.len(), 1);
-        assert!(classes[0]
-            .common_preconditions
-            .contains(&Precondition::AllNegative { param_index: 0 }));
+        assert!(
+            classes[0]
+                .common_preconditions
+                .contains(&Precondition::AllNegative { param_index: 0 })
+        );
     }
 
     #[test]
     fn preconditions_all_equal() {
         let path = vec![make_branch(0, true)];
         let executions = vec![
-            entry(vec![json!("hello")], make_result(Some(json!(1)), path.clone())),
-            entry(vec![json!("hello")], make_result(Some(json!(2)), path.clone())),
+            entry(
+                vec![json!("hello")],
+                make_result(Some(json!(1)), path.clone()),
+            ),
+            entry(
+                vec![json!("hello")],
+                make_result(Some(json!(2)), path.clone()),
+            ),
             entry(vec![json!("hello")], make_result(Some(json!(3)), path)),
         ];
 
         let classes = group_into_classes(&executions);
         assert_eq!(classes.len(), 1);
-        assert!(classes[0]
-            .common_preconditions
-            .contains(&Precondition::AllEqual {
-                param_index: 0,
-                value: json!("hello"),
-            }));
+        assert!(
+            classes[0]
+                .common_preconditions
+                .contains(&Precondition::AllEqual {
+                    param_index: 0,
+                    value: json!("hello"),
+                })
+        );
     }
 
     #[test]
@@ -504,12 +528,14 @@ mod tests {
 
         let classes = group_into_classes(&executions);
         assert_eq!(classes.len(), 1);
-        assert!(classes[0]
-            .common_preconditions
-            .contains(&Precondition::SameType {
-                param_index: 0,
-                type_name: "string".to_string(),
-            }));
+        assert!(
+            classes[0]
+                .common_preconditions
+                .contains(&Precondition::SameType {
+                    param_index: 0,
+                    type_name: "string".to_string(),
+                })
+        );
     }
 
     #[test]
@@ -546,16 +572,34 @@ mod tests {
     #[test]
     fn branch_path_equality() {
         let p1 = BranchPath(vec![
-            BranchStep { branch_id: 0, taken: true },
-            BranchStep { branch_id: 1, taken: false },
+            BranchStep {
+                branch_id: 0,
+                taken: true,
+            },
+            BranchStep {
+                branch_id: 1,
+                taken: false,
+            },
         ]);
         let p2 = BranchPath(vec![
-            BranchStep { branch_id: 0, taken: true },
-            BranchStep { branch_id: 1, taken: false },
+            BranchStep {
+                branch_id: 0,
+                taken: true,
+            },
+            BranchStep {
+                branch_id: 1,
+                taken: false,
+            },
         ]);
         let p3 = BranchPath(vec![
-            BranchStep { branch_id: 0, taken: true },
-            BranchStep { branch_id: 1, taken: true },
+            BranchStep {
+                branch_id: 0,
+                taken: true,
+            },
+            BranchStep {
+                branch_id: 1,
+                taken: true,
+            },
         ]);
         assert_eq!(p1, p2);
         assert_ne!(p1, p3);
@@ -583,10 +627,7 @@ mod tests {
                 vec![json!({"name": "very long string value here", "extra": true})],
                 make_result(Some(json!(1)), path.clone()),
             ),
-            entry(
-                vec![json!({"a": 1})],
-                make_result(Some(json!(2)), path),
-            ),
+            entry(vec![json!({"a": 1})], make_result(Some(json!(2)), path)),
         ];
 
         let classes = group_into_classes(&executions);
@@ -609,19 +650,29 @@ mod tests {
 
         let classes = group_into_classes(&executions);
         assert_eq!(classes.len(), 1);
-        assert!(classes[0]
-            .common_preconditions
-            .contains(&Precondition::AllPositive { param_index: 0 }));
-        assert!(classes[0]
-            .common_preconditions
-            .contains(&Precondition::AllNegative { param_index: 1 }));
+        assert!(
+            classes[0]
+                .common_preconditions
+                .contains(&Precondition::AllPositive { param_index: 0 })
+        );
+        assert!(
+            classes[0]
+                .common_preconditions
+                .contains(&Precondition::AllNegative { param_index: 1 })
+        );
     }
 
     #[test]
     fn branch_path_round_trips() {
         let path = BranchPath(vec![
-            BranchStep { branch_id: 0, taken: true },
-            BranchStep { branch_id: 3, taken: false },
+            BranchStep {
+                branch_id: 0,
+                taken: true,
+            },
+            BranchStep {
+                branch_id: 3,
+                taken: false,
+            },
         ]);
         let json = serde_json::to_string(&path).expect("serialize");
         let deserialized: BranchPath = serde_json::from_str(&json).expect("deserialize");
@@ -670,7 +721,10 @@ mod tests {
     fn equivalence_class_round_trips() {
         let path = vec![make_branch(0, true), make_branch(1, false)];
         let executions = vec![
-            entry(vec![json!(5)], make_result(Some(json!("pos")), path.clone())),
+            entry(
+                vec![json!(5)],
+                make_result(Some(json!("pos")), path.clone()),
+            ),
             entry(vec![json!(10)], make_result(Some(json!("big")), path)),
         ];
         let classes = group_into_classes(&executions);

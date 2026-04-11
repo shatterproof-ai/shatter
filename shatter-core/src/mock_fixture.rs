@@ -232,9 +232,7 @@ fn json_matches_type(value: &Value, ty: &TypeInfo) -> bool {
                     .is_some_and(|v| json_matches_type(v, field_ty))
             })
         }
-        (_, TypeInfo::Union { variants }) => {
-            variants.iter().any(|v| json_matches_type(value, v))
-        }
+        (_, TypeInfo::Union { variants }) => variants.iter().any(|v| json_matches_type(value, v)),
         // Unknown/Complex/Opaque — can't validate statically, accept anything.
         (_, TypeInfo::Unknown | TypeInfo::Complex { .. } | TypeInfo::Opaque { .. }) => true,
         _ => false,
@@ -373,7 +371,9 @@ pub fn validate_expectations(
     // Check called_with patterns.
     if let Some(patterns) = &expectations.called_with {
         for (i, call) in calls.iter().enumerate() {
-            let matches_any = patterns.iter().any(|pattern| args_match(pattern, &call.args));
+            let matches_any = patterns
+                .iter()
+                .any(|pattern| args_match(pattern, &call.args));
             if !matches_any {
                 errors.push(ExpectationError::ArgMismatch {
                     symbol: fixture.symbol.clone(),
@@ -392,11 +392,14 @@ fn args_match(pattern: &[ArgMatcher], args: &[Value]) -> bool {
     if pattern.len() != args.len() {
         return false;
     }
-    pattern.iter().zip(args.iter()).all(|(matcher, arg)| match matcher {
-        ArgMatcher::Exact { value } => arg == value,
-        ArgMatcher::Any => true,
-        ArgMatcher::TypeOf { expected } => json_matches_type(arg, expected),
-    })
+    pattern
+        .iter()
+        .zip(args.iter())
+        .all(|(matcher, arg)| match matcher {
+            ArgMatcher::Exact { value } => arg == value,
+            ArgMatcher::Any => true,
+            ArgMatcher::TypeOf { expected } => json_matches_type(arg, expected),
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -497,10 +500,7 @@ mod tests {
                     "db.query",
                     vec![json!({"id": 1, "name": "Alice"})],
                     TypeInfo::Object {
-                        fields: vec![
-                            ("id".into(), TypeInfo::Int),
-                            ("name".into(), TypeInfo::Str),
-                        ],
+                        fields: vec![("id".into(), TypeInfo::Int), ("name".into(), TypeInfo::Str)],
                     },
                 )],
             )],
@@ -584,9 +584,12 @@ mod tests {
             )],
             vec![(
                 "src/api.ts:getUser",
-                vec![global_fixture("fetch", MockValueSpace::Seeded {
-                    seed_file: "seeds/fetch.jsonl".into(),
-                })],
+                vec![global_fixture(
+                    "fetch",
+                    MockValueSpace::Seeded {
+                        seed_file: "seeds/fetch.jsonl".into(),
+                    },
+                )],
             )],
         );
 
@@ -816,8 +819,12 @@ mod tests {
         };
 
         let calls = vec![
-            MockCallRecord { args: vec![json!("a")] },
-            MockCallRecord { args: vec![json!("b")] },
+            MockCallRecord {
+                args: vec![json!("a")],
+            },
+            MockCallRecord {
+                args: vec![json!("b")],
+            },
         ];
 
         assert!(validate_expectations(&fixture, &calls).is_empty());
@@ -836,10 +843,15 @@ mod tests {
             }),
         };
 
-        let calls = vec![MockCallRecord { args: vec![json!("a")] }];
+        let calls = vec![MockCallRecord {
+            args: vec![json!("a")],
+        }];
         let errors = validate_expectations(&fixture, &calls);
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], ExpectationError::CallCountMismatch { actual: 1, .. }));
+        assert!(matches!(
+            &errors[0],
+            ExpectationError::CallCountMismatch { actual: 1, .. }
+        ));
     }
 
     #[test]
@@ -899,16 +911,30 @@ mod tests {
             return_type: None,
             expectations: Some(MockExpectations {
                 called_with: Some(vec![
-                    vec![ArgMatcher::Exact { value: json!("SELECT") }, ArgMatcher::Any],
-                    vec![ArgMatcher::Exact { value: json!("INSERT") }, ArgMatcher::Any],
+                    vec![
+                        ArgMatcher::Exact {
+                            value: json!("SELECT"),
+                        },
+                        ArgMatcher::Any,
+                    ],
+                    vec![
+                        ArgMatcher::Exact {
+                            value: json!("INSERT"),
+                        },
+                        ArgMatcher::Any,
+                    ],
                 ]),
                 call_count: None,
             }),
         };
 
         let calls = vec![
-            MockCallRecord { args: vec![json!("SELECT"), json!(1)] },
-            MockCallRecord { args: vec![json!("INSERT"), json!({"name": "Bob"})] },
+            MockCallRecord {
+                args: vec![json!("SELECT"), json!(1)],
+            },
+            MockCallRecord {
+                args: vec![json!("INSERT"), json!({"name": "Bob"})],
+            },
         ];
 
         assert!(validate_expectations(&fixture, &calls).is_empty());
@@ -935,7 +961,10 @@ mod tests {
 
         let errors = validate_expectations(&fixture, &calls);
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], ExpectationError::ArgMismatch { call_index: 0, .. }));
+        assert!(matches!(
+            &errors[0],
+            ExpectationError::ArgMismatch { call_index: 0, .. }
+        ));
     }
 
     #[test]
@@ -954,11 +983,15 @@ mod tests {
         };
 
         // String arg — matches
-        let calls = vec![MockCallRecord { args: vec![json!("hello")] }];
+        let calls = vec![MockCallRecord {
+            args: vec![json!("hello")],
+        }];
         assert!(validate_expectations(&fixture, &calls).is_empty());
 
         // Int arg — doesn't match
-        let calls = vec![MockCallRecord { args: vec![json!(42)] }];
+        let calls = vec![MockCallRecord {
+            args: vec![json!(42)],
+        }];
         assert_eq!(validate_expectations(&fixture, &calls).len(), 1);
     }
 
@@ -972,7 +1005,9 @@ mod tests {
             expectations: None,
         };
 
-        let calls = vec![MockCallRecord { args: vec![json!(1)] }];
+        let calls = vec![MockCallRecord {
+            args: vec![json!(1)],
+        }];
         assert!(validate_expectations(&fixture, &calls).is_empty());
     }
 
@@ -990,7 +1025,9 @@ mod tests {
         };
 
         // Call with 1 arg vs pattern expecting 2 → mismatch
-        let calls = vec![MockCallRecord { args: vec![json!(1)] }];
+        let calls = vec![MockCallRecord {
+            args: vec![json!(1)],
+        }];
         assert_eq!(validate_expectations(&fixture, &calls).len(), 1);
     }
 
@@ -1075,11 +1112,10 @@ mod tests {
                 (0u32..100).prop_map(|n| CallCountExpectation::Exact { n }),
                 (0u32..100).prop_map(|n| CallCountExpectation::AtLeast { n }),
                 (0u32..100).prop_map(|n| CallCountExpectation::AtMost { n }),
-                (0u32..50, 0u32..50)
-                    .prop_map(|(a, b)| CallCountExpectation::Between {
-                        min: a.min(b),
-                        max: a.max(b),
-                    }),
+                (0u32..50, 0u32..50).prop_map(|(a, b)| CallCountExpectation::Between {
+                    min: a.min(b),
+                    max: a.max(b),
+                }),
             ]
         }
 
@@ -1105,15 +1141,22 @@ mod tests {
             let return_type = prop::option::of(arb_type_info_leaf());
             let expectations = prop::option::of(arb_expectations());
 
-            (symbol, value_space, return_values, return_type, expectations).prop_map(
-                |(symbol, value_space, return_values, return_type, expectations)| MockFixture {
-                    symbol,
-                    value_space,
-                    return_values,
-                    return_type,
-                    expectations,
-                },
+            (
+                symbol,
+                value_space,
+                return_values,
+                return_type,
+                expectations,
             )
+                .prop_map(
+                    |(symbol, value_space, return_values, return_type, expectations)| MockFixture {
+                        symbol,
+                        value_space,
+                        return_values,
+                        return_type,
+                        expectations,
+                    },
+                )
         }
 
         fn arb_fixture_scope() -> impl Strategy<Value = MockFixtureScope> {
@@ -1133,8 +1176,7 @@ mod tests {
         fn arb_fixture_config() -> impl Strategy<Value = MockFixtureConfig> {
             let global = arb_fixture_scope();
             let files = prop::collection::hash_map("[a-z/]{1,15}", arb_fixture_scope(), 0..3);
-            let functions =
-                prop::collection::hash_map("[a-z/:]{1,20}", arb_fixture_scope(), 0..3);
+            let functions = prop::collection::hash_map("[a-z/:]{1,20}", arb_fixture_scope(), 0..3);
 
             (global, files, functions).prop_map(|(global, files, functions)| MockFixtureConfig {
                 global,

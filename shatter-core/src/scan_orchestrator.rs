@@ -1045,11 +1045,8 @@ pub async fn scan(
     // Load checkpoint for resume support.
     let scan_id = compute_scan_id(config);
     let cfg_hash = scan_config_hash(config);
-    let mut checkpoint = load_or_create_checkpoint(
-        config.resume_path.as_deref(),
-        &scan_id,
-        &cfg_hash,
-    );
+    let mut checkpoint =
+        load_or_create_checkpoint(config.resume_path.as_deref(), &scan_id, &cfg_hash);
 
     // Load the interesting input pool for cross-function seed sharing.
     let mut input_pool = config
@@ -1621,10 +1618,7 @@ async fn run_layer_batched(
         .map(|t| t.explore_config.max_iterations)
         .collect();
 
-    let mut scheduler = BatchScheduler::with_individual_budgets(
-        &per_function_budgets,
-        batch_size,
-    );
+    let mut scheduler = BatchScheduler::with_individual_budgets(&per_function_budgets, batch_size);
 
     // Per-task live scheduler state accumulator. Populated from disk on
     // layer entry (advisory — load failures become fresh state) and
@@ -1788,7 +1782,10 @@ async fn run_layer_batched(
 
                 {
                     let mut maps = behavior_maps.lock().await;
-                    maps.insert(func_result.function_name.clone(), func_result.behavior_map.clone());
+                    maps.insert(
+                        func_result.function_name.clone(),
+                        func_result.behavior_map.clone(),
+                    );
                 }
                 if let Some(c) = cache {
                     let _ = c.store(&func_result.behavior_map);
@@ -1805,8 +1802,7 @@ async fn run_layer_batched(
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
-                    st.iterations_consumed =
-                        st.iterations_consumed.saturating_add(iterations_used);
+                    st.iterations_consumed = st.iterations_consumed.saturating_add(iterations_used);
                     st.batches_completed = st.batches_completed.saturating_add(1);
                     st.exhausted = exhausted;
                 }
@@ -2450,11 +2446,8 @@ pub async fn parallel_scan_with_progress(
     // Load checkpoint for resume support.
     let scan_id = compute_scan_id(config);
     let cfg_hash = scan_config_hash(config);
-    let mut checkpoint = load_or_create_checkpoint(
-        config.resume_path.as_deref(),
-        &scan_id,
-        &cfg_hash,
-    );
+    let mut checkpoint =
+        load_or_create_checkpoint(config.resume_path.as_deref(), &scan_id, &cfg_hash);
 
     let mut all_results: Vec<FunctionResult> = Vec::new();
     let mut test_order: Vec<String> = Vec::new();
@@ -2873,8 +2866,10 @@ pub async fn parallel_scan_with_progress(
                     let wpf = config.workers_per_fn;
                     let mut out = Vec::with_capacity(tasks.len() * wpf);
                     for (fn_idx, task) in tasks.into_iter().enumerate() {
-                        let per_replica_iters =
-                            task.explore_config.max_iterations.map(|m| (m / wpf as u32).max(1));
+                        let per_replica_iters = task
+                            .explore_config
+                            .max_iterations
+                            .map(|m| (m / wpf as u32).max(1));
                         for replica in 0..wpf {
                             let mut replica_config = task.explore_config.clone();
                             replica_config.seed =
@@ -3149,10 +3144,7 @@ pub async fn parallel_scan_with_progress(
                         function_name,
                         limit,
                     } => {
-                        let idx = fn_progress_index
-                            .get(&function_name)
-                            .copied()
-                            .unwrap_or(0);
+                        let idx = fn_progress_index.get(&function_name).copied().unwrap_or(0);
                         let reason = format!("timed out after {:.0}s", limit.as_secs_f64());
                         summary_record_failed(
                             &mut summary,
@@ -3171,10 +3163,7 @@ pub async fn parallel_scan_with_progress(
                         function_name,
                         error,
                     } => {
-                        let idx = fn_progress_index
-                            .get(&function_name)
-                            .copied()
-                            .unwrap_or(0);
+                        let idx = fn_progress_index.get(&function_name).copied().unwrap_or(0);
                         let reason = format!("error: {error}");
                         summary_record_failed(
                             &mut summary,
@@ -3319,7 +3308,8 @@ async fn explore_single_function(
     genetic_config: &crate::config::GeneticConfig,
     cache: &Option<Arc<BehaviorMapCache>>,
 ) -> Result<FunctionResult, ScanError> {
-    let exploration = explorer::explore_function(frontend, analysis, explore_config, None, None).await?;
+    let exploration =
+        explorer::explore_function(frontend, analysis, explore_config, None, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();

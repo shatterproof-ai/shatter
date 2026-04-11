@@ -164,22 +164,21 @@ fn infer_sort(expr: &SymExpr) -> Sort {
         SymExpr::Const(ConstValue::Str(_)) => Sort::Str,
         SymExpr::BinOp { op, left, right } => match op {
             BinOpKind::And | BinOpKind::Or => Sort::Bool,
-            BinOpKind::Eq | BinOpKind::Ne | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt
+            BinOpKind::Eq
+            | BinOpKind::Ne
+            | BinOpKind::Lt
+            | BinOpKind::Le
+            | BinOpKind::Gt
             | BinOpKind::Ge => {
                 let l = infer_sort(left);
                 if l != Sort::Int && l != Sort::Bool {
                     l
                 } else {
                     let r = infer_sort(right);
-                    if r != Sort::Int {
-                        r
-                    } else {
-                        l
-                    }
+                    if r != Sort::Int { r } else { l }
                 }
             }
-            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div
-            | BinOpKind::Mod => {
+            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Mod => {
                 let l = infer_sort(left);
                 if l == Sort::Real {
                     return Sort::Real;
@@ -231,11 +230,7 @@ fn infer_operand_sort(expr: &SymExpr) -> Sort {
         } => {
             let l = infer_sort(left);
             let r = infer_sort(right);
-            if l != Sort::Int {
-                l
-            } else {
-                r
-            }
+            if l != Sort::Int { l } else { r }
         }
         _ => infer_sort(expr),
     }
@@ -257,11 +252,7 @@ fn param_var_name(name: &str, path: &[String]) -> String {
 ///
 /// Must be called within a `z3::with_z3_config` block or with the default
 /// thread-local Z3 context active.
-fn to_z3_expr(
-    vars: &mut VarTable,
-    expr: &SymExpr,
-    hint_sort: Sort,
-) -> Result<Z3Ast, SolverError> {
+fn to_z3_expr(vars: &mut VarTable, expr: &SymExpr, hint_sort: Sort) -> Result<Z3Ast, SolverError> {
     match expr {
         SymExpr::Param { name, path } => {
             let var_name = param_var_name(name, path);
@@ -356,7 +347,11 @@ fn convert_binop(
             Ok(Z3Ast::Bool(Bool::or(&[&l, &r])))
         }
 
-        BinOpKind::Eq | BinOpKind::Ne | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt
+        BinOpKind::Eq
+        | BinOpKind::Ne
+        | BinOpKind::Lt
+        | BinOpKind::Le
+        | BinOpKind::Gt
         | BinOpKind::Ge => {
             let operand_sort = infer_comparison_sort(left, right, hint_sort);
             convert_comparison(vars, op, left, right, operand_sort)
@@ -367,12 +362,14 @@ fn convert_binop(
             convert_arithmetic(vars, op, left, right, arith_sort)
         }
 
-        BinOpKind::BitwiseAnd | BinOpKind::BitwiseOr | BinOpKind::BitwiseXor
-        | BinOpKind::Shl | BinOpKind::Shr | BinOpKind::BitClear => {
-            Err(SolverError::Unsupported(format!(
-                "bitwise operator {op:?} not yet supported in Z3 solver"
-            )))
-        }
+        BinOpKind::BitwiseAnd
+        | BinOpKind::BitwiseOr
+        | BinOpKind::BitwiseXor
+        | BinOpKind::Shl
+        | BinOpKind::Shr
+        | BinOpKind::BitClear => Err(SolverError::Unsupported(format!(
+            "bitwise operator {op:?} not yet supported in Z3 solver"
+        ))),
 
         BinOpKind::In | BinOpKind::InstanceOf => Err(SolverError::Unsupported(format!(
             "JS operator {op:?} not supported in Z3 solver"
@@ -447,7 +444,7 @@ fn convert_comparison(
                 _ => {
                     return Err(SolverError::Unsupported(format!(
                         "comparison {op:?} not supported on booleans"
-                    )))
+                    )));
                 }
             }))
         }
@@ -498,7 +495,7 @@ fn convert_arithmetic(
                 BinOpKind::Mod => {
                     return Err(SolverError::Unsupported(
                         "modulo not supported on reals".into(),
-                    ))
+                    ));
                 }
                 _ => unreachable!(),
             }))
@@ -581,7 +578,9 @@ fn convert_string_call(
     args: &[SymExpr],
 ) -> Result<Z3Ast, SolverError> {
     let op = resolve_string_op(name).ok_or_else(|| {
-        SolverError::Unsupported(format!("function call '{name}' cannot be represented in Z3"))
+        SolverError::Unsupported(format!(
+            "function call '{name}' cannot be represented in Z3"
+        ))
     })?;
 
     match op {
@@ -624,9 +623,8 @@ fn convert_string_call(
                     offset.get_z3_ast(),
                 )
             };
-            let result = result.ok_or_else(|| {
-                SolverError::Unsupported("Z3_mk_seq_index returned null".into())
-            })?;
+            let result = result
+                .ok_or_else(|| SolverError::Unsupported("Z3_mk_seq_index returned null".into()))?;
             Ok(Z3Ast::Int(unsafe { Int::wrap(ctx_ref, result) }))
         }
 
@@ -695,7 +693,10 @@ fn receiver_and_first_arg(
     Ok((s, a))
 }
 
-fn require_receiver<'a>(name: &str, receiver: Option<&'a SymExpr>) -> Result<&'a SymExpr, SolverError> {
+fn require_receiver<'a>(
+    name: &str,
+    receiver: Option<&'a SymExpr>,
+) -> Result<&'a SymExpr, SolverError> {
     receiver.ok_or_else(|| {
         SolverError::Unsupported(format!("string method '{name}' requires a receiver"))
     })
@@ -703,7 +704,9 @@ fn require_receiver<'a>(name: &str, receiver: Option<&'a SymExpr>) -> Result<&'a
 
 fn require_first_arg<'a>(name: &str, args: &'a [SymExpr]) -> Result<&'a SymExpr, SolverError> {
     args.first().ok_or_else(|| {
-        SolverError::Unsupported(format!("string method '{name}' requires at least one argument"))
+        SolverError::Unsupported(format!(
+            "string method '{name}' requires at least one argument"
+        ))
     })
 }
 
@@ -781,10 +784,7 @@ fn to_z3_string(vars: &mut VarTable, expr: &SymExpr) -> Result<Z3String, SolverE
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Extract concrete values for all declared variables from a Z3 model.
-fn extract_concrete_values(
-    model: &z3::Model,
-    vars: &VarTable,
-) -> HashMap<String, ConcreteValue> {
+fn extract_concrete_values(model: &z3::Model, vars: &VarTable) -> HashMap<String, ConcreteValue> {
     let mut result = HashMap::new();
 
     for (name, ast) in &vars.ints {
@@ -799,10 +799,7 @@ fn extract_concrete_values(
         if let Some(val) = model.eval(ast, true) {
             if let Some((num, den)) = val.as_rational() {
                 if den != 0 {
-                    result.insert(
-                        name.clone(),
-                        ConcreteValue::Float(num as f64 / den as f64),
-                    );
+                    result.insert(name.clone(), ConcreteValue::Float(num as f64 / den as f64));
                 }
             } else {
                 let s = val.to_string();
@@ -875,9 +872,7 @@ fn concrete_value_matches_type(value: &ConcreteValue, ty: &TypeInfo) -> bool {
         (ConcreteValue::Complex { .. }, TypeInfo::Complex { .. }) => true,
         // Int is the Z3 default for types it can't represent (arrays, objects, unions,
         // unknown, opaque). Accept Int for any non-primitive type.
-        (ConcreteValue::Int(_), _) => {
-            !matches!(ty, TypeInfo::Str | TypeInfo::Bool)
-        }
+        (ConcreteValue::Int(_), _) => !matches!(ty, TypeInfo::Str | TypeInfo::Bool),
         _ => false,
     }
 }
@@ -1041,8 +1036,7 @@ pub fn solve_for_mcdc_independence(
     // Skip if target condition is Unknown — can't assert it in Z3.
     if matches!(conditions[target_index], SymExpr::Unknown) {
         return Err(SolverError::Unsupported(
-            "target condition is Unknown; MC/DC analysis not possible for opaque conditions"
-                .into(),
+            "target condition is Unknown; MC/DC analysis not possible for opaque conditions".into(),
         ));
     }
 
@@ -1185,7 +1179,8 @@ mod tests {
     #[test]
     fn negate_last_branch_finds_new_path() {
         let constraints = vec![x_gt_10(), x_lt_20()];
-        let result = solve_for_new_path(&constraints, 1, None, &[]).expect("solver should not error");
+        let result =
+            solve_for_new_path(&constraints, 1, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1201,7 +1196,8 @@ mod tests {
     #[test]
     fn negate_first_branch() {
         let constraints = vec![x_gt_10(), x_lt_20()];
-        let result = solve_for_new_path(&constraints, 0, None, &[]).expect("solver should not error");
+        let result =
+            solve_for_new_path(&constraints, 0, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1469,9 +1465,7 @@ mod tests {
         let constraints = vec![x_gt_10()];
         // In debug builds, the `#[requires]` contract catches this as a panic
         // before the function body's manual check returns Err.
-        let result = std::panic::catch_unwind(|| {
-            solve_for_new_path(&constraints, 5, None, &[])
-        });
+        let result = std::panic::catch_unwind(|| solve_for_new_path(&constraints, 5, None, &[]));
         assert!(
             result.is_err() || result.unwrap().is_err(),
             "out-of-bounds negate_index must fail"
@@ -1514,7 +1508,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.as_str() < "hello", "expected s < \"hello\", got s=\"{s}\"");
+                assert!(
+                    s.as_str() < "hello",
+                    "expected s < \"hello\", got s=\"{s}\""
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1656,7 +1653,8 @@ mod tests {
                 right: Box::new(SymExpr::Const(ConstValue::Int(25))),
             },
         ];
-        let result = solve_for_new_path(&constraints, 2, None, &[]).expect("solver should not error");
+        let result =
+            solve_for_new_path(&constraints, 2, None, &[]).expect("solver should not error");
         match result {
             SolveResult::Sat(values) => {
                 let x = match values.get("x") {
@@ -1829,7 +1827,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.contains("hello"), "expected s to contain 'hello', got '{s}'");
+                assert!(
+                    s.contains("hello"),
+                    "expected s to contain 'hello', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1857,7 +1858,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.contains("world"), "expected s to contain 'world', got '{s}'");
+                assert!(
+                    s.contains("world"),
+                    "expected s to contain 'world', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1882,7 +1886,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.starts_with("pre"), "expected s to start with 'pre', got '{s}'");
+                assert!(
+                    s.starts_with("pre"),
+                    "expected s to start with 'pre', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1910,7 +1917,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.starts_with("go_"), "expected s to start with 'go_', got '{s}'");
+                assert!(
+                    s.starts_with("go_"),
+                    "expected s to start with 'go_', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1935,7 +1945,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.ends_with(".ts"), "expected s to end with '.ts', got '{s}'");
+                assert!(
+                    s.ends_with(".ts"),
+                    "expected s to end with '.ts', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -1963,7 +1976,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.ends_with(".go"), "expected s to end with '.go', got '{s}'");
+                assert!(
+                    s.ends_with(".go"),
+                    "expected s to end with '.go', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -2037,10 +2053,7 @@ mod tests {
             left: Box::new(SymExpr::Call {
                 name: "strings.Index".into(),
                 receiver: None,
-                args: vec![
-                    str_param("s"),
-                    SymExpr::Const(ConstValue::Str("x".into())),
-                ],
+                args: vec![str_param("s"), SymExpr::Const(ConstValue::Str("x".into()))],
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
@@ -2085,10 +2098,7 @@ mod tests {
                     other => panic!("expected Str for s, got {other:?}"),
                 };
                 let len = s.len();
-                assert!(
-                    len > 5 && len < 10,
-                    "expected 5 < length < 10, got {len}"
-                );
+                assert!(len > 5 && len < 10, "expected 5 < length < 10, got {len}");
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -2113,7 +2123,10 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s.starts_with('a'), "expected s to start with 'a', got '{s}'");
+                assert!(
+                    s.starts_with('a'),
+                    "expected s to start with 'a', got '{s}'"
+                );
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -2216,11 +2229,15 @@ mod tests {
         let yaml_src = include_str!("../data/string-ops.yaml");
         let spec: serde_yaml::Value =
             serde_yaml::from_str(yaml_src).expect("failed to parse string-ops.yaml");
-        let operations = spec["operations"].as_sequence().expect("operations should be a list");
+        let operations = spec["operations"]
+            .as_sequence()
+            .expect("operations should be a list");
         for op_value in operations {
             let op_name = op_value["name"].as_str().unwrap();
             let z3_sort = op_value["z3_sort"].as_str().unwrap();
-            let aliases = op_value["aliases"].as_sequence().expect("aliases should be a list");
+            let aliases = op_value["aliases"]
+                .as_sequence()
+                .expect("aliases should be a list");
             for alias in aliases {
                 let method = alias["method"].as_str().unwrap();
                 let resolved = resolve_string_op(method);
@@ -2488,11 +2505,7 @@ mod tests {
 
         /// String method names that produce Bool constraints.
         fn arb_string_bool_method() -> impl Strategy<Value = &'static str> {
-            prop_oneof![
-                Just("includes"),
-                Just("startsWith"),
-                Just("endsWith"),
-            ]
+            prop_oneof![Just("includes"), Just("startsWith"), Just("endsWith"),]
         }
 
         proptest! {
@@ -2837,8 +2850,7 @@ mod tests {
 
     #[test]
     fn postcondition_trivially_true_for_error() {
-        let result: Result<SolveResult, SolverError> =
-            Err(SolverError::Unsat);
+        let result: Result<SolveResult, SolverError> = Err(SolverError::Unsat);
         let params = vec![ParamInfo {
             name: "x".into(),
             typ: TypeInfo::Str,
@@ -2870,27 +2882,26 @@ mod tests {
         // x > 0
         let cond_x = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
         // y < 10
         let cond_y = SymExpr::BinOp {
             op: BinOpKind::Lt,
-            left: Box::new(SymExpr::Param { name: "y".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "y".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(10))),
         };
         let conditions = vec![cond_x, cond_y];
         let observed = vec![Some(true), Some(true)];
 
-        let result = solve_for_mcdc_independence(
-            &[],
-            &conditions,
-            &observed,
-            0,
-            None,
-            &[],
-        )
-        .expect("solver should not error");
+        let result = solve_for_mcdc_independence(&[], &conditions, &observed, 0, None, &[])
+            .expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -2917,26 +2928,25 @@ mod tests {
     fn mcdc_flip_second_condition() {
         let cond_x = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
         let cond_y = SymExpr::BinOp {
             op: BinOpKind::Lt,
-            left: Box::new(SymExpr::Param { name: "y".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "y".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(10))),
         };
         let conditions = vec![cond_x, cond_y];
         let observed = vec![Some(true), Some(true)];
 
-        let result = solve_for_mcdc_independence(
-            &[],
-            &conditions,
-            &observed,
-            1,
-            None,
-            &[],
-        )
-        .expect("solver should not error");
+        let result = solve_for_mcdc_independence(&[], &conditions, &observed, 1, None, &[])
+            .expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -2965,13 +2975,19 @@ mod tests {
         // x > 0
         let cond_a = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
         // x > 5
         let cond_b = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(5))),
         };
         let conditions = vec![cond_a, cond_b];
@@ -2980,15 +2996,8 @@ mod tests {
 
         // Flip target=1 (x > 5): assert x > 0 (pinned) AND NOT (x > 5).
         // Satisfiable: 0 < x <= 5.
-        let result = solve_for_mcdc_independence(
-            &[],
-            &conditions,
-            &observed,
-            1,
-            None,
-            &[],
-        )
-        .expect("solver should not error");
+        let result = solve_for_mcdc_independence(&[], &conditions, &observed, 1, None, &[])
+            .expect("solver should not error");
 
         match result {
             SolveResult::Sat(values) => {
@@ -3015,13 +3024,19 @@ mod tests {
         // x == 3
         let cond_eq = SymExpr::BinOp {
             op: BinOpKind::Eq,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(3))),
         };
         // x != 3
         let cond_ne = SymExpr::BinOp {
             op: BinOpKind::Ne,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(3))),
         };
         let conditions = vec![cond_eq, cond_ne];
@@ -3029,15 +3044,8 @@ mod tests {
         let observed = vec![Some(true), Some(false)];
 
         // target=0: flip (x==3) to NOT(x==3)=x!=3, pin (x!=3) as false → assert x==3 AND x!=3 → UNSAT
-        let result = solve_for_mcdc_independence(
-            &[],
-            &conditions,
-            &observed,
-            0,
-            None,
-            &[],
-        )
-        .expect("solver should not error");
+        let result = solve_for_mcdc_independence(&[], &conditions, &observed, 0, None, &[])
+            .expect("solver should not error");
 
         assert!(
             matches!(result, SolveResult::Unsat),
@@ -3050,20 +3058,16 @@ mod tests {
     fn mcdc_masked_target_returns_error() {
         let cond = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
         let conditions = vec![cond];
         let observed = vec![None]; // masked
 
-        let result = solve_for_mcdc_independence(
-            &[],
-            &conditions,
-            &observed,
-            0,
-            None,
-            &[],
-        );
+        let result = solve_for_mcdc_independence(&[], &conditions, &observed, 0, None, &[]);
         assert!(
             result.is_err(),
             "expected error for masked target, got {result:?}"
@@ -3075,7 +3079,10 @@ mod tests {
     fn mcdc_out_of_bounds_target_returns_error() {
         let cond = SymExpr::BinOp {
             op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param { name: "x".into(), path: vec![] }),
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
         let conditions = vec![cond];
@@ -3089,7 +3096,10 @@ mod tests {
             None,
             &[],
         );
-        assert!(result.is_err(), "expected error for OOB target, got {result:?}");
+        assert!(
+            result.is_err(),
+            "expected error for OOB target, got {result:?}"
+        );
     }
 
     /// Proptest: valid inputs (non-masked target, non-Unknown conditions) never panic.
@@ -3201,10 +3211,7 @@ mod kani_proofs {
     #[kani::unwind(2)]
     fn prove_infer_sort_bool_is_bool() {
         let v: bool = kani::any();
-        assert_eq!(
-            infer_sort(&SymExpr::Const(ConstValue::Bool(v))),
-            Sort::Bool
-        );
+        assert_eq!(infer_sort(&SymExpr::Const(ConstValue::Bool(v))), Sort::Bool);
     }
 
     #[kani::proof]
@@ -3252,11 +3259,7 @@ mod kani_proofs {
             op: UnOpKind::Not,
             operand: Box::new(leaf_sym_expr(tag)),
         };
-        assert_eq!(
-            infer_sort(&expr),
-            Sort::Bool,
-            "Not must always infer Bool"
-        );
+        assert_eq!(infer_sort(&expr), Sort::Bool, "Not must always infer Bool");
     }
 
     // -- Harness 5: TypeOf always returns Str ---------------------------------
@@ -3269,11 +3272,7 @@ mod kani_proofs {
             op: UnOpKind::TypeOf,
             operand: Box::new(leaf_sym_expr(tag)),
         };
-        assert_eq!(
-            infer_sort(&expr),
-            Sort::Str,
-            "TypeOf must always infer Str"
-        );
+        assert_eq!(infer_sort(&expr), Sort::Str, "TypeOf must always infer Str");
     }
 
     // -- Harness 6: Neg/BitwiseNot preserve operand sort ----------------------

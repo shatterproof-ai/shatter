@@ -224,7 +224,12 @@ mod tests {
         }
     }
 
-    fn make_frontier_with_rarity(branch_id: u32, depth: u32, stall_count: u32, rarity_boost: f64) -> Frontier {
+    fn make_frontier_with_rarity(
+        branch_id: u32,
+        depth: u32,
+        stall_count: u32,
+        rarity_boost: f64,
+    ) -> Frontier {
         Frontier {
             branch_id,
             depth,
@@ -416,7 +421,10 @@ mod tests {
         set.insert(make_frontier_with_rarity(2, 3, 1, 0.0));
 
         let f = set.pop_highest_priority().unwrap();
-        assert_eq!(f.branch_id, 2, "lower stall count wins when rarity is equal");
+        assert_eq!(
+            f.branch_id, 2,
+            "lower stall count wins when rarity is equal"
+        );
     }
 
     #[test]
@@ -453,7 +461,7 @@ mod tests {
     #[test]
     fn abandon_stalled_removes_correct_frontiers() {
         let mut set = FrontierSet::new();
-        set.insert(make_frontier(1, 0, 3));  // below threshold
+        set.insert(make_frontier(1, 0, 3)); // below threshold
         set.insert(make_frontier(2, 1, 10)); // at threshold
         set.insert(make_frontier(3, 2, 15)); // above threshold
 
@@ -576,16 +584,16 @@ mod proptests {
             0..50u32,
             0.0..=1.0f64,
         )
-            .prop_map(|(branch_id, depth, blocking_params, stall_count, rarity_boost)| {
-                Frontier {
+            .prop_map(
+                |(branch_id, depth, blocking_params, stall_count, rarity_boost)| Frontier {
                     branch_id,
                     depth,
                     blocking_params,
                     best_prefix: vec![],
                     stall_count,
                     rarity_boost,
-                }
-            })
+                },
+            )
     }
 
     proptest! {

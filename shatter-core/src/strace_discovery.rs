@@ -99,7 +99,10 @@ pub enum StraceError {
     /// strace is not available on this platform or not installed.
     NotAvailable(String),
     /// The traced command failed.
-    CommandFailed { exit_code: Option<i32>, stderr: String },
+    CommandFailed {
+        exit_code: Option<i32>,
+        stderr: String,
+    },
     /// Failed to parse strace output.
     ParseError(String),
     /// I/O error running strace.
@@ -203,10 +206,7 @@ pub fn discover_network_deps(
     // The traced command failing is not necessarily an error for us — we still
     // want to report whatever network activity was observed. But we log a warning.
     if !output.status.success() {
-        log::warn!(
-            "traced command exited with code {:?}",
-            output.status.code()
-        );
+        log::warn!("traced command exited with code {:?}", output.status.code());
     }
 
     parse_strace_output(&trace_output, command)
@@ -236,10 +236,7 @@ pub fn discover_network_deps(
 ///   PID  <... syscall resumed>) = result
 ///
 /// We focus on completed calls and extract network-relevant information.
-pub fn parse_strace_output(
-    output: &str,
-    command: &[String],
-) -> Result<StraceReport, StraceError> {
+pub fn parse_strace_output(output: &str, command: &[String]) -> Result<StraceReport, StraceError> {
     let mut events = Vec::new();
     let mut endpoint_set: HashMap<NetworkEndpoint, ()> = HashMap::new();
     let mut syscall_counts: HashMap<String, u32> = HashMap::new();
@@ -268,8 +265,8 @@ pub fn parse_strace_output(
                 endpoint_set.insert(endpoint, ());
             }
 
-            let is_network = is_network_syscall(&parsed.syscall)
-                || is_socket_io(&parsed, &socket_fds);
+            let is_network =
+                is_network_syscall(&parsed.syscall) || is_socket_io(&parsed, &socket_fds);
 
             if is_network {
                 *syscall_counts.entry(parsed.syscall.clone()).or_insert(0) += 1;
@@ -372,7 +369,10 @@ fn find_matching_close_paren(s: &str) -> Option<usize> {
 fn parse_return_fd(result: &str) -> Option<i32> {
     let trimmed = result.trim();
     // Could be "3" or "3<socket:...>" — take digits.
-    let fd_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+    let fd_str: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
     fd_str.parse().ok().filter(|fd| *fd >= 0)
 }
 
@@ -400,7 +400,10 @@ fn parse_socket_args(args: &str) -> SocketInfo {
         "unknown".to_string()
     };
 
-    SocketInfo { family, socket_type }
+    SocketInfo {
+        family,
+        socket_type,
+    }
 }
 
 /// Extract a network endpoint from connect() or sendto() arguments.
@@ -432,8 +435,7 @@ fn extract_endpoint(
 
     let (address, port) = if family == "unix" {
         // Unix socket: extract path.
-        let path = extract_quoted_value(args, "sun_path")
-            .unwrap_or_else(|| "unknown".to_string());
+        let path = extract_quoted_value(args, "sun_path").unwrap_or_else(|| "unknown".to_string());
         (path, 0)
     } else {
         // IP socket: extract address and port.
@@ -481,23 +483,14 @@ pub fn format_report(report: &StraceReport) -> String {
 
     out.push_str("=== Strace Network Discovery Report ===\n\n");
     out.push_str(&format!("Command: {}\n", report.command.join(" ")));
-    out.push_str(&format!(
-        "Total network events: {}\n",
-        report.events.len()
-    ));
+    out.push_str(&format!("Total network events: {}\n", report.events.len()));
 
     if !report.endpoints.is_empty() {
-        out.push_str(&format!(
-            "Unique endpoints: {}\n\n",
-            report.endpoints.len()
-        ));
+        out.push_str(&format!("Unique endpoints: {}\n\n", report.endpoints.len()));
         out.push_str("--- Discovered Endpoints ---\n");
         for ep in &report.endpoints {
             if ep.family == "unix" {
-                out.push_str(&format!(
-                    "  unix://{}  ({})\n",
-                    ep.address, ep.socket_type
-                ));
+                out.push_str(&format!("  unix://{}  ({})\n", ep.address, ep.socket_type));
             } else {
                 out.push_str(&format!(
                     "  {}://{}:{}  ({})\n",
@@ -530,29 +523,22 @@ mod tests {
     use super::*;
 
     // Sample strace output lines for testing.
-    const SAMPLE_SOCKET_LINE: &str =
-        r#"12345 socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) = 3"#;
+    const SAMPLE_SOCKET_LINE: &str = r#"12345 socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) = 3"#;
 
-    const SAMPLE_CONNECT_LINE: &str =
-        r#"12345 connect(3, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("93.184.216.34")}, 16) = 0"#;
+    const SAMPLE_CONNECT_LINE: &str = r#"12345 connect(3, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("93.184.216.34")}, 16) = 0"#;
 
-    const SAMPLE_CONNECT_IPV6_LINE: &str =
-        r#"12345 connect(4, {sa_family=AF_INET6, sin6_port=htons(80), sin6_addr=inet6_addr("::1")}, 28) = 0"#;
+    const SAMPLE_CONNECT_IPV6_LINE: &str = r#"12345 connect(4, {sa_family=AF_INET6, sin6_port=htons(80), sin6_addr=inet6_addr("::1")}, 28) = 0"#;
 
-    const SAMPLE_SENDTO_LINE: &str =
-        r#"12345 sendto(5, "GET / HTTP/1.1\r\n", 16, 0, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("10.0.0.1")}, 16) = 16"#;
+    const SAMPLE_SENDTO_LINE: &str = r#"12345 sendto(5, "GET / HTTP/1.1\r\n", 16, 0, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("10.0.0.1")}, 16) = 16"#;
 
     const SAMPLE_UNIX_CONNECT: &str =
         r#"12345 connect(6, {sa_family=AF_UNIX, sun_path="/var/run/docker.sock"}, 110) = 0"#;
 
-    const SAMPLE_READ_LINE: &str =
-        r#"12345 read(3, "HTTP/1.1 200 OK\r\n", 4096) = 17"#;
+    const SAMPLE_READ_LINE: &str = r#"12345 read(3, "HTTP/1.1 200 OK\r\n", 4096) = 17"#;
 
-    const SAMPLE_WRITE_LINE: &str =
-        r#"12345 write(3, "GET / HTTP/1.1\r\n", 16) = 16"#;
+    const SAMPLE_WRITE_LINE: &str = r#"12345 write(3, "GET / HTTP/1.1\r\n", 16) = 16"#;
 
-    const SAMPLE_BIND_LINE: &str =
-        r#"12345 bind(7, {sa_family=AF_INET, sin_port=htons(3000), sin_addr=inet_addr("0.0.0.0")}, 16) = 0"#;
+    const SAMPLE_BIND_LINE: &str = r#"12345 bind(7, {sa_family=AF_INET, sin_port=htons(3000), sin_addr=inet_addr("0.0.0.0")}, 16) = 0"#;
 
     #[test]
     fn parse_socket_line() {
@@ -584,8 +570,11 @@ mod tests {
         ]
         .join("\n");
 
-        let report = parse_strace_output(&trace, &["curl".to_string(), "https://example.com".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(
+            &trace,
+            &["curl".to_string(), "https://example.com".to_string()],
+        )
+        .expect("should parse");
 
         // socket, connect, sendto, read (on socket fd 3), write (on socket fd 3)
         assert_eq!(report.events.len(), 5);
@@ -595,8 +584,7 @@ mod tests {
     #[test]
     fn extract_ipv4_endpoint() {
         let trace = [SAMPLE_SOCKET_LINE, SAMPLE_CONNECT_LINE].join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(report.endpoints.len(), 1);
         let ep = &report.endpoints[0];
@@ -613,8 +601,7 @@ mod tests {
             SAMPLE_CONNECT_IPV6_LINE,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(report.endpoints.len(), 1);
         let ep = &report.endpoints[0];
@@ -630,8 +617,7 @@ mod tests {
             SAMPLE_UNIX_CONNECT,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(report.endpoints.len(), 1);
         let ep = &report.endpoints[0];
@@ -647,8 +633,7 @@ mod tests {
             SAMPLE_SENDTO_LINE,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(report.endpoints.len(), 1);
         let ep = &report.endpoints[0];
@@ -659,14 +644,8 @@ mod tests {
 
     #[test]
     fn read_write_on_socket_fd_are_included() {
-        let trace = [
-            SAMPLE_SOCKET_LINE,
-            SAMPLE_READ_LINE,
-            SAMPLE_WRITE_LINE,
-        ]
-        .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let trace = [SAMPLE_SOCKET_LINE, SAMPLE_READ_LINE, SAMPLE_WRITE_LINE].join("\n");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         // socket + read on fd 3 + write on fd 3
         assert_eq!(report.events.len(), 3);
@@ -679,8 +658,7 @@ mod tests {
         // fd 99 was never opened as a socket.
         let trace = r#"12345 read(99, "data", 4) = 4
 12345 write(99, "data", 4) = 4"#;
-        let report = parse_strace_output(trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(trace, &["test".to_string()]).expect("should parse");
 
         assert!(report.events.is_empty());
     }
@@ -695,8 +673,7 @@ mod tests {
             SAMPLE_WRITE_LINE,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(*report.syscall_counts.get("socket").unwrap_or(&0), 1);
         assert_eq!(*report.syscall_counts.get("connect").unwrap_or(&0), 1);
@@ -706,8 +683,7 @@ mod tests {
 
     #[test]
     fn empty_trace_produces_empty_report() {
-        let report = parse_strace_output("", &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output("", &["test".to_string()]).expect("should parse");
 
         assert!(report.events.is_empty());
         assert!(report.endpoints.is_empty());
@@ -718,8 +694,7 @@ mod tests {
     fn unfinished_and_resumed_lines_are_skipped() {
         let trace = "12345 connect(3, {sa_family=AF_INET <unfinished ...>\n\
                      12345 <... connect resumed>) = 0";
-        let report = parse_strace_output(trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(trace, &["test".to_string()]).expect("should parse");
 
         assert!(report.events.is_empty());
     }
@@ -733,8 +708,7 @@ mod tests {
             SAMPLE_CONNECT_LINE,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         // Two connect events but only one unique endpoint.
         assert_eq!(report.events.len(), 3); // socket + 2x connect
@@ -748,8 +722,7 @@ mod tests {
             SAMPLE_BIND_LINE,
         ]
         .join("\n");
-        let report = parse_strace_output(&trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(&trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(*report.syscall_counts.get("bind").unwrap_or(&0), 1);
         // bind is a network syscall, so it should be in events.
@@ -841,13 +814,18 @@ mod tests {
 111 connect(3, {sa_family=AF_INET, sin_port=htons(80), sin_addr=inet_addr("1.1.1.1")}, 16) = 0
 222 sendto(3, "data", 4, 0, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("8.8.8.8")}, 16) = 4"#;
 
-        let report = parse_strace_output(trace, &["test".to_string()])
-            .expect("should parse");
+        let report = parse_strace_output(trace, &["test".to_string()]).expect("should parse");
 
         assert_eq!(report.endpoints.len(), 2);
 
-        let has_tcp = report.endpoints.iter().any(|e| e.socket_type == "tcp" && e.port == 80);
-        let has_udp = report.endpoints.iter().any(|e| e.socket_type == "udp" && e.port == 53);
+        let has_tcp = report
+            .endpoints
+            .iter()
+            .any(|e| e.socket_type == "tcp" && e.port == 80);
+        let has_udp = report
+            .endpoints
+            .iter()
+            .any(|e| e.socket_type == "udp" && e.port == 53);
         assert!(has_tcp, "should have TCP endpoint on port 80");
         assert!(has_udp, "should have UDP endpoint on port 53");
     }

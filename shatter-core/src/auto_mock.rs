@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::protocol::{DependencyKind, ExternalDependency, MockBehavior, MockConfig};
 use crate::scope::{DependencyAction, ScopeMatcher};
@@ -40,42 +40,99 @@ pub enum IoCategory {
 
 /// Known module prefixes for each category.
 const FS_MODULES: &[&str] = &[
-    "fs", "node:fs", "fs/promises", "node:fs/promises", "path", "node:path",
+    "fs",
+    "node:fs",
+    "fs/promises",
+    "node:fs/promises",
+    "path",
+    "node:path",
     // Go stdlib
-    "os", "io", "io/ioutil", "bufio",
+    "os",
+    "io",
+    "io/ioutil",
+    "bufio",
 ];
 const NETWORK_MODULES: &[&str] = &[
-    "http", "https", "node:http", "node:https", "net", "node:net",
-    "axios", "node-fetch", "fetch", "got", "superagent", "request",
+    "http",
+    "https",
+    "node:http",
+    "node:https",
+    "net",
+    "node:net",
+    "axios",
+    "node-fetch",
+    "fetch",
+    "got",
+    "superagent",
+    "request",
     "undici",
 ];
 const DB_MODULES: &[&str] = &[
-    "pg", "mysql", "mysql2", "mongodb", "redis", "ioredis",
-    "prisma", "@prisma/client", "knex", "sequelize", "typeorm",
-    "mongoose", "sqlite3", "better-sqlite3", "drizzle-orm",
-    "database/sql", "gorm.io/gorm",
+    "pg",
+    "mysql",
+    "mysql2",
+    "mongodb",
+    "redis",
+    "ioredis",
+    "prisma",
+    "@prisma/client",
+    "knex",
+    "sequelize",
+    "typeorm",
+    "mongoose",
+    "sqlite3",
+    "better-sqlite3",
+    "drizzle-orm",
+    "database/sql",
+    "gorm.io/gorm",
 ];
 const PURE_UTILITY_MODULES: &[&str] = &[
-    "lodash", "lodash-es", "underscore", "ramda", "date-fns",
-    "dayjs", "moment", "validator", "uuid", "nanoid",
-    "chalk", "debug", "ms",
-    "strings", "strconv", "fmt", "math", "sort",
+    "lodash",
+    "lodash-es",
+    "underscore",
+    "ramda",
+    "date-fns",
+    "dayjs",
+    "moment",
+    "validator",
+    "uuid",
+    "nanoid",
+    "chalk",
+    "debug",
+    "ms",
+    "strings",
+    "strconv",
+    "fmt",
+    "math",
+    "sort",
 ];
 
 /// Classify an external dependency into an [`IoCategory`].
 pub fn classify_dependency(dep: &ExternalDependency) -> IoCategory {
     let module = dep.source_module.as_str();
 
-    if FS_MODULES.iter().any(|m| module == *m || module.starts_with(&format!("{m}/"))) {
+    if FS_MODULES
+        .iter()
+        .any(|m| module == *m || module.starts_with(&format!("{m}/")))
+    {
         return IoCategory::FileSystem;
     }
-    if NETWORK_MODULES.iter().any(|m| module == *m || module.starts_with(&format!("{m}/"))) {
+    if NETWORK_MODULES
+        .iter()
+        .any(|m| module == *m || module.starts_with(&format!("{m}/")))
+    {
         return IoCategory::Network;
     }
-    if DB_MODULES.iter().any(|m| module == *m || module.starts_with(&format!("{m}/"))) {
+    if DB_MODULES
+        .iter()
+        .any(|m| module == *m || module.starts_with(&format!("{m}/")))
+    {
         return IoCategory::Database;
     }
-    if PURE_UTILITY_MODULES.iter().any(|m| module == *m || module.starts_with(&format!("{m}/"))) {
+    if PURE_UTILITY_MODULES
+        .iter()
+        .any(|m| module == *m || module.starts_with(&format!("{m}/")))
+    {
         return IoCategory::PureUtility;
     }
 
@@ -138,7 +195,11 @@ fn default_for_fs(symbol: &str) -> Value {
 /// Pick a sensible default for a database operation based on the symbol name.
 fn default_for_db(symbol: &str) -> Value {
     let lower = symbol.to_lowercase();
-    if lower.contains("query") || lower.contains("find") || lower.contains("select") || lower.contains("all") {
+    if lower.contains("query")
+        || lower.contains("find")
+        || lower.contains("select")
+        || lower.contains("all")
+    {
         json!({"rows": []})
     } else if lower.contains("insert") || lower.contains("create") || lower.contains("save") {
         json!({"rowCount": 1})
@@ -200,10 +261,8 @@ pub fn generate_auto_mocks(
     overrides: &HashMap<String, MockOverride>,
     existing_mocks: &[MockConfig],
 ) -> Vec<MockConfig> {
-    let already_mocked: std::collections::HashSet<&str> = existing_mocks
-        .iter()
-        .map(|m| m.symbol.as_str())
-        .collect();
+    let already_mocked: std::collections::HashSet<&str> =
+        existing_mocks.iter().map(|m| m.symbol.as_str()).collect();
 
     let mut result = Vec::new();
 
@@ -298,17 +357,13 @@ pub fn generate_error_variant(dep: &ExternalDependency, category: IoCategory) ->
         },
         IoCategory::Database => MockConfig {
             symbol: dep.symbol.clone(),
-            return_values: vec![
-                json!({"code": "ECONNREFUSED", "message": "Connection refused"}),
-            ],
+            return_values: vec![json!({"code": "ECONNREFUSED", "message": "Connection refused"})],
             should_track_calls: true,
             default_behavior: MockBehavior::ThrowError,
         },
         IoCategory::FileSystem => MockConfig {
             symbol: dep.symbol.clone(),
-            return_values: vec![
-                json!({"code": "ENOENT", "message": "No such file or directory"}),
-            ],
+            return_values: vec![json!({"code": "ENOENT", "message": "No such file or directory"})],
             should_track_calls: true,
             default_behavior: MockBehavior::ThrowError,
         },
@@ -335,10 +390,8 @@ pub fn generate_error_mocks(
     error_probability: f64,
     rng: &mut impl rand::Rng,
 ) -> Vec<MockConfig> {
-    let already_mocked: std::collections::HashSet<&str> = existing_mocks
-        .iter()
-        .map(|m| m.symbol.as_str())
-        .collect();
+    let already_mocked: std::collections::HashSet<&str> =
+        existing_mocks.iter().map(|m| m.symbol.as_str()).collect();
 
     let mut result = Vec::new();
 
@@ -402,14 +455,9 @@ pub struct MockParam {
 /// unless a matching config explicitly overrides them. Dependencies with
 /// a matching config get [`ValueSource::UserOverride`]; those without get
 /// [`ValueSource::AutoGenerated`].
-pub fn build_mock_params(
-    deps: &[ExternalDependency],
-    configs: &[MockConfig],
-) -> Vec<MockParam> {
-    let config_by_symbol: HashMap<&str, &MockConfig> = configs
-        .iter()
-        .map(|c| (c.symbol.as_str(), c))
-        .collect();
+pub fn build_mock_params(deps: &[ExternalDependency], configs: &[MockConfig]) -> Vec<MockParam> {
+    let config_by_symbol: HashMap<&str, &MockConfig> =
+        configs.iter().map(|c| (c.symbol.as_str(), c)).collect();
 
     let mut result = Vec::new();
 
@@ -689,7 +737,10 @@ mod tests {
 
         // axios.get → network category, returns {status: 200, data: {}}
         let net_mock = by_symbol["get"];
-        assert_eq!(net_mock.return_values, vec![json!({"status": 200, "data": {}})]);
+        assert_eq!(
+            net_mock.return_values,
+            vec![json!({"status": 200, "data": {}})]
+        );
         assert!(net_mock.should_track_calls);
 
         // pg.query → database category, but overridden with custom rows
@@ -908,7 +959,10 @@ mod tests {
         assert!(!by_symbol.contains_key("map"));
 
         assert_eq!(by_symbol["readFile"].category, IoCategory::FileSystem);
-        assert_eq!(by_symbol["readFile"].value_source, ValueSource::AutoGenerated);
+        assert_eq!(
+            by_symbol["readFile"].value_source,
+            ValueSource::AutoGenerated
+        );
 
         assert_eq!(by_symbol["get"].category, IoCategory::Network);
         assert_eq!(by_symbol["get"].value_source, ValueSource::AutoGenerated);
@@ -917,7 +971,10 @@ mod tests {
         assert_eq!(by_symbol["query"].value_source, ValueSource::UserOverride);
 
         assert_eq!(by_symbol["compute"].category, IoCategory::ExternalOther);
-        assert_eq!(by_symbol["compute"].value_source, ValueSource::AutoGenerated);
+        assert_eq!(
+            by_symbol["compute"].value_source,
+            ValueSource::AutoGenerated
+        );
     }
 
     // --- Error variant generation tests ---

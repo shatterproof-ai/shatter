@@ -62,7 +62,11 @@ pub fn compute_function_fingerprint(source_text: &str, analysis: &FunctionAnalys
         .iter()
         .map(|b| {
             let mut s = String::new();
-            let _ = write!(s, "{}:{}:{:?}:{}", b.id, b.line, b.branch_type, b.condition_text);
+            let _ = write!(
+                s,
+                "{}:{}:{:?}:{}",
+                b.id, b.line, b.branch_type, b.condition_text
+            );
             s
         })
         .collect();
@@ -140,7 +144,10 @@ pub fn compute_deep_fingerprints(
     let mut shallow: HashMap<String, String> = HashMap::new();
     for func in analyses {
         let source = extract_function_source(file_path, func.start_line, func.end_line)?;
-        shallow.insert(func.name.clone(), compute_function_fingerprint(&source, func));
+        shallow.insert(
+            func.name.clone(),
+            compute_function_fingerprint(&source, func),
+        );
     }
 
     // Build in-scope callee sets (for Kahn's algorithm ordering).
@@ -161,11 +168,8 @@ pub fn compute_deep_fingerprints(
     let all_callees_map: HashMap<&str, HashSet<String>> = analyses
         .iter()
         .map(|func| {
-            let callees: HashSet<String> = func
-                .dependencies
-                .iter()
-                .map(|d| d.symbol.clone())
-                .collect();
+            let callees: HashSet<String> =
+                func.dependencies.iter().map(|d| d.symbol.clone()).collect();
             (func.name.as_str(), callees)
         })
         .collect();
@@ -203,10 +207,7 @@ pub fn compute_deep_fingerprints(
 
     while let Some(func_name) = queue.pop() {
         if let Some(sfp) = shallow.get(func_name) {
-            let callees = all_callees_map
-                .get(func_name)
-                .cloned()
-                .unwrap_or_default();
+            let callees = all_callees_map.get(func_name).cloned().unwrap_or_default();
             deep.insert(
                 func_name.to_string(),
                 compute_deep_fingerprint(sfp, &deep, &callees),
@@ -626,11 +627,7 @@ mod tests {
     fn extract_function_source_reads_correct_lines() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
-        std::fs::write(
-            &file,
-            "line1\nline2\nline3\nline4\nline5\n",
-        )
-        .unwrap();
+        std::fs::write(&file, "line1\nline2\nline3\nline4\nline5\n").unwrap();
 
         let source = extract_function_source(&file, 2, 4).unwrap();
         assert_eq!(source, "line2\nline3\nline4");
@@ -664,10 +661,8 @@ mod tests {
     fn deep_fp_changes_when_callee_fp_changes() {
         let callees: HashSet<String> = ["leaf".into()].into_iter().collect();
 
-        let fps1: HashMap<String, String> =
-            [("leaf".into(), "aaa".into())].into_iter().collect();
-        let fps2: HashMap<String, String> =
-            [("leaf".into(), "bbb".into())].into_iter().collect();
+        let fps1: HashMap<String, String> = [("leaf".into(), "aaa".into())].into_iter().collect();
+        let fps2: HashMap<String, String> = [("leaf".into(), "bbb".into())].into_iter().collect();
 
         let fp1 = compute_deep_fingerprint("shallow1", &fps1, &callees);
         let fp2 = compute_deep_fingerprint("shallow1", &fps2, &callees);
@@ -677,10 +672,12 @@ mod tests {
     #[test]
     fn deep_fp_ignores_out_of_scope_callees() {
         let callees: HashSet<String> = ["leaf".into()].into_iter().collect();
-        let callee_fps: HashMap<String, String> =
-            [("leaf".into(), "aaa".into()), ("other".into(), "bbb".into())]
-                .into_iter()
-                .collect();
+        let callee_fps: HashMap<String, String> = [
+            ("leaf".into(), "aaa".into()),
+            ("other".into(), "bbb".into()),
+        ]
+        .into_iter()
+        .collect();
 
         // "other" is in the map but not in callees — should be ignored
         let fp_with_extra = compute_deep_fingerprint("shallow1", &callee_fps, &callees);
@@ -785,15 +782,10 @@ mod tests {
         assert_eq!(fps.len(), 2);
 
         // caller's deep FP should differ from a standalone computation without callees.
-        let caller_shallow = compute_function_fingerprint(
-            "function caller() { return leaf(); }",
-            &analyses[1],
-        );
-        let caller_no_deps = compute_deep_fingerprint(
-            &caller_shallow,
-            &HashMap::new(),
-            &HashSet::new(),
-        );
+        let caller_shallow =
+            compute_function_fingerprint("function caller() { return leaf(); }", &analyses[1]);
+        let caller_no_deps =
+            compute_deep_fingerprint(&caller_shallow, &HashMap::new(), &HashSet::new());
         assert_ne!(fps["caller"], caller_no_deps);
     }
 
@@ -868,7 +860,6 @@ mod tests {
         }
     }
 
-
     // --- FingerprintRegistry tests ---
 
     #[test]
@@ -912,9 +903,7 @@ mod tests {
 
         type FuncSpec<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
 
-        fn make_registry_for_graph(
-            funcs: &[FuncSpec<'_>],
-        ) -> FunctionRegistry {
+        fn make_registry_for_graph(funcs: &[FuncSpec<'_>]) -> FunctionRegistry {
             let mut entries = Vec::new();
             let mut index = HashMap::new();
             for (file, name, deps) in funcs {
@@ -956,7 +945,10 @@ mod tests {
             let graph = CallGraph::from_registry(&reg);
 
             let mut shallow = HashMap::new();
-            shallow.insert("src/b.ts::helper".into(), "aaa".repeat(22)[..64].to_string());
+            shallow.insert(
+                "src/b.ts::helper".into(),
+                "aaa".repeat(22)[..64].to_string(),
+            );
             shallow.insert("src/a.ts::main".into(), "bbb".repeat(22)[..64].to_string());
 
             let fp_reg = compute_cross_file_deep_fingerprints(&shallow, &graph);
@@ -1007,7 +999,11 @@ mod tests {
                 ("src/d.ts", "leaf", vec![]),
                 ("src/b.ts", "left", vec![("leaf", "src/d.ts")]),
                 ("src/c.ts", "right", vec![("leaf", "src/d.ts")]),
-                ("src/a.ts", "top", vec![("left", "src/b.ts"), ("right", "src/c.ts")]),
+                (
+                    "src/a.ts",
+                    "top",
+                    vec![("left", "src/b.ts"), ("right", "src/c.ts")],
+                ),
             ]);
             let graph = CallGraph::from_registry(&reg);
 
@@ -1049,9 +1045,7 @@ mod tests {
 
         #[test]
         fn staleness_all_fresh() {
-            let reg = make_registry_for_graph(&[
-                ("src/a.ts", "foo", vec![]),
-            ]);
+            let reg = make_registry_for_graph(&[("src/a.ts", "foo", vec![])]);
             let graph = CallGraph::from_registry(&reg);
 
             let mut current = FingerprintRegistry::new();
@@ -1142,10 +1136,7 @@ mod tests {
 
             let plan = compute_cross_file_staleness(&current, &previous, &graph);
             assert_eq!(plan.stale, vec!["src/a.ts::new_fn"]);
-            assert_eq!(
-                plan.stale_reasons["src/a.ts::new_fn"],
-                StalenessReason::New
-            );
+            assert_eq!(plan.stale_reasons["src/a.ts::new_fn"], StalenessReason::New);
         }
 
         #[test]
@@ -1173,7 +1164,11 @@ mod tests {
                 ("src/d.ts", "leaf", vec![]),
                 ("src/b.ts", "left", vec![("leaf", "src/d.ts")]),
                 ("src/c.ts", "right", vec![("leaf", "src/d.ts")]),
-                ("src/a.ts", "top", vec![("left", "src/b.ts"), ("right", "src/c.ts")]),
+                (
+                    "src/a.ts",
+                    "top",
+                    vec![("left", "src/b.ts"), ("right", "src/c.ts")],
+                ),
             ]);
             let graph = CallGraph::from_registry(&reg);
 
@@ -1215,10 +1210,12 @@ mod tests {
         // "external" is a cross-file dep — not in analyses but in external_fingerprints.
         let analyses = vec![make_analysis("caller", 1, 1, vec!["external"])];
 
-        let ext_v1: HashMap<String, String> =
-            [("external".into(), "aaa".repeat(22))].into_iter().collect();
-        let ext_v2: HashMap<String, String> =
-            [("external".into(), "bbb".repeat(22))].into_iter().collect();
+        let ext_v1: HashMap<String, String> = [("external".into(), "aaa".repeat(22))]
+            .into_iter()
+            .collect();
+        let ext_v2: HashMap<String, String> = [("external".into(), "bbb".repeat(22))]
+            .into_iter()
+            .collect();
 
         let fps_v1 = compute_deep_fingerprints(&file, &analyses, &ext_v1).unwrap();
         let fps_v2 = compute_deep_fingerprints(&file, &analyses, &ext_v2).unwrap();
@@ -1234,8 +1231,9 @@ mod tests {
         std::fs::write(&file, "function caller() { return external(); }\n").unwrap();
 
         let analyses = vec![make_analysis("caller", 1, 1, vec!["external"])];
-        let ext: HashMap<String, String> =
-            [("external".into(), "aaa".repeat(22))].into_iter().collect();
+        let ext: HashMap<String, String> = [("external".into(), "aaa".repeat(22))]
+            .into_iter()
+            .collect();
 
         let fps = compute_deep_fingerprints(&file, &analyses, &ext).unwrap();
 
@@ -1264,15 +1262,10 @@ mod tests {
         assert_eq!(fps.len(), 2);
 
         // caller's deep FP should still incorporate leaf (in-file dep).
-        let caller_shallow = compute_function_fingerprint(
-            "function caller() { return leaf(); }",
-            &analyses[1],
-        );
-        let caller_no_deps = compute_deep_fingerprint(
-            &caller_shallow,
-            &HashMap::new(),
-            &HashSet::new(),
-        );
+        let caller_shallow =
+            compute_function_fingerprint("function caller() { return leaf(); }", &analyses[1]);
+        let caller_no_deps =
+            compute_deep_fingerprint(&caller_shallow, &HashMap::new(), &HashSet::new());
         assert_ne!(fps["caller"], caller_no_deps);
     }
 }

@@ -76,10 +76,10 @@ pub struct StratumInfo {
 /// Complexity tier based on branch count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ComplexityTier {
-    Trivial,   // 0-1 branches
-    Simple,    // 2-5 branches
-    Moderate,  // 6-15 branches
-    Complex,   // 16+ branches
+    Trivial,  // 0-1 branches
+    Simple,   // 2-5 branches
+    Moderate, // 6-15 branches
+    Complex,  // 16+ branches
 }
 
 impl ComplexityTier {
@@ -227,9 +227,7 @@ pub fn parse_batch_spec(s: &str) -> Result<BatchSpec, String> {
         }
         Ok(BatchSpec::Range(start, end))
     } else {
-        let idx: usize = s
-            .parse()
-            .map_err(|_| format!("invalid batch index: {s}"))?;
+        let idx: usize = s.parse().map_err(|_| format!("invalid batch index: {s}"))?;
         Ok(BatchSpec::Single(idx))
     }
 }
@@ -308,7 +306,12 @@ pub fn select_batch(
         let complexity = ComplexityTier::from_branch_count(entry.branch_count);
         let depth = depth_map.get(qn).copied().unwrap_or(0);
         let kind = FunctionKind::classify(entry);
-        let key = StratumKey { module, complexity, depth, kind };
+        let key = StratumKey {
+            module,
+            complexity,
+            depth,
+            kind,
+        };
         strata.entry(key).or_default().push(qn);
     }
 
@@ -536,11 +539,7 @@ fn module_from_path(file_path: &Path, scan_root: &str) -> String {
     rel.parent()
         .map(|p| {
             let s = p.to_string_lossy().to_string();
-            if s.is_empty() {
-                ".".to_string()
-            } else {
-                s
-            }
+            if s.is_empty() { ".".to_string() } else { s }
         })
         .unwrap_or_else(|| ".".to_string())
 }
@@ -626,10 +625,7 @@ fn allocate_budget(
         }
     }
 
-    allocations
-        .into_iter()
-        .map(|a| (a.key, a.count))
-        .collect()
+    allocations.into_iter().map(|a| (a.key, a.count)).collect()
 }
 
 /// Compute the transitive closure of callees for the selected set.
@@ -684,12 +680,7 @@ mod tests {
     use crate::types::TypeInfo;
     use std::path::PathBuf;
 
-    fn make_entry(
-        name: &str,
-        file: &str,
-        branch_count: usize,
-        deps: Vec<String>,
-    ) -> FunctionEntry {
+    fn make_entry(name: &str, file: &str, branch_count: usize, deps: Vec<String>) -> FunctionEntry {
         FunctionEntry {
             file_path: PathBuf::from(file),
             name: name.to_string(),
@@ -891,8 +882,14 @@ mod tests {
 
     #[test]
     fn test_complexity_tier_classification() {
-        assert_eq!(ComplexityTier::from_branch_count(0), ComplexityTier::Trivial);
-        assert_eq!(ComplexityTier::from_branch_count(1), ComplexityTier::Trivial);
+        assert_eq!(
+            ComplexityTier::from_branch_count(0),
+            ComplexityTier::Trivial
+        );
+        assert_eq!(
+            ComplexityTier::from_branch_count(1),
+            ComplexityTier::Trivial
+        );
         assert_eq!(ComplexityTier::from_branch_count(2), ComplexityTier::Simple);
         assert_eq!(ComplexityTier::from_branch_count(5), ComplexityTier::Simple);
         assert_eq!(
@@ -995,7 +992,10 @@ mod tests {
                 break;
             }
         }
-        assert!(closure_found, "fn_a should be selected with at least one seed");
+        assert!(
+            closure_found,
+            "fn_a should be selected with at least one seed"
+        );
     }
 
     #[test]
@@ -1105,10 +1105,7 @@ mod tests {
         let batch1 = select_batch(&entries, &cg, &config, 1);
 
         // Batches should be disjoint (selected sets don't overlap).
-        let overlap: HashSet<_> = batch0
-            .selected
-            .intersection(&batch1.selected)
-            .collect();
+        let overlap: HashSet<_> = batch0.selected.intersection(&batch1.selected).collect();
         assert!(
             overlap.is_empty(),
             "batches should be disjoint, but overlap: {overlap:?}"

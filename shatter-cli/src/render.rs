@@ -74,7 +74,10 @@ pub(crate) struct ExploreRenderOpts<'a> {
 // ── Builders ─────────────────────────────────────────────────────────────────
 
 /// Build an [`ExploreFnView`] from an [`ObservationOutput`] and render options.
-pub(crate) fn explore_fn_view(result: &ObservationOutput, opts: ExploreRenderOpts<'_>) -> ExploreFnView {
+pub(crate) fn explore_fn_view(
+    result: &ObservationOutput,
+    opts: ExploreRenderOpts<'_>,
+) -> ExploreFnView {
     let location = opts
         .location
         .map(|loc| format!(" *({loc})*"))
@@ -97,7 +100,12 @@ pub(crate) fn explore_fn_view(result: &ObservationOutput, opts: ExploreRenderOpt
         .iter()
         .enumerate()
         .map(|(i, exec)| {
-            let inputs = exec.inputs.iter().map(value_short).collect::<Vec<_>>().join(", ");
+            let inputs = exec
+                .inputs
+                .iter()
+                .map(value_short)
+                .collect::<Vec<_>>()
+                .join(", ");
             let call = format!("{}({})", result.function_name, inputs);
             let outcome = if let Some(ref err) = exec.thrown_error {
                 format!("throws `{err}`")
@@ -106,7 +114,11 @@ pub(crate) fn explore_fn_view(result: &ObservationOutput, opts: ExploreRenderOpt
             } else {
                 "void".to_string()
             };
-            PathView { index: i + 1, call, outcome }
+            PathView {
+                index: i + 1,
+                call,
+                outcome,
+            }
         })
         .collect();
 
@@ -118,7 +130,13 @@ pub(crate) fn explore_fn_view(result: &ObservationOutput, opts: ExploreRenderOpt
         extras.push("Explorer: concolic (Z3-backed)".to_string());
     }
 
-    ExploreFnView { function_name: result.function_name.clone(), location, summary, paths, extras }
+    ExploreFnView {
+        function_name: result.function_name.clone(),
+        location,
+        summary,
+        paths,
+        extras,
+    }
 }
 
 /// Build a [`ScanView`] from a [`ParallelScanResult`].
@@ -145,8 +163,10 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         })
         .collect();
 
-    let (expected, errors): (Vec<_>, Vec<_>) =
-        result.skipped.iter().partition(|s| s.category == SkipCategory::Expected);
+    let (expected, errors): (Vec<_>, Vec<_>) = result
+        .skipped
+        .iter()
+        .partition(|s| s.category == SkipCategory::Expected);
 
     let to_view = |s: &&shatter_core::scan_orchestrator::SkippedFunction| SkippedView {
         function_name: s.function_name.clone(),
@@ -185,12 +205,14 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
 
 /// Render an explore function view to a Markdown string.
 pub(crate) fn render_explore_fn(view: &ExploreFnView) -> String {
-    view.render().unwrap_or_else(|e| format!("[render error: {e}]"))
+    view.render()
+        .unwrap_or_else(|e| format!("[render error: {e}]"))
 }
 
 /// Render a scan view to a Markdown string.
 pub(crate) fn render_scan(view: &ScanView) -> String {
-    view.render().unwrap_or_else(|e| format!("[render error: {e}]"))
+    view.render()
+        .unwrap_or_else(|e| format!("[render error: {e}]"))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -245,7 +267,11 @@ mod tests {
         let obs = make_observation("add", 3);
         let view = explore_fn_view(
             &obs,
-            ExploreRenderOpts { location: Some("src/math.ts:1-10"), mocks_used: &[], is_concolic: false },
+            ExploreRenderOpts {
+                location: Some("src/math.ts:1-10"),
+                mocks_used: &[],
+                is_concolic: false,
+            },
         );
         let md = render_explore_fn(&view);
         assert!(md.contains("add"), "should contain function name");
@@ -259,7 +285,11 @@ mod tests {
         let obs = make_observation("fn", 1);
         let view = explore_fn_view(
             &obs,
-            ExploreRenderOpts { location: None, mocks_used: &[], is_concolic: false },
+            ExploreRenderOpts {
+                location: None,
+                mocks_used: &[],
+                is_concolic: false,
+            },
         );
         let md = render_explore_fn(&view);
         assert!(md.contains("fn"), "should contain function name");
@@ -272,10 +302,17 @@ mod tests {
         let mocks = vec!["db.query".to_string(), "cache.get".to_string()];
         let view = explore_fn_view(
             &obs,
-            ExploreRenderOpts { location: None, mocks_used: &mocks, is_concolic: true },
+            ExploreRenderOpts {
+                location: None,
+                mocks_used: &mocks,
+                is_concolic: true,
+            },
         );
         let md = render_explore_fn(&view);
-        assert!(md.contains("Mocks: db.query, cache.get"), "should list mocks");
+        assert!(
+            md.contains("Mocks: db.query, cache.get"),
+            "should list mocks"
+        );
         assert!(md.contains("concolic"), "should mention concolic explorer");
     }
 

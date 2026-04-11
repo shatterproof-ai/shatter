@@ -304,10 +304,7 @@ pub fn write_specify_stage(output: &SpecifyStageOutput, path: &Path) -> Result<(
 ///
 /// Branches never reached by any execution are reported as [`SolveOutcome::Unreachable`].
 /// Branches with opaque/unknown constraints are reported as [`SolveOutcome::Opaque`].
-pub fn solve(
-    observe: &ObserveStageOutput,
-    solver_timeout_ms: Option<u64>,
-) -> StageSolveOutput {
+pub fn solve(observe: &ObserveStageOutput, solver_timeout_ms: Option<u64>) -> StageSolveOutput {
     let analysis = &observe.analysis;
     let raw_results = &observe.observation.raw_results;
 
@@ -389,7 +386,11 @@ pub fn solve(
 fn solve_for_branch_direction(
     branch_id: u32,
     target_taken: bool,
-    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, ExecuteResult)],
+    raw_results: &[(
+        Vec<serde_json::Value>,
+        Vec<crate::protocol::MockConfig>,
+        ExecuteResult,
+    )],
     param_infos: &[crate::types::ParamInfo],
     loops: &[crate::protocol::LoopInfo],
     solver_timeout_ms: Option<u64>,
@@ -432,16 +433,15 @@ fn solve_for_branch_direction(
     let target_decision = &witness_result.branch_path[branch_idx];
     if let SymConstraint::Unknown { hint } = &target_decision.constraint {
         metrics.opaque_count += 1;
-        return SolveOutcome::Opaque {
-            hint: hint.clone(),
-        };
+        return SolveOutcome::Opaque { hint: hint.clone() };
     }
 
     // Extract symbolic constraints from the witness execution.
     let raw_constraints = extract_sym_constraints(witness_result);
 
     // Apply loop constraint rewriting if loops are present.
-    let rewritten = crate::loop_analysis::rewrite_loop_constraints(&raw_constraints, loops, witness_result);
+    let rewritten =
+        crate::loop_analysis::rewrite_loop_constraints(&raw_constraints, loops, witness_result);
     let rewritten = crate::loop_analysis::merge_loop_states(&rewritten, loops, witness_result);
 
     // Build the solvable-only constraint list (filtering out None/Unknown entries).
@@ -501,7 +501,9 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
     let records: Vec<ExecutionRecord> = observe
         .raw_results
         .iter()
-        .map(|(inputs, _mocks, result)| execution_record_from_result(&observe.function_name, inputs, result))
+        .map(|(inputs, _mocks, result)| {
+            execution_record_from_result(&observe.function_name, inputs, result)
+        })
         .collect();
 
     let mut behavior_map = BehaviorMap::from_records(&observe.function_name, &records);
@@ -527,8 +529,9 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
     );
 
     if let Some((total, independent, opaque)) = observe.mcdc_summary {
-        coverage_metrics.mcdc_metrics =
-            Some(crate::coverage_metrics::McdcMetrics::from_mcdc_summary(total, independent, opaque));
+        coverage_metrics.mcdc_metrics = Some(
+            crate::coverage_metrics::McdcMetrics::from_mcdc_summary(total, independent, opaque),
+        );
     }
 
     AnalyzeOutput {
@@ -559,12 +562,8 @@ pub fn specify(
         observe.file, observe.analysis.start_line, observe.analysis.end_line
     ));
 
-    let mut spec = crate::spec::build_spec(
-        &observe.observation,
-        &analyze.eq_classes,
-        location,
-        None,
-    );
+    let mut spec =
+        crate::spec::build_spec(&observe.observation, &analyze.eq_classes, location, None);
 
     if detect_invariants {
         crate::spec::detect_spec_invariants(&mut spec, &observe.observation, &analyze.eq_classes);
@@ -677,10 +676,7 @@ fn compute_coverage_completeness(
 }
 
 /// Generate test suggestions from spec classes and solve results.
-fn build_test_suggestions(
-    spec: &FunctionSpec,
-    solve: &StageSolveOutput,
-) -> Vec<TestSuggestion> {
+fn build_test_suggestions(spec: &FunctionSpec, solve: &StageSolveOutput) -> Vec<TestSuggestion> {
     let mut suggestions = Vec::new();
 
     // One suggestion per spec class from its canonical example.
@@ -688,9 +684,10 @@ fn build_test_suggestions(
         if let Some(example) = class.examples.first() {
             let (expected_return, expected_error) = match &class.postcondition {
                 crate::spec::Postcondition::Returns { value } => (Some(value.clone()), None),
-                crate::spec::Postcondition::Throws { error } => {
-                    (None, Some(format!("{}: {}", error.error_type, error.message)))
-                }
+                crate::spec::Postcondition::Throws { error } => (
+                    None,
+                    Some(format!("{}: {}", error.error_type, error.message)),
+                ),
                 crate::spec::Postcondition::ReturnsVoid => (None, None),
             };
 
@@ -857,15 +854,15 @@ mod tests {
 
     #[test]
     fn analyze_produces_all_outputs() {
-        let branch_path = vec![
-            BranchDecision {
-                branch_id: 0,
-                line: 10,
-                taken: true,
-                constraint: SymConstraint::Unknown { hint: "test".into() },
-                conditions: None,
+        let branch_path = vec![BranchDecision {
+            branch_id: 0,
+            line: 10,
+            taken: true,
+            constraint: SymConstraint::Unknown {
+                hint: "test".into(),
             },
-        ];
+            conditions: None,
+        }];
         let exec_result = ExecuteResult {
             return_value: Some(json!("positive")),
             thrown_error: None,
@@ -875,7 +872,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
 
@@ -888,7 +888,15 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![(vec![json!(5)], vec![], exec_result)],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -913,7 +921,15 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -964,7 +980,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
 
@@ -981,7 +1000,15 @@ mod tests {
                 (vec![json!(3)], vec![], make_result(json!("c"))),
             ],
             discoveries: vec![(0, DiscoveryMethod::Random)],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -990,14 +1017,17 @@ mod tests {
         // Must be 2 (one per unique branch_id), not 6 (total observations).
         let constraint_total =
             output.coverage_metrics.symexpr_count + output.coverage_metrics.unknown_count;
-        assert_eq!(constraint_total, 2, "constraints must equal unique branch_ids, not total observations");
+        assert_eq!(
+            constraint_total, 2,
+            "constraints must equal unique branch_ids, not total observations"
+        );
         assert_eq!(output.coverage_metrics.symexpr_count, 1);
         assert_eq!(output.coverage_metrics.unknown_count, 1);
     }
 
     #[test]
     fn analyze_carries_nondeterministic_fields() {
-        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+        use crate::nondeterminism::{Confidence, NondeterminismEvidence, NondeterministicField};
 
         let observe = ObservationOutput {
             function_name: "nondet_fn".into(),
@@ -1013,7 +1043,14 @@ mod tests {
                 evidence: vec![NondeterminismEvidence::ObservedWithinRun],
                 confidence: Confidence::High,
             }],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -1038,7 +1075,14 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -1065,7 +1109,14 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -1073,7 +1124,10 @@ mod tests {
         let json = serde_json::to_string(&output).expect("serialize");
         let d: AnalyzeOutput = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(d.eq_classes.len(), output.eq_classes.len());
-        assert_eq!(d.coverage_metrics.total_branches, output.coverage_metrics.total_branches);
+        assert_eq!(
+            d.coverage_metrics.total_branches,
+            output.coverage_metrics.total_branches
+        );
         assert_eq!(d.behavior_map.function_id, output.behavior_map.function_id);
     }
 
@@ -1089,7 +1143,14 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -1109,12 +1170,16 @@ mod tests {
     #[test]
     fn eq_classes_bounded_by_raw_results() {
         let branch_path_a = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: true,
+            branch_id: 0,
+            line: 10,
+            taken: true,
             constraint: SymConstraint::Unknown { hint: "t".into() },
             conditions: None,
         }];
         let branch_path_b = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: false,
+            branch_id: 0,
+            line: 10,
+            taken: false,
             constraint: SymConstraint::Unknown { hint: "t".into() },
             conditions: None,
         }];
@@ -1127,7 +1192,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
         let observe = ObservationOutput {
@@ -1144,7 +1212,14 @@ mod tests {
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -1173,12 +1248,16 @@ mod tests {
             discoveries: vec![(0, DiscoveryMethod::Random)],
             triage_skipped: 0,
             triage_mispredictions: 0,
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(),
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
             mcdc_summary: None,
             pipeline_overlaps: 0,
             shrink_stats: crate::shrink::ShrinkStats::default(),
             abandoned_frontiers: vec![],
-            opaque_suggestions: vec![], stubbed_modules: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let output: ObservationOutput = concolic.into();
@@ -1193,7 +1272,11 @@ mod tests {
     fn stub_observe_stage(
         name: &str,
         branch_count: usize,
-        raw_results: Vec<(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, ExecuteResult)>,
+        raw_results: Vec<(
+            Vec<serde_json::Value>,
+            Vec<crate::protocol::MockConfig>,
+            ExecuteResult,
+        )>,
     ) -> ObserveStageOutput {
         let observation = ObservationOutput {
             function_name: name.into(),
@@ -1225,23 +1308,37 @@ mod tests {
     fn solve_all_covered_returns_empty() {
         // Both directions observed for the single branch → nothing to solve.
         let branch_path_t = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: true,
+            branch_id: 0,
+            line: 10,
+            taken: true,
             constraint: SymConstraint::Expr {
                 expr: crate::sym_expr::SymExpr::BinOp {
                     op: crate::sym_expr::BinOpKind::Gt,
-                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
-                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                    left: Box::new(crate::sym_expr::SymExpr::Param {
+                        name: "x".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(
+                        crate::sym_expr::ConstValue::Int(0),
+                    )),
                 },
             },
             conditions: None,
         }];
         let branch_path_f = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: false,
+            branch_id: 0,
+            line: 10,
+            taken: false,
             constraint: SymConstraint::Expr {
                 expr: crate::sym_expr::SymExpr::BinOp {
                     op: crate::sym_expr::BinOpKind::Gt,
-                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
-                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                    left: Box::new(crate::sym_expr::SymExpr::Param {
+                        name: "x".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(
+                        crate::sym_expr::ConstValue::Int(0),
+                    )),
                 },
             },
             conditions: None,
@@ -1255,16 +1352,26 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
-        let observe = stub_observe_stage("all_covered", 1, vec![
-            (vec![json!(5)], vec![], make_result(branch_path_t)),
-            (vec![json!(-1)], vec![], make_result(branch_path_f)),
-        ]);
+        let observe = stub_observe_stage(
+            "all_covered",
+            1,
+            vec![
+                (vec![json!(5)], vec![], make_result(branch_path_t)),
+                (vec![json!(-1)], vec![], make_result(branch_path_f)),
+            ],
+        );
 
         let output = solve(&observe, Some(1000));
-        assert!(output.solved_branches.is_empty(), "no uncovered branches to solve");
+        assert!(
+            output.solved_branches.is_empty(),
+            "no uncovered branches to solve"
+        );
         assert_eq!(output.metrics.total_uncovered, 0);
     }
 
@@ -1286,8 +1393,12 @@ mod tests {
     fn solve_opaque_constraint() {
         // Branch observed in one direction but with Unknown constraint → Opaque.
         let branch_path = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: true,
-            constraint: SymConstraint::Unknown { hint: "opaque call".into() },
+            branch_id: 0,
+            line: 10,
+            taken: true,
+            constraint: SymConstraint::Unknown {
+                hint: "opaque call".into(),
+            },
             conditions: None,
         }];
         let result = ExecuteResult {
@@ -1299,31 +1410,42 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
-        let observe = stub_observe_stage("opaque", 1, vec![
-            (vec![json!(1)], vec![], result),
-        ]);
+        let observe = stub_observe_stage("opaque", 1, vec![(vec![json!(1)], vec![], result)]);
 
         let output = solve(&observe, Some(1000));
         assert_eq!(output.metrics.total_uncovered, 1);
         assert_eq!(output.metrics.opaque_count, 1);
         assert_eq!(output.solved_branches.len(), 1);
         assert!(!output.solved_branches[0].target_taken);
-        assert!(matches!(output.solved_branches[0].outcome, SolveOutcome::Opaque { .. }));
+        assert!(matches!(
+            output.solved_branches[0].outcome,
+            SolveOutcome::Opaque { .. }
+        ));
     }
 
     #[test]
     fn solve_with_solvable_constraint() {
         // Branch 0: x > 0, only taken=true observed. Solve should find inputs for taken=false.
         let branch_path = vec![BranchDecision {
-            branch_id: 0, line: 10, taken: true,
+            branch_id: 0,
+            line: 10,
+            taken: true,
             constraint: SymConstraint::Expr {
                 expr: crate::sym_expr::SymExpr::BinOp {
                     op: crate::sym_expr::BinOpKind::Gt,
-                    left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
-                    right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                    left: Box::new(crate::sym_expr::SymExpr::Param {
+                        name: "x".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(crate::sym_expr::SymExpr::Const(
+                        crate::sym_expr::ConstValue::Int(0),
+                    )),
                 },
             },
             conditions: None,
@@ -1337,12 +1459,13 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
-        let observe = stub_observe_stage("solvable", 1, vec![
-            (vec![json!(5)], vec![], result),
-        ]);
+        let observe = stub_observe_stage("solvable", 1, vec![(vec![json!(5)], vec![], result)]);
 
         let output = solve(&observe, Some(5000));
         assert_eq!(output.metrics.total_uncovered, 1);
@@ -1368,19 +1491,30 @@ mod tests {
         // Verify metrics counts match the number of solved_branches by outcome type.
         let branch_path = vec![
             BranchDecision {
-                branch_id: 0, line: 10, taken: true,
+                branch_id: 0,
+                line: 10,
+                taken: true,
                 constraint: SymConstraint::Expr {
                     expr: crate::sym_expr::SymExpr::BinOp {
                         op: crate::sym_expr::BinOpKind::Gt,
-                        left: Box::new(crate::sym_expr::SymExpr::Param { name: "x".into(), path: vec![] }),
-                        right: Box::new(crate::sym_expr::SymExpr::Const(crate::sym_expr::ConstValue::Int(0))),
+                        left: Box::new(crate::sym_expr::SymExpr::Param {
+                            name: "x".into(),
+                            path: vec![],
+                        }),
+                        right: Box::new(crate::sym_expr::SymExpr::Const(
+                            crate::sym_expr::ConstValue::Int(0),
+                        )),
                     },
                 },
                 conditions: None,
             },
             BranchDecision {
-                branch_id: 1, line: 20, taken: true,
-                constraint: SymConstraint::Unknown { hint: "opaque".into() },
+                branch_id: 1,
+                line: 20,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "opaque".into(),
+                },
                 conditions: None,
             },
         ];
@@ -1393,20 +1527,22 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
         // 3 branches in analysis: branch 0 (solvable, one direction), branch 1 (opaque, one direction),
         // branch 2 (never reached).
-        let observe = stub_observe_stage("tally", 3, vec![
-            (vec![json!(5)], vec![], result),
-        ]);
+        let observe = stub_observe_stage("tally", 3, vec![(vec![json!(5)], vec![], result)]);
 
         let output = solve(&observe, Some(5000));
         let m = &output.metrics;
 
         // Tally check: sum of outcomes should equal total_uncovered.
-        let tally = m.sat_count + m.unsat_count + m.opaque_count + m.unreachable_count + m.error_count;
+        let tally =
+            m.sat_count + m.unsat_count + m.opaque_count + m.unreachable_count + m.error_count;
         assert_eq!(
             tally, m.total_uncovered,
             "outcome tally ({tally}) must equal total_uncovered ({})",
@@ -1427,7 +1563,9 @@ mod tests {
                     branch_id: 0,
                     line: 10,
                     target_taken: false,
-                    outcome: SolveOutcome::Sat { inputs: vec![json!(42)] },
+                    outcome: SolveOutcome::Sat {
+                        inputs: vec![json!(42)],
+                    },
                 },
                 SolvedBranch {
                     branch_id: 1,
@@ -1439,7 +1577,9 @@ mod tests {
                     branch_id: 2,
                     line: 30,
                     target_taken: false,
-                    outcome: SolveOutcome::Opaque { hint: "test".into() },
+                    outcome: SolveOutcome::Opaque {
+                        hint: "test".into(),
+                    },
                 },
                 SolvedBranch {
                     branch_id: 3,
@@ -1451,7 +1591,9 @@ mod tests {
                     branch_id: 4,
                     line: 50,
                     target_taken: false,
-                    outcome: SolveOutcome::Error { message: "timeout".into() },
+                    outcome: SolveOutcome::Error {
+                        message: "timeout".into(),
+                    },
                 },
             ],
             metrics: SolveMetrics {
@@ -1475,9 +1617,17 @@ mod tests {
         assert_eq!(d.solve.solved_branches.len(), 5);
         assert_eq!(d.solve.metrics.total_uncovered, 5);
         assert_eq!(d.solve.metrics.sat_count, 1);
-        assert_eq!(d.solve.solved_branches[0].outcome, SolveOutcome::Sat { inputs: vec![json!(42)] });
+        assert_eq!(
+            d.solve.solved_branches[0].outcome,
+            SolveOutcome::Sat {
+                inputs: vec![json!(42)]
+            }
+        );
         assert_eq!(d.solve.solved_branches[1].outcome, SolveOutcome::Unsat);
-        assert_eq!(d.solve.solved_branches[3].outcome, SolveOutcome::Unreachable);
+        assert_eq!(
+            d.solve.solved_branches[3].outcome,
+            SolveOutcome::Unreachable
+        );
     }
 
     // -- Property-based tests --

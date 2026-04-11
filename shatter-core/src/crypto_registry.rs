@@ -113,9 +113,26 @@ const AMBIGUOUS_CRYPTO_PATTERNS: &[(&str, CryptoDirection)] = &[
 
 /// Module name substrings that establish a crypto context for ambiguous patterns.
 const CRYPTO_MODULE_INDICATORS: &[&str] = &[
-    "crypto", "cipher", "aes", "ssl", "tls", "gpg", "nacl", "sodium", "bcrypt",
-    "argon", "scrypt", "hmac", "rsa", "ecdsa", "ed25519", "chacha", "salsa",
-    "blake", "tweetnacl", "libsodium",
+    "crypto",
+    "cipher",
+    "aes",
+    "ssl",
+    "tls",
+    "gpg",
+    "nacl",
+    "sodium",
+    "bcrypt",
+    "argon",
+    "scrypt",
+    "hmac",
+    "rsa",
+    "ecdsa",
+    "ed25519",
+    "chacha",
+    "salsa",
+    "blake",
+    "tweetnacl",
+    "libsodium",
 ];
 
 /// Layer 2: classify a dependency by naming heuristic.
@@ -403,11 +420,21 @@ mod tests {
     fn load_builtin_registry() {
         let registry = CryptoRegistry::load().expect("built-in registry should parse");
         // Sanity check: we have entries for all three languages.
-        assert!(registry.len() > 30, "expected 30+ entries, got {}", registry.len());
+        assert!(
+            registry.len() > 30,
+            "expected 30+ entries, got {}",
+            registry.len()
+        );
 
-        let has_ts = registry.lookup("typescript", "crypto", "createDecipheriv").is_some();
-        let has_go = registry.lookup("go", "crypto/cipher", "AEAD.Open").is_some();
-        let has_rust = registry.lookup("rust", "aes-gcm", "Aes256Gcm::decrypt").is_some();
+        let has_ts = registry
+            .lookup("typescript", "crypto", "createDecipheriv")
+            .is_some();
+        let has_go = registry
+            .lookup("go", "crypto/cipher", "AEAD.Open")
+            .is_some();
+        let has_rust = registry
+            .lookup("rust", "aes-gcm", "Aes256Gcm::decrypt")
+            .is_some();
         assert!(has_ts, "missing TypeScript crypto entry");
         assert!(has_go, "missing Go crypto entry");
         assert!(has_rust, "missing Rust crypto entry");
@@ -468,8 +495,16 @@ mod tests {
     #[test]
     fn lookup_missing_returns_none() {
         let registry = CryptoRegistry::load().unwrap();
-        assert!(registry.lookup("typescript", "crypto", "nonexistent").is_none());
-        assert!(registry.lookup("python", "cryptography", "encrypt").is_none());
+        assert!(
+            registry
+                .lookup("typescript", "crypto", "nonexistent")
+                .is_none()
+        );
+        assert!(
+            registry
+                .lookup("python", "cryptography", "encrypt")
+                .is_none()
+        );
     }
 
     #[test]
@@ -546,8 +581,8 @@ output = "plaintext"
         )
         .unwrap();
 
-        let registry = CryptoRegistry::load_with_override(&override_path)
-            .expect("override file should parse");
+        let registry =
+            CryptoRegistry::load_with_override(&override_path).expect("override file should parse");
 
         // Overridden entry should have new direction.
         let overridden = registry
@@ -566,7 +601,11 @@ output = "plaintext"
         assert_eq!(custom.direction, CryptoDirection::Decrypt);
 
         // Existing non-overridden entries should remain.
-        assert!(registry.lookup("go", "crypto/cipher", "AEAD.Open").is_some());
+        assert!(
+            registry
+                .lookup("go", "crypto/cipher", "AEAD.Open")
+                .is_some()
+        );
     }
 
     #[test]
@@ -708,8 +747,7 @@ output = "plaintext"
 
         // "open" WITH crypto context should match.
         let dep_crypto = make_dep("open", "crypto/cipher");
-        let boundary =
-            classify_by_name(&dep_crypto).expect("open in crypto module should match");
+        let boundary = classify_by_name(&dep_crypto).expect("open in crypto module should match");
         assert_eq!(boundary.direction, CryptoDirection::Decrypt);
         assert_eq!(boundary.confidence, Confidence::Low);
     }
@@ -910,12 +948,18 @@ output = "plaintext"
         assert_eq!(boundaries.len(), 2);
 
         // Layer 1 result.
-        let layer1 = boundaries.iter().find(|b| b.symbol == "createDecipheriv").unwrap();
+        let layer1 = boundaries
+            .iter()
+            .find(|b| b.symbol == "createDecipheriv")
+            .unwrap();
         assert_eq!(layer1.confidence, Confidence::High);
         assert_eq!(layer1.output, Some(OutputSemantics::Plaintext));
 
         // Layer 2 result.
-        let layer2 = boundaries.iter().find(|b| b.symbol == "decryptPayload").unwrap();
+        let layer2 = boundaries
+            .iter()
+            .find(|b| b.symbol == "decryptPayload")
+            .unwrap();
         assert_eq!(layer2.confidence, Confidence::Medium);
         assert!(layer2.output.is_none());
 
@@ -1000,13 +1044,15 @@ output = "plaintext"
                 "[a-zA-Z_/][a-zA-Z0-9_/.@-]{0,30}",
                 proptest::collection::vec(any::<u32>(), 0..5),
             )
-                .prop_map(|(kind, symbol, source_module, call_sites)| ExternalDependency {
-                    kind,
-                    symbol,
-                    source_module,
-                    return_type: crate::types::TypeInfo::Unknown,
-                    param_types: vec![],
-                    call_sites,
+                .prop_map(|(kind, symbol, source_module, call_sites)| {
+                    ExternalDependency {
+                        kind,
+                        symbol,
+                        source_module,
+                        return_type: crate::types::TypeInfo::Unknown,
+                        param_types: vec![],
+                        call_sites,
+                    }
                 })
         }
 

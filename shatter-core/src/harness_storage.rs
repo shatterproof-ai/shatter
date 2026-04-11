@@ -54,18 +54,14 @@ impl HarnessStorage {
 
         Self {
             cache_root: Self::default_cache_dir(project_root),
-            scratch_root: std::env::temp_dir()
-                .join(format!("shatter-scratch-{scratch_id}")),
+            scratch_root: std::env::temp_dir().join(format!("shatter-scratch-{scratch_id}")),
             artifact_root: Self::default_artifact_dir(project_root),
         }
     }
 
     /// Default cache directory: `<project_root>/.shatter/cache/harness/`.
     pub fn default_cache_dir(project_root: &Path) -> PathBuf {
-        project_root
-            .join(".shatter")
-            .join("cache")
-            .join("harness")
+        project_root.join(".shatter").join("cache").join("harness")
     }
 
     /// Default artifact directory: `<project_root>/shatter-artifacts/`.
@@ -152,10 +148,12 @@ mod tests {
             storage.cache_root(),
             Path::new("/home/user/project/.shatter/cache/harness")
         );
-        assert!(storage
-            .scratch_root()
-            .to_string_lossy()
-            .contains("shatter-scratch-"));
+        assert!(
+            storage
+                .scratch_root()
+                .to_string_lossy()
+                .contains("shatter-scratch-")
+        );
         assert_eq!(
             storage.artifact_root(),
             Path::new("/home/user/project/shatter-artifacts")

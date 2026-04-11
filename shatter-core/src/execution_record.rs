@@ -104,7 +104,10 @@ pub struct ErrorInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SideEffect {
-    ConsoleOutput { level: String, message: String },
+    ConsoleOutput {
+        level: String,
+        message: String,
+    },
     FileWrite {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,7 +123,9 @@ pub enum SideEffect {
         variable: String,
         value: Option<String>,
     },
-    GlobalMutation { name: String },
+    GlobalMutation {
+        name: String,
+    },
     ThrownError {
         error_type: String,
         message: String,
@@ -428,7 +433,8 @@ mod tests {
 
     #[test]
     fn condition_outcome_masked_default_false() {
-        let json = r#"{"condition_index":0,"value":true,"constraint":{"kind":"unknown","hint":"test"}}"#;
+        let json =
+            r#"{"condition_index":0,"value":true,"constraint":{"kind":"unknown","hint":"test"}}"#;
         let co: ConditionOutcome = serde_json::from_str(json).expect("deserialize");
         assert!(!co.masked, "masked should default to false when absent");
     }
@@ -439,7 +445,9 @@ mod tests {
             branch_id: 5,
             line: 20,
             taken: true,
-            constraint: SymConstraint::Unknown { hint: String::new() },
+            constraint: SymConstraint::Unknown {
+                hint: String::new(),
+            },
             conditions: Some(vec![
                 ConditionOutcome {
                     condition_index: 0,
@@ -474,11 +482,16 @@ mod tests {
             branch_id: 1,
             line: 5,
             taken: false,
-            constraint: SymConstraint::Unknown { hint: String::new() },
+            constraint: SymConstraint::Unknown {
+                hint: String::new(),
+            },
             conditions: None,
         };
         let json = serde_json::to_string(&bd).expect("serialize");
-        assert!(!json.contains("conditions"), "None conditions must not appear in JSON");
+        assert!(
+            !json.contains("conditions"),
+            "None conditions must not appear in JSON"
+        );
     }
 
     #[test]
@@ -576,7 +589,9 @@ mod tests {
             thrown_error: Some(ErrorInfo {
                 error_type: "TypeError".into(),
                 message: "input is null".into(),
-                stack: None, error_category: None }),
+                stack: None,
+                error_category: None,
+            }),
             side_effects: vec![],
             wall_time_ms: 0.01,
             cpu_time_us: 8,

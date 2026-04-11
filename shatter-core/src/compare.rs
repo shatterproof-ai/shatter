@@ -229,8 +229,7 @@ fn build_behavior_map(
         for example in &class.examples {
             let key = canonical_inputs_key(&example.inputs);
             map.entry(key).or_insert_with(|| {
-                let output =
-                    normalize_example_output(&example.return_value, &example.thrown_error);
+                let output = normalize_example_output(&example.return_value, &example.thrown_error);
                 (example.inputs.clone(), output)
             });
         }
@@ -368,7 +367,10 @@ mod tests {
     use serde_json::json;
 
     /// Build a minimal FunctionSpec for testing.
-    fn make_spec(name: &str, examples: Vec<(Vec<serde_json::Value>, ConcreteExample)>) -> FunctionSpec {
+    fn make_spec(
+        name: &str,
+        examples: Vec<(Vec<serde_json::Value>, ConcreteExample)>,
+    ) -> FunctionSpec {
         let classes: Vec<SpecClass> = examples
             .into_iter()
             .enumerate()
@@ -380,9 +382,7 @@ mod tests {
                 }]),
                 preconditions: Vec::new(),
                 postcondition: match (&example.return_value, &example.thrown_error) {
-                    (_, Some(err)) => Postcondition::Throws {
-                        error: err.clone(),
-                    },
+                    (_, Some(err)) => Postcondition::Throws { error: err.clone() },
                     (Some(v), None) if v.is_null() => Postcondition::ReturnsVoid,
                     (Some(v), None) => Postcondition::Returns { value: v.clone() },
                     (None, None) => Postcondition::ReturnsVoid,
@@ -409,39 +409,58 @@ mod tests {
         }
     }
 
-    fn example_returns(inputs: Vec<serde_json::Value>, value: serde_json::Value) -> (Vec<serde_json::Value>, ConcreteExample) {
+    fn example_returns(
+        inputs: Vec<serde_json::Value>,
+        value: serde_json::Value,
+    ) -> (Vec<serde_json::Value>, ConcreteExample) {
         let i = inputs.clone();
-        (i, ConcreteExample {
-            inputs,
-            return_value: Some(value),
-            thrown_error: None,
-        })
+        (
+            i,
+            ConcreteExample {
+                inputs,
+                return_value: Some(value),
+                thrown_error: None,
+            },
+        )
     }
 
-    fn example_throws(inputs: Vec<serde_json::Value>, error_type: &str, message: &str) -> (Vec<serde_json::Value>, ConcreteExample) {
+    fn example_throws(
+        inputs: Vec<serde_json::Value>,
+        error_type: &str,
+        message: &str,
+    ) -> (Vec<serde_json::Value>, ConcreteExample) {
         let i = inputs.clone();
-        (i, ConcreteExample {
-            inputs,
-            return_value: None,
-            thrown_error: Some(ErrorInfo {
-                error_type: error_type.to_string(),
-                message: message.to_string(),
-                stack: None,
-                error_category: None,
-            }),
-        })
+        (
+            i,
+            ConcreteExample {
+                inputs,
+                return_value: None,
+                thrown_error: Some(ErrorInfo {
+                    error_type: error_type.to_string(),
+                    message: message.to_string(),
+                    stack: None,
+                    error_category: None,
+                }),
+            },
+        )
     }
 
     #[test]
     fn identical_specs_all_matching() {
-        let spec_a = make_spec("add_ts", vec![
-            example_returns(vec![json!(1), json!(2)], json!(3)),
-            example_returns(vec![json!(0), json!(0)], json!(0)),
-        ]);
-        let spec_b = make_spec("add_go", vec![
-            example_returns(vec![json!(1), json!(2)], json!(3)),
-            example_returns(vec![json!(0), json!(0)], json!(0)),
-        ]);
+        let spec_a = make_spec(
+            "add_ts",
+            vec![
+                example_returns(vec![json!(1), json!(2)], json!(3)),
+                example_returns(vec![json!(0), json!(0)], json!(0)),
+            ],
+        );
+        let spec_b = make_spec(
+            "add_go",
+            vec![
+                example_returns(vec![json!(1), json!(2)], json!(3)),
+                example_returns(vec![json!(0), json!(0)], json!(0)),
+            ],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert_eq!(result.matching.len(), 2);
@@ -453,12 +472,14 @@ mod tests {
 
     #[test]
     fn divergent_output_detected() {
-        let spec_a = make_spec("div_ts", vec![
-            example_returns(vec![json!(10), json!(3)], json!(3)),
-        ]);
-        let spec_b = make_spec("div_go", vec![
-            example_returns(vec![json!(10), json!(3)], json!(3.333)),
-        ]);
+        let spec_a = make_spec(
+            "div_ts",
+            vec![example_returns(vec![json!(10), json!(3)], json!(3))],
+        );
+        let spec_b = make_spec(
+            "div_go",
+            vec![example_returns(vec![json!(10), json!(3)], json!(3.333))],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert!(result.matching.is_empty());
@@ -469,12 +490,8 @@ mod tests {
 
     #[test]
     fn disjoint_inputs_all_unique() {
-        let spec_a = make_spec("f_ts", vec![
-            example_returns(vec![json!(1)], json!(10)),
-        ]);
-        let spec_b = make_spec("f_go", vec![
-            example_returns(vec![json!(2)], json!(20)),
-        ]);
+        let spec_a = make_spec("f_ts", vec![example_returns(vec![json!(1)], json!(10))]);
+        let spec_b = make_spec("f_go", vec![example_returns(vec![json!(2)], json!(20))]);
 
         let result = compare_specs(&spec_a, &spec_b);
         assert!(result.matching.is_empty());
@@ -487,12 +504,22 @@ mod tests {
     #[test]
     fn error_normalization_ignores_error_type() {
         // TS reports TypeError, Go reports runtime_error — same message means matching.
-        let spec_a = make_spec("validate_ts", vec![
-            example_throws(vec![json!(-1)], "TypeError", "value must be positive"),
-        ]);
-        let spec_b = make_spec("validate_go", vec![
-            example_throws(vec![json!(-1)], "runtime_error", "value must be positive"),
-        ]);
+        let spec_a = make_spec(
+            "validate_ts",
+            vec![example_throws(
+                vec![json!(-1)],
+                "TypeError",
+                "value must be positive",
+            )],
+        );
+        let spec_b = make_spec(
+            "validate_go",
+            vec![example_throws(
+                vec![json!(-1)],
+                "runtime_error",
+                "value must be positive",
+            )],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert_eq!(result.matching.len(), 1);
@@ -501,12 +528,22 @@ mod tests {
 
     #[test]
     fn error_different_message_is_divergent() {
-        let spec_a = make_spec("validate_ts", vec![
-            example_throws(vec![json!(-1)], "TypeError", "negative input"),
-        ]);
-        let spec_b = make_spec("validate_go", vec![
-            example_throws(vec![json!(-1)], "runtime_error", "invalid value: -1"),
-        ]);
+        let spec_a = make_spec(
+            "validate_ts",
+            vec![example_throws(
+                vec![json!(-1)],
+                "TypeError",
+                "negative input",
+            )],
+        );
+        let spec_b = make_spec(
+            "validate_go",
+            vec![example_throws(
+                vec![json!(-1)],
+                "runtime_error",
+                "invalid value: -1",
+            )],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert!(result.matching.is_empty());
@@ -516,12 +553,14 @@ mod tests {
     #[test]
     fn value_normalization_sorted_keys() {
         // Object key order should not affect comparison.
-        let spec_a = make_spec("f_ts", vec![
-            example_returns(vec![json!(1)], json!({"b": 2, "a": 1})),
-        ]);
-        let spec_b = make_spec("f_go", vec![
-            example_returns(vec![json!(1)], json!({"a": 1, "b": 2})),
-        ]);
+        let spec_a = make_spec(
+            "f_ts",
+            vec![example_returns(vec![json!(1)], json!({"b": 2, "a": 1}))],
+        );
+        let spec_b = make_spec(
+            "f_go",
+            vec![example_returns(vec![json!(1)], json!({"a": 1, "b": 2}))],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert_eq!(result.matching.len(), 1);
@@ -530,59 +569,85 @@ mod tests {
 
     #[test]
     fn void_returns_match() {
-        let spec_a = make_spec("noop_ts", vec![
-            (vec![json!(1)], ConcreteExample {
-                inputs: vec![json!(1)],
-                return_value: None,
-                thrown_error: None,
-            }),
-        ]);
-        let spec_b = make_spec("noop_go", vec![
-            (vec![json!(1)], ConcreteExample {
-                inputs: vec![json!(1)],
-                return_value: Some(json!(null)),
-                thrown_error: None,
-            }),
-        ]);
+        let spec_a = make_spec(
+            "noop_ts",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: None,
+                    thrown_error: None,
+                },
+            )],
+        );
+        let spec_b = make_spec(
+            "noop_go",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: Some(json!(null)),
+                    thrown_error: None,
+                },
+            )],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
-        assert_eq!(result.matching.len(), 1, "None and null should both normalize to Void");
+        assert_eq!(
+            result.matching.len(),
+            1,
+            "None and null should both normalize to Void"
+        );
     }
 
     #[test]
     fn mixed_scenario() {
-        let spec_a = make_spec("calc_ts", vec![
-            example_returns(vec![json!(2), json!(3)], json!(5)),      // matching
-            example_returns(vec![json!(0), json!(0)], json!(0)),      // matching
-            example_throws(vec![json!(-1), json!(0)], "Error", "negative"), // divergent
-            example_returns(vec![json!(100)], json!(200)),            // only in A
-        ]);
-        let spec_b = make_spec("calc_go", vec![
-            example_returns(vec![json!(2), json!(3)], json!(5)),
-            example_returns(vec![json!(0), json!(0)], json!(0)),
-            example_returns(vec![json!(-1), json!(0)], json!(-1)),    // divergent (returns instead of throws)
-            example_returns(vec![json!(999)], json!(1998)),           // only in B
-        ]);
+        let spec_a = make_spec(
+            "calc_ts",
+            vec![
+                example_returns(vec![json!(2), json!(3)], json!(5)), // matching
+                example_returns(vec![json!(0), json!(0)], json!(0)), // matching
+                example_throws(vec![json!(-1), json!(0)], "Error", "negative"), // divergent
+                example_returns(vec![json!(100)], json!(200)),       // only in A
+            ],
+        );
+        let spec_b = make_spec(
+            "calc_go",
+            vec![
+                example_returns(vec![json!(2), json!(3)], json!(5)),
+                example_returns(vec![json!(0), json!(0)], json!(0)),
+                example_returns(vec![json!(-1), json!(0)], json!(-1)), // divergent (returns instead of throws)
+                example_returns(vec![json!(999)], json!(1998)),        // only in B
+            ],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         assert_eq!(result.matching.len(), 2);
         assert_eq!(result.divergent.len(), 1);
         assert_eq!(result.only_in_a.len(), 1);
         assert_eq!(result.only_in_b.len(), 1);
-        let pct = result.similarity_percent().expect("should have shared inputs");
+        let pct = result
+            .similarity_percent()
+            .expect("should have shared inputs");
         assert!((pct - 66.67).abs() < 0.1, "expected ~66.67%, got {pct}"); // 2/3
     }
 
     #[test]
     fn format_text_includes_summary_metric() {
-        let spec_a = make_spec("f_ts", vec![
-            example_returns(vec![json!(1)], json!(10)),
-            example_returns(vec![json!(2)], json!(20)),
-        ]);
-        let spec_b = make_spec("f_go", vec![
-            example_returns(vec![json!(1)], json!(10)),
-            example_returns(vec![json!(2)], json!(99)),
-        ]);
+        let spec_a = make_spec(
+            "f_ts",
+            vec![
+                example_returns(vec![json!(1)], json!(10)),
+                example_returns(vec![json!(2)], json!(20)),
+            ],
+        );
+        let spec_b = make_spec(
+            "f_go",
+            vec![
+                example_returns(vec![json!(1)], json!(10)),
+                example_returns(vec![json!(2)], json!(99)),
+            ],
+        );
 
         let result = compare_specs(&spec_a, &spec_b);
         let text = format_compare_text(&result);
@@ -592,12 +657,8 @@ mod tests {
 
     #[test]
     fn format_json_roundtrips() {
-        let spec_a = make_spec("f_ts", vec![
-            example_returns(vec![json!(1)], json!(2)),
-        ]);
-        let spec_b = make_spec("f_go", vec![
-            example_returns(vec![json!(1)], json!(2)),
-        ]);
+        let spec_a = make_spec("f_ts", vec![example_returns(vec![json!(1)], json!(2))]);
+        let spec_b = make_spec("f_go", vec![example_returns(vec![json!(1)], json!(2))]);
 
         let result = compare_specs(&spec_a, &spec_b);
         let json_str = format_compare_json(&result).expect("serialize");
@@ -644,18 +705,20 @@ mod tests {
         fn arb_example() -> impl Strategy<Value = (Vec<serde_json::Value>, ConcreteExample)> {
             (arb_inputs(), arb_value()).prop_map(|(inputs, ret)| {
                 let i = inputs.clone();
-                (i, ConcreteExample {
-                    inputs,
-                    return_value: Some(ret),
-                    thrown_error: None,
-                })
+                (
+                    i,
+                    ConcreteExample {
+                        inputs,
+                        return_value: Some(ret),
+                        thrown_error: None,
+                    },
+                )
             })
         }
 
         fn arb_spec(name: &'static str) -> impl Strategy<Value = FunctionSpec> {
-            prop::collection::vec(arb_example(), 1..6).prop_map(move |examples| {
-                make_spec(name, examples)
-            })
+            prop::collection::vec(arb_example(), 1..6)
+                .prop_map(move |examples| make_spec(name, examples))
         }
 
         proptest! {

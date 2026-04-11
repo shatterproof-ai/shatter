@@ -152,12 +152,7 @@ pub fn resolve_targets(
     tier: &str,
 ) -> Result<Vec<BenchTarget>, BenchError> {
     let tier_map = manifest.perf.get(tier).ok_or_else(|| {
-        let available = manifest
-            .perf
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let available = manifest.perf.keys().cloned().collect::<Vec<_>>().join(", ");
         BenchError::UnknownTier(tier.to_string(), available)
     })?;
 
@@ -181,14 +176,17 @@ pub fn resolve_targets(
 }
 
 fn parse_target_entry(entry: &str) -> Result<(String, String), BenchError> {
-    let colon_pos = entry.rfind(':').ok_or_else(|| {
-        BenchError::InvalidTarget(entry.to_string())
-    })?;
+    let colon_pos = entry
+        .rfind(':')
+        .ok_or_else(|| BenchError::InvalidTarget(entry.to_string()))?;
     // Ensure neither side is empty
     if colon_pos == 0 || colon_pos == entry.len() - 1 {
         return Err(BenchError::InvalidTarget(entry.to_string()));
     }
-    Ok((entry[..colon_pos].to_string(), entry[colon_pos + 1..].to_string()))
+    Ok((
+        entry[..colon_pos].to_string(),
+        entry[colon_pos + 1..].to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +199,10 @@ fn parse_target_entry(entry: &str) -> Result<(String, String), BenchError> {
 ///
 /// Panics if `values` is empty.
 pub fn compute_statistics(values: &[f64]) -> StatSummary {
-    assert!(!values.is_empty(), "compute_statistics requires non-empty input");
+    assert!(
+        !values.is_empty(),
+        "compute_statistics requires non-empty input"
+    );
 
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -215,7 +216,12 @@ pub fn compute_statistics(values: &[f64]) -> StatSummary {
         (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
     };
 
-    StatSummary { min, max, mean, median }
+    StatSummary {
+        min,
+        max,
+        mean,
+        median,
+    }
 }
 
 /// Attempt to detect the current git commit hash.
@@ -315,7 +321,8 @@ mod tests {
 
     #[test]
     fn parse_target_entry_valid() {
-        let (file, func) = parse_target_entry("examples/ts/01-arithmetic.ts:classifyNumber").unwrap();
+        let (file, func) =
+            parse_target_entry("examples/ts/01-arithmetic.ts:classifyNumber").unwrap();
         assert_eq!(file, "examples/ts/01-arithmetic.ts");
         assert_eq!(func, "classifyNumber");
     }

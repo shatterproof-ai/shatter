@@ -29,14 +29,20 @@ pub(crate) fn run_analyze(
         shatter_core::report_style::ReportStyle::default()
     };
     let report_opts = ReportOptions {
-        location: Some(format!("{}:{}-{}", stage_input.file, analysis.start_line, analysis.end_line)),
+        location: Some(format!(
+            "{}:{}-{}",
+            stage_input.file, analysis.start_line, analysis.end_line
+        )),
         show_perf: false,
         wall_time: None,
         coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
         style: report_style.clone(),
         genetic_stats: None,
     };
-    print!("{}", explorer::format_exploration_report(observation, &report_opts));
+    print!(
+        "{}",
+        explorer::format_exploration_report(observation, &report_opts)
+    );
     print!(
         "{}",
         shatter_core::coverage_metrics::format_coverage_metrics(
@@ -49,12 +55,13 @@ pub(crate) fn run_analyze(
     // Build and display spec if requested.
     let spec = if show_spec || detect_invariants {
         let eq_classes = &analyze_output.eq_classes;
-        let location = Some(format!("{}:{}-{}", stage_input.file, analysis.start_line, analysis.end_line));
+        let location = Some(format!(
+            "{}:{}-{}",
+            stage_input.file, analysis.start_line, analysis.end_line
+        ));
 
         let spec = if detect_invariants {
-            shatter_core::spec::build_spec_with_invariants(
-                observation, eq_classes, location, None,
-            )
+            shatter_core::spec::build_spec_with_invariants(observation, eq_classes, location, None)
         } else {
             shatter_core::spec::build_spec(observation, eq_classes, location, None)
         };

@@ -71,7 +71,10 @@ pub fn interpolate_inputs(
         return Vec::new();
     }
 
-    let len = true_witness.len().min(false_witness.len()).min(param_infos.len());
+    let len = true_witness
+        .len()
+        .min(false_witness.len())
+        .min(param_infos.len());
 
     // Collect per-parameter midpoint sequences for differing values.
     let mut per_param_midpoints: Vec<(usize, Vec<Value>)> = Vec::new();
@@ -280,12 +283,7 @@ fn interpolate_object(
 
 /// Interpolate nullable values: if one is null and the other non-null,
 /// return both; otherwise delegate to inner type.
-fn interpolate_nullable(
-    a: &Value,
-    b: &Value,
-    inner: &TypeInfo,
-    max_steps: usize,
-) -> Vec<Value> {
+fn interpolate_nullable(a: &Value, b: &Value, inner: &TypeInfo, max_steps: usize) -> Vec<Value> {
     match (a.is_null(), b.is_null()) {
         (true, false) => vec![b.clone()],
         (false, true) => vec![a.clone()],
@@ -295,12 +293,7 @@ fn interpolate_nullable(
 }
 
 /// Try interpolating if both values match the same union variant.
-fn interpolate_union(
-    a: &Value,
-    b: &Value,
-    variants: &[TypeInfo],
-    max_steps: usize,
-) -> Vec<Value> {
+fn interpolate_union(a: &Value, b: &Value, variants: &[TypeInfo], max_steps: usize) -> Vec<Value> {
     for variant in variants {
         let midpoints = interpolate_value(a, b, variant, max_steps);
         if !midpoints.is_empty() {
@@ -449,7 +442,10 @@ mod tests {
             scope_events: vec![],
             side_effects: vec![],
             performance: PerformanceMetrics::default(),
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -564,8 +560,7 @@ mod tests {
 
     #[test]
     fn interpolate_float_infinity_skipped() {
-        let results =
-            interpolate_float(&json!(f64::INFINITY), &json!(5.0), MAX_BOUNDARY_STEPS);
+        let results = interpolate_float(&json!(f64::INFINITY), &json!(5.0), MAX_BOUNDARY_STEPS);
         assert!(results.is_empty());
     }
 

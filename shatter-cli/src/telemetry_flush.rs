@@ -95,8 +95,8 @@ fn try_flush_queue() -> Result<(), FlushError> {
         return Ok(());
     }
 
-    let endpoint = std::env::var(ENV_TELEMETRY_URL)
-        .unwrap_or_else(|_| POSTHOG_DEFAULT_URL.to_string());
+    let endpoint =
+        std::env::var(ENV_TELEMETRY_URL).unwrap_or_else(|_| POSTHOG_DEFAULT_URL.to_string());
 
     let batch = build_batch(POSTHOG_API_KEY, &events)?;
 
@@ -220,7 +220,7 @@ impl std::error::Error for FlushError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shatter_core::telemetry::{EventPayload, TelemetryEvent, TELEMETRY_SCHEMA_VERSION};
+    use shatter_core::telemetry::{EventPayload, TELEMETRY_SCHEMA_VERSION, TelemetryEvent};
 
     fn make_event(name: &str) -> TelemetryEvent {
         TelemetryEvent {
@@ -302,7 +302,10 @@ mod tests {
         let event = make_event("command_run");
         let ph = shatter_to_posthog(&event).unwrap();
         let props = ph.properties.as_object().unwrap();
-        assert!(props.contains_key("type"), "properties must contain serde tag 'type'");
+        assert!(
+            props.contains_key("type"),
+            "properties must contain serde tag 'type'"
+        );
     }
 
     // ── flush cap (no network) ─────────────────────────────────────────────
@@ -369,11 +372,11 @@ mod tests {
 
     #[test]
     fn batch_capped_at_flush_max_events() {
-        let events: Vec<TelemetryEvent> =
-            (0..FLUSH_MAX_EVENTS + 10).map(|i| make_event(&format!("ev{i}"))).collect();
+        let events: Vec<TelemetryEvent> = (0..FLUSH_MAX_EVENTS + 10)
+            .map(|i| make_event(&format!("ev{i}")))
+            .collect();
         // Simulate the capping logic from try_flush_queue.
-        let capped: Vec<TelemetryEvent> =
-            events.into_iter().take(FLUSH_MAX_EVENTS).collect();
+        let capped: Vec<TelemetryEvent> = events.into_iter().take(FLUSH_MAX_EVENTS).collect();
         assert_eq!(capped.len(), FLUSH_MAX_EVENTS);
     }
 }

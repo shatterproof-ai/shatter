@@ -194,7 +194,9 @@ impl TimingHandle {
 
     pub fn install_global(&self) -> Result<(), SetGlobalDefaultError> {
         let _ = GLOBAL_TIMING_HANDLE.set(self.clone());
-        tracing::subscriber::set_global_default(Registry::default().with(TimingLayer::new(self.clone())))
+        tracing::subscriber::set_global_default(
+            Registry::default().with(TimingLayer::new(self.clone())),
+        )
     }
 
     pub fn snapshot(&self) -> Vec<TimingPhaseSummary> {
@@ -203,13 +205,15 @@ impl TimingHandle {
 
     fn record(&self, phase_path: String, total_ms: f64, self_ms: f64) {
         let mut guard = self.inner.lock().unwrap();
-        let entry = guard.entry(phase_path.clone()).or_insert_with(|| TimingPhaseSummary {
-            phase_path,
-            total_ms: 0.0,
-            self_ms: 0.0,
-            count: 0,
-            attributes: BTreeMap::new(),
-        });
+        let entry = guard
+            .entry(phase_path.clone())
+            .or_insert_with(|| TimingPhaseSummary {
+                phase_path,
+                total_ms: 0.0,
+                self_ms: 0.0,
+                count: 0,
+                attributes: BTreeMap::new(),
+            });
         entry.total_ms += total_ms;
         entry.self_ms += self_ms;
         entry.count += 1;
@@ -399,6 +403,10 @@ mod tests {
 
         let phases = handle.snapshot();
         assert!(phases.iter().any(|phase| phase.phase_path == "cli.command"));
-        assert!(phases.iter().any(|phase| phase.phase_path == "cli.command.core.explore"));
+        assert!(
+            phases
+                .iter()
+                .any(|phase| phase.phase_path == "cli.command.core.explore")
+        );
     }
 }

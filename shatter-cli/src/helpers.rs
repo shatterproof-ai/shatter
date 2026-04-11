@@ -10,7 +10,10 @@ use shatter_core::log_level::LogLevel;
 use crate::args::Language;
 
 /// Resolve the project root: explicit `project_dir` wins, otherwise auto-detect from `reference_path`.
-pub(crate) fn resolve_project_root(project_dir: Option<&Path>, reference_path: &Path) -> Option<String> {
+pub(crate) fn resolve_project_root(
+    project_dir: Option<&Path>,
+    reference_path: &Path,
+) -> Option<String> {
     if let Some(dir) = project_dir {
         Some(dir.to_string_lossy().into_owned())
     } else {
@@ -68,7 +71,9 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
 pub(crate) fn find_custom_binary(shatter_dir: Option<&Path>, lang: &str) -> Option<PathBuf> {
     let binary_name = format!("shatter-{lang}-custom");
     // Check new location: .shatter-cache/bin/
-    let cache_bin = PathBuf::from(".shatter-cache").join("bin").join(&binary_name);
+    let cache_bin = PathBuf::from(".shatter-cache")
+        .join("bin")
+        .join(&binary_name);
     if cache_bin.is_file() {
         return Some(cache_bin);
     }
@@ -102,7 +107,10 @@ pub(crate) fn frontend_config(
             let bundle_path = crate::embedded_frontend::ensure_extracted()?;
             (
                 PathBuf::from("node"),
-                vec!["--no-warnings".to_string(), bundle_path.to_string_lossy().into_owned()],
+                vec![
+                    "--no-warnings".to_string(),
+                    bundle_path.to_string_lossy().into_owned(),
+                ],
             )
         }
         Language::Go => {
@@ -158,7 +166,9 @@ pub(crate) fn frontend_config(
         && language == Language::Go
     {
         let bytes = mb * 1024 * 1024;
-        config.env_vars.push(("GOMEMLIMIT".to_string(), format!("{bytes}B")));
+        config
+            .env_vars
+            .push(("GOMEMLIMIT".to_string(), format!("{bytes}B")));
     }
 
     Ok(config)
@@ -181,8 +191,7 @@ pub(crate) fn apply_storage_env(
 /// roots fall back to temp-based paths (no durable cache).
 pub(crate) fn apply_project_storage(config: &mut FrontendConfig, project_root: Option<&str>) {
     if let Some(root) = project_root {
-        let storage =
-            shatter_core::harness_storage::HarnessStorage::for_project(Path::new(root));
+        let storage = shatter_core::harness_storage::HarnessStorage::for_project(Path::new(root));
         apply_storage_env(config, &storage);
     }
 }
@@ -199,19 +208,17 @@ pub(crate) fn apply_frontend_env(
         LogLevel::ENV_VAR.to_string(),
         log_level.as_str().to_string(),
     ));
-    config.env_vars.push((
-        "SHATTER_EXEC_TIMEOUT".to_string(),
-        exec_timeout.to_string(),
-    ));
+    config
+        .env_vars
+        .push(("SHATTER_EXEC_TIMEOUT".to_string(), exec_timeout.to_string()));
     config.env_vars.push((
         "SHATTER_BUILD_TIMEOUT".to_string(),
         build_timeout.to_string(),
     ));
     if release {
-        config.env_vars.push((
-            "SHATTER_HARNESS_RELEASE".to_string(),
-            "1".to_string(),
-        ));
+        config
+            .env_vars
+            .push(("SHATTER_HARNESS_RELEASE".to_string(), "1".to_string()));
     }
 }
 
@@ -336,8 +343,16 @@ pub(crate) fn resolve_mcdc_budgets(
             None if mcdc => Some(DEFAULT_MAX_ITERATIONS * 5),
             None => None,
         },
-        timeout: timeout.unwrap_or(if mcdc { DEFAULT_TIMEOUT * 5 } else { DEFAULT_TIMEOUT }),
-        solver_timeout: if mcdc && solver_timeout.is_none() { Some(10) } else { solver_timeout },
+        timeout: timeout.unwrap_or(if mcdc {
+            DEFAULT_TIMEOUT * 5
+        } else {
+            DEFAULT_TIMEOUT
+        }),
+        solver_timeout: if mcdc && solver_timeout.is_none() {
+            Some(10)
+        } else {
+            solver_timeout
+        },
     }
 }
 
@@ -348,15 +363,26 @@ mod mcdc_budget_tests {
     #[test]
     fn mcdc_default_budgets_are_scaled() {
         let b = resolve_mcdc_budgets(None, None, None, true);
-        assert_eq!(b.max_iterations, Some(DEFAULT_MAX_ITERATIONS * 5), "max_iterations should be 5x");
+        assert_eq!(
+            b.max_iterations,
+            Some(DEFAULT_MAX_ITERATIONS * 5),
+            "max_iterations should be 5x"
+        );
         assert_eq!(b.timeout, DEFAULT_TIMEOUT * 5, "timeout should be 5x");
-        assert_eq!(b.solver_timeout, Some(10), "solver_timeout should default to 10s under mcdc");
+        assert_eq!(
+            b.solver_timeout,
+            Some(10),
+            "solver_timeout should default to 10s under mcdc"
+        );
     }
 
     #[test]
     fn non_mcdc_default_budgets_are_unbounded() {
         let b = resolve_mcdc_budgets(None, None, None, false);
-        assert_eq!(b.max_iterations, None, "no --max-iterations means unbounded");
+        assert_eq!(
+            b.max_iterations, None,
+            "no --max-iterations means unbounded"
+        );
         assert_eq!(b.timeout, DEFAULT_TIMEOUT);
         assert_eq!(b.solver_timeout, None);
     }
@@ -364,9 +390,20 @@ mod mcdc_budget_tests {
     #[test]
     fn user_provided_values_override_mcdc_defaults() {
         let b = resolve_mcdc_budgets(Some(42), Some(30), Some(5), true);
-        assert_eq!(b.max_iterations, Some(42), "user-provided max_iterations must not be multiplied");
-        assert_eq!(b.timeout, 30, "user-provided timeout must not be multiplied");
-        assert_eq!(b.solver_timeout, Some(5), "user-provided solver_timeout must not be changed");
+        assert_eq!(
+            b.max_iterations,
+            Some(42),
+            "user-provided max_iterations must not be multiplied"
+        );
+        assert_eq!(
+            b.timeout, 30,
+            "user-provided timeout must not be multiplied"
+        );
+        assert_eq!(
+            b.solver_timeout,
+            Some(5),
+            "user-provided solver_timeout must not be changed"
+        );
     }
 
     #[test]
@@ -374,8 +411,16 @@ mod mcdc_budget_tests {
         // User provides max_iterations but not timeout or solver_timeout
         let b = resolve_mcdc_budgets(Some(200), None, None, true);
         assert_eq!(b.max_iterations, Some(200), "user value wins");
-        assert_eq!(b.timeout, DEFAULT_TIMEOUT * 5, "unspecified timeout gets mcdc scaling");
-        assert_eq!(b.solver_timeout, Some(10), "unspecified solver_timeout gets mcdc default");
+        assert_eq!(
+            b.timeout,
+            DEFAULT_TIMEOUT * 5,
+            "unspecified timeout gets mcdc scaling"
+        );
+        assert_eq!(
+            b.solver_timeout,
+            Some(10),
+            "unspecified solver_timeout gets mcdc default"
+        );
     }
 }
 
@@ -442,8 +487,11 @@ mod cli_parity_tests {
             CLI_BUILD_TIMEOUT_DEFAULT_SECS,
             false,
         );
-        let env_map: std::collections::HashMap<&str, &str> =
-            config.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let env_map: std::collections::HashMap<&str, &str> = config
+            .env_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
 
         assert_eq!(
             env_map.get("SHATTER_LOG_LEVEL").copied(),
@@ -469,7 +517,11 @@ mod cli_parity_tests {
     fn explore_defaults_match_parity_contract() {
         let cli = Cli::parse_from(["shatter", "explore", "dummy.ts"]);
         match cli.command {
-            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+            CliCommand::Explore {
+                exec_timeout,
+                build_timeout,
+                ..
+            } => {
                 assert_eq!(
                     exec_timeout, CLI_EXEC_TIMEOUT_DEFAULT_SECS,
                     "`explore --exec-timeout` default ({exec_timeout}s) diverges from \
@@ -495,7 +547,11 @@ mod cli_parity_tests {
     fn scan_defaults_match_parity_contract() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+            CliCommand::Scan {
+                exec_timeout,
+                build_timeout,
+                ..
+            } => {
                 // exec_timeout is None when not explicitly passed; the built-in
                 // default (resolved at runtime) matches the parity contract.
                 assert_eq!(
@@ -548,7 +604,7 @@ mod cli_parity_tests {
     #[test]
     fn apply_storage_env_sets_all_storage_vars() {
         use shatter_core::harness_storage::{
-            HarnessStorage, ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH,
+            ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, HarnessStorage,
         };
         let storage = HarnessStorage::for_project(Path::new("/tmp/test"));
         let mut config = FrontendConfig::new(PathBuf::from("dummy"));
@@ -556,17 +612,16 @@ mod cli_parity_tests {
         let keys: std::collections::HashSet<&str> =
             config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
         for var in [ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, ENV_ARTIFACT_DIR] {
-            assert!(
-                keys.contains(var),
-                "apply_storage_env must set {var}"
-            );
+            assert!(keys.contains(var), "apply_storage_env must set {var}");
         }
     }
 
     /// `apply_project_storage` sets storage vars when a project root is provided.
     #[test]
     fn apply_project_storage_with_root() {
-        use shatter_core::harness_storage::{ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH};
+        use shatter_core::harness_storage::{
+            ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH,
+        };
         let mut config = FrontendConfig::new(PathBuf::from("dummy"));
         apply_project_storage(&mut config, Some("/tmp/project"));
         let keys: std::collections::HashSet<&str> =
@@ -582,7 +637,11 @@ mod cli_parity_tests {
         let mut config = FrontendConfig::new(PathBuf::from("dummy"));
         let before = config.env_vars.len();
         apply_project_storage(&mut config, None);
-        assert_eq!(config.env_vars.len(), before, "no vars should be added when project_root is None");
+        assert_eq!(
+            config.env_vars.len(),
+            before,
+            "no vars should be added when project_root is None"
+        );
     }
 }
 
@@ -595,15 +654,35 @@ mod tests {
         let mut config = FrontendConfig::new(PathBuf::from("dummy"));
         apply_frontend_env(&mut config, LogLevel::Info, 20, 45, false);
         let env_map: std::collections::HashMap<_, _> = config.env_vars.iter().cloned().collect();
-        assert_eq!(env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()), Some("20"));
-        assert_eq!(env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()), Some("45"));
+        assert_eq!(
+            env_map.get("SHATTER_EXEC_TIMEOUT").map(|s| s.as_str()),
+            Some("20")
+        );
+        assert_eq!(
+            env_map.get("SHATTER_BUILD_TIMEOUT").map(|s| s.as_str()),
+            Some("45")
+        );
     }
 
     #[test]
     fn frontend_config_typescript_uses_embedded_bundle() {
-        let config = frontend_config(Language::TypeScript, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT, LogLevel::Info, 10, 30, None, None, false, false).unwrap();
+        let config = frontend_config(
+            Language::TypeScript,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(config.command, PathBuf::from("node"));
-        assert_eq!(config.request_timeout, shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT);
+        assert_eq!(
+            config.request_timeout,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT
+        );
         // First arg suppresses Node warnings, second is the extracted bundle
         assert_eq!(config.args.len(), 2);
         assert_eq!(config.args[0], "--no-warnings");
@@ -616,7 +695,18 @@ mod tests {
 
     #[test]
     fn frontend_config_go_uses_embedded_binary() {
-        let config = frontend_config(Language::Go, Duration::from_secs(45), LogLevel::Info, 10, 30, None, None, false, false).unwrap();
+        let config = frontend_config(
+            Language::Go,
+            Duration::from_secs(45),
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(config.request_timeout, Duration::from_secs(45));
         assert!(config.args.is_empty());
         // The command should point to the extracted binary, not a relative dev path
@@ -648,17 +738,31 @@ mod tests {
     fn build_meta_config_defaults() {
         let config = build_meta_config(false, None, None, None, None).unwrap();
         assert!(config.adaptive);
-        assert_eq!(config.window_size, shatter_core::config::DEFAULT_EXPLORATION_SCORE_WINDOW);
-        assert_eq!(config.cold_start_threshold, shatter_core::config::DEFAULT_EXPLORATION_COLD_START);
-        assert!((config.floor - shatter_core::config::DEFAULT_EXPLORATION_STRATEGY_FLOOR).abs() < f64::EPSILON);
+        assert_eq!(
+            config.window_size,
+            shatter_core::config::DEFAULT_EXPLORATION_SCORE_WINDOW
+        );
+        assert_eq!(
+            config.cold_start_threshold,
+            shatter_core::config::DEFAULT_EXPLORATION_COLD_START
+        );
+        assert!(
+            (config.floor - shatter_core::config::DEFAULT_EXPLORATION_STRATEGY_FLOOR).abs()
+                < f64::EPSILON
+        );
         assert!(config.static_weights.is_none());
     }
 
     #[test]
     fn build_meta_config_with_overrides() {
         let config = build_meta_config(
-            true, Some(50), Some(10), Some(0.05), Some("random=0.8,literals=0.2"),
-        ).unwrap();
+            true,
+            Some(50),
+            Some(10),
+            Some(0.05),
+            Some("random=0.8,literals=0.2"),
+        )
+        .unwrap();
         assert!(!config.adaptive);
         assert_eq!(config.window_size, 50);
         assert_eq!(config.cold_start_threshold, 10);

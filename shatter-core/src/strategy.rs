@@ -30,8 +30,11 @@ use serde_json::Value;
 pub use crate::value_strategy::{TypeAwareMutator, ValueStrategy, ValueToVectorAdapter};
 
 use crate::boundary_dict::generate_boundary_inputs;
-use crate::input_gen::{crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs, mutate_inputs};
 use crate::execution_record::SymConstraint;
+use crate::input_gen::{
+    crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs,
+    mutate_inputs,
+};
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue};
 use crate::solver::{self, SolveResult};
@@ -416,7 +419,11 @@ impl MetaStrategy {
     /// and the index of the strategy that produced them.
     ///
     /// Returns `None` when all strategies are exhausted.
-    pub fn next(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+    pub fn next(
+        &mut self,
+        ctx: &StrategyContext,
+        rng: &mut impl Rng,
+    ) -> Option<(Vec<Value>, usize)> {
         if self.all_exhausted() {
             return None;
         }
@@ -509,7 +516,11 @@ impl MetaStrategy {
 
     // --- Selection modes ---
 
-    fn next_static(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+    fn next_static(
+        &mut self,
+        ctx: &StrategyContext,
+        rng: &mut impl Rng,
+    ) -> Option<(Vec<Value>, usize)> {
         let weights = self.config.static_weights.clone()?;
 
         // Track strategies that returned None this call (temporarily empty reactive
@@ -542,7 +553,11 @@ impl MetaStrategy {
         }
     }
 
-    fn next_adaptive(&mut self, ctx: &StrategyContext, rng: &mut impl Rng) -> Option<(Vec<Value>, usize)> {
+    fn next_adaptive(
+        &mut self,
+        ctx: &StrategyContext,
+        rng: &mut impl Rng,
+    ) -> Option<(Vec<Value>, usize)> {
         // Track strategies that returned None this call (temporarily empty reactive
         // strategies or exhausted finite ones) to avoid infinite loops.
         let mut skipped_this_call = std::collections::HashSet::new();
@@ -806,9 +821,10 @@ impl InputStrategy for FuzzerStrategy {
 
         // Record inputs that hit Unknown constraints (branches the solver
         // cannot handle, so fuzzing is the only way to explore them).
-        let has_unknown = result.branch_path.iter().any(|decision| {
-            matches!(decision.constraint, SymConstraint::Unknown { .. })
-        });
+        let has_unknown = result
+            .branch_path
+            .iter()
+            .any(|decision| matches!(decision.constraint, SymConstraint::Unknown { .. }));
         if has_unknown {
             self.interesting.push(inputs.to_vec());
         }
@@ -881,13 +897,9 @@ impl InputStrategy for Z3SolverStrategy {
             crate::loop_analysis::rewrite_loop_constraints(&sym_constraints, &self.loops, result);
 
         // Technique 6: merge remaining per-iteration constraints into ITE chains.
-        let rewritten =
-            crate::loop_analysis::merge_loop_states(&rewritten, &self.loops, result);
+        let rewritten = crate::loop_analysis::merge_loop_states(&rewritten, &self.loops, result);
 
-        let solvable: Vec<SymExpr> = rewritten
-            .iter()
-            .filter_map(|c| c.clone())
-            .collect();
+        let solvable: Vec<SymExpr> = rewritten.iter().filter_map(|c| c.clone()).collect();
 
         if solvable.is_empty() {
             return;
@@ -909,11 +921,8 @@ impl InputStrategy for Z3SolverStrategy {
 
             match solve_result {
                 Ok(Ok(SolveResult::Sat(values))) => {
-                    let new_inputs = crate::orchestrator::overlay_solved_values(
-                        inputs,
-                        &values,
-                        &param_names,
-                    );
+                    let new_inputs =
+                        crate::orchestrator::overlay_solved_values(inputs, &values, &param_names);
                     self.pending.push_back(new_inputs);
                 }
                 _ => {
@@ -941,8 +950,8 @@ impl InputStrategy for Z3SolverStrategy {
 mod tests {
     use super::*;
     use crate::types::TypeInfo;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     /// Minimal strategy that yields a fixed sequence of inputs.
     struct FixedStrategy {
@@ -953,7 +962,11 @@ mod tests {
 
     impl FixedStrategy {
         fn new(name: &'static str, items: Vec<Vec<Value>>) -> Self {
-            Self { name, items, idx: 0 }
+            Self {
+                name,
+                items,
+                idx: 0,
+            }
         }
     }
 
@@ -1028,10 +1041,7 @@ mod tests {
             static_weights: None,
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(
-            vec![Box::new(a), Box::new(b)],
-            config,
-        );
+        let mut meta = MetaStrategy::new(vec![Box::new(a), Box::new(b)], config);
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1045,20 +1055,20 @@ mod tests {
     #[test]
     fn meta_skips_exhausted_strategies() {
         let short = FixedStrategy::new("short", vec![vec![Value::from(1)]]);
-        let long = FixedStrategy::new("long", vec![
-            vec![Value::from(10)],
-            vec![Value::from(20)],
-            vec![Value::from(30)],
-        ]);
+        let long = FixedStrategy::new(
+            "long",
+            vec![
+                vec![Value::from(10)],
+                vec![Value::from(20)],
+                vec![Value::from(30)],
+            ],
+        );
         let config = MetaConfig {
             adaptive: false,
             static_weights: None,
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(
-            vec![Box::new(short), Box::new(long)],
-            config,
-        );
+        let mut meta = MetaStrategy::new(vec![Box::new(short), Box::new(long)], config);
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1096,10 +1106,7 @@ mod tests {
             value: vec![Value::from(1)],
         };
         let config = MetaConfig::default();
-        let mut meta = MetaStrategy::new(
-            vec![Box::new(infinite), Box::new(fresh)],
-            config,
-        );
+        let mut meta = MetaStrategy::new(vec![Box::new(infinite), Box::new(fresh)], config);
 
         // Simulate graduated state for strategy 0.
         for i in 0..20 {
@@ -1150,8 +1157,8 @@ mod tests {
 
     #[test]
     fn feedback_fans_out_to_all_strategies() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         struct CountingStrategy {
             count: Arc<AtomicU32>,
@@ -1162,7 +1169,12 @@ mod tests {
                 Some(vec![Value::from(0)])
             }
 
-            fn feedback(&mut self, _inputs: &[Value], _result: &ExecuteResult, _was_new_path: bool) {
+            fn feedback(
+                &mut self,
+                _inputs: &[Value],
+                _result: &ExecuteResult,
+                _was_new_path: bool,
+            ) {
                 self.count.fetch_add(1, Ordering::Relaxed);
             }
 
@@ -1177,10 +1189,7 @@ mod tests {
         let s1 = CountingStrategy { count: c1.clone() };
         let s2 = CountingStrategy { count: c2.clone() };
 
-        let mut meta = MetaStrategy::new(
-            vec![Box::new(s1), Box::new(s2)],
-            MetaConfig::default(),
-        );
+        let mut meta = MetaStrategy::new(vec![Box::new(s1), Box::new(s2)], MetaConfig::default());
 
         let result = make_exec_result();
         meta.feedback(&[Value::from(0)], &result, true);
@@ -1191,22 +1200,33 @@ mod tests {
 
     #[test]
     fn static_weights_selection() {
-        let a = FixedStrategy::new("a", vec![
-            vec![Value::from(1)], vec![Value::from(2)], vec![Value::from(3)],
-            vec![Value::from(4)], vec![Value::from(5)], vec![Value::from(6)],
-        ]);
-        let b = FixedStrategy::new("b", vec![
-            vec![Value::from(10)], vec![Value::from(20)], vec![Value::from(30)],
-            vec![Value::from(40)], vec![Value::from(50)], vec![Value::from(60)],
-        ]);
+        let a = FixedStrategy::new(
+            "a",
+            vec![
+                vec![Value::from(1)],
+                vec![Value::from(2)],
+                vec![Value::from(3)],
+                vec![Value::from(4)],
+                vec![Value::from(5)],
+                vec![Value::from(6)],
+            ],
+        );
+        let b = FixedStrategy::new(
+            "b",
+            vec![
+                vec![Value::from(10)],
+                vec![Value::from(20)],
+                vec![Value::from(30)],
+                vec![Value::from(40)],
+                vec![Value::from(50)],
+                vec![Value::from(60)],
+            ],
+        );
         let config = MetaConfig {
             static_weights: Some(vec![("a".into(), 1.0), ("b".into(), 1.0)]),
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(
-            vec![Box::new(a), Box::new(b)],
-            config,
-        );
+        let mut meta = MetaStrategy::new(vec![Box::new(a), Box::new(b)], config);
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1457,8 +1477,12 @@ mod tests {
     fn literals_strategy_yields_expected_candidates() {
         let params = make_params(&[TypeInfo::Str]);
         let literals = vec![
-            LiteralValue::Str { value: "hello".into() },
-            LiteralValue::Str { value: "world".into() },
+            LiteralValue::Str {
+                value: "hello".into(),
+            },
+            LiteralValue::Str {
+                value: "world".into(),
+            },
         ];
         let expected = literals_to_candidate_inputs(&params, &literals);
         let mut strat = LiteralsStrategy::new(&params, &literals);
@@ -1494,7 +1518,9 @@ mod tests {
 
     #[test]
     fn literals_strategy_empty_params() {
-        let literals = vec![LiteralValue::Str { value: "test".into() }];
+        let literals = vec![LiteralValue::Str {
+            value: "test".into(),
+        }];
         let mut strat = LiteralsStrategy::new(&[], &literals);
         let ctx = empty_ctx();
         assert_eq!(strat.estimated_size(), Some(0));
@@ -1513,7 +1539,9 @@ mod tests {
         let literals = vec![
             LiteralValue::Int { value: 1 },
             LiteralValue::Int { value: 2 },
-            LiteralValue::Str { value: "abc".into() },
+            LiteralValue::Str {
+                value: "abc".into(),
+            },
         ];
         let mut strat = LiteralsStrategy::new(&params, &literals);
         let ctx = empty_ctx();
@@ -1532,7 +1560,10 @@ mod tests {
         let mut s = RandomStrategy::new(Some(42));
         let ctx = empty_ctx();
         for _ in 0..100 {
-            assert!(s.next(&ctx).is_some(), "random strategy should never return None");
+            assert!(
+                s.next(&ctx).is_some(),
+                "random strategy should never return None"
+            );
         }
     }
 
@@ -1552,7 +1583,11 @@ mod tests {
         for _ in 0..20 {
             let vals = s.next(&int_ctx).unwrap();
             assert_eq!(vals.len(), 1);
-            assert!(vals[0].is_number(), "Int param should produce a number, got {:?}", vals[0]);
+            assert!(
+                vals[0].is_number(),
+                "Int param should produce a number, got {:?}",
+                vals[0]
+            );
         }
 
         let str_ctx = StrategyContext {
@@ -1567,7 +1602,11 @@ mod tests {
         for _ in 0..20 {
             let vals = s.next(&str_ctx).unwrap();
             assert_eq!(vals.len(), 1);
-            assert!(vals[0].is_string(), "Str param should produce a string, got {:?}", vals[0]);
+            assert!(
+                vals[0].is_string(),
+                "Str param should produce a string, got {:?}",
+                vals[0]
+            );
         }
 
         let bool_ctx = StrategyContext {
@@ -1582,7 +1621,11 @@ mod tests {
         for _ in 0..20 {
             let vals = s.next(&bool_ctx).unwrap();
             assert_eq!(vals.len(), 1);
-            assert!(vals[0].is_boolean(), "Bool param should produce a boolean, got {:?}", vals[0]);
+            assert!(
+                vals[0].is_boolean(),
+                "Bool param should produce a boolean, got {:?}",
+                vals[0]
+            );
         }
     }
 
@@ -1792,7 +1835,10 @@ mod tests {
         s.feedback(&[Value::from(5)], &result, false);
 
         let solved = s.next(&empty_ctx());
-        assert!(solved.is_some(), "Z3 should produce a solved input for x != 5");
+        assert!(
+            solved.is_some(),
+            "Z3 should produce a solved input for x != 5"
+        );
         let solved = solved.unwrap();
         assert_eq!(solved.len(), 1, "output must preserve input vector length");
         // The solved value should differ from 5.
@@ -1940,55 +1986,55 @@ mod tests {
             }
         }
 
-    // --- StrategyTier classification tests ---
+        // --- StrategyTier classification tests ---
 
-    #[test]
-    fn strategy_tier_classification() {
-        let user = UserProvidedStrategy::new(vec![]);
-        assert_eq!(user.tier(), StrategyTier::Vector);
+        #[test]
+        fn strategy_tier_classification() {
+            let user = UserProvidedStrategy::new(vec![]);
+            assert_eq!(user.tier(), StrategyTier::Vector);
 
-        let literals = LiteralsStrategy::new(&[], &[]);
-        assert_eq!(literals.tier(), StrategyTier::Vector);
+            let literals = LiteralsStrategy::new(&[], &[]);
+            assert_eq!(literals.tier(), StrategyTier::Vector);
 
-        let random = RandomStrategy::new(Some(42));
-        assert_eq!(random.tier(), StrategyTier::Vector);
+            let random = RandomStrategy::new(Some(42));
+            assert_eq!(random.tier(), StrategyTier::Vector);
 
-        let boundary = BoundarySeeds::new(&[]);
-        assert_eq!(boundary.tier(), StrategyTier::Vector);
+            let boundary = BoundarySeeds::new(&[]);
+            assert_eq!(boundary.tier(), StrategyTier::Vector);
 
-        let pool = PoolSeedsStrategy::new(vec![]);
-        assert_eq!(pool.tier(), StrategyTier::Vector);
+            let pool = PoolSeedsStrategy::new(vec![]);
+            assert_eq!(pool.tier(), StrategyTier::Vector);
 
-        let fuzzer = FuzzerStrategy::new(Some(42));
-        assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
+            let fuzzer = FuzzerStrategy::new(Some(42));
+            assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
 
-        let z3 = Z3SolverStrategy::new(None, vec![], vec![]);
-        assert_eq!(z3.tier(), StrategyTier::Vector);
-    }
+            let z3 = Z3SolverStrategy::new(None, vec![], vec![]);
+            assert_eq!(z3.tier(), StrategyTier::Vector);
+        }
 
-    #[test]
-    fn default_tier_is_vector() {
-        let s = FixedStrategy::new("test", vec![]);
-        assert_eq!(s.tier(), StrategyTier::Vector);
-    }
+        #[test]
+        fn default_tier_is_vector() {
+            let s = FixedStrategy::new("test", vec![]);
+            assert_eq!(s.tier(), StrategyTier::Vector);
+        }
 
-    #[test]
-    fn meta_strategy_tier_query() {
-        let user = UserProvidedStrategy::new(vec![vec![Value::from(1)]]);
-        let fuzzer = FuzzerStrategy::new(Some(42));
-        let meta = MetaStrategy::new(
-            vec![Box::new(user), Box::new(fuzzer)],
-            MetaConfig::default(),
-        );
-        assert_eq!(meta.strategy_tier(0), StrategyTier::Vector);
-        assert_eq!(meta.strategy_tier(1), StrategyTier::Hybrid);
-    }
+        #[test]
+        fn meta_strategy_tier_query() {
+            let user = UserProvidedStrategy::new(vec![vec![Value::from(1)]]);
+            let fuzzer = FuzzerStrategy::new(Some(42));
+            let meta = MetaStrategy::new(
+                vec![Box::new(user), Box::new(fuzzer)],
+                MetaConfig::default(),
+            );
+            assert_eq!(meta.strategy_tier(0), StrategyTier::Vector);
+            assert_eq!(meta.strategy_tier(1), StrategyTier::Hybrid);
+        }
 
-    #[test]
-    fn hybrid_strategies_are_infinite() {
-        let fuzzer = FuzzerStrategy::new(Some(0));
-        assert!(!fuzzer.is_finite());
-        assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
-    }
+        #[test]
+        fn hybrid_strategies_are_infinite() {
+            let fuzzer = FuzzerStrategy::new(Some(0));
+            assert!(!fuzzer.is_finite());
+            assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
+        }
     }
 }

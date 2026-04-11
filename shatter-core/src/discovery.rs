@@ -97,7 +97,10 @@ pub fn discover_files(
     let include_set = build_glob_set(&options.include_patterns)?;
     let exclude_set = build_glob_set(&options.exclude_patterns)?;
     let default_exclude_set = build_glob_set(
-        &DEFAULT_EXCLUDES.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+        &DEFAULT_EXCLUDES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>(),
     )?;
 
     let ignore_matcher = if options.respect_gitignore {
@@ -108,14 +111,20 @@ pub fn discover_files(
     let shatter_ignore_matcher = load_ignore_file(&root.join(".shatterignore"));
 
     let mut results = Vec::new();
-    walk_dir(root, root, 0, &WalkConfig {
-        include_set: &include_set,
-        exclude_set: &exclude_set,
-        default_exclude_set: &default_exclude_set,
-        ignore_matcher: ignore_matcher.as_ref(),
-        shatter_ignore_matcher: shatter_ignore_matcher.as_ref(),
-        max_depth: options.max_depth,
-    }, &mut results)?;
+    walk_dir(
+        root,
+        root,
+        0,
+        &WalkConfig {
+            include_set: &include_set,
+            exclude_set: &exclude_set,
+            default_exclude_set: &default_exclude_set,
+            ignore_matcher: ignore_matcher.as_ref(),
+            shatter_ignore_matcher: shatter_ignore_matcher.as_ref(),
+            max_depth: options.max_depth,
+        },
+        &mut results,
+    )?;
 
     results.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(results)
@@ -244,7 +253,10 @@ pub fn filter_file_list(
     let include_set = build_glob_set(&options.include_patterns)?;
     let exclude_set = build_glob_set(&options.exclude_patterns)?;
     let default_exclude_set = build_glob_set(
-        &DEFAULT_EXCLUDES.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+        &DEFAULT_EXCLUDES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>(),
     )?;
 
     let ignore_matcher = if options.respect_gitignore {
@@ -322,10 +334,12 @@ fn build_glob_set(patterns: &[String]) -> Result<Option<GlobSet>, DiscoveryError
         })?;
         builder.add(glob);
     }
-    let set = builder.build().map_err(|e| DiscoveryError::InvalidPattern {
-        pattern: patterns.join(", "),
-        source: e,
-    })?;
+    let set = builder
+        .build()
+        .map_err(|e| DiscoveryError::InvalidPattern {
+            pattern: patterns.join(", "),
+            source: e,
+        })?;
     Ok(Some(set))
 }
 
@@ -451,10 +465,7 @@ fn discover_session_setup(project_root: &Path, language_ext: &str) -> Option<Pat
 }
 
 /// Find file-level setup files co-located with source files.
-fn discover_file_setup(
-    language_ext: &str,
-    source_files: &[PathBuf],
-) -> HashMap<PathBuf, PathBuf> {
+fn discover_file_setup(language_ext: &str, source_files: &[PathBuf]) -> HashMap<PathBuf, PathBuf> {
     let mut result = HashMap::new();
     for source in source_files {
         let Some(stem) = source.file_stem().and_then(|s| s.to_str()) else {
@@ -494,12 +505,19 @@ mod tests {
         create_file(dir.path(), "README.md");
 
         let results = discover_files(dir.path(), &DiscoveryOptions::default()).expect("discover");
-        let names: Vec<_> = results.iter().map(|(p, _)| p.file_name().unwrap().to_str().unwrap()).collect();
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
 
         assert!(names.contains(&"app.ts"));
         assert!(names.contains(&"utils.tsx"));
         assert!(!names.contains(&"README.md"));
-        assert!(results.iter().all(|(_, lang)| *lang == Language::TypeScript));
+        assert!(
+            results
+                .iter()
+                .all(|(_, lang)| *lang == Language::TypeScript)
+        );
     }
 
     #[test]
@@ -565,7 +583,10 @@ mod tests {
         create_file(dir.path(), "__tests__/integration.ts");
 
         let results = discover_files(dir.path(), &DiscoveryOptions::default()).expect("discover");
-        let names: Vec<_> = results.iter().map(|(p, _)| p.file_name().unwrap().to_str().unwrap()).collect();
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
 
         assert!(names.contains(&"app.ts"));
         assert!(names.contains(&"handler.go"));
@@ -681,7 +702,10 @@ mod tests {
         create_file(dir.path(), "m.ts");
 
         let results = discover_files(dir.path(), &DiscoveryOptions::default()).expect("discover");
-        let names: Vec<_> = results.iter().map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_string()).collect();
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
         assert_eq!(names, vec!["a.ts", "m.ts", "z.ts"]);
     }
 
@@ -700,8 +724,8 @@ mod tests {
             dir.path().join("README.md"),
         ];
 
-        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
-            .expect("filter");
+        let results =
+            filter_file_list(dir.path(), files, &DiscoveryOptions::default()).expect("filter");
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|(_, l)| *l == Language::TypeScript));
         assert!(results.iter().any(|(_, l)| *l == Language::Go));
@@ -718,8 +742,8 @@ mod tests {
             dir.path().join("node_modules/pkg/index.ts"),
         ];
 
-        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
-            .expect("filter");
+        let results =
+            filter_file_list(dir.path(), files, &DiscoveryOptions::default()).expect("filter");
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("app.ts"));
     }
@@ -774,8 +798,8 @@ mod tests {
             PathBuf::from("/somewhere/else/foo.ts"),
         ];
 
-        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
-            .expect("filter");
+        let results =
+            filter_file_list(dir.path(), files, &DiscoveryOptions::default()).expect("filter");
         assert_eq!(results.len(), 1);
     }
 
@@ -792,8 +816,8 @@ mod tests {
             dir.path().join("m.ts"),
         ];
 
-        let results = filter_file_list(dir.path(), files, &DiscoveryOptions::default())
-            .expect("filter");
+        let results =
+            filter_file_list(dir.path(), files, &DiscoveryOptions::default()).expect("filter");
         let names: Vec<_> = results
             .iter()
             .map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_string())
@@ -804,8 +828,8 @@ mod tests {
     #[test]
     fn filter_empty_list_returns_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let results = filter_file_list(dir.path(), vec![], &DiscoveryOptions::default())
-            .expect("filter");
+        let results =
+            filter_file_list(dir.path(), vec![], &DiscoveryOptions::default()).expect("filter");
         assert!(results.is_empty());
     }
 
@@ -816,12 +840,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         create_file(dir.path(), "shatter.setup.ts");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &[],
-            &SetupConfigOverride::default(),
-        );
+        let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
         assert_eq!(result.session, Some(dir.path().join("shatter.setup.ts")));
         assert!(result.file_level.is_empty());
     }
@@ -831,16 +850,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         create_file(dir.path(), ".shatter/setup.ts");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &[],
-            &SetupConfigOverride::default(),
-        );
-        assert_eq!(
-            result.session,
-            Some(dir.path().join(".shatter/setup.ts"))
-        );
+        let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
+        assert_eq!(result.session, Some(dir.path().join(".shatter/setup.ts")));
     }
 
     #[test]
@@ -849,12 +860,7 @@ mod tests {
         create_file(dir.path(), "shatter.setup.ts");
         create_file(dir.path(), ".shatter/setup.ts");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &[],
-            &SetupConfigOverride::default(),
-        );
+        let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
         assert_eq!(result.session, Some(dir.path().join("shatter.setup.ts")));
     }
 
@@ -865,12 +871,8 @@ mod tests {
         create_file(dir.path(), "src/auth.shatter.setup.ts");
 
         let sources = vec![dir.path().join("src/auth.ts")];
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &sources,
-            &SetupConfigOverride::default(),
-        );
+        let result =
+            discover_setup_files(dir.path(), "ts", &sources, &SetupConfigOverride::default());
         assert!(result.session.is_none());
         assert_eq!(result.file_level.len(), 1);
         assert_eq!(
@@ -925,12 +927,7 @@ mod tests {
     fn setup_no_files_returns_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &[],
-            &SetupConfigOverride::default(),
-        );
+        let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
         assert_eq!(result, DiscoveredSetupFiles::default());
     }
 
@@ -942,12 +939,8 @@ mod tests {
         create_file(dir.path(), "pkg/handler.shatter.setup.go");
 
         let sources = vec![dir.path().join("pkg/handler.go")];
-        let result = discover_setup_files(
-            dir.path(),
-            "go",
-            &sources,
-            &SetupConfigOverride::default(),
-        );
+        let result =
+            discover_setup_files(dir.path(), "go", &sources, &SetupConfigOverride::default());
         assert_eq!(result.session, Some(dir.path().join("shatter.setup.go")));
         assert_eq!(result.file_level.len(), 1);
         assert_eq!(
@@ -964,19 +957,20 @@ mod tests {
         create_file(dir.path(), "src/auth.shatter.setup.ts");
         // No setup for db.ts
 
-        let sources = vec![
-            dir.path().join("src/auth.ts"),
-            dir.path().join("src/db.ts"),
-        ];
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &sources,
-            &SetupConfigOverride::default(),
-        );
+        let sources = vec![dir.path().join("src/auth.ts"), dir.path().join("src/db.ts")];
+        let result =
+            discover_setup_files(dir.path(), "ts", &sources, &SetupConfigOverride::default());
         assert_eq!(result.file_level.len(), 1);
-        assert!(result.file_level.contains_key(&dir.path().join("src/auth.ts")));
-        assert!(!result.file_level.contains_key(&dir.path().join("src/db.ts")));
+        assert!(
+            result
+                .file_level
+                .contains_key(&dir.path().join("src/auth.ts"))
+        );
+        assert!(
+            !result
+                .file_level
+                .contains_key(&dir.path().join("src/db.ts"))
+        );
     }
 
     #[test]
@@ -985,12 +979,7 @@ mod tests {
         // Setup file is .ts but we're looking for .go
         create_file(dir.path(), "shatter.setup.ts");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "go",
-            &[],
-            &SetupConfigOverride::default(),
-        );
+        let result = discover_setup_files(dir.path(), "go", &[], &SetupConfigOverride::default());
         assert!(result.session.is_none());
     }
 
@@ -999,12 +988,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         create_file(dir.path(), "shatter.setup.ts");
 
-        let result = discover_setup_files(
-            dir.path(),
-            "ts",
-            &[],
-            &SetupConfigOverride::default(),
-        );
+        let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
         assert!(result.session.is_some());
         assert!(result.file_level.is_empty());
     }

@@ -4,7 +4,7 @@
 //! Conceptual inverse of `mutate_value` in `input_gen.rs`: mutation goes toward
 //! novelty, shrinking goes toward simplicity.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::orchestrator::hash_branch_path;
 use crate::protocol::ExecuteResult;
@@ -140,7 +140,10 @@ pub fn bulk_shrink_candidate(inputs: &[Value], param_infos: &[ParamInfo]) -> Opt
         let orig_complexity = value_complexity(&inputs[i]);
         let candidates = shrink_candidates(&inputs[i], &param_infos[i].typ);
         // Only replace if the candidate is strictly simpler than the original.
-        if let Some(simpler) = candidates.into_iter().find(|c| value_complexity(c) < orig_complexity) {
+        if let Some(simpler) = candidates
+            .into_iter()
+            .find(|c| value_complexity(c) < orig_complexity)
+        {
             trial[i] = simpler;
             any_changed = true;
         }
@@ -206,9 +209,9 @@ const SHRINK_FLOAT_NEG_ONE: f64 = -1.0;
 /// required to reach a minimal form.
 #[must_use]
 pub fn witness_complexity(inputs: &[Value]) -> usize {
-    inputs
-        .iter()
-        .fold(0usize, |acc, value| acc.saturating_add(value_complexity(value)))
+    inputs.iter().fold(0usize, |acc, value| {
+        acc.saturating_add(value_complexity(value))
+    })
 }
 
 /// Witnesses with complexity at or below this threshold are skipped during the
@@ -623,7 +626,10 @@ mod tests {
         };
         let line = format_shrink_stats_line(&stats);
         assert!(line.contains("8"), "expected attempt count in '{line}'");
-        assert!(line.contains("2/4"), "expected shrunk/considered ratio in '{line}'");
+        assert!(
+            line.contains("2/4"),
+            "expected shrunk/considered ratio in '{line}'"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -769,10 +775,7 @@ mod tests {
     #[test]
     fn shrink_object_removes_fields() {
         let typ = TypeInfo::Object {
-            fields: vec![
-                ("a".into(), TypeInfo::Int),
-                ("b".into(), TypeInfo::Str),
-            ],
+            fields: vec![("a".into(), TypeInfo::Int), ("b".into(), TypeInfo::Str)],
         };
         let val = json!({"a": 10, "b": "hi"});
         let candidates = shrink_candidates(&val, &typ);
@@ -886,9 +889,24 @@ mod tests {
             (json!("hello"), TypeInfo::Str),
             (json!(true), TypeInfo::Bool),
             (json!(false), TypeInfo::Bool),
-            (json!(null), TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) }),
-            (json!([]), TypeInfo::Array { element: Box::new(TypeInfo::Int) }),
-            (json!([1, 2]), TypeInfo::Array { element: Box::new(TypeInfo::Int) }),
+            (
+                json!(null),
+                TypeInfo::Nullable {
+                    inner: Box::new(TypeInfo::Int),
+                },
+            ),
+            (
+                json!([]),
+                TypeInfo::Array {
+                    element: Box::new(TypeInfo::Int),
+                },
+            ),
+            (
+                json!([1, 2]),
+                TypeInfo::Array {
+                    element: Box::new(TypeInfo::Int),
+                },
+            ),
         ];
 
         for (val, typ) in &cases {
@@ -906,7 +924,12 @@ mod tests {
         let cases: Vec<(Value, TypeInfo)> = vec![
             (json!(10), TypeInfo::Int),
             (json!("hello"), TypeInfo::Str),
-            (json!([1, 2, 3]), TypeInfo::Array { element: Box::new(TypeInfo::Int) }),
+            (
+                json!([1, 2, 3]),
+                TypeInfo::Array {
+                    element: Box::new(TypeInfo::Int),
+                },
+            ),
         ];
 
         for (val, typ) in &cases {
@@ -1129,9 +1152,7 @@ mod tests {
         assert!(witness_complexity(&empty) <= witness_complexity(&[json!(0)]));
         assert!(witness_complexity(&[json!(0)]) < witness_complexity(&[json!(1)]));
         assert!(witness_complexity(&[json!(1)]) < witness_complexity(&[json!("hello")]));
-        assert!(
-            witness_complexity(&[json!("hello")]) < witness_complexity(&[json!([1i64, 2, 3])])
-        );
+        assert!(witness_complexity(&[json!("hello")]) < witness_complexity(&[json!([1i64, 2, 3])]));
     }
 
     #[test]
@@ -1164,7 +1185,10 @@ mod tests {
             witness_complexity(&[max.clone(), max.clone(), max.clone()]),
             usize::MAX
         );
-        assert_eq!(witness_complexity(&[json!([i64::MAX, i64::MAX])]), usize::MAX);
+        assert_eq!(
+            witness_complexity(&[json!([i64::MAX, i64::MAX])]),
+            usize::MAX
+        );
     }
 
     mod witness_complexity_prop_tests {
@@ -1246,7 +1270,8 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -1282,20 +1307,14 @@ mod tests {
                 type_name: None,
             }];
 
-            let result = shrink_witness(
-                &[json!(100)],
-                &params,
-                target_hash,
-                50,
-                |inputs| {
-                    let x = inputs[0].as_i64().unwrap_or(0);
-                    if x > 0 {
-                        Ok(make_result(branch_taken()))
-                    } else {
-                        Ok(make_result(branch_not_taken()))
-                    }
-                },
-            );
+            let result = shrink_witness(&[json!(100)], &params, target_hash, 50, |inputs| {
+                let x = inputs[0].as_i64().unwrap_or(0);
+                if x > 0 {
+                    Ok(make_result(branch_taken()))
+                } else {
+                    Ok(make_result(branch_not_taken()))
+                }
+            });
 
             assert!(result.shrunk);
             assert_eq!(result.inputs[0], json!(1));
@@ -1355,13 +1374,9 @@ mod tests {
                 type_name: None,
             }];
 
-            let result = shrink_witness(
-                &[json!(0)],
-                &params,
-                target_hash,
-                20,
-                |_inputs| Ok(make_result(branch_not_taken())),
-            );
+            let result = shrink_witness(&[json!(0)], &params, target_hash, 20, |_inputs| {
+                Ok(make_result(branch_not_taken()))
+            });
 
             assert!(!result.shrunk);
             assert_eq!(result.inputs, vec![json!(0)]);
@@ -1378,13 +1393,9 @@ mod tests {
                 type_name: None,
             }];
 
-            let result = shrink_witness(
-                &[json!(1000)],
-                &params,
-                target_hash,
-                3,
-                |_inputs| Ok(make_result(branch_not_taken())),
-            );
+            let result = shrink_witness(&[json!(1000)], &params, target_hash, 3, |_inputs| {
+                Ok(make_result(branch_not_taken()))
+            });
 
             assert_eq!(result.attempts, 3);
         }
@@ -1449,7 +1460,8 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -1459,11 +1471,19 @@ mod tests {
         }
 
         fn int_param(name: &str) -> ParamInfo {
-            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+            ParamInfo {
+                name: name.into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }
         }
 
         fn str_param(name: &str) -> ParamInfo {
-            ParamInfo { name: name.into(), typ: TypeInfo::Str, type_name: None }
+            ParamInfo {
+                name: name.into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }
         }
 
         // -------------------------------------------------------------------
@@ -1486,7 +1506,11 @@ mod tests {
             // false (bool) and "" (string) have no shrink candidates.
             let inputs = vec![json!(false), json!("")];
             let params = vec![
-                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+                ParamInfo {
+                    name: "b".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
                 str_param("s"),
             ];
             assert!(bulk_shrink_candidate(&inputs, &params).is_none());
@@ -1497,7 +1521,11 @@ mod tests {
             // First param is minimal (false bool — no candidates), second is not.
             let inputs = vec![json!(false), json!("hello")];
             let params = vec![
-                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
+                ParamInfo {
+                    name: "b".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
                 str_param("s"),
             ];
             let candidate = bulk_shrink_candidate(&inputs, &params).unwrap();
@@ -1636,17 +1664,26 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
 
         fn int_param(name: &str) -> ParamInfo {
-            ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
+            ParamInfo {
+                name: name.into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }
         }
 
         fn str_param(name: &str) -> ParamInfo {
-            ParamInfo { name: name.into(), typ: TypeInfo::Str, type_name: None }
+            ParamInfo {
+                name: name.into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }
         }
 
         fn branch_taken() -> Vec<BranchDecision> {
@@ -1673,12 +1710,24 @@ mod tests {
             // First trial: params 0 and 1 reduced, params 2 and 3 unchanged.
             assert_ne!(trials[0][0], inputs[0], "group 0: param 0 should be shrunk");
             assert_ne!(trials[0][1], inputs[1], "group 0: param 1 should be shrunk");
-            assert_eq!(trials[0][2], inputs[2], "group 0: param 2 should be unchanged");
-            assert_eq!(trials[0][3], inputs[3], "group 0: param 3 should be unchanged");
+            assert_eq!(
+                trials[0][2], inputs[2],
+                "group 0: param 2 should be unchanged"
+            );
+            assert_eq!(
+                trials[0][3], inputs[3],
+                "group 0: param 3 should be unchanged"
+            );
 
             // Second trial: params 2 and 3 reduced, params 0 and 1 unchanged.
-            assert_eq!(trials[1][0], inputs[0], "group 1: param 0 should be unchanged");
-            assert_eq!(trials[1][1], inputs[1], "group 1: param 1 should be unchanged");
+            assert_eq!(
+                trials[1][0], inputs[0],
+                "group 1: param 0 should be unchanged"
+            );
+            assert_eq!(
+                trials[1][1], inputs[1],
+                "group 1: param 1 should be unchanged"
+            );
             assert_ne!(trials[1][2], inputs[2], "group 1: param 2 should be shrunk");
             assert_ne!(trials[1][3], inputs[3], "group 1: param 3 should be shrunk");
         }
@@ -1690,7 +1739,10 @@ mod tests {
             let params = vec![int_param("x"), str_param("s"), int_param("z")];
             let first = grouped_shrink_candidates(&inputs, &params, 1);
             let second = grouped_shrink_candidates(&inputs, &params, 1);
-            assert_eq!(first, second, "grouped_shrink_candidates must be deterministic");
+            assert_eq!(
+                first, second,
+                "grouped_shrink_candidates must be deterministic"
+            );
         }
 
         #[test]
@@ -1700,12 +1752,27 @@ mod tests {
             // actually minimal. Use booleans instead — `false` is minimal.
             let false_inputs = vec![json!(false), json!(false), json!(false)];
             let bool_params = vec![
-                ParamInfo { name: "a".into(), typ: TypeInfo::Bool, type_name: None },
-                ParamInfo { name: "b".into(), typ: TypeInfo::Bool, type_name: None },
-                ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+                ParamInfo {
+                    name: "a".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
+                ParamInfo {
+                    name: "b".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
+                ParamInfo {
+                    name: "c".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
             ];
             let trials = grouped_shrink_candidates(&false_inputs, &bool_params, 2);
-            assert!(trials.is_empty(), "all-minimal params should produce no trials");
+            assert!(
+                trials.is_empty(),
+                "all-minimal params should produce no trials"
+            );
         }
 
         #[test]
@@ -1713,14 +1780,26 @@ mod tests {
             // Only some params are shrinkable — only non-empty group trials are returned.
             let inputs = vec![json!(false), json!(100i64), json!(false)];
             let params = vec![
-                ParamInfo { name: "a".into(), typ: TypeInfo::Bool, type_name: None },
+                ParamInfo {
+                    name: "a".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
                 int_param("b"),
-                ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
+                ParamInfo {
+                    name: "c".into(),
+                    typ: TypeInfo::Bool,
+                    type_name: None,
+                },
             ];
             // group_size=2: group [0,1] has shrinkable param 1; group [2] has no shrinkable.
             let trials = grouped_shrink_candidates(&inputs, &params, 2);
             // Only the first group produces a trial (param 1 is shrinkable).
-            assert_eq!(trials.len(), 1, "only groups with shrinkable params produce trials");
+            assert_eq!(
+                trials.len(),
+                1,
+                "only groups with shrinkable params produce trials"
+            );
             assert_eq!(trials[0][0], json!(false), "param 0 unchanged");
             assert_ne!(trials[0][1], json!(100i64), "param 1 shrunk");
             assert_eq!(trials[0][2], json!(false), "param 2 unchanged");
@@ -1964,7 +2043,8 @@ mod tests {
                 scope_events: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
-                connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         }
@@ -2096,10 +2176,10 @@ mod selection_policy_tests {
     fn sort_order_is_deterministic() {
         // Same path set sorted twice should produce identical order.
         let paths: Vec<(u64, Vec<serde_json::Value>)> = vec![
-            (10, vec![json!("hello")]),  // complexity 5
-            (5, vec![json!(42i64)]),     // complexity 42
-            (20, vec![json!(0i64)]),     // complexity 0 (skipped)
-            (1, vec![json!("ab")]),      // complexity 2
+            (10, vec![json!("hello")]), // complexity 5
+            (5, vec![json!(42i64)]),    // complexity 42
+            (20, vec![json!(0i64)]),    // complexity 0 (skipped)
+            (1, vec![json!("ab")]),     // complexity 2
         ];
 
         fn sorted_order(paths: &[(u64, Vec<serde_json::Value>)]) -> Vec<u64> {
@@ -2123,11 +2203,14 @@ mod selection_policy_tests {
 
     #[test]
     fn higher_complexity_sorted_first() {
-        let mut candidates: Vec<(u64, usize)> =
-            vec![(1, 10), (2, 100), (3, 5), (4, 50)];
+        let mut candidates: Vec<(u64, usize)> = vec![(1, 10), (2, 100), (3, 5), (4, 50)];
         candidates.sort_by(|(ph_a, ca), (ph_b, cb)| cb.cmp(ca).then(ph_a.cmp(ph_b)));
         let hashes: Vec<u64> = candidates.into_iter().map(|(ph, _)| ph).collect();
-        assert_eq!(hashes, vec![2, 4, 1, 3], "must sort by descending complexity");
+        assert_eq!(
+            hashes,
+            vec![2, 4, 1, 3],
+            "must sort by descending complexity"
+        );
     }
 
     #[test]
@@ -2233,8 +2316,14 @@ mod budget_tests {
 
     #[test]
     fn budget_at_trivial_boundary() {
-        assert_eq!(shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD, 20), MIN_SHRINK_BUDGET);
-        assert_eq!(shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD + 1, 20), 10);
+        assert_eq!(
+            shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD, 20),
+            MIN_SHRINK_BUDGET
+        );
+        assert_eq!(
+            shrink_budget_for_witness(SHRINK_TRIVIAL_THRESHOLD + 1, 20),
+            10
+        );
     }
 
     #[test]
@@ -2247,7 +2336,10 @@ mod budget_tests {
     #[test]
     fn budget_at_moderate_boundary() {
         assert_eq!(shrink_budget_for_witness(SHRINK_MODERATE_THRESHOLD, 20), 10);
-        assert_eq!(shrink_budget_for_witness(SHRINK_MODERATE_THRESHOLD + 1, 20), 20);
+        assert_eq!(
+            shrink_budget_for_witness(SHRINK_MODERATE_THRESHOLD + 1, 20),
+            20
+        );
     }
 
     #[test]

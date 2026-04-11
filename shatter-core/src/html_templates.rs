@@ -71,7 +71,11 @@ fn render_source_block(
     let mut html = String::new();
     for (i, line_text) in all_lines[start_idx..end_idx].iter().enumerate() {
         let lineno = start_line + i as u32;
-        let cls = if covered.contains(&lineno) { "covered" } else { "uncovered" };
+        let cls = if covered.contains(&lineno) {
+            "covered"
+        } else {
+            "uncovered"
+        };
         html.push_str(&format!(
             r#"<div class="src-line {cls}" data-line="{lineno}"><span class="src-ln {cls}">{lineno}</span><span class="src-text">{}</span></div>"#,
             html_escape(line_text)
@@ -244,14 +248,15 @@ pub fn render_explore_fn(
         .collect();
 
     // Build source block: parse location, aggregate covered lines, render.
-    let source_code_html = parse_location(location).and_then(|(file_path, start_line, end_line)| {
-        let covered: HashSet<u32> = result
-            .new_path_executions
-            .iter()
-            .flat_map(|exec| exec.lines_executed.iter().copied())
-            .collect();
-        render_source_block(file_path, project_root, start_line, end_line, &covered)
-    });
+    let source_code_html =
+        parse_location(location).and_then(|(file_path, start_line, end_line)| {
+            let covered: HashSet<u32> = result
+                .new_path_executions
+                .iter()
+                .flat_map(|exec| exec.lines_executed.iter().copied())
+                .collect();
+            render_source_block(file_path, project_root, start_line, end_line, &covered)
+        });
 
     let tmpl = ExploreFnTemplate {
         fn_name: &result.function_name,

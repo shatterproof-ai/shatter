@@ -82,15 +82,11 @@ fn bundled_ts_frontend_responds_to_handshake() {
         .as_array()
         .expect("capabilities should be an array");
     assert!(
-        capabilities
-            .iter()
-            .any(|c| c.as_str() == Some("analyze")),
+        capabilities.iter().any(|c| c.as_str() == Some("analyze")),
         "capabilities should include 'analyze'"
     );
     assert!(
-        capabilities
-            .iter()
-            .any(|c| c.as_str() == Some("execute")),
+        capabilities.iter().any(|c| c.as_str() == Some("execute")),
         "capabilities should include 'execute'"
     );
 
@@ -103,10 +99,7 @@ fn bundled_ts_frontend_responds_to_handshake() {
     writeln!(stdin, "{}", shutdown).expect("failed to write shutdown");
 
     let status = child.wait().expect("failed to wait for node process");
-    assert!(
-        status.success(),
-        "node process exited with error: {status}"
-    );
+    assert!(status.success(), "node process exited with error: {status}");
 }
 
 /// Locate the shatter cache directory.

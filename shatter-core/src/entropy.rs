@@ -44,10 +44,7 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
 /// Returns `Some(Encrypt)` if output entropy exceeds input by more than
 /// [`ENTROPY_DELTA_THRESHOLD`], `Some(Decrypt)` for the reverse, or
 /// `None` if the delta is below threshold.
-pub fn classify_entropy_delta(
-    input_entropy: f64,
-    output_entropy: f64,
-) -> Option<CryptoDirection> {
+pub fn classify_entropy_delta(input_entropy: f64, output_entropy: f64) -> Option<CryptoDirection> {
     let delta = output_entropy - input_entropy;
     if delta > ENTROPY_DELTA_THRESHOLD {
         Some(CryptoDirection::Encrypt)

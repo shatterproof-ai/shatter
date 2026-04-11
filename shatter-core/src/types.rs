@@ -173,9 +173,7 @@ impl TypeInfo {
             TypeInfo::Object { fields } => fields.iter().any(|(_, t)| t.has_opaque()),
             TypeInfo::Union { variants } => variants.iter().any(|t| t.has_opaque()),
             TypeInfo::Nullable { inner } => inner.has_opaque(),
-            TypeInfo::Complex { inner, .. } => {
-                inner.as_deref().is_some_and(|t| t.has_opaque())
-            }
+            TypeInfo::Complex { inner, .. } => inner.as_deref().is_some_and(|t| t.has_opaque()),
             TypeInfo::Int
             | TypeInfo::Float
             | TypeInfo::Str
@@ -200,11 +198,21 @@ impl TypeInfo {
     pub fn find_opaque_node(
         &self,
         path: &mut Vec<PathSegment>,
-    ) -> Option<(String, Option<StaticOpacityReason>, Option<MediumOpacityReason>)> {
+    ) -> Option<(
+        String,
+        Option<StaticOpacityReason>,
+        Option<MediumOpacityReason>,
+    )> {
         match self {
-            TypeInfo::Opaque { label, static_opacity, medium_opacity } => {
-                Some((label.clone(), static_opacity.clone(), medium_opacity.clone()))
-            }
+            TypeInfo::Opaque {
+                label,
+                static_opacity,
+                medium_opacity,
+            } => Some((
+                label.clone(),
+                static_opacity.clone(),
+                medium_opacity.clone(),
+            )),
             TypeInfo::Array { element } => {
                 path.push(PathSegment::ArrayElement);
                 if let Some(result) = element.find_opaque_node(path) {
@@ -330,16 +338,22 @@ mod tests {
     fn nested_type_round_trips() {
         let typ = TypeInfo::Object {
             fields: vec![
-                ("items".into(), TypeInfo::Array {
-                    element: Box::new(TypeInfo::Object {
-                        fields: vec![
-                            ("id".into(), TypeInfo::Int),
-                            ("label".into(), TypeInfo::Nullable {
-                                inner: Box::new(TypeInfo::Str),
-                            }),
-                        ],
-                    }),
-                }),
+                (
+                    "items".into(),
+                    TypeInfo::Array {
+                        element: Box::new(TypeInfo::Object {
+                            fields: vec![
+                                ("id".into(), TypeInfo::Int),
+                                (
+                                    "label".into(),
+                                    TypeInfo::Nullable {
+                                        inner: Box::new(TypeInfo::Str),
+                                    },
+                                ),
+                            ],
+                        }),
+                    },
+                ),
                 ("count".into(), TypeInfo::Int),
             ],
         };
@@ -352,9 +366,12 @@ mod tests {
             name: "order".into(),
             typ: TypeInfo::Object {
                 fields: vec![
-                    ("items".into(), TypeInfo::Array {
-                        element: Box::new(TypeInfo::Int),
-                    }),
+                    (
+                        "items".into(),
+                        TypeInfo::Array {
+                            element: Box::new(TypeInfo::Int),
+                        },
+                    ),
                     ("priority".into(), TypeInfo::Str),
                 ],
             },
@@ -425,7 +442,10 @@ mod tests {
     #[test]
     fn complex_type_info_with_metadata_round_trips() {
         let mut metadata = serde_json::Map::new();
-        metadata.insert("class".into(), serde_json::Value::String("TypeError".into()));
+        metadata.insert(
+            "class".into(),
+            serde_json::Value::String("TypeError".into()),
+        );
         round_trip(&TypeInfo::Complex {
             kind: ComplexKind::Error,
             metadata,
@@ -521,13 +541,24 @@ mod tests {
 
     #[test]
     fn has_opaque_direct() {
-        assert!(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None }.has_opaque());
+        assert!(
+            TypeInfo::Opaque {
+                label: "net.Socket".into(),
+                static_opacity: None,
+                medium_opacity: None
+            }
+            .has_opaque()
+        );
     }
 
     #[test]
     fn has_opaque_nested_in_array() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Opaque { label: "net.Socket".into(), static_opacity: None, medium_opacity: None }),
+            element: Box::new(TypeInfo::Opaque {
+                label: "net.Socket".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            }),
         };
         assert!(typ.has_opaque());
     }
@@ -536,7 +567,14 @@ mod tests {
     fn has_opaque_nested_in_object() {
         let typ = TypeInfo::Object {
             fields: vec![
-                ("conn".into(), TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None, medium_opacity: None }),
+                (
+                    "conn".into(),
+                    TypeInfo::Opaque {
+                        label: "pg.Client".into(),
+                        static_opacity: None,
+                        medium_opacity: None,
+                    },
+                ),
                 ("name".into(), TypeInfo::Str),
             ],
         };
@@ -546,7 +584,11 @@ mod tests {
     #[test]
     fn has_opaque_nested_in_nullable() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Opaque { label: "channel".into(), static_opacity: None, medium_opacity: None }),
+            inner: Box::new(TypeInfo::Opaque {
+                label: "channel".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            }),
         };
         assert!(typ.has_opaque());
     }
@@ -555,12 +597,18 @@ mod tests {
     fn has_opaque_false_for_all_primitive_tree() {
         let typ = TypeInfo::Object {
             fields: vec![
-                ("items".into(), TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
-                }),
-                ("label".into(), TypeInfo::Nullable {
-                    inner: Box::new(TypeInfo::Str),
-                }),
+                (
+                    "items".into(),
+                    TypeInfo::Array {
+                        element: Box::new(TypeInfo::Int),
+                    },
+                ),
+                (
+                    "label".into(),
+                    TypeInfo::Nullable {
+                        inner: Box::new(TypeInfo::Str),
+                    },
+                ),
                 ("flag".into(), TypeInfo::Bool),
             ],
         };
@@ -602,7 +650,11 @@ mod tests {
         let result = typ.find_opaque_node(&mut path);
         assert_eq!(
             result,
-            Some(("AbstractService".to_string(), Some(StaticOpacityReason::AbstractType), None))
+            Some((
+                "AbstractService".to_string(),
+                Some(StaticOpacityReason::AbstractType),
+                None
+            ))
         );
     }
 
@@ -617,7 +669,11 @@ mod tests {
         let result = typ.find_opaque_node(&mut path);
         assert_eq!(
             result,
-            Some(("redis.Client".to_string(), None, Some(MediumOpacityReason::InfrastructurePackage)))
+            Some((
+                "redis.Client".to_string(),
+                None,
+                Some(MediumOpacityReason::InfrastructurePackage)
+            ))
         );
     }
 
@@ -640,7 +696,11 @@ mod tests {
         let result = typ.find_opaque_node(&mut path);
         assert_eq!(
             result,
-            Some(("DataSource".to_string(), Some(StaticOpacityReason::NoImplementors), None))
+            Some((
+                "DataSource".to_string(),
+                Some(StaticOpacityReason::NoImplementors),
+                None
+            ))
         );
         assert_eq!(
             path,
@@ -658,5 +718,4 @@ mod tests {
         assert!(TypeInfo::Str.find_opaque_node(&mut path).is_none());
         assert_eq!(path.len(), 1, "path should be unmodified on no-match");
     }
-
 }

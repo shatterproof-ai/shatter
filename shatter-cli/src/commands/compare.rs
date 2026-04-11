@@ -28,7 +28,10 @@ pub(crate) fn run_compare(
             .map_err(|e| format!("failed to serialize comparison: {e}"))?;
         println!("{json}");
     } else {
-        print_markdown(&shatter_core::compare::format_compare_text(&result), use_color);
+        print_markdown(
+            &shatter_core::compare::format_compare_text(&result),
+            use_color,
+        );
     }
 
     Ok(result.has_divergences())

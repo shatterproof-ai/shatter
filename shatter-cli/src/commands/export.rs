@@ -35,7 +35,10 @@ pub(crate) async fn run_export_tests(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate framework
     if framework != "jest" && framework != "vitest" && framework != "gotest" {
-        return Err(format!("unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'").into());
+        return Err(format!(
+            "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
+        )
+        .into());
     }
 
     let _scope_config = match scope_path {
@@ -64,11 +67,21 @@ pub(crate) async fn run_export_tests(
 
         log::info!("Exploring {file_str}:{func_display} for test export...");
 
-        let mut config = frontend_config(target.language, req_timeout, LogLevel::Warn, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+        let mut config = frontend_config(
+            target.language,
+            req_timeout,
+            LogLevel::Warn,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            None,
+            false,
+            release,
+        )?;
         apply_project_storage(&mut config, project_root_str.as_deref());
-        let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!("failed to spawn {} frontend: {e}", target.language.label())
-        })?;
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .map_err(|e| format!("failed to spawn {} frontend: {e}", target.language.label()))?;
 
         // Analyze
         let analyze_response = frontend
@@ -124,14 +137,21 @@ pub(crate) async fn run_export_tests(
         for func in &functions {
             log::info!("Exploring {}...", func.name);
 
-            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await {
+            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await
+            {
                 Ok(result) => {
                     let behavior_map = BehaviorMap::from_exploration_result(&func.name, &result);
 
                     let test_code = match framework {
-                        "jest" => export::generate_jest_tests(&behavior_map, &func.name, module_path),
-                        "vitest" => export::generate_vitest_tests(&behavior_map, &func.name, module_path),
-                        "gotest" => export::generate_go_tests(&behavior_map, &func.name, module_path),
+                        "jest" => {
+                            export::generate_jest_tests(&behavior_map, &func.name, module_path)
+                        }
+                        "vitest" => {
+                            export::generate_vitest_tests(&behavior_map, &func.name, module_path)
+                        }
+                        "gotest" => {
+                            export::generate_go_tests(&behavior_map, &func.name, module_path)
+                        }
                         _ => unreachable!("validated above"),
                     };
 
@@ -170,8 +190,12 @@ pub(crate) fn emit_test_files(
     framework: &str,
     output_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("failed to create test output directory '{}': {e}", output_dir.display()))?;
+    std::fs::create_dir_all(output_dir).map_err(|e| {
+        format!(
+            "failed to create test output directory '{}': {e}",
+            output_dir.display()
+        )
+    })?;
 
     let mut files_written = 0u32;
 
@@ -221,6 +245,9 @@ pub(crate) fn emit_test_files(
         files_written += 1;
     }
 
-    println!("Emitted {files_written} test file(s) to {}", output_dir.display());
+    println!(
+        "Emitted {files_written} test file(s) to {}",
+        output_dir.display()
+    );
     Ok(())
 }

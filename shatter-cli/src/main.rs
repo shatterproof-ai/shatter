@@ -88,7 +88,12 @@ async fn main() -> ExitCode {
         .filter_level(log_filter)
         .format(|buf, record| {
             use std::io::Write;
-            writeln!(buf, "[{}] {}", record.level().to_string().to_lowercase(), record.args())
+            writeln!(
+                buf,
+                "[{}] {}",
+                record.level().to_string().to_lowercase(),
+                record.args()
+            )
         })
         .parse_default_env()
         .init();
@@ -290,13 +295,7 @@ async fn main() -> ExitCode {
             input,
             output,
             solver_timeout,
-        } => {
-            commands::solve::run_solve(
-                &input,
-                output.as_deref(),
-                solver_timeout,
-            )
-        }
+        } => commands::solve::run_solve(&input, output.as_deref(), solver_timeout),
         CliCommand::Observe {
             target,
             concolic,
@@ -422,8 +421,7 @@ async fn main() -> ExitCode {
             // Resolve hierarchical .shatter/config.yaml defaults for scan budgets.
             let scan_dir = std::path::Path::new(&directory);
             let yaml_defaults = {
-                let configs = shatter_core::config::discover_configs(scan_dir)
-                    .unwrap_or_default();
+                let configs = shatter_core::config::discover_configs(scan_dir).unwrap_or_default();
                 let merged = shatter_core::config::merge_configs(&configs);
                 merged.defaults
             };
@@ -431,12 +429,9 @@ async fn main() -> ExitCode {
             let genetic_config = if genetic {
                 shatter_core::config::GeneticConfig {
                     enabled: true,
-                    population_size: genetic_population
-                        .unwrap_or(yaml_genetic.population_size),
-                    max_generations: genetic_generations
-                        .unwrap_or(yaml_genetic.max_generations),
-                    timeout_secs: genetic_timeout
-                        .unwrap_or(yaml_genetic.timeout_secs),
+                    population_size: genetic_population.unwrap_or(yaml_genetic.population_size),
+                    max_generations: genetic_generations.unwrap_or(yaml_genetic.max_generations),
+                    timeout_secs: genetic_timeout.unwrap_or(yaml_genetic.timeout_secs),
                     ..yaml_genetic
                 }
             } else {
@@ -444,13 +439,12 @@ async fn main() -> ExitCode {
             };
 
             // Load project-level config (shatter.config.json) for scan defaults.
-            let project_cfg = shatter_core::config::load_project_config(
-                std::path::Path::new(&directory),
-            )
-            .unwrap_or_else(|e| {
-                log::warn!("Failed to load project config: {e}");
-                None
-            });
+            let project_cfg =
+                shatter_core::config::load_project_config(std::path::Path::new(&directory))
+                    .unwrap_or_else(|e| {
+                        log::warn!("Failed to load project config: {e}");
+                        None
+                    });
 
             // Resolve CLI options: CLI flag > YAML config > built-in default.
             let effective_max_iterations = max_iterations
@@ -470,12 +464,18 @@ async fn main() -> ExitCode {
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_PARALLELISM);
             // For Vec/bool fields: CLI non-empty/true overrides config.
             let effective_include = if include.is_empty() {
-                project_cfg.as_ref().map(|c| c.include.clone()).unwrap_or_default()
+                project_cfg
+                    .as_ref()
+                    .map(|c| c.include.clone())
+                    .unwrap_or_default()
             } else {
                 include
             };
             let effective_exclude = if exclude.is_empty() {
-                project_cfg.as_ref().map(|c| c.exclude.clone()).unwrap_or_default()
+                project_cfg
+                    .as_ref()
+                    .map(|c| c.exclude.clone())
+                    .unwrap_or_default()
             } else {
                 exclude
             };
@@ -653,39 +653,64 @@ async fn main() -> ExitCode {
             snapshot,
             current,
             json,
-        } => {
-            match commands::diff::run_diff(&snapshot, &current, json, use_color) {
-                Ok(has_regressions) => {
-                    let code = if has_regressions { 1 } else { 0 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
-                }
-                Err(e) => Err(e),
+        } => match commands::diff::run_diff(&snapshot, &current, json, use_color) {
+            Ok(has_regressions) => {
+                let code = if has_regressions { 1 } else { 0 };
+                return finalize_exit_code(
+                    &subcommand_name,
+                    cmd_start.elapsed().as_millis() as u64,
+                    code,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                );
             }
-        }
+            Err(e) => Err(e),
+        },
         CliCommand::SpecDiff { old, new, json } => {
             match commands::diff::run_spec_diff(&old, &new, json, use_color) {
                 Ok(has_regressions) => {
                     let code = if has_regressions { 1 } else { 0 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                    return finalize_exit_code(
+                        &subcommand_name,
+                        cmd_start.elapsed().as_millis() as u64,
+                        code,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    );
                 }
                 Err(e) => Err(e),
             }
         }
-        CliCommand::Compare { spec_a, spec_b, json } => {
-            match commands::compare::run_compare(&spec_a, &spec_b, json, use_color) {
-                Ok(has_divergences) => {
-                    let code = if has_divergences { 1 } else { 0 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
-                }
-                Err(e) => Err(e),
+        CliCommand::Compare {
+            spec_a,
+            spec_b,
+            json,
+        } => match commands::compare::run_compare(&spec_a, &spec_b, json, use_color) {
+            Ok(has_divergences) => {
+                let code = if has_divergences { 1 } else { 0 };
+                return finalize_exit_code(
+                    &subcommand_name,
+                    cmd_start.elapsed().as_millis() as u64,
+                    code,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                );
             }
-        }
+            Err(e) => Err(e),
+        },
         CliCommand::BuildFrontend {
             language,
             config,
             output,
-        } => commands::build_frontend::run_build_frontend(&language, config.as_deref(), output.as_deref())
-            .map_err(|e| e.into()),
+        } => commands::build_frontend::run_build_frontend(
+            &language,
+            config.as_deref(),
+            output.as_deref(),
+        )
+        .map_err(|e| e.into()),
         CliCommand::DiscoverDeps {
             command,
             strace,
@@ -693,8 +718,17 @@ async fn main() -> ExitCode {
             json,
         } => {
             if !strace {
-                eprintln!("Error: --strace flag is required. Currently strace is the only supported discovery method.");
-                return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                eprintln!(
+                    "Error: --strace flag is required. Currently strace is the only supported discovery method."
+                );
+                return finalize_exit_code(
+                    &subcommand_name,
+                    cmd_start.elapsed().as_millis() as u64,
+                    1,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                );
             }
             match shatter_core::strace_discovery::discover_network_deps(
                 &command,
@@ -727,10 +761,27 @@ async fn main() -> ExitCode {
             prioritize,
             budget,
         } => {
-            match commands::test::run_test(all, record, tier, &base, include_untracked, dry_run, prioritize, budget, use_color) {
+            match commands::test::run_test(
+                all,
+                record,
+                tier,
+                &base,
+                include_untracked,
+                dry_run,
+                prioritize,
+                budget,
+                use_color,
+            ) {
                 Ok(success) => {
                     let code = if success { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                    return finalize_exit_code(
+                        &subcommand_name,
+                        cmd_start.elapsed().as_millis() as u64,
+                        code,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    );
                 }
                 Err(e) => Err(e),
             }
@@ -765,7 +816,14 @@ async fn main() -> ExitCode {
             {
                 Ok(all_fresh) => {
                     let code = if all_fresh { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                    return finalize_exit_code(
+                        &subcommand_name,
+                        cmd_start.elapsed().as_millis() as u64,
+                        code,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    );
                 }
                 Err(e) => Err(e),
             }
@@ -796,22 +854,41 @@ async fn main() -> ExitCode {
             {
                 Ok(all_confirmed) => {
                     let code = if all_confirmed { 0 } else { 1 };
-                    return finalize_exit_code(&subcommand_name, cmd_start.elapsed().as_millis() as u64, code, &timing_config, timing_start_unix_ms, timing_handle.as_ref());
+                    return finalize_exit_code(
+                        &subcommand_name,
+                        cmd_start.elapsed().as_millis() as u64,
+                        code,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    );
                 }
                 Err(e) => Err(e),
             }
         }
-        CliCommand::Init { directory } => {
-            commands::init::run_init(directory.as_deref(), &colors)
-        }
+        CliCommand::Init { directory } => commands::init::run_init(directory.as_deref(), &colors),
         CliCommand::Telemetry { action } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
             return match commands::telemetry::run_telemetry(&action) {
-                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+                Ok(()) => finalize_exit_code(
+                    &subcommand_name,
+                    dm,
+                    0,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                ),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     queue_command_error_event(&subcommand_name, &*e);
-                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+                    finalize_exit_code(
+                        &subcommand_name,
+                        dm,
+                        1,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    )
                 }
             };
         }
@@ -849,11 +926,25 @@ async fn main() -> ExitCode {
                     commands::cache::run_cache_clear_from_action(&action, &project_root)
                 });
             return match result {
-                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+                Ok(()) => finalize_exit_code(
+                    &subcommand_name,
+                    dm,
+                    0,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                ),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     queue_command_error_event(&subcommand_name, &*e);
-                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+                    finalize_exit_code(
+                        &subcommand_name,
+                        dm,
+                        1,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    )
                 }
             };
         }
@@ -863,21 +954,33 @@ async fn main() -> ExitCode {
             let non_interactive = !std::io::stdin().is_terminal();
             let dm = cmd_start.elapsed().as_millis() as u64;
             let result = match action {
-                NondeterminismAction::Review { cache_dir } => {
-                    commands::nondeterminism::run_review(
-                        cli.project_dir.as_deref(),
-                        &colors,
-                        cache_dir.as_deref(),
-                        non_interactive,
-                    )
-                }
+                NondeterminismAction::Review { cache_dir } => commands::nondeterminism::run_review(
+                    cli.project_dir.as_deref(),
+                    &colors,
+                    cache_dir.as_deref(),
+                    non_interactive,
+                ),
             };
             return match result {
-                Ok(()) => finalize_exit_code(&subcommand_name, dm, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+                Ok(()) => finalize_exit_code(
+                    &subcommand_name,
+                    dm,
+                    0,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                ),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     queue_command_error_event(&subcommand_name, &*e);
-                    finalize_exit_code(&subcommand_name, dm, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+                    finalize_exit_code(
+                        &subcommand_name,
+                        dm,
+                        1,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    )
                 }
             };
         }
@@ -886,11 +989,25 @@ async fn main() -> ExitCode {
     let duration_ms = cmd_start.elapsed().as_millis() as u64;
 
     match result {
-        Ok(()) => finalize_exit_code(&subcommand_name, duration_ms, 0, &timing_config, timing_start_unix_ms, timing_handle.as_ref()),
+        Ok(()) => finalize_exit_code(
+            &subcommand_name,
+            duration_ms,
+            0,
+            &timing_config,
+            timing_start_unix_ms,
+            timing_handle.as_ref(),
+        ),
         Err(e) => {
             eprintln!("Error: {e}");
             queue_command_error_event(&subcommand_name, &*e);
-            finalize_exit_code(&subcommand_name, duration_ms, 1, &timing_config, timing_start_unix_ms, timing_handle.as_ref())
+            finalize_exit_code(
+                &subcommand_name,
+                duration_ms,
+                1,
+                &timing_config,
+                timing_start_unix_ms,
+                timing_handle.as_ref(),
+            )
         }
     }
 }
@@ -910,7 +1027,14 @@ fn finalize_exit_code(
     if telemetry::is_enabled() {
         telemetry_flush::flush_queue();
     }
-    persist_timing_run(subcommand, duration_ms, exit_code, timing_config, timing_start_unix_ms, timing_handle);
+    persist_timing_run(
+        subcommand,
+        duration_ms,
+        exit_code,
+        timing_config,
+        timing_start_unix_ms,
+        timing_handle,
+    );
     if exit_code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -948,7 +1072,8 @@ fn persist_timing_run(
 fn subcommand_label(cmd: &CliCommand) -> String {
     // Use Debug formatting and take the first word (variant name).
     let debug = format!("{cmd:?}");
-    debug.split_whitespace()
+    debug
+        .split_whitespace()
         .next()
         .unwrap_or("unknown")
         .to_lowercase()
@@ -961,7 +1086,9 @@ fn categorize_error(err: &dyn std::fmt::Display) -> &'static str {
         "file_not_found"
     } else if msg.contains("permission denied") {
         "permission_denied"
-    } else if msg.contains("directory") && (msg.contains("not found") || msg.contains("does not exist")) {
+    } else if msg.contains("directory")
+        && (msg.contains("not found") || msg.contains("does not exist"))
+    {
         "dir_not_found"
     } else if msg.contains("timed out") || msg.contains("timeout") {
         "timeout"

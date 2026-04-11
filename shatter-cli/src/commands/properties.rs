@@ -35,9 +35,7 @@ pub(crate) async fn run_properties(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format — only yaml is supported for now
     if format != "yaml" {
-        return Err(
-            format!("unsupported format '{format}': only 'yaml' is supported").into(),
-        );
+        return Err(format!("unsupported format '{format}': only 'yaml' is supported").into());
     }
 
     let _scope_config = match scope_path {
@@ -78,9 +76,9 @@ pub(crate) async fn run_properties(
             release,
         )?;
         apply_project_storage(&mut config, project_root_str.as_deref());
-        let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!("failed to spawn {} frontend: {e}", target.language.label())
-        })?;
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .map_err(|e| format!("failed to spawn {} frontend: {e}", target.language.label()))?;
 
         // Analyze phase: discover functions in the target file
         let analyze_response = frontend
@@ -137,22 +135,17 @@ pub(crate) async fn run_properties(
         for func in &functions {
             log::info!("Exploring {}...", func.name);
 
-            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await {
+            match explorer::explore_function(&mut frontend, func, &explore_config, None, None).await
+            {
                 Ok(result) => {
                     // Run the pipeline analyze stage to derive equivalence classes
                     let analyze_output = shatter_core::pipeline::analyze(&result, func);
                     let eq_classes = &analyze_output.eq_classes;
 
-                    let location = Some(format!(
-                        "{file_str}:{}-{}",
-                        func.start_line, func.end_line
-                    ));
-                    let func_spec = spec::build_spec_with_invariants(
-                        &result,
-                        eq_classes,
-                        location,
-                        None,
-                    );
+                    let location =
+                        Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
+                    let func_spec =
+                        spec::build_spec_with_invariants(&result, eq_classes, location, None);
                     file_specs.push(func_spec);
                 }
                 Err(e) => {

@@ -303,7 +303,9 @@ pub fn format_coverage_metrics(
         let ratio_pct = metrics.symexpr_ratio() * 100.0;
         out.push_str(&format!(
             "  {dim}Symbolic: {}/{} constraints ({:.0}%){reset}\n",
-            metrics.symexpr_count, constraint_total, ratio_pct,
+            metrics.symexpr_count,
+            constraint_total,
+            ratio_pct,
             dim = style.dim,
             reset = style.reset,
         ));
@@ -425,7 +427,11 @@ fn extract_targets_inner(
                 branch_id: branch.id,
                 line: branch.line,
                 reason: TargetReason::OpaqueConstraint,
-                constraint_hint: if hint.is_empty() { None } else { Some(hint.clone()) },
+                constraint_hint: if hint.is_empty() {
+                    None
+                } else {
+                    Some(hint.clone())
+                },
             });
         }
     }
@@ -619,10 +625,7 @@ mod tests {
     #[test]
     fn format_coverage_metrics_omits_zero_categories() {
         let style = crate::report_style::ReportStyle::default();
-        let discoveries = vec![
-            (0, DiscoveryMethod::Random),
-            (1, DiscoveryMethod::Random),
-        ];
+        let discoveries = vec![(0, DiscoveryMethod::Random), (1, DiscoveryMethod::Random)];
         let metrics = CoverageMetrics::from_exploration(2, &discoveries, &[]);
         let output = format_coverage_metrics(&metrics, &style);
 
@@ -641,8 +644,7 @@ mod tests {
         ];
         for method in methods {
             let json = serde_json::to_string(&method).expect("serialize");
-            let deserialized: DiscoveryMethod =
-                serde_json::from_str(&json).expect("deserialize");
+            let deserialized: DiscoveryMethod = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(method, deserialized);
         }
     }
@@ -660,8 +662,7 @@ mod tests {
             mcdc_metrics: None,
         };
         let json = serde_json::to_string(&metrics).expect("serialize");
-        let deserialized: CoverageMetrics =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: CoverageMetrics = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(metrics, deserialized);
     }
 
@@ -717,13 +718,18 @@ mod tests {
             mcdc_metrics: None,
         };
         let json = serde_json::to_string(&metrics).expect("serialize");
-        assert!(!json.contains("mcdc_metrics"), "None mcdc_metrics must not appear in JSON");
+        assert!(
+            !json.contains("mcdc_metrics"),
+            "None mcdc_metrics must not appear in JSON"
+        );
     }
 
     // --- extract_targets tests ---
 
     use crate::execution_record::BranchDecision;
-    use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, PerformanceMetrics};
+    use crate::protocol::{
+        BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, PerformanceMetrics,
+    };
     use crate::types::{ParamInfo, TypeInfo};
 
     fn make_branch(id: u32, line: u32, condition: &str) -> BranchInfo {
@@ -769,7 +775,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.0,
                 cpu_time_us: 0,
@@ -807,10 +816,7 @@ mod tests {
             make_branch(0, 5, "x > 0"),
             make_branch(1, 10, "x < 100"),
         ]);
-        let discoveries = vec![
-            (0, DiscoveryMethod::Z3),
-            (1, DiscoveryMethod::Random),
-        ];
+        let discoveries = vec![(0, DiscoveryMethod::Z3), (1, DiscoveryMethod::Random)];
         // No Unknown constraints in executions
         let expr = SymExpr::Const(ConstValue::Bool(true));
         let exec = make_exec_with_branches(vec![
@@ -851,17 +857,15 @@ mod tests {
             (2, DiscoveryMethod::Random),
         ];
         // Branch 2 has Unknown constraint at runtime
-        let exec = make_exec_with_branches(vec![
-            BranchDecision {
-                branch_id: 2,
-                line: 15,
-                taken: true,
-                constraint: SymConstraint::Unknown {
-                    hint: "dynamic validation call".to_string(),
-                },
-                conditions: None,
+        let exec = make_exec_with_branches(vec![BranchDecision {
+            branch_id: 2,
+            line: 15,
+            taken: true,
+            constraint: SymConstraint::Unknown {
+                hint: "dynamic validation call".to_string(),
             },
-        ]);
+            conditions: None,
+        }]);
         let raw_results = vec![(vec![serde_json::json!(10)], vec![], exec)];
 
         let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
@@ -870,7 +874,10 @@ mod tests {
         // Branch 2: OpaqueConstraint
         assert_eq!(targets[0].branch_id, 2);
         assert_eq!(targets[0].reason, TargetReason::OpaqueConstraint);
-        assert_eq!(targets[0].constraint_hint.as_deref(), Some("dynamic validation call"));
+        assert_eq!(
+            targets[0].constraint_hint.as_deref(),
+            Some("dynamic validation call")
+        );
         // Branch 3: Uncovered
         assert_eq!(targets[1].branch_id, 3);
         assert_eq!(targets[1].reason, TargetReason::Uncovered);
@@ -892,21 +899,17 @@ mod tests {
 
     #[test]
     fn extract_targets_opaque_hint_from_runtime_not_static() {
-        let analysis = make_analysis(vec![
-            make_branch(0, 5, "static condition text"),
-        ]);
+        let analysis = make_analysis(vec![make_branch(0, 5, "static condition text")]);
         let discoveries = vec![(0, DiscoveryMethod::Random)];
-        let exec = make_exec_with_branches(vec![
-            BranchDecision {
-                branch_id: 0,
-                line: 5,
-                taken: true,
-                constraint: SymConstraint::Unknown {
-                    hint: "runtime opaque hint".to_string(),
-                },
-                conditions: None,
+        let exec = make_exec_with_branches(vec![BranchDecision {
+            branch_id: 0,
+            line: 5,
+            taken: true,
+            constraint: SymConstraint::Unknown {
+                hint: "runtime opaque hint".to_string(),
             },
-        ]);
+            conditions: None,
+        }]);
         let raw_results = vec![(vec![serde_json::json!(1)], vec![], exec)];
 
         let targets = extract_targets_inner(&analysis.branches, &discoveries, &raw_results);
@@ -914,14 +917,15 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].reason, TargetReason::OpaqueConstraint);
         // Hint comes from runtime Unknown, not from BranchInfo.condition_text
-        assert_eq!(targets[0].constraint_hint.as_deref(), Some("runtime opaque hint"));
+        assert_eq!(
+            targets[0].constraint_hint.as_deref(),
+            Some("runtime opaque hint")
+        );
     }
 
     #[test]
     fn extract_targets_uncovered_hint_from_condition_text() {
-        let analysis = make_analysis(vec![
-            make_branch(0, 5, "x > threshold"),
-        ]);
+        let analysis = make_analysis(vec![make_branch(0, 5, "x > threshold")]);
         let discoveries = vec![];
         let raw_results = vec![];
 
@@ -1120,10 +1124,16 @@ mod tests {
             mcdc_metrics: Some(McdcMetrics::from_mcdc_summary(11, 7, 2)),
         };
         let output = format_coverage_metrics(&metrics, &style);
-        assert!(output.contains("MC/DC Coverage"), "expected MC/DC Coverage section");
+        assert!(
+            output.contains("MC/DC Coverage"),
+            "expected MC/DC Coverage section"
+        );
         assert!(output.contains("11 total"), "expected total conditions");
         assert!(output.contains("2 opaque"), "expected opaque conditions");
-        assert!(output.contains("7/9 analyzable"), "expected independent/analyzable");
+        assert!(
+            output.contains("7/9 analyzable"),
+            "expected independent/analyzable"
+        );
     }
 
     #[test]
@@ -1140,7 +1150,10 @@ mod tests {
             mcdc_metrics: None,
         };
         let output = format_coverage_metrics(&metrics, &style);
-        assert!(!output.contains("MC/DC Coverage"), "MC/DC section must be absent when mcdc_metrics is None");
+        assert!(
+            !output.contains("MC/DC Coverage"),
+            "MC/DC section must be absent when mcdc_metrics is None"
+        );
     }
 
     #[test]
@@ -1158,7 +1171,10 @@ mod tests {
         };
         let output = format_coverage_metrics(&metrics, &style);
         assert!(output.contains("MC/DC Coverage"));
-        assert!(!output.contains("opaque"), "opaque text must not appear when opaque_conditions == 0");
+        assert!(
+            !output.contains("opaque"),
+            "opaque text must not appear when opaque_conditions == 0"
+        );
     }
 
     // --- DiscoveryMethod::McdcTarget counts toward z3_solved ---
@@ -1171,7 +1187,10 @@ mod tests {
             (2, DiscoveryMethod::Random),
         ];
         let metrics = CoverageMetrics::from_exploration(3, &discoveries, &[]);
-        assert_eq!(metrics.z3_solved, 2, "Z3 and McdcTarget both count toward z3_solved");
+        assert_eq!(
+            metrics.z3_solved, 2,
+            "Z3 and McdcTarget both count toward z3_solved"
+        );
         assert_eq!(metrics.random_found, 1);
         assert_eq!(metrics.uncovered, 0);
     }

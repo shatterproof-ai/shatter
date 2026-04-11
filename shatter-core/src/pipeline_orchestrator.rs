@@ -343,8 +343,11 @@ pub async fn run_pipeline(
 
     // --- Stage 4: Specify (final iteration only) ---
     if config.stages.includes_specify()
-        && let (Some(obs), Some(ana), Some(sol)) =
-            (observe_out.as_ref(), analyze_out.as_ref(), solve_out.as_ref())
+        && let (Some(obs), Some(ana), Some(sol)) = (
+            observe_out.as_ref(),
+            analyze_out.as_ref(),
+            solve_out.as_ref(),
+        )
     {
         let spec = pipeline::specify(obs, ana, sol, config.detect_invariants);
         if let Some(ref dir) = config.persist_dir {
@@ -410,8 +413,7 @@ async fn run_concolic_observe(
         )
     })?;
 
-    let mut seed_inputs =
-        crate::boundary_dict::generate_boundary_inputs(&input.analysis.params);
+    let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&input.analysis.params);
     seed_inputs.extend(extra_seeds.iter().cloned());
 
     let result = orchestrator::explore(
@@ -444,14 +446,8 @@ async fn run_random_observe(
     let mut config = input.explore_config.clone();
     config.user_seeds.extend(extra_seeds.iter().cloned());
 
-    let obs = explorer::explore_function(
-        input.frontend,
-        &input.analysis,
-        &config,
-        None,
-        None,
-    )
-    .await?;
+    let obs =
+        explorer::explore_function(input.frontend, &input.analysis, &config, None, None).await?;
 
     Ok(obs)
 }
@@ -508,10 +504,7 @@ mod tests {
         }
     }
 
-    fn stub_observe_output(
-        name: &str,
-        branch_count: usize,
-    ) -> ObserveStageOutput {
+    fn stub_observe_output(name: &str, branch_count: usize) -> ObserveStageOutput {
         // Create an observation with one path that covers branch 0 taken=true.
         let branch_path = (0..branch_count)
             .map(|i| BranchDecision {
@@ -589,8 +582,7 @@ mod tests {
     fn run_analyze_solve_specify_composes_correctly() {
         let observe = stub_observe_output("classify", 2);
 
-        let (analyze, solve, specify) =
-            run_analyze_solve_specify(&observe, None, false);
+        let (analyze, solve, specify) = run_analyze_solve_specify(&observe, None, false);
 
         // Analyze should produce eq classes and metrics.
         assert_eq!(analyze.eq_classes.len(), 1);
@@ -690,14 +682,12 @@ mod tests {
     #[test]
     fn extract_sat_seeds_empty_when_no_sat() {
         let solve = StageSolveOutput {
-            solved_branches: vec![
-                SolvedBranch {
-                    branch_id: 0,
-                    line: 10,
-                    target_taken: false,
-                    outcome: SolveOutcome::Unsat,
-                },
-            ],
+            solved_branches: vec![SolvedBranch {
+                branch_id: 0,
+                line: 10,
+                target_taken: false,
+                outcome: SolveOutcome::Unsat,
+            }],
             metrics: SolveMetrics::default(),
         };
 
@@ -751,8 +741,7 @@ mod tests {
     #[test]
     fn pipeline_result_serialization_roundtrip() {
         let observe = stub_observe_output("roundtrip_test", 1);
-        let (analyze, solve, specify) =
-            run_analyze_solve_specify(&observe, None, false);
+        let (analyze, solve, specify) = run_analyze_solve_specify(&observe, None, false);
 
         let result = PipelineResult {
             observe: Some(observe),
@@ -769,8 +758,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&result).expect("serialize");
-        let deserialized: PipelineResult =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: PipelineResult = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.iterations_completed, 1);
         assert_eq!(deserialized.iteration_summaries.len(), 1);
@@ -790,8 +778,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&summary).expect("serialize");
-        let deserialized: IterationSummary =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: IterationSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(summary, deserialized);
     }
 
@@ -887,10 +874,7 @@ mod tests {
                 (vec![json!(5)], vec![], exec1),
                 (vec![json!(-3)], vec![], exec2),
             ],
-            discoveries: vec![
-                (0, DiscoveryMethod::Random),
-                (0, DiscoveryMethod::Random),
-            ],
+            discoveries: vec![(0, DiscoveryMethod::Random), (0, DiscoveryMethod::Random)],
             nondeterministic_fields: vec![],
             float_probe_results: vec![],
             boundary_results: vec![],
@@ -908,8 +892,7 @@ mod tests {
             file: "test.ts".into(),
         };
 
-        let (analyze, solve, specify) =
-            run_analyze_solve_specify(&observe, None, false);
+        let (analyze, solve, specify) = run_analyze_solve_specify(&observe, None, false);
 
         // Analyze: should have equivalence classes.
         assert!(!analyze.eq_classes.is_empty());

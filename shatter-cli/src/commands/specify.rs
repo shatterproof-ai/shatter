@@ -49,7 +49,12 @@ pub(crate) fn run_specify(opts: SpecifyOptions<'_>) -> Result<(), Box<dyn std::e
             out
         };
 
-        write_output(&formatted, opts.output_path, opts.as_json || opts.as_yaml, opts.use_color)
+        write_output(
+            &formatted,
+            opts.output_path,
+            opts.as_json || opts.as_yaml,
+            opts.use_color,
+        )
     } else {
         let eq_classes = analyze_out.eq_classes;
         let location = Some(format!(
@@ -58,9 +63,7 @@ pub(crate) fn run_specify(opts: SpecifyOptions<'_>) -> Result<(), Box<dyn std::e
         ));
 
         let spec = if opts.detect_invariants {
-            shatter_core::spec::build_spec_with_invariants(
-                observation, &eq_classes, location, None,
-            )
+            shatter_core::spec::build_spec_with_invariants(observation, &eq_classes, location, None)
         } else {
             shatter_core::spec::build_spec(observation, &eq_classes, location, None)
         };
@@ -73,7 +76,12 @@ pub(crate) fn run_specify(opts: SpecifyOptions<'_>) -> Result<(), Box<dyn std::e
             shatter_core::spec::format_spec_markdown(&spec)
         };
 
-        write_output(&formatted, opts.output_path, opts.as_json || opts.as_yaml, opts.use_color)
+        write_output(
+            &formatted,
+            opts.output_path,
+            opts.as_json || opts.as_yaml,
+            opts.use_color,
+        )
     }
 }
 
@@ -94,9 +102,7 @@ fn write_output(
     Ok(())
 }
 
-fn format_completeness_footer(
-    cc: &shatter_core::pipeline::CoverageCompleteness,
-) -> String {
+fn format_completeness_footer(cc: &shatter_core::pipeline::CoverageCompleteness) -> String {
     format!(
         "\n\n---\n\n## Coverage Completeness\n\n\
          | Metric | Count |\n|---|---|\n\

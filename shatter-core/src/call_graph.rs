@@ -72,20 +72,13 @@ impl CallGraph {
         // Build a name-to-indices map for resolving dependencies by symbol name.
         let mut name_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
         for (i, entry) in entries.iter().enumerate() {
-            name_to_indices
-                .entry(&entry.name)
-                .or_default()
-                .push(i);
+            name_to_indices.entry(&entry.name).or_default().push(i);
         }
 
         for (caller_idx, entry) in entries.iter().enumerate() {
             for dep in &entry.dependencies {
-                let callee_idx = resolve_dependency(
-                    &dep.symbol,
-                    &dep.source_module,
-                    &name_to_indices,
-                    entries,
-                );
+                let callee_idx =
+                    resolve_dependency(&dep.symbol, &dep.source_module, &name_to_indices, entries);
                 if let Some(ci) = callee_idx
                     && ci != caller_idx
                 {
@@ -293,9 +286,7 @@ impl CallGraph {
             }
         }
 
-        let mut queue: Vec<usize> = (0..num_sccs)
-            .filter(|&i| out_degree[i] == 0)
-            .collect();
+        let mut queue: Vec<usize> = (0..num_sccs).filter(|&i| out_degree[i] == 0).collect();
 
         let mut batches: Vec<ExplorationBatch> = Vec::new();
         let mut layer = 0;
@@ -438,17 +429,12 @@ mod tests {
 
     /// Helper: build a FunctionRegistry from a list of (file, name, deps) tuples.
     /// Each dep is a symbol name (no source_module disambiguation).
-    fn make_registry(
-        funcs: &[FuncSpec<'_>],
-    ) -> FunctionRegistry {
+    fn make_registry(funcs: &[FuncSpec<'_>]) -> FunctionRegistry {
         let mut entries = Vec::new();
         let mut index = HashMap::new();
 
         for (file, name, deps) in funcs {
-            let qn = FunctionRegistry::qualified_name(
-                &PathBuf::from(file),
-                name,
-            );
+            let qn = FunctionRegistry::qualified_name(&PathBuf::from(file), name);
             let idx = entries.len();
             index.insert(qn, idx);
             entries.push(FunctionEntry {
@@ -479,17 +465,12 @@ mod tests {
     }
 
     /// Helper: build registry with source_module on dependencies.
-    fn make_registry_with_modules(
-        funcs: &[FuncSpecWithModules<'_>],
-    ) -> FunctionRegistry {
+    fn make_registry_with_modules(funcs: &[FuncSpecWithModules<'_>]) -> FunctionRegistry {
         let mut entries = Vec::new();
         let mut index = HashMap::new();
 
         for (file, name, deps) in funcs {
-            let qn = FunctionRegistry::qualified_name(
-                &PathBuf::from(file),
-                name,
-            );
+            let qn = FunctionRegistry::qualified_name(&PathBuf::from(file), name);
             let idx = entries.len();
             index.insert(qn, idx);
             entries.push(FunctionEntry {
@@ -591,10 +572,7 @@ mod tests {
     #[test]
     fn cycle_detection_two_nodes() {
         // A → B, B → A
-        let registry = make_registry(&[
-            ("src/a.ts", "A", vec!["B"]),
-            ("src/a.ts", "B", vec!["A"]),
-        ]);
+        let registry = make_registry(&[("src/a.ts", "A", vec!["B"]), ("src/a.ts", "B", vec!["A"])]);
         let graph = CallGraph::from_registry(&registry);
 
         let cycles = graph.cycle_groups();
@@ -653,9 +631,7 @@ mod tests {
     #[test]
     fn unknown_dependency_is_ignored() {
         // "nonexistent" is not in the registry → no edge created.
-        let registry = make_registry(&[
-            ("src/a.ts", "foo", vec!["nonexistent"]),
-        ]);
+        let registry = make_registry(&[("src/a.ts", "foo", vec!["nonexistent"])]);
         let graph = CallGraph::from_registry(&registry);
 
         assert_eq!(graph.edge_count(), 0);
@@ -737,9 +713,7 @@ mod tests {
     #[test]
     fn self_call_not_added_as_edge() {
         // A function depending on its own name should not create a self-loop.
-        let registry = make_registry(&[
-            ("src/a.ts", "recurse", vec!["recurse"]),
-        ]);
+        let registry = make_registry(&[("src/a.ts", "recurse", vec!["recurse"])]);
         let graph = CallGraph::from_registry(&registry);
 
         assert_eq!(graph.edge_count(), 0);
@@ -863,10 +837,7 @@ mod tests {
     #[test]
     fn batches_cycle_grouped_together() {
         // A ↔ B (mutual recursion): single batch with one group of 2
-        let registry = make_registry(&[
-            ("src/a.ts", "A", vec!["B"]),
-            ("src/a.ts", "B", vec!["A"]),
-        ]);
+        let registry = make_registry(&[("src/a.ts", "A", vec!["B"]), ("src/a.ts", "B", vec!["A"])]);
         let graph = CallGraph::from_registry(&registry);
 
         let batches = graph.topological_batches();

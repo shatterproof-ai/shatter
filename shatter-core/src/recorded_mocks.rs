@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::execution_record::ExternalCall;
-use crate::protocol::{ExternalDependency, ExecuteResult, MockBehavior, MockConfig};
+use crate::protocol::{ExecuteResult, ExternalDependency, MockBehavior, MockConfig};
 
 /// Subdirectory within `shatter-artifacts/` for recorded mock fixtures.
 ///
@@ -126,10 +126,7 @@ pub fn aggregate_recordings(
         let latency = exec_result.performance.wall_time_ms;
         for call in &exec_result.calls_to_external {
             let obs = external_call_to_observation(call, latency);
-            by_symbol
-                .entry(call.symbol.clone())
-                .or_default()
-                .push(obs);
+            by_symbol.entry(call.symbol.clone()).or_default().push(obs);
         }
     }
 
@@ -232,11 +229,7 @@ pub fn load_recorded_mocks(path: &Path) -> Result<RecordedMockFile, RecordError>
 /// Check if a recorded mock file exists for this file+function pair.
 pub fn find_recorded_mocks(shatter_dir: &Path, file: &str, function: &str) -> Option<PathBuf> {
     let path = recorded_mock_path(shatter_dir, file, function);
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.exists() { Some(path) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +268,7 @@ pub fn recorded_mocks_to_mock_configs(mock_file: &RecordedMockFile) -> Vec<MockC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{PerformanceMetrics, ExecuteResult};
+    use crate::protocol::{ExecuteResult, PerformanceMetrics};
     use serde_json::json;
 
     fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
@@ -338,7 +331,9 @@ mod tests {
                 heap_allocated_bytes: 2048,
             },
             capture_truncation: None,
-            discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -495,7 +490,10 @@ mod tests {
 
         assert_eq!(behaviors.len(), 1);
         let obs = &behaviors[0].observations[0];
-        assert_eq!(obs.args, vec![json!("https://example.com"), json!({"method": "POST"})]);
+        assert_eq!(
+            obs.args,
+            vec![json!("https://example.com"), json!({"method": "POST"})]
+        );
         assert_eq!(obs.return_value, json!({"status": 200, "data": [1, 2, 3]}));
         assert!(obs.error.is_none());
     }
@@ -544,12 +542,18 @@ mod tests {
 
     #[test]
     fn sanitize_strips_leading_underscore() {
-        assert_eq!(sanitize_path_component("/absolute/path.ts"), "absolute_path.ts");
+        assert_eq!(
+            sanitize_path_component("/absolute/path.ts"),
+            "absolute_path.ts"
+        );
     }
 
     #[test]
     fn sanitize_handles_backslashes() {
-        assert_eq!(sanitize_path_component("src\\foo\\bar.ts"), "src_foo_bar.ts");
+        assert_eq!(
+            sanitize_path_component("src\\foo\\bar.ts"),
+            "src_foo_bar.ts"
+        );
     }
 
     // -- Proptest --
@@ -593,10 +597,12 @@ mod tests {
                 "[a-z-]+",
                 prop::collection::vec(arb_dep_observation(), 0..5),
             )
-                .prop_map(|(symbol, source_module, observations)| ExternalDepBehavior {
-                    symbol,
-                    source_module,
-                    observations,
+                .prop_map(|(symbol, source_module, observations)| {
+                    ExternalDepBehavior {
+                        symbol,
+                        source_module,
+                        observations,
+                    }
                 })
         }
 

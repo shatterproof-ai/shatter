@@ -76,14 +76,14 @@ impl Snapshot {
     }
 
     /// Create a snapshot from multiple behavior maps.
-    pub fn from_behavior_maps(
-        maps: &[BehaviorMap],
-        created_at: impl Into<String>,
-    ) -> Self {
+    pub fn from_behavior_maps(maps: &[BehaviorMap], created_at: impl Into<String>) -> Self {
         Self {
             version: Self::CURRENT_VERSION,
             created_at: created_at.into(),
-            functions: maps.iter().map(FunctionSnapshot::from_behavior_map).collect(),
+            functions: maps
+                .iter()
+                .map(FunctionSnapshot::from_behavior_map)
+                .collect(),
         }
     }
 
@@ -270,9 +270,7 @@ impl SnapshotDiff {
                     previous,
                     current,
                 } => {
-                    out.push_str(&format!(
-                        "  [REGRESSION] {function_id}:{behavior_id}\n"
-                    ));
+                    out.push_str(&format!("  [REGRESSION] {function_id}:{behavior_id}\n"));
                     out.push_str(&format!(
                         "               previous: {}\n",
                         format_outcome(previous)
@@ -342,8 +340,7 @@ pub fn diff(previous: &Snapshot, current: &Snapshot) -> SnapshotDiff {
     }
 
     // Walk current snapshot
-    let mut seen_keys: std::collections::HashSet<(&str, &str)> =
-        std::collections::HashSet::new();
+    let mut seen_keys: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
 
     for func in &current.functions {
         for behavior in &func.behaviors {
@@ -476,11 +473,21 @@ mod tests {
         let maps = vec![
             make_behavior_map(
                 "add",
-                vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+                vec![make_behavior(
+                    0,
+                    vec![json!(1), json!(2)],
+                    Some(json!(3)),
+                    None,
+                )],
             ),
             make_behavior_map(
                 "sub",
-                vec![make_behavior(0, vec![json!(5), json!(3)], Some(json!(2)), None)],
+                vec![make_behavior(
+                    0,
+                    vec![json!(5), json!(3)],
+                    Some(json!(2)),
+                    None,
+                )],
             ),
         ];
 
@@ -501,7 +508,9 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None, error_category: None }),
+                    stack: None,
+                    error_category: None,
+                }),
             )],
         );
 
@@ -540,7 +549,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "RangeError".to_string(),
                         message: "negative input".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
         );
@@ -553,7 +564,12 @@ mod tests {
     fn snapshot_json_is_pretty_and_stable() {
         let map = make_behavior_map(
             "add",
-            vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            vec![make_behavior(
+                0,
+                vec![json!(1), json!(2)],
+                Some(json!(3)),
+                None,
+            )],
         );
 
         let snapshot = Snapshot::from_behavior_map(&map, "2026-02-26T10:00:00Z");
@@ -599,10 +615,7 @@ mod tests {
         }
     }
 
-    fn make_func_snapshot(
-        function_id: &str,
-        behaviors: Vec<SnapshotBehavior>,
-    ) -> FunctionSnapshot {
+    fn make_func_snapshot(function_id: &str, behaviors: Vec<SnapshotBehavior>) -> FunctionSnapshot {
         FunctionSnapshot {
             function_id: function_id.to_string(),
             behaviors,
@@ -752,7 +765,12 @@ mod tests {
         )]);
         let current = make_snapshot(vec![make_func_snapshot(
             "calc",
-            vec![make_snap_behavior("b0", vec![json!(1)], Some(json!(1)), None)],
+            vec![make_snap_behavior(
+                "b0",
+                vec![json!(1)],
+                Some(json!(1)),
+                None,
+            )],
         )]);
 
         let result = diff(&previous, &current);
@@ -766,16 +784,31 @@ mod tests {
     fn diff_detects_new_function() {
         let previous = make_snapshot(vec![make_func_snapshot(
             "add",
-            vec![make_snap_behavior("b0", vec![json!(1)], Some(json!(1)), None)],
+            vec![make_snap_behavior(
+                "b0",
+                vec![json!(1)],
+                Some(json!(1)),
+                None,
+            )],
         )]);
         let current = make_snapshot(vec![
             make_func_snapshot(
                 "add",
-                vec![make_snap_behavior("b0", vec![json!(1)], Some(json!(1)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(1)],
+                    Some(json!(1)),
+                    None,
+                )],
             ),
             make_func_snapshot(
                 "sub",
-                vec![make_snap_behavior("b0", vec![json!(5), json!(3)], Some(json!(2)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(5), json!(3)],
+                    Some(json!(2)),
+                    None,
+                )],
             ),
         ]);
 
@@ -789,16 +822,31 @@ mod tests {
         let previous = make_snapshot(vec![
             make_func_snapshot(
                 "add",
-                vec![make_snap_behavior("b0", vec![json!(1)], Some(json!(1)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(1)],
+                    Some(json!(1)),
+                    None,
+                )],
             ),
             make_func_snapshot(
                 "sub",
-                vec![make_snap_behavior("b0", vec![json!(5)], Some(json!(2)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(5)],
+                    Some(json!(2)),
+                    None,
+                )],
             ),
         ]);
         let current = make_snapshot(vec![make_func_snapshot(
             "add",
-            vec![make_snap_behavior("b0", vec![json!(1)], Some(json!(1)), None)],
+            vec![make_snap_behavior(
+                "b0",
+                vec![json!(1)],
+                Some(json!(1)),
+                None,
+            )],
         )]);
 
         let result = diff(&previous, &current);
@@ -819,7 +867,12 @@ mod tests {
             ),
             make_func_snapshot(
                 "sub",
-                vec![make_snap_behavior("b0", vec![json!(5), json!(3)], Some(json!(2)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(5), json!(3)],
+                    Some(json!(2)),
+                    None,
+                )],
             ),
         ]);
 
@@ -835,7 +888,12 @@ mod tests {
             ),
             make_func_snapshot(
                 "mul",
-                vec![make_snap_behavior("b0", vec![json!(2), json!(3)], Some(json!(6)), None)],
+                vec![make_snap_behavior(
+                    "b0",
+                    vec![json!(2), json!(3)],
+                    Some(json!(6)),
+                    None,
+                )],
             ),
         ]);
 
@@ -966,7 +1024,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "ValidationError".to_string(),
                         message: "invalid tier".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
         );

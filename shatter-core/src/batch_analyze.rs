@@ -103,10 +103,7 @@ impl FunctionRegistry {
 pub enum BatchAnalyzeError {
     /// A frontend communication error.
     #[error("frontend error for {file}: {source}")]
-    Frontend {
-        file: String,
-        source: FrontendError,
-    },
+    Frontend { file: String, source: FrontendError },
     /// No frontend available for a language.
     #[error("no frontend configured for language: {0:?}")]
     NoFrontend(Language),
@@ -147,8 +144,7 @@ pub async fn batch_analyze(
                     crypto_registry.as_ref(),
                     language.as_registry_str(),
                 );
-                let qualified =
-                    FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+                let qualified = FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
                 let idx = entries.len();
                 index.insert(qualified, idx);
                 entries.push(entry);
@@ -215,8 +211,7 @@ pub async fn batch_analyze(
                 crypto_registry.as_ref(),
                 language.as_registry_str(),
             );
-            let qualified =
-                FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+            let qualified = FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
             let idx = entries.len();
             index.insert(qualified, idx);
             entries.push(entry);
@@ -311,11 +306,7 @@ mod tests {
         }
     }
 
-    fn make_analysis_with_deps(
-        name: &str,
-        exported: bool,
-        deps: Vec<&str>,
-    ) -> FunctionAnalysis {
+    fn make_analysis_with_deps(name: &str, exported: bool, deps: Vec<&str>) -> FunctionAnalysis {
         let mut a = make_analysis(name, exported, 0);
         a.dependencies = deps
             .into_iter()
@@ -383,7 +374,8 @@ mod tests {
             invocation_model: crate::protocol::InvocationModel::Direct,
         };
 
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
+        let entry =
+            function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
 
         assert_eq!(entry.file_path, PathBuf::from("src/app.ts"));
         assert_eq!(entry.name, "myFunc");
@@ -400,7 +392,12 @@ mod tests {
     #[test]
     fn function_entry_unexported_function() {
         let analysis = make_analysis("private_helper", false, 0);
-        let entry = function_entry_from_analysis(PathBuf::from("src/utils.ts"), analysis, None, "typescript");
+        let entry = function_entry_from_analysis(
+            PathBuf::from("src/utils.ts"),
+            analysis,
+            None,
+            "typescript",
+        );
         assert!(!entry.exported);
     }
 
@@ -536,13 +533,9 @@ mod tests {
         let mut entries = Vec::new();
         let mut index = HashMap::new();
 
-        for (i, (file, name)) in [
-            ("src/a.ts", "f1"),
-            ("src/a.ts", "f2"),
-            ("src/b.ts", "g1"),
-        ]
-        .iter()
-        .enumerate()
+        for (i, (file, name)) in [("src/a.ts", "f1"), ("src/a.ts", "f2"), ("src/b.ts", "g1")]
+            .iter()
+            .enumerate()
         {
             index.insert(format!("{file}::{name}"), i);
             entries.push(FunctionEntry {
@@ -617,7 +610,12 @@ mod tests {
     #[test]
     fn function_entry_preserves_dependencies() {
         let analysis = make_analysis_with_deps("caller", true, vec!["dep1", "dep2"]);
-        let entry = function_entry_from_analysis(PathBuf::from("src/main.ts"), analysis, None, "typescript");
+        let entry = function_entry_from_analysis(
+            PathBuf::from("src/main.ts"),
+            analysis,
+            None,
+            "typescript",
+        );
 
         assert_eq!(entry.dependencies.len(), 2);
         assert_eq!(entry.dependencies[0].symbol, "dep1");
@@ -627,14 +625,16 @@ mod tests {
     #[test]
     fn function_entry_branch_count_matches_branches() {
         let analysis = make_analysis("branchy", true, 5);
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
+        let entry =
+            function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
         assert_eq!(entry.branch_count, 5);
     }
 
     #[test]
     fn function_entry_zero_branches() {
         let analysis = make_analysis("simple", true, 0);
-        let entry = function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
+        let entry =
+            function_entry_from_analysis(PathBuf::from("src/app.ts"), analysis, None, "typescript");
         assert_eq!(entry.branch_count, 0);
     }
 
@@ -672,10 +672,7 @@ mod tests {
 
         // Noop frontend returns one "stub" function per file
         assert_eq!(registry.len(), 2);
-        assert_eq!(
-            registry.functions_in_file(Path::new("src/app.ts")).len(),
-            1
-        );
+        assert_eq!(registry.functions_in_file(Path::new("src/app.ts")).len(), 1);
         assert_eq!(
             registry.functions_in_file(Path::new("src/utils.ts")).len(),
             1
@@ -701,7 +698,10 @@ mod tests {
         let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, BatchAnalyzeError::NoFrontend(Language::TypeScript)));
+        assert!(matches!(
+            err,
+            BatchAnalyzeError::NoFrontend(Language::TypeScript)
+        ));
     }
 
     #[tokio::test]
@@ -739,12 +739,11 @@ mod tests {
             .expect("batch analyze failed");
 
         assert_eq!(registry.len(), 2);
+        assert_eq!(registry.functions_in_file(Path::new("src/app.ts")).len(), 1);
         assert_eq!(
-            registry.functions_in_file(Path::new("src/app.ts")).len(),
-            1
-        );
-        assert_eq!(
-            registry.functions_in_file(Path::new("pkg/handler.go")).len(),
+            registry
+                .functions_in_file(Path::new("pkg/handler.go"))
+                .len(),
             1
         );
 

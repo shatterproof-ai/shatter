@@ -279,21 +279,33 @@ mod tests {
         let mut table = McdcTable::default();
         table.record_observation(
             1,
-            &[make_condition(0, Some(true), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(true), false),
+                make_condition(1, Some(true), false),
+            ],
             true,
         );
         table.record_observation(
             1,
-            &[make_condition(0, Some(false), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(false), false),
+                make_condition(1, Some(true), false),
+            ],
             false,
         );
         table.record_observation(
             1,
-            &[make_condition(0, Some(true), false), make_condition(1, Some(false), false)],
+            &[
+                make_condition(0, Some(true), false),
+                make_condition(1, Some(false), false),
+            ],
             false,
         );
 
-        assert!(table.is_complete(), "all conditions should have independence pairs");
+        assert!(
+            table.is_complete(),
+            "all conditions should have independence pairs"
+        );
         let (total, independent, opaque) = table.summary();
         assert_eq!(total, 2);
         assert_eq!(independent, 2);
@@ -367,21 +379,23 @@ mod tests {
         // Decision branch_id=0: achieve independence for condition 0.
         table.record_observation(
             0,
-            &[make_condition(0, Some(true), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(true), false),
+                make_condition(1, Some(true), false),
+            ],
             true,
         );
         table.record_observation(
             0,
-            &[make_condition(0, Some(false), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(false), false),
+                make_condition(1, Some(true), false),
+            ],
             false,
         );
 
         // Decision branch_id=1: only one observation so far.
-        table.record_observation(
-            1,
-            &[make_condition(0, Some(true), false)],
-            true,
-        );
+        table.record_observation(1, &[make_condition(0, Some(true), false)], true);
 
         assert!(!table.is_complete(), "branch 1 is not complete yet");
         assert_eq!(table.decisions.len(), 2);
@@ -396,17 +410,26 @@ mod tests {
         // Decision 0: 2 conditions, both independent after 3 observations.
         table.record_observation(
             0,
-            &[make_condition(0, Some(true), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(true), false),
+                make_condition(1, Some(true), false),
+            ],
             true,
         );
         table.record_observation(
             0,
-            &[make_condition(0, Some(false), false), make_condition(1, Some(true), false)],
+            &[
+                make_condition(0, Some(false), false),
+                make_condition(1, Some(true), false),
+            ],
             false,
         );
         table.record_observation(
             0,
-            &[make_condition(0, Some(true), false), make_condition(1, Some(false), false)],
+            &[
+                make_condition(0, Some(true), false),
+                make_condition(1, Some(false), false),
+            ],
             false,
         );
 
@@ -414,7 +437,7 @@ mod tests {
         table.record_observation(1, &[make_condition(0, Some(true), false)], true);
 
         let (total, independent, opaque) = table.summary();
-        assert_eq!(total, 3);   // 2 from decision 0 + 1 from decision 1
+        assert_eq!(total, 3); // 2 from decision 0 + 1 from decision 1
         assert_eq!(independent, 2); // only decision 0's conditions
         assert_eq!(opaque, 0);
     }

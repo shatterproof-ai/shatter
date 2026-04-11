@@ -14,14 +14,13 @@ pub(crate) fn run_build_frontend(
             let candidate = PathBuf::from(".shatter");
             candidate.is_dir().then_some(candidate)
         })
-        .ok_or_else(|| "no .shatter/ directory found; pass --config or run from project root".to_string())?;
+        .ok_or_else(|| {
+            "no .shatter/ directory found; pass --config or run from project root".to_string()
+        })?;
 
     let config_path = shatter_dir.join("config.yaml");
     if !config_path.exists() {
-        return Err(format!(
-            "config not found: {}",
-            config_path.display()
-        ));
+        return Err(format!("config not found: {}", config_path.display()));
     }
 
     let config = shatter_config::parse_config(&config_path)
@@ -31,8 +30,7 @@ pub(crate) fn run_build_frontend(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".shatter-cache").join("bin"));
 
-    std::fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("failed to create output dir: {e}"))?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
     match language {
         "go" => build_go_frontend(&shatter_dir, &config, &out_dir),
@@ -44,10 +42,7 @@ pub(crate) fn run_build_frontend(
 }
 
 /// Collect native generator file paths from config for a given language extension.
-fn collect_native_generators(
-    config: &ShatterConfig,
-    extension: &str,
-) -> Vec<(String, PathBuf)> {
+fn collect_native_generators(config: &ShatterConfig, extension: &str) -> Vec<(String, PathBuf)> {
     let mut generators = Vec::new();
     let check = |name: &str, path_str: &str| {
         let path = Path::new(path_str);
@@ -87,9 +82,7 @@ fn build_go_frontend(
 ) -> Result<(), String> {
     let native_gens = collect_native_generators(config, "go");
     if native_gens.is_empty() {
-        return Err(
-            "no .go generators found in config.yaml; nothing to build".to_string(),
-        );
+        return Err("no .go generators found in config.yaml; nothing to build".to_string());
     }
 
     let output_binary = out_dir.join("shatter-go-custom");
@@ -100,13 +93,14 @@ fn build_go_frontend(
 
     // Locate the shatter-go source directory. In development it's a sibling of
     // shatter-cli; for installed binaries it would be embedded (future work).
-    let shatter_go_dir = locate_shatter_go_source()
-        .ok_or_else(|| "cannot find shatter-go source directory; \
-            ensure you are running from the shatter repo or set SHATTER_GO_SRC".to_string())?;
+    let shatter_go_dir = locate_shatter_go_source().ok_or_else(|| {
+        "cannot find shatter-go source directory; \
+            ensure you are running from the shatter repo or set SHATTER_GO_SRC"
+            .to_string()
+    })?;
 
     // Create temp build directory
-    let temp_dir = tempfile::tempdir()
-        .map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
     let build_dir = temp_dir.path();
 
     // Initialize Go module
@@ -125,7 +119,8 @@ fn build_go_frontend(
         } else {
             project_root.join(rel_path)
         };
-        let filename = src.file_name()
+        let filename = src
+            .file_name()
             .ok_or_else(|| format!("generator path has no filename: {}", src.display()))?;
         std::fs::copy(&src, usergens_dir.join(filename))
             .map_err(|e| format!("failed to copy {}: {e}", src.display()))?;
@@ -137,7 +132,11 @@ fn build_go_frontend(
     // Check if any copied file already declares `package usergens`; if not,
     // they might declare a different package. We'll write a minimal file.
     let has_package_decl = native_gens.iter().any(|(_, rel_path)| {
-        let src = if rel_path.is_absolute() { rel_path.clone() } else { project_root.join(rel_path) };
+        let src = if rel_path.is_absolute() {
+            rel_path.clone()
+        } else {
+            project_root.join(rel_path)
+        };
         std::fs::read_to_string(&src)
             .map(|s| s.contains("package usergens"))
             .unwrap_or(false)
@@ -186,8 +185,10 @@ func main() {{
     run_go_cmd(
         build_dir,
         &[
-            "mod", "edit",
-            "--require", "github.com/shatter-dev/shatter/shatter-go@v0.0.0",
+            "mod",
+            "edit",
+            "--require",
+            "github.com/shatter-dev/shatter/shatter-go@v0.0.0",
             "--replace",
             &format!(
                 "github.com/shatter-dev/shatter/shatter-go={}",
@@ -221,10 +222,7 @@ func main() {{
         return Err(format!("go build failed:\n{stderr}"));
     }
 
-    log::info!(
-        "custom Go frontend built: {}",
-        output_binary.display()
-    );
+    log::info!("custom Go frontend built: {}", output_binary.display());
     Ok(())
 }
 
@@ -273,9 +271,7 @@ fn build_rust_frontend(
 ) -> Result<(), String> {
     let native_gens = collect_native_generators(config, "rs");
     if native_gens.is_empty() {
-        return Err(
-            "no .rs generators found in config.yaml; nothing to build".to_string(),
-        );
+        return Err("no .rs generators found in config.yaml; nothing to build".to_string());
     }
 
     let output_binary = out_dir.join("shatter-rust-custom");
@@ -285,21 +281,21 @@ fn build_rust_frontend(
     );
 
     // Locate shatter-rust source
-    let shatter_rust_dir = locate_shatter_rust_source()
-        .ok_or_else(|| "cannot find shatter-rust source directory; \
-            ensure you are running from the shatter repo or set SHATTER_RUST_SRC".to_string())?;
+    let shatter_rust_dir = locate_shatter_rust_source().ok_or_else(|| {
+        "cannot find shatter-rust source directory; \
+            ensure you are running from the shatter repo or set SHATTER_RUST_SRC"
+            .to_string()
+    })?;
     let shatter_rust_abs = std::fs::canonicalize(&shatter_rust_dir)
         .map_err(|e| format!("failed to canonicalize shatter-rust path: {e}"))?;
 
     // Create temp build directory
-    let temp_dir = tempfile::tempdir()
-        .map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
     let build_dir = temp_dir.path();
 
     // Create Cargo project structure
     let src_dir = build_dir.join("src");
-    std::fs::create_dir_all(&src_dir)
-        .map_err(|e| format!("failed to create src dir: {e}"))?;
+    std::fs::create_dir_all(&src_dir).map_err(|e| format!("failed to create src dir: {e}"))?;
 
     // Copy user generator files into src/
     let project_root = shatter_dir.parent().unwrap_or(Path::new("."));
@@ -415,13 +411,9 @@ fn main() {{
         .join("target")
         .join(profile_dir)
         .join("shatter-rust-custom");
-    std::fs::copy(&built, &output_binary)
-        .map_err(|e| format!("failed to copy binary: {e}"))?;
+    std::fs::copy(&built, &output_binary).map_err(|e| format!("failed to copy binary: {e}"))?;
 
-    log::info!(
-        "custom Rust frontend built: {}",
-        output_binary.display()
-    );
+    log::info!("custom Rust frontend built: {}", output_binary.display());
     Ok(())
 }
 

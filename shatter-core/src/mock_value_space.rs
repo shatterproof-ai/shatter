@@ -61,7 +61,8 @@ pub enum ConnectionFailureKind {
 // ---------------------------------------------------------------------------
 
 /// Patterns indicating a refused TCP connection.
-pub const CONN_REFUSED_PATTERNS: &[&str] = &["ECONNREFUSED", "connection refused", "Connection refused"];
+pub const CONN_REFUSED_PATTERNS: &[&str] =
+    &["ECONNREFUSED", "connection refused", "Connection refused"];
 
 /// Patterns indicating a DNS resolution failure.
 pub const DNS_FAILURE_PATTERNS: &[&str] = &[
@@ -94,7 +95,8 @@ pub const TIMEOUT_PATTERNS: &[&str] = &[
 ];
 
 /// HTTP status codes that indicate application-level errors (not infra).
-pub const APP_ERROR_STATUS_CODES: &[&str] = &["400 ", "404 ", "409 ", "422 ", "500 ", "502 ", "503 "];
+pub const APP_ERROR_STATUS_CODES: &[&str] =
+    &["400 ", "404 ", "409 ", "422 ", "500 ", "502 ", "503 "];
 
 // ---------------------------------------------------------------------------
 // Classification functions
@@ -174,9 +176,10 @@ impl LiveFirstState {
             (_, LiveCallOutcome::ConnectionFailure { .. }) => Self::Unavailable,
 
             // Success or app error from untried/available → available.
-            (Self::Untried | Self::Available, LiveCallOutcome::Success | LiveCallOutcome::AppError { .. }) => {
-                Self::Available
-            }
+            (
+                Self::Untried | Self::Available,
+                LiveCallOutcome::Success | LiveCallOutcome::AppError { .. },
+            ) => Self::Available,
         }
     }
 
@@ -323,7 +326,8 @@ mod tests {
 
     #[test]
     fn classify_live_call_app_error() {
-        let result: Result<serde_json::Value, String> = Err("validation failed: name required".into());
+        let result: Result<serde_json::Value, String> =
+            Err("validation failed: name required".into());
         assert!(matches!(
             classify_live_call(&result),
             LiveCallOutcome::AppError { .. }

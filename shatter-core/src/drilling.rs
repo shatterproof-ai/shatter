@@ -105,8 +105,8 @@ mod tests {
     use super::*;
     use crate::sym_expr::{BinOpKind, SymExpr};
     use crate::types::TypeInfo;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use serde_json::json;
 
     fn make_param(name: &str, typ: TypeInfo) -> ParamInfo {
@@ -165,7 +165,10 @@ mod tests {
             hint: "opaque".into(),
         };
         let params = vec![make_param("x", TypeInfo::Int)];
-        assert_eq!(identify_blocking_params(&constraint, &params), Vec::<usize>::new());
+        assert_eq!(
+            identify_blocking_params(&constraint, &params),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
@@ -177,7 +180,10 @@ mod tests {
             },
         };
         let params = vec![make_param("x", TypeInfo::Int)];
-        assert_eq!(identify_blocking_params(&constraint, &params), Vec::<usize>::new());
+        assert_eq!(
+            identify_blocking_params(&constraint, &params),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
