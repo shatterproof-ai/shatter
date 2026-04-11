@@ -31,60 +31,36 @@ When adding a new AST node type or protocol message, add corresponding fast-chec
 
 ## BigInt Serialization Contract
 
-TS serializes `bigint` values as `{"__complex_type": "big_int", "value": "<decimal string>"}` in all protocol responses (return values, side effects, global state snapshots). The `serializeReplacer` in `src/serialize.ts` is wired into `sendResponse()` in `main.ts` and into internal `JSON.stringify` calls in `executor.ts` (console capture, before/after state snapshots).
-
-The inverse operation (`reconstructValue` in `src/reconstruct.ts`) converts tagged objects back to native `BigInt` for function inputs. Go and Rust frontends do not produce `bigint` values natively and require no changes — the Rust core accepts tagged objects as `serde_json::Value` and `export.rs` already formats them for test generation.
+TS serializes `bigint` values as `{"__complex_type": "big_int", "value": "<decimal string>"}` in all protocol responses. The `serializeReplacer` in `src/serialize.ts` is wired into `sendResponse()` in `main.ts` and into internal `JSON.stringify` calls in `executor.ts` (console capture, before/after state snapshots). The inverse operation (`reconstructValue` in `src/reconstruct.ts`) converts tagged objects back to native `BigInt` for function inputs. Go and Rust frontends do not produce `bigint` values natively; the Rust core accepts tagged objects as `serde_json::Value` and `export.rs` already formats them for test generation.
 
 ## Ite SymExpr Parity Contract
 
-TS is the only frontend that produces `ite` SymExpr nodes. The `ite` variant represents SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust frontends can deserialize `ite` but do not produce it — Go lacks data flow tracking, Rust frontend analyze is a stub. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial` for tracking.
+TS is the only frontend that produces `ite` SymExpr nodes — SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust deserialize `ite` but do not produce it. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
 ## Side Effect Parity Contract
 
-TS is the reference implementation for side effect capture. All 7 canonical kinds are defined in `src/protocol.ts` and the generator `arbSideEffect` in `src/property.test.ts` covers all of them.
+TS is the reference implementation. All 7 canonical kinds are defined in `src/protocol.ts`; `arbSideEffect` in `src/property.test.ts` generates all of them.
 
-| Kind | Captured? | Source | Notes |
-|---|---|---|---|
-| `console_output` | Yes | `createCapturingConsole()` in `executor.ts` | `level` ∈ {log, warn, error, info, debug}; stdout → "log", stderr → "error"; max 4096 bytes/message |
-| `global_state_change` | Yes | `executor.ts` post-execution diff | Compares exported module-level variable values before/after |
-| `thrown_error` | Yes | `executor.ts` catch block | Captures `error_type` (constructor name), `message`, `stack` |
-| `global_mutation` | Yes | `executor.ts` | Name-only capture (no before/after) for exported module names |
-| `file_write` | No | — | Not yet intercepted |
-| `network_request` | No | — | Not yet intercepted |
-| `environment_read` | No | — | Not yet intercepted |
+Captured: `console_output` (via `createCapturingConsole()` in `executor.ts`, max 4096 bytes/message, stdout→"log" stderr→"error"), `global_state_change` (pre/post diff of exported module-level variables), `thrown_error` (catch block, captures `error_type`/`message`/`stack`), `global_mutation` (name-only for exported module names). Not captured: `file_write`, `network_request`, `environment_read`. Console capture respects `capture: true` (default). Side effects list is truncated at 70 lines (head 50 + tail 20) — see `CAPTURE_HEAD_LINES`/`CAPTURE_TAIL_LINES` in `shatter-core/src/execution_record.rs`.
 
-Console capture applies only when `capture: true` (default). Side effects list is truncated at 70 lines (head 50 + tail 20). See `CAPTURE_HEAD_LINES`/`CAPTURE_TAIL_LINES` in `shatter-core/src/execution_record.rs`.
-
-See `protocol/parity-matrix.yaml` `side_effect_capabilities` for the cross-frontend matrix.
+Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities`.
 
 ## Prepare Parity Contract
 
-TypeScript implements the `prepare` command. It pre-warms the compiled script cache so subsequent execute calls skip TypeScript → JS transpilation.
-
-| Aspect | Detail |
-|---|---|
-| Handler | `"prepare"` case in `src/handlers.ts` |
-| Advertised | Yes — `"prepare"` in `SUPPORTED_CAPABILITIES` |
-| Cache key | `resolvedFile:function` (via `instrumentedSources` map) |
-| prepare_id | SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars |
-| Cache backing | `compiledScriptCache` in `src/executor.ts`, pre-warmed via `warmCompiledScriptCache()` |
-| Lifecycle | `preparedKeys.clear()` on teardown, shutdown, and `clearInstrumentedSources` |
-| Prerequisite | `instrument` must be called before `prepare` (source must be in `instrumentedSources`) |
+TS implements `prepare` to pre-warm the compiled script cache. Handler: `"prepare"` case in `src/handlers.ts`. Advertised in `SUPPORTED_CAPABILITIES`. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars. Cache backing: `compiledScriptCache` in `src/executor.ts`, pre-warmed via `warmCompiledScriptCache()`. `preparedKeys.clear()` runs on teardown, shutdown, and `clearInstrumentedSources`. `instrument` must be called first (source must be in `instrumentedSources`).
 
 ## Invocation Model Parity Contract
 
-The TS executor inspects each function's `FunctionAnalysis.invocation_model` (cached at analyze time) before every execute call and routes the call accordingly. TS is the **reference implementation** for invocation model dispatch; Go and Rust frontends will be brought to parity in a later wave.
+TS is the reference implementation for invocation model dispatch (Go/Rust will reach parity later). The executor inspects each function's `FunctionAnalysis.invocation_model` (cached at analyze time) and routes:
 
-| `invocation_model` | Dispatch | Notes |
-|---|---|---|
-| absent or `{ kind: "direct" }` | `executeInstrumented` / `executeFunction` | Default direct-call path; unchanged for any target whose analyzer does not report an adapter model. |
-| `{ kind: "adapter", adapter_id, ... }` | `executeAdapterOwned` → `InvocationHook` | Hook is resolved from `RuntimeHooks.invocation_hooks` by `adapter_id`. Must be supplied via a `RuntimeHookFactory` whose `id` matches an entry in `ExecutionProfile.adapters`. |
-| `{ kind: "adapter", ... }` with no matching hook | error | Same `not_supported` error code used by other unsupported adapters: `"execution adapter not supported by TypeScript frontend: <id>"`. |
+- Absent or `{ kind: "direct" }` → `executeInstrumented` / `executeFunction` (default path)
+- `{ kind: "adapter", adapter_id, ... }` → `executeAdapterOwned` → `InvocationHook` resolved from `RuntimeHooks.invocation_hooks` by `adapter_id` (supplied via `RuntimeHookFactory` whose `id` matches an `ExecutionProfile.adapters` entry)
+- `{ kind: "adapter", ... }` with no matching hook → `not_supported` error: `"execution adapter not supported by TypeScript frontend: <id>"`
 
-Synthetic parameters and structured outcomes ride through the existing wire fields — `ExecuteRequest.inputs`, `ExecuteResponse.return_value`, `ExecuteResponse.thrown_error`, and `ExecuteResponse.side_effects`. **No new protocol fields**, so `protocol/registry.yaml`, `protocol/schemas/`, and `protocol/conformance/` are untouched. The executor returns empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` for adapter-owned calls — instrumented adapter execution is a follow-up concern.
+Synthetic parameters and structured outcomes ride through existing wire fields (`inputs`, `return_value`, `thrown_error`, `side_effects`). **No new protocol fields.** Adapter-owned calls return empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` — instrumented adapter execution is a follow-up.
 
-Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts` (pure dispatcher, unit-tested), `executeAdapterOwned` in `src/executor.ts`, dispatch site in `src/handlers.ts` execute case. Analyses are cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}` and cleared on shutdown, function-level teardown, and `clearInstrumentedSources`.
+Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` in `src/executor.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
 
 ## Timeout Contract
 
-Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

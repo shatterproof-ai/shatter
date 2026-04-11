@@ -18,9 +18,20 @@ Rust core engine (library crate). Contains the concolic explorer, constraint sol
 - `scan_orchestrator.rs` — Multi-file scan coordination
 - `executability.rs` — Opaque type detection and executability checks
 
+## Formal Methods & Verification
+
+Four complementary tools, each with a distinct role. PBT is the workhorse; the others fill gaps PBT can't reach.
+
+| Tool | Role | When to use |
+|---|---|---|
+| **Property-based testing** | Invariant discovery, regression prevention | Any non-trivial public function with invariants |
+| **Native fuzzing** | Crash resistance at parsing boundaries | Code that deserializes untrusted input |
+| **Contracts** (`contracts` crate) | Runtime assertions at trust boundaries | Only where Rust's type system can't express the invariant |
+| **Kani model checking** (deferred — P4) | Exhaustive verification of critical algorithms | Highest-stakes properties only (solver correctness). Not yet in use. |
+
 ## Property-Based Testing Policy (proptest)
 
-Every non-trivial public function should have proptest coverage. Prioritize:
+Every non-trivial public function should have proptest coverage. PBT is not optional decoration — it is a primary testing strategy alongside unit tests and E2E tests. Prioritize:
 
 1. **Trust boundaries first**: serialization roundtrips, FFI bridges (Z3 solver), protocol parsing. These have the highest bug density.
 2. **Semantic invariants over structural checks**: "solved values match ParamInfo types" is valuable; "Request serializes to JSON" is table stakes. Both are needed, but semantic properties catch real bugs.
@@ -33,6 +44,14 @@ Shared generators live in `test_arbitraries.rs` — reuse them. Depth-bound recu
 **When NOT to use proptest**: simple getters/setters, thin wrappers, tests where specific examples are clearer.
 
 **Target**: every module with a `proptest!` block should have properties covering its core invariants, not just serialization.
+
+Sub-crate CLAUDE.md files (`shatter-ts/`, `shatter-go/`) document per-component PBT priorities and the language-specific PBT tooling (`fast-check`, `rapid`).
+
+## Native Fuzzing
+
+- **Go**: `testing.F` in `*_fuzz_test.go` files — byte-level mutation for crash/panic discovery at parsing boundaries. Seed corpus from existing test fixtures.
+- **Rust**: `cargo-fuzz` for deserialization boundaries.
+- Add a fuzz target for any code that deserializes untrusted input (protocol messages, subprocess JSON).
 
 ## Contracts Policy (`contracts` crate)
 
@@ -60,3 +79,10 @@ Contracts (`#[requires]`, `#[ensures]`) are active only in debug/test builds. Th
 - Postconditions that restate the return type or the obvious effect of a `map`/`collect`
 - Any invariant expressible as a type (prefer `NonEmpty<Vec<T>>` over `#[requires(!v.is_empty())]`)
 - Anywhere proptest already covers the invariant — contracts add redundant runtime checks
+
+## Anti-Patterns
+
+- Contracts that restate type signatures — use the type system instead
+- Proptest for trivial getters/setters — specific examples are clearer
+- PBT that only tests serialization roundtrips without semantic invariants — roundtrips are table stakes, not the goal
+- Duplicating generators across test files — use shared generators in `test_arbitraries.rs` / `arbSymExpr` / `genTypeInfo`
