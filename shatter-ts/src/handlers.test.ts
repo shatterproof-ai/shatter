@@ -1,7 +1,22 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { handleRequest, parseRequest, clearInstrumentedSources, instrumentedSourcesSize, setupContextsSize, getLoadedModuleNames, setWorkerPath, terminateWorker, preparedKeysSize, preparedTargetsSize } from "./handlers.js";
+import {
+  handleRequest,
+  parseRequest,
+  clearInstrumentedSources,
+  instrumentedSourcesSize,
+  setupContextsSize,
+  getLoadedModuleNames,
+  setWorkerPath,
+  terminateWorker,
+  preparedKeysSize,
+  preparedTargetsSize,
+  cachedAnalysesSize,
+  __setCachedInvocationModelForTest,
+  __setTestRuntimeHookFactoriesForTest,
+} from "./handlers.js";
+import type { RuntimeHookFactory, InvocationHook } from "./runtime-hooks.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
 import {
   PROTOCOL_VERSION,
@@ -627,6 +642,180 @@ export function usesAlias(): number {
         expect(response.return_value).toBe(42);
         expect(response.thrown_error).toBeNull();
       }
+    });
+  });
+
+  describe("invocation adapter hooks", () => {
+    const ADAPTER_ID = "test/invocation-hook";
+
+    function makeHookFactory(hook: InvocationHook): RuntimeHookFactory {
+      return {
+        id: ADAPTER_ID,
+        createRuntimeHooks() {
+          return {
+            resolver_adapters: [],
+            sandbox_providers: [],
+            invocation_hooks: [hook],
+          };
+        },
+      };
+    }
+
+    afterEach(() => {
+      __setTestRuntimeHookFactoriesForTest(null);
+    });
+
+    it("populates cachedAnalyses on analyze and clears on clearInstrumentedSources", async () => {
+      const exampleFile = TS_ARITHMETIC;
+      clearInstrumentedSources();
+      expect(cachedAnalysesSize()).toBe(0);
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        }),
+      );
+      expect(cachedAnalysesSize()).toBeGreaterThan(0);
+
+      clearInstrumentedSources();
+      expect(cachedAnalysesSize()).toBe(0);
+    });
+
+    it("routes through the adapter hook when invocation_model is adapter-owned", async () => {
+      const exampleFile = TS_ARITHMETIC;
+      const calls: Array<{ functionName: string; inputs: readonly unknown[] }> = [];
+      const hook: InvocationHook = {
+        id: ADAPTER_ID,
+        invoke(ctx) {
+          calls.push({ functionName: ctx.functionName, inputs: ctx.inputs });
+          return { returnValue: { adapter: "called", n: ctx.inputs[0] } };
+        },
+      };
+      __setTestRuntimeHookFactoriesForTest([makeHookFactory(hook)]);
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        }),
+      );
+      __setCachedInvocationModelForTest(
+        path.resolve(exampleFile),
+        "classifyNumber",
+        { kind: "adapter", adapter_id: ADAPTER_ID },
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${exampleFile}:classifyNumber`,
+          inputs: [7],
+          mocks: [],
+          execution_profile: {
+            adapters: [{ id: ADAPTER_ID, apply: "required" }],
+          },
+        }),
+      );
+
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toEqual({ adapter: "called", n: 7 });
+        expect(response.branch_path).toEqual([]);
+      }
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.functionName).toBe("classifyNumber");
+      expect(calls[0]?.inputs).toEqual([7]);
+    });
+
+    it("uses the direct path when invocation_model is { kind: 'direct' }", async () => {
+      const exampleFile = TS_ARITHMETIC;
+      const hookCalls: number[] = [];
+      const hook: InvocationHook = {
+        id: ADAPTER_ID,
+        invoke() {
+          hookCalls.push(1);
+          return { returnValue: "should-not-be-called" };
+        },
+      };
+      __setTestRuntimeHookFactoriesForTest([makeHookFactory(hook)]);
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        }),
+      );
+      __setCachedInvocationModelForTest(
+        path.resolve(exampleFile),
+        "classifyNumber",
+        { kind: "direct" },
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${exampleFile}:classifyNumber`,
+          inputs: [-3],
+          mocks: [],
+        }),
+      );
+
+      expect(response.status).toBe("execute");
+      if (response.status === "execute") {
+        expect(response.return_value).toBe("negative");
+      }
+      expect(hookCalls).toHaveLength(0);
+    });
+
+    it("returns not_supported when adapter_id has no matching hook", async () => {
+      const exampleFile = TS_ARITHMETIC;
+
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        }),
+      );
+      __setCachedInvocationModelForTest(
+        path.resolve(exampleFile),
+        "classifyNumber",
+        { kind: "adapter", adapter_id: "no/such/adapter" },
+      );
+
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${exampleFile}:classifyNumber`,
+          inputs: [1],
+          mocks: [],
+        }),
+      );
+
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("no/such/adapter");
+      }
+    });
+
+    it("clears cachedAnalyses on shutdown", async () => {
+      const exampleFile = TS_ARITHMETIC;
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: exampleFile,
+          function: "classifyNumber",
+        }),
+      );
+      expect(cachedAnalysesSize()).toBeGreaterThan(0);
+
+      await handleRequest(makeRequest({ command: "shutdown" }));
+      expect(cachedAnalysesSize()).toBe(0);
     });
   });
 

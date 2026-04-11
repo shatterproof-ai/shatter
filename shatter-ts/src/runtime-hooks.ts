@@ -2,7 +2,13 @@ import * as path from "node:path";
 
 import * as ts from "typescript";
 
-import type { ExecutionAdapter, ExecutionProfile } from "./protocol.js";
+import type {
+  ExecutionAdapter,
+  ExecutionProfile,
+  ErrorInfo,
+  InvocationModel,
+  SideEffect,
+} from "./protocol.js";
 import type { ResolverAdapter } from "./executor.js";
 import { ADAPTER_ID_IMPORT_META_ENV } from "./runtime-hints.js";
 
@@ -20,9 +26,40 @@ export interface SandboxProvider {
   augmentSandbox(sandbox: Record<string, unknown>): void;
 }
 
+/** The non-direct InvocationModel variant. The direct variant short-circuits
+ *  to the existing executeFunction/executeInstrumented paths and never reaches
+ *  an InvocationHook. */
+export type AdapterInvocationModel = Extract<InvocationModel, { kind: "adapter" }>;
+
+/** Context handed to an InvocationHook describing the call to dispatch. */
+export interface InvocationContext {
+  readonly fileForExec: string;
+  readonly functionName: string;
+  readonly invocationModel: AdapterInvocationModel;
+  readonly inputs: readonly unknown[];
+  readonly capture: boolean;
+}
+
+/** Structured outcome an adapter-owned invocation produces. The fields ride
+ *  back through existing ExecuteResponse fields — no new wire fields. */
+export interface InvocationOutcome {
+  readonly returnValue?: unknown;
+  readonly thrownError?: ErrorInfo;
+  readonly sideEffects?: ReadonlyArray<SideEffect>;
+}
+
+/** Adapter-owned invocation hook. Mounts, scenario-drives, or otherwise
+ *  invokes a target instead of calling the exported symbol directly.
+ *  Resolved by `id`, which must equal `InvocationModel.adapter_id`. */
+export interface InvocationHook {
+  readonly id: string;
+  invoke(context: InvocationContext): Promise<InvocationOutcome> | InvocationOutcome;
+}
+
 export interface RuntimeHooks {
   resolver_adapters: ResolverAdapter[];
   sandbox_providers: SandboxProvider[];
+  invocation_hooks: InvocationHook[];
 }
 
 export interface RuntimeHookFactory {
@@ -30,13 +67,39 @@ export interface RuntimeHookFactory {
   createRuntimeHooks?(
     adapter: ExecutionAdapter,
     context: RuntimeHookContext,
-  ): RuntimeHooks | null | undefined;
+  ): Partial<RuntimeHooks> | null | undefined;
 }
 
-function mergeRuntimeHooks(target: RuntimeHooks, next: RuntimeHooks | null | undefined): void {
+function mergeRuntimeHooks(
+  target: RuntimeHooks,
+  next: Partial<RuntimeHooks> | null | undefined,
+): void {
   if (!next) return;
-  target.resolver_adapters.push(...next.resolver_adapters);
-  target.sandbox_providers.push(...next.sandbox_providers);
+  if (next.resolver_adapters) target.resolver_adapters.push(...next.resolver_adapters);
+  if (next.sandbox_providers) target.sandbox_providers.push(...next.sandbox_providers);
+  if (next.invocation_hooks) target.invocation_hooks.push(...next.invocation_hooks);
+}
+
+/** Pure dispatcher selection used both by the execute handler and by
+ *  property tests. Decides whether a given analysis routes to the direct
+ *  path, an adapter-owned path, or an unsupported failure. */
+export type InvocationStrategy =
+  | { kind: "direct" }
+  | { kind: "adapter"; hook: InvocationHook; model: AdapterInvocationModel }
+  | { kind: "unsupported"; adapterId: string };
+
+export function chooseInvocationStrategy(
+  invocationModel: InvocationModel | undefined,
+  hooks: ReadonlyArray<InvocationHook>,
+): InvocationStrategy {
+  if (!invocationModel || invocationModel.kind === "direct") {
+    return { kind: "direct" };
+  }
+  const hook = hooks.find((h) => h.id === invocationModel.adapter_id);
+  if (!hook) {
+    return { kind: "unsupported", adapterId: invocationModel.adapter_id };
+  }
+  return { kind: "adapter", hook, model: invocationModel };
 }
 
 interface TsconfigResolutionState {
@@ -134,6 +197,7 @@ function createTsconfigPathsFactory(): RuntimeHookFactory {
           },
         ],
         sandbox_providers: [],
+        invocation_hooks: [],
       };
     },
   };
@@ -174,12 +238,13 @@ function createImportMetaEnvFactory(): RuntimeHookFactory {
             },
           },
         ],
+        invocation_hooks: [],
       };
     },
   };
 }
 
-const DEFAULT_RUNTIME_HOOK_FACTORIES: readonly RuntimeHookFactory[] = [
+export const DEFAULT_RUNTIME_HOOK_FACTORIES: readonly RuntimeHookFactory[] = [
   createTsconfigPathsFactory(),
   createImportMetaEnvFactory(),
 ];
@@ -189,7 +254,7 @@ export function resolveRuntimeHooks(
   context: RuntimeHookContext,
   factories: readonly RuntimeHookFactory[] = DEFAULT_RUNTIME_HOOK_FACTORIES,
 ): RuntimeHooks {
-  const hooks: RuntimeHooks = { resolver_adapters: [], sandbox_providers: [] };
+  const hooks: RuntimeHooks = { resolver_adapters: [], sandbox_providers: [], invocation_hooks: [] };
   if (!executionProfile) {
     return hooks;
   }

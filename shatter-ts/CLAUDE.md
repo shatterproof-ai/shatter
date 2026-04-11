@@ -71,6 +71,20 @@ TypeScript implements the `prepare` command. It pre-warms the compiled script ca
 | Lifecycle | `preparedKeys.clear()` on teardown, shutdown, and `clearInstrumentedSources` |
 | Prerequisite | `instrument` must be called before `prepare` (source must be in `instrumentedSources`) |
 
+## Invocation Model Parity Contract
+
+The TS executor inspects each function's `FunctionAnalysis.invocation_model` (cached at analyze time) before every execute call and routes the call accordingly. TS is the **reference implementation** for invocation model dispatch; Go and Rust frontends will be brought to parity in a later wave.
+
+| `invocation_model` | Dispatch | Notes |
+|---|---|---|
+| absent or `{ kind: "direct" }` | `executeInstrumented` / `executeFunction` | Default direct-call path; unchanged for any target whose analyzer does not report an adapter model. |
+| `{ kind: "adapter", adapter_id, ... }` | `executeAdapterOwned` → `InvocationHook` | Hook is resolved from `RuntimeHooks.invocation_hooks` by `adapter_id`. Must be supplied via a `RuntimeHookFactory` whose `id` matches an entry in `ExecutionProfile.adapters`. |
+| `{ kind: "adapter", ... }` with no matching hook | error | Same `not_supported` error code used by other unsupported adapters: `"execution adapter not supported by TypeScript frontend: <id>"`. |
+
+Synthetic parameters and structured outcomes ride through the existing wire fields — `ExecuteRequest.inputs`, `ExecuteResponse.return_value`, `ExecuteResponse.thrown_error`, and `ExecuteResponse.side_effects`. **No new protocol fields**, so `protocol/registry.yaml`, `protocol/schemas/`, and `protocol/conformance/` are untouched. The executor returns empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` for adapter-owned calls — instrumented adapter execution is a follow-up concern.
+
+Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts` (pure dispatcher, unit-tested), `executeAdapterOwned` in `src/executor.ts`, dispatch site in `src/handlers.ts` execute case. Analyses are cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}` and cleared on shutdown, function-level teardown, and `clearInstrumentedSources`.
+
 ## Timeout Contract
 
 Execution timeout: 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

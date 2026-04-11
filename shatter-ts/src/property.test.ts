@@ -55,6 +55,7 @@ import {
   ParamInfo,
   BranchInfo,
   ErrorInfo,
+  InvocationModel,
 } from "./protocol.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import {
@@ -64,7 +65,8 @@ import {
   ADAPTER_ID_BROWSER_GLOBALS,
   ADAPTER_ID_IMPORT_META_ENV,
 } from "./runtime-hints.js";
-import { resolveRuntimeHooks } from "./runtime-hooks.js";
+import { resolveRuntimeHooks, chooseInvocationStrategy } from "./runtime-hooks.js";
+import type { InvocationHook } from "./runtime-hooks.js";
 import { buildSymExpr, buildSymExprWithFlow, flattenConditions } from "./instrumentor.js";
 import type { FlattenedConditions } from "./instrumentor.js";
 import type { ConditionOutcome } from "./protocol.js";
@@ -340,6 +342,21 @@ const arbAdapterHint = fc.record({
   conflicts: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), { nil: undefined }),
 });
 
+const arbInvocationModel: fc.Arbitrary<InvocationModel> = fc.oneof(
+  fc.record({ kind: fc.constant("direct" as const) }),
+  fc.record({
+    kind: fc.constant("adapter" as const),
+    adapter_id: arbIdent,
+    synthetic_params: fc.option(fc.array(arbParamInfo, { maxLength: 3 }), {
+      nil: undefined,
+    }),
+    scenario_schema: fc.option(
+      fc.record({ description: arbShortString }),
+      { nil: undefined },
+    ),
+  }),
+);
+
 const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   name: arbIdent,
   exported: fc.boolean(),
@@ -354,6 +371,7 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
     nil: undefined,
   }),
   adapter_hints: fc.option(fc.array(arbAdapterHint, { maxLength: 3 }), { nil: undefined }),
+  invocation_model: fc.option(arbInvocationModel, { nil: undefined }),
 });
 
 // ---------------------------------------------------------------------------
@@ -2024,6 +2042,109 @@ describe("SandboxProvider composition properties", () => {
           expect(key in meta.env).toBe(true);
         }
       }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// InvocationModel + adapter dispatcher (str-t4uo.2.3)
+// ---------------------------------------------------------------------------
+
+describe("property: InvocationModel", () => {
+  it("FunctionAnalysis with invocation_model survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbFunctionAnalysis, (analysis) => {
+        const decoded = JSON.parse(JSON.stringify(analysis)) as FunctionAnalysis;
+        expect(decoded).toEqual(analysis);
+      }),
+    );
+  });
+
+  it("InvocationModel adapter variant preserves synthetic_params length and order", () => {
+    fc.assert(
+      fc.property(arbInvocationModel, (model) => {
+        if (model.kind !== "adapter" || model.synthetic_params === undefined) {
+          return;
+        }
+        const decoded = JSON.parse(JSON.stringify(model)) as InvocationModel;
+        if (decoded.kind !== "adapter" || decoded.synthetic_params === undefined) {
+          throw new Error("decoded model lost adapter variant");
+        }
+        expect(decoded.synthetic_params.length).toBe(model.synthetic_params.length);
+        for (let i = 0; i < model.synthetic_params.length; i++) {
+          expect(decoded.synthetic_params[i]).toEqual(model.synthetic_params[i]);
+        }
+      }),
+    );
+  });
+
+  it("chooseInvocationStrategy: direct or absent model always returns direct", () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.constant(undefined),
+          fc.record({ kind: fc.constant("direct" as const) }),
+        ),
+        (model) => {
+          const strategy = chooseInvocationStrategy(model, []);
+          expect(strategy.kind).toBe("direct");
+        },
+      ),
+    );
+  });
+
+  it("chooseInvocationStrategy: adapter model with matching hook returns adapter", () => {
+    fc.assert(
+      fc.property(arbIdent, fc.array(arbParamInfo, { maxLength: 3 }), (adapterId, params) => {
+        const hook: InvocationHook = {
+          id: adapterId,
+          invoke: () => ({ returnValue: null }),
+        };
+        const model: InvocationModel = {
+          kind: "adapter",
+          adapter_id: adapterId,
+          synthetic_params: params,
+        };
+        const strategy = chooseInvocationStrategy(model, [hook]);
+        expect(strategy.kind).toBe("adapter");
+        if (strategy.kind === "adapter") {
+          expect(strategy.hook.id).toBe(adapterId);
+          expect(strategy.model.synthetic_params).toEqual(params);
+        }
+      }),
+    );
+  });
+
+  it("chooseInvocationStrategy: adapter model without matching hook returns unsupported", () => {
+    fc.assert(
+      fc.property(arbIdent, arbIdent, (modelId, hookId) => {
+        fc.pre(modelId !== hookId);
+        const hook: InvocationHook = { id: hookId, invoke: () => ({ returnValue: null }) };
+        const model: InvocationModel = { kind: "adapter", adapter_id: modelId };
+        const strategy = chooseInvocationStrategy(model, [hook]);
+        expect(strategy.kind).toBe("unsupported");
+        if (strategy.kind === "unsupported") {
+          expect(strategy.adapterId).toBe(modelId);
+        }
+      }),
+    );
+  });
+
+  it("chooseInvocationStrategy: pure — same inputs always produce same outcome", () => {
+    fc.assert(
+      fc.property(
+        arbInvocationModel,
+        fc.array(arbIdent, { minLength: 1, maxLength: 4 }),
+        (model, hookIds) => {
+          const hooks: InvocationHook[] = hookIds.map((id) => ({
+            id,
+            invoke: () => ({ returnValue: null }),
+          }));
+          const a = chooseInvocationStrategy(model, hooks);
+          const b = chooseInvocationStrategy(model, hooks);
+          expect(a.kind).toBe(b.kind);
+        },
+      ),
     );
   });
 });
