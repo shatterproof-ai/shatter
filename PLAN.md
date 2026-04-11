@@ -819,7 +819,7 @@ shatter retest --snapshot snapshots/shipping.json
 shatter spec src/services/shipping.ts:calculateShipping
 
 # Generate executable test file
-shatter export-tests --framework jest src/services/shipping.ts
+shatter diff snapshots/shipping.json current/shipping.json
 
 # Compare against previous snapshot (regression detection)
 shatter diff snapshots/shipping.json

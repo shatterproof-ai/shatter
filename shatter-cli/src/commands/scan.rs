@@ -16,7 +16,6 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::report;
 use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
 
-use crate::commands::export::emit_test_files;
 use crate::helpers::*;
 
 /// Run the scan command: explore multiple functions in dependency order.
@@ -47,8 +46,6 @@ pub(crate) async fn run_scan(
     stdout: bool,
     format: crate::args::StdoutFormat,
     progress: bool,
-    emit_tests: Option<&str>,
-    tests_dir: Option<&Path>,
     dry_run: bool,
     resume: Option<&str>,
     mock_config: Option<&Path>,
@@ -80,18 +77,6 @@ pub(crate) async fn run_scan(
                 .join("pool.json"),
         )
     };
-    // Validate --emit-tests framework early.
-    if let Some(framework) = emit_tests
-        && framework != "jest"
-        && framework != "vitest"
-        && framework != "gotest"
-    {
-        return Err(format!(
-            "unsupported framework '{framework}': expected 'jest', 'vitest', or 'gotest'"
-        )
-        .into());
-    }
-
     // Validate --language if specified.
     if let Some(lang) = language_filter
         && lang != "typescript"
@@ -898,22 +883,6 @@ pub(crate) async fn run_scan(
                     crate::args::StdoutFormat::Text => report::format_text_report(&scan_report),
                 };
                 print_markdown(&content, use_color);
-            }
-
-            // Emit test files if --emit-tests was specified.
-            if let Some(framework) = emit_tests {
-                let resolved_tests_dir = tests_dir
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("."));
-
-                if let Err(e) = emit_test_files(
-                    &result,
-                    &scan_config.file_map,
-                    framework,
-                    &resolved_tests_dir,
-                ) {
-                    log::error!("Failed to emit test files: {e}");
-                }
             }
 
             if result.has_scan_failure() {

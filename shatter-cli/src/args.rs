@@ -717,15 +717,6 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value = "markdown")]
         format: StdoutFormat,
 
-        /// Generate test files after scan. Framework: jest, vitest, or gotest.
-        #[arg(long)]
-        emit_tests: Option<String>,
-
-        /// Output directory for generated test files (used with --emit-tests).
-        /// Defaults to the current directory if not specified.
-        #[arg(long)]
-        tests_dir: Option<PathBuf>,
-
         /// Show what would be scanned without executing.
         #[arg(long)]
         dry_run: bool,
@@ -901,68 +892,6 @@ pub(crate) enum CliCommand {
         /// allowing idle workers to contribute to the same function. Default: 1.
         #[arg(long, default_value_t = 1)]
         workers_per_fn: usize,
-    },
-
-    /// Export generated tests from behavior maps produced by exploration.
-    ///
-    /// Runs exploration on the given targets, then generates test files in the
-    /// specified framework format.
-    ExportTests {
-        /// Targets to explore and export tests for, in <file>:<function> format.
-        #[arg(required = true)]
-        targets: Vec<String>,
-
-        /// Test framework to generate: jest, vitest, or gotest.
-        #[arg(long, default_value = "jest")]
-        framework: String,
-
-        /// Module path for imports (Jest: relative path; Go: package name).
-        #[arg(long, default_value = ".")]
-        module_path: String,
-
-        /// Write tests to file. May be repeated.
-        #[arg(long = "output", short = 'o', value_name = "FILE")]
-        outputs: Vec<PathBuf>,
-
-        /// Write tests to stdout in addition to any -o files.
-        /// When no -o flags are given, stdout is the default output.
-        #[arg(long)]
-        stdout: bool,
-
-        /// Maximum number of iterations for the concolic loop.
-        #[arg(long, default_value_t = 100)]
-        max_iterations: u32,
-
-        /// Timeout in seconds for the entire exploration.
-        #[arg(long, default_value_t = 60)]
-        timeout: u64,
-
-        /// Path to a scope configuration YAML file.
-        #[arg(long)]
-        scope: Option<PathBuf>,
-
-        /// Per-request timeout in seconds (how long to wait for a single frontend response).
-        #[arg(long, default_value_t = 30)]
-        request_timeout: u64,
-
-        /// Execution timeout in seconds for each function invocation in the frontend.
-        /// Default: 10s.
-        #[arg(long, default_value_t = 10)]
-        exec_timeout: u64,
-
-        /// Build timeout in seconds for compiling instrumented code in the frontend.
-        /// Default: 30s.
-        #[arg(long, default_value_t = 30)]
-        build_timeout: u64,
-
-        /// Compile harnesses in release mode (optimized but slower compilation).
-        /// Default is debug mode for faster compilation.
-        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
-        release: bool,
-
-        /// Memory limit in MB for the frontend process.
-        #[arg(long)]
-        memory_limit: Option<u64>,
     },
 
     /// Discover and export behavioral properties and invariants as a YAML spec.
@@ -1885,25 +1814,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_export_tests_with_request_timeout() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "export-tests",
-            "--request-timeout",
-            "5",
-            "test.ts:myFunc",
-        ]);
-        match cli.command {
-            CliCommand::ExportTests {
-                request_timeout, ..
-            } => {
-                assert_eq!(request_timeout, 5);
-            }
-            _ => panic!("expected ExportTests command"),
-        }
-    }
-
-    #[test]
     fn cli_parses_run_with_request_timeout() {
         let cli = Cli::parse_from(["shatter", "run", "--request-timeout", "45", "/tmp/repo"]);
         match cli.command {
@@ -2234,87 +2144,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_export_tests_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "export-tests",
-            "--framework",
-            "gotest",
-            "--module-path",
-            "examples",
-            "test.go:Add",
-        ]);
-        match cli.command {
-            CliCommand::ExportTests {
-                targets,
-                framework,
-                module_path,
-                outputs,
-                max_iterations,
-                timeout,
-                scope,
-                request_timeout,
-                ..
-            } => {
-                assert_eq!(targets, vec!["test.go:Add"]);
-                assert_eq!(framework, "gotest");
-                assert_eq!(module_path, "examples");
-                assert!(outputs.is_empty());
-                assert_eq!(max_iterations, 100);
-                assert_eq!(timeout, 60);
-                assert!(scope.is_none());
-                assert_eq!(request_timeout, 30);
-            }
-            _ => panic!("expected ExportTests command"),
-        }
-    }
-
-    #[test]
-    fn cli_export_tests_defaults() {
-        let cli = Cli::parse_from(["shatter", "export-tests", "test.ts:myFunc"]);
-        match cli.command {
-            CliCommand::ExportTests {
-                framework,
-                module_path,
-                outputs,
-                ..
-            } => {
-                assert_eq!(framework, "jest");
-                assert_eq!(module_path, ".");
-                assert!(outputs.is_empty());
-            }
-            _ => panic!("expected ExportTests command"),
-        }
-    }
-
-    #[test]
-    fn cli_export_tests_with_output_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "export-tests",
-            "--output",
-            "tests/generated_test.go",
-            "--framework",
-            "gotest",
-            "test.go:Add",
-        ]);
-        match cli.command {
-            CliCommand::ExportTests { outputs, .. } => {
-                assert_eq!(outputs, vec![PathBuf::from("tests/generated_test.go")]);
-            }
-            _ => panic!("expected ExportTests command"),
-        }
-    }
-
-    #[test]
-    fn cli_export_tests_requires_at_least_one_target() {
-        let result = Cli::try_parse_from(["shatter", "export-tests"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
     fn cli_parses_diff_subcommand() {
         let cli = Cli::parse_from([
             "shatter",
@@ -2497,39 +2326,6 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn cli_scan_emit_tests_flag() {
-        let cli = Cli::parse_from(["shatter", "scan", "--emit-tests", "jest", "src/"]);
-        match cli.command {
-            CliCommand::Scan { emit_tests, .. } => {
-                assert_eq!(emit_tests, Some("jest".to_string()));
-            }
-            _ => panic!("expected Scan command"),
-        }
-    }
-
-    #[test]
-    fn cli_scan_emit_tests_gotest() {
-        let cli = Cli::parse_from(["shatter", "scan", "--emit-tests", "gotest", "src/"]);
-        match cli.command {
-            CliCommand::Scan { emit_tests, .. } => {
-                assert_eq!(emit_tests, Some("gotest".to_string()));
-            }
-            _ => panic!("expected Scan command"),
-        }
-    }
-
-    #[test]
-    fn cli_scan_emit_tests_defaults_to_none() {
-        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
-        match cli.command {
-            CliCommand::Scan { emit_tests, .. } => {
-                assert!(emit_tests.is_none());
-            }
-            _ => panic!("expected Scan command"),
-        }
     }
 
     #[test]

@@ -58,14 +58,6 @@ steps:
     targets: walkthrough.rust
     language: rust
 
-  - id: export-tests
-    title: "Export Generated Tests"
-    description: "Generate Jest test files from explored behavior maps"
-    command: "export-tests --framework jest --module-path ./src/01-arithmetic"
-    targets_literal:
-      - "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
-    language: typescript
-
   - id: concolic-z3
     title: "Concolic Exploration (Z3)"
     description: "Use the Z3-backed concolic explorer to solve branch constraints"

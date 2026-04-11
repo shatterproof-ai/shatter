@@ -135,37 +135,10 @@ Source code → Analyze → Explore → Cluster → Report
 | `--output-dir PATH` | `./shatter-report/` | Report output directory |
 | `--report FORMAT` | `json` | Report format: `json`, `markdown`, or `both` |
 | `--progress-json` | false | Emit structured JSON progress events to stdout |
-| `--emit-tests FRAMEWORK` | — | Generate test files: `jest`, `vitest`, or `gotest` |
-| `--emit-tests-dir PATH` | same as output-dir | Directory for emitted test files |
 
 **Output**:
 - JSON report: per-function behavior maps, coverage, branch analysis.
 - Markdown report: human-readable summary of all explored functions.
-- Test files: generated test code in the specified framework.
-
-### 2.3 `shatter export-tests`
-
-**Purpose**: Generate test files from behavior maps produced by exploration.
-
-**Syntax**: `shatter export-tests [OPTIONS] <TARGETS>...`
-
-**Behavior**:
-1. Run exploration on the given targets (same as `explore`).
-2. Convert the resulting behavior maps into test source code.
-3. Write to stdout or `--output` file.
-
-**Supported frameworks**:
-
-| Framework | Language | Test structure |
-|-----------|----------|----------------|
-| `jest` | TypeScript | `describe`/`it` blocks with ES module imports |
-| `vitest` | TypeScript | Same as Jest (identical output) |
-| `gotest` | Go | Table-driven `t.Run()` subtests |
-
-**Generated test structure**:
-- One `describe` (Jest/Vitest) or `Test*` function (Go) per explored function.
-- One `it` block / table entry per observed behavior.
-- Each test calls the function with the canonical example inputs and asserts the expected return value or error.
 
 ### 2.4 `shatter run`
 

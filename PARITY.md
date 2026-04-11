@@ -79,7 +79,7 @@ not pass the corresponding flag. Any change to a default must update the constan
 | Env var | CLI flag | Governed default | Governed commands |
 |---------|----------|-----------------|-------------------|
 | `SHATTER_LOG_LEVEL` | `--log-level` | `info` | all frontend-spawning commands |
-| `SHATTER_EXEC_TIMEOUT` | `--exec-timeout` | `10` s | `explore`, `scan`, `export-tests`, `fuzz`, `reduce`, `re-run`, `run` |
+| `SHATTER_EXEC_TIMEOUT` | `--exec-timeout` | `10` s | `explore`, `scan`, `fuzz`, `reduce`, `re-run`, `run` |
 | `SHATTER_BUILD_TIMEOUT` | `--build-timeout` | `30` s | same as above |
 
 **Intentional exception:** The `observe` command uses `exec-timeout=30s` and

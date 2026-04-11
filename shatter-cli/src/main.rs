@@ -360,8 +360,6 @@ async fn main() -> ExitCode {
             outputs,
             stdout,
             format,
-            emit_tests,
-            tests_dir,
             dry_run,
             resume,
             progress,
@@ -531,8 +529,6 @@ async fn main() -> ExitCode {
                 effective_stdout,
                 format,
                 progress,
-                emit_tests.as_deref(),
-                tests_dir.as_deref(),
                 dry_run,
                 resume.as_deref(),
                 mock_config.as_deref(),
@@ -552,40 +548,6 @@ async fn main() -> ExitCode {
                 effective_capture,
                 workers_per_fn,
                 &genetic_config,
-            )
-            .await
-        }
-        CliCommand::ExportTests {
-            targets,
-            framework,
-            module_path,
-            outputs,
-            stdout,
-            max_iterations,
-            timeout,
-            scope,
-            request_timeout,
-            exec_timeout,
-            build_timeout,
-            release,
-            memory_limit,
-        } => {
-            commands::export::run_export_tests(
-                &targets,
-                &framework,
-                &module_path,
-                &outputs,
-                stdout,
-                max_iterations,
-                timeout,
-                scope.as_deref(),
-                request_timeout,
-                exec_timeout,
-                build_timeout,
-                release,
-                log_level,
-                memory_limit,
-                cli.project_dir.as_deref(),
             )
             .await
         }
