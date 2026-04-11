@@ -1705,6 +1705,7 @@ async fn run_layer_batched(
                         task_index: batch_config.task_index,
                         iterations_used: 0,
                         exhausted: true,
+                        rank: 0,
                     });
                     {
                         let st = &mut live_states[batch_config.task_index];
@@ -1800,6 +1801,7 @@ async fn run_layer_batched(
                     task_index: batch_config.task_index,
                     iterations_used,
                     exhausted,
+                    rank: 0,
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
@@ -1843,6 +1845,7 @@ async fn run_layer_batched(
                     task_index: batch_config.task_index,
                     iterations_used: 0,
                     exhausted: true,
+                    rank: 0,
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
@@ -1883,6 +1886,7 @@ async fn run_layer_batched(
                     task_index: batch_config.task_index,
                     iterations_used: 0,
                     exhausted: true,
+                    rank: 0,
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
