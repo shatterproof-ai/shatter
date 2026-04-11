@@ -219,6 +219,56 @@ mod tests {
     }
 
     #[test]
+    fn reenqueue_path_interleaves_two_functions() {
+        // Narrow test of the re-enqueue state machine requested in str-b2my.6
+        // review: the single behavior separating round-robin batching from
+        // "one batch per function" degenerate mode is that a task reported
+        // with `exhausted: false` must be re-queued and must NOT starve the
+        // other tasks. Two unbounded functions, batch=50:
+        //
+        //   pop → A (task 0)
+        //   record_outcome(A, exhausted: false)
+        //   pop → B (task 1)   // A must not monopolise; B runs next
+        //   record_outcome(B, exhausted: true)   // B done
+        //   pop → A            // A re-queued and returns now that B is gone
+        //   record_outcome(A, exhausted: true)
+        //   pop → None
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        let b1 = s.next_batch().expect("first batch");
+        assert_eq!(b1.task_index, 0, "first batch should be task 0");
+        assert_eq!(b1.batch_number, 0);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+        });
+
+        let b2 = s.next_batch().expect("second batch");
+        assert_eq!(
+            b2.task_index, 1,
+            "task 0 must yield to task 1 after exhausted:false"
+        );
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: true,
+        });
+
+        let b3 = s.next_batch().expect("task 0 should be re-enqueued");
+        assert_eq!(b3.task_index, 0, "re-enqueued task 0 must reappear");
+        assert_eq!(b3.batch_number, 1, "batch_number advances on re-enqueue");
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+        });
+
+        assert!(s.next_batch().is_none());
+        assert!(s.is_complete());
+    }
+
+    #[test]
     fn round_robin_ordering() {
         let mut s = BatchScheduler::new(3, Some(100), 50);
         let mut order = Vec::new();
