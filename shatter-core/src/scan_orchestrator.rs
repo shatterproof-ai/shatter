@@ -1623,13 +1623,17 @@ async fn run_layer_batched(
     // Per-task live scheduler state accumulator. Populated from disk on
     // layer entry (advisory — load failures become fresh state) and
     // flushed to disk when a function exhausts or the layer ends.
-    // Current entries have no fingerprint stamped yet (str-bo4z.1
-    // wired fingerprint-based freshness for behavior maps; scheduler
-    // state fingerprinting is a follow-up task in the str-bo4z epic).
+    //
+    // Each entry is initialized with the task's current `deep_fp` so any
+    // flush — fresh function, evicted-then-reset function, or final
+    // layer-end flush — stamps the on-disk record with a fingerprint that
+    // future runs can compare against. The body-change invalidation hook
+    // (str-bo4z.2) below relies on this stamp.
     let mut live_states: Vec<SchedulerState> = tasks
         .iter()
         .map(|t| SchedulerState {
             function_id: t.func_name.clone(),
+            fingerprint: t.deep_fp.clone(),
             ..SchedulerState::default()
         })
         .collect();
@@ -1637,7 +1641,17 @@ async fn run_layer_batched(
 
     if let Some(ssc) = scheduler_state_cache.as_ref() {
         for (idx, task) in tasks.iter().enumerate() {
-            match ssc.load(&task.func_name, DEFAULT_SCHEDULER_MODE) {
+            // str-bo4z.2: when we know the current function fingerprint,
+            // route through `load_if_fresh` so a body change clears the
+            // persisted record and the function returns to the queue as
+            // effectively unexplored. Tasks without a deep_fp (legacy /
+            // uninstrumented call sites) fall back to `load` so we don't
+            // regress behavior that pre-dated fingerprint propagation.
+            let result = match task.deep_fp.as_deref() {
+                Some(fp) => ssc.load_if_fresh(&task.func_name, DEFAULT_SCHEDULER_MODE, fp),
+                None => ssc.load(&task.func_name, DEFAULT_SCHEDULER_MODE),
+            };
+            match result {
                 Ok(Some(prior)) => {
                     log::debug!(
                         "scheduler-state cache hit for {}: iterations_consumed={}, batches_completed={}, exhausted={}",
@@ -1648,10 +1662,16 @@ async fn run_layer_batched(
                     );
                     live_states[idx] = prior;
                     live_states[idx].function_id = task.func_name.clone();
+                    // Restamp with the current task fingerprint so the
+                    // next persist captures it. (When deep_fp is Some,
+                    // load_if_fresh guarantees the loaded record's
+                    // fingerprint already equals deep_fp; the explicit
+                    // assignment keeps the invariant in one place.)
+                    live_states[idx].fingerprint = task.deep_fp.clone();
                 }
                 Ok(None) => {
                     log::debug!(
-                        "scheduler-state cache miss for {} — starting fresh",
+                        "scheduler-state cache miss or stale fingerprint for {} — starting fresh",
                         task.func_name,
                     );
                 }
@@ -8596,6 +8616,120 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // --- str-bo4z.2: body-change invalidation regression guards ---
+    //
+    // The full `run_layer_batched` requires a live frontend subprocess so
+    // we can't drive it from a unit test. Instead, these tests exercise
+    // the cache call sequence the load loop uses (`load_if_fresh` keyed
+    // on the task's `deep_fp`) to lock in the contract.
+
+    #[test]
+    fn load_if_fresh_clears_stale_state_for_changed_function() {
+        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        // Pre-populate as if a previous run had partially explored
+        // `pkg:fn_changed` and recorded substantial progress under
+        // fingerprint OLD.
+        let prior = SchedulerState {
+            function_id: "pkg:fn_changed".into(),
+            fingerprint: Some("OLD".into()),
+            iterations_consumed: 200,
+            batches_completed: 7,
+            exhausted: true,
+            ..SchedulerState::default()
+        };
+        cache.store(&prior, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        // Same call shape the load loop uses when the task's current
+        // deep_fp is "NEW".
+        let loaded = cache
+            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .unwrap();
+        assert_eq!(
+            loaded, None,
+            "body change must drop stale state so the function returns to the queue unexplored"
+        );
+
+        // Idempotency: a second pass observes a clean cache miss.
+        let loaded_again = cache
+            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .unwrap();
+        assert_eq!(loaded_again, None);
+
+        // The on-disk file is gone — a plain `load` also reports a miss.
+        assert_eq!(
+            cache
+                .load("pkg:fn_changed", DEFAULT_SCHEDULER_MODE)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn load_if_fresh_preserves_state_for_unchanged_function() {
+        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let prior = SchedulerState {
+            function_id: "pkg:fn_stable".into(),
+            fingerprint: Some("FP".into()),
+            iterations_consumed: 75,
+            batches_completed: 4,
+            exhausted: false,
+            ..SchedulerState::default()
+        };
+        cache.store(&prior, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let loaded = cache
+            .load_if_fresh("pkg:fn_stable", DEFAULT_SCHEDULER_MODE, "FP")
+            .unwrap()
+            .expect("matching fingerprint must reload state");
+        assert_eq!(loaded.iterations_consumed, 75);
+        assert_eq!(loaded.batches_completed, 4);
+        assert!(!loaded.exhausted);
+    }
+
+    #[test]
+    fn load_if_fresh_does_not_disturb_sibling_functions() {
+        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let changed = SchedulerState {
+            function_id: "pkg:fn_changed".into(),
+            fingerprint: Some("OLD".into()),
+            iterations_consumed: 50,
+            ..SchedulerState::default()
+        };
+        let stable = SchedulerState {
+            function_id: "pkg:fn_stable".into(),
+            fingerprint: Some("STABLE".into()),
+            iterations_consumed: 100,
+            ..SchedulerState::default()
+        };
+        cache.store(&changed, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&stable, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        // Invalidate the changed function.
+        let dropped = cache
+            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .unwrap();
+        assert_eq!(dropped, None);
+
+        // Sibling is fully recoverable under its own (matching) fingerprint.
+        let kept = cache
+            .load_if_fresh("pkg:fn_stable", DEFAULT_SCHEDULER_MODE, "STABLE")
+            .unwrap()
+            .expect("unrelated function must keep its state");
+        assert_eq!(kept.iterations_consumed, 100);
     }
 
     #[test]

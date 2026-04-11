@@ -619,6 +619,45 @@ impl SchedulerStateCache {
         Ok(fresh)
     }
 
+    /// Load cached scheduler state for `(function_id, mode)` only if its
+    /// stored fingerprint matches `current_fingerprint`.
+    ///
+    /// Returns `Ok(Some(state))` when the cached fingerprint exactly equals
+    /// `current_fingerprint`. On any kind of staleness — fingerprint mismatch,
+    /// legacy entry written without a fingerprint, version-skewed envelope, or
+    /// unparseable bytes — the on-disk file is unlinked (best-effort) and
+    /// `Ok(None)` is returned, so the caller starts the function as
+    /// effectively unexplored. A genuine filesystem I/O failure other than
+    /// `NotFound` is the only `Err` path.
+    ///
+    /// This is the body-change invalidation hook for str-bo4z.2: callers in
+    /// [`crate::scan_orchestrator`] use it instead of [`Self::load`] when they
+    /// have a current function fingerprint, so a function whose body has
+    /// changed since the last run does not resume from stale scheduler memory.
+    pub fn load_if_fresh(
+        &self,
+        function_id: &str,
+        mode: &str,
+        current_fingerprint: &str,
+    ) -> Result<Option<SchedulerState>, CacheError> {
+        let Some(state) = self.load(function_id, mode)? else {
+            return Ok(None);
+        };
+        let fresh = state
+            .fingerprint
+            .as_deref()
+            .is_some_and(|fp| fp == current_fingerprint);
+        if !fresh {
+            if let Err(e) = self.clear_function(function_id, mode) {
+                log::warn!(
+                    "failed to drop stale scheduler state {function_id} (mode={mode}): {e}"
+                );
+            }
+            return Ok(None);
+        }
+        Ok(Some(state))
+    }
+
     /// Remove the on-disk entry for `(function_id, mode)` if present.
     ///
     /// Missing files are not an error — this is a best-effort cleanup.
@@ -1464,6 +1503,121 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_state_load_if_fresh_returns_state_when_fingerprint_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("matchFunc");
+        state.fingerprint = Some("fp-current".to_string());
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let loaded = cache
+            .load_if_fresh("matchFunc", DEFAULT_SCHEDULER_MODE, "fp-current")
+            .unwrap();
+        assert_eq!(loaded, Some(state));
+
+        let path = dir.path().join("matchFunc.scheduler.default.json");
+        assert!(path.exists(), "fresh entry must not be unlinked");
+    }
+
+    #[test]
+    fn scheduler_state_load_if_fresh_returns_none_and_unlinks_when_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("staleFunc");
+        state.fingerprint = Some("fp-old".to_string());
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("staleFunc.scheduler.default.json");
+        assert!(path.exists());
+
+        let loaded = cache
+            .load_if_fresh("staleFunc", DEFAULT_SCHEDULER_MODE, "fp-new")
+            .unwrap();
+        assert_eq!(loaded, None);
+        assert!(!path.exists(), "stale entry must be unlinked");
+        assert_eq!(
+            cache.load("staleFunc", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_load_if_fresh_returns_none_for_legacy_no_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("legacyFunc");
+        state.fingerprint = None;
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("legacyFunc.scheduler.default.json");
+        assert!(path.exists());
+
+        let loaded = cache
+            .load_if_fresh("legacyFunc", DEFAULT_SCHEDULER_MODE, "any-fp")
+            .unwrap();
+        assert_eq!(loaded, None);
+        assert!(!path.exists(), "legacy entry must be treated as stale");
+    }
+
+    #[test]
+    fn scheduler_state_load_if_fresh_returns_none_on_cache_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let loaded = cache
+            .load_if_fresh("never-stored", DEFAULT_SCHEDULER_MODE, "fp")
+            .unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn scheduler_state_load_if_fresh_idempotent_on_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("idemFunc");
+        state.fingerprint = Some("fp-old".to_string());
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let first = cache
+            .load_if_fresh("idemFunc", DEFAULT_SCHEDULER_MODE, "fp-new")
+            .unwrap();
+        let second = cache
+            .load_if_fresh("idemFunc", DEFAULT_SCHEDULER_MODE, "fp-new")
+            .unwrap();
+        assert_eq!(first, None);
+        assert_eq!(second, None);
+    }
+
+    #[test]
+    fn scheduler_state_load_if_fresh_does_not_touch_other_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut a = sample_scheduler_state("funcA");
+        a.fingerprint = Some("fp-a".to_string());
+        let mut b = sample_scheduler_state("funcB");
+        b.fingerprint = Some("fp-b".to_string());
+        cache.store(&a, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&b, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        // Invalidate funcA with a wrong fingerprint.
+        let dropped = cache
+            .load_if_fresh("funcA", DEFAULT_SCHEDULER_MODE, "fp-changed")
+            .unwrap();
+        assert_eq!(dropped, None);
+
+        // funcB is still recoverable under its own correct fingerprint.
+        let kept = cache
+            .load_if_fresh("funcB", DEFAULT_SCHEDULER_MODE, "fp-b")
+            .unwrap();
+        assert_eq!(kept, Some(b));
+    }
+
+    #[test]
     fn scheduler_state_sidecar_does_not_leak_into_behavior_map_cache() {
         // str-bo4z.5: SchedulerStateCache sidecars must be ignored by
         // BehaviorMapCache::{load_all, load_all_for_file}. A regression here
@@ -1835,6 +1989,147 @@ mod proptests {
                 .load(&state.function_id, DEFAULT_SCHEDULER_MODE)
                 .unwrap();
             prop_assert_eq!(loaded, Some(state));
+        }
+
+        /// str-bo4z.2 invariant 1: storing with fingerprint X then loading
+        /// via load_if_fresh under the same X must return the original state
+        /// unchanged. "Unchanged functions keep their state."
+        #[test]
+        fn scheduler_state_load_if_fresh_returns_state_when_fresh(
+            mut state in arb_scheduler_state(),
+            fp in "[a-f0-9]{32}",
+        ) {
+            state.fingerprint = Some(fp.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let loaded = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp)
+                .unwrap();
+            prop_assert_eq!(loaded, Some(state.clone()));
+
+            // Fresh path must not unlink the file.
+            let path = cache.path_for(&state.function_id, DEFAULT_SCHEDULER_MODE);
+            prop_assert!(path.exists(), "fresh entry must remain on disk");
+        }
+
+        /// str-bo4z.2 invariant 2: storing with fingerprint X and loading via
+        /// load_if_fresh under any Y != X must return None AND remove the
+        /// on-disk entry. "After body change, scheduler state for that
+        /// function is empty."
+        #[test]
+        fn scheduler_state_load_if_fresh_invalidates_on_body_change(
+            mut state in arb_scheduler_state(),
+            fp_old in "[a-f0-9]{32}",
+            fp_new in "[a-f0-9]{32}",
+        ) {
+            prop_assume!(fp_old != fp_new);
+            state.fingerprint = Some(fp_old);
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let loaded = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp_new)
+                .unwrap();
+            prop_assert_eq!(loaded, None);
+
+            // The on-disk file must be gone, and a follow-up plain load is a
+            // clean cache miss.
+            let path = cache.path_for(&state.function_id, DEFAULT_SCHEDULER_MODE);
+            prop_assert!(!path.exists(), "stale entry must be unlinked");
+            prop_assert_eq!(
+                cache.load(&state.function_id, DEFAULT_SCHEDULER_MODE).unwrap(),
+                None
+            );
+        }
+
+        /// str-bo4z.2 invariant 3: load_if_fresh is idempotent on the stale
+        /// path. Calling it twice with a mismatched fingerprint is
+        /// indistinguishable from calling it once: both calls return None and
+        /// neither panics or errors. The first call removes the file; the
+        /// second sees a cache miss and short-circuits.
+        #[test]
+        fn scheduler_state_load_if_fresh_idempotent_on_stale(
+            mut state in arb_scheduler_state(),
+            fp_old in "[a-f0-9]{32}",
+            fp_new in "[a-f0-9]{32}",
+        ) {
+            prop_assume!(fp_old != fp_new);
+            state.fingerprint = Some(fp_old);
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let first = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp_new)
+                .unwrap();
+            let second = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp_new)
+                .unwrap();
+            prop_assert_eq!(&first, &None);
+            prop_assert_eq!(&second, &None);
+        }
+
+        /// str-bo4z.2 invariant 4: load_if_fresh is idempotent on the fresh
+        /// path. Two consecutive calls with the matching fingerprint must
+        /// return identical state and leave the file on disk both times.
+        #[test]
+        fn scheduler_state_load_if_fresh_idempotent_on_fresh(
+            mut state in arb_scheduler_state(),
+            fp in "[a-f0-9]{32}",
+        ) {
+            state.fingerprint = Some(fp.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let first = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp)
+                .unwrap();
+            let second = cache
+                .load_if_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp)
+                .unwrap();
+            prop_assert_eq!(&first, &Some(state.clone()));
+            prop_assert_eq!(&second, &Some(state));
+        }
+
+        /// str-bo4z.2 invariant 5: invalidating one function via
+        /// load_if_fresh with a wrong fingerprint must not touch any
+        /// unrelated function's persisted state. Cross-function blast radius
+        /// is exactly zero.
+        #[test]
+        fn scheduler_state_load_if_fresh_does_not_touch_other_functions(
+            mut a in arb_scheduler_state(),
+            mut b in arb_scheduler_state(),
+            fp_a in "[a-f0-9]{32}",
+            fp_b in "[a-f0-9]{32}",
+            fp_changed in "[a-f0-9]{32}",
+        ) {
+            // Force distinct function ids so the two records own separate files.
+            prop_assume!(a.function_id != b.function_id);
+            prop_assume!(fp_a != fp_changed);
+            a.fingerprint = Some(fp_a);
+            b.fingerprint = Some(fp_b.clone());
+
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&a, DEFAULT_SCHEDULER_MODE).unwrap();
+            cache.store(&b, DEFAULT_SCHEDULER_MODE).unwrap();
+
+            // Invalidate `a` with a wrong fingerprint.
+            let dropped = cache
+                .load_if_fresh(&a.function_id, DEFAULT_SCHEDULER_MODE, &fp_changed)
+                .unwrap();
+            prop_assert_eq!(dropped, None);
+
+            // `b` survives untouched.
+            let kept = cache
+                .load_if_fresh(&b.function_id, DEFAULT_SCHEDULER_MODE, &fp_b)
+                .unwrap();
+            prop_assert_eq!(kept, Some(b));
         }
     }
 }
