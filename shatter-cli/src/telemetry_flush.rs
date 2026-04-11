@@ -312,13 +312,13 @@ mod tests {
 
     #[test]
     fn flush_max_events_constant_is_positive() {
-        assert!(FLUSH_MAX_EVENTS > 0);
-        assert!(FLUSH_MAX_EVENTS <= 100);
+        const { assert!(FLUSH_MAX_EVENTS > 0) };
+        const { assert!(FLUSH_MAX_EVENTS <= 100) };
     }
 
     #[test]
     fn flush_timeout_constant_is_positive() {
-        assert!(FLUSH_TIMEOUT_SECS > 0);
+        const { assert!(FLUSH_TIMEOUT_SECS > 0) };
     }
 
     // ── SHATTER_TELEMETRY_DEBUG flush path (temp queue file) ──────────────

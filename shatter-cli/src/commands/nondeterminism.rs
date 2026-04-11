@@ -447,8 +447,12 @@ mod tests {
         };
 
         // Write twice — should not duplicate.
-        shatter_core::config::update_nondeterminism_config(&config_path, &[decl.clone()], &[])
-            .unwrap();
+        shatter_core::config::update_nondeterminism_config(
+            &config_path,
+            std::slice::from_ref(&decl),
+            &[],
+        )
+        .unwrap();
         shatter_core::config::update_nondeterminism_config(&config_path, &[decl], &[]).unwrap();
 
         let loaded = shatter_core::config::parse_config(&config_path).unwrap();
