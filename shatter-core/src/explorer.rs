@@ -179,10 +179,36 @@ pub struct ExploreProgressSnapshot {
     pub paths_found: usize,
     /// Total branches reported by static analysis (if known).
     pub total_branches: Option<usize>,
+    /// Number of distinct branches covered so far (unique branch IDs with
+    /// recorded discoveries). `None` when the explorer does not track per-branch
+    /// discovery attribution.
+    pub branches_covered: Option<usize>,
+    /// MC/DC summary when condition coverage tracking is enabled:
+    /// `(total_conditions, independent_conditions, opaque_conditions)`.
+    pub mcdc_summary: Option<(usize, usize, usize)>,
+    /// Iterations elapsed since the last newly-discovered branch. Non-zero
+    /// values mean the function is spinning without finding new coverage —
+    /// surfaces the "continuing without new discoveries" signal.
+    pub iters_since_new_discovery: u32,
 }
 
 /// Callback type for receiving periodic exploration progress summaries.
 pub type ProgressCallback = dyn Fn(&ExploreProgressSnapshot) + Send + Sync;
+
+/// Bundle of metadata the explorer / orchestrator loops need in order to emit
+/// enriched progress snapshots. Wrapping the callback and the
+/// explorer-external hints (e.g. `total_branches` from static analysis) keeps
+/// the `explore` / `explore_function` signatures stable when future snapshot
+/// fields are added.
+#[derive(Copy, Clone)]
+pub struct ProgressHints<'a> {
+    /// Where to send snapshots. Invoked on the periodic cadence defined by
+    /// [`PROGRESS_SUMMARY_INTERVAL_SECS`].
+    pub callback: &'a ProgressCallback,
+    /// Total branches reported by static analysis, if known. Surfaces as the
+    /// denominator in "N/M branches" output.
+    pub total_branches: Option<usize>,
+}
 
 /// Summary of a single function execution during exploration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,7 +776,7 @@ pub async fn explore_function(
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
     mut setup_mgr: Option<&mut SetupManager>,
-    progress_cb: Option<&ProgressCallback>,
+    progress_hints: Option<ProgressHints<'_>>,
 ) -> Result<ObservationOutput, ExploreError> {
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
@@ -867,6 +893,14 @@ pub async fn explore_function(
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut iterations: u32 = 0;
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+
+    // Tracked for progress reporting: number of branches observed at the last
+    // periodic snapshot, and the iteration index at which that observation was
+    // taken. Their difference feeds `iters_since_new_discovery` so the CLI can
+    // surface the "continuing without new discoveries" signal from the issue
+    // acceptance criteria.
+    let mut last_reported_branches: usize = 0;
+    let mut last_discovery_iteration: u32 = 0;
 
     // --- Prepare lifecycle ---
     // When the frontend supports `prepare`, pre-build the harness once so all
@@ -1090,15 +1124,26 @@ pub async fn explore_function(
         iterations += 1;
 
         // --- Periodic progress summary ---
-        if let Some(cb) = progress_cb {
+        // Track branch discovery growth even when no callback is registered so
+        // the "iters since new discovery" counter remains accurate across
+        // subsequent periodic emissions.
+        if discoveries.len() > last_reported_branches {
+            last_reported_branches = discoveries.len();
+            last_discovery_iteration = iterations;
+        }
+        if let Some(hints) = progress_hints.as_ref() {
             let since_last = last_summary_time.elapsed();
             if since_last >= Duration::from_secs(PROGRESS_SUMMARY_INTERVAL_SECS) {
-                cb(&ExploreProgressSnapshot {
+                let total_branches = hints.total_branches.or(Some(analysis.branches.len()));
+                (hints.callback)(&ExploreProgressSnapshot {
                     function_name: analysis.name.clone(),
                     elapsed: explore_start.elapsed(),
                     iterations,
                     paths_found: obs_state.seen_paths.len(),
-                    total_branches: Some(analysis.branches.len()),
+                    total_branches,
+                    branches_covered: Some(discoveries.len()),
+                    mcdc_summary: None,
+                    iters_since_new_discovery: iterations.saturating_sub(last_discovery_iteration),
                 });
                 last_summary_time = Instant::now();
             }
@@ -4161,6 +4206,47 @@ mod tests {
         assert!(
             !report.contains("GA:"),
             "report should not contain GA section when stats are None"
+        );
+    }
+
+    #[test]
+    fn progress_hints_callback_receives_snapshot_with_new_fields() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Vec<ExploreProgressSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let cb: Box<ProgressCallback> = Box::new(move |snap: &ExploreProgressSnapshot| {
+            sink.lock().unwrap().push(snap.clone());
+        });
+        let hints = ProgressHints {
+            callback: cb.as_ref(),
+            total_branches: Some(12),
+        };
+
+        (hints.callback)(&ExploreProgressSnapshot {
+            function_name: "classifyNumber".into(),
+            elapsed: Duration::from_secs(15),
+            iterations: 847,
+            paths_found: 5,
+            total_branches: hints.total_branches,
+            branches_covered: Some(8),
+            mcdc_summary: Some((7, 3, 0)),
+            iters_since_new_discovery: 12,
+        });
+
+        let snaps = captured.lock().unwrap();
+        assert_eq!(snaps.len(), 1);
+        let snap = &snaps[0];
+        assert_eq!(snap.function_name, "classifyNumber");
+        assert_eq!(snap.total_branches, Some(12));
+        assert_eq!(snap.branches_covered, Some(8));
+        assert_eq!(snap.mcdc_summary, Some((7, 3, 0)));
+        assert_eq!(snap.iters_since_new_discovery, 12);
+        let covered = snap.branches_covered.unwrap();
+        let total = snap.total_branches.unwrap();
+        assert!(
+            covered <= total,
+            "branches_covered ({covered}) must not exceed total_branches ({total})"
         );
     }
 }

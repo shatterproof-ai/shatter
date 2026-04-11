@@ -943,6 +943,22 @@ pub struct ProgressEvent {
     pub total: usize,
     /// Milliseconds elapsed since the scan started.
     pub elapsed_ms: u64,
+    /// Cumulative distinct branches covered for this function so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches_covered: Option<usize>,
+    /// Total branches reported by static analysis for this function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches_total: Option<usize>,
+    /// Total MC/DC conditions tracked, when MC/DC coverage is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_total: Option<usize>,
+    /// Independent MC/DC conditions satisfied so far, when MC/DC is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_independent: Option<usize>,
+    /// Iterations without a new branch discovery. Non-zero values signal the
+    /// function is continuing to run without surfacing new coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iters_since_new_discovery: Option<u32>,
 }
 
 impl ProgressEvent {
@@ -956,6 +972,11 @@ impl ProgressEvent {
             current,
             total,
             elapsed_ms,
+            branches_covered: None,
+            branches_total: None,
+            mcdc_total: None,
+            mcdc_independent: None,
+            iters_since_new_discovery: None,
         }
     }
 
@@ -972,6 +993,31 @@ impl ProgressEvent {
             status: Some(status.into()),
             ..Self::new(function, current, total, elapsed_ms)
         }
+    }
+
+    /// Attach cumulative branch coverage counts to this event.
+    #[must_use]
+    pub fn with_branch_coverage(mut self, covered: usize, total: usize) -> Self {
+        self.branches_covered = Some(covered);
+        self.branches_total = Some(total);
+        self
+    }
+
+    /// Attach an MC/DC summary `(total_conditions, independent_conditions)` to
+    /// this event. Callers pass the pair from
+    /// [`crate::mcdc::McdcTable::summary`].
+    #[must_use]
+    pub fn with_mcdc(mut self, mcdc_total: usize, mcdc_independent: usize) -> Self {
+        self.mcdc_total = Some(mcdc_total);
+        self.mcdc_independent = Some(mcdc_independent);
+        self
+    }
+
+    /// Attach an "iterations without new discovery" counter.
+    #[must_use]
+    pub fn with_idle_iters(mut self, iters: u32) -> Self {
+        self.iters_since_new_discovery = Some(iters);
+        self
     }
 
     /// Serialize this event as a JSON string.
@@ -1791,6 +1837,54 @@ mod tests {
         let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.status.as_deref(), Some("skipped"));
         assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn progress_event_new_omits_optional_fields_in_json() {
+        let event = ProgressEvent::new("f", 1, 2, 100);
+        let json = event.to_json().expect("serialize");
+        assert!(
+            !json.contains("branches_covered"),
+            "bare progress event should not emit branches_covered: {json}"
+        );
+        assert!(
+            !json.contains("mcdc_total"),
+            "bare progress event should not emit mcdc_total: {json}"
+        );
+        assert!(
+            !json.contains("iters_since_new_discovery"),
+            "bare progress event should not emit iters_since_new_discovery: {json}"
+        );
+    }
+
+    #[test]
+    fn progress_event_with_coverage_round_trips() {
+        let event = ProgressEvent::new("classifyNumber", 1, 5, 1234)
+            .with_branch_coverage(8, 12)
+            .with_mcdc(7, 3)
+            .with_idle_iters(42);
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(event, deserialized);
+        assert_eq!(deserialized.branches_covered, Some(8));
+        assert_eq!(deserialized.branches_total, Some(12));
+        assert_eq!(deserialized.mcdc_total, Some(7));
+        assert_eq!(deserialized.mcdc_independent, Some(3));
+        assert_eq!(deserialized.iters_since_new_discovery, Some(42));
+    }
+
+    #[test]
+    fn progress_event_legacy_json_deserializes_without_new_fields() {
+        // Earlier producers/consumers did not know about the optional fields.
+        // The struct must still accept their shape unchanged.
+        let legacy = r#"{"type":"progress","function":"f","current":1,"total":3,"elapsed_ms":200}"#;
+        let event: ProgressEvent = serde_json::from_str(legacy).expect("deserialize legacy");
+        assert_eq!(event.function, "f");
+        assert_eq!(event.branches_covered, None);
+        assert_eq!(event.branches_total, None);
+        assert_eq!(event.mcdc_total, None);
+        assert_eq!(event.mcdc_independent, None);
+        assert_eq!(event.iters_since_new_discovery, None);
     }
 
     #[test]
