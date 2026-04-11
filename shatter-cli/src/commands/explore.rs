@@ -552,6 +552,53 @@ fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, St
     Ok(artifacts)
 }
 
+/// Minimum iterations-without-discovery before the periodic progress line
+/// appends an `(idle N)` tag. Zero or one would be noise on the very first
+/// snapshot right after the explore loop warms up.
+const IDLE_STREAK_THRESHOLD: u32 = 2;
+
+/// Render a periodic explore progress snapshot as a single human-readable
+/// stderr line. Shared between random and concolic explorer paths so the two
+/// produce visually identical output.
+///
+/// Output example:
+///   `[12s] classifyNumber: 847 iters, 5 paths, 8/12 branches, mcdc 3/7, 55.2 iter/s (idle 320)`
+fn format_progress_snapshot(snapshot: &ExploreProgressSnapshot) -> String {
+    let secs = snapshot.elapsed.as_secs();
+    let total_branches_label = snapshot
+        .total_branches
+        .map_or_else(|| "?".to_string(), |t| t.to_string());
+    let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
+        snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    let branches_segment = match snapshot.branches_covered {
+        Some(covered) => format!("{covered}/{total_branches_label} branches"),
+        None => format!("{}/{} paths", snapshot.paths_found, total_branches_label),
+    };
+
+    let mut line = format!(
+        "[{secs}s] {}: {} iters, {} paths, {}, {:.1} iter/s",
+        snapshot.function_name,
+        snapshot.iterations,
+        snapshot.paths_found,
+        branches_segment,
+        rate,
+    );
+
+    if let Some((total, independent, _opaque)) = snapshot.mcdc_summary {
+        line.push_str(&format!(", mcdc {independent}/{total}"));
+    }
+
+    if snapshot.iters_since_new_discovery >= IDLE_STREAK_THRESHOLD {
+        line.push_str(&format!(" (idle {})", snapshot.iters_since_new_discovery));
+    }
+
+    line
+}
+
 fn emit_explore_progress(
     function: &str,
     current: usize,
@@ -1226,23 +1273,7 @@ pub(crate) async fn run_explore(
     // Periodic progress callback (hoisted — value does not depend on target).
     let periodic_progress: Option<Arc<Box<ProgressCallback>>> = if log_level >= LogLevel::Info {
         Some(Arc::new(Box::new(|snapshot: &ExploreProgressSnapshot| {
-            let secs = snapshot.elapsed.as_secs();
-            let branches = snapshot
-                .total_branches
-                .map_or("?".to_string(), |t| t.to_string());
-            let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
-                snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
-            } else {
-                0.0
-            };
-            eprintln!(
-                "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
-                snapshot.function_name,
-                snapshot.iterations,
-                snapshot.paths_found,
-                branches,
-                rate,
-            );
+            eprintln!("{}", format_progress_snapshot(snapshot));
         })))
     } else {
         None
@@ -2102,6 +2133,12 @@ pub(crate) async fn run_explore(
                 total_branches_covered += obs.unique_paths;
             }
 
+            // Snapshot the accumulator's prior state before merge so we can
+            // distinguish "first batch for this function" (no prior state yet)
+            // from a re-enqueue that added zero new discoveries (the idle
+            // signal required by str-cii2).
+            let prior_batches_merged = accumulators[work_index].batches_merged;
+
             if log_level >= LogLevel::Info {
                 let paths = batch_outcome
                     .result
@@ -2113,16 +2150,55 @@ pub(crate) async fn run_explore(
                 } else {
                     "err"
                 };
-                eprintln!(
-                    "[batch {}/{}] {}: {} iters, {} paths, {:.1}s ({})",
+                // Cumulative per-function stats include the freshly completed
+                // batch merged in: covered = prior ∪ this batch's branch IDs,
+                // MC/DC = component-wise max across all batches so far.
+                let prior_covered = accumulators[work_index].discoveries.len();
+                let new_branches_this_batch = batch_rank as usize;
+                let cumulative_covered = prior_covered + new_branches_this_batch;
+                let total_branches_for_func = work_items[work_index].func.branches.len();
+                let cumulative_mcdc = match (
+                    accumulators[work_index].mcdc_summary,
+                    batch_outcome
+                        .result
+                        .as_ref()
+                        .ok()
+                        .and_then(|obs| obs.mcdc_summary),
+                ) {
+                    (Some(cur), Some(new)) => {
+                        Some((cur.0.max(new.0), cur.1.max(new.1), cur.2.max(new.2)))
+                    }
+                    (None, new) => new,
+                    (cur, None) => cur,
+                };
+
+                let mut line = format!(
+                    "[batch {}/{}] {}: {} iters, {} paths, {}/{} branches",
                     batches_completed,
                     batches_launched,
                     accumulators[work_index].function_name,
                     iters_used,
                     paths,
+                    cumulative_covered,
+                    total_branches_for_func,
+                );
+                if let Some((total, independent, _)) = cumulative_mcdc {
+                    line.push_str(&format!(", mcdc {independent}/{total}"));
+                }
+                line.push_str(&format!(
+                    ", {:.1}s ({})",
                     batch_outcome.wall_time.as_secs_f64(),
                     status,
-                );
+                ));
+
+                // Re-enqueue idle signal: prior batches exist, this one added
+                // no new branch discoveries, and the function will keep being
+                // scheduled because it did not exhaust its iteration cap.
+                if prior_batches_merged > 0 && new_branches_this_batch == 0 && !exhausted {
+                    line.push_str(" (continuing without new discoveries)");
+                }
+
+                eprintln!("{line}");
             }
 
             func_wall_time[work_index] += batch_outcome.wall_time;

@@ -943,6 +943,22 @@ pub struct ProgressEvent {
     pub total: usize,
     /// Milliseconds elapsed since the scan started.
     pub elapsed_ms: u64,
+    /// Cumulative distinct branches covered for this function so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches_covered: Option<usize>,
+    /// Total branches reported by static analysis for this function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches_total: Option<usize>,
+    /// Total MC/DC conditions tracked, when MC/DC coverage is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_total: Option<usize>,
+    /// Independent MC/DC conditions satisfied so far, when MC/DC is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcdc_independent: Option<usize>,
+    /// Iterations without a new branch discovery. Non-zero values signal the
+    /// function is continuing to run without surfacing new coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iters_since_new_discovery: Option<u32>,
 }
 
 impl ProgressEvent {
@@ -956,6 +972,11 @@ impl ProgressEvent {
             current,
             total,
             elapsed_ms,
+            branches_covered: None,
+            branches_total: None,
+            mcdc_total: None,
+            mcdc_independent: None,
+            iters_since_new_discovery: None,
         }
     }
 
@@ -972,6 +993,31 @@ impl ProgressEvent {
             status: Some(status.into()),
             ..Self::new(function, current, total, elapsed_ms)
         }
+    }
+
+    /// Attach cumulative branch coverage counts to this event.
+    #[must_use]
+    pub fn with_branch_coverage(mut self, covered: usize, total: usize) -> Self {
+        self.branches_covered = Some(covered);
+        self.branches_total = Some(total);
+        self
+    }
+
+    /// Attach an MC/DC summary `(total_conditions, independent_conditions)` to
+    /// this event. Callers pass the pair from
+    /// [`crate::mcdc::McdcTable::summary`].
+    #[must_use]
+    pub fn with_mcdc(mut self, mcdc_total: usize, mcdc_independent: usize) -> Self {
+        self.mcdc_total = Some(mcdc_total);
+        self.mcdc_independent = Some(mcdc_independent);
+        self
+    }
+
+    /// Attach an "iterations without new discovery" counter.
+    #[must_use]
+    pub fn with_idle_iters(mut self, iters: u32) -> Self {
+        self.iters_since_new_discovery = Some(iters);
+        self
     }
 
     /// Serialize this event as a JSON string.
