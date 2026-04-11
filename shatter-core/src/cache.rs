@@ -649,9 +649,7 @@ impl SchedulerStateCache {
             .is_some_and(|fp| fp == current_fingerprint);
         if !fresh {
             if let Err(e) = self.clear_function(function_id, mode) {
-                log::warn!(
-                    "failed to drop stale scheduler state {function_id} (mode={mode}): {e}"
-                );
+                log::warn!("failed to drop stale scheduler state {function_id} (mode={mode}): {e}");
             }
             return Ok(None);
         }
@@ -674,6 +672,223 @@ impl SchedulerStateCache {
         let base = cache_base_path(&self.cache_dir, function_id);
         let safe_mode = sanitize_component(mode);
         base.with_extension(format!("scheduler.{safe_mode}.json"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stored-inputs cache (str-bo4z.3)
+// ---------------------------------------------------------------------------
+
+/// Schema version for the stored-inputs sidecar file.
+///
+/// Bumped independently of `PROTOCOL_VERSION` when the [`StoredInputsCacheEntry`]
+/// layout changes in a way existing readers cannot tolerate.
+pub const STORED_INPUTS_SCHEMA_VERSION: u32 = 1;
+
+/// Versioned envelope for cached stored-input entries.
+///
+/// A protocol-version or schema-version mismatch invalidates the entry
+/// silently on read, mirroring the behavior map and scheduler-state caches.
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredInputsCacheEntry {
+    protocol_version: String,
+    schema_version: u32,
+    function_id: String,
+    signature: crate::fingerprint::FunctionSignature,
+    inputs: Vec<Vec<serde_json::Value>>,
+}
+
+/// Disk-backed cache for storing function input vectors keyed by
+/// [`FunctionSignature`](crate::fingerprint::FunctionSignature).
+///
+/// **Why a separate cache**: [`BehaviorMapCache`] is body-fingerprint-keyed,
+/// so any body edit drops the cached `BehaviorMap` and — because input vectors
+/// live inside `BehaviorMap.behaviors[].input_args` — every previously
+/// exercised input with it. `StoredInputsCache` is signature-keyed instead:
+/// two runs with the same parameter list reuse the same file regardless of
+/// whether the body changed between runs, so inputs that produced interesting
+/// behaviors remain available for replay as seeds.
+///
+/// **Adaptation**: when a function's signature has grown by a trailing tail
+/// (added parameters), cached inputs are padded with JSON nulls to the new
+/// arity. When it has shrunk by a trailing tail (removed parameters), cached
+/// inputs are truncated. Any other shape change (middle insertion, reorder,
+/// prefix type mismatch) is rejected as [`Incompatible`] and the on-disk
+/// entry is unlinked, mirroring [`BehaviorMapCache::is_fresh`]'s staleness-drop
+/// contract. See [`FunctionSignature::compatibility_with`].
+///
+/// Sidecar layout: colocated with the behavior map under the same hierarchical
+/// path, with extension `inputs.json`.
+///
+/// [`Incompatible`]: crate::fingerprint::SignatureCompat::Incompatible
+/// [`FunctionSignature::compatibility_with`]: crate::fingerprint::FunctionSignature::compatibility_with
+#[derive(Debug)]
+pub struct StoredInputsCache {
+    cache_dir: PathBuf,
+}
+
+impl StoredInputsCache {
+    /// Create a new stored-inputs cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Default stored-inputs cache directory: colocated with behavior maps
+    /// under `<project_root>/.shatter-cache/behavior-maps/`.
+    ///
+    /// Sharing the root with other caches lets operators inspect all cached
+    /// artifacts for a function side by side.
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root.join(".shatter-cache").join("behavior-maps")
+    }
+
+    /// Store `inputs` under `function_id` for `signature`, using an atomic
+    /// temp-file + rename write.
+    ///
+    /// Overwrites any existing entry for the same `function_id`; the prior
+    /// entry's signature does not need to be compatible — signature changes
+    /// are handled at load time. Input vectors are persisted verbatim; this
+    /// method does **not** verify that every vector's length equals
+    /// `signature.arity()`. Callers should pass well-formed inputs.
+    pub fn store(
+        &self,
+        function_id: &str,
+        signature: &crate::fingerprint::FunctionSignature,
+        inputs: &[Vec<serde_json::Value>],
+    ) -> Result<(), CacheError> {
+        let path = self.path_for(function_id);
+        let entry = StoredInputsCacheEntry {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            schema_version: STORED_INPUTS_SCHEMA_VERSION,
+            function_id: function_id.to_string(),
+            signature: signature.clone(),
+            inputs: inputs.to_vec(),
+        };
+        let json = serde_json::to_string_pretty(&entry)?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut tmp_os = path.clone().into_os_string();
+        tmp_os.push(".tmp");
+        let tmp_path = PathBuf::from(tmp_os);
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
+
+        Ok(())
+    }
+
+    /// Load stored inputs for `function_id`, adapting them to `current` when
+    /// the stored signature differs by a trailing-tail only.
+    ///
+    /// Returns:
+    /// - `Ok(Some(inputs))` on cache hit. Inputs are adapted as follows:
+    ///   - [`Exact`]: returned unchanged.
+    ///   - [`Additive { added: n }`]: each vector is padded with `n` trailing
+    ///     [`serde_json::Value::Null`]s.
+    ///   - [`Subtractive { removed: n }`]: the last `n` elements are truncated
+    ///     from each vector.
+    ///
+    ///   In every adapted case, every returned vector has length exactly
+    ///   `current.arity()`.
+    /// - `Ok(None)` on cache miss, non-UTF8 contents, parse error,
+    ///   protocol-version mismatch, schema-version mismatch, or
+    ///   [`Incompatible`] signature. In the [`Incompatible`] case the on-disk
+    ///   entry is unlinked (best-effort) before returning.
+    /// - `Err(_)` only on genuine filesystem I/O failure other than `NotFound`.
+    ///
+    /// [`Exact`]: crate::fingerprint::SignatureCompat::Exact
+    /// [`Additive { added: n }`]: crate::fingerprint::SignatureCompat::Additive
+    /// [`Subtractive { removed: n }`]: crate::fingerprint::SignatureCompat::Subtractive
+    /// [`Incompatible`]: crate::fingerprint::SignatureCompat::Incompatible
+    pub fn load_compatible(
+        &self,
+        function_id: &str,
+        current: &crate::fingerprint::FunctionSignature,
+    ) -> Result<Option<Vec<Vec<serde_json::Value>>>, CacheError> {
+        use crate::fingerprint::SignatureCompat;
+
+        let path = self.path_for(function_id);
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(CacheError::Io(e)),
+        };
+        let contents = match std::str::from_utf8(&bytes) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+        let entry: StoredInputsCacheEntry = match serde_json::from_str(contents) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
+        if entry.protocol_version != PROTOCOL_VERSION
+            || entry.schema_version != STORED_INPUTS_SCHEMA_VERSION
+        {
+            return Ok(None);
+        }
+
+        match entry.signature.compatibility_with(current) {
+            SignatureCompat::Exact => Ok(Some(entry.inputs)),
+            SignatureCompat::Additive { added } => {
+                let adapted = entry
+                    .inputs
+                    .into_iter()
+                    .map(|mut v| {
+                        v.extend(std::iter::repeat_n(serde_json::Value::Null, added));
+                        v
+                    })
+                    .collect();
+                Ok(Some(adapted))
+            }
+            SignatureCompat::Subtractive { removed } => {
+                let target = current.arity();
+                let adapted = entry
+                    .inputs
+                    .into_iter()
+                    .map(|mut v| {
+                        let keep = v.len().saturating_sub(removed).min(target);
+                        v.truncate(keep);
+                        v
+                    })
+                    .collect();
+                Ok(Some(adapted))
+            }
+            SignatureCompat::Incompatible => {
+                if path.exists()
+                    && let Err(e) = fs::remove_file(&path)
+                {
+                    log::warn!(
+                        "failed to drop incompatible stored inputs {} at {}: {e}",
+                        function_id,
+                        path.display()
+                    );
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Remove the on-disk entry for `function_id` if present.
+    ///
+    /// Missing files are not an error — this is a best-effort cleanup for
+    /// callers that already know an entry should be dropped.
+    pub fn clear_function(&self, function_id: &str) -> Result<(), CacheError> {
+        let path = self.path_for(function_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CacheError::Io(e)),
+        }
+    }
+
+    fn path_for(&self, function_id: &str) -> PathBuf {
+        let base = cache_base_path(&self.cache_dir, function_id);
+        base.with_extension("inputs.json")
     }
 }
 
@@ -1669,6 +1884,265 @@ mod tests {
         let loaded = cache.load("safeFunc", "weird*mode?").unwrap();
         assert_eq!(loaded, Some(state));
     }
+
+    // --- StoredInputsCache tests (str-bo4z.3) ---
+
+    fn sig(types: &[crate::types::TypeInfo]) -> crate::fingerprint::FunctionSignature {
+        crate::fingerprint::FunctionSignature {
+            param_types: types.to_vec(),
+        }
+    }
+
+    #[test]
+    fn stored_inputs_cache_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int, crate::types::TypeInfo::Str]);
+        let inputs = vec![vec![json!(1), json!("a")], vec![json!(-7), json!("")]];
+
+        cache.store("src/m.ts:f", &s, &inputs).unwrap();
+
+        let loaded = cache.load_compatible("src/m.ts:f", &s).unwrap();
+        assert_eq!(loaded, Some(inputs));
+    }
+
+    #[test]
+    fn stored_inputs_cache_miss_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        let loaded = cache.load_compatible("never:stored", &s).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn stored_inputs_cache_survives_body_change() {
+        // Headline str-bo4z.3 regression: StoredInputsCache is
+        // signature-keyed, not body-fingerprint-keyed, so a body edit that
+        // drops the BehaviorMap cache MUST NOT drop the inputs entry.
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().join("behavior-maps")).unwrap();
+        let inputs_cache = StoredInputsCache::new(dir.path().join("stored-inputs")).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+        let function_id = "src/m.ts:square";
+        let inputs = vec![vec![json!(3)], vec![json!(-4)]];
+
+        // Initial run: store a behavior map (body "v1") and the input vectors.
+        let mut map_v1 = sample_map(function_id);
+        bm_cache
+            .store_with_fingerprint(&map_v1, "body-fp-v1")
+            .unwrap();
+        inputs_cache.store(function_id, &s, &inputs).unwrap();
+
+        // Body edit: is_fresh sees a different body fingerprint and unlinks
+        // the behavior map entry. (Mirrors str-bo4z.1 behavior.)
+        assert!(!bm_cache.is_fresh(function_id, "body-fp-v2").unwrap());
+        assert_eq!(bm_cache.load(function_id).unwrap(), None);
+
+        // The stored inputs MUST still be reachable under the same signature.
+        let loaded = inputs_cache.load_compatible(function_id, &s).unwrap();
+        assert_eq!(loaded, Some(inputs));
+
+        // Touch map_v1 so the helper's unused-var lint is quiet.
+        map_v1.function_id.clear();
+    }
+
+    #[test]
+    fn stored_inputs_cache_drops_incompatible_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let stored_sig = sig(&[crate::types::TypeInfo::Int]);
+        let current_sig = sig(&[crate::types::TypeInfo::Str]);
+        cache
+            .store("src/m.ts:f", &stored_sig, &[vec![json!(7)]])
+            .unwrap();
+
+        let path = cache.path_for("src/m.ts:f");
+        assert!(path.exists(), "entry should exist on disk");
+
+        let loaded = cache.load_compatible("src/m.ts:f", &current_sig).unwrap();
+        assert_eq!(loaded, None);
+        assert!(
+            !path.exists(),
+            "incompatible entry should be unlinked by load_compatible"
+        );
+    }
+
+    #[test]
+    fn stored_inputs_cache_adapts_additive_with_null_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let stored_sig = sig(&[crate::types::TypeInfo::Int]);
+        let current_sig = sig(&[
+            crate::types::TypeInfo::Int,
+            crate::types::TypeInfo::Str,
+            crate::types::TypeInfo::Bool,
+        ]);
+        cache
+            .store("f", &stored_sig, &[vec![json!(1)], vec![json!(2)]])
+            .unwrap();
+
+        let loaded = cache.load_compatible("f", &current_sig).unwrap().unwrap();
+        assert_eq!(
+            loaded,
+            vec![
+                vec![json!(1), serde_json::Value::Null, serde_json::Value::Null],
+                vec![json!(2), serde_json::Value::Null, serde_json::Value::Null],
+            ]
+        );
+        for row in &loaded {
+            assert_eq!(row.len(), current_sig.arity());
+        }
+    }
+
+    #[test]
+    fn stored_inputs_cache_adapts_subtractive_with_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let stored_sig = sig(&[
+            crate::types::TypeInfo::Int,
+            crate::types::TypeInfo::Str,
+            crate::types::TypeInfo::Bool,
+        ]);
+        let current_sig = sig(&[crate::types::TypeInfo::Int]);
+        cache
+            .store(
+                "f",
+                &stored_sig,
+                &[
+                    vec![json!(1), json!("a"), json!(true)],
+                    vec![json!(9), json!("z"), json!(false)],
+                ],
+            )
+            .unwrap();
+
+        let loaded = cache.load_compatible("f", &current_sig).unwrap().unwrap();
+        assert_eq!(loaded, vec![vec![json!(1)], vec![json!(9)]]);
+        for row in &loaded {
+            assert_eq!(row.len(), current_sig.arity());
+        }
+    }
+
+    #[test]
+    fn stored_inputs_cache_protocol_version_mismatch_is_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        // Hand-write an entry with a bad protocol_version.
+        let path = cache.path_for("f");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let bad = serde_json::json!({
+            "protocol_version": "NOT-THE-REAL-VERSION",
+            "schema_version": STORED_INPUTS_SCHEMA_VERSION,
+            "function_id": "f",
+            "signature": { "param_types": ["int"] },
+            "inputs": [[1]]
+        });
+        fs::write(&path, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
+
+        let loaded = cache.load_compatible("f", &s).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn stored_inputs_cache_schema_version_mismatch_is_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        let path = cache.path_for("f");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let bad = serde_json::json!({
+            "protocol_version": PROTOCOL_VERSION,
+            "schema_version": STORED_INPUTS_SCHEMA_VERSION + 1,
+            "function_id": "f",
+            "signature": { "param_types": ["int"] },
+            "inputs": [[1]]
+        });
+        fs::write(&path, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
+
+        let loaded = cache.load_compatible("f", &s).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn stored_inputs_cache_corrupt_bytes_is_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        let path = cache.path_for("f");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, b"{ not json }").unwrap();
+
+        let loaded = cache.load_compatible("f", &s).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn stored_inputs_cache_store_overwrites_same_function_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        cache.store("f", &s, &[vec![json!(1)]]).unwrap();
+        cache
+            .store("f", &s, &[vec![json!(2)], vec![json!(3)]])
+            .unwrap();
+
+        let loaded = cache.load_compatible("f", &s).unwrap().unwrap();
+        assert_eq!(loaded, vec![vec![json!(2)], vec![json!(3)]]);
+    }
+
+    #[test]
+    fn stored_inputs_cache_clear_function_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let s = sig(&[crate::types::TypeInfo::Int]);
+
+        cache.store("f", &s, &[vec![json!(1)]]).unwrap();
+        cache.clear_function("f").unwrap();
+        // Second clear is a no-op (file already gone).
+        cache.clear_function("f").unwrap();
+        // Third clear on a never-stored id is also a no-op.
+        cache.clear_function("never-stored").unwrap();
+
+        let loaded = cache.load_compatible("f", &s).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn stored_inputs_cache_sidecars_behavior_map_path() {
+        // Confirm the sidecar layout: the inputs file sits next to the
+        // behavior map file under the same hierarchical directory, so an
+        // operator can ls a directory and see both artifacts.
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let inputs_cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+        let function_id = "src/auth.ts:login";
+        let s = sig(&[crate::types::TypeInfo::Str]);
+
+        bm_cache.store(&sample_map(function_id)).unwrap();
+        inputs_cache
+            .store(function_id, &s, &[vec![json!("admin")]])
+            .unwrap();
+
+        let bm_path = dir.path().join("src/auth.ts/login.json");
+        let inputs_path = dir.path().join("src/auth.ts/login.inputs.json");
+        assert!(bm_path.exists(), "behavior map should exist at {bm_path:?}");
+        assert!(
+            inputs_path.exists(),
+            "stored inputs should exist at {inputs_path:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2130,6 +2604,181 @@ mod proptests {
                 .load_if_fresh(&b.function_id, DEFAULT_SCHEDULER_MODE, &fp_b)
                 .unwrap();
             prop_assert_eq!(kept, Some(b));
+        }
+    }
+
+    // --- StoredInputsCache proptests (str-bo4z.3) ---
+
+    use crate::fingerprint::{FunctionSignature, SignatureCompat};
+    use crate::test_arbitraries::arb_type_info;
+
+    /// Depth-bounded strategy for a function signature.
+    ///
+    /// Keeps `arb_type_info` depth at 2 and caps arity at 4 per
+    /// `formal-methods-policy`: bounded recursion, bounded explosion.
+    fn arb_function_signature() -> impl Strategy<Value = FunctionSignature> {
+        prop::collection::vec(arb_type_info(2), 0..=4)
+            .prop_map(|param_types| FunctionSignature { param_types })
+    }
+
+    /// JSON values that survive serde roundtrip under PartialEq. Floats are
+    /// bounded to the well-rounded range per `formal-methods-policy`:
+    /// filter NaN, avoid large exponents whose JSON textual form loses a
+    /// ULP or two through serde_json's pretty-printer.
+    fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
+        prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i64>().prop_map(serde_json::Value::from),
+            (-1_000_000i64..=1_000_000i64).prop_map(|n| serde_json::Value::from(n as f64)),
+            ".*".prop_map(serde_json::Value::String),
+        ]
+    }
+
+    /// Generate a signature paired with an input matrix whose rows match the
+    /// signature's arity. `prop_flat_map` is the correct way to thread one
+    /// strategy's output into another so proptest can shrink both together.
+    fn arb_signature_and_inputs()
+    -> impl Strategy<Value = (FunctionSignature, Vec<Vec<serde_json::Value>>)> {
+        arb_function_signature().prop_flat_map(|s| {
+            let arity = s.arity();
+            let rows = prop::collection::vec(
+                prop::collection::vec(arb_json_value(), arity..=arity),
+                0..=6,
+            );
+            (Just(s), rows)
+        })
+    }
+
+    proptest! {
+        /// Invariant A (roundtrip preservation): for any signature and any
+        /// input matrix whose rows match the signature's arity, `store` then
+        /// `load_compatible` with the same signature returns the original
+        /// vectors unchanged.
+        #[test]
+        fn stored_inputs_roundtrip_preserves_vectors(
+            (s, inputs) in arb_signature_and_inputs(),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+            cache.store("fid", &s, &inputs).unwrap();
+
+            let loaded = cache.load_compatible("fid", &s).unwrap();
+            prop_assert_eq!(loaded, Some(inputs));
+        }
+
+        /// Invariant B (compatibility duality): for any two signatures A and
+        /// B, A.compat(B) == Additive{n} iff B.compat(A) == Subtractive{n};
+        /// and compatibility is reflexive (A.compat(A) == Exact).
+        #[test]
+        fn stored_inputs_compat_is_reflexive_and_dual(
+            a in arb_function_signature(),
+            b in arb_function_signature(),
+        ) {
+            prop_assert_eq!(a.compatibility_with(&a), SignatureCompat::Exact);
+            prop_assert_eq!(b.compatibility_with(&b), SignatureCompat::Exact);
+
+            match a.compatibility_with(&b) {
+                SignatureCompat::Exact => {
+                    prop_assert_eq!(b.compatibility_with(&a), SignatureCompat::Exact);
+                    prop_assert_eq!(a.arity(), b.arity());
+                }
+                SignatureCompat::Additive { added: n } => {
+                    prop_assert_eq!(
+                        b.compatibility_with(&a),
+                        SignatureCompat::Subtractive { removed: n }
+                    );
+                }
+                SignatureCompat::Subtractive { removed: n } => {
+                    prop_assert_eq!(
+                        b.compatibility_with(&a),
+                        SignatureCompat::Additive { added: n }
+                    );
+                }
+                SignatureCompat::Incompatible => {
+                    prop_assert_eq!(
+                        b.compatibility_with(&a),
+                        SignatureCompat::Incompatible
+                    );
+                }
+            }
+        }
+
+        /// Invariant C (adaptation preserves arity): when load_compatible
+        /// returns Some for any stored signature + current signature pair
+        /// that is not Incompatible, every returned row has length exactly
+        /// `current.arity()`.
+        #[test]
+        fn stored_inputs_adapted_rows_match_current_arity(
+            stored in arb_function_signature(),
+            tail in prop::collection::vec(arb_type_info(2), 0..=3),
+            add_or_remove in any::<bool>(),
+        ) {
+            // Construct `current` as either stored ++ tail (additive) or
+            // stored with a trailing tail removed (subtractive). This
+            // guarantees the prefix constraint and exercises both branches.
+            let current = if add_or_remove {
+                let mut pt = stored.param_types.clone();
+                pt.extend(tail.clone());
+                FunctionSignature { param_types: pt }
+            } else {
+                let keep = stored.arity().saturating_sub(tail.len());
+                FunctionSignature {
+                    param_types: stored.param_types[..keep].to_vec(),
+                }
+            };
+
+            // Skip cases where the compat landed on Incompatible — the
+            // `tail` parameter is arbitrary so for subtractive generation
+            // it can legally differ from the trailing `stored` types, but
+            // here we only need to exercise valid adaptations.
+            let compat = stored.compatibility_with(&current);
+            prop_assume!(!matches!(compat, SignatureCompat::Incompatible));
+
+            // Build inputs whose rows match stored.arity().
+            let arity = stored.arity();
+            let inputs: Vec<Vec<serde_json::Value>> = (0..3)
+                .map(|_| vec![serde_json::Value::Null; arity])
+                .collect();
+
+            let dir = tempfile::tempdir().unwrap();
+            let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+            cache.store("fid", &stored, &inputs).unwrap();
+
+            let loaded = cache.load_compatible("fid", &current).unwrap().unwrap();
+            for row in &loaded {
+                prop_assert_eq!(row.len(), current.arity());
+            }
+        }
+
+        /// Invariant D (incompatible loads unlink): after `store(A)` followed
+        /// by `load_compatible(B)` where A.compat(B) == Incompatible, the
+        /// on-disk entry no longer exists. Mirrors the BehaviorMapCache
+        /// `is_fresh` staleness-drop contract.
+        #[test]
+        fn stored_inputs_incompatible_load_unlinks_entry(
+            a in arb_function_signature(),
+            b in arb_function_signature(),
+        ) {
+            prop_assume!(matches!(
+                a.compatibility_with(&b),
+                SignatureCompat::Incompatible
+            ));
+
+            let arity = a.arity();
+            let inputs: Vec<Vec<serde_json::Value>> = (0..2)
+                .map(|_| vec![serde_json::Value::Null; arity])
+                .collect();
+
+            let dir = tempfile::tempdir().unwrap();
+            let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+            cache.store("fid", &a, &inputs).unwrap();
+            let path = cache.path_for("fid");
+            prop_assert!(path.exists());
+
+            let loaded = cache.load_compatible("fid", &b).unwrap();
+            prop_assert_eq!(loaded, None);
+            prop_assert!(!path.exists(), "incompatible load should unlink");
         }
     }
 }
