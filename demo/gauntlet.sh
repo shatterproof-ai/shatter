@@ -517,7 +517,7 @@ step 26 $TOTAL "Behavioral Specification (JSON)" \
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
 step 27 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
-    bash -c "$SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json && $SHATTER explore --quiet --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
+    bash -c "$SHATTER explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json && $SHATTER explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
 
 # Stage 27: Cross-language compare
 # Reuses the v1 and v2 spec files from step 27 to demonstrate cross-language
@@ -559,13 +559,13 @@ step 34 $TOTAL "Invariant Detection" \
 # Stage 34: Setup + generators via config
 step 35 $TOTAL "Setup + Generators via Config" \
     "Explore with setup/teardown lifecycle and custom type generators from .shatter/config.yaml" \
-    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --config "$EXAMPLES_TS_CONFIG" \
     "$TS_OBJECTS_FN"
 
 # Stage 35: Setup + generators with debug logging
 step 36 $TOTAL "Setup + Generators (Debug)" \
     "Show setup/teardown and generator lifecycle with --log-level debug" \
-    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --config "$EXAMPLES_TS_CONFIG" \
     --log-level debug "$TS_OBJECTS_FN"
 
 # Stage 36: File-level explore (all exported functions)
@@ -626,14 +626,14 @@ step 46 $TOTAL "Revalidate" \
 # Stage 46: Multi-level setup/teardown
 step 47 $TOTAL "Multi-Level Setup/Teardown" \
     "Explore with session + file level setup/teardown from .shatter/config.yaml" \
-    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 30 \
     "$TS_ARITHMETIC_FN"
 
 # Stage 47: Setup with --fail-on-setup-error
 step 48 $TOTAL "Setup Fail-on-Error" \
     "Use --fail-on-setup-error to abort immediately on setup failures" \
-    $SHATTER explore --config "$EXAMPLES_TS_CONFIG" \
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --config "$EXAMPLES_TS_CONFIG" \
     --setup-timeout 10 --fail-on-setup-error \
     "$TS_ARITHMETIC_FN"
 
