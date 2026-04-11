@@ -2860,7 +2860,9 @@ mod tests {
         // Scripted per-batch outcomes: (iterations, discoveries).
         // fn_a: three full-cap batches then converges early on batch 4.
         // fn_b: two full-cap batches then converges early on batch 3.
-        let scripts: Vec<Vec<(u32, Vec<(u32, DiscoveryMethod)>)>> = vec![
+        type Discovery = (u32, DiscoveryMethod);
+        type BatchScript = Vec<(u32, Vec<Discovery>)>;
+        let scripts: Vec<BatchScript> = vec![
             vec![
                 (500, vec![(1, DiscoveryMethod::Z3)]),
                 (500, vec![(2, DiscoveryMethod::Z3)]),
@@ -2873,7 +2875,7 @@ mod tests {
                 (100, vec![]), // early convergence, no new branches
             ],
         ];
-        let mut cursors = vec![0usize, 0usize];
+        let mut cursors = [0usize, 0usize];
         let mut order: Vec<usize> = Vec::new();
         let mut not_exhausted_count = 0u32;
 
