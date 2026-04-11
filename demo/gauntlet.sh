@@ -394,7 +394,7 @@ step 3 $TOTAL "Analyze with Scope Config" \
 # Stage 3: Explore
 step 4 $TOTAL "Generate & Execute Inputs" \
     "Concolic execution: generate inputs to cover all branches" \
-    $SHATTER explore -o "$HTML_REPORT_DIR/explore.html" --stdout "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 -o "$HTML_REPORT_DIR/explore.html" --stdout "${EXAMPLES[@]}"
 
 # Stage 4: Clusters
 step 5 $TOTAL "Show Behavior Clusters" \

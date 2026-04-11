@@ -20,6 +20,7 @@ steps:
     title: "Explore TypeScript Functions"
     description: "Concolic execution: generate inputs to cover all branches"
     command: "explore"
+    args: ["--max-iterations", "20", "--timeout-explore", "15"]
     targets: walkthrough.typescript
     language: typescript
 
