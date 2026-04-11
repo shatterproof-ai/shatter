@@ -174,8 +174,7 @@ Recommended behavior:
 
 ## External Examples Checkout
 
-The repository still uses the `.agents/` git submodule for shared agent rules,
-but the example corpus now lives in the separate
+The example corpus lives in the separate
 `https://github.com/shatterproof-ai/examples` repository and is fetched outside
 this repo under `/tmp`.
 
