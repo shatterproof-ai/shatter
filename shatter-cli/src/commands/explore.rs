@@ -2819,9 +2819,10 @@ mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        load_explore_artifacts, read_explore_artifact, sanitize_artifact_component,
-        write_explore_artifact, write_explore_summary,
+        format_progress_snapshot, load_explore_artifacts, read_explore_artifact,
+        sanitize_artifact_component, write_explore_artifact, write_explore_summary,
     };
+    use shatter_core::explorer::ExploreProgressSnapshot;
     use shatter_core::config::GeneticConfig;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
     use shatter_core::report::ProgressEvent;
@@ -2844,6 +2845,67 @@ mod tests {
         emit_explore_progress("f", 1, 3, Duration::ZERO, "started");
         emit_explore_progress("f", 2, 3, Duration::from_millis(250), "completed");
         emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed");
+    }
+
+    fn base_snapshot() -> ExploreProgressSnapshot {
+        ExploreProgressSnapshot {
+            function_name: "classifyNumber".to_string(),
+            elapsed: Duration::from_secs(12),
+            iterations: 847,
+            paths_found: 5,
+            total_branches: Some(12),
+            branches_covered: Some(8),
+            mcdc_summary: None,
+            iters_since_new_discovery: 0,
+        }
+    }
+
+    #[test]
+    fn format_progress_snapshot_shows_branches_iters_and_rate() {
+        let line = format_progress_snapshot(&base_snapshot());
+        assert!(line.starts_with("[12s] classifyNumber:"), "line={line}");
+        assert!(line.contains("847 iters"), "line={line}");
+        assert!(line.contains("5 paths"), "line={line}");
+        assert!(line.contains("8/12 branches"), "line={line}");
+        assert!(line.contains("iter/s"), "line={line}");
+        // No MC/DC section unless explicitly set.
+        assert!(!line.contains("mcdc"), "line={line}");
+        // No idle tag on zero streak.
+        assert!(!line.contains("idle"), "line={line}");
+    }
+
+    #[test]
+    fn format_progress_snapshot_renders_mcdc_when_present() {
+        let mut snap = base_snapshot();
+        snap.mcdc_summary = Some((7, 3, 1));
+        let line = format_progress_snapshot(&snap);
+        assert!(line.contains("mcdc 3/7"), "line={line}");
+    }
+
+    #[test]
+    fn format_progress_snapshot_appends_idle_tag_above_threshold() {
+        let mut snap = base_snapshot();
+        snap.iters_since_new_discovery = 320;
+        let line = format_progress_snapshot(&snap);
+        assert!(line.contains("(idle 320)"), "line={line}");
+    }
+
+    #[test]
+    fn format_progress_snapshot_omits_idle_tag_when_below_threshold() {
+        let mut snap = base_snapshot();
+        snap.iters_since_new_discovery = 1; // below IDLE_STREAK_THRESHOLD (2)
+        let line = format_progress_snapshot(&snap);
+        assert!(!line.contains("idle"), "line={line}");
+    }
+
+    #[test]
+    fn format_progress_snapshot_falls_back_to_paths_when_no_branch_count() {
+        let mut snap = base_snapshot();
+        snap.branches_covered = None;
+        snap.total_branches = None;
+        let line = format_progress_snapshot(&snap);
+        // Branch segment falls back to paths/? when branch tracking is absent.
+        assert!(line.contains("5/? paths"), "line={line}");
     }
 
     fn sample_func_analysis() -> FunctionAnalysis {

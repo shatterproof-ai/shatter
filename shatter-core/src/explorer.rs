@@ -4208,4 +4208,45 @@ mod tests {
             "report should not contain GA section when stats are None"
         );
     }
+
+    #[test]
+    fn progress_hints_callback_receives_snapshot_with_new_fields() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Vec<ExploreProgressSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let cb: Box<ProgressCallback> = Box::new(move |snap: &ExploreProgressSnapshot| {
+            sink.lock().unwrap().push(snap.clone());
+        });
+        let hints = ProgressHints {
+            callback: cb.as_ref(),
+            total_branches: Some(12),
+        };
+
+        (hints.callback)(&ExploreProgressSnapshot {
+            function_name: "classifyNumber".into(),
+            elapsed: Duration::from_secs(15),
+            iterations: 847,
+            paths_found: 5,
+            total_branches: hints.total_branches,
+            branches_covered: Some(8),
+            mcdc_summary: Some((7, 3, 0)),
+            iters_since_new_discovery: 12,
+        });
+
+        let snaps = captured.lock().unwrap();
+        assert_eq!(snaps.len(), 1);
+        let snap = &snaps[0];
+        assert_eq!(snap.function_name, "classifyNumber");
+        assert_eq!(snap.total_branches, Some(12));
+        assert_eq!(snap.branches_covered, Some(8));
+        assert_eq!(snap.mcdc_summary, Some((7, 3, 0)));
+        assert_eq!(snap.iters_since_new_discovery, 12);
+        let covered = snap.branches_covered.unwrap();
+        let total = snap.total_branches.unwrap();
+        assert!(
+            covered <= total,
+            "branches_covered ({covered}) must not exceed total_branches ({total})"
+        );
+    }
 }
