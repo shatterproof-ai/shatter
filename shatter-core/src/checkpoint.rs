@@ -161,11 +161,7 @@ impl ScanCheckpoint {
     /// Returns `Some(path)` if found, `None` otherwise.
     pub fn auto_discover(project_root: Option<&str>, scan_id: &str) -> Option<PathBuf> {
         let path = Self::default_path(project_root, scan_id);
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
+        if path.exists() { Some(path) } else { None }
     }
 
     /// Default checkpoint file path in the artifact directory.
@@ -191,8 +187,7 @@ impl ScanCheckpoint {
         cache: &BehaviorMapCache,
     ) -> bool {
         if let Some(stored_fp) = self.completed.get(func_name) {
-            stored_fp == current_deep_fp
-                && cache.load(func_name).ok().flatten().is_some()
+            stored_fp == current_deep_fp && cache.load(func_name).ok().flatten().is_some()
         } else {
             false
         }
@@ -331,7 +326,11 @@ mod tests {
     #[test]
     fn save_creates_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("deep").join("scan.checkpoint");
+        let path = dir
+            .path()
+            .join("nested")
+            .join("deep")
+            .join("scan.checkpoint");
 
         let mut cp = ScanCheckpoint::new("id".into());
         cp.save(&path).unwrap();
@@ -425,8 +424,7 @@ mod tests {
         fs::create_dir_all(&checkpoint_dir).unwrap();
         fs::write(checkpoint_dir.join("checkpoint.json"), "{}").unwrap();
 
-        let result =
-            ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), scan_id);
+        let result = ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), scan_id);
         assert!(result.is_some());
     }
 

@@ -12,7 +12,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tracing::Instrument;
 
-use crate::protocol::{Command as ProtoCommand, Request, Response, ResponseResult, PROTOCOL_VERSION};
+use crate::protocol::{
+    Command as ProtoCommand, PROTOCOL_VERSION, Request, Response, ResponseResult,
+};
 
 /// Default timeout for individual frontend requests (30 seconds).
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -45,7 +47,9 @@ pub enum FrontendError {
     Serialize(serde_json::Error),
 
     /// Failed to deserialize a response from JSON.
-    #[error("failed to deserialize frontend response ({response_bytes} bytes): {source}\n  hint: {hint}")]
+    #[error(
+        "failed to deserialize frontend response ({response_bytes} bytes): {source}\n  hint: {hint}"
+    )]
     Deserialize {
         source: serde_json::Error,
         response_bytes: usize,
@@ -99,11 +103,7 @@ impl FrontendConfig {
             command,
             args: Vec::new(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
-            capabilities: vec![
-                "analyze".into(),
-                "execute".into(),
-                "instrument".into(),
-            ],
+            capabilities: vec!["analyze".into(), "execute".into(), "instrument".into()],
             env_vars: Vec::new(),
         }
     }
@@ -336,8 +336,7 @@ impl Frontend {
         }
 
         // Wait briefly for the process to exit, then kill if still running.
-        let wait_result =
-            tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, self.child.wait()).await;
+        let wait_result = tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, self.child.wait()).await;
 
         match wait_result {
             Ok(Ok(_status)) => Ok(()),
@@ -656,8 +655,16 @@ mod tests {
             .map(|summary| summary.phase_path)
             .collect();
 
-        assert!(phase_paths.iter().any(|phase| phase == "frontend.request.handshake"));
-        assert!(phase_paths.iter().any(|phase| phase == "frontend.request.execute"));
+        assert!(
+            phase_paths
+                .iter()
+                .any(|phase| phase == "frontend.request.handshake")
+        );
+        assert!(
+            phase_paths
+                .iter()
+                .any(|phase| phase == "frontend.request.execute")
+        );
     }
 
     #[tokio::test]

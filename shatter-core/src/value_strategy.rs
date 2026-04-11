@@ -155,8 +155,7 @@ impl ValueToVectorAdapter {
             .zip(params.iter())
             .map(|(val, param)| {
                 if self.rng.random_range(0.0..1.0) < self.mutation_rate {
-                    self.value_strategy
-                        .mutate(val, &param.typ, &mut self.rng)
+                    self.value_strategy.mutate(val, &param.typ, &mut self.rng)
                 } else {
                     val.clone()
                 }
@@ -264,7 +263,10 @@ mod tests {
         let mut m = TypeAwareMutator::new(vec![]);
         let mut rng = StdRng::seed_from_u64(42);
         let result = m.mutate(&Value::from(5), &TypeInfo::Int, &mut rng);
-        assert!(result.is_number(), "Int mutation should produce a number, got {result:?}");
+        assert!(
+            result.is_number(),
+            "Int mutation should produce a number, got {result:?}"
+        );
     }
 
     #[test]
@@ -272,7 +274,10 @@ mod tests {
         let mut m = TypeAwareMutator::new(vec!["test".into()]);
         let mut rng = StdRng::seed_from_u64(42);
         let result = m.mutate(&Value::from("hello"), &TypeInfo::Str, &mut rng);
-        assert!(result.is_string(), "Str mutation should produce a string, got {result:?}");
+        assert!(
+            result.is_string(),
+            "Str mutation should produce a string, got {result:?}"
+        );
     }
 
     #[test]
@@ -280,7 +285,10 @@ mod tests {
         let mut m = TypeAwareMutator::new(vec![]);
         let mut rng = StdRng::seed_from_u64(42);
         let result = m.mutate(&Value::from(true), &TypeInfo::Bool, &mut rng);
-        assert!(result.is_boolean(), "Bool mutation should produce a boolean, got {result:?}");
+        assert!(
+            result.is_boolean(),
+            "Bool mutation should produce a boolean, got {result:?}"
+        );
     }
 
     #[test]
@@ -342,7 +350,10 @@ mod tests {
         let result = make_exec_result();
 
         adapter.feedback(&[Value::from(5)], &result, false);
-        assert!(adapter.next(&ctx).is_none(), "non-new-path feedback should not seed inputs");
+        assert!(
+            adapter.next(&ctx).is_none(),
+            "non-new-path feedback should not seed inputs"
+        );
     }
 
     #[test]
@@ -369,7 +380,10 @@ mod tests {
 
         adapter.feedback(&original, &result, true);
         let output = adapter.next(&ctx).expect("should produce output");
-        assert_eq!(output, original, "0% mutation rate should preserve all values");
+        assert_eq!(
+            output, original,
+            "0% mutation rate should preserve all values"
+        );
     }
 
     // --- Proptest ---

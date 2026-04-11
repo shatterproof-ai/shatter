@@ -119,9 +119,7 @@ fn behavior_to_condition(behavior: &Behavior) -> Option<MockCondition> {
         .enumerate()
         .map(|(i, arg)| InputPattern {
             arg_index: i,
-            matcher: PatternMatcher::Eq {
-                value: arg.clone(),
-            },
+            matcher: PatternMatcher::Eq { value: arg.clone() },
         })
         .collect();
 
@@ -130,10 +128,7 @@ fn behavior_to_condition(behavior: &Behavior) -> Option<MockCondition> {
         .clone()
         .unwrap_or(serde_json::Value::Null);
 
-    let error = behavior
-        .thrown_error
-        .as_ref()
-        .map(|e| e.message.clone());
+    let error = behavior.thrown_error.as_ref().map(|e| e.message.clone());
 
     Some(MockCondition {
         input_patterns,
@@ -154,9 +149,9 @@ pub fn matches_condition(args: &[serde_json::Value], condition: &MockCondition) 
 fn matches_pattern(value: &serde_json::Value, matcher: &PatternMatcher) -> bool {
     match matcher {
         PatternMatcher::Eq { value: expected } => value == expected,
-        PatternMatcher::Range { min, max } => value
-            .as_f64()
-            .is_some_and(|n| n >= *min && n <= *max),
+        PatternMatcher::Range { min, max } => {
+            value.as_f64().is_some_and(|n| n >= *min && n <= *max)
+        }
         PatternMatcher::Type { type_name } => json_type_name(value) == type_name.as_str(),
         PatternMatcher::Any => true,
     }
@@ -257,7 +252,12 @@ mod tests {
     fn single_behavior_produces_single_condition() {
         let map = make_behavior_map(
             "getPrice",
-            vec![make_behavior(0, vec![json!("widget")], Some(json!(9.99)), None)],
+            vec![make_behavior(
+                0,
+                vec![json!("widget")],
+                Some(json!(9.99)),
+                None,
+            )],
         );
 
         let tree = build_mock_from_behavior_map(&map).expect("should produce a tree");
@@ -322,7 +322,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "Error".to_string(),
                         message: "division by zero".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
         );
@@ -364,15 +366,9 @@ mod tests {
         let patterns = &tree.conditions[0].input_patterns;
         assert_eq!(patterns.len(), 3);
         assert_eq!(patterns[0].arg_index, 0);
-        assert_eq!(
-            patterns[0].matcher,
-            PatternMatcher::Eq { value: json!(3) }
-        );
+        assert_eq!(patterns[0].matcher, PatternMatcher::Eq { value: json!(3) });
         assert_eq!(patterns[1].arg_index, 1);
-        assert_eq!(
-            patterns[1].matcher,
-            PatternMatcher::Eq { value: json!(4) }
-        );
+        assert_eq!(patterns[1].matcher, PatternMatcher::Eq { value: json!(4) });
         assert_eq!(patterns[2].arg_index, 2);
         assert_eq!(
             patterns[2].matcher,
@@ -398,7 +394,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "Error".to_string(),
                         message: "not found".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
         );
@@ -444,7 +442,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "Error".to_string(),
                         message: "fail".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
         );
@@ -557,8 +557,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&tree).expect("serialize");
-        let deserialized: MockDecisionTree =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: MockDecisionTree = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(tree, deserialized);
     }
 

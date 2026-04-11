@@ -95,7 +95,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let go_dir = tmp.path().join("mygoproject");
         fs::create_dir_all(&go_dir).unwrap();
-        fs::write(go_dir.join("go.mod"), "module example.com/test\n\ngo 1.21\n").unwrap();
+        fs::write(
+            go_dir.join("go.mod"),
+            "module example.com/test\n\ngo 1.21\n",
+        )
+        .unwrap();
         let go_file = go_dir.join("main.go");
         fs::write(&go_file, "package main\nfunc main() {}\n").unwrap();
 
@@ -112,7 +116,10 @@ mod tests {
         let file = tmp.path().join("isolated.ts");
         fs::write(&file, "export function f() {}").unwrap();
         let result = detect_project_root(&file);
-        assert!(result.is_none(), "isolated file should have no project root");
+        assert!(
+            result.is_none(),
+            "isolated file should have no project root"
+        );
     }
 
     #[test]

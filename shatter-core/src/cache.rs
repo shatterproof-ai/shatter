@@ -260,8 +260,7 @@ impl BehaviorMapCache {
         if !self.cache_dir.exists() {
             return Ok((0, 0));
         }
-        let (file_count, bytes) =
-            crate::analysis_cache::count_dir_contents(&self.cache_dir)?;
+        let (file_count, bytes) = crate::analysis_cache::count_dir_contents(&self.cache_dir)?;
         fs::remove_dir_all(&self.cache_dir)?;
         fs::create_dir_all(&self.cache_dir)?;
         Ok((file_count, bytes))
@@ -798,7 +797,10 @@ mod tests {
     fn default_dir_is_relative_to_project_root() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = BehaviorMapCache::default_dir(dir.path());
-        assert_eq!(cache_dir, dir.path().join(".shatter-cache").join("behavior-maps"));
+        assert_eq!(
+            cache_dir,
+            dir.path().join(".shatter-cache").join("behavior-maps")
+        );
     }
 
     #[test]
@@ -1004,7 +1006,7 @@ mod tests {
 
     #[test]
     fn store_and_load_preserves_nondeterministic_fields() {
-        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+        use crate::nondeterminism::{Confidence, NondeterminismEvidence, NondeterministicField};
 
         let dir = tempfile::tempdir().unwrap();
         let cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
@@ -1021,7 +1023,10 @@ mod tests {
 
         assert_eq!(loaded.nondeterministic_fields.len(), 1);
         assert_eq!(loaded.nondeterministic_fields[0].field_path, "return.id");
-        assert_eq!(loaded.nondeterministic_fields[0].confidence, Confidence::High);
+        assert_eq!(
+            loaded.nondeterministic_fields[0].confidence,
+            Confidence::High
+        );
     }
 
     #[test]
@@ -1114,7 +1119,9 @@ mod tests {
         let cache = SpecCache::new(dir.path().to_path_buf()).unwrap();
 
         let spec = sample_spec("validate");
-        cache.store("src/auth.ts:TokenValidator.validate", &spec).unwrap();
+        cache
+            .store("src/auth.ts:TokenValidator.validate", &spec)
+            .unwrap();
 
         let loaded = cache.load("src/auth.ts:TokenValidator.validate").unwrap();
         assert_eq!(loaded, Some(spec));
@@ -1302,10 +1309,7 @@ mod tests {
         let tampered = contents.replace(PROTOCOL_VERSION, "0.0.0-fake");
         std::fs::write(&path, tampered).unwrap();
 
-        assert_eq!(
-            cache.load("oldFunc", DEFAULT_SCHEDULER_MODE).unwrap(),
-            None
-        );
+        assert_eq!(cache.load("oldFunc", DEFAULT_SCHEDULER_MODE).unwrap(), None);
     }
 
     #[test]
@@ -1391,10 +1395,7 @@ mod tests {
                 .unwrap()
         );
         assert!(!path.exists(), "stale entry should be unlinked");
-        assert_eq!(
-            cache.load("edited", DEFAULT_SCHEDULER_MODE).unwrap(),
-            None
-        );
+        assert_eq!(cache.load("edited", DEFAULT_SCHEDULER_MODE).unwrap(), None);
     }
 
     #[test]
@@ -1445,9 +1446,16 @@ mod tests {
         cache.store(&a, DEFAULT_SCHEDULER_MODE).unwrap();
         cache.store(&b, DEFAULT_SCHEDULER_MODE).unwrap();
 
-        cache.clear_function("funcA", DEFAULT_SCHEDULER_MODE).unwrap();
+        cache
+            .clear_function("funcA", DEFAULT_SCHEDULER_MODE)
+            .unwrap();
         assert_eq!(cache.load("funcA", DEFAULT_SCHEDULER_MODE).unwrap(), None);
-        assert!(cache.load("funcB", DEFAULT_SCHEDULER_MODE).unwrap().is_some());
+        assert!(
+            cache
+                .load("funcB", DEFAULT_SCHEDULER_MODE)
+                .unwrap()
+                .is_some()
+        );
 
         // Clearing a missing entry is not an error.
         cache
@@ -1639,7 +1647,15 @@ mod proptests {
             proptest::collection::vec("[a-zA-Z0-9_.]{1,20}", 0..8),
         )
             .prop_map(
-                |(function_id, fingerprint, iterations_consumed, batches_completed, exhausted, mode, uncovered_branches)| {
+                |(
+                    function_id,
+                    fingerprint,
+                    iterations_consumed,
+                    batches_completed,
+                    exhausted,
+                    mode,
+                    uncovered_branches,
+                )| {
                     SchedulerState {
                         function_id,
                         fingerprint,

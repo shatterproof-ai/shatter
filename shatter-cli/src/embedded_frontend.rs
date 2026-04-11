@@ -41,8 +41,12 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     let bundle_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js"));
 
     if !bundle_path.exists() {
-        fs::create_dir_all(cache_dir)
-            .map_err(|e| format!("failed to create cache directory {}: {e}", cache_dir.display()))?;
+        fs::create_dir_all(cache_dir).map_err(|e| {
+            format!(
+                "failed to create cache directory {}: {e}",
+                cache_dir.display()
+            )
+        })?;
 
         // Write atomically: use a unique temp file so concurrent callers do not
         // race on the same `.tmp` path. If another caller wins the race to the
@@ -194,13 +198,17 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         // Plant a fake old bundle
-        let old_bundle = tmp.join("frontend-0000000000000000000000000000000000000000000000000000000000000000.js");
+        let old_bundle = tmp
+            .join("frontend-0000000000000000000000000000000000000000000000000000000000000000.js");
         fs::write(&old_bundle, b"old").unwrap();
 
         let path = extract_to(&tmp).expect("extraction failed");
 
         assert!(path.exists());
-        assert!(!old_bundle.exists(), "old bundle should have been cleaned up");
+        assert!(
+            !old_bundle.exists(),
+            "old bundle should have been cleaned up"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -225,7 +233,10 @@ mod tests {
 
         // Current behavior: this errors. After the fix, ensure_extracted()
         // should fall back to a temp dir and succeed.
-        assert!(result.is_err(), "expected failure on unwritable cache dir (pre-fix behavior)");
+        assert!(
+            result.is_err(),
+            "expected failure on unwritable cache dir (pre-fix behavior)"
+        );
     }
 
     #[test]
@@ -249,7 +260,10 @@ mod tests {
 
         // After the fix, this should succeed via temp dir fallback
         let path = result.expect("extraction should succeed via fallback");
-        assert!(path.exists(), "extracted bundle should exist at fallback location");
+        assert!(
+            path.exists(),
+            "extracted bundle should exist at fallback location"
+        );
     }
 
     #[test]
@@ -272,7 +286,10 @@ mod tests {
         }
 
         for handle in handles {
-            let path = handle.join().expect("thread panicked").expect("extraction failed");
+            let path = handle
+                .join()
+                .expect("thread panicked")
+                .expect("extraction failed");
             assert!(path.exists(), "bundle path should exist after extraction");
         }
 

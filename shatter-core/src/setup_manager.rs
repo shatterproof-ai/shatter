@@ -134,10 +134,7 @@ pub enum SetupError {
     },
 
     #[error("setup failed at {level:?} level: {message}")]
-    Failed {
-        level: SetupLevel,
-        message: String,
-    },
+    Failed { level: SetupLevel, message: String },
 
     #[error("setup skipped at {level:?} level due to prior failure at {cause_level:?}")]
     Skipped {
@@ -199,23 +196,15 @@ impl SetupManager {
         context: SetupContext,
     ) -> Result<(), SetupError> {
         if let Some(cause_level) = self.blocking_failure(level) {
-            return Err(SetupError::Skipped {
-                level,
-                cause_level,
-            });
+            return Err(SetupError::Skipped { level, cause_level });
         }
-        self.contexts
-            .insert((level, scope.to_string()), context);
+        self.contexts.insert((level, scope.to_string()), context);
         self.failures.clear(level);
         Ok(())
     }
 
     /// Record a setup failure at the given level.
-    pub fn record_failure(
-        &mut self,
-        level: SetupLevel,
-        error: String,
-    ) -> Result<(), SetupError> {
+    pub fn record_failure(&mut self, level: SetupLevel, error: String) -> Result<(), SetupError> {
         self.failures.record(level, error.clone());
         if self.fail_on_error {
             Err(SetupError::Failed {
@@ -325,8 +314,14 @@ mod tests {
         let t = SetupTimeouts::default();
         assert_eq!(t.timeout_for(SetupLevel::Session), DEFAULT_SESSION_TIMEOUT);
         assert_eq!(t.timeout_for(SetupLevel::File), DEFAULT_FILE_TIMEOUT);
-        assert_eq!(t.timeout_for(SetupLevel::Function), DEFAULT_FUNCTION_TIMEOUT);
-        assert_eq!(t.timeout_for(SetupLevel::Execution), DEFAULT_EXECUTION_TIMEOUT);
+        assert_eq!(
+            t.timeout_for(SetupLevel::Function),
+            DEFAULT_FUNCTION_TIMEOUT
+        );
+        assert_eq!(
+            t.timeout_for(SetupLevel::Execution),
+            DEFAULT_EXECUTION_TIMEOUT
+        );
     }
 
     #[test]
@@ -491,11 +486,7 @@ mod tests {
         mgr.record_failure(SetupLevel::Session, "session failed".into())
             .unwrap();
 
-        let result = mgr.setup(
-            SetupLevel::File,
-            "auth.ts",
-            serde_json::json!({}),
-        );
+        let result = mgr.setup(SetupLevel::File, "auth.ts", serde_json::json!({}));
         assert!(result.is_err());
         match result.unwrap_err() {
             SetupError::Skipped { level, cause_level } => {

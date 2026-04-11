@@ -107,9 +107,17 @@ pub fn score(
     let depth = depth_score(&result.branch_path);
     let rarity = rarity_score(&result.branch_path, profile);
 
-    let rarity_weight = if profile.is_some() { weights.rarity } else { 0.0 };
-    let weight_sum =
-        weights.coverage + weights.proximity + weights.unknown_bonus + weights.novelty + weights.depth + rarity_weight;
+    let rarity_weight = if profile.is_some() {
+        weights.rarity
+    } else {
+        0.0
+    };
+    let weight_sum = weights.coverage
+        + weights.proximity
+        + weights.unknown_bonus
+        + weights.novelty
+        + weights.depth
+        + rarity_weight;
     let total = if weight_sum > 0.0 {
         (weights.coverage * coverage
             + weights.proximity * proximity
@@ -252,11 +260,7 @@ fn comparison_distance(op: BinOpKind, left: f64, right: f64) -> f64 {
 
 /// Normalize a raw distance to [0.0, 1.0) via `d / (d + 1)`.
 fn normalize_distance(d: f64) -> f64 {
-    if d <= 0.0 {
-        0.0
-    } else {
-        d / (d + 1.0)
-    }
+    if d <= 0.0 { 0.0 } else { d / (d + 1.0) }
 }
 
 /// Try to extract a numeric value from a constant expression.
@@ -314,8 +318,8 @@ fn rarity_score(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::protocol::{ExecuteResult, PerformanceMetrics};
+    use std::collections::HashMap;
 
     /// Helper to build an `ExecuteResult` with a given branch path.
     fn make_result(branch_path: Vec<BranchDecision>) -> ExecuteResult {
@@ -328,7 +332,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.0,
                 cpu_time_us: 0,
@@ -339,7 +346,13 @@ mod tests {
     }
 
     /// Helper to build a `BranchDecision` with a numeric comparison constraint.
-    fn numeric_branch(id: u32, taken: bool, op: BinOpKind, left: i64, right: i64) -> BranchDecision {
+    fn numeric_branch(
+        id: u32,
+        taken: bool,
+        op: BinOpKind,
+        left: i64,
+        right: i64,
+    ) -> BranchDecision {
         BranchDecision {
             branch_id: id,
             line: id * 10,
@@ -490,12 +503,22 @@ mod tests {
         let result = make_result(vec![]);
         let targets: HashSet<u32> = [1, 2, 3].into_iter().collect();
         let mut ctx = FitnessContext::new();
-        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
+        let breakdown = score(
+            &result,
+            &targets,
+            &mut ctx,
+            &FitnessWeights::default(),
+            None,
+        );
 
         assert_eq!(breakdown.coverage, 0.0);
         assert_eq!(breakdown.proximity, 0.0);
         assert_eq!(breakdown.unknown_bonus, 0.0);
-        assert!(breakdown.total < 0.3, "expected low total, got {}", breakdown.total);
+        assert!(
+            breakdown.total < 0.3,
+            "expected low total, got {}",
+            breakdown.total
+        );
     }
 
     #[test]
@@ -507,11 +530,21 @@ mod tests {
         let result = make_result(path);
         let targets: HashSet<u32> = [1, 2].into_iter().collect();
         let mut ctx = FitnessContext::new();
-        let breakdown = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
+        let breakdown = score(
+            &result,
+            &targets,
+            &mut ctx,
+            &FitnessWeights::default(),
+            None,
+        );
 
         assert_eq!(breakdown.coverage, 1.0);
         assert_eq!(breakdown.proximity, 1.0);
-        assert!(breakdown.total > 0.7, "expected high total, got {}", breakdown.total);
+        assert!(
+            breakdown.total > 0.7,
+            "expected high total, got {}",
+            breakdown.total
+        );
     }
 
     #[test]
@@ -538,7 +571,10 @@ mod tests {
     fn default_weights_sum_to_one() {
         let w = FitnessWeights::default();
         let sum = w.coverage + w.proximity + w.unknown_bonus + w.novelty + w.depth + w.rarity;
-        assert!((sum - 1.0).abs() < f64::EPSILON, "weights sum to {sum}, expected 1.0");
+        assert!(
+            (sum - 1.0).abs() < f64::EPSILON,
+            "weights sum to {sum}, expected 1.0"
+        );
     }
 
     #[test]
@@ -558,7 +594,13 @@ mod tests {
         for (i, path) in scenarios.into_iter().enumerate() {
             let mut ctx = FitnessContext::new();
             let result = make_result(path);
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
+            let b = score(
+                &result,
+                &targets,
+                &mut ctx,
+                &FitnessWeights::default(),
+                None,
+            );
             assert!(
                 b.total >= 0.0 && b.total <= 1.0,
                 "scenario {i}: total {:.4} out of range",
@@ -599,14 +641,20 @@ mod tests {
 
     #[test]
     fn depth_score_monotonically_increases() {
-        let short: Vec<_> = (0..3).map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5)).collect();
-        let long: Vec<_> = (0..20).map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5)).collect();
+        let short: Vec<_> = (0..3)
+            .map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5))
+            .collect();
+        let long: Vec<_> = (0..20)
+            .map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5))
+            .collect();
         assert!(depth_score(&short) < depth_score(&long));
     }
 
     #[test]
     fn depth_score_bounded_below_one() {
-        let very_long: Vec<_> = (0..10_000).map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5)).collect();
+        let very_long: Vec<_> = (0..10_000)
+            .map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5))
+            .collect();
         let score = depth_score(&very_long);
         assert!(score < 1.0, "expected < 1.0, got {score}");
         assert!(score > 0.99, "expected near 1.0, got {score}");
@@ -618,21 +666,32 @@ mod tests {
             .map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5))
             .collect();
         let score = depth_score(&path);
-        assert!((score - 0.5).abs() < f64::EPSILON, "expected 0.5, got {score}");
+        assert!(
+            (score - 0.5).abs() < f64::EPSILON,
+            "expected 0.5, got {score}"
+        );
     }
 
     #[test]
     fn fitness_range_includes_depth() {
         let scenarios: Vec<Vec<BranchDecision>> = vec![
             vec![],
-            (0..30).map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5)).collect(),
+            (0..30)
+                .map(|i| numeric_branch(i, true, BinOpKind::Gt, 10, 5))
+                .collect(),
         ];
         let targets: HashSet<u32> = [1, 2, 3, 4].into_iter().collect();
 
         for (i, path) in scenarios.into_iter().enumerate() {
             let mut ctx = FitnessContext::new();
             let result = make_result(path);
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), None);
+            let b = score(
+                &result,
+                &targets,
+                &mut ctx,
+                &FitnessWeights::default(),
+                None,
+            );
             assert!(
                 b.depth >= 0.0 && b.depth < 1.0,
                 "scenario {i}: depth {:.4} out of range",
@@ -711,13 +770,28 @@ mod tests {
         };
 
         let mut ctx = FitnessContext::new();
-        let rare_score = score(&make_result(rare_path), &targets, &mut ctx, &weights, Some(&profile));
+        let rare_score = score(
+            &make_result(rare_path),
+            &targets,
+            &mut ctx,
+            &weights,
+            Some(&profile),
+        );
         let mut ctx2 = FitnessContext::new();
-        let common_score = score(&make_result(common_path), &targets, &mut ctx2, &weights, Some(&profile));
+        let common_score = score(
+            &make_result(common_path),
+            &targets,
+            &mut ctx2,
+            &weights,
+            Some(&profile),
+        );
 
-        assert!(rare_score.total > common_score.total,
+        assert!(
+            rare_score.total > common_score.total,
             "rare branch score ({}) should exceed common ({})",
-            rare_score.total, common_score.total);
+            rare_score.total,
+            common_score.total
+        );
     }
 
     #[test]
@@ -738,14 +812,23 @@ mod tests {
         for (i, path) in scenarios.into_iter().enumerate() {
             let mut ctx = FitnessContext::new();
             let result = make_result(path);
-            let b = score(&result, &targets, &mut ctx, &FitnessWeights::default(), Some(&profile));
+            let b = score(
+                &result,
+                &targets,
+                &mut ctx,
+                &FitnessWeights::default(),
+                Some(&profile),
+            );
             assert!(
                 b.total >= 0.0 && b.total <= 1.0,
                 "scenario {i}: total {:.4} out of range",
                 b.total
             );
-            assert!(b.rarity >= 0.0 && b.rarity <= 1.0,
-                "scenario {i}: rarity {:.4} out of range", b.rarity);
+            assert!(
+                b.rarity >= 0.0 && b.rarity <= 1.0,
+                "scenario {i}: rarity {:.4} out of range",
+                b.rarity
+            );
         }
     }
 }

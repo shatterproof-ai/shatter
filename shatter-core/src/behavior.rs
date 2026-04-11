@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::execution_record::{
-    BranchDecision, ErrorInfo, ExternalCall, ExecutionRecord, SideEffect,
+    BranchDecision, ErrorInfo, ExecutionRecord, ExternalCall, SideEffect,
 };
 use crate::orchestrator::hash_branch_path;
 use crate::protocol::{ExecuteResult, MockBehavior, MockConfig};
@@ -141,10 +141,7 @@ fn build_traced_calls(calls: &[ExternalCall], start_index: u32) -> Vec<TracedCal
 
 /// Build [`TracedSideEffect`]s from a slice of [`SideEffect`]s, starting at
 /// the given call index offset.
-fn build_traced_side_effects(
-    effects: &[SideEffect],
-    start_index: u32,
-) -> Vec<TracedSideEffect> {
+fn build_traced_side_effects(effects: &[SideEffect], start_index: u32) -> Vec<TracedSideEffect> {
     effects
         .iter()
         .enumerate()
@@ -294,7 +291,9 @@ impl BehaviorMap {
                 let thrown_error = exec.thrown_error.as_ref().map(|msg| ErrorInfo {
                     error_type: "Error".to_string(),
                     message: msg.clone(),
-                    stack: None, error_category: None });
+                    stack: None,
+                    error_category: None,
+                });
                 // Try to find the matching raw result for this execution to
                 // extract the dependency trace and mock values.
                 let matching_raw = result
@@ -354,10 +353,18 @@ impl BehaviorMap {
     /// Only behaviors whose `branch_path` hash is not already represented in the
     /// map are added. Returns the number of newly added behaviors.
     pub fn merge_ga_discoveries(&mut self, discoveries: &[Behavior]) -> usize {
-        let mut seen: HashSet<u64> =
-            self.behaviors.iter().map(|b| hash_branch_path(&b.branch_path)).collect();
+        let mut seen: HashSet<u64> = self
+            .behaviors
+            .iter()
+            .map(|b| hash_branch_path(&b.branch_path))
+            .collect();
 
-        let mut next_id = self.behaviors.iter().map(|b| b.id).max().map_or(0, |m| m + 1);
+        let mut next_id = self
+            .behaviors
+            .iter()
+            .map(|b| b.id)
+            .max()
+            .map_or(0, |m| m + 1);
         let mut added = 0usize;
 
         for discovery in discoveries {
@@ -557,9 +564,7 @@ impl CallGraph {
                     is_self_recursive: self.self_recursive.contains(id),
                 });
             } else {
-                result.push(TestOrderEntry::MutualGroup {
-                    function_ids: scc,
-                });
+                result.push(TestOrderEntry::MutualGroup { function_ids: scc });
             }
         }
 
@@ -568,10 +573,7 @@ impl CallGraph {
 
     /// Direct callees of a function (excluding self-calls).
     pub fn callees(&self, function_id: &str) -> HashSet<String> {
-        self.edges
-            .get(function_id)
-            .cloned()
-            .unwrap_or_default()
+        self.edges.get(function_id).cloned().unwrap_or_default()
     }
 
     /// Whether a function calls itself.
@@ -673,7 +675,9 @@ mod tests {
     use super::*;
     use crate::execution_record::ExternalCall;
     use crate::explorer::{ExecutionSummary, ObservationOutput};
-    use crate::protocol::{DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics};
+    use crate::protocol::{
+        DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics,
+    };
     use crate::types::TypeInfo;
 
     #[test]
@@ -785,18 +789,29 @@ mod tests {
                     return_value: Some(json!("positive")),
                     thrown_error: None,
                     lines_executed: vec![1, 2],
-                    is_new_path: true, error_intent: None },
+                    is_new_path: true,
+                    error_intent: None,
+                },
                 ExecutionSummary {
                     inputs: vec![json!(-1)],
                     return_value: None,
                     thrown_error: Some("Error: negative input".to_string()),
                     lines_executed: vec![1, 3],
-                    is_new_path: true, error_intent: None },
+                    is_new_path: true,
+                    error_intent: None,
+                },
             ],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
-
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -846,10 +861,7 @@ mod tests {
 
     #[test]
     fn call_graph_from_analyses_builds_edges() {
-        let analyses = vec![
-            make_analysis("a", vec!["b"]),
-            make_analysis("b", vec![]),
-        ];
+        let analyses = vec![make_analysis("a", vec!["b"]), make_analysis("b", vec![])];
         let graph = CallGraph::from_analyses(&analyses);
 
         assert!(graph.callees("a").contains("b"));
@@ -885,18 +897,29 @@ mod tests {
             "getDiscount should come before calculateTotal, got: {ids:?}"
         );
         // Both should be Single, non-recursive
-        assert!(matches!(&order[0], TestOrderEntry::Single { is_self_recursive: false, .. }));
-        assert!(matches!(&order[1], TestOrderEntry::Single { is_self_recursive: false, .. }));
+        assert!(matches!(
+            &order[0],
+            TestOrderEntry::Single {
+                is_self_recursive: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &order[1],
+            TestOrderEntry::Single {
+                is_self_recursive: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn call_graph_mutual_recursion_returns_group() {
-        let analyses = vec![
-            make_analysis("a", vec!["b"]),
-            make_analysis("b", vec!["a"]),
-        ];
+        let analyses = vec![make_analysis("a", vec!["b"]), make_analysis("b", vec!["a"])];
         let graph = CallGraph::from_analyses(&analyses);
-        let order = graph.test_order().expect("mutual recursion should not error");
+        let order = graph
+            .test_order()
+            .expect("mutual recursion should not error");
 
         assert_eq!(order.len(), 1);
         match &order[0] {
@@ -911,15 +934,18 @@ mod tests {
 
     #[test]
     fn call_graph_self_recursive_not_rejected_as_cycle() {
-        let analyses = vec![
-            make_analysis("factorial", vec!["factorial"]),
-        ];
+        let analyses = vec![make_analysis("factorial", vec!["factorial"])];
         let graph = CallGraph::from_analyses(&analyses);
-        let order = graph.test_order().expect("self-recursion should not be a cycle");
+        let order = graph
+            .test_order()
+            .expect("self-recursion should not be a cycle");
 
         assert_eq!(order.len(), 1);
         match &order[0] {
-            TestOrderEntry::Single { function_id, is_self_recursive } => {
+            TestOrderEntry::Single {
+                function_id,
+                is_self_recursive,
+            } => {
                 assert_eq!(function_id, "factorial");
                 assert!(is_self_recursive);
             }
@@ -944,8 +970,12 @@ mod tests {
         assert!(pos_helper < pos_factorial);
 
         // helper is non-recursive Single, factorial is self-recursive Single
-        assert!(matches!(&order[0], TestOrderEntry::Single { function_id, is_self_recursive: false } if function_id == "helper"));
-        assert!(matches!(&order[1], TestOrderEntry::Single { function_id, is_self_recursive: true } if function_id == "factorial"));
+        assert!(
+            matches!(&order[0], TestOrderEntry::Single { function_id, is_self_recursive: false } if function_id == "helper")
+        );
+        assert!(
+            matches!(&order[1], TestOrderEntry::Single { function_id, is_self_recursive: true } if function_id == "factorial")
+        );
     }
 
     #[test]
@@ -966,7 +996,9 @@ mod tests {
         assert!(pos_helper < pos_even);
 
         // The mutual group should contain is_even and is_odd
-        let group_entry = order.iter().find(|e| matches!(e, TestOrderEntry::MutualGroup { .. }));
+        let group_entry = order
+            .iter()
+            .find(|e| matches!(e, TestOrderEntry::MutualGroup { .. }));
         assert!(group_entry.is_some());
         match group_entry.unwrap() {
             TestOrderEntry::MutualGroup { function_ids } => {
@@ -1004,7 +1036,8 @@ mod tests {
         let callee_map = BehaviorMap::from_records("getDiscount", &callee_records);
 
         // caller exercises behaviors 0 and 2 (gold and default)
-        let mut caller_record = make_record("calculateTotal", 10, vec![json!(100)], Some(json!(80.0)));
+        let mut caller_record =
+            make_record("calculateTotal", 10, vec![json!(100)], Some(json!(80.0)));
         caller_record.calls_to_external = vec![
             ExternalCall {
                 symbol: "getDiscount".to_string(),
@@ -1028,9 +1061,7 @@ mod tests {
 
     #[test]
     fn behavior_coverage_no_match() {
-        let callee_records = vec![
-            make_record("helper", 1, vec![json!(1)], Some(json!("x"))),
-        ];
+        let callee_records = vec![make_record("helper", 1, vec![json!(1)], Some(json!("x")))];
         let callee_map = BehaviorMap::from_records("helper", &callee_records);
 
         // caller doesn't call helper at all
@@ -1143,7 +1174,10 @@ mod tests {
         };
 
         assert_eq!(composite.behavior_coverage.len(), 1);
-        assert_eq!(composite.behavior_coverage[0].exercised_behavior_ids, vec![0, 1]);
+        assert_eq!(
+            composite.behavior_coverage[0].exercised_behavior_ids,
+            vec![0, 1]
+        );
 
         // Verify round-trip
         round_trip(&composite);
@@ -1175,7 +1209,10 @@ mod tests {
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 1.0,
                 cpu_time_us: 800,
@@ -1212,7 +1249,10 @@ mod tests {
                 message: "fetching data".to_string(),
             }],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 5.0,
                 cpu_time_us: 3000,
@@ -1286,7 +1326,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.1,
                 cpu_time_us: 50,
@@ -1356,7 +1399,10 @@ mod tests {
                     body: None,
                 },
             ],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 2.0,
                 cpu_time_us: 1500,
@@ -1390,7 +1436,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: PerformanceMetrics {
                 wall_time_ms: 0.5,
                 cpu_time_us: 300,
@@ -1410,11 +1459,20 @@ mod tests {
                 return_value: Some(json!("positive")),
                 thrown_error: None,
                 lines_executed: vec![1, 2],
-                is_new_path: true, error_intent: None }],
+                is_new_path: true,
+                error_intent: None,
+            }],
             raw_results: vec![(vec![json!(5)], vec![], raw_result)],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
-
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1427,7 +1485,7 @@ mod tests {
 
     #[test]
     fn behavior_map_nondeterministic_fields_round_trip() {
-        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+        use crate::nondeterminism::{Confidence, NondeterminismEvidence, NondeterministicField};
 
         let map = BehaviorMap {
             function_id: "fn1".to_string(),
@@ -1454,7 +1512,7 @@ mod tests {
 
     #[test]
     fn from_exploration_result_carries_nondeterministic_fields() {
-        use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+        use crate::nondeterminism::{Confidence, NondeterminismEvidence, NondeterministicField};
 
         let result = ObservationOutput {
             function_name: "fn1".to_string(),
@@ -1470,7 +1528,14 @@ mod tests {
                 evidence: vec![NondeterminismEvidence::ObservedWithinRun],
                 confidence: Confidence::Medium,
             }],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
 
         let map = BehaviorMap::from_exploration_result("fn1", &result);
@@ -1511,7 +1576,10 @@ mod tests {
         // Existing map has 2 behaviors with paths A and B.
         let mut map = BehaviorMap {
             function_id: "test_fn".to_string(),
-            behaviors: vec![make_behavior(0, path_a.clone()), make_behavior(1, path_b.clone())],
+            behaviors: vec![
+                make_behavior(0, path_a.clone()),
+                make_behavior(1, path_b.clone()),
+            ],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
@@ -1523,7 +1591,10 @@ mod tests {
 
         assert_eq!(added, 1, "only the new path should be added");
         assert_eq!(map.behaviors.len(), 3, "2 original + 1 new");
-        assert_eq!(map.behaviors[2].id, 2, "new behavior gets next sequential id");
+        assert_eq!(
+            map.behaviors[2].id, 2,
+            "new behavior gets next sequential id"
+        );
         assert_eq!(map.behaviors[2].branch_path, path_c);
     }
 

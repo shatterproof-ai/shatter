@@ -90,17 +90,11 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
         .collect();
 
     // Index old classes by branch path for matching.
-    let old_by_path: std::collections::HashMap<_, _> = old
-        .classes
-        .iter()
-        .map(|c| (&c.branch_path, c))
-        .collect();
+    let old_by_path: std::collections::HashMap<_, _> =
+        old.classes.iter().map(|c| (&c.branch_path, c)).collect();
 
-    let new_by_path: std::collections::HashMap<_, _> = new
-        .classes
-        .iter()
-        .map(|c| (&c.branch_path, c))
-        .collect();
+    let new_by_path: std::collections::HashMap<_, _> =
+        new.classes.iter().map(|c| (&c.branch_path, c)).collect();
 
     // Find matched, added, and changed classes.
     for new_class in &new.classes {
@@ -219,10 +213,7 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
 pub fn format_spec_diff_text(diff: &SpecDiff) -> String {
     let mut out = String::new();
 
-    out.push_str(&format!(
-        "Spec diff: {}\n\n",
-        diff.function_name
-    ));
+    out.push_str(&format!("Spec diff: {}\n\n", diff.function_name));
 
     if diff.is_empty() {
         out.push_str("  No changes detected.\n");
@@ -250,10 +241,7 @@ pub fn format_spec_diff_text(diff: &SpecDiff) -> String {
         ));
     }
     if !diff.lost_properties.is_empty() {
-        parts.push(format!(
-            "{} property/ies lost",
-            diff.lost_properties.len()
-        ));
+        parts.push(format!("{} property/ies lost", diff.lost_properties.len()));
     }
     out.push_str(&format!("  Summary: {}\n\n", parts.join(", ")));
 
@@ -282,10 +270,7 @@ pub fn format_spec_diff_text(diff: &SpecDiff) -> String {
 
     // Changed preconditions
     for change in &diff.changed_preconditions {
-        out.push_str(&format!(
-            "  [PRECOND] {}\n",
-            change.class_label
-        ));
+        out.push_str(&format!("  [PRECOND] {}\n", change.class_label));
         for removed in &change.removed {
             out.push_str(&format!(
                 "            - {}\n",
@@ -326,10 +311,7 @@ fn postconditions_equal_ignoring_nondeterminism(
     match (old, new) {
         (Postcondition::Returns { value: old_val }, Postcondition::Returns { value: new_val }) => {
             // If the entire return is nondeterministic, skip comparison.
-            if nondet_fields
-                .iter()
-                .any(|f| f.field_path == "return")
-            {
+            if nondet_fields.iter().any(|f| f.field_path == "return") {
                 return true;
             }
 
@@ -652,7 +634,9 @@ mod tests {
                     error: ErrorInfo {
                         error_type: "ValidationError".to_string(),
                         message: "invalid input".to_string(),
-                        stack: None, error_category: None },
+                        stack: None,
+                        error_category: None,
+                    },
                 },
             )],
         );
@@ -792,8 +776,7 @@ mod tests {
 
         let diff = diff_specs(&old, &new);
         let json_str = format_spec_diff_json(&diff).expect("json serialization");
-        let deserialized: SpecDiff =
-            serde_json::from_str(&json_str).expect("json deserialization");
+        let deserialized: SpecDiff = serde_json::from_str(&json_str).expect("json deserialization");
         assert_eq!(diff, deserialized);
     }
 
@@ -857,7 +840,10 @@ mod tests {
             text.contains("returns \"pos\""),
             "should show new postcondition"
         );
-        assert!(text.contains("[PRECOND]"), "should show precondition change");
+        assert!(
+            text.contains("[PRECOND]"),
+            "should show precondition change"
+        );
     }
 
     #[test]
@@ -905,7 +891,9 @@ mod tests {
                         error: ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "boom".to_string(),
-                            stack: None, error_category: None },
+                            stack: None,
+                            error_category: None,
+                        },
                     },
                 ),
             ],
@@ -948,7 +936,9 @@ mod tests {
 
         let diff = diff_specs(&old, &new);
         assert!(
-            diff.lost_properties.iter().any(|p| p.contains("coverage dropped")),
+            diff.lost_properties
+                .iter()
+                .any(|p| p.contains("coverage dropped")),
             "should detect coverage drop, got: {:?}",
             diff.lost_properties
         );
@@ -964,7 +954,7 @@ mod tests {
 
     // -- Nondeterminism-aware postcondition comparison tests --
 
-    use crate::nondeterminism::{Confidence, NondeterministicField, NondeterminismEvidence};
+    use crate::nondeterminism::{Confidence, NondeterminismEvidence, NondeterministicField};
 
     #[test]
     fn nondeterministic_field_excludes_postcondition_diff() {

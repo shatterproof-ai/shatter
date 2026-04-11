@@ -313,7 +313,10 @@ scope:
             include: vec!["src/**/*.ts".to_string()],
             exclude: vec!["**/*.test.ts".to_string()],
             mock: vec!["node_modules/**".to_string()],
-            passthrough: vec!["node_modules/lodash".to_string(), "node_modules/lodash/**".to_string()],
+            passthrough: vec![
+                "node_modules/lodash".to_string(),
+                "node_modules/lodash/**".to_string(),
+            ],
         };
         let matcher = ScopeMatcher::new(&config).unwrap();
 

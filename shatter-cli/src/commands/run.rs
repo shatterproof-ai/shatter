@@ -34,7 +34,10 @@ pub(crate) async fn run_run(
 
     // Check for URL input (not yet supported)
     if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("git@") {
-        return Err("URL/git clone input is not yet supported. Please provide a local directory path.".into());
+        return Err(
+            "URL/git clone input is not yet supported. Please provide a local directory path."
+                .into(),
+        );
     }
 
     let root = PathBuf::from(path);
@@ -42,7 +45,8 @@ pub(crate) async fn run_run(
         return Err(format!("'{}' is not a directory", root.display()).into());
     }
 
-    let root = root.canonicalize()
+    let root = root
+        .canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
     let project_root_str = resolve_project_root(project_dir, &root);
@@ -101,19 +105,27 @@ pub(crate) async fn run_run(
     let req_timeout = Duration::from_secs(request_timeout);
     let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
 
-    let needed_langs: std::collections::HashSet<DiscoveryLanguage> = analyzable_files
-        .iter()
-        .map(|(_, lang)| *lang)
-        .collect();
+    let needed_langs: std::collections::HashSet<DiscoveryLanguage> =
+        analyzable_files.iter().map(|(_, lang)| *lang).collect();
 
     for lang in &needed_langs {
-        let cli_lang = discovery_lang_to_cli_lang(*lang)
-            .ok_or_else(|| format!("no frontend for {lang:?}"))?;
-        let mut config = frontend_config(cli_lang, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+        let cli_lang =
+            discovery_lang_to_cli_lang(*lang).ok_or_else(|| format!("no frontend for {lang:?}"))?;
+        let mut config = frontend_config(
+            cli_lang,
+            req_timeout,
+            log_level,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            None,
+            false,
+            release,
+        )?;
         apply_project_storage(&mut config, project_root_str.as_deref());
-        let frontend = Frontend::spawn(&config).await.map_err(|e| {
-            format!("failed to spawn {lang:?} frontend: {e}")
-        })?;
+        let frontend = Frontend::spawn(&config)
+            .await
+            .map_err(|e| format!("failed to spawn {lang:?} frontend: {e}"))?;
         log::debug!(
             "Frontend connected (language={})",
             frontend.language().unwrap_or("unknown")
@@ -135,7 +147,11 @@ pub(crate) async fn run_run(
     let total_functions = registry.len();
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();
 
-    log::debug!("Found {} function(s) with {} total branch(es)", total_functions, total_branches);
+    log::debug!(
+        "Found {} function(s) with {} total branch(es)",
+        total_functions,
+        total_branches
+    );
 
     if total_functions == 0 {
         log::info!("No functions found to explore.");
@@ -195,7 +211,11 @@ pub(crate) async fn run_run(
             };
 
             // Determine the language of this file
-            let ext = entry.file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let ext = entry
+                .file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
             let disc_lang = match DiscoveryLanguage::from_extension(ext) {
                 Some(l) => l,
                 None => continue,
@@ -254,13 +274,18 @@ pub(crate) async fn run_run(
                 capture_side_effects: false,
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
-                };
+            };
 
-            match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None).await {
+            match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None)
+                .await
+            {
                 Ok(result) => {
                     log::debug!(
                         "{}: {} path(s), {}/{} lines",
-                        entry.name, result.unique_paths, result.lines_covered, result.total_lines
+                        entry.name,
+                        result.unique_paths,
+                        result.lines_covered,
+                        result.total_lines
                     );
                     exploration_results.push((qualified_name.clone(), result));
                 }

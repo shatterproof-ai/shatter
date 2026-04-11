@@ -89,11 +89,7 @@ impl AnalysisCache {
     }
 
     /// Store analysis results for a source file.
-    pub fn store(
-        &self,
-        file_path: &Path,
-        analyses: &[FunctionAnalysis],
-    ) -> Result<(), CacheError> {
+    pub fn store(&self, file_path: &Path, analyses: &[FunctionAnalysis]) -> Result<(), CacheError> {
         let content_hash = sha256_file(file_path)?;
         let mtime_secs = mtime_secs(file_path)?;
 
@@ -247,7 +243,11 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         let cache = AnalysisCache::new(cache_dir).unwrap();
 
-        let src = create_source_file(dir.path(), "test.ts", "function add(a, b) { return a + b; }");
+        let src = create_source_file(
+            dir.path(),
+            "test.ts",
+            "function add(a, b) { return a + b; }",
+        );
         let analyses = sample_analyses();
 
         cache.store(&src, &analyses).unwrap();
@@ -266,7 +266,11 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         let cache = AnalysisCache::new(cache_dir).unwrap();
 
-        let src = create_source_file(dir.path(), "test.ts", "function add(a, b) { return a + b; }");
+        let src = create_source_file(
+            dir.path(),
+            "test.ts",
+            "function add(a, b) { return a + b; }",
+        );
         cache.store(&src, &sample_analyses()).unwrap();
 
         // Modify the file content — ensure mtime changes.

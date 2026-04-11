@@ -39,10 +39,7 @@ pub enum SymExpr {
     },
 
     /// Unary operation: op operand.
-    UnOp {
-        op: UnOpKind,
-        operand: Box<SymExpr>,
-    },
+    UnOp { op: UnOpKind, operand: Box<SymExpr> },
 
     /// Method/function call with symbolic arguments.
     Call {
@@ -138,9 +135,7 @@ fn collect_param_names(expr: &SymExpr, names: &mut HashSet<String>) {
         SymExpr::UnOp { operand, .. } => {
             collect_param_names(operand, names);
         }
-        SymExpr::Call {
-            receiver, args, ..
-        } => {
+        SymExpr::Call { receiver, args, .. } => {
             if let Some(r) = receiver {
                 collect_param_names(r, names);
             }
@@ -315,10 +310,7 @@ mod tests {
                 path: vec![],
             }),
         };
-        assert_eq!(
-            extract_param_names(&expr),
-            HashSet::from(["x".into()])
-        );
+        assert_eq!(extract_param_names(&expr), HashSet::from(["x".into()]));
     }
 
     #[test]
@@ -449,12 +441,10 @@ mod tests {
             serde_json::from_str(r#""bit_clear""#).expect("bit_clear should deserialize");
         assert_eq!(bit_clear, BinOpKind::BitClear);
 
-        let shl: BinOpKind =
-            serde_json::from_str(r#""shl""#).expect("shl should deserialize");
+        let shl: BinOpKind = serde_json::from_str(r#""shl""#).expect("shl should deserialize");
         assert_eq!(shl, BinOpKind::Shl);
 
-        let shr: BinOpKind =
-            serde_json::from_str(r#""shr""#).expect("shr should deserialize");
+        let shr: BinOpKind = serde_json::from_str(r#""shr""#).expect("shr should deserialize");
         assert_eq!(shr, BinOpKind::Shr);
 
         // Full BinOp expression with bit_clear, as sent by the Go frontend
@@ -541,10 +531,7 @@ mod tests {
                 path: vec![],
             }),
         };
-        assert_eq!(
-            extract_param_names(&expr),
-            HashSet::from(["flag".into()])
-        );
+        assert_eq!(extract_param_names(&expr), HashSet::from(["flag".into()]));
     }
 
     #[test]
@@ -577,10 +564,7 @@ mod tests {
                 path: vec![],
             }],
         };
-        assert_eq!(
-            extract_param_names(&expr),
-            HashSet::from(["input".into()])
-        );
+        assert_eq!(extract_param_names(&expr), HashSet::from(["input".into()]));
     }
 
     #[test]
@@ -632,10 +616,7 @@ mod tests {
             }),
             right: Box::new(SymExpr::Const(ConstValue::Int(0))),
         };
-        assert_eq!(
-            extract_param_names(&expr),
-            HashSet::from(["config".into()])
-        );
+        assert_eq!(extract_param_names(&expr), HashSet::from(["config".into()]));
     }
 
     #[test]
@@ -643,7 +624,8 @@ mod tests {
         // Go frontend may omit "args" when the slice is empty (omitempty).
         // The serde(default) on args ensures this still deserializes.
         let json = r#"{"kind":"call","name":"isReady"}"#;
-        let expr: SymExpr = serde_json::from_str(json).expect("should deserialize call without args");
+        let expr: SymExpr =
+            serde_json::from_str(json).expect("should deserialize call without args");
         match expr {
             SymExpr::Call { name, args, .. } => {
                 assert_eq!(name, "isReady");
@@ -658,7 +640,8 @@ mod tests {
         // When Go serializes Args without omitempty and the slice is nil,
         // the JSON has "args":null. Verify this also deserializes.
         let json = r#"{"kind":"call","name":"isReady","args":null}"#;
-        let expr: SymExpr = serde_json::from_str(json).expect("should deserialize call with null args");
+        let expr: SymExpr =
+            serde_json::from_str(json).expect("should deserialize call with null args");
         match expr {
             SymExpr::Call { name, args, .. } => {
                 assert_eq!(name, "isReady");

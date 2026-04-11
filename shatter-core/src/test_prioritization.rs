@@ -131,9 +131,9 @@ pub fn parse_budget(s: &str) -> Result<Duration, PrioritizeError> {
         if ch.is_ascii_digit() || ch == '.' {
             current_num.push(ch);
         } else {
-            let n: f64 = current_num.parse().map_err(|_| {
-                PrioritizeError::InvalidBudget(format!("invalid number in '{s}'"))
-            })?;
+            let n: f64 = current_num
+                .parse()
+                .map_err(|_| PrioritizeError::InvalidBudget(format!("invalid number in '{s}'")))?;
             current_num.clear();
             match ch {
                 's' => total_secs += n as u64,
@@ -150,9 +150,9 @@ pub fn parse_budget(s: &str) -> Result<Duration, PrioritizeError> {
 
     // Trailing digits without a unit → seconds
     if !current_num.is_empty() {
-        let n: f64 = current_num.parse().map_err(|_| {
-            PrioritizeError::InvalidBudget(format!("invalid number in '{s}'"))
-        })?;
+        let n: f64 = current_num
+            .parse()
+            .map_err(|_| PrioritizeError::InvalidBudget(format!("invalid number in '{s}'")))?;
         total_secs += n as u64;
     }
 
@@ -270,10 +270,7 @@ pub fn prioritize(
 ) -> PrioritizeResult {
     // Dedup by test ID, keeping the first occurrence.
     let mut seen_ids = HashSet::new();
-    let deduped: Vec<&TestCase> = tests
-        .iter()
-        .filter(|t| seen_ids.insert(&t.id))
-        .collect();
+    let deduped: Vec<&TestCase> = tests.iter().filter(|t| seen_ids.insert(&t.id)).collect();
 
     let n = deduped.len();
     let mut selected: Vec<RankedTest> = Vec::with_capacity(n);
@@ -435,10 +432,7 @@ pub fn format_prioritize_report(result: &PrioritizeResult, use_color: bool) -> S
     }
 
     if !result.budget.is_zero() {
-        out.push_str(&format!(
-            "Budget: {:.0}s\n",
-            result.budget.as_secs_f64()
-        ));
+        out.push_str(&format!("Budget: {:.0}s\n", result.budget.as_secs_f64()));
     }
     out.push('\n');
 
@@ -463,7 +457,11 @@ pub fn format_prioritize_report(result: &PrioritizeResult, use_color: bool) -> S
             out.push_str(&format!("{excl_header}\n"));
         }
         for tc in &result.excluded {
-            out.push_str(&format!("  - {} ({:.1}s)\n", tc.id, tc.duration.as_secs_f64()));
+            out.push_str(&format!(
+                "  - {} ({:.1}s)\n",
+                tc.id,
+                tc.duration.as_secs_f64()
+            ));
         }
     }
 

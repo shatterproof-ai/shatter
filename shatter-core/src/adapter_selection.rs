@@ -9,9 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::nondeterminism::Confidence;
-use crate::protocol::{
-    AdapterHint, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
-};
+use crate::protocol::{AdapterHint, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile};
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -86,9 +84,7 @@ impl AdapterSelectionResult {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AdapterSelectionError {
     /// Two required adapters (from explicit config) conflict with each other.
-    #[error(
-        "required adapter `{adapter_id}` conflicts with active adapter `{conflicting_id}`"
-    )]
+    #[error("required adapter `{adapter_id}` conflicts with active adapter `{conflicting_id}`")]
     RequiredConflict {
         adapter_id: String,
         conflicting_id: String,
@@ -121,10 +117,8 @@ pub fn select_adapters(
     let mut result = AdapterSelectionResult::default();
 
     // Index hints by adapter id for quick lookup.
-    let hint_by_id: std::collections::HashMap<&str, &AdapterHint> = hints
-        .iter()
-        .map(|h| (h.adapter.id.as_str(), h))
-        .collect();
+    let hint_by_id: std::collections::HashMap<&str, &AdapterHint> =
+        hints.iter().map(|h| (h.adapter.id.as_str(), h)).collect();
 
     // Track which adapter ids are already processed.
     let mut processed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -197,8 +191,7 @@ pub fn select_adapters(
 /// An adapter hint is eligible for transparent auto-apply when its policy is
 /// `Auto` and the frontend reported `High` confidence.
 fn is_auto_apply_eligible(hint: &AdapterHint) -> bool {
-    hint.adapter.apply == Some(ExecutionAdapterApply::Auto)
-        && hint.confidence == Confidence::High
+    hint.adapter.apply == Some(ExecutionAdapterApply::Auto) && hint.confidence == Confidence::High
 }
 
 /// Check for conflicts between active adapters. If both are from config,
@@ -273,8 +266,11 @@ fn promote_requirements(
     result: &mut AdapterSelectionResult,
     hint_by_id: &std::collections::HashMap<&str, &AdapterHint>,
 ) {
-    let active_ids: std::collections::HashSet<&str> =
-        result.active.iter().map(|a| a.adapter.id.as_str()).collect();
+    let active_ids: std::collections::HashSet<&str> = result
+        .active
+        .iter()
+        .map(|a| a.adapter.id.as_str())
+        .collect();
 
     // Collect promotions to apply after iteration.
     let mut to_promote: Vec<String> = Vec::new();
@@ -353,11 +349,7 @@ mod tests {
         }
     }
 
-    fn hint(
-        id: &str,
-        apply: Option<ExecutionAdapterApply>,
-        confidence: Confidence,
-    ) -> AdapterHint {
+    fn hint(id: &str, apply: Option<ExecutionAdapterApply>, confidence: Confidence) -> AdapterHint {
         AdapterHint {
             adapter: adapter(id, apply),
             confidence,
@@ -380,12 +372,18 @@ mod tests {
     #[test]
     fn config_required_always_active() {
         let profile = ExecutionProfile {
-            adapters: vec![adapter("ts/react-hooks", Some(ExecutionAdapterApply::Required))],
+            adapters: vec![adapter(
+                "ts/react-hooks",
+                Some(ExecutionAdapterApply::Required),
+            )],
         };
         let result = select_adapters(Some(&profile), &[]).unwrap();
         assert_eq!(result.active.len(), 1);
         assert_eq!(result.active[0].adapter.id, "ts/react-hooks");
-        assert_eq!(result.active[0].provenance, SelectionProvenance::ExplicitConfig);
+        assert_eq!(
+            result.active[0].provenance,
+            SelectionProvenance::ExplicitConfig
+        );
     }
 
     #[test]
@@ -410,7 +408,10 @@ mod tests {
     #[test]
     fn config_disabled_goes_to_rejected() {
         let profile = ExecutionProfile {
-            adapters: vec![adapter("ts/react-hooks", Some(ExecutionAdapterApply::Disabled))],
+            adapters: vec![adapter(
+                "ts/react-hooks",
+                Some(ExecutionAdapterApply::Disabled),
+            )],
         };
         let result = select_adapters(Some(&profile), &[]).unwrap();
         assert!(result.active.is_empty());
@@ -429,7 +430,10 @@ mod tests {
         let result = select_adapters(None, &hints).unwrap();
         assert_eq!(result.active.len(), 1);
         assert_eq!(result.active[0].adapter.id, "ts/browser-dom");
-        assert_eq!(result.active[0].provenance, SelectionProvenance::AutoApplied);
+        assert_eq!(
+            result.active[0].provenance,
+            SelectionProvenance::AutoApplied
+        );
     }
 
     #[test]
@@ -473,7 +477,10 @@ mod tests {
     #[test]
     fn config_overrides_hint() {
         let profile = ExecutionProfile {
-            adapters: vec![adapter("ts/react-hooks", Some(ExecutionAdapterApply::Required))],
+            adapters: vec![adapter(
+                "ts/react-hooks",
+                Some(ExecutionAdapterApply::Required),
+            )],
         };
         // Hint says suggest, but config says required → config wins.
         let hints = vec![hint(
@@ -483,7 +490,10 @@ mod tests {
         )];
         let result = select_adapters(Some(&profile), &hints).unwrap();
         assert_eq!(result.active.len(), 1);
-        assert_eq!(result.active[0].provenance, SelectionProvenance::ExplicitConfig);
+        assert_eq!(
+            result.active[0].provenance,
+            SelectionProvenance::ExplicitConfig
+        );
         // Hint reasons are attached to the config adapter.
         assert!(!result.active[0].reasons.is_empty());
         assert!(result.suggested.is_empty());
@@ -492,7 +502,10 @@ mod tests {
     #[test]
     fn config_disable_overrides_auto_hint() {
         let profile = ExecutionProfile {
-            adapters: vec![adapter("ts/browser-dom", Some(ExecutionAdapterApply::Disabled))],
+            adapters: vec![adapter(
+                "ts/browser-dom",
+                Some(ExecutionAdapterApply::Disabled),
+            )],
         };
         let hints = vec![hint(
             "ts/browser-dom",
@@ -523,13 +536,19 @@ mod tests {
             }],
         }];
         let err = select_adapters(Some(&profile), &hints).unwrap_err();
-        assert!(matches!(err, AdapterSelectionError::RequiredConflict { .. }));
+        assert!(matches!(
+            err,
+            AdapterSelectionError::RequiredConflict { .. }
+        ));
     }
 
     #[test]
     fn conflict_demotes_auto_applied() {
         let profile = ExecutionProfile {
-            adapters: vec![adapter("ts/browser-dom-a", Some(ExecutionAdapterApply::Required))],
+            adapters: vec![adapter(
+                "ts/browser-dom-a",
+                Some(ExecutionAdapterApply::Required),
+            )],
         };
         let hints = vec![
             AdapterHint {
@@ -577,7 +596,11 @@ mod tests {
         ];
         let result = select_adapters(None, &hints).unwrap();
         // Both should be active.
-        let active_ids: Vec<&str> = result.active.iter().map(|a| a.adapter.id.as_str()).collect();
+        let active_ids: Vec<&str> = result
+            .active
+            .iter()
+            .map(|a| a.adapter.id.as_str())
+            .collect();
         assert!(active_ids.contains(&"ts/react-hooks"));
         assert!(active_ids.contains(&"ts/module-resolution"));
     }
@@ -586,7 +609,10 @@ mod tests {
     fn to_execution_profile_preserves_order() {
         let profile = ExecutionProfile {
             adapters: vec![
-                adapter("ts/module-resolution", Some(ExecutionAdapterApply::Required)),
+                adapter(
+                    "ts/module-resolution",
+                    Some(ExecutionAdapterApply::Required),
+                ),
                 adapter("ts/browser-dom", Some(ExecutionAdapterApply::Required)),
             ],
         };
@@ -626,8 +652,8 @@ mod tests {
     #[cfg(test)]
     mod prop {
         use super::*;
-        use proptest::prelude::*;
         use crate::test_arbitraries::{arb_adapter_hint, arb_execution_profile};
+        use proptest::prelude::*;
 
         proptest! {
             #[test]

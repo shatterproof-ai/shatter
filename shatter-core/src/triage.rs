@@ -249,9 +249,7 @@ impl TriageState {
 
             // Too many unknowns — skip this trace.
             let total = trace.len();
-            if total > 0
-                && (indeterminate_count as f64 / total as f64) > INDETERMINATE_THRESHOLD
-            {
+            if total > 0 && (indeterminate_count as f64 / total as f64) > INDETERMINATE_THRESHOLD {
                 continue;
             }
 
@@ -515,7 +513,10 @@ fn eval_arith(a: &Value, b: &Value, f: fn(f64, f64) -> f64) -> Option<Value> {
     let fb = as_f64(b)?;
     let result = f(fa, fb);
     // Preserve integer results when both inputs are integers and the result is exact
-    if a.is_i64() && b.is_i64() && let Some(i) = i64_from_f64(result) {
+    if a.is_i64()
+        && b.is_i64()
+        && let Some(i) = i64_from_f64(result)
+    {
         return Some(Value::from(i));
     }
     Some(Value::from(result))
@@ -542,7 +543,9 @@ fn eval_unop(
         UnOpKind::Not => Some(Value::from(!is_truthy(&val))),
         UnOpKind::Neg => {
             let f = as_f64(&val)?;
-            if val.is_i64() && let Some(i) = i64_from_f64(-f) {
+            if val.is_i64()
+                && let Some(i) = i64_from_f64(-f)
+            {
                 return Some(Value::from(i));
             }
             Some(Value::from(-f))
@@ -577,9 +580,7 @@ fn eval_call(
         }
         Some(StringOp::IndexOf) => {
             let (haystack, needle) = eval_string_pair(name, receiver, args, params, param_names)?;
-            let idx = haystack
-                .find(needle.as_str())
-                .map_or(-1i64, |i| i as i64);
+            let idx = haystack.find(needle.as_str()).map_or(-1i64, |i| i as i64);
             Some(Value::from(idx))
         }
         Some(StringOp::Length) => {
@@ -762,11 +763,8 @@ mod tests {
     #[test]
     fn param_nested_field_path() {
         let obj = json!({"a": {"b": {"c": true}}});
-        let result = evaluate_constraint(
-            &param_path("x", &["a", "b", "c"]),
-            &[obj],
-            &names(&["x"]),
-        );
+        let result =
+            evaluate_constraint(&param_path("x", &["a", "b", "c"]), &[obj], &names(&["x"]));
         assert_eq!(result, Some(json!(true)));
     }
 
@@ -779,11 +777,8 @@ mod tests {
     #[test]
     fn param_missing_field_returns_none() {
         let obj = json!({"a": 1});
-        let result = evaluate_constraint(
-            &param_path("x", &["nonexistent"]),
-            &[obj],
-            &names(&["x"]),
-        );
+        let result =
+            evaluate_constraint(&param_path("x", &["nonexistent"]), &[obj], &names(&["x"]));
         assert_eq!(result, None);
     }
 
@@ -797,11 +792,7 @@ mod tests {
 
     #[test]
     fn const_float() {
-        let result = evaluate_constraint(
-            &SymExpr::Const(ConstValue::Float(2.5)),
-            &[],
-            &[],
-        );
+        let result = evaluate_constraint(&SymExpr::Const(ConstValue::Float(2.5)), &[], &[]);
         assert_eq!(result, Some(json!(2.5)));
     }
 
@@ -813,8 +804,14 @@ mod tests {
 
     #[test]
     fn const_bool() {
-        assert_eq!(evaluate_constraint(&bool_const(true), &[], &[]), Some(json!(true)));
-        assert_eq!(evaluate_constraint(&bool_const(false), &[], &[]), Some(json!(false)));
+        assert_eq!(
+            evaluate_constraint(&bool_const(true), &[], &[]),
+            Some(json!(true))
+        );
+        assert_eq!(
+            evaluate_constraint(&bool_const(false), &[], &[]),
+            Some(json!(false))
+        );
     }
 
     #[test]
@@ -836,7 +833,10 @@ mod tests {
             kind: ComplexKind::Date,
             repr: Box::new(ConstValue::Int(1704067200000)),
         });
-        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!(1704067200000i64)));
+        assert_eq!(
+            evaluate_constraint(&expr, &[], &[]),
+            Some(json!(1704067200000i64))
+        );
     }
 
     // --- Unknown ---
@@ -1000,7 +1000,10 @@ mod tests {
             left: Box::new(str_const("hello ")),
             right: Box::new(str_const("world")),
         };
-        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("hello world")));
+        assert_eq!(
+            evaluate_constraint(&expr, &[], &[]),
+            Some(json!("hello world"))
+        );
     }
 
     #[test]
@@ -1297,7 +1300,10 @@ mod tests {
             receiver: Some(Box::new(str_const("hello "))),
             args: vec![str_const("world")],
         };
-        assert_eq!(evaluate_constraint(&expr, &[], &[]), Some(json!("hello world")));
+        assert_eq!(
+            evaluate_constraint(&expr, &[], &[]),
+            Some(json!("hello world"))
+        );
     }
 
     #[test]
@@ -1389,7 +1395,11 @@ mod tests {
                 left: Box::new(int_const(5)),
                 right: Box::new(int_const(3)),
             };
-            assert_eq!(evaluate_constraint(&expr, &[], &[]), None, "op {op:?} should return None");
+            assert_eq!(
+                evaluate_constraint(&expr, &[], &[]),
+                None,
+                "op {op:?} should return None"
+            );
         }
     }
 

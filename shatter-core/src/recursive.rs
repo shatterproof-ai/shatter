@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::behavior::BehaviorMap;
 use crate::execution_record::ExecutionRecord;
@@ -180,7 +180,12 @@ async fn probe_for_base_cases(
 
         if !calls_self {
             let input_hash = hash_inputs(&inputs);
-            base_cases.push(make_exec_record(&analysis.name, input_hash, inputs, &exec_result));
+            base_cases.push(make_exec_record(
+                &analysis.name,
+                input_hash,
+                inputs,
+                &exec_result,
+            ));
         }
     }
 
@@ -199,8 +204,7 @@ pub async fn explore_recursive(
     config: &RecursiveConfig,
 ) -> Result<RecursiveResult, RecursiveError> {
     // Step 1: Probe for base cases
-    let (base_records, probes_executed) =
-        probe_for_base_cases(frontend, analysis, config).await?;
+    let (base_records, probes_executed) = probe_for_base_cases(frontend, analysis, config).await?;
     let base_case_count = base_records.len();
 
     if base_records.is_empty() {
@@ -256,7 +260,12 @@ pub async fn explore_recursive(
                 _ => continue,
             };
 
-            all_records.push(make_exec_record(&analysis.name, input_hash, inputs, &exec_result));
+            all_records.push(make_exec_record(
+                &analysis.name,
+                input_hash,
+                inputs,
+                &exec_result,
+            ));
         }
 
         let updated_map = BehaviorMap::from_records(&analysis.name, &all_records);
@@ -367,9 +376,9 @@ pub async fn explore_mutual_group(
 
     // Step 1: Probe each function for base cases
     for func_id in group {
-        let analysis = analyses
-            .get(func_id)
-            .ok_or_else(|| RecursiveError::UnexpectedResponse(format!("missing analysis for {func_id}")))?;
+        let analysis = analyses.get(func_id).ok_or_else(|| {
+            RecursiveError::UnexpectedResponse(format!("missing analysis for {func_id}"))
+        })?;
 
         let probe_inputs = generate_probe_inputs(&analysis.params, config.max_probes);
 
@@ -444,7 +453,8 @@ pub async fn explore_mutual_group(
             let analysis = analyses.get(func_id).expect("func in analyses");
             let depth_inputs = generate_depth_inputs(&analysis.params, d);
 
-            let seen_hashes: HashSet<u64> = all_records[func_id].iter().map(|r| r.input_hash).collect();
+            let seen_hashes: HashSet<u64> =
+                all_records[func_id].iter().map(|r| r.input_hash).collect();
 
             for inputs in depth_inputs {
                 let input_hash = hash_inputs(&inputs);
@@ -658,5 +668,4 @@ mod tests {
         let b = vec![json!(2)];
         assert_ne!(hash_inputs(&a), hash_inputs(&b));
     }
-
 }

@@ -77,7 +77,9 @@ impl OpaqueCategory {
             OpaqueCategory::Unknown => "type cannot be automatically synthesized",
             OpaqueCategory::NoConstructor => "has no exported constructor or factory function",
             OpaqueCategory::TransitivelyOpaque => "constructor requires an opaque argument",
-            OpaqueCategory::AbstractType => "abstract class or private constructor cannot be instantiated",
+            OpaqueCategory::AbstractType => {
+                "abstract class or private constructor cannot be instantiated"
+            }
             OpaqueCategory::NoImplementors => "no concrete implementation visible in scope",
             OpaqueCategory::InfrastructurePackage => "comes from a known infrastructure package",
             OpaqueCategory::CloseableResource => "implements a close or dispose interface",
@@ -91,15 +93,10 @@ impl OpaqueCategory {
 pub fn category_for_label(label: &str) -> OpaqueCategory {
     // Network handles: sockets, listeners, TLS connections
     match label {
-        "net.Socket"
-        | "net.Server"
-        | "net.Conn"
-        | "net.Listener"
-        | "net.PacketConn"
-        | "tls.TLSSocket"
-        | "tls.Server"
-        | "dgram.Socket"
-        | "http.Server" => return OpaqueCategory::NetworkHandle,
+        "net.Socket" | "net.Server" | "net.Conn" | "net.Listener" | "net.PacketConn"
+        | "tls.TLSSocket" | "tls.Server" | "dgram.Socket" | "http.Server" => {
+            return OpaqueCategory::NetworkHandle;
+        }
         _ => {}
     }
     // I/O streams and file handles
@@ -192,7 +189,10 @@ impl PathSegment {
 pub fn format_nesting_path(path: &[PathSegment]) -> String {
     const MAX_FULL: usize = 3;
     if path.len() <= MAX_FULL {
-        path.iter().map(PathSegment::display).collect::<Vec<_>>().join(" → ")
+        path.iter()
+            .map(PathSegment::display)
+            .collect::<Vec<_>>()
+            .join(" → ")
     } else {
         // Show first 2 segments, ..., last 1 segment
         let mut parts: Vec<String> = path[..2].iter().map(PathSegment::display).collect();
@@ -666,7 +666,11 @@ mod tests {
 
     #[test]
     fn custom_opaque_type_matched_by_type_name() {
-        let params = vec![param_with_type_name("pool", TypeInfo::Unknown, "DatabasePool")];
+        let params = vec![param_with_type_name(
+            "pool",
+            TypeInfo::Unknown,
+            "DatabasePool",
+        )];
         let custom_types = vec![custom("DatabasePool")];
         let reasons = check_executability(&params, &custom_types);
         assert_eq!(reasons.len(), 1);
@@ -678,8 +682,15 @@ mod tests {
 
     #[test]
     fn custom_opaque_type_with_reason() {
-        let params = vec![param_with_type_name("client", TypeInfo::Unknown, "HttpClient")];
-        let custom_types = vec![custom_with_reason("HttpClient", "requires live HTTP connection")];
+        let params = vec![param_with_type_name(
+            "client",
+            TypeInfo::Unknown,
+            "HttpClient",
+        )];
+        let custom_types = vec![custom_with_reason(
+            "HttpClient",
+            "requires live HTTP connection",
+        )];
         let reasons = check_executability(&params, &custom_types);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].opaque_label, "HttpClient");
@@ -748,28 +759,64 @@ mod tests {
 
     #[test]
     fn category_for_label_network_handles() {
-        assert_eq!(category_for_label("net.Socket"), OpaqueCategory::NetworkHandle);
-        assert_eq!(category_for_label("net.Conn"), OpaqueCategory::NetworkHandle);
-        assert_eq!(category_for_label("tls.TLSSocket"), OpaqueCategory::NetworkHandle);
-        assert_eq!(category_for_label("dgram.Socket"), OpaqueCategory::NetworkHandle);
-        assert_eq!(category_for_label("http.Server"), OpaqueCategory::NetworkHandle);
+        assert_eq!(
+            category_for_label("net.Socket"),
+            OpaqueCategory::NetworkHandle
+        );
+        assert_eq!(
+            category_for_label("net.Conn"),
+            OpaqueCategory::NetworkHandle
+        );
+        assert_eq!(
+            category_for_label("tls.TLSSocket"),
+            OpaqueCategory::NetworkHandle
+        );
+        assert_eq!(
+            category_for_label("dgram.Socket"),
+            OpaqueCategory::NetworkHandle
+        );
+        assert_eq!(
+            category_for_label("http.Server"),
+            OpaqueCategory::NetworkHandle
+        );
     }
 
     #[test]
     fn category_for_label_io_streams() {
-        assert_eq!(category_for_label("stream.Readable"), OpaqueCategory::IoStream);
-        assert_eq!(category_for_label("stream.Writable"), OpaqueCategory::IoStream);
-        assert_eq!(category_for_label("fs.ReadStream"), OpaqueCategory::IoStream);
+        assert_eq!(
+            category_for_label("stream.Readable"),
+            OpaqueCategory::IoStream
+        );
+        assert_eq!(
+            category_for_label("stream.Writable"),
+            OpaqueCategory::IoStream
+        );
+        assert_eq!(
+            category_for_label("fs.ReadStream"),
+            OpaqueCategory::IoStream
+        );
         assert_eq!(category_for_label("os.File"), OpaqueCategory::IoStream);
         assert_eq!(category_for_label("io.Reader"), OpaqueCategory::IoStream);
-        assert_eq!(category_for_label("io.ReadCloser"), OpaqueCategory::IoStream);
+        assert_eq!(
+            category_for_label("io.ReadCloser"),
+            OpaqueCategory::IoStream
+        );
     }
 
     #[test]
     fn category_for_label_database_connections() {
-        assert_eq!(category_for_label("pg.Client"), OpaqueCategory::DatabaseConnection);
-        assert_eq!(category_for_label("pg.Pool"), OpaqueCategory::DatabaseConnection);
-        assert_eq!(category_for_label("sql.DB"), OpaqueCategory::DatabaseConnection);
+        assert_eq!(
+            category_for_label("pg.Client"),
+            OpaqueCategory::DatabaseConnection
+        );
+        assert_eq!(
+            category_for_label("pg.Pool"),
+            OpaqueCategory::DatabaseConnection
+        );
+        assert_eq!(
+            category_for_label("sql.DB"),
+            OpaqueCategory::DatabaseConnection
+        );
         assert_eq!(
             category_for_label("database/sql.DB"),
             OpaqueCategory::DatabaseConnection
@@ -802,7 +849,10 @@ mod tests {
 
     #[test]
     fn category_for_label_unknown_falls_back_to_unknown() {
-        assert_eq!(category_for_label("some.UnknownType"), OpaqueCategory::Unknown);
+        assert_eq!(
+            category_for_label("some.UnknownType"),
+            OpaqueCategory::Unknown
+        );
         assert_eq!(category_for_label("grpc.Client"), OpaqueCategory::Unknown);
         assert_eq!(category_for_label("channel"), OpaqueCategory::Unknown);
     }
@@ -832,13 +882,30 @@ mod tests {
 
     #[test]
     fn static_opacity_category_labels_and_reasons() {
-        assert_eq!(OpaqueCategory::NoConstructor.label(), "type with no constructor");
-        assert_eq!(OpaqueCategory::TransitivelyOpaque.label(), "transitively opaque type");
+        assert_eq!(
+            OpaqueCategory::NoConstructor.label(),
+            "type with no constructor"
+        );
+        assert_eq!(
+            OpaqueCategory::TransitivelyOpaque.label(),
+            "transitively opaque type"
+        );
         assert_eq!(OpaqueCategory::AbstractType.label(), "abstract type");
-        assert_eq!(OpaqueCategory::NoImplementors.label(), "interface with no implementors");
+        assert_eq!(
+            OpaqueCategory::NoImplementors.label(),
+            "interface with no implementors"
+        );
 
-        assert!(OpaqueCategory::NoConstructor.reason().contains("constructor"));
-        assert!(OpaqueCategory::TransitivelyOpaque.reason().contains("opaque"));
+        assert!(
+            OpaqueCategory::NoConstructor
+                .reason()
+                .contains("constructor")
+        );
+        assert!(
+            OpaqueCategory::TransitivelyOpaque
+                .reason()
+                .contains("opaque")
+        );
         assert!(OpaqueCategory::AbstractType.reason().contains("abstract"));
         assert!(OpaqueCategory::NoImplementors.reason().contains("concrete"));
     }
@@ -864,11 +931,21 @@ mod tests {
 
     #[test]
     fn medium_opacity_category_labels_and_reasons() {
-        assert_eq!(OpaqueCategory::InfrastructurePackage.label(), "infrastructure package");
-        assert_eq!(OpaqueCategory::CloseableResource.label(), "closeable resource");
+        assert_eq!(
+            OpaqueCategory::InfrastructurePackage.label(),
+            "infrastructure package"
+        );
+        assert_eq!(
+            OpaqueCategory::CloseableResource.label(),
+            "closeable resource"
+        );
         assert_eq!(OpaqueCategory::NativeHandle.label(), "native handle");
 
-        assert!(OpaqueCategory::InfrastructurePackage.reason().contains("infrastructure"));
+        assert!(
+            OpaqueCategory::InfrastructurePackage
+                .reason()
+                .contains("infrastructure")
+        );
         assert!(OpaqueCategory::CloseableResource.reason().contains("close"));
         assert!(OpaqueCategory::NativeHandle.reason().contains("OS handle"));
     }
@@ -953,10 +1030,7 @@ mod tests {
             PathSegment::Param("config".into()),
             PathSegment::Field("db".into()),
         ];
-        assert_eq!(
-            format_nesting_path(&path),
-            r#"param "config" → field "db""#
-        );
+        assert_eq!(format_nesting_path(&path), r#"param "config" → field "db""#);
     }
 
     #[test]
@@ -1056,7 +1130,11 @@ mod tests {
 
     #[test]
     fn unknown_type_with_type_name_produces_suggestion() {
-        let params = vec![param_with_type_name("hash", TypeInfo::Unknown, "HashResult")];
+        let params = vec![param_with_type_name(
+            "hash",
+            TypeInfo::Unknown,
+            "HashResult",
+        )];
         let suggestions = build_opaque_suggestions(&params, &HashMap::new());
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].param_name, "hash");
@@ -1082,7 +1160,10 @@ mod tests {
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].param_name, "val");
         assert_eq!(suggestions[0].failed_solve_count, OPAQUE_SUGGEST_THRESHOLD);
-        assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::FrequentSolveFailure);
+        assert_eq!(
+            suggestions[0].reason,
+            OpaqueSuggestionReason::FrequentSolveFailure
+        );
     }
 
     #[test]
@@ -1100,12 +1181,19 @@ mod tests {
         // not by suggestions.
         let params = vec![param(
             "conn",
-            TypeInfo::Opaque { label: "pg.Client".into(), static_opacity: None, medium_opacity: None },
+            TypeInfo::Opaque {
+                label: "pg.Client".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            },
         )];
         let mut fail_counts = HashMap::new();
         fail_counts.insert("conn".into(), OPAQUE_SUGGEST_THRESHOLD + 5);
         let suggestions = build_opaque_suggestions(&params, &fail_counts);
-        assert!(suggestions.is_empty(), "known-opaque params should not generate suggestions");
+        assert!(
+            suggestions.is_empty(),
+            "known-opaque params should not generate suggestions"
+        );
     }
 
     #[test]
@@ -1119,7 +1207,10 @@ mod tests {
         let suggestions = build_opaque_suggestions(&params, &fail_counts);
         assert_eq!(suggestions.len(), 2);
         assert_eq!(suggestions[0].reason, OpaqueSuggestionReason::UnknownType);
-        assert_eq!(suggestions[1].reason, OpaqueSuggestionReason::FrequentSolveFailure);
+        assert_eq!(
+            suggestions[1].reason,
+            OpaqueSuggestionReason::FrequentSolveFailure
+        );
     }
 
     #[test]

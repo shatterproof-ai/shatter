@@ -26,10 +26,7 @@ pub(crate) fn run_init(
 
     // If .shatter/ already exists, report and return.
     if shatter_dir.exists() {
-        println!(
-            "Project already initialized at {}",
-            shatter_dir.display()
-        );
+        println!("Project already initialized at {}", shatter_dir.display());
         // Report which files exist inside .shatter/.
         if let Ok(entries) = std::fs::read_dir(&shatter_dir) {
             for entry in entries.flatten() {
@@ -50,9 +47,7 @@ pub(crate) fn run_init(
     let config_path = shatter_dir.join("config.yaml");
     let config_content = build_config_yaml(&language);
     std::fs::write(&config_path, config_content)?;
-    println!(
-        "  Created  .shatter/config.yaml  (detected language: {language})"
-    );
+    println!("  Created  .shatter/config.yaml  (detected language: {language})");
 
     println!("Initialized Shatter project at {}", resolved_dir.display());
 
@@ -181,7 +176,10 @@ mod tests {
         // Second call must not overwrite.
         run_init(Some(dir.path()), &colors).unwrap();
         let content = std::fs::read_to_string(&config_path).unwrap();
-        assert_eq!(content, "# custom content", "idempotent: must not overwrite existing config");
+        assert_eq!(
+            content, "# custom content",
+            "idempotent: must not overwrite existing config"
+        );
     }
 
     #[test]

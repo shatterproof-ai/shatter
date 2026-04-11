@@ -40,22 +40,13 @@ pub enum InvariantKind {
         value: f64,
     },
     /// A parameter always equals a constant value.
-    NumericConstant {
-        path: JsonPath,
-        value: f64,
-    },
+    NumericConstant { path: JsonPath, value: f64 },
     /// A value is never null/absent.
-    NotNull {
-        path: JsonPath,
-    },
+    NotNull { path: JsonPath },
     /// A value is always null.
-    IsNull {
-        path: JsonPath,
-    },
+    IsNull { path: JsonPath },
     /// A string is never empty.
-    StringNonEmpty {
-        path: JsonPath,
-    },
+    StringNonEmpty { path: JsonPath },
     /// A string always has a specific length.
     StringLength {
         path: JsonPath,
@@ -69,13 +60,9 @@ pub enum InvariantKind {
         input_path: JsonPath,
     },
     /// A boolean is always true.
-    AlwaysTrue {
-        path: JsonPath,
-    },
+    AlwaysTrue { path: JsonPath },
     /// A boolean is always false.
-    AlwaysFalse {
-        path: JsonPath,
-    },
+    AlwaysFalse { path: JsonPath },
 }
 
 /// Comparison operators for numeric invariants.
@@ -103,7 +90,10 @@ impl std::fmt::Display for ComparisonOp {
 pub type JsonPath = Vec<String>;
 
 /// Resolve a path into a JSON value, returning `None` if any segment is missing.
-fn resolve_path<'a>(value: &'a serde_json::Value, path: &[String]) -> Option<&'a serde_json::Value> {
+fn resolve_path<'a>(
+    value: &'a serde_json::Value,
+    path: &[String],
+) -> Option<&'a serde_json::Value> {
     let mut current = value;
     for segment in path {
         match current {
@@ -166,7 +156,11 @@ struct Candidate {
 }
 
 /// Extract all leaf paths from a JSON value for candidate generation.
-fn extract_paths(value: &serde_json::Value, prefix: &[String], out: &mut Vec<(JsonPath, serde_json::Value)>) {
+fn extract_paths(
+    value: &serde_json::Value,
+    prefix: &[String],
+    out: &mut Vec<(JsonPath, serde_json::Value)>,
+) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map {
@@ -211,10 +205,7 @@ fn target_value(record: &ExecutionRecord, target: InvariantTarget) -> serde_json
 }
 
 /// Generate candidate invariants from the first specimen.
-fn generate_candidates(
-    specimens: &[ExecutionRecord],
-    target: InvariantTarget,
-) -> Vec<Candidate> {
+fn generate_candidates(specimens: &[ExecutionRecord], target: InvariantTarget) -> Vec<Candidate> {
     if specimens.is_empty() {
         return vec![];
     }
@@ -490,7 +481,10 @@ fn generate_output_input_candidates(
                         check: Box::new(move |record| {
                             let out_val = target_value(record, InvariantTarget::Output);
                             let in_val = record.parameters.get(pi);
-                            match (resolve_path(&out_val, &op), in_val.and_then(|v| resolve_path(v, &ip))) {
+                            match (
+                                resolve_path(&out_val, &op),
+                                in_val.and_then(|v| resolve_path(v, &ip)),
+                            ) {
                                 (Some(a), Some(b)) => a == b,
                                 _ => false,
                             }
@@ -507,10 +501,7 @@ fn generate_output_input_candidates(
 // ---------------------------------------------------------------------------
 
 /// Detect invariants that hold across all specimens for the given target.
-pub fn detect_invariants(
-    specimens: &[ExecutionRecord],
-    target: InvariantTarget,
-) -> Vec<Invariant> {
+pub fn detect_invariants(specimens: &[ExecutionRecord], target: InvariantTarget) -> Vec<Invariant> {
     if specimens.is_empty() {
         return vec![];
     }
@@ -521,7 +512,10 @@ pub fn detect_invariants(
         .into_par_iter()
         .filter(|candidate| {
             // Skip the placeholder constant-detection candidate (handled below)
-            if matches!(candidate.invariant.kind, InvariantKind::NumericConstant { .. }) {
+            if matches!(
+                candidate.invariant.kind,
+                InvariantKind::NumericConstant { .. }
+            ) {
                 return false;
             }
             specimens.iter().all(|s| (candidate.check)(s))
@@ -586,24 +580,22 @@ fn filter_trivial(invariants: &mut Vec<Invariant>) {
     let gt_zero_paths: Vec<JsonPath> = invariants
         .iter()
         .filter_map(|inv| match &inv.kind {
-            InvariantKind::NumericComparison { path, op: ComparisonOp::Gt, value }
-                if *value == 0.0 =>
-            {
-                Some(path.clone())
-            }
+            InvariantKind::NumericComparison {
+                path,
+                op: ComparisonOp::Gt,
+                value,
+            } if *value == 0.0 => Some(path.clone()),
             _ => None,
         })
         .collect();
 
-    invariants.retain(|inv| {
-        match &inv.kind {
-            InvariantKind::NumericComparison {
-                path,
-                op: ComparisonOp::Ge,
-                value,
-            } if *value == 0.0 => !gt_zero_paths.contains(path),
-            _ => true,
-        }
+    invariants.retain(|inv| match &inv.kind {
+        InvariantKind::NumericComparison {
+            path,
+            op: ComparisonOp::Ge,
+            value,
+        } if *value == 0.0 => !gt_zero_paths.contains(path),
+        _ => true,
     });
 
     // Remove `x < 0` when values are actually >= 0 (these would have been filtered
@@ -720,7 +712,11 @@ fn format_invariant_label(inv: &Invariant, target: InvariantTarget) -> String {
             };
             format!("{}.length {op_str} {value}", format_path(path))
         }
-        InvariantKind::OutputEqualsInput { output_path, param_index, input_path } => {
+        InvariantKind::OutputEqualsInput {
+            output_path,
+            param_index,
+            input_path,
+        } => {
             let out = if output_path.is_empty() {
                 "output".to_string()
             } else {
@@ -745,7 +741,11 @@ fn format_invariant_label(inv: &Invariant, target: InvariantTarget) -> String {
 /// Convert raw exploration results into ExecutionRecords.
 pub fn records_from_raw_results(
     function_id: &str,
-    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
+    raw_results: &[(
+        Vec<serde_json::Value>,
+        Vec<crate::protocol::MockConfig>,
+        crate::protocol::ExecuteResult,
+    )],
 ) -> Vec<ExecutionRecord> {
     use std::hash::{Hash, Hasher};
     raw_results
@@ -873,7 +873,10 @@ mod tests {
         let has_not_null = invariants.iter().any(|inv| {
             matches!(&inv.kind, InvariantKind::NotNull { path } if path == &vec!["name".to_string()])
         });
-        assert!(has_not_null, "should detect name != null, got: {invariants:?}");
+        assert!(
+            has_not_null,
+            "should detect name != null, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -888,7 +891,10 @@ mod tests {
         let has_non_empty = invariants.iter().any(|inv| {
             matches!(&inv.kind, InvariantKind::StringNonEmpty { path } if path == &vec!["s".to_string()])
         });
-        assert!(has_non_empty, "should detect s is non-empty, got: {invariants:?}");
+        assert!(
+            has_non_empty,
+            "should detect s is non-empty, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -903,7 +909,10 @@ mod tests {
         let has_non_empty = invariants.iter().any(|inv| {
             matches!(&inv.kind, InvariantKind::StringNonEmpty { path } if path == &vec!["s".to_string()])
         });
-        assert!(!has_non_empty, "should not detect non-empty when empty string present");
+        assert!(
+            !has_non_empty,
+            "should not detect non-empty when empty string present"
+        );
     }
 
     #[test]
@@ -926,7 +935,10 @@ mod tests {
                 } if output_path == &vec!["len".to_string()] && input_path == &vec!["len".to_string()]
             )
         });
-        assert!(has_relation, "should detect output.len == input.len, got: {invariants:?}");
+        assert!(
+            has_relation,
+            "should detect output.len == input.len, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -938,10 +950,13 @@ mod tests {
 
         let invariants = detect_invariants(&specimens, InvariantTarget::Output);
 
-        let has_relation = invariants.iter().any(|inv| {
-            matches!(&inv.kind, InvariantKind::OutputEqualsInput { .. })
-        });
-        assert!(!has_relation, "should not detect output.len == input.len when they differ");
+        let has_relation = invariants
+            .iter()
+            .any(|inv| matches!(&inv.kind, InvariantKind::OutputEqualsInput { .. }));
+        assert!(
+            !has_relation,
+            "should not detect output.len == input.len when they differ"
+        );
     }
 
     #[test]
@@ -961,7 +976,10 @@ mod tests {
                 if path.is_empty() && *value == 42.0
             )
         });
-        assert!(has_constant, "should detect output == 42, got: {invariants:?}");
+        assert!(
+            has_constant,
+            "should detect output == 42, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -1012,7 +1030,10 @@ mod tests {
         let has_always_true = invariants.iter().any(|inv| {
             matches!(&inv.kind, InvariantKind::AlwaysTrue { path } if path == &vec!["active".to_string()])
         });
-        assert!(has_always_true, "should detect active is always true, got: {invariants:?}");
+        assert!(
+            has_always_true,
+            "should detect active is always true, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -1027,25 +1048,19 @@ mod tests {
         let has_is_null = invariants.iter().any(|inv| {
             matches!(&inv.kind, InvariantKind::IsNull { path } if path == &vec!["opt".to_string()])
         });
-        assert!(has_is_null, "should detect opt is always null, got: {invariants:?}");
+        assert!(
+            has_is_null,
+            "should detect opt is always null, got: {invariants:?}"
+        );
     }
 
     #[test]
     fn combined_invariants_x_positive_and_output_len_equals_input_len() {
         // The acceptance criteria scenario: all inputs have x > 0 and output.len == input.len
         let specimens = vec![
-            make_record(
-                vec![json!({"x": 1, "len": 3})],
-                Some(json!({"len": 3})),
-            ),
-            make_record(
-                vec![json!({"x": 5, "len": 7})],
-                Some(json!({"len": 7})),
-            ),
-            make_record(
-                vec![json!({"x": 10, "len": 1})],
-                Some(json!({"len": 1})),
-            ),
+            make_record(vec![json!({"x": 1, "len": 3})], Some(json!({"len": 3}))),
+            make_record(vec![json!({"x": 5, "len": 7})], Some(json!({"len": 7}))),
+            make_record(vec![json!({"x": 10, "len": 1})], Some(json!({"len": 1}))),
         ];
 
         let input_invs = detect_invariants(&specimens, InvariantTarget::Input);
@@ -1062,7 +1077,10 @@ mod tests {
                 } if path == &vec!["x".to_string()] && *value == 0.0
             )
         });
-        assert!(has_x_gt_0, "should detect x > 0 in inputs, got: {input_invs:?}");
+        assert!(
+            has_x_gt_0,
+            "should detect x > 0 in inputs, got: {input_invs:?}"
+        );
 
         // Should detect output.len == input.len
         let has_len_relation = output_invs.iter().any(|inv| {
@@ -1178,7 +1196,10 @@ mod tests {
                 if path == &vec!["order".to_string(), "total".to_string()] && *value == 0.0
             )
         });
-        assert!(has_nested, "should detect order.total > 0, got: {invariants:?}");
+        assert!(
+            has_nested,
+            "should detect order.total > 0, got: {invariants:?}"
+        );
     }
 
     #[test]
@@ -1202,7 +1223,10 @@ mod tests {
                 } if path.is_empty() && *value == 0.0
             )
         });
-        assert!(has_gt_0, "should detect param > 0 for scalar input, got: {invariants:?}");
+        assert!(
+            has_gt_0,
+            "should detect param > 0 for scalar input, got: {invariants:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1257,8 +1281,11 @@ mod tests {
 
         let classified = detect_classified_invariants(&specimens, InvariantTarget::Input);
         let x_inv = classified.iter().find(|ci| ci.label.contains("input.x"));
-        assert!(x_inv.is_some(), "should have label containing 'input.x', got: {:?}",
-            classified.iter().map(|c| &c.label).collect::<Vec<_>>());
+        assert!(
+            x_inv.is_some(),
+            "should have label containing 'input.x', got: {:?}",
+            classified.iter().map(|c| &c.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1346,7 +1373,10 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-                capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: PerformanceMetrics {
                     wall_time_ms: 1.0,
                     cpu_time_us: 100,

@@ -85,9 +85,9 @@ pub(crate) async fn run_bench(
             false, // release
         )?;
         apply_project_storage(&mut fc, storage_project_root.as_deref());
-        let frontend = Frontend::spawn(&fc).await.map_err(|e| {
-            format!("failed to spawn {} frontend: {e}", lang.label())
-        })?;
+        let frontend = Frontend::spawn(&fc)
+            .await
+            .map_err(|e| format!("failed to spawn {} frontend: {e}", lang.label()))?;
         frontends.insert(*lang, frontend);
     }
 
@@ -96,12 +96,7 @@ pub(crate) async fn run_bench(
 
     for (target_idx, target) in targets.iter().enumerate() {
         let target_id = format!("{}:{}", target.file, target.function);
-        eprintln!(
-            "[{}/{}] {}",
-            target_idx + 1,
-            targets.len(),
-            target_id,
-        );
+        eprintln!("[{}/{}] {}", target_idx + 1, targets.len(), target_id,);
 
         let lang = match language_from_manifest_key(&target.language) {
             Some(l) => l,
@@ -222,12 +217,15 @@ async fn analyze_target(
         .map_err(|e| format!("{e}"))?;
 
     match response.result {
-        ResponseResult::Analyze { functions } => {
-            functions
-                .into_iter()
-                .find(|f| f.name == target.function)
-                .ok_or_else(|| format!("function {:?} not found in analyze response", target.function))
-        }
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == target.function)
+            .ok_or_else(|| {
+                format!(
+                    "function {:?} not found in analyze response",
+                    target.function
+                )
+            }),
         ResponseResult::Error { code, message, .. } => {
             Err(format!("analyze error ({code:?}): {message}"))
         }
@@ -403,7 +401,9 @@ fn print_summary(bundle: &BenchmarkBundle) {
         bundle.warmups,
         bundle.repeats,
     );
-    let total_ms = bundle.finished_at_unix_ms.saturating_sub(bundle.started_at_unix_ms);
+    let total_ms = bundle
+        .finished_at_unix_ms
+        .saturating_sub(bundle.started_at_unix_ms);
     eprintln!("Total wall time: {:.1}s", total_ms as f64 / 1000.0);
     eprintln!();
     for scenario in &bundle.scenarios {

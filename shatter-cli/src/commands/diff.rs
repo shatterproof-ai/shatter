@@ -13,10 +13,18 @@ pub(crate) fn run_diff(
     output_json: bool,
     use_color: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let previous = snapshot::Snapshot::read_from_file(snapshot_path)
-        .map_err(|e| format!("failed to read previous snapshot '{}': {e}", snapshot_path.display()))?;
-    let current = snapshot::Snapshot::read_from_file(current_path)
-        .map_err(|e| format!("failed to read current snapshot '{}': {e}", current_path.display()))?;
+    let previous = snapshot::Snapshot::read_from_file(snapshot_path).map_err(|e| {
+        format!(
+            "failed to read previous snapshot '{}': {e}",
+            snapshot_path.display()
+        )
+    })?;
+    let current = snapshot::Snapshot::read_from_file(current_path).map_err(|e| {
+        format!(
+            "failed to read current snapshot '{}': {e}",
+            current_path.display()
+        )
+    })?;
 
     let result = snapshot::diff(&previous, &current);
 
@@ -57,7 +65,10 @@ pub(crate) fn run_spec_diff(
             .map_err(|e| format!("failed to serialize spec diff: {e}"))?;
         println!("{json}");
     } else {
-        print_markdown(&shatter_core::spec_diff::format_spec_diff_text(&result), use_color);
+        print_markdown(
+            &shatter_core::spec_diff::format_spec_diff_text(&result),
+            use_color,
+        );
     }
 
     Ok(result.has_regressions())

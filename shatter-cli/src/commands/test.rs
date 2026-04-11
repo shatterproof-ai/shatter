@@ -80,10 +80,18 @@ pub(crate) fn run_test(
             eprintln!("  Running {} in {}...", runner.kind, runner.root.display());
             let result = test_runner::run_tests(runner, &[])?;
             if !result.success {
-                eprintln!("  {} FAILED ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+                eprintln!(
+                    "  {} FAILED ({:.1}s)",
+                    runner.kind,
+                    result.duration.as_secs_f64()
+                );
                 all_success = false;
             } else {
-                eprintln!("  {} passed ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+                eprintln!(
+                    "  {} passed ({:.1}s)",
+                    runner.kind,
+                    result.duration.as_secs_f64()
+                );
             }
         }
         return Ok(all_success);
@@ -131,9 +139,11 @@ pub(crate) fn run_test(
     let query = map.query_affected(&changed_relative);
 
     if dry_run {
-        let header = format!("{} changed file(s), {} affected test(s):",
+        let header = format!(
+            "{} changed file(s), {} affected test(s):",
             query.changed_files.len(),
-            query.affected_tests.len());
+            query.affected_tests.len()
+        );
         if use_color {
             println!("\x1b[1m{header}\x1b[0m");
         } else {
@@ -193,7 +203,11 @@ pub(crate) fn run_test(
         let report = test_prioritization::format_prioritize_report(&result, use_color);
         print!("{report}");
 
-        result.ordered.iter().map(|r| r.test.id.clone()).collect::<Vec<_>>()
+        result
+            .ordered
+            .iter()
+            .map(|r| r.test.id.clone())
+            .collect::<Vec<_>>()
     } else {
         query.affected_tests.clone()
     };
@@ -228,13 +242,25 @@ pub(crate) fn run_test(
             continue;
         }
 
-        eprintln!("  Running {} ({} test(s))...", runner.kind, runner_tests.len());
+        eprintln!(
+            "  Running {} ({} test(s))...",
+            runner.kind,
+            runner_tests.len()
+        );
         let result = test_runner::run_tests(runner, &runner_tests)?;
         if !result.success {
-            eprintln!("  {} FAILED ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+            eprintln!(
+                "  {} FAILED ({:.1}s)",
+                runner.kind,
+                result.duration.as_secs_f64()
+            );
             all_success = false;
         } else {
-            eprintln!("  {} passed ({:.1}s)", runner.kind, result.duration.as_secs_f64());
+            eprintln!(
+                "  {} passed ({:.1}s)",
+                runner.kind,
+                result.duration.as_secs_f64()
+            );
         }
     }
 

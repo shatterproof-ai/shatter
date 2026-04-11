@@ -7,8 +7,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 use crate::behavior::Behavior;
 use crate::config::GeneticConfig;
@@ -16,7 +16,7 @@ use crate::coverage_metrics::TargetBranch;
 use crate::execution_record::BranchDecision;
 use crate::frontend::{Frontend, FrontendError};
 use crate::genetic::Population;
-use crate::genetic_fitness::{score, FitnessContext, FitnessWeights};
+use crate::genetic_fitness::{FitnessContext, FitnessWeights, score};
 use crate::orchestrator::hash_branch_path;
 use crate::protocol::{Command, ExecuteResult, ResponseResult};
 use crate::types::ParamInfo;
@@ -95,12 +95,7 @@ pub async fn genetic_explore(
                 break;
             }
 
-            let result = execute_individual(
-                frontend,
-                function_name,
-                &individual.inputs,
-            )
-            .await?;
+            let result = execute_individual(frontend, function_name, &individual.inputs).await?;
 
             total_executions += 1;
 
@@ -277,7 +272,11 @@ mod tests {
     #[test]
     fn find_new_target_hits_finds_matching_branches() {
         let targets: HashSet<u32> = [1, 3, 5].into_iter().collect();
-        let path = vec![make_branch(1, true), make_branch(2, true), make_branch(3, false)];
+        let path = vec![
+            make_branch(1, true),
+            make_branch(2, true),
+            make_branch(3, false),
+        ];
         let hits = find_new_target_hits(&path, &targets);
         assert_eq!(hits, vec![1, 3]);
     }
@@ -319,7 +318,10 @@ mod tests {
         assert_eq!(bmap.function_id, "test_fn");
         assert_eq!(bmap.behaviors.len(), 2);
         assert_eq!(bmap.behaviors[0].input_args, vec![serde_json::json!(1)]);
-        assert_eq!(bmap.behaviors[1].input_args, vec![serde_json::json!("hello")]);
+        assert_eq!(
+            bmap.behaviors[1].input_args,
+            vec![serde_json::json!("hello")]
+        );
     }
 
     #[test]

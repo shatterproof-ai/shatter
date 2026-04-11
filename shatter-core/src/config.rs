@@ -274,11 +274,8 @@ pub fn load_project_config(dir: &Path) -> Result<Option<ProjectConfig>, ConfigEr
         path: path.clone(),
         source: e,
     })?;
-    let config: ProjectConfig =
-        serde_json::from_str(&contents).map_err(|e| ConfigError::ProjectConfigParse {
-            path,
-            source: e,
-        })?;
+    let config: ProjectConfig = serde_json::from_str(&contents)
+        .map_err(|e| ConfigError::ProjectConfigParse { path, source: e })?;
     Ok(Some(config))
 }
 
@@ -311,11 +308,21 @@ pub struct GeneticConfig {
 }
 
 impl GeneticConfig {
-    fn default_population_size() -> u32 { 50 }
-    fn default_max_generations() -> u32 { 100 }
-    fn default_mutation_rate() -> f64 { 0.3 }
-    fn default_crossover_rate() -> f64 { 0.7 }
-    fn default_timeout_secs() -> u32 { 300 }
+    fn default_population_size() -> u32 {
+        50
+    }
+    fn default_max_generations() -> u32 {
+        100
+    }
+    fn default_mutation_rate() -> f64 {
+        0.3
+    }
+    fn default_crossover_rate() -> f64 {
+        0.7
+    }
+    fn default_timeout_secs() -> u32 {
+        300
+    }
 }
 
 impl Default for GeneticConfig {
@@ -361,10 +368,18 @@ pub struct ExplorationConfig {
 }
 
 impl ExplorationConfig {
-    fn default_adaptive() -> bool { DEFAULT_EXPLORATION_ADAPTIVE }
-    fn default_score_window() -> usize { DEFAULT_EXPLORATION_SCORE_WINDOW }
-    fn default_cold_start() -> u64 { DEFAULT_EXPLORATION_COLD_START }
-    fn default_strategy_floor() -> f64 { DEFAULT_EXPLORATION_STRATEGY_FLOOR }
+    fn default_adaptive() -> bool {
+        DEFAULT_EXPLORATION_ADAPTIVE
+    }
+    fn default_score_window() -> usize {
+        DEFAULT_EXPLORATION_SCORE_WINDOW
+    }
+    fn default_cold_start() -> u64 {
+        DEFAULT_EXPLORATION_COLD_START
+    }
+    fn default_strategy_floor() -> f64 {
+        DEFAULT_EXPLORATION_STRATEGY_FLOOR
+    }
 
     /// Parse a `--strategy-weights` CLI string like `"literals=0.3,random=0.5"`.
     pub fn parse_strategy_weights(s: &str) -> Result<HashMap<String, f64>, ConfigError> {
@@ -374,11 +389,11 @@ impl ExplorationConfig {
             if pair.is_empty() {
                 continue;
             }
-            let (name, weight_str) = pair
-                .split_once('=')
-                .ok_or_else(|| ConfigError::InvalidStrategyWeights(format!(
+            let (name, weight_str) = pair.split_once('=').ok_or_else(|| {
+                ConfigError::InvalidStrategyWeights(format!(
                     "expected 'name=weight' but got '{pair}'"
-                )))?;
+                ))
+            })?;
             let name = name.trim();
             let weight_str = weight_str.trim();
             let weight: f64 = weight_str.parse().map_err(|_| {
@@ -408,9 +423,10 @@ impl ExplorationConfig {
             cold_start_threshold: self.cold_start,
             floor: self.strategy_floor,
             adaptive: self.adaptive,
-            static_weights: self.strategy_weights.as_ref().map(|m| {
-                m.iter().map(|(k, v)| (k.clone(), *v)).collect()
-            }),
+            static_weights: self
+                .strategy_weights
+                .as_ref()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect()),
         }
     }
 }
@@ -483,7 +499,6 @@ pub struct DefaultsConfig {
     #[serde(default)]
     pub execution_profile: Option<ExecutionProfile>,
 }
-
 
 /// Per-function configuration, matched by glob pattern against function identifiers.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -649,10 +664,12 @@ pub fn parse_set_overrides(set_pairs: &[String]) -> Result<ShatterConfig, Config
     }
     let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     for pair in set_pairs {
-        let (key, val_str) = pair.split_once('=').ok_or_else(|| ConfigError::InvalidSetOverride {
-            pair: pair.clone(),
-            reason: "missing '=' separator".to_string(),
-        })?;
+        let (key, val_str) =
+            pair.split_once('=')
+                .ok_or_else(|| ConfigError::InvalidSetOverride {
+                    pair: pair.clone(),
+                    reason: "missing '=' separator".to_string(),
+                })?;
         let segments: Vec<&str> = key.split('.').collect();
         if segments.iter().any(|s| s.is_empty()) {
             return Err(ConfigError::InvalidSetOverride {
@@ -666,7 +683,10 @@ pub fn parse_set_overrides(set_pairs: &[String]) -> Result<ShatterConfig, Config
                 reason: format!("invalid YAML value: {e}"),
             })?;
         set_dotted_path(&mut root, &segments, val).map_err(|reason| {
-            ConfigError::InvalidSetOverride { pair: pair.clone(), reason }
+            ConfigError::InvalidSetOverride {
+                pair: pair.clone(),
+                reason,
+            }
         })?;
     }
     serde_yaml::from_value(root).map_err(|e| ConfigError::SetOverrideDeserialize { source: e })
@@ -730,18 +750,28 @@ pub fn update_nondeterminism_config(
         ShatterConfig::default()
     };
 
-    let nd = config.nondeterminism.get_or_insert_with(NondeterminismConfig::default);
+    let nd = config
+        .nondeterminism
+        .get_or_insert_with(NondeterminismConfig::default);
 
     // Merge confirmed: add entries not already present (keyed by function + path).
     for decl in new_confirmed {
-        if !nd.confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+        if !nd
+            .confirmed
+            .iter()
+            .any(|d| d.function == decl.function && d.path == decl.path)
+        {
             nd.confirmed.push(decl.clone());
         }
     }
 
     // Merge rejected: add entries not already present.
     for decl in new_rejected {
-        if !nd.rejected.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+        if !nd
+            .rejected
+            .iter()
+            .any(|d| d.function == decl.function && d.path == decl.path)
+        {
             nd.rejected.push(decl.clone());
         }
     }
@@ -855,24 +885,24 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
 
     for config in configs.iter().rev() {
         if let Some(ref g) = config.defaults.generators {
-            generators.get_or_insert_with(HashMap::new).extend(
-                g.iter().map(|(k, v)| (k.clone(), v.clone())),
-            );
+            generators
+                .get_or_insert_with(HashMap::new)
+                .extend(g.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         if let Some(ref pg) = config.defaults.param_generators {
-            param_generators.get_or_insert_with(HashMap::new).extend(
-                pg.iter().map(|(k, v)| (k.clone(), v.clone())),
-            );
+            param_generators
+                .get_or_insert_with(HashMap::new)
+                .extend(pg.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         if let Some(ref fs) = config.defaults.file_setup {
-            file_setup.get_or_insert_with(HashMap::new).extend(
-                fs.iter().map(|(k, v)| (k.clone(), v.clone())),
-            );
+            file_setup
+                .get_or_insert_with(HashMap::new)
+                .extend(fs.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         if let Some(ref mock_overrides) = config.defaults.mocks {
-            mocks.get_or_insert_with(HashMap::new).extend(
-                mock_overrides.iter().map(|(k, v)| (k.clone(), v.clone())),
-            );
+            mocks
+                .get_or_insert_with(HashMap::new)
+                .extend(mock_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
     }
 
@@ -911,7 +941,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut functions: HashMap<String, FunctionConfig> = HashMap::new();
     for config in configs {
         for (pattern, func_config) in &config.functions {
-            functions.entry(pattern.clone()).or_insert_with(|| func_config.clone());
+            functions
+                .entry(pattern.clone())
+                .or_insert_with(|| func_config.clone());
         }
     }
 
@@ -919,7 +951,10 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     for config in configs {
         for t in &config.opaque_types {
             // Deduplicate by name — nearest config wins on duplicates.
-            if !opaque_types.iter().any(|existing| existing.name() == t.name()) {
+            if !opaque_types
+                .iter()
+                .any(|existing| existing.name() == t.name())
+            {
                 opaque_types.push(t.clone());
             }
         }
@@ -933,19 +968,28 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         if let Some(ref nd) = config.nondeterminism {
             has_any = true;
             for decl in &nd.confirmed {
-                if !confirmed.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+                if !confirmed
+                    .iter()
+                    .any(|d| d.function == decl.function && d.path == decl.path)
+                {
                     confirmed.push(decl.clone());
                 }
             }
             for decl in &nd.rejected {
-                if !rejected.iter().any(|d| d.function == decl.function && d.path == decl.path) {
+                if !rejected
+                    .iter()
+                    .any(|d| d.function == decl.function && d.path == decl.path)
+                {
                     rejected.push(decl.clone());
                 }
             }
         }
     }
     let nondeterminism = if has_any {
-        Some(NondeterminismConfig { confirmed, rejected })
+        Some(NondeterminismConfig {
+            confirmed,
+            rejected,
+        })
     } else {
         None
     };
@@ -1021,9 +1065,7 @@ fn resolve_from_merged(
         .or(config.defaults.timeout)
         .unwrap_or(cli_timeout);
 
-    let skip = func_config
-        .and_then(|fc| fc.skip)
-        .unwrap_or(false);
+    let skip = func_config.and_then(|fc| fc.skip).unwrap_or(false);
 
     let setup_level = func_config
         .and_then(|fc| fc.setup_level)
@@ -1036,11 +1078,8 @@ fn resolve_from_merged(
         .unwrap_or(DEFAULT_SETUP_TIMEOUT_SECS);
 
     // Merge mock overrides: defaults first, then function-level overrides on top.
-    let mut mock_overrides: HashMap<String, crate::auto_mock::MockOverride> = config
-        .defaults
-        .mocks
-        .clone()
-        .unwrap_or_default();
+    let mut mock_overrides: HashMap<String, crate::auto_mock::MockOverride> =
+        config.defaults.mocks.clone().unwrap_or_default();
     if let Some(fc) = func_config
         && let Some(ref func_mocks) = fc.mocks
     {
@@ -1125,8 +1164,7 @@ pub fn resolve_function_config_with_inputs(
                 {
                     let inputs_path = dc.shatter_dir.join(inputs_rel);
                     if inputs_path.is_file() {
-                        resolved.candidate_inputs =
-                            parse_candidate_inputs(&inputs_path)?;
+                        resolved.candidate_inputs = parse_candidate_inputs(&inputs_path)?;
                     }
                     break;
                 }
@@ -1159,7 +1197,9 @@ pub fn resolve_function_config_with_inputs(
     for dc in discovered.iter().rev() {
         if let Some(ref fs) = dc.config.defaults.file_setup {
             for (glob_pattern, setup_rel) in fs {
-                resolved.file_setup.insert(glob_pattern.clone(), dc.shatter_dir.join(setup_rel));
+                resolved
+                    .file_setup
+                    .insert(glob_pattern.clone(), dc.shatter_dir.join(setup_rel));
             }
         }
     }
@@ -1169,12 +1209,16 @@ pub fn resolve_function_config_with_inputs(
     for dc in discovered.iter().rev() {
         if let Some(ref g) = dc.config.defaults.generators {
             for (type_name, gen_rel) in g {
-                resolved.generators.insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
+                resolved
+                    .generators
+                    .insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
             }
         }
         if let Some(ref pg) = dc.config.defaults.param_generators {
             for (param_name, gen_rel) in pg {
-                resolved.param_generators.insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
+                resolved
+                    .param_generators
+                    .insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
             }
         }
     }
@@ -1185,12 +1229,16 @@ pub fn resolve_function_config_with_inputs(
             if matcher.is_match(function_id) {
                 if let Some(ref g) = fc.generators {
                     for (type_name, gen_rel) in g {
-                        resolved.generators.insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
+                        resolved
+                            .generators
+                            .insert(type_name.clone(), dc.shatter_dir.join(gen_rel));
                     }
                 }
                 if let Some(ref pg) = fc.param_generators {
                     for (param_name, gen_rel) in pg {
-                        resolved.param_generators.insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
+                        resolved
+                            .param_generators
+                            .insert(param_name.clone(), dc.shatter_dir.join(gen_rel));
                     }
                 }
                 break;
@@ -1298,20 +1346,22 @@ functions:
 
         let inputs = parse_candidate_inputs(&inputs_path).unwrap();
         assert_eq!(inputs.len(), 2);
-        assert_eq!(inputs[0].args, vec![serde_json::json!(42), serde_json::json!("hello")]);
+        assert_eq!(
+            inputs[0].args,
+            vec![serde_json::json!(42), serde_json::json!("hello")]
+        );
         assert_eq!(inputs[0].label.as_deref(), Some("typical usage"));
-        assert_eq!(inputs[1].args, vec![serde_json::json!(-1), serde_json::json!("")]);
+        assert_eq!(
+            inputs[1].args,
+            vec![serde_json::json!(-1), serde_json::json!("")]
+        );
     }
 
     #[test]
     fn parse_candidate_inputs_without_labels() {
         let dir = TempDir::new().unwrap();
         let inputs_path = dir.path().join("candidates.json");
-        fs::write(
-            &inputs_path,
-            r#"[{ "args": [1, 2, 3] }]"#,
-        )
-        .unwrap();
+        fs::write(&inputs_path, r#"[{ "args": [1, 2, 3] }]"#).unwrap();
 
         let inputs = parse_candidate_inputs(&inputs_path).unwrap();
         assert_eq!(inputs.len(), 1);
@@ -1581,7 +1631,10 @@ functions:
             .execution_profile
             .expect("execution profile should be present");
         assert_eq!(profile.adapters.len(), 2);
-        assert_eq!(profile.adapters[0].id, "ts/module-resolution/tsconfig-paths");
+        assert_eq!(
+            profile.adapters[0].id,
+            "ts/module-resolution/tsconfig-paths"
+        );
         assert_eq!(profile.adapters[1].id, "ts/react-hooks");
         assert_eq!(
             profile.adapters[1].options,
@@ -1678,7 +1731,10 @@ functions:
             .expect("resolved execution profile should be present");
         assert_eq!(profile.adapters.len(), 1);
         assert_eq!(profile.adapters[0].id, "ts/react-hooks");
-        assert_eq!(profile.adapters[0].apply, Some(ExecutionAdapterApply::Required));
+        assert_eq!(
+            profile.adapters[0].apply,
+            Some(ExecutionAdapterApply::Required)
+        );
     }
 
     #[test]
@@ -1693,16 +1749,14 @@ functions:
             ..ShatterConfig::default()
         };
 
-        let resolved =
-            resolve_function_config("some/func", &[config], Some(50), 30).unwrap();
+        let resolved = resolve_function_config("some/func", &[config], Some(50), 30).unwrap();
         assert_eq!(resolved.max_iterations, Some(200)); // from config defaults
         assert_eq!(resolved.timeout, 30); // from CLI (config default is None)
     }
 
     #[test]
     fn resolve_function_config_uses_cli_defaults_when_no_config() {
-        let resolved =
-            resolve_function_config("any/func", &[], Some(100), 60).unwrap();
+        let resolved = resolve_function_config("any/func", &[], Some(100), 60).unwrap();
         assert_eq!(resolved.max_iterations, Some(100));
         assert_eq!(resolved.timeout, 60);
     }
@@ -1735,9 +1789,13 @@ functions:
             ..ShatterConfig::default()
         };
 
-        let resolved =
-            resolve_function_config("src/generated/api.ts:handler", std::slice::from_ref(&config), Some(100), 60)
-                .unwrap();
+        let resolved = resolve_function_config(
+            "src/generated/api.ts:handler",
+            std::slice::from_ref(&config),
+            Some(100),
+            60,
+        )
+        .unwrap();
         assert!(resolved.skip);
 
         let resolved2 =
@@ -1773,18 +1831,15 @@ functions:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "myFunc",
-            root.path(),
-            None,
-            Some(50),
-            30,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("myFunc", root.path(), None, Some(50), 30, &[])
+                .unwrap();
 
         assert_eq!(resolved.candidate_inputs.len(), 1);
-        assert_eq!(resolved.candidate_inputs[0].args, vec![serde_json::json!(42)]);
+        assert_eq!(
+            resolved.candidate_inputs[0].args,
+            vec![serde_json::json!(42)]
+        );
         assert_eq!(
             resolved.candidate_inputs[0].label.as_deref(),
             Some("the answer")
@@ -1806,11 +1861,7 @@ functions:
 
         // Create the explicit inputs file
         let explicit_path = root.path().join("explicit.json");
-        fs::write(
-            &explicit_path,
-            r#"[{"args": [99]}]"#,
-        )
-        .unwrap();
+        fs::write(&explicit_path, r#"[{"args": [99]}]"#).unwrap();
 
         let resolved = resolve_function_config_with_inputs(
             "myFunc",
@@ -1823,7 +1874,10 @@ functions:
         .unwrap();
 
         assert_eq!(resolved.candidate_inputs.len(), 1);
-        assert_eq!(resolved.candidate_inputs[0].args, vec![serde_json::json!(99)]);
+        assert_eq!(
+            resolved.candidate_inputs[0].args,
+            vec![serde_json::json!(99)]
+        );
     }
 
     #[test]
@@ -1864,7 +1918,8 @@ functions:
         assert_eq!(merged.defaults.timeout, Some(30)); // falls through
 
         let resolved =
-            resolve_function_config("src/auth/login.ts:validateToken", &configs, Some(100), 60).unwrap();
+            resolve_function_config("src/auth/login.ts:validateToken", &configs, Some(100), 60)
+                .unwrap();
         assert_eq!(resolved.max_iterations, Some(500)); // from sub defaults
         assert_eq!(resolved.timeout, 120); // from function pattern
     }
@@ -1972,11 +2027,7 @@ functions:
     fn parse_config_without_new_fields_still_works() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config.yaml");
-        fs::write(
-            &config_path,
-            "defaults:\n  max_iterations: 100\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "defaults:\n  max_iterations: 100\n").unwrap();
 
         let config = parse_config(&config_path).unwrap();
         assert_eq!(config.defaults.setup, None);
@@ -1996,9 +2047,10 @@ functions:
                     ("User".to_string(), "./gen/user.ts".to_string()),
                     ("Order".to_string(), "./gen/order.ts".to_string()),
                 ])),
-                param_generators: Some(HashMap::from([
-                    ("token".to_string(), "./gen/token.ts".to_string()),
-                ])),
+                param_generators: Some(HashMap::from([(
+                    "token".to_string(),
+                    "./gen/token.ts".to_string(),
+                )])),
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
@@ -2006,9 +2058,10 @@ functions:
         };
         let near = ShatterConfig {
             defaults: DefaultsConfig {
-                generators: Some(HashMap::from([
-                    ("User".to_string(), "./gen/custom_user.ts".to_string()),
-                ])),
+                generators: Some(HashMap::from([(
+                    "User".to_string(),
+                    "./gen/custom_user.ts".to_string(),
+                )])),
                 ..DefaultsConfig::default()
             },
             functions: HashMap::new(),
@@ -2091,15 +2144,9 @@ functions:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "myFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("myFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         // Function-level setup overrides defaults
         assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/custom.ts")));
@@ -2125,15 +2172,9 @@ defaults:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "anyFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("anyFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         assert_eq!(resolved.setup, Some(shatter_dir.join("./setup/default.ts")));
         assert_eq!(resolved.setup_level, SetupLevel::Execution);
@@ -2164,23 +2205,29 @@ functions:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "myFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("myFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         // Function-level User overrides default
-        assert_eq!(resolved.generators[&"User".to_string()], shatter_dir.join("./gen/custom_user.ts"));
+        assert_eq!(
+            resolved.generators[&"User".to_string()],
+            shatter_dir.join("./gen/custom_user.ts")
+        );
         // Default Order is inherited
-        assert_eq!(resolved.generators[&"Order".to_string()], shatter_dir.join("./gen/order.ts"));
+        assert_eq!(
+            resolved.generators[&"Order".to_string()],
+            shatter_dir.join("./gen/order.ts")
+        );
         // Both param generators present
-        assert_eq!(resolved.param_generators[&"token".to_string()], shatter_dir.join("./gen/token.ts"));
-        assert_eq!(resolved.param_generators[&"sessionId".to_string()], shatter_dir.join("./gen/session.ts"));
+        assert_eq!(
+            resolved.param_generators[&"token".to_string()],
+            shatter_dir.join("./gen/token.ts")
+        );
+        assert_eq!(
+            resolved.param_generators[&"sessionId".to_string()],
+            shatter_dir.join("./gen/session.ts")
+        );
     }
 
     #[test]
@@ -2194,15 +2241,9 @@ functions:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "anyFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("anyFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         assert_eq!(resolved.setup, None);
         assert_eq!(resolved.setup_level, SetupLevel::Function); // default
@@ -2215,8 +2256,7 @@ functions:
 
     #[test]
     fn resolve_function_config_setup_level_defaults_to_function() {
-        let resolved =
-            resolve_function_config("any/func", &[], Some(100), 60).unwrap();
+        let resolved = resolve_function_config("any/func", &[], Some(100), 60).unwrap();
         assert_eq!(resolved.setup_level, SetupLevel::Function);
         assert_eq!(resolved.setup_timeout, DEFAULT_SETUP_TIMEOUT_SECS);
     }
@@ -2239,11 +2279,14 @@ opaque_types:
         .unwrap();
 
         let config = parse_config(&config_path).unwrap();
-        assert_eq!(config.opaque_types, vec![
-            CustomOpaqueType::Name("DatabasePool".to_string()),
-            CustomOpaqueType::Name("RedisClient".to_string()),
-            CustomOpaqueType::Name("KafkaProducer".to_string()),
-        ]);
+        assert_eq!(
+            config.opaque_types,
+            vec![
+                CustomOpaqueType::Name("DatabasePool".to_string()),
+                CustomOpaqueType::Name("RedisClient".to_string()),
+                CustomOpaqueType::Name("KafkaProducer".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -2262,13 +2305,16 @@ opaque_types:
         .unwrap();
 
         let config = parse_config(&config_path).unwrap();
-        assert_eq!(config.opaque_types, vec![
-            CustomOpaqueType::Name("DatabaseConnection".to_string()),
-            CustomOpaqueType::Named {
-                name: "HttpClient".to_string(),
-                reason: Some("requires live HTTP connection".to_string()),
-            },
-        ]);
+        assert_eq!(
+            config.opaque_types,
+            vec![
+                CustomOpaqueType::Name("DatabaseConnection".to_string()),
+                CustomOpaqueType::Named {
+                    name: "HttpClient".to_string(),
+                    reason: Some("requires live HTTP connection".to_string()),
+                },
+            ]
+        );
         assert_eq!(config.opaque_types[0].name(), "DatabaseConnection");
         assert_eq!(config.opaque_types[0].reason(), None);
         assert_eq!(config.opaque_types[1].name(), "HttpClient");
@@ -2306,11 +2352,14 @@ opaque_types:
         };
 
         let merged = merge_configs(&[near, far]);
-        assert_eq!(merged.opaque_types, vec![
-            CustomOpaqueType::Name("DatabasePool".to_string()),
-            CustomOpaqueType::Name("RedisClient".to_string()),
-            CustomOpaqueType::Name("KafkaProducer".to_string()),
-        ]);
+        assert_eq!(
+            merged.opaque_types,
+            vec![
+                CustomOpaqueType::Name("DatabasePool".to_string()),
+                CustomOpaqueType::Name("RedisClient".to_string()),
+                CustomOpaqueType::Name("KafkaProducer".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -2406,7 +2455,10 @@ nondeterminism:
         .unwrap();
 
         let config = parse_config(&config_path).unwrap();
-        let nd = config.nondeterminism.as_ref().expect("nondeterminism present");
+        let nd = config
+            .nondeterminism
+            .as_ref()
+            .expect("nondeterminism present");
         assert_eq!(nd.confirmed.len(), 1);
         assert_eq!(nd.confirmed[0].function, "createUser");
         assert_eq!(nd.confirmed[0].path, "$.id");
@@ -2554,9 +2606,10 @@ defaults:
         };
         let near = ShatterConfig {
             defaults: DefaultsConfig {
-                file_setup: Some(HashMap::from([
-                    ("src/**/*.ts".to_string(), "./setup/near-ts.ts".to_string()),
-                ])),
+                file_setup: Some(HashMap::from([(
+                    "src/**/*.ts".to_string(),
+                    "./setup/near-ts.ts".to_string(),
+                )])),
                 ..DefaultsConfig::default()
             },
             ..ShatterConfig::default()
@@ -2584,15 +2637,9 @@ defaults:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "anyFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("anyFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         assert_eq!(
             resolved.file_setup["src/**/*.ts"],
@@ -2617,15 +2664,9 @@ defaults:
         )
         .unwrap();
 
-        let resolved = resolve_function_config_with_inputs(
-            "anyFunc",
-            root.path(),
-            None,
-            Some(100),
-            60,
-            &[],
-        )
-        .unwrap();
+        let resolved =
+            resolve_function_config_with_inputs("anyFunc", root.path(), None, Some(100), 60, &[])
+                .unwrap();
 
         let session = resolved.session_setup.as_ref().unwrap();
         assert_eq!(session.file, "./setup/session.ts");
@@ -2644,9 +2685,10 @@ defaults:
                     file: "./setup/session.ts".into(),
                     timeout: Some(90),
                 }),
-                file_setup: Some(HashMap::from([
-                    ("src/**/*.ts".to_string(), "./setup/ts.ts".to_string()),
-                ])),
+                file_setup: Some(HashMap::from([(
+                    "src/**/*.ts".to_string(),
+                    "./setup/ts.ts".to_string(),
+                )])),
                 ..DefaultsConfig::default()
             },
             ..ShatterConfig::default()
@@ -2663,10 +2705,7 @@ defaults:
         use proptest::prelude::*;
 
         fn arb_session_setup_config() -> impl Strategy<Value = SessionSetupConfig> {
-            (
-                "[a-z./]{1,30}",
-                proptest::option::of(1u64..3600),
-            )
+            ("[a-z./]{1,30}", proptest::option::of(1u64..3600))
                 .prop_map(|(file, timeout)| SessionSetupConfig { file, timeout })
         }
 
@@ -2685,7 +2724,15 @@ defaults:
                 proptest::option::of(arb_file_setup_map()),
             )
                 .prop_map(
-                    |(max_iterations, timeout, setup, setup_level, setup_timeout, session_setup, file_setup)| {
+                    |(
+                        max_iterations,
+                        timeout,
+                        setup,
+                        setup_level,
+                        setup_timeout,
+                        session_setup,
+                        file_setup,
+                    )| {
                         DefaultsConfig {
                             max_iterations,
                             timeout,
@@ -2743,14 +2790,8 @@ defaults:
                 config.output.as_ref().and_then(|o| o.format.as_deref()),
                 Some("json")
             );
-            assert_eq!(
-                config.output.as_ref().map(|o| o.paths.len()),
-                Some(1)
-            );
-            assert_eq!(
-                config.output.as_ref().and_then(|o| o.stdout),
-                Some(true)
-            );
+            assert_eq!(config.output.as_ref().map(|o| o.paths.len()), Some(1));
+            assert_eq!(config.output.as_ref().and_then(|o| o.stdout), Some(true));
         }
 
         #[test]
@@ -3006,7 +3047,10 @@ defaults:
         };
 
         let merged = merge_configs(&[near, far]);
-        let exploration = merged.defaults.exploration.expect("merged exploration defaults");
+        let exploration = merged
+            .defaults
+            .exploration
+            .expect("merged exploration defaults");
         assert!(!exploration.adaptive);
         assert_eq!(exploration.score_window, 50);
         assert_eq!(exploration.cold_start, 10);
@@ -3055,7 +3099,8 @@ functions:
       score_window: 50
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
+        let resolved =
+            resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
         assert!(!resolved.exploration.adaptive);
         assert_eq!(resolved.exploration.score_window, 50);
     }
@@ -3089,7 +3134,10 @@ defaults:
         assert_eq!(resolved.genetic.population_size, 200);
         assert_eq!(resolved.genetic.max_generations, 500);
         // timeout_secs falls back to built-in default
-        assert_eq!(resolved.genetic.timeout_secs, GeneticConfig::default().timeout_secs);
+        assert_eq!(
+            resolved.genetic.timeout_secs,
+            GeneticConfig::default().timeout_secs
+        );
     }
 
     #[test]
@@ -3147,7 +3195,8 @@ functions:
       population_size: 50
 "#;
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
-        let resolved = resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
+        let resolved =
+            resolve_function_config("src/hot.ts:hotPath", &[config], Some(100), 60).unwrap();
         assert!(!resolved.genetic.enabled);
         assert_eq!(resolved.genetic.population_size, 50);
     }
@@ -3163,7 +3212,9 @@ functions:
 
     #[test]
     fn parse_strategy_weights_valid() {
-        let weights = ExplorationConfig::parse_strategy_weights("literals=0.3,random=0.5,boundary=0.2").unwrap();
+        let weights =
+            ExplorationConfig::parse_strategy_weights("literals=0.3,random=0.5,boundary=0.2")
+                .unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights["literals"] - 0.3).abs() < f64::EPSILON);
         assert!((weights["random"] - 0.5).abs() < f64::EPSILON);
@@ -3172,7 +3223,8 @@ functions:
 
     #[test]
     fn parse_strategy_weights_trims_whitespace() {
-        let weights = ExplorationConfig::parse_strategy_weights("  random = 0.8 , literals = 0.2 ").unwrap();
+        let weights =
+            ExplorationConfig::parse_strategy_weights("  random = 0.8 , literals = 0.2 ").unwrap();
         assert_eq!(weights.len(), 2);
     }
 
@@ -3227,13 +3279,19 @@ functions:
     #[test]
     fn parse_set_overrides_missing_equals_returns_error() {
         let result = parse_set_overrides(&["defaults.max_iterations".to_string()]);
-        assert!(matches!(result, Err(ConfigError::InvalidSetOverride { .. })));
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidSetOverride { .. })
+        ));
     }
 
     #[test]
     fn parse_set_overrides_empty_segment_returns_error() {
         let result = parse_set_overrides(&["defaults..max_iterations=200".to_string()]);
-        assert!(matches!(result, Err(ConfigError::InvalidSetOverride { .. })));
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidSetOverride { .. })
+        ));
     }
 
     #[test]
@@ -3261,14 +3319,15 @@ functions:
         // May succeed (ignored) or fail at deserialize — either is acceptable, but no panic.
         let _ = result;
     }
-
 }
 
 #[cfg(test)]
 mod config_proptests {
     use proptest::prelude::*;
 
-    use super::{NondeterminismDeclaration, parse_config, parse_set_overrides, update_nondeterminism_config};
+    use super::{
+        NondeterminismDeclaration, parse_config, parse_set_overrides, update_nondeterminism_config,
+    };
 
     proptest! {
         #[test]

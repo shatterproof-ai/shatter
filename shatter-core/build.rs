@@ -130,7 +130,9 @@ fn generate(spec: &Spec) -> String {
     code.push_str("}\n\n");
 
     // --- resolve_string_op() ---
-    code.push_str("/// Resolve a method name (as reported by a frontend) to a canonical `StringOp`.\n");
+    code.push_str(
+        "/// Resolve a method name (as reported by a frontend) to a canonical `StringOp`.\n",
+    );
     code.push_str("fn resolve_string_op(method: &str) -> Option<StringOp> {\n");
     code.push_str("    match method {\n");
     let mut emitted_methods = HashSet::new();
@@ -172,9 +174,7 @@ fn generate(spec: &Spec) -> String {
     fn emit_array(code: &mut String, name: &str, doc: &str, methods: &[String]) {
         code.push_str(&format!("/// {doc}\n"));
         code.push_str("#[allow(dead_code)] // Available for consumers outside solver dispatch\n");
-        code.push_str(&format!(
-            "const {name}: &[&str] = &[\n"
-        ));
+        code.push_str(&format!("const {name}: &[&str] = &[\n"));
         for m in methods {
             code.push_str(&format!("    \"{m}\",\n"));
         }

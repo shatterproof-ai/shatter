@@ -38,13 +38,16 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
         return Ok(binary_path);
     }
 
-    fs::create_dir_all(cache_dir)
-        .map_err(|e| format!("failed to create cache directory {}: {e}", cache_dir.display()))?;
+    fs::create_dir_all(cache_dir).map_err(|e| {
+        format!(
+            "failed to create cache directory {}: {e}",
+            cache_dir.display()
+        )
+    })?;
 
     // Write atomically: write to a temp file then rename to avoid partial reads
     let tmp_path = cache_dir.join(format!("go-frontend-{BINARY_HASH}.tmp"));
-    fs::write(&tmp_path, BINARY)
-        .map_err(|e| format!("failed to write go frontend binary: {e}"))?;
+    fs::write(&tmp_path, BINARY).map_err(|e| format!("failed to write go frontend binary: {e}"))?;
 
     // Make executable
     fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))
@@ -174,7 +177,10 @@ mod tests {
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
         let _ = fs::remove_dir_all(&tmp);
 
-        assert!(result.is_err(), "expected failure on unwritable cache dir (pre-fix behavior)");
+        assert!(
+            result.is_err(),
+            "expected failure on unwritable cache dir (pre-fix behavior)"
+        );
     }
 
     #[test]
@@ -195,7 +201,10 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
 
         let path = result.expect("extraction should succeed via fallback");
-        assert!(path.exists(), "extracted binary should exist at fallback location");
+        assert!(
+            path.exists(),
+            "extracted binary should exist at fallback location"
+        );
     }
 
     #[test]
@@ -205,13 +214,17 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         // Plant a fake old binary
-        let old_binary = tmp.join("go-frontend-0000000000000000000000000000000000000000000000000000000000000000");
+        let old_binary = tmp
+            .join("go-frontend-0000000000000000000000000000000000000000000000000000000000000000");
         fs::write(&old_binary, b"old").unwrap();
 
         let path = extract_to(&tmp).expect("extraction failed");
 
         assert!(path.exists());
-        assert!(!old_binary.exists(), "old binary should have been cleaned up");
+        assert!(
+            !old_binary.exists(),
+            "old binary should have been cleaned up"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

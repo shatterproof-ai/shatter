@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::behavior::BehaviorMap;
 use crate::execution_record::BranchDecision;
 use crate::frontend::{Frontend, FrontendError};
-use crate::interesting_pool::{classify_severity, Severity};
+use crate::interesting_pool::{Severity, classify_severity};
 use crate::nondeterminism::NondeterministicField;
 use crate::protocol::{Command as ProtoCommand, ResponseResult};
 
@@ -215,8 +215,12 @@ pub async fn revalidate_behaviors(
         let path_matches =
             branch_paths_match(expected_branch_path, &observed_branch_path, nondet_fields);
 
-        let verdict =
-            classify_verdict(code_changed, path_matches, expected_severity, observed_severity);
+        let verdict = classify_verdict(
+            code_changed,
+            path_matches,
+            expected_severity,
+            observed_severity,
+        );
 
         reports.push(RevalidationReport {
             function_name: behavior_map.function_id.clone(),
@@ -246,7 +250,12 @@ mod tests {
 
     #[test]
     fn confirmed_when_code_changed_but_behavior_identical() {
-        let v = classify_verdict(true, true, Severity::HandledError, Some(Severity::HandledError));
+        let v = classify_verdict(
+            true,
+            true,
+            Severity::HandledError,
+            Some(Severity::HandledError),
+        );
         assert_eq!(v, RevalidationVerdict::Confirmed);
     }
 
@@ -287,12 +296,7 @@ mod tests {
 
     #[test]
     fn severity_upgrade() {
-        let v = classify_verdict(
-            false,
-            true,
-            Severity::RarePath,
-            Some(Severity::Crash),
-        );
+        let v = classify_verdict(false, true, Severity::RarePath, Some(Severity::Crash));
         assert_eq!(v, RevalidationVerdict::SeverityUpgrade);
     }
 
@@ -311,19 +315,17 @@ mod tests {
     #[test]
     fn severity_downgrade_takes_precedence_over_drift() {
         // Code changed and path differs, but severity decreased — report as downgrade.
-        let v = classify_verdict(
-            true,
-            false,
-            Severity::Crash,
-            Some(Severity::HandledError),
-        );
+        let v = classify_verdict(true, false, Severity::Crash, Some(Severity::HandledError));
         assert_eq!(v, RevalidationVerdict::SeverityDowngrade);
     }
 
     #[test]
     fn display_impl() {
         assert_eq!(RevalidationVerdict::Confirmed.to_string(), "confirmed");
-        assert_eq!(RevalidationVerdict::ExpectedDrift.to_string(), "expected drift");
+        assert_eq!(
+            RevalidationVerdict::ExpectedDrift.to_string(),
+            "expected drift"
+        );
         assert_eq!(RevalidationVerdict::Flaky.to_string(), "flaky");
         assert_eq!(
             RevalidationVerdict::PotentialRegression.to_string(),
@@ -389,8 +391,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&report).expect("serialize report");
-        let restored: RevalidationReport =
-            serde_json::from_str(&json).expect("deserialize report");
+        let restored: RevalidationReport = serde_json::from_str(&json).expect("deserialize report");
         assert_eq!(report, restored);
     }
 

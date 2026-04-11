@@ -9,8 +9,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use shatter_core::config::GeneticConfig;
-use shatter_core::coverage_metrics::{extract_targets_concolic, TargetBranch, TargetReason};
-use shatter_core::frontend::{Frontend, FrontendConfig, DEFAULT_REQUEST_TIMEOUT};
+use shatter_core::coverage_metrics::{TargetBranch, TargetReason, extract_targets_concolic};
+use shatter_core::frontend::{DEFAULT_REQUEST_TIMEOUT, Frontend, FrontendConfig};
 use shatter_core::genetic_explorer;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
 use shatter_core::protocol::{
@@ -48,7 +48,10 @@ async fn spawn_ts_frontend() -> Frontend {
     );
 
     let mut config = FrontendConfig::new(PathBuf::from("node"));
-    config.args = vec!["--no-warnings".to_string(), frontend_path.to_string_lossy().into_owned()];
+    config.args = vec![
+        "--no-warnings".to_string(),
+        frontend_path.to_string_lossy().into_owned(),
+    ];
     config.request_timeout = DEFAULT_REQUEST_TIMEOUT;
 
     Frontend::spawn(&config)
@@ -73,14 +76,10 @@ async fn analyze_function(
         .expect("analyze command failed");
 
     match response.result {
-        ResponseResult::Analyze { functions } => {
-            functions
-                .into_iter()
-                .find(|f| f.name == function_name)
-                .unwrap_or_else(|| {
-                    panic!("function '{function_name}' not found in analysis results")
-                })
-        }
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == function_name)
+            .unwrap_or_else(|| panic!("function '{function_name}' not found in analysis results")),
         other => panic!("expected Analyze response, got: {other:?}"),
     }
 }
@@ -171,10 +170,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
     };
 
     // Seed with a few diverse values to start exploration.
-    let seed_inputs = vec![
-        vec![serde_json::json!(5)],
-        vec![serde_json::json!(-3)],
-    ];
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
 
     let result = orchestrator::explore(
         &mut frontend,
@@ -356,9 +352,7 @@ async fn concolic_safedivide_discovers_error_paths() {
     let return_values = return_value_set(&result);
 
     // Should discover the division-by-zero error path.
-    let has_div_zero = return_values
-        .iter()
-        .any(|v| v.contains("division by zero"));
+    let has_div_zero = return_values.iter().any(|v| v.contains("division by zero"));
     assert!(
         has_div_zero,
         "should discover 'division by zero' error path; found: {return_values:?}"
@@ -415,14 +409,14 @@ async fn concolic_validateemail_discovers_string_paths() {
 
     // Seed with structurally diverse emails that exercise different validation paths.
     let seed_inputs = vec![
-        vec![serde_json::json!("")],                    // empty string
-        vec![serde_json::json!("no-at-sign")],          // missing @
-        vec![serde_json::json!("a@@b.com")],            // multiple @
-        vec![serde_json::json!("@domain.com")],         // empty local part
-        vec![serde_json::json!("user@")],               // empty domain
-        vec![serde_json::json!(".dot@x.com")],          // local starts with dot
-        vec![serde_json::json!("user+tag@x.com")],      // plus-addressing
-        vec![serde_json::json!("test@example.com")],     // standard valid
+        vec![serde_json::json!("")],                 // empty string
+        vec![serde_json::json!("no-at-sign")],       // missing @
+        vec![serde_json::json!("a@@b.com")],         // multiple @
+        vec![serde_json::json!("@domain.com")],      // empty local part
+        vec![serde_json::json!("user@")],            // empty domain
+        vec![serde_json::json!(".dot@x.com")],       // local starts with dot
+        vec![serde_json::json!("user+tag@x.com")],   // plus-addressing
+        vec![serde_json::json!("test@example.com")], // standard valid
     ];
 
     let result = orchestrator::explore(
@@ -503,12 +497,9 @@ async fn concolic_validateemail_with_literal_seeds() {
     };
 
     // Match CLI concolic seeding: boundary seeds + literal-derived seeds.
-    let mut seed_inputs =
-        shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
-    let literal_candidates = shatter_core::input_gen::literals_to_candidate_inputs(
-        &analysis.params,
-        &analysis.literals,
-    );
+    let mut seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&analysis.params);
+    let literal_candidates =
+        shatter_core::input_gen::literals_to_candidate_inputs(&analysis.params, &analysis.literals);
     seed_inputs.extend(literal_candidates);
 
     let result = orchestrator::explore(
@@ -539,9 +530,9 @@ async fn concolic_validateemail_with_literal_seeds() {
     // found in the input, so indexOf('@') succeeded. The substring "empty" appears
     // in several guard-passing paths, so we match only the exact empty-input path
     // and the missing-@ path to distinguish "stuck" from "past the guard".
-    let stuck_before_at_guard = return_values.iter().all(|v| {
-        v.contains("missing @") || v == "{\"reason\":\"empty\",\"valid\":false}"
-    });
+    let stuck_before_at_guard = return_values
+        .iter()
+        .all(|v| v.contains("missing @") || v == "{\"reason\":\"empty\",\"valid\":false}");
 
     assert!(
         !stuck_before_at_guard,
@@ -848,12 +839,11 @@ async fn setup_failure_skips_dependents() {
     );
 
     // Attempting setup at File level through the manager should fail with Skipped.
-    let result = mgr.setup(
-        SetupLevel::File,
-        "some-file.ts",
-        serde_json::json!({}),
+    let result = mgr.setup(SetupLevel::File, "some-file.ts", serde_json::json!({}));
+    assert!(
+        result.is_err(),
+        "file setup should be blocked by session failure"
     );
-    assert!(result.is_err(), "file setup should be blocked by session failure");
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
@@ -1073,10 +1063,7 @@ async fn orchestrator_explore_with_setup_context() {
         ..Default::default()
     };
 
-    let seed_inputs = vec![
-        vec![serde_json::json!(5)],
-        vec![serde_json::json!(-3)],
-    ];
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
 
     let result = orchestrator::explore(
         &mut frontend,
@@ -1198,12 +1185,13 @@ async fn concolic_mock_status_branches_discovered() {
 
     // Construct mocks explicitly — the analyzer doesn't detect per-function
     // dependencies for standalone files, so we wire them manually.
-    let mocks = vec![readfilesync_mock(&["ab", "hello world", "", "a very long string here"])];
-    let mock_params = vec![fs_mock_param(
-        "fs:readFileSync",
-        TypeInfo::Str,
-        1,
-    )];
+    let mocks = vec![readfilesync_mock(&[
+        "ab",
+        "hello world",
+        "",
+        "a very long string here",
+    ])];
+    let mock_params = vec![fs_mock_param("fs:readFileSync", TypeInfo::Str, 1)];
 
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str.clone(),
@@ -1230,19 +1218,17 @@ async fn concolic_mock_status_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
     };
 
-    let result = shatter_core::explorer::explore_function(
-        &mut frontend,
-        &analysis,
-        &config,
-        None,
-        None,
-    )
-    .await
-    .expect("explore_function failed");
+    let result =
+        shatter_core::explorer::explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("explore_function failed");
 
     let return_values = explorer_return_value_set(&result);
 
-    eprintln!("  [str-3ky9.8/status] unique_paths: {}", result.unique_paths);
+    eprintln!(
+        "  [str-3ky9.8/status] unique_paths: {}",
+        result.unique_paths
+    );
     eprintln!("  [str-3ky9.8/status] return_values: {return_values:?}");
 
     // Dynamic mocking with random strings of varied lengths should discover
@@ -1319,19 +1305,17 @@ async fn concolic_mock_result_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
     };
 
-    let result = shatter_core::explorer::explore_function(
-        &mut frontend,
-        &analysis,
-        &config,
-        None,
-        None,
-    )
-    .await
-    .expect("explore_function failed");
+    let result =
+        shatter_core::explorer::explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("explore_function failed");
 
     let return_values = explorer_return_value_set(&result);
 
-    eprintln!("  [str-3ky9.8/result] unique_paths: {}", result.unique_paths);
+    eprintln!(
+        "  [str-3ky9.8/result] unique_paths: {}",
+        result.unique_paths
+    );
     eprintln!("  [str-3ky9.8/result] return_values: {return_values:?}");
 
     // Should discover at least 2 of 3 branches from varied mock boolean/string values.
@@ -1343,9 +1327,9 @@ async fn concolic_mock_result_branches_discovered() {
     );
 
     // Verify at least one mock-dependent branch is discovered.
-    let has_mock_branch = return_values.iter().any(|v| {
-        v.contains("missing") || v.contains("loaded") || v.contains("empty-config")
-    });
+    let has_mock_branch = return_values
+        .iter()
+        .any(|v| v.contains("missing") || v.contains("loaded") || v.contains("empty-config"));
     assert!(
         has_mock_branch,
         "should discover at least one mock-gated branch; found: {return_values:?}"
@@ -1375,7 +1359,11 @@ async fn concolic_mock_loop_branches_discovered() {
     let analysis = analyze_function(&mut frontend, &file_str, "classifyConfigs").await;
 
     // Cycle through "#comment" and "no-comment" to trigger the mixed branch.
-    let mocks = vec![readfilesync_mock(&["#comment", "no-comment", "#also-comment"])];
+    let mocks = vec![readfilesync_mock(&[
+        "#comment",
+        "no-comment",
+        "#also-comment",
+    ])];
     let mock_params = vec![fs_mock_param(
         "fs:readFileSync",
         TypeInfo::Str,
@@ -1411,15 +1399,10 @@ async fn concolic_mock_loop_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
     };
 
-    let result = shatter_core::explorer::explore_function(
-        &mut frontend,
-        &analysis,
-        &config,
-        None,
-        None,
-    )
-    .await
-    .expect("explore_function failed");
+    let result =
+        shatter_core::explorer::explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("explore_function failed");
 
     let return_values = explorer_return_value_set(&result);
 
@@ -1491,8 +1474,8 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
 
     // Seed with values that trigger each branch directly.
     let seed_inputs = vec![
-        vec![serde_json::json!(1), serde_json::json!(5)],   // a > 0, b < 10 -> "both"
-        vec![serde_json::json!(-1), serde_json::json!(5)],  // a <= 0 -> "neither"
+        vec![serde_json::json!(1), serde_json::json!(5)], // a > 0, b < 10 -> "both"
+        vec![serde_json::json!(-1), serde_json::json!(5)], // a <= 0 -> "neither"
     ];
 
     let result = orchestrator::explore(

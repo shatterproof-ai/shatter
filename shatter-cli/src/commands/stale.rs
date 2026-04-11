@@ -32,11 +32,21 @@ pub(crate) async fn run_stale(
     let project_root_str = resolve_project_root(project_dir, &target.file);
 
     let req_timeout = Duration::from_secs(request_timeout);
-    let mut config = frontend_config(target.language, req_timeout, log_level, exec_timeout, build_timeout, memory_limit, None, false, release)?;
+    let mut config = frontend_config(
+        target.language,
+        req_timeout,
+        log_level,
+        exec_timeout,
+        build_timeout,
+        memory_limit,
+        None,
+        false,
+        release,
+    )?;
     apply_project_storage(&mut config, project_root_str.as_deref());
-    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-        format!("failed to spawn {} frontend: {e}", target.language.label())
-    })?;
+    let mut frontend = Frontend::spawn(&config)
+        .await
+        .map_err(|e| format!("failed to spawn {} frontend: {e}", target.language.label()))?;
 
     let analyze_response = frontend
         .send(ProtoCommand::Analyze {
@@ -76,8 +86,13 @@ pub(crate) async fn run_stale(
     let existing = shatter_core::spec::read_file_spec_bundle(spec_path)
         .map_err(|e| format!("failed to read spec file {}: {e}", spec_path.display()))?;
 
-    let plan = shatter_core::spec::compute_incremental_plan(&target.file, &functions, &existing, &external_fingerprints)
-        .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
+    let plan = shatter_core::spec::compute_incremental_plan(
+        &target.file,
+        &functions,
+        &existing,
+        &external_fingerprints,
+    )
+    .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
 
     let all_fresh = plan.stale.is_empty() && plan.removed.is_empty();
 

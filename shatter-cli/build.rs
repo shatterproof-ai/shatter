@@ -18,7 +18,10 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
 
     // Re-run if any TS source files change
     println!("cargo:rerun-if-changed={}", ts_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", ts_dir.join("package.json").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        ts_dir.join("package.json").display()
+    );
 
     // Install deps if node_modules missing
     if !ts_dir.join("node_modules").exists() {
@@ -48,7 +51,8 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
     std::fs::copy(&bundle_src, &out_bundle).expect("failed to copy bundle to OUT_DIR");
 
     let out_worker = out_dir.join("frontend-worker-bundle.js");
-    std::fs::copy(&worker_bundle_src, &out_worker).expect("failed to copy worker bundle to OUT_DIR");
+    std::fs::copy(&worker_bundle_src, &out_worker)
+        .expect("failed to copy worker bundle to OUT_DIR");
 
     println!("cargo:rustc-env=FRONTEND_BUNDLE_HASH={hash}");
 }
@@ -57,9 +61,18 @@ fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
     let go_dir = manifest_dir.join("..").join("shatter-go");
 
     // Re-run if any Go source files change
-    println!("cargo:rerun-if-changed={}", go_dir.join("main.go").display());
-    println!("cargo:rerun-if-changed={}", go_dir.join("protocol").display());
-    println!("cargo:rerun-if-changed={}", go_dir.join("instrument").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("main.go").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("protocol").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("instrument").display()
+    );
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
 
     let go_binary = out_dir.join("shatter-go");

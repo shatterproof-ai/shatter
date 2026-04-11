@@ -19,17 +19,17 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ExecutionProfile, SetupContextStack, SetupLevel};
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::explorer::{
-    classify_error_intent, frontend_supports, path_hash, send_setup, send_teardown,
-    ExecutionSummary, ExploreError, LoopBuckets, ObservationOutput,
+    ExecutionSummary, ExploreError, LoopBuckets, ObservationOutput, classify_error_intent,
+    frontend_supports, path_hash, send_setup, send_teardown,
 };
 use crate::frontend::{Frontend, FrontendError};
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
 };
+use crate::protocol::{ExecutionProfile, SetupContextStack, SetupLevel};
 
 /// Errors that can occur during observation.
 #[derive(Debug, thiserror::Error)]
@@ -376,16 +376,13 @@ pub async fn observe_function(
     };
 
     // --- Setup lifecycle ---
-    let has_setup =
-        config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
+    let has_setup = config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
     let per_function_setup = has_setup && config.setup_level == SetupLevel::Function;
     let per_execution_setup = has_setup && config.setup_level == SetupLevel::Execution;
 
     let mut setup_context: Option<SetupContextStack> = None;
 
-    if per_function_setup
-        && let Some(ref setup_file) = config.setup_file
-    {
+    if per_function_setup && let Some(ref setup_file) = config.setup_file {
         setup_context = send_setup(
             frontend,
             setup_file,
@@ -400,13 +397,7 @@ pub async fn observe_function(
     // --- Execute batch ---
     // For per-execution setup, we need to interleave setup/teardown with each execution.
     let batch = if per_execution_setup {
-        observe_batch_with_per_execution_setup(
-            frontend,
-            analysis,
-            inputs,
-            config,
-        )
-        .await?
+        observe_batch_with_per_execution_setup(frontend, analysis, inputs, config).await?
     } else {
         observe_batch(
             frontend,
@@ -442,11 +433,13 @@ pub async fn observe_function(
         raw_results: batch.raw_results,
         discoveries: batch.discoveries,
         nondeterministic_fields: vec![],
-        float_probe_results: vec![], boundary_results: vec![],
+        float_probe_results: vec![],
+        boundary_results: vec![],
         shrunk_witnesses: std::collections::HashMap::new(),
         mcdc_summary: None,
         shrink_stats: crate::shrink::ShrinkStats::default(),
-        abandoned_frontiers: vec![], opaque_suggestions: vec![],
+        abandoned_frontiers: vec![],
+        opaque_suggestions: vec![],
         stubbed_modules,
     })
 }
@@ -487,14 +480,14 @@ async fn observe_batch_with_per_execution_setup(
 
         let obs = observe_single(
             frontend,
-                &analysis.name,
-                &input,
-                &config.mocks,
-                setup_context.as_ref(),
-                config.execution_profile.as_ref(),
-                &config.loop_buckets,
-                &mut state,
-                config.capture_side_effects,
+            &analysis.name,
+            &input,
+            &config.mocks,
+            setup_context.as_ref(),
+            config.execution_profile.as_ref(),
+            &config.loop_buckets,
+            &mut state,
+            config.capture_side_effects,
             None,
         )
         .await?;
@@ -530,10 +523,7 @@ mod tests {
     use crate::protocol::{ExecuteResult, PerformanceMetrics};
 
     /// Build a minimal ExecuteResult with specified branch decisions and lines.
-    fn make_exec_result(
-        branch_ids: &[(u32, bool)],
-        lines: &[u32],
-    ) -> ExecuteResult {
+    fn make_exec_result(branch_ids: &[(u32, bool)], lines: &[u32]) -> ExecuteResult {
         ExecuteResult {
             return_value: Some(serde_json::json!(42)),
             thrown_error: None,
@@ -560,7 +550,10 @@ mod tests {
                 heap_used_bytes: 0,
                 heap_allocated_bytes: 0,
             },
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         }
     }
 
@@ -579,7 +572,10 @@ mod tests {
         // Different branch decisions should produce different hashes.
         let r3 = make_exec_result(&[(1, true), (2, true)], &[10, 20, 30]);
         let h3 = path_hash(&r3, &buckets);
-        assert_ne!(h1, h3, "different branch paths should produce different hashes");
+        assert_ne!(
+            h1, h3,
+            "different branch paths should produce different hashes"
+        );
     }
 
     #[test]
@@ -738,9 +734,9 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use proptest::prelude::*;
     use crate::execution_record::{BranchDecision, SymConstraint};
     use crate::protocol::{ExecuteResult, PerformanceMetrics};
+    use proptest::prelude::*;
 
     /// Generate a random BranchDecision with a given branch_id.
     fn arb_branch_decision(max_id: u32) -> impl Strategy<Value = BranchDecision> {
@@ -775,7 +771,10 @@ mod proptests {
                 heap_used_bytes: 0,
                 heap_allocated_bytes: 0,
             },
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         })
     }
 

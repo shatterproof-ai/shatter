@@ -187,10 +187,8 @@ pub fn find_mcdc_pairs(behavior_map: &BehaviorMap) -> Vec<(usize, McdcAnnotation
                     }
 
                     if all_others_agree {
-                        let inputs_a =
-                            behavior_map.behaviors[bidx_a].input_args.clone();
-                        let inputs_b =
-                            behavior_map.behaviors[bidx_b].input_args.clone();
+                        let inputs_a = behavior_map.behaviors[bidx_a].input_args.clone();
+                        let inputs_b = behavior_map.behaviors[bidx_b].input_args.clone();
                         // Annotate behavior_a: paired with behavior_b's inputs.
                         result.push((
                             bidx_a,
@@ -339,8 +337,9 @@ pub fn generate_go_tests_with_annotations(
     // Separate panic behaviors (with original indices) from normal behaviors.
     let indexed_behaviors: Vec<(usize, &Behavior)> =
         behavior_map.behaviors.iter().enumerate().collect();
-    let (panic_behaviors, normal_behaviors): (Vec<_>, Vec<_>) =
-        indexed_behaviors.iter().partition(|(_, b)| b.thrown_error.is_some());
+    let (panic_behaviors, normal_behaviors): (Vec<_>, Vec<_>) = indexed_behaviors
+        .iter()
+        .partition(|(_, b)| b.thrown_error.is_some());
 
     if !normal_behaviors.is_empty() {
         // Emit MC/DC annotation block for table-driven cases, before the table.
@@ -379,7 +378,9 @@ pub fn generate_go_tests_with_annotations(
         }
 
         // Determine return type from first behavior with a return value
-        let has_return = normal_behaviors.iter().any(|(_, b)| b.return_value.is_some());
+        let has_return = normal_behaviors
+            .iter()
+            .any(|(_, b)| b.return_value.is_some());
         if has_return {
             let return_type = normal_behaviors
                 .iter()
@@ -412,10 +413,7 @@ pub fn generate_go_tests_with_annotations(
                     args.join(", ")
                 ));
             } else {
-                out.push_str(&format!(
-                    "\t\t{{\"{test_name}\", {}}},\n",
-                    args.join(", ")
-                ));
+                out.push_str(&format!("\t\t{{\"{test_name}\", {}}},\n", args.join(", ")));
             }
         }
 
@@ -459,10 +457,7 @@ pub fn generate_go_tests_with_annotations(
         out.push_str("\t\t\t\tt.Errorf(\"expected panic but did not get one\")\n");
         out.push_str("\t\t\t}\n");
         out.push_str("\t\t}()\n");
-        out.push_str(&format!(
-            "\t\t{function_name}({})\n",
-            args.join(", ")
-        ));
+        out.push_str(&format!("\t\t{function_name}({})\n", args.join(", ")));
         out.push_str("\t})\n");
     }
 
@@ -528,7 +523,9 @@ fn format_go_value(value: &serde_json::Value) -> String {
         return go;
     }
     match value {
-        serde_json::Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        serde_json::Value::String(s) => {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        }
         serde_json::Value::Null => "nil".to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
@@ -557,12 +554,16 @@ fn try_format_complex_go(value: &serde_json::Value) -> Option<String> {
         }
         "big_int" => {
             let v = obj.get("value")?.as_str()?;
-            Some(format!("func() *big.Int {{ n, _ := new(big.Int).SetString(\"{v}\", 10); return n }}()"))
+            Some(format!(
+                "func() *big.Int {{ n, _ := new(big.Int).SetString(\"{v}\", 10); return n }}()"
+            ))
         }
         "url" => {
             let v = obj.get("value")?.as_str()?;
             let escaped = v.replace('"', "\\\"");
-            Some(format!("func() *url.URL {{ u, _ := url.Parse(\"{escaped}\"); return u }}()"))
+            Some(format!(
+                "func() *url.URL {{ u, _ := url.Parse(\"{escaped}\"); return u }}()"
+            ))
         }
         "error" => {
             let msg = obj.get("message").and_then(|m| m.as_str()).unwrap_or("");
@@ -671,11 +672,7 @@ fn build_test_name(behavior: &Behavior) -> String {
     }
 
     match &behavior.return_value {
-        Some(val) => format!(
-            "returns {} for input ({})",
-            format_value_short(val),
-            inputs
-        ),
+        Some(val) => format!("returns {} for input ({})", format_value_short(val), inputs),
         None => format!("returns undefined for input ({inputs})"),
     }
 }
@@ -700,9 +697,7 @@ fn build_test_body(function_name: &str, behavior: &Behavior) -> String {
             Some(val) => format_value(val),
             None => "undefined".to_string(),
         };
-        body.push_str(&format!(
-            "    const result = {function_name}({args});\n"
-        ));
+        body.push_str(&format!("    const result = {function_name}({args});\n"));
         body.push_str(&format!("    expect(result).toEqual({expected});\n"));
     }
 
@@ -755,7 +750,10 @@ fn try_format_complex_js(value: &serde_json::Value) -> Option<String> {
         }
         "buffer" => {
             let v = obj.get("value")?.as_str()?;
-            let enc = obj.get("encoding").and_then(|e| e.as_str()).unwrap_or("base64");
+            let enc = obj
+                .get("encoding")
+                .and_then(|e| e.as_str())
+                .unwrap_or("base64");
             Some(format!("Buffer.from('{v}', '{enc}')"))
         }
         "error" => {
@@ -768,7 +766,10 @@ fn try_format_complex_js(value: &serde_json::Value) -> Option<String> {
             Some(format!("'{}'", escape_single_quotes(v)))
         }
         "symbol" => {
-            let desc = obj.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            let desc = obj
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
             Some(format!("Symbol('{}')", escape_single_quotes(desc)))
         }
         "option" => {
@@ -864,13 +865,21 @@ mod tests {
     fn generates_it_block_for_return_value() {
         let map = BehaviorMap {
             function_id: "add".to_string(),
-            behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(1), json!(2)],
+                Some(json!(3)),
+                None,
+            )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "add", "./src/math");
 
-        assert!(output.contains("it('returns 3 for input (1, 2)'"), "output: {output}");
+        assert!(
+            output.contains("it('returns 3 for input (1, 2)'"),
+            "output: {output}"
+        );
         assert!(output.contains("const result = add(1, 2);"));
         assert!(output.contains("expect(result).toEqual(3);"));
     }
@@ -903,13 +912,18 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None, error_category: None }),
+                    stack: None,
+                    error_category: None,
+                }),
             )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
         let output = generate_jest_tests(&map, "divide", "./src/math");
-        assert!(output.contains("throws division by zero for input (1, 0)"), "output: {output}");
+        assert!(
+            output.contains("throws division by zero for input (1, 0)"),
+            "output: {output}"
+        );
         assert!(output.contains("expect(() => divide(1, 0)).toThrow();"));
     }
 
@@ -992,7 +1006,12 @@ mod tests {
     fn go_generates_test_function_name_capitalized() {
         let map = BehaviorMap {
             function_id: "classifyNumber".to_string(),
-            behaviors: vec![make_behavior(0, vec![json!(5)], Some(json!("positive")), None)],
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(5)],
+                Some(json!("positive")),
+                None,
+            )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
@@ -1012,7 +1031,10 @@ mod tests {
             nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "noop", "main");
-        assert!(output.contains("// No behaviors observed"), "output: {output}");
+        assert!(
+            output.contains("// No behaviors observed"),
+            "output: {output}"
+        );
     }
 
     #[test]
@@ -1109,7 +1131,12 @@ mod tests {
     fn go_generates_multiple_params() {
         let map = BehaviorMap {
             function_id: "add".to_string(),
-            behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(1), json!(2)],
+                Some(json!(3)),
+                None,
+            )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
@@ -1117,7 +1144,10 @@ mod tests {
 
         assert!(output.contains("arg0     int"), "output: {output}");
         assert!(output.contains("arg1     int"), "output: {output}");
-        assert!(output.contains("got := add(tt.arg0, tt.arg1)"), "output: {output}");
+        assert!(
+            output.contains("got := add(tt.arg0, tt.arg1)"),
+            "output: {output}"
+        );
     }
 
     #[test]
@@ -1131,7 +1161,9 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None, error_category: None }),
+                    stack: None,
+                    error_category: None,
+                }),
             )],
             fingerprint: None,
             nondeterministic_fields: vec![],
@@ -1160,7 +1192,9 @@ mod tests {
                     Some(ErrorInfo {
                         error_type: "Error".to_string(),
                         message: "division by zero".to_string(),
-                        stack: None, error_category: None }),
+                        stack: None,
+                        error_category: None,
+                    }),
                 ),
             ],
             fingerprint: None,
@@ -1239,7 +1273,8 @@ mod tests {
 
     #[test]
     fn format_value_uuid_produces_string() {
-        let val = json!({"__complex_type": "uuid", "value": "550e8400-e29b-41d4-a716-446655440000"});
+        let val =
+            json!({"__complex_type": "uuid", "value": "550e8400-e29b-41d4-a716-446655440000"});
         assert_eq!(format_value(&val), "'550e8400-e29b-41d4-a716-446655440000'");
     }
 
@@ -1266,7 +1301,10 @@ mod tests {
         let val = json!({"__complex_type": "some_future_type", "value": "x"});
         // Should fall through to default JSON formatting
         let result = format_value(&val);
-        assert!(result.contains("__complex_type"), "should contain raw JSON: {result}");
+        assert!(
+            result.contains("__complex_type"),
+            "should contain raw JSON: {result}"
+        );
     }
 
     #[test]
@@ -1348,7 +1386,12 @@ mod tests {
     fn vitest_generates_it_block_for_return_value() {
         let map = BehaviorMap {
             function_id: "add".to_string(),
-            behaviors: vec![make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None)],
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(1), json!(2)],
+                Some(json!(3)),
+                None,
+            )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
@@ -1369,7 +1412,9 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "division by zero".to_string(),
-                    stack: None, error_category: None }),
+                    stack: None,
+                    error_category: None,
+                }),
             )],
             fingerprint: None,
             nondeterministic_fields: vec![],
@@ -1416,7 +1461,9 @@ mod tests {
                 branch_id,
                 line,
                 taken,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: Some(conditions),
             }],
             side_effects: vec![],
@@ -1435,7 +1482,9 @@ mod tests {
             condition_index,
             value,
             masked,
-            constraint: SymConstraint::Unknown { hint: String::new() },
+            constraint: SymConstraint::Unknown {
+                hint: String::new(),
+            },
         }
     }
 
@@ -1449,8 +1498,8 @@ mod tests {
             0,
             vec![json!(5), json!(3)],
             Some(json!("can drive")),
-            0,   // branch_id
-            15,  // line
+            0,    // branch_id
+            15,   // line
             true, // taken
             vec![
                 make_condition_outcome(0, Some(true), false),
@@ -1461,8 +1510,8 @@ mod tests {
             1,
             vec![json!(-1), json!(3)],
             Some(json!("cannot drive")),
-            0,    // branch_id
-            15,   // line
+            0,     // branch_id
+            15,    // line
             false, // taken
             vec![
                 make_condition_outcome(0, Some(false), false),
@@ -1524,7 +1573,10 @@ mod tests {
     fn jest_export_contains_mcdc_annotation_when_present() {
         let map = make_mcdc_behavior_map();
         let annotations = find_mcdc_pairs(&map);
-        assert!(!annotations.is_empty(), "test setup: expected pairs to be found");
+        assert!(
+            !annotations.is_empty(),
+            "test setup: expected pairs to be found"
+        );
 
         let output =
             generate_jest_tests_with_annotations(&map, "classify", "./src/classify", &annotations);
@@ -1590,7 +1642,10 @@ mod tests {
             nondeterministic_fields: vec![],
         };
         let output = generate_vitest_tests(&map, "add", "./src/math");
-        assert!(!output.contains("// MC/DC"), "expected no MC/DC annotation:\n{output}");
+        assert!(
+            !output.contains("// MC/DC"),
+            "expected no MC/DC annotation:\n{output}"
+        );
     }
 
     #[test]
@@ -1598,8 +1653,7 @@ mod tests {
         let map = make_mcdc_behavior_map();
         let annotations = find_mcdc_pairs(&map);
 
-        let output =
-            generate_go_tests_with_annotations(&map, "classify", "main", &annotations);
+        let output = generate_go_tests_with_annotations(&map, "classify", "main", &annotations);
 
         assert!(
             output.contains("// MC/DC:"),
@@ -1615,14 +1669,20 @@ mod tests {
     fn go_export_no_annotation_when_mcdc_data_absent() {
         let map = BehaviorMap {
             function_id: "add".to_string(),
-            behaviors: vec![
-                make_behavior(0, vec![json!(1), json!(2)], Some(json!(3)), None),
-            ],
+            behaviors: vec![make_behavior(
+                0,
+                vec![json!(1), json!(2)],
+                Some(json!(3)),
+                None,
+            )],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
         let output = generate_go_tests(&map, "add", "math");
-        assert!(!output.contains("// MC/DC"), "expected no MC/DC annotation:\n{output}");
+        assert!(
+            !output.contains("// MC/DC"),
+            "expected no MC/DC annotation:\n{output}"
+        );
     }
 
     // ── Property-based tests ─────────────────────────────────────────────

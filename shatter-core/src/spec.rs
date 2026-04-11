@@ -302,7 +302,7 @@ pub fn detect_spec_invariants(
     eq_classes: &[EquivalenceClass],
 ) {
     use crate::invariants::{
-        detect_classified_invariants, records_from_raw_results, InvariantTarget,
+        InvariantTarget, detect_classified_invariants, records_from_raw_results,
     };
 
     let all_records = records_from_raw_results(&result.function_name, &result.raw_results);
@@ -359,7 +359,9 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass, z3_branches: &HashSet<u
             error: ErrorInfo {
                 error_type,
                 message,
-                stack: None, error_category: None },
+                stack: None,
+                error_category: None,
+            },
         }
     } else {
         match &ec.canonical_return_value {
@@ -381,7 +383,9 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass, z3_branches: &HashSet<u
             ErrorInfo {
                 error_type,
                 message,
-                stack: None, error_category: None }
+                stack: None,
+                error_category: None,
+            }
         }),
     };
 
@@ -456,10 +460,7 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
         for ci in &spec.invariants {
             out.push_str(&format!(
                 "- {} [{}] ({}/{})\n",
-                ci.invariant.description,
-                ci.confidence,
-                ci.satisfied_count,
-                ci.total_count,
+                ci.invariant.description, ci.confidence, ci.satisfied_count, ci.total_count,
             ));
         }
         out.push('\n');
@@ -476,7 +477,9 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
 
         // Preconditions
         if class.preconditions.is_empty() {
-            out.push_str(&format!("**Preconditions** {pre_badge}: _(none derived)_\n\n"));
+            out.push_str(&format!(
+                "**Preconditions** {pre_badge}: _(none derived)_\n\n"
+            ));
         } else {
             out.push_str(&format!("**Preconditions** {pre_badge}:\n"));
             for pre in &class.preconditions {
@@ -506,10 +509,7 @@ pub fn format_spec_markdown(spec: &FunctionSpec) -> String {
             for ci in &class.invariants {
                 out.push_str(&format!(
                     "- {} [{}] ({}/{})\n",
-                    ci.invariant.description,
-                    ci.confidence,
-                    ci.satisfied_count,
-                    ci.total_count,
+                    ci.invariant.description, ci.confidence, ci.satisfied_count, ci.total_count,
                 ));
             }
             out.push('\n');
@@ -900,7 +900,15 @@ mod tests {
             new_path_executions: vec![],
             raw_results: vec![],
             discoveries: vec![],
-            nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         }
     }
 
@@ -1056,10 +1064,7 @@ mod tests {
 
         let mut result = make_exploration_result("classify", 50, 3);
         // Branch 0 solved by Z3, branch 1 found randomly
-        result.discoveries = vec![
-            (0, DiscoveryMethod::Z3),
-            (1, DiscoveryMethod::Random),
-        ];
+        result.discoveries = vec![(0, DiscoveryMethod::Z3), (1, DiscoveryMethod::Random)];
 
         let classes = vec![
             // Class with only branch 0 (Z3) → Proven
@@ -1096,11 +1101,23 @@ mod tests {
         assert_eq!(spec.classes[0].precondition_provenance, Provenance::Proven);
         assert_eq!(spec.classes[0].postcondition_provenance, Provenance::Proven);
 
-        assert_eq!(spec.classes[1].precondition_provenance, Provenance::Observed);
-        assert_eq!(spec.classes[1].postcondition_provenance, Provenance::Observed);
+        assert_eq!(
+            spec.classes[1].precondition_provenance,
+            Provenance::Observed
+        );
+        assert_eq!(
+            spec.classes[1].postcondition_provenance,
+            Provenance::Observed
+        );
 
-        assert_eq!(spec.classes[2].precondition_provenance, Provenance::Observed);
-        assert_eq!(spec.classes[2].postcondition_provenance, Provenance::Observed);
+        assert_eq!(
+            spec.classes[2].precondition_provenance,
+            Provenance::Observed
+        );
+        assert_eq!(
+            spec.classes[2].postcondition_provenance,
+            Provenance::Observed
+        );
     }
 
     #[test]
@@ -1108,10 +1125,7 @@ mod tests {
         use crate::coverage_metrics::DiscoveryMethod;
 
         let mut result = make_exploration_result("allProven", 20, 2);
-        result.discoveries = vec![
-            (0, DiscoveryMethod::Z3),
-            (1, DiscoveryMethod::Z3),
-        ];
+        result.discoveries = vec![(0, DiscoveryMethod::Z3), (1, DiscoveryMethod::Z3)];
 
         let classes = vec![make_eq_class(
             vec![(0, true), (1, false)],
@@ -1145,7 +1159,10 @@ mod tests {
         )];
 
         let spec = build_spec(&result, &classes, None, None);
-        assert_eq!(spec.classes[0].precondition_provenance, Provenance::Observed);
+        assert_eq!(
+            spec.classes[0].precondition_provenance,
+            Provenance::Observed
+        );
     }
 
     #[test]
@@ -1231,7 +1248,10 @@ mod tests {
         assert_eq!(deserialized.function_name, "add");
         assert_eq!(deserialized.classes.len(), 1);
         assert_eq!(deserialized.classes[0].examples.len(), 1);
-        assert_eq!(deserialized.classes[0].examples[0].inputs, vec![json!(1), json!(2)]);
+        assert_eq!(
+            deserialized.classes[0].examples[0].inputs,
+            vec![json!(1), json!(2)]
+        );
         assert_eq!(
             deserialized.classes[0].postcondition,
             Postcondition::Returns { value: json!(3) }
@@ -1252,29 +1272,21 @@ mod tests {
 
         let spec = build_spec(&result, &classes, None, None);
         let json_str = format_spec_json(&spec).expect("json serialization");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("json parse");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("json parse");
 
         assert_eq!(parsed["function_name"], "fn1");
         assert!(parsed["location"].is_null());
         assert!(parsed["classes"].is_array());
         assert_eq!(parsed["classes"][0]["sample_count"], 5);
-        assert_eq!(
-            parsed["classes"][0]["precondition_provenance"],
-            "observed"
-        );
-        assert_eq!(
-            parsed["classes"][0]["postcondition_provenance"],
-            "observed"
-        );
+        assert_eq!(parsed["classes"][0]["precondition_provenance"], "observed");
+        assert_eq!(parsed["classes"][0]["postcondition_provenance"], "observed");
     }
 
     #[test]
     fn provenance_serialization_round_trips() {
         for p in [Provenance::Proven, Provenance::Observed] {
             let json_str = serde_json::to_string(&p).expect("serialize");
-            let deserialized: Provenance =
-                serde_json::from_str(&json_str).expect("deserialize");
+            let deserialized: Provenance = serde_json::from_str(&json_str).expect("deserialize");
             assert_eq!(p, deserialized);
         }
     }
@@ -1289,15 +1301,16 @@ mod tests {
                 error: ErrorInfo {
                     error_type: "Error".to_string(),
                     message: "boom".to_string(),
-                    stack: None, error_category: None },
+                    stack: None,
+                    error_category: None,
+                },
             },
             Postcondition::ReturnsVoid,
         ];
 
         for post in &postconditions {
             let json_str = serde_json::to_string(post).expect("serialize");
-            let deserialized: Postcondition =
-                serde_json::from_str(&json_str).expect("deserialize");
+            let deserialized: Postcondition = serde_json::from_str(&json_str).expect("deserialize");
             assert_eq!(*post, deserialized);
         }
     }
@@ -1379,7 +1392,10 @@ mod tests {
         let spec = build_spec(&result, &classes, None, None);
         let md = format_spec_markdown(&spec);
 
-        assert!(md.contains("_(none derived)_"), "should note no preconditions");
+        assert!(
+            md.contains("_(none derived)_"),
+            "should note no preconditions"
+        );
     }
 
     #[test]
@@ -1430,7 +1446,9 @@ mod tests {
                         error: ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "bad input".to_string(),
-                            stack: None, error_category: None },
+                            stack: None,
+                            error_category: None,
+                        },
                     },
                     side_effects: vec![],
                     examples: vec![ConcreteExample {
@@ -1439,7 +1457,9 @@ mod tests {
                         thrown_error: Some(ErrorInfo {
                             error_type: "Error".to_string(),
                             message: "bad input".to_string(),
-                            stack: None, error_category: None }),
+                            stack: None,
+                            error_category: None,
+                        }),
                     }],
                     sample_count: 5,
                     precondition_provenance: Provenance::Observed,
@@ -1453,24 +1473,29 @@ mod tests {
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
-       
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");
-        let deserialized: FunctionSpec =
-            serde_json::from_str(&json_str).expect("deserialize");
+        let deserialized: FunctionSpec = serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(spec, deserialized);
     }
 
     #[test]
     fn format_spec_markdown_includes_function_invariants() {
         use crate::invariants::{
-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
         };
 
         let mut spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
-            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            &[make_eq_class(
+                vec![],
+                vec![json!(1)],
+                Some(json!(2)),
+                None,
+                vec![],
+                5,
+            )],
             None,
             None,
         );
@@ -1492,19 +1517,29 @@ mod tests {
         }];
 
         let md = format_spec_markdown(&spec);
-        assert!(md.contains("Function invariants:"), "should have function invariants section");
+        assert!(
+            md.contains("Function invariants:"),
+            "should have function invariants section"
+        );
         assert!(md.contains("x > 0"), "should contain invariant description");
     }
 
     #[test]
     fn format_spec_markdown_includes_class_invariants() {
         use crate::invariants::{
-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
         };
 
         let mut spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
-            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            &[make_eq_class(
+                vec![],
+                vec![json!(1)],
+                Some(json!(2)),
+                None,
+                vec![],
+                5,
+            )],
             None,
             None,
         );
@@ -1526,15 +1561,28 @@ mod tests {
         }];
 
         let md = format_spec_markdown(&spec);
-        assert!(md.contains("**Invariants:**"), "should have per-class invariants section");
-        assert!(md.contains("y >= 0"), "should contain invariant description");
+        assert!(
+            md.contains("**Invariants:**"),
+            "should have per-class invariants section"
+        );
+        assert!(
+            md.contains("y >= 0"),
+            "should contain invariant description"
+        );
     }
 
     #[test]
     fn invariants_skipped_in_json_when_empty() {
         let spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
-            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            &[make_eq_class(
+                vec![],
+                vec![json!(1)],
+                Some(json!(2)),
+                None,
+                vec![],
+                5,
+            )],
             None,
             None,
         );
@@ -1542,7 +1590,10 @@ mod tests {
         let json_str = format_spec_json(&spec).expect("json serialization");
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
 
-        assert!(parsed.get("invariants").is_none(), "empty invariants should be skipped");
+        assert!(
+            parsed.get("invariants").is_none(),
+            "empty invariants should be skipped"
+        );
         assert!(
             parsed["classes"][0].get("invariants").is_none(),
             "empty class invariants should be skipped"
@@ -1552,12 +1603,19 @@ mod tests {
     #[test]
     fn invariants_present_in_json_when_populated() {
         use crate::invariants::{
-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget, ComparisonOp,
+            ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
         };
 
         let mut spec = build_spec(
             &make_exploration_result("fn1", 10, 1),
-            &[make_eq_class(vec![], vec![json!(1)], Some(json!(2)), None, vec![], 5)],
+            &[make_eq_class(
+                vec![],
+                vec![json!(1)],
+                Some(json!(2)),
+                None,
+                vec![],
+                5,
+            )],
             None,
             None,
         );
@@ -1581,7 +1639,10 @@ mod tests {
         let json_str = format_spec_json(&spec).expect("json serialization");
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
 
-        assert!(parsed["invariants"].is_array(), "invariants should be present when populated");
+        assert!(
+            parsed["invariants"].is_array(),
+            "invariants should be present when populated"
+        );
         assert_eq!(parsed["invariants"][0]["label"], "input.x > 0");
     }
 
@@ -1673,7 +1734,10 @@ mod tests {
         std::fs::write(&path, "not valid json {{{").expect("write bad json");
 
         let err = read_file_spec_bundle(&path).unwrap_err();
-        assert!(matches!(err, SpecIoError::Json(_)), "expected Json error, got: {err}");
+        assert!(
+            matches!(err, SpecIoError::Json(_)),
+            "expected Json error, got: {err}"
+        );
     }
 
     #[test]
@@ -1684,9 +1748,8 @@ mod tests {
         ));
         assert!(io_err.to_string().contains("spec I/O error"));
 
-        let json_err = SpecIoError::from(
-            serde_json::from_str::<FileSpecBundle>("bad").unwrap_err(),
-        );
+        let json_err =
+            SpecIoError::from(serde_json::from_str::<FileSpecBundle>("bad").unwrap_err());
         assert!(json_err.to_string().contains("spec JSON error"));
     }
 
@@ -1746,8 +1809,12 @@ mod tests {
         std::fs::write(&file, source).unwrap();
 
         let analysis = make_analysis("add", 1, 4);
-        let deep_fps =
-            crate::fingerprint::compute_deep_fingerprints(&file, std::slice::from_ref(&analysis), &std::collections::HashMap::new()).unwrap();
+        let deep_fps = crate::fingerprint::compute_deep_fingerprints(
+            &file,
+            std::slice::from_ref(&analysis),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         let fp = &deep_fps["add"];
 
         let existing = FileSpecBundle {
@@ -1755,8 +1822,18 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", Some(fp))],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
-        assert!(plan.stale.is_empty(), "expected no stale, got: {:?}", plan.stale);
+        let plan = compute_incremental_plan(
+            &file,
+            &[analysis],
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        assert!(
+            plan.stale.is_empty(),
+            "expected no stale, got: {:?}",
+            plan.stale
+        );
         assert_eq!(plan.fresh, vec!["add"]);
         assert!(plan.removed.is_empty());
     }
@@ -1765,7 +1842,11 @@ mod tests {
     fn incremental_plan_stale_on_fingerprint_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
-        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+        std::fs::write(
+            &file,
+            "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n",
+        )
+        .unwrap();
 
         let analysis = make_analysis("add", 1, 4);
 
@@ -1774,7 +1855,13 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", Some("old_fp_mismatch"))],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
+        let plan = compute_incremental_plan(
+            &file,
+            &[analysis],
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
         assert!(plan.removed.is_empty());
@@ -1784,7 +1871,11 @@ mod tests {
     fn incremental_plan_stale_when_no_fingerprint() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
-        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+        std::fs::write(
+            &file,
+            "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n",
+        )
+        .unwrap();
 
         let analysis = make_analysis("add", 1, 4);
 
@@ -1793,7 +1884,13 @@ mod tests {
             functions: vec![make_spec_with_fingerprint("add", None)],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
+        let plan = compute_incremental_plan(
+            &file,
+            &[analysis],
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
     }
@@ -1802,7 +1899,11 @@ mod tests {
     fn incremental_plan_new_function() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
-        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+        std::fs::write(
+            &file,
+            "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n",
+        )
+        .unwrap();
 
         let analysis = make_analysis("add", 1, 4);
         let existing = FileSpecBundle {
@@ -1810,7 +1911,13 @@ mod tests {
             functions: vec![],
         };
 
-        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
+        let plan = compute_incremental_plan(
+            &file,
+            &[analysis],
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.stale, vec!["add"]);
         assert!(plan.fresh.is_empty());
         assert!(plan.removed.is_empty());
@@ -1820,7 +1927,11 @@ mod tests {
     fn incremental_plan_removed_function() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
-        std::fs::write(&file, "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n").unwrap();
+        std::fs::write(
+            &file,
+            "function add(x) {\n  if (x > 0) return x;\n  return 0;\n}\n",
+        )
+        .unwrap();
 
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
@@ -1831,7 +1942,13 @@ mod tests {
         };
 
         let analysis = make_analysis("add", 1, 4);
-        let plan = compute_incremental_plan(&file, &[analysis], &existing, &std::collections::HashMap::new()).unwrap();
+        let plan = compute_incremental_plan(
+            &file,
+            &[analysis],
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.removed, vec!["removed_fn"]);
     }
 
@@ -1862,8 +1979,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
         // V1: leaf returns 1
-        let source_v1 =
-            "function leaf(x) {\n  if (x > 0) return 1;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
+        let source_v1 = "function leaf(x) {\n  if (x > 0) return 1;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
         std::fs::write(&file, source_v1).unwrap();
 
         let analyses_v1 = vec![
@@ -1871,8 +1987,12 @@ mod tests {
             make_analysis_with_deps("caller", 5, 7, vec!["leaf"]),
         ];
 
-        let deep_fps_v1 =
-            crate::fingerprint::compute_deep_fingerprints(&file, &analyses_v1, &std::collections::HashMap::new()).unwrap();
+        let deep_fps_v1 = crate::fingerprint::compute_deep_fingerprints(
+            &file,
+            &analyses_v1,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
 
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
@@ -1883,8 +2003,7 @@ mod tests {
         };
 
         // V2: leaf returns 2 (changed), caller unchanged
-        let source_v2 =
-            "function leaf(x) {\n  if (x > 0) return 2;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
+        let source_v2 = "function leaf(x) {\n  if (x > 0) return 2;\n  return 0;\n}\nfunction caller(x) {\n  if (x > 0) return leaf(x);\n  return 0;\n}\n";
         std::fs::write(&file, source_v2).unwrap();
 
         let analyses_v2 = vec![
@@ -1892,10 +2011,19 @@ mod tests {
             make_analysis_with_deps("caller", 5, 7, vec!["leaf"]),
         ];
 
-        let plan = compute_incremental_plan(&file, &analyses_v2, &existing, &std::collections::HashMap::new()).unwrap();
+        let plan = compute_incremental_plan(
+            &file,
+            &analyses_v2,
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
 
         // Both should be stale: leaf changed directly, caller transitively.
-        assert!(plan.stale.contains(&"leaf".to_string()), "leaf should be stale");
+        assert!(
+            plan.stale.contains(&"leaf".to_string()),
+            "leaf should be stale"
+        );
         assert!(
             plan.stale.contains(&"caller".to_string()),
             "caller should be stale when callee changes"
@@ -1915,23 +2043,40 @@ mod tests {
         };
 
         let new_stale_spec = make_spec_with_fingerprint("stale_fn", Some("fp2_new"));
-        let current_names: HashSet<String> =
-            ["fresh_fn", "stale_fn"].iter().map(|s| s.to_string()).collect();
+        let current_names: HashSet<String> = ["fresh_fn", "stale_fn"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let merged = merge_file_spec_bundles(&existing, &[new_stale_spec], &current_names);
 
         assert_eq!(merged.functions.len(), 2);
-        let names: Vec<&str> = merged.functions.iter().map(|f| f.function_name.as_str()).collect();
-        assert!(names.contains(&"stale_fn"), "should contain re-explored stale_fn");
+        let names: Vec<&str> = merged
+            .functions
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"stale_fn"),
+            "should contain re-explored stale_fn"
+        );
         assert!(names.contains(&"fresh_fn"), "should carry over fresh_fn");
         assert!(!names.contains(&"removed_fn"), "should drop removed_fn");
 
         // Verify stale_fn has new fingerprint
-        let stale = merged.functions.iter().find(|f| f.function_name == "stale_fn").unwrap();
+        let stale = merged
+            .functions
+            .iter()
+            .find(|f| f.function_name == "stale_fn")
+            .unwrap();
         assert_eq!(stale.fingerprint.as_deref(), Some("fp2_new"));
 
         // Verify fresh_fn has old fingerprint
-        let fresh = merged.functions.iter().find(|f| f.function_name == "fresh_fn").unwrap();
+        let fresh = merged
+            .functions
+            .iter()
+            .find(|f| f.function_name == "fresh_fn")
+            .unwrap();
         assert_eq!(fresh.fingerprint.as_deref(), Some("fp1"));
     }
 
@@ -1960,8 +2105,7 @@ mod tests {
             ],
         };
 
-        let current_names: HashSet<String> =
-            ["fn1", "fn2"].iter().map(|s| s.to_string()).collect();
+        let current_names: HashSet<String> = ["fn1", "fn2"].iter().map(|s| s.to_string()).collect();
 
         let merged = merge_file_spec_bundles(&existing, &[], &current_names);
         assert_eq!(merged.functions.len(), 2);
@@ -2069,9 +2213,7 @@ mod tests {
 
     #[test]
     fn spec_invariant_medium_confidence() {
-        use crate::invariants::{
-            ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget,
-        };
+        use crate::invariants::{ClassifiedInvariant, Invariant, InvariantKind, InvariantTarget};
 
         let ci = ClassifiedInvariant {
             invariant: Invariant {
@@ -2306,9 +2448,7 @@ mod tests {
 
         // ── merge_file_spec_bundles properties ──────────────────────
 
-        fn arb_file_spec_bundle(
-            max_fns: usize,
-        ) -> impl Strategy<Value = FileSpecBundle> {
+        fn arb_file_spec_bundle(max_fns: usize) -> impl Strategy<Value = FileSpecBundle> {
             prop::collection::vec(arb_function_spec(), 0..=max_fns).prop_map(|mut specs| {
                 let mut seen = std::collections::HashSet::new();
                 specs.retain(|s| seen.insert(s.function_name.clone()));

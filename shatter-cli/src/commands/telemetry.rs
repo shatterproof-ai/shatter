@@ -30,10 +30,17 @@ fn print_status() -> Result<(), Box<dyn std::error::Error>> {
         .map(|events| events.len())
         .unwrap_or(0);
 
-    println!("Telemetry:    {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "Telemetry:    {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     println!("Config:       {}", config_path.display());
     println!("Anonymous ID: {}", anon_id);
-    println!("Queue:        {} ({} events)", queue_path.display(), event_count);
+    println!(
+        "Queue:        {} ({} events)",
+        queue_path.display(),
+        event_count
+    );
 
     Ok(())
 }

@@ -18,11 +18,9 @@
 
 use std::path::Path;
 
-use shatter_core::explorer::{ExecutionSummary, ObservationOutput};
-use shatter_core::report::{
-    generate_html_scan_report, generate_report, wrap_explore_html,
-};
 use shatter_core::behavior::BehaviorMap;
+use shatter_core::explorer::{ExecutionSummary, ObservationOutput};
+use shatter_core::report::{generate_html_scan_report, generate_report, wrap_explore_html};
 use shatter_core::scan_orchestrator::{FunctionResult, MockSource, MockUsage, ParallelScanResult};
 use shatter_core::shrink::ShrinkStats;
 
@@ -120,7 +118,9 @@ fn make_observation_output() -> ObservationOutput {
         shrunk_witnesses: std::collections::HashMap::new(),
         mcdc_summary: None,
         shrink_stats: ShrinkStats::default(),
-        abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+        abandoned_frontiers: vec![],
+        opaque_suggestions: vec![],
+        stubbed_modules: vec![],
     }
 }
 
@@ -136,7 +136,10 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
      -> FunctionResult {
         let mocks_used: Vec<MockUsage> = mocks
             .into_iter()
-            .map(|n| MockUsage { name: n.to_string(), source: MockSource::CachedBehaviorMap })
+            .map(|n| MockUsage {
+                name: n.to_string(),
+                source: MockSource::CachedBehaviorMap,
+            })
             .collect();
         let new_path_executions: Vec<ExecutionSummary> = (0..unique_paths)
             .map(|i| ExecutionSummary {
@@ -177,7 +180,9 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
                 shrunk_witnesses: std::collections::HashMap::new(),
                 mcdc_summary: None,
                 shrink_stats: ShrinkStats::default(),
-                abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -234,7 +239,10 @@ fn snapshot_explore_fn_html() {
     // No project_root: source block is skipped gracefully.
     let html = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
 
-    assert!(!html.is_empty(), "render_explore_fn_html must not return empty string");
+    assert!(
+        !html.is_empty(),
+        "render_explore_fn_html must not return empty string"
+    );
     assert_snapshot(&snapshot_path("explore_fn.html"), &html);
 }
 
@@ -249,8 +257,14 @@ fn snapshot_explore_page_html() {
 
     let html = wrap_explore_html(&[fragment], 1, 2, 5, 8);
 
-    assert!(!html.is_empty(), "wrap_explore_html must not return empty string");
-    assert!(html.starts_with("<!DOCTYPE html>"), "must be a full HTML page");
+    assert!(
+        !html.is_empty(),
+        "wrap_explore_html must not return empty string"
+    );
+    assert!(
+        html.starts_with("<!DOCTYPE html>"),
+        "must be a full HTML page"
+    );
     assert_snapshot(&snapshot_path("explore_page.html"), &html);
 }
 
@@ -261,8 +275,14 @@ fn snapshot_scan_report_html() {
     // No project_root: source block is skipped gracefully.
     let html = generate_html_scan_report(&report, None);
 
-    assert!(!html.is_empty(), "generate_html_scan_report must not return empty string");
-    assert!(html.starts_with("<!DOCTYPE html>"), "must be a full HTML page");
+    assert!(
+        !html.is_empty(),
+        "generate_html_scan_report must not return empty string"
+    );
+    assert!(
+        html.starts_with("<!DOCTYPE html>"),
+        "must be a full HTML page"
+    );
     assert_snapshot(&snapshot_path("scan_report.html"), &html);
 }
 
@@ -291,8 +311,14 @@ fn source_block_rendered_when_project_root_provided() {
     let html = render_explore_fn_html(&result, location, Some(&dir));
 
     assert!(html.contains("src-block"), "source block div must appear");
-    assert!(html.contains("src-line covered"), "covered lines must appear");
-    assert!(html.contains("src-line uncovered"), "uncovered lines must appear");
+    assert!(
+        html.contains("src-line covered"),
+        "covered lines must appear"
+    );
+    assert!(
+        html.contains("src-line uncovered"),
+        "uncovered lines must appear"
+    );
     assert!(html.contains("return a + b"), "source text must appear");
     assert!(html.contains("&lt;"), "source text must be HTML-escaped");
 }

@@ -10,29 +10,29 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use tracing::Instrument;
 
-use crate::protocol::SetupLevel;
 use crate::auto_mock::MockParam;
 use crate::coverage_metrics::DiscoveryMethod;
-use crate::mock_value_space::{LiveCallOutcome, LiveFirstState, classify_connection_failure};
 use crate::frontend::{Frontend, FrontendError};
 use crate::input_gen::{
-    generate_inputs_with_custom, generate_mock_values,
-    prefetch_custom_values, PrefetchedValues, ValueSource,
+    PrefetchedValues, ValueSource, generate_inputs_with_custom, generate_mock_values,
+    prefetch_custom_values,
 };
+use crate::mock_value_space::{LiveCallOutcome, LiveFirstState, classify_connection_failure};
 use crate::orchestrator::FrontendCapabilities;
-use crate::strategy::{
-    BoundarySeeds, InputStrategy, LiteralsStrategy, MetaStrategy, PoolSeedsStrategy,
-    RandomStrategy, StrategyContext, UserProvidedStrategy,
-};
+use crate::protocol::SetupLevel;
 use crate::protocol::{
     Command as ProtoCommand, ExecuteResult, ExecutionProfile, FunctionAnalysis, MockConfig,
     ResponseResult, SetupContextEntry, SetupContextStack,
 };
 use crate::setup_manager::SetupManager;
+use crate::strategy::{
+    BoundarySeeds, InputStrategy, LiteralsStrategy, MetaStrategy, PoolSeedsStrategy,
+    RandomStrategy, StrategyContext, UserProvidedStrategy,
+};
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
 ///
@@ -349,13 +349,26 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
         /// A collapsed scope: set of distinct per-iteration branch profiles,
         /// each paired with its iteration-count bucket (or `None` when
         /// bucketing is disabled, preserving backward-compat hashing).
-        Scope { scope_tag: u64, profile_buckets: Vec<ProfileWithBucket> },
+        Scope {
+            scope_tag: u64,
+            profile_buckets: Vec<ProfileWithBucket>,
+        },
     }
 
     fn is_matching_exit(event: &TraceEvent, kind: ScopeKind) -> bool {
         match (kind, event) {
-            (ScopeKind::Loop(id), TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id } }) => *loop_id == id,
-            (ScopeKind::Call(id), TraceEvent::Scope { event: ScopeEvent::CallExit { call_site_id } }) => *call_site_id == id,
+            (
+                ScopeKind::Loop(id),
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopExit { loop_id },
+                },
+            ) => *loop_id == id,
+            (
+                ScopeKind::Call(id),
+                TraceEvent::Scope {
+                    event: ScopeEvent::CallExit { call_site_id },
+                },
+            ) => *call_site_id == id,
             _ => false,
         }
     }
@@ -376,7 +389,11 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
             let mut sorted: Vec<ProfileWithBucket> = profiles
                 .iter()
                 .map(|(profile, &count)| {
-                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    let bucket = if buckets.is_disabled() {
+                        None
+                    } else {
+                        Some(buckets.bucket(count))
+                    };
                     (profile.clone(), bucket)
                 })
                 .collect();
@@ -388,7 +405,11 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
             let mut sorted: Vec<ProfileWithBucket> = profiles
                 .iter()
                 .map(|(profile, &count)| {
-                    let bucket = if buckets.is_disabled() { None } else { Some(buckets.bucket(count)) };
+                    let bucket = if buckets.is_disabled() {
+                        None
+                    } else {
+                        Some(buckets.bucket(count))
+                    };
                     (profile.clone(), bucket)
                 })
                 .collect();
@@ -397,7 +418,10 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
         }
         scope_ids.sort_by_key(|(tag, _)| *tag);
         for (scope_tag, profile_buckets) in scope_ids {
-            items.push(CollapsedItem::Scope { scope_tag, profile_buckets });
+            items.push(CollapsedItem::Scope {
+                scope_tag,
+                profile_buckets,
+            });
         }
     }
 
@@ -420,8 +444,12 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
                     let (kind, is_enter) = match event {
                         ScopeEvent::LoopEnter { loop_id } => (ScopeKind::Loop(*loop_id), true),
                         ScopeEvent::LoopExit { loop_id } => (ScopeKind::Loop(*loop_id), false),
-                        ScopeEvent::CallEnter { call_site_id } => (ScopeKind::Call(*call_site_id), true),
-                        ScopeEvent::CallExit { call_site_id } => (ScopeKind::Call(*call_site_id), false),
+                        ScopeEvent::CallEnter { call_site_id } => {
+                            (ScopeKind::Call(*call_site_id), true)
+                        }
+                        ScopeEvent::CallExit { call_site_id } => {
+                            (ScopeKind::Call(*call_site_id), false)
+                        }
                     };
 
                     if !is_enter {
@@ -445,7 +473,10 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
                             CollapsedItem::Branch { branch_id, taken } => {
                                 profile.insert((*branch_id, *taken));
                             }
-                            CollapsedItem::Scope { scope_tag, profile_buckets } => {
+                            CollapsedItem::Scope {
+                                scope_tag,
+                                profile_buckets,
+                            } => {
                                 let mut h = DefaultHasher::new();
                                 scope_tag.hash(&mut h);
                                 profile_buckets.hash(&mut h);
@@ -459,10 +490,18 @@ fn scope_aware_hash(events: &[crate::execution_record::TraceEvent], buckets: &Lo
                     // Increment iteration count for this (scope_id, profile) pair
                     match kind {
                         ScopeKind::Loop(id) => {
-                            *loop_profiles.entry(id).or_default().entry(profile_vec).or_insert(0) += 1;
+                            *loop_profiles
+                                .entry(id)
+                                .or_default()
+                                .entry(profile_vec)
+                                .or_insert(0) += 1;
                         }
                         ScopeKind::Call(id) => {
-                            *call_profiles.entry(id).or_default().entry(profile_vec).or_insert(0) += 1;
+                            *call_profiles
+                                .entry(id)
+                                .or_default()
+                                .entry(profile_vec)
+                                .or_insert(0) += 1;
                         }
                     }
 
@@ -678,7 +717,11 @@ fn explorer_discovery_method(strategy_name: &str) -> DiscoveryMethod {
 }
 
 /// Send a Teardown command to the frontend.
-pub(crate) async fn send_teardown(frontend: &mut Frontend, scope: &str, level: SetupLevel) -> Result<(), ExploreError> {
+pub(crate) async fn send_teardown(
+    frontend: &mut Frontend,
+    scope: &str,
+    level: SetupLevel,
+) -> Result<(), ExploreError> {
     let response = frontend
         .send(ProtoCommand::Teardown {
             scope: scope.to_string(),
@@ -721,7 +764,11 @@ pub async fn explore_function(
         .await?;
 
     let instrumentable_line_count = match instrument_response.result {
-        ResponseResult::Instrument { instrumented, instrumentable_line_count, .. } => {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
             if !instrumented {
                 return Err(ExploreError::UnexpectedResponse(
                     "instrumentation returned instrumented=false".to_string(),
@@ -747,17 +794,19 @@ pub async fn explore_function(
     };
 
     // --- Setup lifecycle ---
-    let has_setup =
-        config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
+    let has_setup = config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
     let per_function_setup = has_setup && config.setup_level == SetupLevel::Function;
     let per_execution_setup = has_setup && config.setup_level == SetupLevel::Execution;
 
     let mut setup_context: Option<SetupContextStack> = None;
 
     // When a SetupManager is provided, check should_skip and cache contexts.
-    let skip_setup = setup_mgr.as_ref().is_some_and(|m| m.should_skip(config.setup_level));
+    let skip_setup = setup_mgr
+        .as_ref()
+        .is_some_and(|m| m.should_skip(config.setup_level));
 
-    if per_function_setup && !skip_setup
+    if per_function_setup
+        && !skip_setup
         && let Some(ref setup_file) = config.setup_file
     {
         match send_setup(
@@ -768,8 +817,8 @@ pub async fn explore_function(
             config.project_root.clone(),
             config.execution_profile.clone(),
         )
-            .instrument(tracing::info_span!("setup.function"))
-            .await?
+        .instrument(tracing::info_span!("setup.function"))
+        .await?
         {
             Some(ctx) => {
                 if let Some(ref mut mgr) = setup_mgr
@@ -798,13 +847,17 @@ pub async fn explore_function(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
 
     let mut prefetched = if use_generators {
-        prefetch_custom_values(&config.value_sources, frontend, config.max_iterations.unwrap_or(100) as usize)
-            .instrument(tracing::info_span!("input_gen.prefetch"))
-            .await
-            .unwrap_or_else(|e| {
-                log::debug!("prefetch failed, falling back to built-in: {e}");
-                PrefetchedValues::new()
-            })
+        prefetch_custom_values(
+            &config.value_sources,
+            frontend,
+            config.max_iterations.unwrap_or(100) as usize,
+        )
+        .instrument(tracing::info_span!("input_gen.prefetch"))
+        .await
+        .unwrap_or_else(|e| {
+            log::debug!("prefetch failed, falling back to built-in: {e}");
+            PrefetchedValues::new()
+        })
     } else {
         PrefetchedValues::new()
     };
@@ -859,7 +912,11 @@ pub async fn explore_function(
     let float_indices = crate::float_probe::float_param_indices(&analysis.params);
     let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
     let probe_budget = float_indices.len() * crate::float_probe::PROBE_COUNT * 2;
-    if !float_indices.is_empty() && config.max_iterations.is_none_or(|m| probe_budget < m as usize) {
+    if !float_indices.is_empty()
+        && config
+            .max_iterations
+            .is_none_or(|m| probe_budget < m as usize)
+    {
         for &idx in &float_indices {
             let pairs = crate::float_probe::generate_probe_pairs(
                 &analysis.params,
@@ -899,7 +956,8 @@ pub async fn explore_function(
                 if let (
                     ResponseResult::Execute(float_result),
                     ResponseResult::Execute(floor_result),
-                ) = (&float_resp.result, &floor_resp.result) {
+                ) = (&float_resp.result, &floor_resp.result)
+                {
                     total_probes += 1;
 
                     let fhash = path_hash(float_result, &config.loop_buckets);
@@ -919,7 +977,11 @@ pub async fn explore_function(
                         divergent_values.push(v);
                     }
 
-                    raw_results.push((float_inputs.clone(), config.mocks.clone(), (**float_result).clone()));
+                    raw_results.push((
+                        float_inputs.clone(),
+                        config.mocks.clone(),
+                        (**float_result).clone(),
+                    ));
                 }
             }
 
@@ -1043,7 +1105,8 @@ pub async fn explore_function(
         }
 
         // --- Per-execution setup ---
-        if per_execution_setup && !skip_setup
+        if per_execution_setup
+            && !skip_setup
             && let Some(ref setup_file) = config.setup_file
         {
             match send_setup(
@@ -1054,14 +1117,15 @@ pub async fn explore_function(
                 config.project_root.clone(),
                 config.execution_profile.clone(),
             )
-                .instrument(tracing::info_span!("setup.execution"))
-                .await?
+            .instrument(tracing::info_span!("setup.execution"))
+            .await?
             {
                 Some(ctx) => {
                     if let Some(ref mut mgr) = setup_mgr
                         && let Some(entry) = ctx.contexts.first()
                     {
-                        let _ = mgr.setup(config.setup_level, &analysis.name, entry.context.clone());
+                        let _ =
+                            mgr.setup(config.setup_level, &analysis.name, entry.context.clone());
                     }
                     setup_context = Some(ctx);
                 }
@@ -1069,7 +1133,10 @@ pub async fn explore_function(
                     if let Some(ref mut mgr) = setup_mgr {
                         let _ = mgr.record_failure(
                             config.setup_level,
-                            format!("per-execution setup returned no context for {}", analysis.name),
+                            format!(
+                                "per-execution setup returned no context for {}",
+                                analysis.name
+                            ),
                         );
                     }
                 }
@@ -1169,7 +1236,8 @@ pub async fn explore_function(
         }
 
         // --- Per-execution teardown ---
-        if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
+        if per_execution_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown")
+        {
             send_teardown(frontend, &analysis.name, config.setup_level)
                 .instrument(tracing::info_span!("teardown.execution"))
                 .await?;
@@ -1240,14 +1308,17 @@ pub async fn explore_function(
         // that the highest-value witnesses are shrunk first. Tie-break by ascending
         // path hash for fully deterministic ordering independent of HashMap iteration.
         let paths_considered = path_witnesses.len();
-        let mut to_shrink: Vec<(u64, Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>)> =
-            path_witnesses
-                .into_iter()
-                .filter(|(_, (inputs, _))| {
-                    crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
-                })
-                .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
-                .collect();
+        let mut to_shrink: Vec<(
+            u64,
+            Vec<serde_json::Value>,
+            Vec<crate::protocol::MockConfig>,
+        )> = path_witnesses
+            .into_iter()
+            .filter(|(_, (inputs, _))| {
+                crate::shrink::should_shrink_path(crate::shrink::witness_complexity(inputs))
+            })
+            .map(|(ph, (inputs, mocks))| (ph, inputs, mocks))
+            .collect();
         to_shrink.sort_by(|(ph_a, inputs_a, _), (ph_b, inputs_b, _)| {
             let ca = crate::shrink::witness_complexity(inputs_a);
             let cb = crate::shrink::witness_complexity(inputs_b);
@@ -1308,11 +1379,9 @@ pub async fn explore_function(
             let n = analysis.params.len().min(current.len());
             if !bulk_accepted && n >= 3 && attempts < witness_budget {
                 let group_size = n / 2;
-                for trial in crate::shrink::grouped_shrink_candidates(
-                    &current,
-                    &analysis.params,
-                    group_size,
-                ) {
+                for trial in
+                    crate::shrink::grouped_shrink_candidates(&current, &analysis.params, group_size)
+                {
                     if attempts >= witness_budget {
                         break;
                     }
@@ -1428,7 +1497,11 @@ pub async fn explore_function(
 
 /// Extract deduplicated module names with `StubbedImport` kind from raw results.
 pub fn collect_stubbed_modules(
-    raw_results: &[(Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>, crate::protocol::ExecuteResult)],
+    raw_results: &[(
+        Vec<serde_json::Value>,
+        Vec<crate::protocol::MockConfig>,
+        crate::protocol::ExecuteResult,
+    )],
 ) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     for (_, _, result) in raw_results {
@@ -1499,7 +1572,10 @@ pub fn format_explore_footer(
             pct = style.color_coverage_pct(pct),
         ));
     }
-    out.push_str(&format!(" \u{2550}\u{2550}\u{2550}{reset}\n", reset = style.reset));
+    out.push_str(&format!(
+        " \u{2550}\u{2550}\u{2550}{reset}\n",
+        reset = style.reset
+    ));
     out
 }
 
@@ -1510,14 +1586,27 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
     // Function header with box-drawing line
     let location = options.location.as_deref().unwrap_or("");
     let header_text = if location.is_empty() {
-        format!("{bold}{name}{reset}", bold = s.bold, name = result.function_name, reset = s.reset)
+        format!(
+            "{bold}{name}{reset}",
+            bold = s.bold,
+            name = result.function_name,
+            reset = s.reset
+        )
     } else {
         format!(
             "{bold}{name}{reset} {dim}({location}){reset}",
-            bold = s.bold, name = result.function_name, dim = s.dim, reset = s.reset,
+            bold = s.bold,
+            name = result.function_name,
+            dim = s.dim,
+            reset = s.reset,
         )
     };
-    let plain_len = result.function_name.len() + if location.is_empty() { 0 } else { location.len() + 3 };
+    let plain_len = result.function_name.len()
+        + if location.is_empty() {
+            0
+        } else {
+            location.len() + 3
+        };
     let pad = 50usize.saturating_sub(plain_len);
     out.push_str(&format!(
         "\u{2500}\u{2500} {header_text} {line}\n",
@@ -1555,7 +1644,11 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
         let last_idx = result.new_path_executions.len() - 1;
         for (i, exec) in result.new_path_executions.iter().enumerate() {
             let is_last = i == last_idx;
-            let branch = if is_last { "\u{2514}\u{2500}" } else { "\u{251c}\u{2500}" };
+            let branch = if is_last {
+                "\u{2514}\u{2500}"
+            } else {
+                "\u{251c}\u{2500}"
+            };
             let continuation = if is_last { "  " } else { "\u{2502} " };
 
             let outcome_label = format_outcome_label_styled(exec, s);
@@ -1583,20 +1676,37 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
     }
 
     if let Some(ref metrics) = options.coverage_metrics {
-        out.push_str(&crate::coverage_metrics::format_coverage_metrics(metrics, s));
+        out.push_str(&crate::coverage_metrics::format_coverage_metrics(
+            metrics, s,
+        ));
     }
     // Float probe results
     if !result.float_probe_results.is_empty() {
-        out.push_str(&format!("  {dim}Float probes:{reset}\n", dim = s.dim, reset = s.reset));
+        out.push_str(&format!(
+            "  {dim}Float probes:{reset}\n",
+            dim = s.dim,
+            reset = s.reset
+        ));
         let last_idx = result.float_probe_results.len() - 1;
         for (i, probe) in result.float_probe_results.iter().enumerate() {
-            let connector = if i == last_idx { "\u{2514}\u{2500}" } else { "\u{251c}\u{2500}" };
+            let connector = if i == last_idx {
+                "\u{2514}\u{2500}"
+            } else {
+                "\u{251c}\u{2500}"
+            };
             let label = match probe.classification {
                 crate::float_probe::FloatClassification::IntegerTreating => {
-                    format!("integer-treating ({}/{} agree)", probe.agreements, probe.total_probes)
+                    format!(
+                        "integer-treating ({}/{} agree)",
+                        probe.agreements, probe.total_probes
+                    )
                 }
                 crate::float_probe::FloatClassification::FloatSensitive => {
-                    let divs: Vec<String> = probe.divergent_values.iter().map(|v| format!("{v}")).collect();
+                    let divs: Vec<String> = probe
+                        .divergent_values
+                        .iter()
+                        .map(|v| format!("{v}"))
+                        .collect();
                     if divs.is_empty() {
                         "float-sensitive".to_string()
                     } else {
@@ -1615,7 +1725,11 @@ pub fn format_exploration_report(result: &ObservationOutput, options: &ReportOpt
     }
 
     if !result.abandoned_frontiers.is_empty() {
-        let ids: Vec<String> = result.abandoned_frontiers.iter().map(|(id, _)| id.to_string()).collect();
+        let ids: Vec<String> = result
+            .abandoned_frontiers
+            .iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
         out.push_str(&format!(
             "  {dim}Abandoned frontiers: {} (branch IDs: {}){reset}\n",
             result.abandoned_frontiers.len(),
@@ -1788,7 +1902,9 @@ fn format_value_short(v: &serde_json::Value) -> String {
 /// Counts how many executions each branch_id appeared in (regardless of
 /// taken/not-taken), divides by total execution count to produce frequencies
 /// in [0.0, 1.0]. Returns an empty profile when there are no raw results.
-pub fn collect_branch_profile(observation: &ObservationOutput) -> crate::branch_profile::BranchProfile {
+pub fn collect_branch_profile(
+    observation: &ObservationOutput,
+) -> crate::branch_profile::BranchProfile {
     use std::collections::HashSet;
 
     let total = observation.raw_results.len();
@@ -1816,19 +1932,23 @@ pub fn collect_branch_profile(observation: &ObservationOutput) -> crate::branch_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::SetupLevel;
     use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
     use crate::input_gen::ValueSource;
     use crate::orchestrator::FrontendCapabilities;
     use crate::protocol::ExecuteResult;
     use crate::protocol::PerformanceMetrics;
+    use crate::protocol::SetupLevel;
 
     /// Base command capabilities for test frontends.
     const BASE_CAPABILITIES: &[&str] = &["analyze", "execute", "instrument"];
 
     /// Build a capability string list from base + additional capabilities.
     fn capabilities_with(extra: &[&str]) -> Vec<String> {
-        BASE_CAPABILITIES.iter().chain(extra.iter()).map(|s| (*s).into()).collect()
+        BASE_CAPABILITIES
+            .iter()
+            .chain(extra.iter())
+            .map(|s| (*s).into())
+            .collect()
     }
 
     fn empty_perf() -> PerformanceMetrics {
@@ -1844,17 +1964,33 @@ mod tests {
     fn path_hash_distinguishes_different_return_values() {
         let r1 = ExecuteResult {
             return_value: Some(serde_json::json!("negative")),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("positive-even")),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1863,17 +1999,33 @@ mod tests {
     fn path_hash_same_lines_executed_produces_same_hash() {
         let r1 = ExecuteResult {
             return_value: Some(serde_json::json!(3.5)),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!(99.0)),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert_eq!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1882,17 +2034,33 @@ mod tests {
     fn path_hash_different_lines_executed_produces_different_hash() {
         let r1 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 3],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 3],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![1, 2, 4],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![1, 2, 4],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1901,20 +2069,43 @@ mod tests {
     fn path_hash_distinguishes_error_from_success() {
         let ok = ExecuteResult {
             return_value: Some(serde_json::json!(42)),
-            thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let err = ExecuteResult {
             return_value: None,
-            thrown_error: Some(ErrorInfo { error_type: "Error".into(), message: "boom".into(), stack: None, error_category: None }),
-            branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
+            thrown_error: Some(ErrorInfo {
+                error_type: "Error".into(),
+                message: "boom".into(),
+                stack: None,
+                error_category: None,
+            }),
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
-        assert_ne!(path_hash(&ok, &no_buckets()), path_hash(&err, &no_buckets()));
+        assert_ne!(
+            path_hash(&ok, &no_buckets()),
+            path_hash(&err, &no_buckets())
+        );
     }
 
     #[test]
@@ -1923,23 +2114,47 @@ mod tests {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None,
             branch_path: vec![BranchDecision {
-                branch_id: 0, line: 10, taken: true,
-                constraint: SymConstraint::Unknown { hint: "test".into() },
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "test".into(),
+                },
                 conditions: None,
             }],
-            lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
             thrown_error: None,
             branch_path: vec![BranchDecision {
-                branch_id: 0, line: 10, taken: false,
-                constraint: SymConstraint::Unknown { hint: "test".into() },
+                branch_id: 0,
+                line: 10,
+                taken: false,
+                constraint: SymConstraint::Unknown {
+                    hint: "test".into(),
+                },
                 conditions: None,
             }],
-            lines_executed: vec![], calls_to_external: vec![], path_constraints: vec![],
-            scope_events: vec![], side_effects: vec![], capture_truncation: None, performance: empty_perf(), discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            scope_events: vec![],
+            side_effects: vec![],
+            capture_truncation: None,
+            performance: empty_perf(),
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -1960,26 +2175,36 @@ mod tests {
                 branch_id,
                 line: 0,
                 taken,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             },
         }
     }
 
     fn loop_enter(id: u32) -> TraceEvent {
-        TraceEvent::Scope { event: ScopeEvent::LoopEnter { loop_id: id } }
+        TraceEvent::Scope {
+            event: ScopeEvent::LoopEnter { loop_id: id },
+        }
     }
 
     fn loop_exit(id: u32) -> TraceEvent {
-        TraceEvent::Scope { event: ScopeEvent::LoopExit { loop_id: id } }
+        TraceEvent::Scope {
+            event: ScopeEvent::LoopExit { loop_id: id },
+        }
     }
 
     fn call_enter(id: u32) -> TraceEvent {
-        TraceEvent::Scope { event: ScopeEvent::CallEnter { call_site_id: id } }
+        TraceEvent::Scope {
+            event: ScopeEvent::CallEnter { call_site_id: id },
+        }
     }
 
     fn call_exit(id: u32) -> TraceEvent {
-        TraceEvent::Scope { event: ScopeEvent::CallExit { call_site_id: id } }
+        TraceEvent::Scope {
+            event: ScopeEvent::CallExit { call_site_id: id },
+        }
     }
 
     /// Helper: make an ExecuteResult with given scope_events.
@@ -1993,7 +2218,10 @@ mod tests {
             path_constraints: vec![],
             scope_events: events,
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         }
     }
@@ -2005,8 +2233,12 @@ mod tests {
             return_value: Some(serde_json::json!("result")),
             thrown_error: None,
             branch_path: vec![BranchDecision {
-                branch_id: 0, line: 10, taken: true,
-                constraint: SymConstraint::Unknown { hint: "test".into() },
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "test".into(),
+                },
                 conditions: None,
             }],
             lines_executed: vec![],
@@ -2014,29 +2246,51 @@ mod tests {
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
         let hash1 = path_hash(&r, &no_buckets());
         let hash2 = legacy_path_hash(&r);
-        assert_eq!(hash1, hash2, "empty scope_events should use legacy_path_hash");
+        assert_eq!(
+            hash1, hash2,
+            "empty scope_events should use legacy_path_hash"
+        );
     }
 
     #[test]
     fn path_hash_simple_loop_same_branches_same_hash() {
         // 3 iterations of loop 0 with branch 0 always true
         let trace_3 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         // 5 iterations of same
         let trace_5 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         assert_eq!(
             path_hash(&exec_with_scope(trace_3), &no_buckets()),
@@ -2049,13 +2303,21 @@ mod tests {
     fn path_hash_loop_different_branches_different_hash() {
         // Loop where all iterations take branch=true
         let trace_all_true = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         // Loop where one iteration takes branch=false (different branch set)
         let trace_mixed = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, false), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, false),
+            loop_exit(0),
         ];
         assert_ne!(
             path_hash(&exec_with_scope(trace_all_true), &no_buckets()),
@@ -2069,22 +2331,34 @@ mod tests {
         // Outer loop 0, inner loop 1 — same branch sets across iterations
         let trace_2x2 = vec![
             loop_enter(0),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
             loop_exit(0),
             loop_enter(0),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
             loop_exit(0),
         ];
         let trace_3x1 = vec![
             loop_enter(0),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
             loop_exit(0),
             loop_enter(0),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
             loop_exit(0),
             loop_enter(0),
-                loop_enter(1), branch_evt(1, true), loop_exit(1),
+            loop_enter(1),
+            branch_evt(1, true),
+            loop_exit(1),
             loop_exit(0),
         ];
         assert_eq!(
@@ -2098,12 +2372,17 @@ mod tests {
     fn path_hash_early_exit_from_loop() {
         // Loop with early exit (no LoopExit marker)
         let trace_early = vec![
-            loop_enter(0), branch_evt(0, true), branch_evt(1, false),
+            loop_enter(0),
+            branch_evt(0, true),
+            branch_evt(1, false),
             // no loop_exit — break/return
         ];
         // Same branches, with proper exit
         let trace_normal = vec![
-            loop_enter(0), branch_evt(0, true), branch_evt(1, false), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            branch_evt(1, false),
+            loop_exit(0),
         ];
         assert_eq!(
             path_hash(&exec_with_scope(trace_early), &no_buckets()),
@@ -2116,14 +2395,18 @@ mod tests {
     fn path_hash_recursion_collapses() {
         // 3 recursive calls with same branch
         let trace_3 = vec![
-            call_enter(0), branch_evt(0, true), call_exit(0),
-            call_enter(0), branch_evt(0, true), call_exit(0),
-            call_enter(0), branch_evt(0, true), call_exit(0),
+            call_enter(0),
+            branch_evt(0, true),
+            call_exit(0),
+            call_enter(0),
+            branch_evt(0, true),
+            call_exit(0),
+            call_enter(0),
+            branch_evt(0, true),
+            call_exit(0),
         ];
         // 1 recursive call
-        let trace_1 = vec![
-            call_enter(0), branch_evt(0, true), call_exit(0),
-        ];
+        let trace_1 = vec![call_enter(0), branch_evt(0, true), call_exit(0)];
         assert_eq!(
             path_hash(&exec_with_scope(trace_3), &no_buckets()),
             path_hash(&exec_with_scope(trace_1), &no_buckets()),
@@ -2136,20 +2419,28 @@ mod tests {
         // Call scope containing a loop
         let trace_a = vec![
             call_enter(0),
-                loop_enter(0), branch_evt(0, true), loop_exit(0),
-                loop_enter(0), branch_evt(0, true), loop_exit(0),
-                branch_evt(1, false),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            branch_evt(1, false),
             call_exit(0),
             call_enter(0),
-                loop_enter(0), branch_evt(0, true), loop_exit(0),
-                branch_evt(1, false),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            branch_evt(1, false),
             call_exit(0),
         ];
         // Same but with different iteration counts
         let trace_b = vec![
             call_enter(0),
-                loop_enter(0), branch_evt(0, true), loop_exit(0),
-                branch_evt(1, false),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            branch_evt(1, false),
             call_exit(0),
         ];
         assert_eq!(
@@ -2195,14 +2486,18 @@ mod tests {
     #[test]
     fn path_hash_loop_bucketing_distinguishes_counts() {
         // 1 iteration of loop with branch 0 true
-        let trace_1 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-        ];
+        let trace_1 = vec![loop_enter(0), branch_evt(0, true), loop_exit(0)];
         // 3 iterations of same profile — bucket 3 (3–5) vs bucket 1 (1)
         let trace_3 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         let buckets = LoopBuckets::default();
         assert_ne!(
@@ -2216,16 +2511,30 @@ mod tests {
     fn path_hash_loop_bucketing_collapses_within_bucket() {
         // 3 iterations → bucket 3 (range 3–5)
         let trace_3 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         // 4 iterations → also bucket 3 (range 3–5)
         let trace_4 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         let buckets = LoopBuckets::default();
         assert_eq!(
@@ -2238,15 +2547,23 @@ mod tests {
     #[test]
     fn path_hash_loop_bucketing_disabled() {
         // With LoopBuckets::none(), different iteration counts should still collapse
-        let trace_1 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-        ];
+        let trace_1 = vec![loop_enter(0), branch_evt(0, true), loop_exit(0)];
         let trace_5 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         let buckets = LoopBuckets::none();
         assert_eq!(
@@ -2261,16 +2578,24 @@ mod tests {
         // Custom boundaries: [1, 10] → 3 buckets: 0-1, 2-10, 11+
         let buckets = LoopBuckets::from_boundaries(vec![1, 10]);
         // 1 iteration → bucket 0 (0-1)
-        let trace_1 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-        ];
+        let trace_1 = vec![loop_enter(0), branch_evt(0, true), loop_exit(0)];
         // 5 iterations → bucket 1 (2-10)
         let trace_5 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
         assert_ne!(
             path_hash(&exec_with_scope(trace_1), &buckets),
@@ -2279,13 +2604,19 @@ mod tests {
         );
         // 3 iterations and 8 iterations → both bucket 1 (2-10)
         let trace_3 = vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
+            loop_enter(0),
+            branch_evt(0, true),
+            loop_exit(0),
         ];
-        let trace_8: Vec<_> = (0..8).flat_map(|_| vec![
-            loop_enter(0), branch_evt(0, true), loop_exit(0),
-        ]).collect();
+        let trace_8: Vec<_> = (0..8)
+            .flat_map(|_| vec![loop_enter(0), branch_evt(0, true), loop_exit(0)])
+            .collect();
         assert_eq!(
             path_hash(&exec_with_scope(trace_3), &buckets),
             path_hash(&exec_with_scope(trace_8), &buckets),
@@ -2308,27 +2639,33 @@ mod tests {
         // 0 loop iterations (empty string)
         let trace_0 = vec![call_enter(0), call_exit(0)];
         // 1 iteration
-        let trace_1 = vec![
-            call_enter(0), loop_enter(0), loop_exit(0), call_exit(0),
-        ];
+        let trace_1 = vec![call_enter(0), loop_enter(0), loop_exit(0), call_exit(0)];
         // 2 iterations
         let trace_2 = vec![
             call_enter(0),
-            loop_enter(0), loop_exit(0),
-            loop_enter(0), loop_exit(0),
+            loop_enter(0),
+            loop_exit(0),
+            loop_enter(0),
+            loop_exit(0),
             call_exit(0),
         ];
         // 5 iterations → bucket 3 (3-5)
         let trace_5: Vec<_> = {
             let mut v = vec![call_enter(0)];
-            for _ in 0..5 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            for _ in 0..5 {
+                v.push(loop_enter(0));
+                v.push(loop_exit(0));
+            }
             v.push(call_exit(0));
             v
         };
         // 10 iterations → bucket 4 (6+)
         let trace_10: Vec<_> = {
             let mut v = vec![call_enter(0)];
-            for _ in 0..10 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            for _ in 0..10 {
+                v.push(loop_enter(0));
+                v.push(loop_exit(0));
+            }
             v.push(call_exit(0));
             v
         };
@@ -2343,19 +2680,24 @@ mod tests {
         let hashes = vec![h0, h1, h2, h5, h10];
         let unique: std::collections::HashSet<u64> = hashes.iter().copied().collect();
         assert_eq!(
-            unique.len(), 5,
+            unique.len(),
+            5,
             "loop inside call scope should produce 5 distinct hashes for 5 buckets, got {hashes:?}",
         );
 
         // 3 and 5 iterations both land in bucket 3 (3-5) → same hash
         let trace_3: Vec<_> = {
             let mut v = vec![call_enter(0)];
-            for _ in 0..3 { v.push(loop_enter(0)); v.push(loop_exit(0)); }
+            for _ in 0..3 {
+                v.push(loop_enter(0));
+                v.push(loop_exit(0));
+            }
             v.push(call_exit(0));
             v
         };
         assert_eq!(
-            path_hash(&exec_with_scope(trace_3), &buckets), h5,
+            path_hash(&exec_with_scope(trace_3), &buckets),
+            h5,
             "3 and 5 iterations should produce same hash (both in bucket 3-5)"
         );
     }
@@ -2373,19 +2715,40 @@ mod tests {
     #[test]
     fn format_exploration_report_shows_clustered_paths() {
         let result = ObservationOutput {
-            function_name: "classify".into(), iterations: 10, unique_paths: 2,
-            lines_covered: 5, total_lines: 10,
+            function_name: "classify".into(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
             new_path_executions: vec![
                 ExecutionSummary {
                     inputs: vec![serde_json::json!(5)],
                     return_value: Some(serde_json::json!("positive-odd")),
-                    thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None },
+                    thrown_error: None,
+                    lines_executed: vec![1, 2, 3],
+                    is_new_path: true,
+                    error_intent: None,
+                },
                 ExecutionSummary {
                     inputs: vec![serde_json::json!(-3)],
                     return_value: Some(serde_json::json!("negative")),
-                    thrown_error: None, lines_executed: vec![1, 4, 5], is_new_path: true, error_intent: None },
+                    thrown_error: None,
+                    lines_executed: vec![1, 4, 5],
+                    is_new_path: true,
+                    error_intent: None,
+                },
             ],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -2400,17 +2763,38 @@ mod tests {
     #[test]
     fn format_exploration_report_with_location() {
         let result = ObservationOutput {
-            function_name: "safeDivide".into(), iterations: 5, unique_paths: 1,
-            lines_covered: 3, total_lines: 5,
+            function_name: "safeDivide".into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(10)],
                 return_value: Some(serde_json::json!(5)),
-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            location: Some("src/math.ts:10-25".into()), ..Default::default()
-        });
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                location: Some("src/math.ts:10-25".into()),
+                ..Default::default()
+            },
+        );
         assert!(report.contains("safeDivide"));
         assert!(report.contains("src/math.ts:10-25"));
     }
@@ -2418,14 +2802,30 @@ mod tests {
     #[test]
     fn format_exploration_report_shows_errors() {
         let result = ObservationOutput {
-            function_name: "risky".into(), iterations: 5, unique_paths: 1,
-            lines_covered: 0, total_lines: 5,
+            function_name: "risky".into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 0,
+            total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(null)],
                 return_value: None,
                 thrown_error: Some("TypeError: cannot read null".into()),
-                lines_executed: vec![], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                lines_executed: vec![],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -2435,13 +2835,32 @@ mod tests {
     #[test]
     fn format_exploration_report_with_perf() {
         let result = ObservationOutput {
-            function_name: "fast".into(), iterations: 10, unique_paths: 1,
-            lines_covered: 0, total_lines: 0, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            function_name: "fast".into(),
+            iterations: 10,
+            unique_paths: 1,
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            show_perf: true, wall_time: Some(std::time::Duration::from_millis(42)),
-            ..Default::default()
-        });
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                show_perf: true,
+                wall_time: Some(std::time::Duration::from_millis(42)),
+                ..Default::default()
+            },
+        );
         assert!(report.contains("Perf:"));
         assert!(report.contains("42.0ms"));
         assert!(report.contains("10 iteration(s)"));
@@ -2450,16 +2869,41 @@ mod tests {
     #[test]
     fn format_exploration_report_includes_coverage_metrics() {
         let result = ObservationOutput {
-            function_name: "analyze".into(), iterations: 20, unique_paths: 3,
-            lines_covered: 8, total_lines: 10, new_path_executions: vec![], raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            function_name: "analyze".into(),
+            iterations: 20,
+            unique_paths: 3,
+            lines_covered: 8,
+            total_lines: 10,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
-            total_branches: 4, z3_solved: 2, random_found: 1, user_provided: 0,
-            uncovered: 1, symexpr_count: 3, unknown_count: 1, mcdc_metrics: None,
+            total_branches: 4,
+            z3_solved: 2,
+            random_found: 1,
+            user_provided: 0,
+            uncovered: 1,
+            symexpr_count: 3,
+            unknown_count: 1,
+            mcdc_metrics: None,
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            coverage_metrics: Some(metrics), ..Default::default()
-        });
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                coverage_metrics: Some(metrics),
+                ..Default::default()
+            },
+        );
         assert!(report.contains("Branches:"));
         assert!(report.contains("Z3:"));
         assert!(report.contains("uncovered:"));
@@ -2469,18 +2913,42 @@ mod tests {
     #[test]
     fn format_exploration_report_with_color() {
         let result = ObservationOutput {
-            function_name: "colorTest".into(), iterations: 5, unique_paths: 1,
-            lines_covered: 4, total_lines: 5,
+            function_name: "colorTest".into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 4,
+            total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
-                thrown_error: None, lines_executed: vec![1, 2, 3, 4], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3, 4],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            style: crate::report_style::ReportStyle::ansi(), ..Default::default()
-        });
-        assert!(report.contains("\x1b["), "report should contain ANSI codes when style is ansi");
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                style: crate::report_style::ReportStyle::ansi(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            report.contains("\x1b["),
+            "report should contain ANSI codes when style is ansi"
+        );
         assert!(report.contains("\x1b[1m"), "function name should be bold");
         assert!(report.contains("\x1b[32m"), "returns should be green");
     }
@@ -2500,13 +2968,30 @@ mod tests {
     #[test]
     fn format_exploration_report_verbose_shows_legacy_format() {
         let result = ObservationOutput {
-            function_name: "classify".into(), iterations: 10, unique_paths: 2,
-            lines_covered: 5, total_lines: 10,
+            function_name: "classify".into(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(5)],
                 return_value: Some(serde_json::json!("positive-odd")),
-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -2518,33 +3003,72 @@ mod tests {
     #[test]
     fn format_report_shows_stubbed_modules_warning() {
         let result = ObservationOutput {
-            function_name: "useFake".into(), iterations: 3, unique_paths: 1,
-            lines_covered: 2, total_lines: 5,
+            function_name: "useFake".into(),
+            iterations: 3,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
             new_path_executions: vec![],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
             stubbed_modules: vec!["pg".into(), "redis".into()],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
-        assert!(report.contains("Partially analyzed"), "report should contain partial analysis warning");
-        assert!(report.contains("pg"), "report should list stubbed module 'pg'");
-        assert!(report.contains("redis"), "report should list stubbed module 'redis'");
+        assert!(
+            report.contains("Partially analyzed"),
+            "report should contain partial analysis warning"
+        );
+        assert!(
+            report.contains("pg"),
+            "report should list stubbed module 'pg'"
+        );
+        assert!(
+            report.contains("redis"),
+            "report should list stubbed module 'redis'"
+        );
     }
 
     #[test]
     fn format_report_no_warning_without_stubbed_modules() {
         let result = ObservationOutput {
-            function_name: "clean".into(), iterations: 3, unique_paths: 1,
-            lines_covered: 2, total_lines: 5,
+            function_name: "clean".into(),
+            iterations: 3,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
             new_path_executions: vec![],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
-        assert!(!report.contains("Partially analyzed"), "clean report should not contain partial analysis warning");
+        assert!(
+            !report.contains("Partially analyzed"),
+            "clean report should not contain partial analysis warning"
+        );
     }
 
     #[test]
     fn collect_stubbed_modules_deduplicates_and_sorts() {
-        use crate::protocol::{DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics};
+        use crate::protocol::{
+            DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics,
+        };
 
         fn stub_dep(module: &str) -> DiscoveredDependency {
             DiscoveredDependency {
@@ -2556,41 +3080,64 @@ mod tests {
         }
 
         let result1 = ExecuteResult {
-            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
-            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            performance: PerformanceMetrics::default(),
             discovered_dependencies: vec![stub_dep("redis"), stub_dep("pg")],
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let result2 = ExecuteResult {
-            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
-            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            performance: PerformanceMetrics::default(),
             discovered_dependencies: vec![stub_dep("pg")], // duplicate
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
-        let raw = vec![
-            (vec![], vec![], result1),
-            (vec![], vec![], result2),
-        ];
+        let raw = vec![(vec![], vec![], result1), (vec![], vec![], result2)];
         let modules = collect_stubbed_modules(&raw);
         assert_eq!(modules, vec!["pg", "redis"]); // sorted, deduplicated
     }
 
     #[test]
     fn collect_stubbed_modules_ignores_non_stubbed_deps() {
-        use crate::protocol::{DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics};
+        use crate::protocol::{
+            DepDetectionKind, DiscoveredDependency, ExecuteResult, PerformanceMetrics,
+        };
         let result = ExecuteResult {
-            return_value: None, thrown_error: None, branch_path: vec![], lines_executed: vec![],
-            calls_to_external: vec![], path_constraints: vec![], side_effects: vec![],
-            scope_events: vec![], capture_truncation: None, performance: PerformanceMetrics::default(),
+            return_value: None,
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            capture_truncation: None,
+            performance: PerformanceMetrics::default(),
             discovered_dependencies: vec![DiscoveredDependency {
                 symbol: String::new(),
                 source_module: "axios".to_string(),
                 kind: DepDetectionKind::UnmockedImport,
                 is_subprocess_spawn: false,
             }],
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
         let raw = vec![(vec![], vec![], result)];
         let modules = collect_stubbed_modules(&raw);
@@ -2612,7 +3159,9 @@ mod tests {
                 branch_id: 1,
                 line: 5,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             }],
             lines_executed: vec![1, 5, 6],
@@ -2620,7 +3169,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -2639,7 +3191,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: Default::default(),
         };
         assert!(classify_error_intent(&result).is_none());
@@ -2653,7 +3208,9 @@ mod tests {
                 branch_id: i,
                 line: 10 + i,
                 taken: true,
-                constraint: SymConstraint::Unknown { hint: String::new() },
+                constraint: SymConstraint::Unknown {
+                    hint: String::new(),
+                },
                 conditions: None,
             })
             .collect();
@@ -2671,7 +3228,10 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
-            capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -2693,10 +3253,18 @@ mod tests {
     fn stub_analysis() -> FunctionAnalysis {
         use crate::types::{ParamInfo, TypeInfo};
         FunctionAnalysis {
-            name: "stub".into(), exported: true,
-            params: vec![ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None }],
-            branches: vec![], dependencies: vec![],
-            return_type: TypeInfo::Unknown, start_line: 1, end_line: 5,
+            name: "stub".into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
             literals: vec![],
             crypto_boundaries: vec![],
             loops: vec![],
@@ -2711,10 +3279,15 @@ mod tests {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(3), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(3),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2722,14 +3295,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("should succeed with noop frontend");
+            .await
+            .expect("should succeed with noop frontend");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 3);
         assert_eq!(result.unique_paths, 1);
@@ -2742,10 +3317,15 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: caps,
+            setup_file: Some("setup.ts".into()),
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2753,14 +3333,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("per_function setup should succeed");
+            .await
+            .expect("per_function setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
@@ -2773,10 +3355,15 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Execution,
-            value_sources: vec![], capabilities: caps,
+            setup_file: Some("setup.ts".into()),
+            setup_level: SetupLevel::Execution,
+            value_sources: vec![],
+            capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2784,14 +3371,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("per_execution setup should succeed");
+            .await
+            .expect("per_execution setup should succeed");
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 2);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2803,10 +3392,15 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&[]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: Some("setup.ts".into()), setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: caps,
+            setup_file: Some("setup.ts".into()),
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2814,14 +3408,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("should succeed without setup capability");
+            .await
+            .expect("should succeed without setup capability");
         assert_eq!(result.iterations, 2);
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -2832,11 +3428,16 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(2), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
+            setup_file: None,
+            setup_level: SetupLevel::Function,
             value_sources: vec![ValueSource::CustomGenerator {
-                generator_name: "x".into(), param_name: Some("x".into()),
+                generator_name: "x".into(),
+                param_name: Some("x".into()),
                 generator_file: "gen.ts".into(),
                 kind: crate::protocol::GeneratorKind::ParamName,
             }],
@@ -2848,14 +3449,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("generators should succeed");
+            .await
+            .expect("generators should succeed");
         assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
         frontend.shutdown().await.expect("shutdown failed");
@@ -2867,10 +3470,15 @@ mod tests {
         let analysis = stub_analysis();
         let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(3), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(3),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: caps,
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: caps,
             user_seeds: vec![],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2878,14 +3486,16 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("no generators should succeed");
+            .await
+            .expect("no generators should succeed");
         assert_eq!(result.iterations, 3);
         frontend.shutdown().await.expect("shutdown failed");
     }
@@ -2896,10 +3506,15 @@ mod tests {
         let analysis = stub_analysis();
         let user_seed_value = vec![serde_json::json!(999)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(5), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(5),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
             user_seeds: vec![user_seed_value.clone()],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2907,22 +3522,34 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("user seeds should succeed");
+            .await
+            .expect("user seeds should succeed");
         assert_eq!(result.iterations, 5);
         // The user-provided seed should appear in raw_results within the budget.
         // MetaStrategy uses adaptive selection so ordering is not guaranteed, but
         // UserProvidedStrategy has exactly 1 input and MUST be drained within budget.
-        let found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == user_seed_value);
-        assert!(found, "user seed {:?} should be executed within the budget; got {:?}",
+        let found = result
+            .raw_results
+            .iter()
+            .any(|(inputs, _, _)| *inputs == user_seed_value);
+        assert!(
+            found,
+            "user seed {:?} should be executed within the budget; got {:?}",
             user_seed_value,
-            result.raw_results.iter().map(|(i, _, _)| i).collect::<Vec<_>>());
+            result
+                .raw_results
+                .iter()
+                .map(|(i, _, _)| i)
+                .collect::<Vec<_>>()
+        );
         frontend.shutdown().await.expect("shutdown failed");
     }
 
@@ -2933,10 +3560,15 @@ mod tests {
         let candidate_value = vec![serde_json::json!(777)];
         let pool_value = vec![serde_json::json!(888)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(10), seed: Some(42), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(10),
+            seed: Some(42),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
             user_seeds: vec![],
             candidate_inputs: vec![candidate_value.clone()],
             pool_seeds: vec![pool_value.clone()],
@@ -2944,20 +3576,28 @@ mod tests {
             execution_profile: None,
             loop_buckets: LoopBuckets::default(),
             timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(), shrink_budget: 0,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("candidate inputs should succeed");
+            .await
+            .expect("candidate inputs should succeed");
         // Both candidate_inputs and pool_seeds should be executed within the budget.
         // MetaStrategy uses adaptive selection so strict ordering is not guaranteed;
         // both UserProvidedStrategy (candidate) and PoolSeedsStrategy (pool) are finite
         // and MUST each be drained within the 10-iteration budget.
-        let candidate_found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == candidate_value);
-        let pool_found = result.raw_results.iter().any(|(inputs, _, _)| *inputs == pool_value);
+        let candidate_found = result
+            .raw_results
+            .iter()
+            .any(|(inputs, _, _)| *inputs == candidate_value);
+        let pool_found = result
+            .raw_results
+            .iter()
+            .any(|(inputs, _, _)| *inputs == pool_value);
         assert!(candidate_found, "candidate input should be executed");
         assert!(pool_found, "pool seed should be executed");
         frontend.shutdown().await.expect("shutdown failed");
@@ -2974,10 +3614,15 @@ mod tests {
         let analysis = stub_analysis();
         let non_boundary_seed = vec![serde_json::json!(42)];
         let config = ExploreConfig {
-            file: "test.ts".into(), max_iterations: Some(2), seed: Some(99), mocks: vec![],
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            seed: Some(99),
+            mocks: vec![],
             mock_params: vec![],
-            setup_file: None, setup_level: SetupLevel::Function,
-            value_sources: vec![], capabilities: FrontendCapabilities::default(),
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
             user_seeds: vec![non_boundary_seed],
             candidate_inputs: vec![],
             pool_seeds: vec![],
@@ -2989,7 +3634,10 @@ mod tests {
             // deterministically within 2 iterations. harvest_from_exploration filters
             // paths with count > DEFAULT_RARITY_THRESHOLD (2), so we must keep
             // iterations ≤ DEFAULT_RARITY_THRESHOLD to avoid filtering all results.
-            meta_config: crate::strategy::MetaConfig { adaptive: false, ..Default::default() },
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
             shrink_budget: 0,
             isolation: IsolationMode::None,
             capture_side_effects: false,
@@ -2997,8 +3645,12 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
-            .await.expect("should succeed with noop frontend");
-        assert!(!result.raw_results.is_empty(), "raw_results should be populated");
+            .await
+            .expect("should succeed with noop frontend");
+        assert!(
+            !result.raw_results.is_empty(),
+            "raw_results should be populated"
+        );
 
         let mut pool = crate::interesting_pool::InterestingPool::default();
         let harvested = crate::interesting_pool::harvest_from_exploration(
@@ -3007,7 +3659,10 @@ mod tests {
             &analysis.params,
             &analysis.name,
         );
-        assert!(harvested > 0, "non-boundary user seed should be harvested from random explorer");
+        assert!(
+            harvested > 0,
+            "non-boundary user seed should be harvested from random explorer"
+        );
         frontend.shutdown().await.expect("shutdown failed");
     }
 
@@ -3099,7 +3754,14 @@ mod tests {
             raw_results: vec![],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -3132,7 +3794,9 @@ mod tests {
             side_effects: vec![],
             scope_events: vec![],
             capture_truncation: None,
-            discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
         };
         let obs = ObservationOutput {
@@ -3145,7 +3809,14 @@ mod tests {
             raw_results: vec![(vec![], vec![], result)],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -3178,7 +3849,9 @@ mod tests {
                 side_effects: vec![],
                 scope_events: vec![],
                 capture_truncation: None,
-                discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
                 performance: empty_perf(),
             }
         };
@@ -3191,14 +3864,21 @@ mod tests {
             total_lines: 10,
             new_path_executions: vec![],
             raw_results: vec![
-                (vec![], vec![], make_result(&[1, 2])),    // exec 1: branches 1,2
-                (vec![], vec![], make_result(&[1, 2])),    // exec 2: branches 1,2
-                (vec![], vec![], make_result(&[1, 3])),    // exec 3: branches 1,3
-                (vec![], vec![], make_result(&[1])),       // exec 4: branch 1 only
+                (vec![], vec![], make_result(&[1, 2])), // exec 1: branches 1,2
+                (vec![], vec![], make_result(&[1, 2])), // exec 2: branches 1,2
+                (vec![], vec![], make_result(&[1, 3])), // exec 3: branches 1,3
+                (vec![], vec![], make_result(&[1])),    // exec 4: branch 1 only
             ],
             discoveries: vec![],
             nondeterministic_fields: vec![],
-            float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
         let profile = collect_branch_profile(&obs);
 
@@ -3216,8 +3896,8 @@ mod tests {
 
     #[test]
     fn update_live_first_states_transitions_on_connection_failure() {
-        use crate::protocol::ConnectionFailure;
         use crate::execution_record::ExternalCall;
+        use crate::protocol::ConnectionFailure;
 
         let mut states: HashMap<String, LiveFirstState> = HashMap::new();
 
@@ -3226,26 +3906,22 @@ mod tests {
             thrown_error: None,
             branch_path: vec![],
             lines_executed: vec![],
-            calls_to_external: vec![
-                ExternalCall {
-                    symbol: "db.query".into(),
-                    args: vec![],
-                    return_value: serde_json::json!(null),
-                },
-            ],
+            calls_to_external: vec![ExternalCall {
+                symbol: "db.query".into(),
+                args: vec![],
+                return_value: serde_json::json!(null),
+            }],
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
             performance: empty_perf(),
             capture_truncation: None,
             discovered_dependencies: vec![],
-            connection_failures: vec![
-                ConnectionFailure {
-                    symbol: "db.query".into(),
-                    error_kind: "connection_refused".into(),
-                    message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
-                },
-            ],
+            connection_failures: vec![ConnectionFailure {
+                symbol: "db.query".into(),
+                error_kind: "connection_refused".into(),
+                message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
+            }],
             runtime_crypto_boundaries: vec![],
         };
 
@@ -3269,20 +3945,19 @@ mod tests {
             thrown_error: None,
             branch_path: vec![],
             lines_executed: vec![],
-            calls_to_external: vec![
-                ExternalCall {
-                    symbol: "api.fetch".into(),
-                    args: vec![],
-                    return_value: serde_json::json!({"status": 200}),
-                },
-            ],
+            calls_to_external: vec![ExternalCall {
+                symbol: "api.fetch".into(),
+                args: vec![],
+                return_value: serde_json::json!({"status": 200}),
+            }],
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
             performance: empty_perf(),
             capture_truncation: None,
             discovered_dependencies: vec![],
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
 
         update_live_first_states(&result, &mut states);
@@ -3306,20 +3981,19 @@ mod tests {
             thrown_error: None,
             branch_path: vec![],
             lines_executed: vec![],
-            calls_to_external: vec![
-                ExternalCall {
-                    symbol: "db.query".into(),
-                    args: vec![],
-                    return_value: serde_json::json!(null),
-                },
-            ],
+            calls_to_external: vec![ExternalCall {
+                symbol: "db.query".into(),
+                args: vec![],
+                return_value: serde_json::json!(null),
+            }],
             path_constraints: vec![],
             scope_events: vec![],
             side_effects: vec![],
             performance: empty_perf(),
             capture_truncation: None,
             discovered_dependencies: vec![],
-            connection_failures: vec![], runtime_crypto_boundaries: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
         };
 
         update_live_first_states(&result, &mut states);
@@ -3375,14 +4049,12 @@ mod tests {
         let mut states: HashMap<String, LiveFirstState> = HashMap::new();
         states.insert("db.query".into(), LiveFirstState::Unavailable);
 
-        let mut mocks = vec![
-            MockConfig {
-                symbol: "db.query".into(),
-                return_values: vec![serde_json::json!(42)],
-                should_track_calls: true,
-                default_behavior: MockBehavior::RepeatLast,
-            },
-        ];
+        let mut mocks = vec![MockConfig {
+            symbol: "db.query".into(),
+            return_values: vec![serde_json::json!(42)],
+            should_track_calls: true,
+            default_behavior: MockBehavior::RepeatLast,
+        }];
 
         apply_live_first_overrides(&states, &mut mocks);
 
@@ -3396,44 +4068,99 @@ mod tests {
     #[test]
     fn format_exploration_report_shows_ga_stats_when_present() {
         let result = ObservationOutput {
-            function_name: "target".into(), iterations: 10, unique_paths: 2,
-            lines_covered: 5, total_lines: 10,
+            function_name: "target".into(),
+            iterations: 10,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
-                thrown_error: None, lines_executed: vec![1, 2], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                thrown_error: None,
+                lines_executed: vec![1, 2],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            genetic_stats: Some(GeneticStats {
-                targets_attempted: 5,
-                targets_solved: 3,
-                generations_run: 42,
-                total_executions: 2100,
-            }),
-            ..Default::default()
-        });
-        assert!(report.contains("GA:"), "report should contain GA section header");
-        assert!(report.contains("3/5 targets solved"), "report should show solved/attempted");
-        assert!(report.contains("42 generation(s)"), "report should show generation count");
-        assert!(report.contains("2100 execution(s)"), "report should show execution count");
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                genetic_stats: Some(GeneticStats {
+                    targets_attempted: 5,
+                    targets_solved: 3,
+                    generations_run: 42,
+                    total_executions: 2100,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(
+            report.contains("GA:"),
+            "report should contain GA section header"
+        );
+        assert!(
+            report.contains("3/5 targets solved"),
+            "report should show solved/attempted"
+        );
+        assert!(
+            report.contains("42 generation(s)"),
+            "report should show generation count"
+        );
+        assert!(
+            report.contains("2100 execution(s)"),
+            "report should show execution count"
+        );
     }
 
     #[test]
     fn format_exploration_report_omits_ga_section_when_none() {
         let result = ObservationOutput {
-            function_name: "plain".into(), iterations: 5, unique_paths: 1,
-            lines_covered: 3, total_lines: 5,
+            function_name: "plain".into(),
+            iterations: 5,
+            unique_paths: 1,
+            lines_covered: 3,
+            total_lines: 5,
             new_path_executions: vec![ExecutionSummary {
                 inputs: vec![serde_json::json!(1)],
                 return_value: Some(serde_json::json!("ok")),
-                thrown_error: None, lines_executed: vec![1, 2, 3], is_new_path: true, error_intent: None }],
-            raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                thrown_error: None,
+                lines_executed: vec![1, 2, 3],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
         };
-        let report = format_exploration_report(&result, &ReportOptions {
-            genetic_stats: None,
-            ..Default::default()
-        });
-        assert!(!report.contains("GA:"), "report should not contain GA section when stats are None");
+        let report = format_exploration_report(
+            &result,
+            &ReportOptions {
+                genetic_stats: None,
+                ..Default::default()
+            },
+        );
+        assert!(
+            !report.contains("GA:"),
+            "report should not contain GA section when stats are None"
+        );
     }
 }

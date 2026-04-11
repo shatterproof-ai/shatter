@@ -244,8 +244,7 @@ mod tests {
                 let arr = result.value.as_array().expect("should be array");
                 assert_eq!(arr.len(), 3);
                 // Same elements, possibly reordered
-                let mut sorted: Vec<i64> =
-                    arr.iter().map(|v| v.as_i64().expect("int")).collect();
+                let mut sorted: Vec<i64> = arr.iter().map(|v| v.as_i64().expect("int")).collect();
                 sorted.sort();
                 assert_eq!(sorted, vec![1, 2, 3]);
                 saw_swap = true;
@@ -331,23 +330,14 @@ mod tests {
                 .expect("should produce a mutation");
             seen.insert(result.kind);
         }
-        assert!(
-            seen.contains(&ArrayMutationKind::Insert),
-            "missing Insert"
-        );
-        assert!(
-            seen.contains(&ArrayMutationKind::Delete),
-            "missing Delete"
-        );
+        assert!(seen.contains(&ArrayMutationKind::Insert), "missing Insert");
+        assert!(seen.contains(&ArrayMutationKind::Delete), "missing Delete");
         assert!(seen.contains(&ArrayMutationKind::Swap), "missing Swap");
         assert!(
             seen.contains(&ArrayMutationKind::Replace),
             "missing Replace"
         );
-        assert!(
-            seen.contains(&ArrayMutationKind::Splice),
-            "missing Splice"
-        );
+        assert!(seen.contains(&ArrayMutationKind::Splice), "missing Splice");
         assert!(
             seen.contains(&ArrayMutationKind::Truncate),
             "missing Truncate"
@@ -390,8 +380,8 @@ mod tests {
         };
         let original = json!([{"name": "a", "value": 1}]);
         for _ in 0..20 {
-            let result = mutate_array(&original, &elem_type, &mut rng)
-                .expect("should produce a mutation");
+            let result =
+                mutate_array(&original, &elem_type, &mut rng).expect("should produce a mutation");
             let arr = result.value.as_array().expect("should be array");
             // All elements should be valid objects (existing or freshly generated)
             for elem in arr {
@@ -399,10 +389,7 @@ mod tests {
                     || result.kind == ArrayMutationKind::Replace
                 {
                     // New elements should be objects with the right fields
-                    assert!(
-                        elem.is_object(),
-                        "expected object element, got {elem}"
-                    );
+                    assert!(elem.is_object(), "expected object element, got {elem}");
                 }
             }
         }

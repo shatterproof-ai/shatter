@@ -19,19 +19,19 @@ use crate::execution_record::{
 use crate::invariants::{
     ClassifiedInvariant, ComparisonOp, Invariant, InvariantKind, InvariantTarget,
 };
-use crate::protocol::{
-    AdapterHint, AdapterRelation, BoundOp, BranchInfo, BranchType, Command, ConnectionFailure,
-    CryptoBoundary, DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode,
-    ExecuteResult, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
-    ExternalDependency, FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel,
-    LiteralValue, LoopInfo, MockBehavior, MockConfig, PerformanceMetrics, Request, Response, ResponseResult,
-    RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary, TimingSummary,
-    PROTOCOL_VERSION,
-};
-use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::pipeline::{
     CoverageCompleteness, SpecifyStageOutput, TestSuggestion, TestSuggestionSource,
 };
+use crate::protocol::{
+    AdapterHint, AdapterRelation, BoundOp, BranchInfo, BranchType, Command, ConnectionFailure,
+    CryptoBoundary, DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode,
+    ExecuteResult, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile, ExternalDependency,
+    FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel, LiteralValue, LoopInfo,
+    MockBehavior, MockConfig, PROTOCOL_VERSION, PerformanceMetrics, Request, Response,
+    ResponseResult, RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary,
+    TimingSummary,
+};
+use crate::protocol::{SetupContextEntry, SetupContextStack, SetupLevel};
 use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, Provenance, SpecClass};
 use crate::sym_expr::{BinOpKind, ConstValue, SymExpr, UnOpKind};
 use crate::triage::{BranchPrediction, TriageDisableReason, TriageVerdict};
@@ -597,8 +597,7 @@ pub fn arb_connection_failure() -> impl Strategy<Value = ConnectionFailure> {
         })
 }
 
-pub fn arb_runtime_crypto_boundary_kind(
-) -> impl Strategy<Value = RuntimeCryptoBoundaryKind> {
+pub fn arb_runtime_crypto_boundary_kind() -> impl Strategy<Value = RuntimeCryptoBoundaryKind> {
     prop_oneof![
         Just(RuntimeCryptoBoundaryKind::Encrypt),
         Just(RuntimeCryptoBoundaryKind::Decrypt),
@@ -623,7 +622,15 @@ pub fn arb_runtime_crypto_boundary() -> impl Strategy<Value = RuntimeCryptoBound
         proptest::option::of(arb_short_string()),
     )
         .prop_map(
-            |(boundary_id, kind, function_name, algorithm, ciphertext_param_index, key_value, iv_value)| {
+            |(
+                boundary_id,
+                kind,
+                function_name,
+                algorithm,
+                ciphertext_param_index,
+                key_value,
+                iv_value,
+            )| {
                 RuntimeCryptoBoundary {
                     boundary_id,
                     kind,
@@ -816,13 +823,15 @@ pub fn arb_induction_var() -> impl Strategy<Value = InductionVar> {
         arb_sym_expr(0),
         arb_bound_op(),
     )
-        .prop_map(|(name, init_expr, step_expr, bound_expr, bound_op)| InductionVar {
-            name,
-            init_expr,
-            step_expr,
-            bound_expr,
-            bound_op,
-        })
+        .prop_map(
+            |(name, init_expr, step_expr, bound_expr, bound_op)| InductionVar {
+                name,
+                init_expr,
+                step_expr,
+                bound_expr,
+                bound_op,
+            },
+        )
 }
 
 pub fn arb_loop_info() -> impl Strategy<Value = LoopInfo> {
@@ -889,21 +898,25 @@ pub fn arb_invocation_model() -> impl Strategy<Value = InvocationModel> {
             prop::collection::vec(arb_param_info(), 0..=3),
             proptest::option::of(arb_json_value_non_null()),
         )
-            .prop_map(|(adapter_id, synthetic_params, scenario_schema)| InvocationModel::Adapter {
-                adapter_id,
-                synthetic_params,
-                scenario_schema,
+            .prop_map(|(adapter_id, synthetic_params, scenario_schema)| {
+                InvocationModel::Adapter {
+                    adapter_id,
+                    synthetic_params,
+                    scenario_schema,
+                }
             }),
     ]
 }
 
 pub fn arb_function_analysis_with_loops() -> impl Strategy<Value = FunctionAnalysis> {
-    (arb_function_analysis(), prop::collection::vec(arb_loop_info(), 0..=2)).prop_map(
-        |(mut fa, loops)| {
+    (
+        arb_function_analysis(),
+        prop::collection::vec(arb_loop_info(), 0..=2),
+    )
+        .prop_map(|(mut fa, loops)| {
             fa.loops = loops;
             fa
-        },
-    )
+        })
 }
 
 pub fn arb_command() -> impl Strategy<Value = Command> {
@@ -949,8 +962,8 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
             proptest::option::of(arb_setup_context_stack()),
             proptest::option::of(arb_ident()),
         )
-            .prop_map(
-                |(function, inputs, mocks, setup_context, prepare_id)| Command::Execute {
+            .prop_map(|(function, inputs, mocks, setup_context, prepare_id)| {
+                Command::Execute {
                     function,
                     inputs,
                     mocks,
@@ -959,7 +972,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                     prepare_id,
                     execution_profile: None,
                 }
-            ),
+            }),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {
             Command::Setup {
                 file,
@@ -1440,7 +1453,8 @@ pub fn arb_coverage_completeness() -> impl Strategy<Value = CoverageCompleteness
     )
         .prop_map(
             |(total, observed, sat, unsat, opaque, unreachable, errors)| {
-                let total_branch_directions = total.max(observed + sat + unsat + opaque + unreachable + errors);
+                let total_branch_directions =
+                    total.max(observed + sat + unsat + opaque + unreachable + errors);
                 let accounted = observed + sat + unsat;
                 let completeness_pct = if total_branch_directions > 0 {
                     (accounted as f64 / total_branch_directions as f64) * 100.0
@@ -1519,9 +1533,8 @@ pub fn arb_execution_adapter() -> impl Strategy<Value = ExecutionAdapter> {
 }
 
 pub fn arb_adapter_relation() -> impl Strategy<Value = AdapterRelation> {
-    (arb_adapter_id(), proptest::option::of(arb_ident())).prop_map(|(adapter_id, reason)| {
-        AdapterRelation { adapter_id, reason }
-    })
+    (arb_adapter_id(), proptest::option::of(arb_ident()))
+        .prop_map(|(adapter_id, reason)| AdapterRelation { adapter_id, reason })
 }
 
 pub fn arb_adapter_hint() -> impl Strategy<Value = AdapterHint> {

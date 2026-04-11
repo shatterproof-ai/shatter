@@ -35,8 +35,8 @@ pub(crate) async fn run_revalidate(
         Some(p) => p.to_path_buf(),
         None => BehaviorMapCache::default_dir(&std::env::current_dir()?),
     };
-    let cache = BehaviorMapCache::new(dir)
-        .map_err(|e| format!("failed to initialize cache: {e}"))?;
+    let cache =
+        BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?;
 
     // Spawn a frontend to analyze and replay inputs.
     let req_timeout = Duration::from_secs(request_timeout);
@@ -52,9 +52,9 @@ pub(crate) async fn run_revalidate(
         release,
     )?;
     apply_project_storage(&mut config, project_root_str.as_deref());
-    let mut frontend = Frontend::spawn(&config).await.map_err(|e| {
-        format!("failed to spawn {} frontend: {e}", target.language.label())
-    })?;
+    let mut frontend = Frontend::spawn(&config)
+        .await
+        .map_err(|e| format!("failed to spawn {} frontend: {e}", target.language.label()))?;
 
     // Analyze to discover functions and compute fingerprints.
     let analyze_response = frontend
@@ -122,9 +122,7 @@ pub(crate) async fn run_revalidate(
 
         if let ResponseResult::Error { code, message, .. } = &instrument_response.result {
             shutdown_frontend(frontend).await;
-            return Err(
-                format!("instrument error for {func_name} ({code:?}): {message}").into(),
-            );
+            return Err(format!("instrument error for {func_name} ({code:?}): {message}").into());
         }
     }
 
@@ -136,18 +134,14 @@ pub(crate) async fn run_revalidate(
         let func_name = bm.function_id.rsplit(':').next().unwrap_or(&bm.function_id);
         let current_fp = fingerprints.get(func_name).map(|s| s.as_str());
 
-        let reports = shatter_core::revalidation::revalidate_behaviors(
-            &mut frontend,
-            bm,
-            current_fp,
-        )
-        .await
-        .map_err(|e| format!("revalidation failed for {}: {e}", bm.function_id))?;
+        let reports =
+            shatter_core::revalidation::revalidate_behaviors(&mut frontend, bm, current_fp)
+                .await
+                .map_err(|e| format!("revalidation failed for {}: {e}", bm.function_id))?;
 
         for report in &reports {
             if report.verdict != shatter_core::revalidation::RevalidationVerdict::Confirmed
-                && report.verdict
-                    != shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
+                && report.verdict != shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
             {
                 has_issues = true;
             }
@@ -167,38 +161,27 @@ pub(crate) async fn run_revalidate(
     } else if all_reports.is_empty() {
         println!("No behaviors to revalidate.");
     } else {
-            for report in &all_reports {
-                let icon = match report.verdict {
-                    shatter_core::revalidation::RevalidationVerdict::Confirmed => "ok",
-                    shatter_core::revalidation::RevalidationVerdict::ExpectedDrift => "drift",
-                    shatter_core::revalidation::RevalidationVerdict::Flaky => "FLAKY",
-                    shatter_core::revalidation::RevalidationVerdict::PotentialRegression => {
-                        "REGRESSION"
-                    }
-                    shatter_core::revalidation::RevalidationVerdict::SeverityDowngrade => {
-                        "DOWNGRADE"
-                    }
-                    shatter_core::revalidation::RevalidationVerdict::SeverityUpgrade => "UPGRADE",
-                };
-                println!(
-                    "  [{icon}] {} ({})",
-                    report.function_name,
-                    report.verdict,
-                );
-            }
-            let confirmed = all_reports
-                .iter()
-                .filter(|r| {
-                    r.verdict == shatter_core::revalidation::RevalidationVerdict::Confirmed
-                        || r.verdict
-                            == shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
-                })
-                .count();
-            println!(
-                "\n{}/{} behaviors confirmed.",
-                confirmed,
-                all_reports.len()
-            );
+        for report in &all_reports {
+            let icon = match report.verdict {
+                shatter_core::revalidation::RevalidationVerdict::Confirmed => "ok",
+                shatter_core::revalidation::RevalidationVerdict::ExpectedDrift => "drift",
+                shatter_core::revalidation::RevalidationVerdict::Flaky => "FLAKY",
+                shatter_core::revalidation::RevalidationVerdict::PotentialRegression => {
+                    "REGRESSION"
+                }
+                shatter_core::revalidation::RevalidationVerdict::SeverityDowngrade => "DOWNGRADE",
+                shatter_core::revalidation::RevalidationVerdict::SeverityUpgrade => "UPGRADE",
+            };
+            println!("  [{icon}] {} ({})", report.function_name, report.verdict,);
+        }
+        let confirmed = all_reports
+            .iter()
+            .filter(|r| {
+                r.verdict == shatter_core::revalidation::RevalidationVerdict::Confirmed
+                    || r.verdict == shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
+            })
+            .count();
+        println!("\n{}/{} behaviors confirmed.", confirmed, all_reports.len());
     }
 
     Ok(!has_issues)

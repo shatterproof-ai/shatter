@@ -100,11 +100,21 @@ pub(crate) struct Cli {
     pub(crate) timing_format: TimingFormatArg,
 
     /// Write one timing artifact JSON file to this path.
-    #[arg(long, global = true, value_name = "PATH", conflicts_with = "timing_output_dir")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        conflicts_with = "timing_output_dir"
+    )]
     pub(crate) timing_output: Option<PathBuf>,
 
     /// Write timing artifact JSON files into this directory.
-    #[arg(long, global = true, value_name = "DIR", conflicts_with = "timing_output")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "DIR",
+        conflicts_with = "timing_output"
+    )]
     pub(crate) timing_output_dir: Option<PathBuf>,
 
     /// Override auto-detected project root directory.
@@ -127,7 +137,12 @@ pub(crate) struct Cli {
     pub(crate) color: ColorMode,
 
     /// Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI).
-    #[arg(long = "render", global = true, default_value = "md", value_name = "MODE")]
+    #[arg(
+        long = "render",
+        global = true,
+        default_value = "md",
+        value_name = "MODE"
+    )]
     pub(crate) render: OutputFormat,
 
     #[command(subcommand)]
@@ -1484,7 +1499,9 @@ pub(crate) fn validate_targets(targets: &[Target]) -> Result<(), String> {
 
 /// Parse a `--loop-buckets` CLI string into `LoopBuckets`.
 /// Accepts "none" (disables bucketing) or comma-separated u32 values like "0,1,2,5".
-pub(crate) fn parse_loop_buckets(s: &str) -> Result<explorer::LoopBuckets, Box<dyn std::error::Error>> {
+pub(crate) fn parse_loop_buckets(
+    s: &str,
+) -> Result<explorer::LoopBuckets, Box<dyn std::error::Error>> {
     let trimmed = s.trim();
     if trimmed.eq_ignore_ascii_case("none") {
         return Ok(explorer::LoopBuckets::none());
@@ -1522,7 +1539,8 @@ mod tests {
             "/tmp/timing",
             "explore",
             "file.ts:fn",
-        ]).unwrap();
+        ])
+        .unwrap();
         let err = cli.timing_config().unwrap_err();
         assert!(err.contains("timing output requires"));
     }
@@ -1585,7 +1603,10 @@ mod tests {
         // A trailing colon with empty function name falls through to the file-only path.
         // "src/app.ts:" becomes the file path; OS sees ".ts:" as extension → unsupported.
         let err = parse_target("src/app.ts:").unwrap_err();
-        assert!(err.contains("unsupported file extension"), "expected extension error, got: {err}");
+        assert!(
+            err.contains("unsupported file extension"),
+            "expected extension error, got: {err}"
+        );
     }
 
     #[test]
@@ -1602,8 +1623,12 @@ mod tests {
 
     #[test]
     fn parse_target_path_with_colons_uses_last_colon() {
-        let target = parse_target("examples/typescript/src/01-arithmetic.ts:classifyNumber").unwrap();
-        assert_eq!(target.file, PathBuf::from("examples/typescript/src/01-arithmetic.ts"));
+        let target =
+            parse_target("examples/typescript/src/01-arithmetic.ts:classifyNumber").unwrap();
+        assert_eq!(
+            target.file,
+            PathBuf::from("examples/typescript/src/01-arithmetic.ts")
+        );
         assert_eq!(target.function.as_deref(), Some("classifyNumber"));
     }
 
@@ -1615,7 +1640,10 @@ mod tests {
             language: Language::TypeScript,
         }];
         let err = validate_targets(&targets).unwrap_err();
-        assert!(err.contains("file not found"), "expected 'file not found', got: {err}");
+        assert!(
+            err.contains("file not found"),
+            "expected 'file not found', got: {err}"
+        );
     }
 
     #[test]
@@ -1645,11 +1673,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore {
                 targets,
@@ -1686,7 +1710,8 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--scope", "shatter.scope.yaml",
+            "--scope",
+            "shatter.scope.yaml",
             "test.ts:myFunc",
         ]);
         match cli.command {
@@ -1702,8 +1727,10 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--max-iterations", "50",
-            "--timeout", "120",
+            "--max-iterations",
+            "50",
+            "--timeout",
+            "120",
             "--analyze-only",
             "a.ts:fn1",
             "b.go:Fn2",
@@ -1744,7 +1771,8 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--cache-dir", "/tmp/foo",
+            "--cache-dir",
+            "/tmp/foo",
             "test.ts:myFunc",
         ]);
         match cli.command {
@@ -1757,11 +1785,7 @@ mod tests {
 
     #[test]
     fn cli_cache_dir_defaults_to_none() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { cache_dir, .. } => {
                 assert!(cache_dir.is_none());
@@ -1775,11 +1799,16 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--request-timeout", "10",
+            "--request-timeout",
+            "10",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { request_timeout, timeout, .. } => {
+            CliCommand::Explore {
+                request_timeout,
+                timeout,
+                ..
+            } => {
                 assert_eq!(request_timeout, 10);
                 assert_eq!(timeout, None);
             }
@@ -1792,11 +1821,16 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--inputs", "candidates.json",
+            "--inputs",
+            "candidates.json",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { inputs, config_path, .. } => {
+            CliCommand::Explore {
+                inputs,
+                config_path,
+                ..
+            } => {
                 assert_eq!(inputs, Some(PathBuf::from("candidates.json")));
                 assert!(config_path.is_none());
             }
@@ -1809,11 +1843,16 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--config", ".shatter/config.yaml",
+            "--config",
+            ".shatter/config.yaml",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { inputs, config_path, .. } => {
+            CliCommand::Explore {
+                inputs,
+                config_path,
+                ..
+            } => {
                 assert!(inputs.is_none());
                 assert_eq!(config_path, Some(PathBuf::from(".shatter/config.yaml")));
             }
@@ -1826,12 +1865,18 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "--request-timeout", "15",
-            "--timeout-total", "200",
+            "--request-timeout",
+            "15",
+            "--timeout-total",
+            "200",
             "test_dir",
         ]);
         match cli.command {
-            CliCommand::Scan { request_timeout, timeout_total, .. } => {
+            CliCommand::Scan {
+                request_timeout,
+                timeout_total,
+                ..
+            } => {
                 assert_eq!(request_timeout, 15);
                 assert_eq!(timeout_total, Some(200));
             }
@@ -1844,11 +1889,14 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "export-tests",
-            "--request-timeout", "5",
+            "--request-timeout",
+            "5",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::ExportTests { request_timeout, .. } => {
+            CliCommand::ExportTests {
+                request_timeout, ..
+            } => {
                 assert_eq!(request_timeout, 5);
             }
             _ => panic!("expected ExportTests command"),
@@ -1857,14 +1905,13 @@ mod tests {
 
     #[test]
     fn cli_parses_run_with_request_timeout() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "run",
-            "--request-timeout", "45",
-            "/tmp/repo",
-        ]);
+        let cli = Cli::parse_from(["shatter", "run", "--request-timeout", "45", "/tmp/repo"]);
         match cli.command {
-            CliCommand::Run { request_timeout, timeout, .. } => {
+            CliCommand::Run {
+                request_timeout,
+                timeout,
+                ..
+            } => {
                 assert_eq!(request_timeout, 45);
                 assert_eq!(timeout, 300);
             }
@@ -1877,12 +1924,18 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--exec-timeout", "20",
-            "--build-timeout", "45",
+            "--exec-timeout",
+            "20",
+            "--build-timeout",
+            "45",
             "test.go:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+            CliCommand::Explore {
+                exec_timeout,
+                build_timeout,
+                ..
+            } => {
                 assert_eq!(exec_timeout, 20);
                 assert_eq!(build_timeout, 45);
             }
@@ -1892,13 +1945,13 @@ mod tests {
 
     #[test]
     fn cli_explore_exec_timeout_defaults() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.go:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.go:myFunc"]);
         match cli.command {
-            CliCommand::Explore { exec_timeout, build_timeout, .. } => {
+            CliCommand::Explore {
+                exec_timeout,
+                build_timeout,
+                ..
+            } => {
                 assert_eq!(exec_timeout, 10);
                 assert_eq!(build_timeout, 30);
             }
@@ -1908,12 +1961,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_concolic_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--concolic",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--concolic", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { concolic, .. } => {
                 assert!(concolic);
@@ -1924,11 +1972,7 @@ mod tests {
 
     #[test]
     fn cli_concolic_defaults_to_false() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { concolic, .. } => {
                 assert!(!concolic);
@@ -1939,12 +1983,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_record_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--record",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--record", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { record, .. } => {
                 assert!(record);
@@ -1955,11 +1994,7 @@ mod tests {
 
     #[test]
     fn cli_record_defaults_to_false() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { record, .. } => {
                 assert!(!record);
@@ -1970,14 +2005,13 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_replay_recorded_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--replay-recorded",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--replay-recorded", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+            CliCommand::Explore {
+                replay_recorded,
+                no_replay,
+                ..
+            } => {
                 assert!(replay_recorded);
                 assert!(!no_replay);
             }
@@ -1987,14 +2021,13 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_no_replay_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--no-replay",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--no-replay", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+            CliCommand::Explore {
+                replay_recorded,
+                no_replay,
+                ..
+            } => {
                 assert!(!replay_recorded);
                 assert!(no_replay);
             }
@@ -2004,13 +2037,13 @@ mod tests {
 
     #[test]
     fn cli_replay_recorded_defaults_to_false() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { replay_recorded, no_replay, .. } => {
+            CliCommand::Explore {
+                replay_recorded,
+                no_replay,
+                ..
+            } => {
                 assert!(!replay_recorded);
                 assert!(!no_replay);
             }
@@ -2020,14 +2053,13 @@ mod tests {
 
     #[test]
     fn cli_parses_scan_with_exec_timeout() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--exec-timeout", "15",
-            "test_dir",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--exec-timeout", "15", "test_dir"]);
         match cli.command {
-            CliCommand::Scan { exec_timeout, build_timeout, .. } => {
+            CliCommand::Scan {
+                exec_timeout,
+                build_timeout,
+                ..
+            } => {
                 assert_eq!(exec_timeout, Some(15));
                 assert_eq!(build_timeout, 30);
             }
@@ -2051,11 +2083,7 @@ mod tests {
 
     #[test]
     fn cli_parses_scan_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
             CliCommand::Scan {
                 directory,
@@ -2088,14 +2116,20 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "--max-iterations", "50",
-            "--timeout-total", "600",
+            "--max-iterations",
+            "50",
+            "--timeout-total",
+            "600",
             "--dry-run",
-            "--language", "typescript",
-            "--include", "**/*.ts",
-            "--exclude", "**/vendor/**",
+            "--language",
+            "typescript",
+            "--include",
+            "**/*.ts",
+            "--exclude",
+            "**/vendor/**",
             "--all",
-            "--max-depth", "3",
+            "--max-depth",
+            "3",
             "src/",
         ]);
         match cli.command {
@@ -2129,12 +2163,7 @@ mod tests {
 
     #[test]
     fn cli_scan_output_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--output", "/tmp/report",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--output", "/tmp/report", "src/"]);
         match cli.command {
             CliCommand::Scan { outputs, .. } => {
                 assert_eq!(outputs, vec![PathBuf::from("/tmp/report")]);
@@ -2162,12 +2191,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_no_cache() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--no-cache",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--no-cache", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { no_cache, .. } => {
                 assert!(no_cache);
@@ -2178,12 +2202,7 @@ mod tests {
 
     #[test]
     fn cli_parses_scan_with_no_cache() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--no-cache",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--no-cache", "src/"]);
         match cli.command {
             CliCommand::Scan { no_cache, .. } => {
                 assert!(no_cache);
@@ -2194,11 +2213,7 @@ mod tests {
 
     #[test]
     fn cli_no_cache_defaults_to_false_for_explore() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { no_cache, .. } => {
                 assert!(!no_cache);
@@ -2209,11 +2224,7 @@ mod tests {
 
     #[test]
     fn cli_no_cache_defaults_to_false_for_scan() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
             CliCommand::Scan { no_cache, .. } => {
                 assert!(!no_cache);
@@ -2227,8 +2238,10 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "export-tests",
-            "--framework", "gotest",
-            "--module-path", "examples",
+            "--framework",
+            "gotest",
+            "--module-path",
+            "examples",
             "test.go:Add",
         ]);
         match cli.command {
@@ -2258,11 +2271,7 @@ mod tests {
 
     #[test]
     fn cli_export_tests_defaults() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "export-tests",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "export-tests", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::ExportTests {
                 framework,
@@ -2283,8 +2292,10 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "export-tests",
-            "--output", "tests/generated_test.go",
-            "--framework", "gotest",
+            "--output",
+            "tests/generated_test.go",
+            "--framework",
+            "gotest",
             "test.go:Add",
         ]);
         match cli.command {
@@ -2327,13 +2338,7 @@ mod tests {
 
     #[test]
     fn cli_parses_diff_with_json_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "diff",
-            "--json",
-            "old.json",
-            "new.json",
-        ]);
+        let cli = Cli::parse_from(["shatter", "diff", "--json", "old.json", "new.json"]);
         match cli.command {
             CliCommand::Diff { json, .. } => {
                 assert!(json);
@@ -2353,12 +2358,7 @@ mod tests {
 
     #[test]
     fn cli_parses_spec_diff_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "spec-diff",
-            "specs/old.json",
-            "specs/new.json",
-        ]);
+        let cli = Cli::parse_from(["shatter", "spec-diff", "specs/old.json", "specs/new.json"]);
         match cli.command {
             CliCommand::SpecDiff { old, new, json } => {
                 assert_eq!(old, PathBuf::from("specs/old.json"));
@@ -2397,14 +2397,13 @@ mod tests {
 
     #[test]
     fn cli_parses_compare_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "compare",
-            "spec_a.json",
-            "spec_b.json",
-        ]);
+        let cli = Cli::parse_from(["shatter", "compare", "spec_a.json", "spec_b.json"]);
         match cli.command {
-            CliCommand::Compare { spec_a, spec_b, json } => {
+            CliCommand::Compare {
+                spec_a,
+                spec_b,
+                json,
+            } => {
                 assert_eq!(spec_a, PathBuf::from("spec_a.json"));
                 assert_eq!(spec_b, PathBuf::from("spec_b.json"));
                 assert!(!json);
@@ -2415,13 +2414,7 @@ mod tests {
 
     #[test]
     fn cli_parses_compare_with_json_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "compare",
-            "--json",
-            "spec_a.json",
-            "spec_b.json",
-        ]);
+        let cli = Cli::parse_from(["shatter", "compare", "--json", "spec_a.json", "spec_b.json"]);
         match cli.command {
             CliCommand::Compare { json, .. } => {
                 assert!(json);
@@ -2441,11 +2434,7 @@ mod tests {
 
     #[test]
     fn cli_parses_run_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "run",
-            "/tmp/my-repo",
-        ]);
+        let cli = Cli::parse_from(["shatter", "run", "/tmp/my-repo"]);
         match cli.command {
             CliCommand::Run {
                 path,
@@ -2472,9 +2461,12 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "run",
-            "--output-dir", "/tmp/output",
-            "--max-iterations", "25",
-            "--timeout", "120",
+            "--output-dir",
+            "/tmp/output",
+            "--max-iterations",
+            "25",
+            "--timeout",
+            "120",
             "--analyze-only",
             ".",
         ]);
@@ -2509,12 +2501,7 @@ mod tests {
 
     #[test]
     fn cli_scan_emit_tests_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--emit-tests", "jest",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--emit-tests", "jest", "src/"]);
         match cli.command {
             CliCommand::Scan { emit_tests, .. } => {
                 assert_eq!(emit_tests, Some("jest".to_string()));
@@ -2525,12 +2512,7 @@ mod tests {
 
     #[test]
     fn cli_scan_emit_tests_gotest() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--emit-tests", "gotest",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--emit-tests", "gotest", "src/"]);
         match cli.command {
             CliCommand::Scan { emit_tests, .. } => {
                 assert_eq!(emit_tests, Some("gotest".to_string()));
@@ -2556,8 +2538,10 @@ mod tests {
             "shatter",
             "scan",
             "--progress",
-            "--resume", "/tmp/state.json",
-            "--mock-config", "/tmp/mocks.yaml",
+            "--resume",
+            "/tmp/state.json",
+            "--mock-config",
+            "/tmp/mocks.yaml",
             "src/",
         ]);
         match cli.command {
@@ -2578,23 +2562,14 @@ mod tests {
     #[test]
     fn cli_scan_until_requires_since() {
         // --until without --since should fail
-        let result = Cli::try_parse_from([
-            "shatter",
-            "scan",
-            "--until", "HEAD~2",
-            "src/",
-        ]);
+        let result = Cli::try_parse_from(["shatter", "scan", "--until", "HEAD~2", "src/"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_scan_since_with_until() {
         let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--since", "HEAD~5",
-            "--until", "HEAD~2",
-            "src/",
+            "shatter", "scan", "--since", "HEAD~5", "--until", "HEAD~2", "src/",
         ]);
         match cli.command {
             CliCommand::Scan { since, until, .. } => {
@@ -2607,12 +2582,7 @@ mod tests {
 
     #[test]
     fn cli_scan_since_without_until() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--since", "HEAD~5",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--since", "HEAD~5", "src/"]);
         match cli.command {
             CliCommand::Scan { since, until, .. } => {
                 assert_eq!(since, Some("HEAD~5".to_string()));
@@ -2624,14 +2594,11 @@ mod tests {
 
     #[test]
     fn cli_parses_scan_with_core_sample() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--core-sample", "50%",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--core-sample", "50%", "src/"]);
         match cli.command {
-            CliCommand::Scan { core_sample, seed, .. } => {
+            CliCommand::Scan {
+                core_sample, seed, ..
+            } => {
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert!(seed.is_none());
             }
@@ -2641,12 +2608,7 @@ mod tests {
 
     #[test]
     fn cli_parses_scan_with_core_sample_absolute() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "scan",
-            "--core-sample", "20",
-            "src/",
-        ]);
+        let cli = Cli::parse_from(["shatter", "scan", "--core-sample", "20", "src/"]);
         match cli.command {
             CliCommand::Scan { core_sample, .. } => {
                 assert_eq!(core_sample, Some("20".to_string()));
@@ -2660,12 +2622,16 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "--core-sample", "50%",
-            "--seed", "12345",
+            "--core-sample",
+            "50%",
+            "--seed",
+            "12345",
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { core_sample, seed, .. } => {
+            CliCommand::Scan {
+                core_sample, seed, ..
+            } => {
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert_eq!(seed, Some(12345));
             }
@@ -2677,7 +2643,9 @@ mod tests {
     fn cli_core_sample_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { core_sample, seed, .. } => {
+            CliCommand::Scan {
+                core_sample, seed, ..
+            } => {
                 assert!(core_sample.is_none());
                 assert!(seed.is_none());
             }
@@ -2690,12 +2658,18 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "scan",
-            "--core-sample", "50%",
-            "--stratum", "0..2",
+            "--core-sample",
+            "50%",
+            "--stratum",
+            "0..2",
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { core_sample, stratum, .. } => {
+            CliCommand::Scan {
+                core_sample,
+                stratum,
+                ..
+            } => {
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert_eq!(stratum, Some("0..2".to_string()));
             }
@@ -2708,7 +2682,8 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "explore",
-            "--spec-out", "spec.json",
+            "--spec-out",
+            "spec.json",
             "src/app.ts:foo",
         ]);
         match cli.command {
@@ -2732,14 +2707,15 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_genetic_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--genetic",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--genetic", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+            CliCommand::Explore {
+                genetic,
+                genetic_population,
+                genetic_generations,
+                genetic_timeout,
+                ..
+            } => {
                 assert!(genetic);
                 assert!(genetic_population.is_none());
                 assert!(genetic_generations.is_none());
@@ -2751,11 +2727,7 @@ mod tests {
 
     #[test]
     fn cli_genetic_defaults_to_false() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { genetic, .. } => {
                 assert!(!genetic);
@@ -2770,13 +2742,22 @@ mod tests {
             "shatter",
             "explore",
             "--genetic",
-            "--genetic-population", "200",
-            "--genetic-generations", "500",
-            "--genetic-timeout", "600",
+            "--genetic-population",
+            "200",
+            "--genetic-generations",
+            "500",
+            "--genetic-timeout",
+            "600",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+            CliCommand::Explore {
+                genetic,
+                genetic_population,
+                genetic_generations,
+                genetic_timeout,
+                ..
+            } => {
                 assert!(genetic);
                 assert_eq!(genetic_population, Some(200));
                 assert_eq!(genetic_generations, Some(500));
@@ -2792,11 +2773,18 @@ mod tests {
             "shatter",
             "scan",
             "--genetic",
-            "--genetic-population", "100",
+            "--genetic-population",
+            "100",
             "test_dir",
         ]);
         match cli.command {
-            CliCommand::Scan { genetic, genetic_population, genetic_generations, genetic_timeout, .. } => {
+            CliCommand::Scan {
+                genetic,
+                genetic_population,
+                genetic_generations,
+                genetic_timeout,
+                ..
+            } => {
                 assert!(genetic);
                 assert_eq!(genetic_population, Some(100));
                 assert!(genetic_generations.is_none());
@@ -2808,12 +2796,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_clean_flag() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "--clean",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--clean", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { clean, dry_run, .. } => {
                 assert!(clean);
@@ -2829,11 +2812,17 @@ mod tests {
             "shatter",
             "explore",
             "--dry-run",
-            "--spec-out", "spec.json",
+            "--spec-out",
+            "spec.json",
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { clean, dry_run, spec_out, .. } => {
+            CliCommand::Explore {
+                clean,
+                dry_run,
+                spec_out,
+                ..
+            } => {
                 assert!(!clean);
                 assert!(dry_run);
                 assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
@@ -2844,11 +2833,7 @@ mod tests {
 
     #[test]
     fn cli_clean_and_dry_run_default_to_false() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "explore",
-            "test.ts:myFunc",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
             CliCommand::Explore { clean, dry_run, .. } => {
                 assert!(!clean);
@@ -2860,14 +2845,15 @@ mod tests {
 
     #[test]
     fn cli_parses_stale_subcommand() {
-        let cli = Cli::parse_from([
-            "shatter",
-            "stale",
-            "src/math.ts",
-            "spec.json",
-        ]);
+        let cli = Cli::parse_from(["shatter", "stale", "src/math.ts", "spec.json"]);
         match cli.command {
-            CliCommand::Stale { source, spec, output_format, request_timeout, .. } => {
+            CliCommand::Stale {
+                source,
+                spec,
+                output_format,
+                request_timeout,
+                ..
+            } => {
                 assert_eq!(source, "src/math.ts");
                 assert_eq!(spec, PathBuf::from("spec.json"));
                 assert_eq!(output_format, "text");
@@ -2882,7 +2868,8 @@ mod tests {
         let cli = Cli::parse_from([
             "shatter",
             "stale",
-            "--output-format", "json",
+            "--output-format",
+            "json",
             "src/math.ts",
             "spec.json",
         ]);
@@ -2898,7 +2885,16 @@ mod tests {
     fn cli_parses_test_subcommand_defaults() {
         let cli = Cli::parse_from(["shatter", "test"]);
         match cli.command {
-            CliCommand::Test { all, record, tier, base, include_untracked, dry_run, prioritize, budget } => {
+            CliCommand::Test {
+                all,
+                record,
+                tier,
+                base,
+                include_untracked,
+                dry_run,
+                prioritize,
+                budget,
+            } => {
                 assert!(!all);
                 assert!(!record);
                 assert!(tier.is_none());
@@ -2949,7 +2945,11 @@ mod tests {
     fn cli_parses_test_dry_run() {
         let cli = Cli::parse_from(["shatter", "test", "--dry-run", "--include-untracked"]);
         match cli.command {
-            CliCommand::Test { dry_run, include_untracked, .. } => {
+            CliCommand::Test {
+                dry_run,
+                include_untracked,
+                ..
+            } => {
                 assert!(dry_run);
                 assert!(include_untracked);
             }
@@ -2961,7 +2961,9 @@ mod tests {
     fn cli_parses_test_prioritize() {
         let cli = Cli::parse_from(["shatter", "test", "--prioritize"]);
         match cli.command {
-            CliCommand::Test { prioritize, budget, .. } => {
+            CliCommand::Test {
+                prioritize, budget, ..
+            } => {
                 assert!(prioritize);
                 assert!(budget.is_none());
             }
@@ -3004,9 +3006,7 @@ mod tests {
 
     #[test]
     fn cli_parses_explore_with_no_adaptive() {
-        let cli = Cli::parse_from([
-            "shatter", "explore", "--no-adaptive", "src/app.ts:foo",
-        ]);
+        let cli = Cli::parse_from(["shatter", "explore", "--no-adaptive", "src/app.ts:foo"]);
         match cli.command {
             CliCommand::Explore { no_adaptive, .. } => {
                 assert!(no_adaptive);
@@ -3018,22 +3018,35 @@ mod tests {
     #[test]
     fn cli_parses_explore_with_strategy_flags() {
         let cli = Cli::parse_from([
-            "shatter", "explore",
-            "--score-window", "50",
-            "--cold-start", "10",
-            "--strategy-floor", "0.05",
-            "--strategy-weights", "literals=0.3,random=0.7",
+            "shatter",
+            "explore",
+            "--score-window",
+            "50",
+            "--cold-start",
+            "10",
+            "--strategy-floor",
+            "0.05",
+            "--strategy-weights",
+            "literals=0.3,random=0.7",
             "src/app.ts:foo",
         ]);
         match cli.command {
             CliCommand::Explore {
-                score_window, cold_start, strategy_floor, strategy_weights, no_adaptive, ..
+                score_window,
+                cold_start,
+                strategy_floor,
+                strategy_weights,
+                no_adaptive,
+                ..
             } => {
                 assert!(!no_adaptive);
                 assert_eq!(score_window, Some(50));
                 assert_eq!(cold_start, Some(10));
                 assert!((strategy_floor.unwrap() - 0.05).abs() < f64::EPSILON);
-                assert_eq!(strategy_weights, Some("literals=0.3,random=0.7".to_string()));
+                assert_eq!(
+                    strategy_weights,
+                    Some("literals=0.3,random=0.7".to_string())
+                );
             }
             _ => panic!("expected Explore command"),
         }
@@ -3044,7 +3057,12 @@ mod tests {
         let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
         match cli.command {
             CliCommand::Explore {
-                no_adaptive, score_window, cold_start, strategy_floor, strategy_weights, ..
+                no_adaptive,
+                score_window,
+                cold_start,
+                strategy_floor,
+                strategy_weights,
+                ..
             } => {
                 assert!(!no_adaptive);
                 assert!(score_window.is_none());
@@ -3059,13 +3077,19 @@ mod tests {
     #[test]
     fn cli_scan_parses_strategy_flags() {
         let cli = Cli::parse_from([
-            "shatter", "scan",
+            "shatter",
+            "scan",
             "--no-adaptive",
-            "--score-window", "200",
+            "--score-window",
+            "200",
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { no_adaptive, score_window, .. } => {
+            CliCommand::Scan {
+                no_adaptive,
+                score_window,
+                ..
+            } => {
                 assert!(no_adaptive);
                 assert_eq!(score_window, Some(200));
             }
@@ -3107,22 +3131,34 @@ mod output_format_tests {
 
     #[test]
     fn test_infer_html() {
-        assert_eq!(infer_output_format(Path::new("report.html")).unwrap(), StdoutFormat::Html);
+        assert_eq!(
+            infer_output_format(Path::new("report.html")).unwrap(),
+            StdoutFormat::Html
+        );
     }
 
     #[test]
     fn test_infer_markdown() {
-        assert_eq!(infer_output_format(Path::new("report.md")).unwrap(), StdoutFormat::Markdown);
+        assert_eq!(
+            infer_output_format(Path::new("report.md")).unwrap(),
+            StdoutFormat::Markdown
+        );
     }
 
     #[test]
     fn test_infer_json() {
-        assert_eq!(infer_output_format(Path::new("report.json")).unwrap(), StdoutFormat::Json);
+        assert_eq!(
+            infer_output_format(Path::new("report.json")).unwrap(),
+            StdoutFormat::Json
+        );
     }
 
     #[test]
     fn test_infer_text() {
-        assert_eq!(infer_output_format(Path::new("report.txt")).unwrap(), StdoutFormat::Text);
+        assert_eq!(
+            infer_output_format(Path::new("report.txt")).unwrap(),
+            StdoutFormat::Text
+        );
     }
 
     #[test]

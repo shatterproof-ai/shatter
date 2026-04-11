@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::behavior::BehaviorMap;
 use crate::input_gen::{crossover_inputs, generate_random_inputs, mutate_inputs};
-use crate::orchestrator::{hash_branch_path, FrontendCapabilities};
+use crate::orchestrator::{FrontendCapabilities, hash_branch_path};
 use crate::types::ParamInfo;
 
 /// Fraction of the population carried unchanged into the next generation.
@@ -118,8 +118,13 @@ impl Population {
             let parent_a = self.tournament_select(rng);
             let parent_b = self.tournament_select(rng);
 
-            let (child_a_inputs, child_b_inputs) =
-                crossover_inputs(&parent_a.inputs, &parent_b.inputs, params, crossover_rate, rng);
+            let (child_a_inputs, child_b_inputs) = crossover_inputs(
+                &parent_a.inputs,
+                &parent_b.inputs,
+                params,
+                crossover_rate,
+                rng,
+            );
 
             let mutated_a = mutate_inputs(&child_a_inputs, params, mutation_rate, dictionary, rng);
             next_gen.push(Individual {
@@ -209,8 +214,8 @@ mod tests {
     use crate::behavior::{Behavior, BehaviorMap};
     use crate::execution_record::{BranchDecision, SymConstraint};
     use crate::types::TypeInfo;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use serde_json::json;
 
     fn make_params() -> Vec<ParamInfo> {
@@ -367,8 +372,8 @@ mod proptests {
     use crate::behavior::BehaviorMap;
     use crate::types::TypeInfo;
     use proptest::prelude::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn simple_params() -> Vec<ParamInfo> {
         vec![ParamInfo {

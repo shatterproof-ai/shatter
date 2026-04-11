@@ -101,8 +101,7 @@ impl BatchState {
         if !path.exists() {
             return Ok(None);
         }
-        let _lock = crate::file_lock::FileLock::acquire(path)
-            .map_err(BatchStateError::Io)?;
+        let _lock = crate::file_lock::FileLock::acquire(path).map_err(BatchStateError::Io)?;
         Self::load_unlocked(path)
     }
 
@@ -119,8 +118,7 @@ impl BatchState {
 
     /// Atomic save with exclusive flock (write to temp file, then rename).
     pub fn save(&self, path: &Path) -> Result<(), BatchStateError> {
-        let _lock = crate::file_lock::FileLock::acquire(path)
-            .map_err(BatchStateError::Io)?;
+        let _lock = crate::file_lock::FileLock::acquire(path).map_err(BatchStateError::Io)?;
         self.save_unlocked(path)
     }
 
@@ -307,7 +305,11 @@ mod tests {
     #[test]
     fn save_creates_parent_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("nested").join("deep").join("batch-state.json");
+        let path = dir
+            .path()
+            .join("nested")
+            .join("deep")
+            .join("batch-state.json");
 
         let state = BatchState::new("s".to_string(), 5);
         state.save(&path).expect("save");

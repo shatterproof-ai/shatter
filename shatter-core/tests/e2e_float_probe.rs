@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use shatter_core::float_probe::FloatClassification;
-use shatter_core::frontend::{Frontend, FrontendConfig, DEFAULT_REQUEST_TIMEOUT};
+use shatter_core::frontend::{DEFAULT_REQUEST_TIMEOUT, Frontend, FrontendConfig};
 use shatter_core::orchestrator::{self, ExploreConfig};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 

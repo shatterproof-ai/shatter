@@ -8,7 +8,9 @@ use shatter_core::pipeline::{self, ObserveStageOutput};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 
 use crate::args::parse_target;
-use crate::helpers::{apply_project_storage, frontend_config, resolve_project_root, shutdown_frontend};
+use crate::helpers::{
+    apply_project_storage, frontend_config, resolve_project_root, shutdown_frontend,
+};
 
 /// Run the observe command: spawn a frontend, analyze the target function, explore it,
 /// and write the resulting ObserveStageOutput JSON to a file or stdout.
@@ -96,121 +98,128 @@ pub(crate) async fn run_observe(
     );
 
     // Explore phase.
-    let explore_result: Result<shatter_core::explorer::ObservationOutput, shatter_core::explorer::ExploreError> =
-        if use_concolic {
-            let seed_inputs =
-                shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
-            let concolic_config = shatter_core::orchestrator::ExploreConfig {
-                max_iterations: Some(max_iterations as usize),
-                max_executions: Some((max_iterations as usize) * 5),
-                plateau_threshold: 20,
-                mocks: vec![],
-                mock_params: vec![],
-                solver_timeout_ms: None,
-                timeout_explore: None,
-                branch_profile: None,
-                meta_config: shatter_core::strategy::MetaConfig::default(),
-                execution_profile: None,
-                loop_convergence_window: 3,
-                refine_budget: None,
-                shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
-                mcdc: false,
-            };
-            // Instrument the function so the frontend has the source ready for prepare.
-            if let Err(e) = frontend.send(ProtoCommand::Instrument {
+    let explore_result: Result<
+        shatter_core::explorer::ObservationOutput,
+        shatter_core::explorer::ExploreError,
+    > = if use_concolic {
+        let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+        let concolic_config = shatter_core::orchestrator::ExploreConfig {
+            max_iterations: Some(max_iterations as usize),
+            max_executions: Some((max_iterations as usize) * 5),
+            plateau_threshold: 20,
+            mocks: vec![],
+            mock_params: vec![],
+            solver_timeout_ms: None,
+            timeout_explore: None,
+            branch_profile: None,
+            meta_config: shatter_core::strategy::MetaConfig::default(),
+            execution_profile: None,
+            loop_convergence_window: 3,
+            refine_budget: None,
+            shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+            mcdc: false,
+        };
+        // Instrument the function so the frontend has the source ready for prepare.
+        if let Err(e) = frontend
+            .send(ProtoCommand::Instrument {
                 file: file_str.clone(),
                 function: func.name.clone(),
                 mocks: vec![],
                 project_root: project_root_str.clone(),
                 execution_profile: None,
-            }).await {
-                log::debug!("instrument failed for concolic path: {e}");
-            }
+            })
+            .await
+        {
+            log::debug!("instrument failed for concolic path: {e}");
+        }
 
-            // Prepare the harness once if the frontend supports it.
-            let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
-                frontend.capabilities(),
-            );
-            let prepare_id: Option<String> = if caps.commands.contains("prepare") {
-                match frontend.send(ProtoCommand::Prepare {
+        // Prepare the harness once if the frontend supports it.
+        let caps =
+            shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
+        let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+            match frontend
+                .send(ProtoCommand::Prepare {
                     file: file_str.clone(),
                     function: func.name.clone(),
                     mocks: vec![],
                     project_root: project_root_str.clone(),
                     execution_profile: None,
-                }).await {
-                    Ok(resp) => match resp.result {
-                        ResponseResult::Prepare { prepare_id } => {
-                            log::debug!("concolic prepare succeeded: {prepare_id}");
-                            Some(prepare_id)
-                        }
-                        other => {
-                            log::debug!("concolic prepare unexpected response: {other:?}");
-                            None
-                        }
-                    },
-                    Err(e) => {
-                        log::debug!("concolic prepare failed, falling back: {e}");
+                })
+                .await
+            {
+                Ok(resp) => match resp.result {
+                    ResponseResult::Prepare { prepare_id } => {
+                        log::debug!("concolic prepare succeeded: {prepare_id}");
+                        Some(prepare_id)
+                    }
+                    other => {
+                        log::debug!("concolic prepare unexpected response: {other:?}");
                         None
                     }
-                }
-            } else {
-                None
-            };
-
-            match shatter_core::orchestrator::explore(
-                &mut frontend,
-                &func.name,
-                seed_inputs,
-                vec![],
-                &func.params,
-                &concolic_config,
-                None,
-                prepare_id,
-                func.loops.clone(),
-            )
-            .await
-            {
-                Ok(mut concolic_result) => {
-                    concolic_result.total_lines =
-                        func.end_line.saturating_sub(func.start_line) + 1;
-                    Ok(concolic_result.into())
-                }
-                Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
-                    Err(shatter_core::explorer::ExploreError::Frontend(fe))
+                },
+                Err(e) => {
+                    log::debug!("concolic prepare failed, falling back: {e}");
+                    None
                 }
             }
         } else {
-            let explore_config = ExploreConfig {
-                file: file_str.clone(),
-                execution_profile: None,
-                max_iterations: Some(max_iterations),
-                seed: None,
-                mocks: vec![],
-                mock_params: vec![],
-                setup_file: None,
-                setup_level: shatter_core::protocol::SetupLevel::Session,
-                value_sources: shatter_core::input_gen::resolve_value_sources(
-                    &func.params,
-                    &std::collections::HashMap::new(),
-                    &std::collections::HashMap::new(),
-                ),
-                capabilities: shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities()),
-                user_seeds: vec![],
-                candidate_inputs: vec![],
-                pool_seeds: vec![],
-                project_root: project_root_str.clone(),
-                loop_buckets: shatter_core::explorer::LoopBuckets::default(),
-                timeout_explore: None,
-                meta_config: shatter_core::strategy::MetaConfig::default(),
-                shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
-                isolation: shatter_core::explorer::IsolationMode::None,
-                capture_side_effects: false,
-                budget_surplus: None,
-                claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
-            };
-            explorer::explore_function(&mut frontend, &func, &explore_config, None, None).await
+            None
         };
+
+        match shatter_core::orchestrator::explore(
+            &mut frontend,
+            &func.name,
+            seed_inputs,
+            vec![],
+            &func.params,
+            &concolic_config,
+            None,
+            prepare_id,
+            func.loops.clone(),
+        )
+        .await
+        {
+            Ok(mut concolic_result) => {
+                concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+                Ok(concolic_result.into())
+            }
+            Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+                Err(shatter_core::explorer::ExploreError::Frontend(fe))
+            }
+        }
+    } else {
+        let explore_config = ExploreConfig {
+            file: file_str.clone(),
+            execution_profile: None,
+            max_iterations: Some(max_iterations),
+            seed: None,
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: shatter_core::protocol::SetupLevel::Session,
+            value_sources: shatter_core::input_gen::resolve_value_sources(
+                &func.params,
+                &std::collections::HashMap::new(),
+                &std::collections::HashMap::new(),
+            ),
+            capabilities: shatter_core::orchestrator::FrontendCapabilities::from_raw(
+                frontend.capabilities(),
+            ),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: project_root_str.clone(),
+            loop_buckets: shatter_core::explorer::LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: shatter_core::strategy::MetaConfig::default(),
+            shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+            isolation: shatter_core::explorer::IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        };
+        explorer::explore_function(&mut frontend, &func, &explore_config, None, None).await
+    };
 
     shutdown_frontend(frontend).await;
 

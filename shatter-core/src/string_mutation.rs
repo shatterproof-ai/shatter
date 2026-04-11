@@ -10,8 +10,25 @@ use rand::Rng;
 // Pattern fragment dictionaries — domain-relevant substrings for insertion
 // ---------------------------------------------------------------------------
 
-const EMAIL_FRAGMENTS: &[&str] = &["@", ".com", ".org", ".net", "user@", "@example.com", "admin@"];
-const URL_FRAGMENTS: &[&str] = &["://", "https://", "http://", "/api/", "?key=", "&val=", "#anchor", "localhost"];
+const EMAIL_FRAGMENTS: &[&str] = &[
+    "@",
+    ".com",
+    ".org",
+    ".net",
+    "user@",
+    "@example.com",
+    "admin@",
+];
+const URL_FRAGMENTS: &[&str] = &[
+    "://",
+    "https://",
+    "http://",
+    "/api/",
+    "?key=",
+    "&val=",
+    "#anchor",
+    "localhost",
+];
 const PATH_FRAGMENTS: &[&str] = &["/", "../", "./", ".txt", ".json", ".csv", "\\"];
 const DELIMITER_FRAGMENTS: &[&str] = &[",", ";", "\t", "\n", "|", ":", "=", "&"];
 const NUMERIC_FRAGMENTS: &[&str] = &["0", "-1", "999", "0.0", "NaN", "Infinity", "-0"];
@@ -29,21 +46,21 @@ const ALL_PATTERN_GROUPS: &[&[&str]] = &[
 /// Characters that appear frequently at domain boundaries and are
 /// more likely to trigger interesting branch conditions than uniform ASCII.
 const WEIGHTED_SPECIAL_CHARS: &[char] = &[
-    '@', '.', '-', '_', '/', ':', '?', '=', '&', '#', '+', '%', '!', '*', '~',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    '@', '.', '-', '_', '/', ':', '?', '=', '&', '#', '+', '%', '!', '*', '~', '0', '1', '2', '3',
+    '4', '5', '6', '7', '8', '9',
 ];
 
 /// Unicode values useful for exercising boundary/security code paths.
 const UNICODE_INTERESTING: &[char] = &[
-    '\u{200B}', // zero-width space
-    '\u{200C}', // zero-width non-joiner
-    '\u{200D}', // zero-width joiner
-    '\u{FEFF}', // BOM / zero-width no-break space
-    '\u{202E}', // RTL override
-    '\u{0301}', // combining acute accent
-    '\u{0000}', // null
-    '\u{FFFD}', // replacement character
-    '\u{4E16}', // CJK: "world"
+    '\u{200B}',  // zero-width space
+    '\u{200C}',  // zero-width non-joiner
+    '\u{200D}',  // zero-width joiner
+    '\u{FEFF}',  // BOM / zero-width no-break space
+    '\u{202E}',  // RTL override
+    '\u{0301}',  // combining acute accent
+    '\u{0000}',  // null
+    '\u{FFFD}',  // replacement character
+    '\u{4E16}',  // CJK: "world"
     '\u{1F600}', // emoji: grinning face
 ];
 
@@ -378,7 +395,10 @@ mod tests {
             }
         }
         // With 60% weight, expect ~60 special chars out of 100
-        assert!(special_count > 30, "expected >30 special chars, got {special_count}");
+        assert!(
+            special_count > 30,
+            "expected >30 special chars, got {special_count}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -435,7 +455,10 @@ mod tests {
         let last = result.chars().last().expect("non-empty");
         let inserted_at_edge =
             UNICODE_INTERESTING.contains(&first) || UNICODE_INTERESTING.contains(&last);
-        assert!(inserted_at_edge, "expected insertion at edge for no-delimiter string");
+        assert!(
+            inserted_at_edge,
+            "expected insertion at edge for no-delimiter string"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -567,7 +590,11 @@ mod tests {
             let mut r = SmallRng::seed_from_u64(seed);
             results.insert(mutate_structure_aware(input, &mut r));
         }
-        assert!(results.len() > 5, "expected variety, got {} unique results", results.len());
+        assert!(
+            results.len() > 5,
+            "expected variety, got {} unique results",
+            results.len()
+        );
     }
 
     #[test]
@@ -582,6 +609,10 @@ mod tests {
         }
         // Should have many distinct results (7 strategies × varied randomness)
         let unique: std::collections::HashSet<_> = results.iter().collect();
-        assert!(unique.len() > 15, "expected >15 unique results, got {}", unique.len());
+        assert!(
+            unique.len() > 15,
+            "expected >15 unique results, got {}",
+            unique.len()
+        );
     }
 }

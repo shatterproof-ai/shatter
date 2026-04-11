@@ -149,7 +149,9 @@ pub fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
             }
 
             if path.join("Cargo.toml").exists()
-                && !runners.iter().any(|r| r.kind == RunnerKind::Cargo && r.root == path)
+                && !runners
+                    .iter()
+                    .any(|r| r.kind == RunnerKind::Cargo && r.root == path)
             {
                 // Skip sub-crates if root has Cargo.toml (workspace handles them)
                 // Only add if no root-level Cargo.toml
@@ -161,7 +163,9 @@ pub fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
                 }
             }
             if path.join("package.json").exists()
-                && !runners.iter().any(|r| r.kind == RunnerKind::Vitest && r.root == path)
+                && !runners
+                    .iter()
+                    .any(|r| r.kind == RunnerKind::Vitest && r.root == path)
             {
                 runners.push(DetectedRunner {
                     kind: RunnerKind::Vitest,
@@ -169,7 +173,9 @@ pub fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
                 });
             }
             if path.join("go.mod").exists()
-                && !runners.iter().any(|r| r.kind == RunnerKind::GoTest && r.root == path)
+                && !runners
+                    .iter()
+                    .any(|r| r.kind == RunnerKind::GoTest && r.root == path)
             {
                 runners.push(DetectedRunner {
                     kind: RunnerKind::GoTest,
@@ -187,10 +193,7 @@ pub fn detect_runners(root: &Path) -> Vec<DetectedRunner> {
 // ---------------------------------------------------------------------------
 
 /// Run tests for a given runner, optionally filtered.
-pub fn run_tests(
-    runner: &DetectedRunner,
-    filter: &[String],
-) -> Result<TestRunResult, TiaError> {
+pub fn run_tests(runner: &DetectedRunner, filter: &[String]) -> Result<TestRunResult, TiaError> {
     let start = Instant::now();
 
     let output = match runner.kind {
@@ -265,7 +268,13 @@ fn run_cargo_with_coverage(
     let output = Command::new("cargo")
         .args(["test"])
         .env("RUSTFLAGS", "-C instrument-coverage")
-        .env("LLVM_PROFILE_FILE", crate_root.join("target/coverage/%p-%m.profraw").to_string_lossy().as_ref())
+        .env(
+            "LLVM_PROFILE_FILE",
+            crate_root
+                .join("target/coverage/%p-%m.profraw")
+                .to_string_lossy()
+                .as_ref(),
+        )
         .current_dir(crate_root)
         .output()
         .map_err(|e| TiaError::Runner {
@@ -292,10 +301,7 @@ fn run_cargo_with_coverage(
 
 /// Build a simplified test→file map for a Cargo crate by scanning source files.
 /// Maps the crate name (as test identifier) to all .rs files in src/.
-fn build_cargo_file_map(
-    crate_root: &Path,
-    project_root: &Path,
-) -> BTreeMap<String, Vec<String>> {
+fn build_cargo_file_map(crate_root: &Path, project_root: &Path) -> BTreeMap<String, Vec<String>> {
     let mut map = BTreeMap::new();
     let crate_name = crate_root
         .file_name()
@@ -338,10 +344,7 @@ fn collect_rs_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 // Go coverage
 // ---------------------------------------------------------------------------
 
-fn run_go_with_coverage(
-    go_root: &Path,
-    project_root: &Path,
-) -> Result<CoverageOutput, TiaError> {
+fn run_go_with_coverage(go_root: &Path, project_root: &Path) -> Result<CoverageOutput, TiaError> {
     let start = Instant::now();
     let cover_file = go_root.join("coverage.out");
 
@@ -394,10 +397,7 @@ pub fn parse_go_coverprofile(
         Err(_) => return map,
     };
 
-    let module_name = go_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("go");
+    let module_name = go_root.file_name().and_then(|n| n.to_str()).unwrap_or("go");
 
     let mut files = std::collections::HashSet::new();
     for line in contents.lines() {

@@ -18,10 +18,7 @@ pub type BranchPathKey = Vec<(u32, bool)>;
 
 /// Extract the clustering key from a sequence of branch decisions.
 fn branch_path_key(decisions: &[BranchDecision]) -> BranchPathKey {
-    decisions
-        .iter()
-        .map(|d| (d.branch_id, d.taken))
-        .collect()
+    decisions.iter().map(|d| (d.branch_id, d.taken)).collect()
 }
 
 /// Observed range for a JSON value dimension (min and max as JSON values).
@@ -124,14 +121,16 @@ fn compute_stats(records: &[&ExecutionRecord]) -> ClusterStats {
     let specimen_count = records.len();
 
     // Determine the maximum number of parameters across all records.
-    let max_params = records.iter().map(|r| r.parameters.len()).max().unwrap_or(0);
+    let max_params = records
+        .iter()
+        .map(|r| r.parameters.len())
+        .max()
+        .unwrap_or(0);
 
     let mut input_ranges = Vec::with_capacity(max_params);
     for i in 0..max_params {
-        let values: Vec<&serde_json::Value> = records
-            .iter()
-            .filter_map(|r| r.parameters.get(i))
-            .collect();
+        let values: Vec<&serde_json::Value> =
+            records.iter().filter_map(|r| r.parameters.get(i)).collect();
         if let Some(range) = compute_value_range(&values) {
             input_ranges.push(range);
         }
@@ -251,7 +250,11 @@ mod tests {
 
     #[test]
     fn single_record_produces_one_cluster() {
-        let records = vec![make_record(vec![(0, true)], vec![json!(5)], Some(json!(10)))];
+        let records = vec![make_record(
+            vec![(0, true)],
+            vec![json!(5)],
+            Some(json!(10)),
+        )];
         let result = cluster_by_branch_path("f", &records);
 
         assert_eq!(result.clusters.len(), 1);
@@ -265,19 +268,47 @@ mod tests {
         // Simulate a function with 2 branches, 10 executions covering all 4 paths.
         let records = vec![
             // TT path
-            make_record(vec![(0, true), (1, true)], vec![json!(10)], Some(json!(100))),
-            make_record(vec![(0, true), (1, true)], vec![json!(20)], Some(json!(200))),
-            make_record(vec![(0, true), (1, true)], vec![json!(15)], Some(json!(150))),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(10)],
+                Some(json!(100)),
+            ),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(20)],
+                Some(json!(200)),
+            ),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(15)],
+                Some(json!(150)),
+            ),
             // TF path
             make_record(vec![(0, true), (1, false)], vec![json!(5)], Some(json!(50))),
             make_record(vec![(0, true), (1, false)], vec![json!(8)], Some(json!(80))),
             // FT path
-            make_record(vec![(0, false), (1, true)], vec![json!(-1)], Some(json!(-10))),
-            make_record(vec![(0, false), (1, true)], vec![json!(-5)], Some(json!(-50))),
-            make_record(vec![(0, false), (1, true)], vec![json!(-3)], Some(json!(-30))),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-1)],
+                Some(json!(-10)),
+            ),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-5)],
+                Some(json!(-50)),
+            ),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-3)],
+                Some(json!(-30)),
+            ),
             // FF path
             make_record(vec![(0, false), (1, false)], vec![json!(0)], Some(json!(0))),
-            make_record(vec![(0, false), (1, false)], vec![json!(-100)], Some(json!(-1000))),
+            make_record(
+                vec![(0, false), (1, false)],
+                vec![json!(-100)],
+                Some(json!(-1000)),
+            ),
         ];
 
         let result = cluster_by_branch_path("classify", &records);
@@ -295,16 +326,44 @@ mod tests {
     #[test]
     fn cluster_specimen_counts_are_accurate() {
         let records = vec![
-            make_record(vec![(0, true), (1, true)], vec![json!(10)], Some(json!(100))),
-            make_record(vec![(0, true), (1, true)], vec![json!(20)], Some(json!(200))),
-            make_record(vec![(0, true), (1, true)], vec![json!(15)], Some(json!(150))),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(10)],
+                Some(json!(100)),
+            ),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(20)],
+                Some(json!(200)),
+            ),
+            make_record(
+                vec![(0, true), (1, true)],
+                vec![json!(15)],
+                Some(json!(150)),
+            ),
             make_record(vec![(0, true), (1, false)], vec![json!(5)], Some(json!(50))),
             make_record(vec![(0, true), (1, false)], vec![json!(8)], Some(json!(80))),
-            make_record(vec![(0, false), (1, true)], vec![json!(-1)], Some(json!(-10))),
-            make_record(vec![(0, false), (1, true)], vec![json!(-5)], Some(json!(-50))),
-            make_record(vec![(0, false), (1, true)], vec![json!(-3)], Some(json!(-30))),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-1)],
+                Some(json!(-10)),
+            ),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-5)],
+                Some(json!(-50)),
+            ),
+            make_record(
+                vec![(0, false), (1, true)],
+                vec![json!(-3)],
+                Some(json!(-30)),
+            ),
             make_record(vec![(0, false), (1, false)], vec![json!(0)], Some(json!(0))),
-            make_record(vec![(0, false), (1, false)], vec![json!(-100)], Some(json!(-1000))),
+            make_record(
+                vec![(0, false), (1, false)],
+                vec![json!(-100)],
+                Some(json!(-1000)),
+            ),
         ];
 
         let result = cluster_by_branch_path("classify", &records);
@@ -342,7 +401,11 @@ mod tests {
         ];
 
         let result = cluster_by_branch_path("f", &records);
-        let range = result.clusters[0].stats.output_range.as_ref().expect("has output");
+        let range = result.clusters[0]
+            .stats
+            .output_range
+            .as_ref()
+            .expect("has output");
 
         assert_eq!(range.min, json!(100));
         assert_eq!(range.max, json!(300));
@@ -355,7 +418,9 @@ mod tests {
         record.thrown_error = Some(crate::execution_record::ErrorInfo {
             error_type: "Error".to_string(),
             message: "boom".to_string(),
-            stack: None, error_category: None });
+            stack: None,
+            error_category: None,
+        });
 
         let result = cluster_by_branch_path("f", &[record]);
         assert!(result.clusters[0].stats.output_range.is_none());
@@ -385,11 +450,19 @@ mod tests {
         let result = cluster_by_branch_path("f", &records);
 
         // F cluster should have index 1
-        let f_cluster = result.clusters.iter().find(|c| c.label == "F").expect("F cluster");
+        let f_cluster = result
+            .clusters
+            .iter()
+            .find(|c| c.label == "F")
+            .expect("F cluster");
         assert_eq!(f_cluster.record_indices, vec![1]);
 
         // T cluster should have indices 0 and 2
-        let t_cluster = result.clusters.iter().find(|c| c.label == "T").expect("T cluster");
+        let t_cluster = result
+            .clusters
+            .iter()
+            .find(|c| c.label == "T")
+            .expect("T cluster");
         assert!(t_cluster.record_indices.contains(&0));
         assert!(t_cluster.record_indices.contains(&2));
     }
@@ -397,9 +470,21 @@ mod tests {
     #[test]
     fn multiple_parameters_have_independent_ranges() {
         let records = vec![
-            make_record(vec![(0, true)], vec![json!(1), json!(100)], Some(json!("ok"))),
-            make_record(vec![(0, true)], vec![json!(5), json!(50)], Some(json!("ok"))),
-            make_record(vec![(0, true)], vec![json!(3), json!(200)], Some(json!("ok"))),
+            make_record(
+                vec![(0, true)],
+                vec![json!(1), json!(100)],
+                Some(json!("ok")),
+            ),
+            make_record(
+                vec![(0, true)],
+                vec![json!(5), json!(50)],
+                Some(json!("ok")),
+            ),
+            make_record(
+                vec![(0, true)],
+                vec![json!(3), json!(200)],
+                Some(json!("ok")),
+            ),
         ];
 
         let result = cluster_by_branch_path("f", &records);
@@ -439,8 +524,7 @@ mod tests {
         let result = cluster_by_branch_path("f", &records);
 
         let json_str = serde_json::to_string(&result).expect("serialize");
-        let deserialized: ClusteringResult =
-            serde_json::from_str(&json_str).expect("deserialize");
+        let deserialized: ClusteringResult = serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(result, deserialized);
     }
 }

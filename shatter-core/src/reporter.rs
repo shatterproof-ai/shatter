@@ -115,11 +115,7 @@ pub fn generate_markdown_from_behavior_map(
                 specimens: vec![record],
                 input_invariants: vec![],
                 output_invariants: vec![],
-                side_effect_summary: b
-                    .side_effects
-                    .iter()
-                    .map(|se| format!("{se:?}"))
-                    .collect(),
+                side_effect_summary: b.side_effects.iter().map(|se| format!("{se:?}")).collect(),
             }
         })
         .collect();
@@ -140,7 +136,9 @@ pub fn generate_markdown_from_behavior_map(
 fn write_function_heading(out: &mut String, analysis: &FunctionAnalysis) {
     let display_params = match &analysis.invocation_model {
         crate::protocol::InvocationModel::Direct => &analysis.params,
-        crate::protocol::InvocationModel::Adapter { synthetic_params, .. } => synthetic_params,
+        crate::protocol::InvocationModel::Adapter {
+            synthetic_params, ..
+        } => synthetic_params,
     };
     let params_str = display_params
         .iter()
@@ -157,7 +155,8 @@ fn write_function_heading(out: &mut String, analysis: &FunctionAnalysis) {
         ret = return_str,
     );
 
-    if let crate::protocol::InvocationModel::Adapter { adapter_id, .. } = &analysis.invocation_model {
+    if let crate::protocol::InvocationModel::Adapter { adapter_id, .. } = &analysis.invocation_model
+    {
         let _ = writeln!(out, "_Invocation: adapter-owned via `{adapter_id}`_\n");
     }
 }
@@ -286,7 +285,10 @@ fn write_behavior_sections(out: &mut String, clusters: &[AnnotatedCluster]) {
             .chain(&cluster.output_invariants)
             .collect();
         if !all_invariants.is_empty() {
-            let descs: Vec<&str> = all_invariants.iter().map(|inv| inv.description.as_str()).collect();
+            let descs: Vec<&str> = all_invariants
+                .iter()
+                .map(|inv| inv.description.as_str())
+                .collect();
             let _ = writeln!(out, "**Invariant:** {}", descs.join("; "));
         }
 
@@ -357,7 +359,11 @@ fn write_performance(out: &mut String, cluster: &AnnotatedCluster) {
         return;
     }
     let times: Vec<f64> = cluster.specimens.iter().map(|s| s.wall_time_ms).collect();
-    let heaps: Vec<i64> = cluster.specimens.iter().map(|s| s.heap_used_bytes).collect();
+    let heaps: Vec<i64> = cluster
+        .specimens
+        .iter()
+        .map(|s| s.heap_used_bytes)
+        .collect();
 
     let avg_time = times.iter().sum::<f64>() / times.len() as f64;
     let max_heap = heaps.iter().copied().max().unwrap_or(0);
@@ -393,7 +399,12 @@ fn write_dependencies_section(out: &mut String, deps: &[ExternalDependency]) {
             let noun = if count == 1 { "site" } else { "sites" };
             format!(" ({count} call {noun})")
         };
-        let _ = writeln!(out, "- {symbol}{info}", symbol = dep.symbol, info = call_info);
+        let _ = writeln!(
+            out,
+            "- {symbol}{info}",
+            symbol = dep.symbol,
+            info = call_info
+        );
     }
     out.push('\n');
 }
@@ -449,10 +460,7 @@ fn format_json_short(value: &serde_json::Value) -> String {
 
 fn summarize_return_values(values: &[&serde_json::Value]) -> String {
     // For numeric values, show range
-    let numbers: Vec<f64> = values
-        .iter()
-        .filter_map(|v| v.as_f64())
-        .collect();
+    let numbers: Vec<f64> = values.iter().filter_map(|v| v.as_f64()).collect();
 
     if numbers.len() == values.len() && !numbers.is_empty() {
         let min = numbers.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -609,9 +617,11 @@ mod tests {
     fn function_heading_includes_signature() {
         let analysis = make_analysis(
             "calculateShipping",
-            vec![
-                ParamInfo { name: "order".to_string(), typ: TypeInfo::Object { fields: vec![] }, type_name: None },
-            ],
+            vec![ParamInfo {
+                name: "order".to_string(),
+                typ: TypeInfo::Object { fields: vec![] },
+                type_name: None,
+            }],
             TypeInfo::Object { fields: vec![] },
             vec![],
         );
@@ -633,8 +643,16 @@ mod tests {
         let analysis = make_analysis(
             "add",
             vec![
-                ParamInfo { name: "a".to_string(), typ: TypeInfo::Int, type_name: None },
-                ParamInfo { name: "b".to_string(), typ: TypeInfo::Int, type_name: None },
+                ParamInfo {
+                    name: "a".to_string(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                },
+                ParamInfo {
+                    name: "b".to_string(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                },
             ],
             TypeInfo::Int,
             vec![],
@@ -683,8 +701,14 @@ mod tests {
             adapter_selection: None,
         };
         let md = generate_markdown(&spec);
-        assert!(md.contains("# Function: useTeamSwitch(teamId: string): unknown"), "got: {md}");
-        assert!(md.contains("_Invocation: adapter-owned via `ts/react-hooks`_"), "got: {md}");
+        assert!(
+            md.contains("# Function: useTeamSwitch(teamId: string): unknown"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("_Invocation: adapter-owned via `ts/react-hooks`_"),
+            "got: {md}"
+        );
     }
 
     #[test]
@@ -693,7 +717,12 @@ mod tests {
         let cluster = AnnotatedCluster {
             id: 0,
             signature: "input is positive".to_string(),
-            specimens: vec![make_record("classify", vec![json!(5)], Some(json!("positive")), None)],
+            specimens: vec![make_record(
+                "classify",
+                vec![json!(5)],
+                Some(json!("positive")),
+                None,
+            )],
             input_invariants: vec![make_invariant("x > 0", InvariantTarget::Input)],
             output_invariants: vec![],
             side_effect_summary: vec![],
@@ -706,7 +735,10 @@ mod tests {
         };
         let md = generate_markdown(&spec);
 
-        assert!(md.contains("## Behavior 1: input is positive\n"), "got: {md}");
+        assert!(
+            md.contains("## Behavior 1: input is positive\n"),
+            "got: {md}"
+        );
         assert!(md.contains("**When:** input is positive\n"), "got: {md}");
         assert!(md.contains("**Returns:** \"positive\"\n"), "got: {md}");
         assert!(md.contains("**Invariant:** x > 0\n"), "got: {md}");
@@ -726,10 +758,15 @@ mod tests {
                 Some(ErrorInfo {
                     error_type: "TypeError".to_string(),
                     message: "input is null".to_string(),
-                    stack: None, error_category: None }),
+                    stack: None,
+                    error_category: None,
+                }),
             )],
             input_invariants: vec![],
-            output_invariants: vec![make_invariant("always throws, never returns", InvariantTarget::Output)],
+            output_invariants: vec![make_invariant(
+                "always throws, never returns",
+                InvariantTarget::Output,
+            )],
             side_effect_summary: vec![],
         };
         let spec = FunctionSpec {
@@ -740,22 +777,31 @@ mod tests {
         };
         let md = generate_markdown(&spec);
 
-        assert!(md.contains("**Throws:** TypeError(\"input is null\")\n"), "got: {md}");
-        assert!(md.contains("**Invariant:** always throws, never returns\n"), "got: {md}");
+        assert!(
+            md.contains("**Throws:** TypeError(\"input is null\")\n"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("**Invariant:** always throws, never returns\n"),
+            "got: {md}"
+        );
     }
 
     #[test]
     fn behavior_section_with_external_calls() {
-        let analysis = make_analysis("checkout", vec![], TypeInfo::Unknown, vec![
-            ExternalDependency {
+        let analysis = make_analysis(
+            "checkout",
+            vec![],
+            TypeInfo::Unknown,
+            vec![ExternalDependency {
                 kind: DependencyKind::FunctionCall,
                 symbol: "rateService.getExpressRate".to_string(),
                 source_module: String::new(),
                 return_type: TypeInfo::Float,
                 param_types: vec![],
                 call_sites: vec![15],
-            },
-        ]);
+            }],
+        );
         let mut record = make_record("checkout", vec![], Some(json!(12.99)), None);
         record.calls_to_external = vec![ExternalCall {
             symbol: "rateService.getExpressRate".to_string(),
@@ -777,7 +823,10 @@ mod tests {
             adapter_selection: None,
         };
         let md = generate_markdown(&spec);
-        assert!(md.contains("**Calls:** rateService.getExpressRate\n"), "got: {md}");
+        assert!(
+            md.contains("**Calls:** rateService.getExpressRate\n"),
+            "got: {md}"
+        );
     }
 
     #[test]
@@ -801,8 +850,14 @@ mod tests {
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("## Edge Cases\n"), "got: {md}");
-        assert!(md.contains("- Empty items array \u{2192} returns { cost: 0, method: \"none\" }\n"), "got: {md}");
-        assert!(md.contains("- Null destination \u{2192} throws TypeError\n"), "got: {md}");
+        assert!(
+            md.contains("- Empty items array \u{2192} returns { cost: 0, method: \"none\" }\n"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("- Null destination \u{2192} throws TypeError\n"),
+            "got: {md}"
+        );
     }
 
     #[test]
@@ -847,8 +902,14 @@ mod tests {
         };
         let md = generate_markdown(&spec);
         assert!(md.contains("## Dependencies\n"), "got: {md}");
-        assert!(md.contains("- rateService.getExpressRate (1 call site)\n"), "got: {md}");
-        assert!(md.contains("- taxService.calculate (2 call sites)\n"), "got: {md}");
+        assert!(
+            md.contains("- rateService.getExpressRate (1 call site)\n"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("- taxService.calculate (2 call sites)\n"),
+            "got: {md}"
+        );
     }
 
     #[test]
@@ -893,10 +954,22 @@ mod tests {
 
         let md = generate_markdown(&spec);
         assert!(md.contains("## Adapter Hints\n"), "got: {md}");
-        assert!(md.contains("`ts/browser-globals` (suggest) [medium]"), "got: {md}");
-        assert!(md.contains("reasons: uses window and document"), "got: {md}");
-        assert!(md.contains("requirements: ts/dom-runtime (needs DOM globals)"), "got: {md}");
-        assert!(md.contains("conflicts: ts/node-only (mutually exclusive runtime)"), "got: {md}");
+        assert!(
+            md.contains("`ts/browser-globals` (suggest) [medium]"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("reasons: uses window and document"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("requirements: ts/dom-runtime (needs DOM globals)"),
+            "got: {md}"
+        );
+        assert!(
+            md.contains("conflicts: ts/node-only (mutually exclusive runtime)"),
+            "got: {md}"
+        );
     }
 
     #[test]
@@ -940,7 +1013,10 @@ mod tests {
         assert!(md.contains("reasons: user configured"), "got: {md}");
         assert!(md.contains("## Suggested Adapters\n"), "got: {md}");
         assert!(md.contains("`ts/react-hooks` [medium]"), "got: {md}");
-        assert!(md.contains("reasons: imports react; calls useCallback"), "got: {md}");
+        assert!(
+            md.contains("reasons: imports react; calls useCallback"),
+            "got: {md}"
+        );
         // Should NOT contain the old "Adapter Hints" section.
         assert!(!md.contains("## Adapter Hints"), "got: {md}");
     }
@@ -949,29 +1025,30 @@ mod tests {
     fn full_spec_matches_expected_format() {
         let analysis = make_analysis(
             "calculateShipping",
-            vec![
-                ParamInfo {
-                    name: "order".to_string(),
-                    typ: TypeInfo::Object {
-                        fields: vec![
-                            ("items".to_string(), TypeInfo::Array { element: Box::new(TypeInfo::Unknown) }),
-                            ("priority".to_string(), TypeInfo::Str),
-                        ],
-                    },
-                    type_name: None,
+            vec![ParamInfo {
+                name: "order".to_string(),
+                typ: TypeInfo::Object {
+                    fields: vec![
+                        (
+                            "items".to_string(),
+                            TypeInfo::Array {
+                                element: Box::new(TypeInfo::Unknown),
+                            },
+                        ),
+                        ("priority".to_string(), TypeInfo::Str),
+                    ],
                 },
-            ],
+                type_name: None,
+            }],
             TypeInfo::Object { fields: vec![] },
-            vec![
-                ExternalDependency {
-                    kind: DependencyKind::FunctionCall,
-                    symbol: "rateService.getExpressRate".to_string(),
-                    source_module: String::new(),
-                    return_type: TypeInfo::Float,
-                    param_types: vec![],
-                    call_sites: vec![10],
-                },
-            ],
+            vec![ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: "rateService.getExpressRate".to_string(),
+                source_module: String::new(),
+                return_type: TypeInfo::Float,
+                param_types: vec![],
+                call_sites: vec![10],
+            }],
         );
 
         let clusters = vec![
@@ -985,7 +1062,10 @@ mod tests {
                     None,
                 )],
                 input_invariants: vec![],
-                output_invariants: vec![make_invariant("cost is always 0", InvariantTarget::Output)],
+                output_invariants: vec![make_invariant(
+                    "cost is always 0",
+                    InvariantTarget::Output,
+                )],
                 side_effect_summary: vec![],
             },
             AnnotatedCluster {
@@ -1028,14 +1108,32 @@ mod tests {
         let md = generate_markdown(&spec);
 
         // Verify structure
-        assert!(md.contains("# Function: calculateShipping("), "missing heading: {md}");
+        assert!(
+            md.contains("# Function: calculateShipping("),
+            "missing heading: {md}"
+        );
         assert!(md.contains("## Parameters\n"), "missing parameters: {md}");
-        assert!(md.contains("## Behavior 1: free shipping for large orders\n"), "missing behavior 1: {md}");
-        assert!(md.contains("## Behavior 2: express shipping calculation\n"), "missing behavior 2: {md}");
-        assert!(md.contains("**Invariant:** cost is always 0\n"), "missing invariant: {md}");
-        assert!(md.contains("**Calls:** rateService.getExpressRate\n"), "missing calls: {md}");
+        assert!(
+            md.contains("## Behavior 1: free shipping for large orders\n"),
+            "missing behavior 1: {md}"
+        );
+        assert!(
+            md.contains("## Behavior 2: express shipping calculation\n"),
+            "missing behavior 2: {md}"
+        );
+        assert!(
+            md.contains("**Invariant:** cost is always 0\n"),
+            "missing invariant: {md}"
+        );
+        assert!(
+            md.contains("**Calls:** rateService.getExpressRate\n"),
+            "missing calls: {md}"
+        );
         assert!(md.contains("## Edge Cases\n"), "missing edge cases: {md}");
-        assert!(md.contains("## Dependencies\n"), "missing dependencies: {md}");
+        assert!(
+            md.contains("## Dependencies\n"),
+            "missing dependencies: {md}"
+        );
     }
 
     #[test]
@@ -1044,7 +1142,11 @@ mod tests {
 
         let analysis = make_analysis(
             "abs",
-            vec![ParamInfo { name: "x".to_string(), typ: TypeInfo::Int, type_name: None }],
+            vec![ParamInfo {
+                name: "x".to_string(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
             TypeInfo::Int,
             vec![],
         );
@@ -1077,7 +1179,10 @@ mod tests {
         };
 
         let md = generate_markdown_from_behavior_map(&analysis, &map);
-        assert!(md.contains("# Function: abs(x: number): number\n"), "got: {md}");
+        assert!(
+            md.contains("# Function: abs(x: number): number\n"),
+            "got: {md}"
+        );
         assert!(md.contains("## Behavior 1:"), "got: {md}");
         assert!(md.contains("## Behavior 2:"), "got: {md}");
     }
@@ -1090,24 +1195,36 @@ mod tests {
         assert_eq!(format_type(&TypeInfo::Bool), "boolean");
         assert_eq!(format_type(&TypeInfo::Unknown), "unknown");
         assert_eq!(
-            format_type(&TypeInfo::Array { element: Box::new(TypeInfo::Int) }),
+            format_type(&TypeInfo::Array {
+                element: Box::new(TypeInfo::Int)
+            }),
             "Array<number>"
         );
         assert_eq!(
-            format_type(&TypeInfo::Nullable { inner: Box::new(TypeInfo::Str) }),
+            format_type(&TypeInfo::Nullable {
+                inner: Box::new(TypeInfo::Str)
+            }),
             "string | null"
         );
         assert_eq!(
-            format_type(&TypeInfo::Union { variants: vec![TypeInfo::Str, TypeInfo::Int] }),
+            format_type(&TypeInfo::Union {
+                variants: vec![TypeInfo::Str, TypeInfo::Int]
+            }),
             "string | number"
         );
         assert_eq!(
-            format_type(&TypeInfo::Object { fields: vec![("x".to_string(), TypeInfo::Int)] }),
+            format_type(&TypeInfo::Object {
+                fields: vec![("x".to_string(), TypeInfo::Int)]
+            }),
             "{ x: number }"
         );
         assert_eq!(format_type(&TypeInfo::Object { fields: vec![] }), "object");
         assert_eq!(
-            format_type(&TypeInfo::Opaque { label: "net.Socket".to_string(), static_opacity: None, medium_opacity: None }),
+            format_type(&TypeInfo::Opaque {
+                label: "net.Socket".to_string(),
+                static_opacity: None,
+                medium_opacity: None
+            }),
             "opaque(net.Socket)"
         );
     }
@@ -1156,9 +1273,7 @@ mod tests {
                 make_invariant("x > 0", InvariantTarget::Input),
                 make_invariant("x < 100", InvariantTarget::Input),
             ],
-            output_invariants: vec![
-                make_invariant("result >= x", InvariantTarget::Output),
-            ],
+            output_invariants: vec![make_invariant("result >= x", InvariantTarget::Output)],
             side_effect_summary: vec![],
         };
         let spec = FunctionSpec {
@@ -1168,7 +1283,10 @@ mod tests {
             adapter_selection: None,
         };
         let md = generate_markdown(&spec);
-        assert!(md.contains("**Invariant:** x > 0; x < 100; result >= x\n"), "got: {md}");
+        assert!(
+            md.contains("**Invariant:** x > 0; x < 100; result >= x\n"),
+            "got: {md}"
+        );
     }
 
     #[test]

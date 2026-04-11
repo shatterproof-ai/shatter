@@ -1687,10 +1687,7 @@ mod tests {
         let md = format_markdown_report(&report);
 
         // Should show exactly MAX_DISPLAY_CLUSTERS cluster lines
-        let cluster_lines: Vec<&str> = md
-            .lines()
-            .filter(|l| l.starts_with("- Cluster "))
-            .collect();
+        let cluster_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- Cluster ")).collect();
         assert_eq!(
             cluster_lines.len(),
             MAX_DISPLAY_CLUSTERS,
@@ -1730,10 +1727,7 @@ mod tests {
         let report = generate_report(&parallel_result, &file_map, None);
         let md = format_markdown_report(&report);
 
-        let cluster_lines: Vec<&str> = md
-            .lines()
-            .filter(|l| l.starts_with("- Cluster "))
-            .collect();
+        let cluster_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- Cluster ")).collect();
         assert_eq!(
             cluster_lines.len(),
             MAX_DISPLAY_CLUSTERS,
