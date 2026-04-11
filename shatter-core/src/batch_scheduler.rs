@@ -8,7 +8,7 @@
 //! The batch size is an internal tuning parameter — it is not exposed
 //! through the user-facing CLI.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Default number of iterations per batch.
 pub const DEFAULT_BATCH_SIZE: u32 = 50;
@@ -48,16 +48,18 @@ struct Entry {
 
 /// Round-robin batch scheduler.
 ///
-/// Assigns fixed-size iteration batches to functions one at a time.
-/// After each batch the caller reports an outcome; non-exhausted functions
-/// are re-enqueued at the tail for another round.
+/// Assigns fixed-size iteration batches to functions. Callers may request
+/// multiple batches concurrently (one per function) and record their
+/// outcomes in any order; non-exhausted functions are re-enqueued at the
+/// tail for another round. Serial callers work unchanged: with at most one
+/// batch in flight the queue behaves like a single-slot round-robin.
 #[derive(Debug)]
 pub struct BatchScheduler {
     queue: VecDeque<Entry>,
     batch_size: u32,
-    /// The entry currently being explored (popped by `next_batch`,
-    /// consumed by `record_outcome`).
-    active: Option<Entry>,
+    /// Entries popped by [`next_batch`] but not yet resolved via
+    /// [`record_outcome`], keyed by `task_index`.
+    in_flight: HashMap<usize, Entry>,
 }
 
 impl BatchScheduler {
@@ -80,7 +82,7 @@ impl BatchScheduler {
         Self {
             queue,
             batch_size,
-            active: None,
+            in_flight: HashMap::new(),
         }
     }
 
@@ -100,24 +102,19 @@ impl BatchScheduler {
         Self {
             queue,
             batch_size,
-            active: None,
+            in_flight: HashMap::new(),
         }
     }
 
     /// Pop the next function and return its batch configuration.
     ///
-    /// Returns `None` when the queue is empty (all functions exhausted).
-    ///
-    /// # Panics
-    ///
-    /// Panics if called while a previous batch has not been recorded via
-    /// [`record_outcome`](Self::record_outcome).
+    /// Returns `None` when the queue is empty. Unlike a strict single-slot
+    /// scheduler, multiple calls without intervening [`record_outcome`]
+    /// calls are allowed: each returned batch is tracked in the in-flight
+    /// set until the matching outcome is recorded. The scheduler never
+    /// returns the same `task_index` twice while it is in flight, because
+    /// entries are only re-added via `record_outcome`.
     pub fn next_batch(&mut self) -> Option<BatchConfig> {
-        assert!(
-            self.active.is_none(),
-            "previous batch must be recorded before requesting the next"
-        );
-
         // Skip entries that have zero remaining budget.
         while let Some(entry) = self.queue.pop_front() {
             if entry.remaining == Some(0) {
@@ -132,27 +129,26 @@ impl BatchScheduler {
                 batch_size: batch_iters,
                 batch_number: entry.batches_completed,
             };
-            self.active = Some(entry);
+            self.in_flight.insert(entry.task_index, entry);
             return Some(config);
         }
         None
     }
 
-    /// Record the outcome of the current batch.
+    /// Record the outcome of an in-flight batch.
     ///
     /// If the function is not exhausted, it is re-enqueued at the tail
     /// with its remaining budget reduced by `iterations_used`.
     ///
     /// # Panics
     ///
-    /// Panics if no batch is active (i.e., `next_batch` was not called
-    /// or the outcome was already recorded).
+    /// Panics if `outcome.task_index` does not correspond to an in-flight
+    /// batch (i.e., `next_batch` was not called for this index, or the
+    /// outcome was already recorded).
     pub fn record_outcome(&mut self, outcome: BatchOutcome) {
-        let mut entry = self
-            .active
-            .take()
-            .expect("record_outcome called without an active batch");
-        debug_assert_eq!(entry.task_index, outcome.task_index);
+        let mut entry = self.in_flight.remove(&outcome.task_index).expect(
+            "record_outcome called for a task_index that is not in flight",
+        );
 
         entry.batches_completed += 1;
 
@@ -172,14 +168,19 @@ impl BatchScheduler {
     }
 
     /// Returns `true` when all functions have been exhausted and there is
-    /// no active batch in flight.
+    /// no batch in flight.
     pub fn is_complete(&self) -> bool {
-        self.active.is_none() && self.queue.is_empty()
+        self.in_flight.is_empty() && self.queue.is_empty()
     }
 
-    /// Number of functions still in the queue (excludes the active batch).
+    /// Number of functions still in the queue (excludes in-flight batches).
     pub fn pending_count(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Number of batches currently in flight.
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
     }
 
     /// Configured batch size.
@@ -353,16 +354,45 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "previous batch must be recorded")]
-    fn next_batch_panics_without_recording() {
-        let mut s = BatchScheduler::new(2, Some(100), 50);
-        let _ = s.next_batch().unwrap();
-        let _ = s.next_batch(); // should panic
+    fn concurrent_in_flight_batches() {
+        let mut s = BatchScheduler::new(3, Some(100), 50);
+
+        let b0 = s.next_batch().unwrap();
+        let b1 = s.next_batch().unwrap();
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b0.task_index, 0);
+        assert_eq!(b1.task_index, 1);
+        assert_eq!(b2.task_index, 2);
+        assert_eq!(s.in_flight_count(), 3);
+        assert_eq!(s.pending_count(), 0);
+        assert!(s.next_batch().is_none());
+
+        // Record in reverse order — non-sequential completion is allowed.
+        s.record_outcome(BatchOutcome {
+            task_index: 2,
+            iterations_used: 50,
+            exhausted: false,
+        });
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+        });
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: false,
+        });
+
+        assert_eq!(s.in_flight_count(), 0);
+        // 0 was exhausted; 1 and 2 re-enqueued. Round order: 2 then 1.
+        let next = s.next_batch().unwrap();
+        assert_eq!(next.task_index, 2);
     }
 
     #[test]
-    #[should_panic(expected = "record_outcome called without an active batch")]
-    fn record_outcome_panics_without_active() {
+    #[should_panic(expected = "not in flight")]
+    fn record_outcome_panics_for_unknown_task() {
         let mut s = BatchScheduler::new(1, Some(100), 50);
         s.record_outcome(BatchOutcome {
             task_index: 0,

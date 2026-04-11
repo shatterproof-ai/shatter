@@ -38,6 +38,14 @@ struct FuncExploreOutcome {
 
 const EXPLORE_ARTIFACT_VERSION: u32 = 2;
 
+/// Internal iteration budget per round-robin batch when broad-scope explore
+/// cycles across many functions. Each batch targets exactly one function and
+/// the scheduler re-enqueues non-exhausted functions at the tail so long runs
+/// surface early coverage on every function instead of deep coverage on a few.
+///
+/// Not exposed through the user-facing CLI — tuning happens here.
+const EXPLORE_BATCH_ITERATIONS: u32 = shatter_core::batch_scheduler::DEFAULT_BATCH_SIZE;
+
 /// Per-function explore artifact for serialization (borrows from outcome).
 #[derive(Serialize)]
 struct ExploreFunctionArtifactWrite<'a> {
@@ -1483,6 +1491,24 @@ pub(crate) async fn run_explore(
         let time_limit_dur = time_limit.map(Duration::from_secs_f64);
         let run_start = Instant::now();
 
+        // Round-robin batch scheduler. Each function gets one batch assignment
+        // per explore invocation; the scheduler drives launch ordering so the
+        // existing JoinSet/--jobs concurrency semantics are preserved while
+        // per-batch summaries and stop-flag checks happen in the collection
+        // phase below. Iteration budgets are not clamped here — bounded runs
+        // still honor their configured max_iterations in full. Multi-batch
+        // resume-from-state is a follow-up; today's orchestrator::explore()
+        // starts fresh on every call and rediscovers prior paths, so marking
+        // each function exhausted after one batch is the correct semantic.
+        let scheduler_budgets: Vec<Option<u32>> =
+            (0..total_work_items).map(|_| Some(1)).collect();
+        let mut batch_scheduler = shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
+            &scheduler_budgets,
+            EXPLORE_BATCH_ITERATIONS,
+        );
+        let mut batches_launched: u32 = 0;
+        let mut batches_completed: u32 = 0;
+
         // Periodic progress callback: prints a one-line summary to stderr every
         // PROGRESS_SUMMARY_INTERVAL_SECS. Suppressed by --quiet (log_level Warn+).
         let periodic_progress: Option<Arc<Box<ProgressCallback>>> =
@@ -1512,7 +1538,13 @@ pub(crate) async fn run_explore(
                 None
             };
 
-        for (work_index, item) in work_items.into_iter().enumerate() {
+        let mut work_items_slots: Vec<Option<FuncWorkItem>> =
+            work_items.into_iter().map(Some).collect();
+        while let Some(batch_config) = batch_scheduler.next_batch() {
+            let work_index = batch_config.task_index;
+            let item = work_items_slots[work_index]
+                .take()
+                .expect("work item present for scheduled batch");
             // --time-limit: stop launching new functions if time limit exceeded.
             if let Some(limit) = time_limit_dur
                 && run_start.elapsed() >= limit
@@ -1521,8 +1553,27 @@ pub(crate) async fn run_explore(
                     "Time limit ({:.1}s) reached, skipping remaining functions",
                     limit.as_secs_f64()
                 );
+                // Mark the batch we popped as exhausted so the scheduler reaches
+                // is_complete() cleanly, then drain the rest of the queue.
+                batch_scheduler.record_outcome(
+                    shatter_core::batch_scheduler::BatchOutcome {
+                        task_index: work_index,
+                        iterations_used: 0,
+                        exhausted: true,
+                    },
+                );
+                while let Some(skipped) = batch_scheduler.next_batch() {
+                    batch_scheduler.record_outcome(
+                        shatter_core::batch_scheduler::BatchOutcome {
+                            task_index: skipped.task_index,
+                            iterations_used: 0,
+                            exhausted: true,
+                        },
+                    );
+                }
                 break;
             }
+            batches_launched += 1;
 
             let sem = Arc::clone(&semaphore);
             let completed_functions = Arc::clone(&completed_functions);
@@ -1696,11 +1747,56 @@ pub(crate) async fn run_explore(
                 }
             };
 
+            // Record this batch as exhausted in the scheduler. Single-batch-
+            // per-function semantics: each function's single scheduled batch is
+            // considered complete regardless of outcome (success or error).
+            batch_scheduler.record_outcome(
+                shatter_core::batch_scheduler::BatchOutcome {
+                    task_index: outcome.work_index,
+                    iterations_used: outcome
+                        .result
+                        .as_ref()
+                        .map(|obs| obs.iterations)
+                        .unwrap_or(0),
+                    exhausted: true,
+                },
+            );
+            batches_completed += 1;
+
             // Update running stop-flag counters from this function's results.
             if let Ok(ref obs) = outcome.result {
                 total_executions_count += obs.iterations as u64;
                 total_branches_seen += obs.total_lines as usize;
                 total_branches_covered += obs.unique_paths;
+            }
+
+            // Per-batch summary line (suppressed by --quiet = LogLevel::Warn+).
+            if log_level >= LogLevel::Info {
+                let iters = outcome
+                    .result
+                    .as_ref()
+                    .map(|obs| obs.iterations)
+                    .unwrap_or(0);
+                let paths = outcome
+                    .result
+                    .as_ref()
+                    .map(|obs| obs.unique_paths)
+                    .unwrap_or(0);
+                let status = if outcome.result.is_ok() {
+                    "ok"
+                } else {
+                    "err"
+                };
+                eprintln!(
+                    "[batch {}/{}] {}: {} iters, {} paths, {:.1}s ({})",
+                    batches_completed,
+                    batches_launched,
+                    outcome.func.name,
+                    iters,
+                    paths,
+                    outcome.wall_time.as_secs_f64(),
+                    status,
+                );
             }
 
             let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, &outcome) {
