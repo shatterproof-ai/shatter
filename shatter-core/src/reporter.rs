@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn summarize_return_values_numeric_range() {
-        let vals = vec![json!(5.0), json!(10.0), json!(15.0)];
+        let vals = [json!(5.0), json!(10.0), json!(15.0)];
         let refs: Vec<&serde_json::Value> = vals.iter().collect();
         let summary = summarize_return_values(&refs);
         assert_eq!(summary, "5-15");
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn summarize_return_values_single_numeric() {
-        let vals = vec![json!(42.0)];
+        let vals = [json!(42.0)];
         let refs: Vec<&serde_json::Value> = vals.iter().collect();
         let summary = summarize_return_values(&refs);
         assert_eq!(summary, "42");
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn summarize_return_values_non_numeric_uses_first() {
-        let vals = vec![json!("hello"), json!("world")];
+        let vals = [json!("hello"), json!("world")];
         let refs: Vec<&serde_json::Value> = vals.iter().collect();
         let summary = summarize_return_values(&refs);
         assert_eq!(summary, "\"hello\"");

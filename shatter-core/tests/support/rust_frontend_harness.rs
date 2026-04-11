@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::env;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::OnceLock;
+
+use tokio::sync::{Mutex, MutexGuard};
 
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::protocol::{Command as ProtoCommand, FunctionAnalysis, ResponseResult};
@@ -48,15 +50,13 @@ pub fn examples_root() -> PathBuf {
 
 /// Serialize Rust frontend integration tests so temp Cargo builds do not
 /// compete for CPU and I/O during the pre-push hook.
-pub fn lock_rust_frontend_test() -> MutexGuard<'static, ()> {
+pub async fn lock_rust_frontend_test() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
 
 pub async fn with_rust_frontend_test_lock<T>(body: impl Future<Output = T>) -> T {
-    let _guard = lock_rust_frontend_test();
+    let _guard = lock_rust_frontend_test().await;
     body.await
 }
 

@@ -999,13 +999,13 @@ mod tests {
     #[test]
     fn json_matches_int() {
         assert!(json_matches_type(&json!(42), &TypeInfo::Int));
-        assert!(!json_matches_type(&json!(3.14), &TypeInfo::Int));
+        assert!(!json_matches_type(&json!(2.5), &TypeInfo::Int));
         assert!(!json_matches_type(&json!("hi"), &TypeInfo::Int));
     }
 
     #[test]
     fn json_matches_float() {
-        assert!(json_matches_type(&json!(3.14), &TypeInfo::Float));
+        assert!(json_matches_type(&json!(2.5), &TypeInfo::Float));
         assert!(json_matches_type(&json!(42), &TypeInfo::Float)); // ints coerce to f64
         assert!(!json_matches_type(&json!("hi"), &TypeInfo::Float));
     }

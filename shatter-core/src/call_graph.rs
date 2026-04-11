@@ -433,10 +433,13 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    type FuncSpec<'a> = (&'a str, &'a str, Vec<&'a str>);
+    type FuncSpecWithModules<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
+
     /// Helper: build a FunctionRegistry from a list of (file, name, deps) tuples.
     /// Each dep is a symbol name (no source_module disambiguation).
     fn make_registry(
-        funcs: &[(&str, &str, Vec<&str>)],
+        funcs: &[FuncSpec<'_>],
     ) -> FunctionRegistry {
         let mut entries = Vec::new();
         let mut index = HashMap::new();
@@ -477,7 +480,7 @@ mod tests {
 
     /// Helper: build registry with source_module on dependencies.
     fn make_registry_with_modules(
-        funcs: &[(&str, &str, Vec<(&str, &str)>)],
+        funcs: &[FuncSpecWithModules<'_>],
     ) -> FunctionRegistry {
         let mut entries = Vec::new();
         let mut index = HashMap::new();

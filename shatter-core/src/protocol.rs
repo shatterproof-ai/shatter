@@ -2361,7 +2361,7 @@ mod tests {
     fn literal_value_round_trips_all_variants() {
         round_trip(&LiteralValue::Int { value: 42 });
         round_trip(&LiteralValue::Int { value: -1 });
-        round_trip(&LiteralValue::Float { value: 3.14 });
+        round_trip(&LiteralValue::Float { value: 2.5 });
         round_trip(&LiteralValue::Str {
             value: "express".into(),
         });

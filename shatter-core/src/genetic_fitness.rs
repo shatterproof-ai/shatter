@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn unknown_bonus_saturates_at_five() {
-        let path: Vec<_> = (0..10).map(|i| unknown_branch(i)).collect();
+        let path: Vec<_> = (0..10).map(unknown_branch).collect();
         assert_eq!(unknown_bonus_score(&path), 1.0);
     }
 

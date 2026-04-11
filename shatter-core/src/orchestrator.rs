@@ -2250,7 +2250,7 @@ mod tests {
     #[test]
     fn concrete_to_json_primitives() {
         assert_eq!(concrete_to_json(&ConcreteValue::Int(42)), serde_json::json!(42));
-        assert_eq!(concrete_to_json(&ConcreteValue::Float(3.14)), serde_json::json!(3.14));
+        assert_eq!(concrete_to_json(&ConcreteValue::Float(2.5)), serde_json::json!(2.5));
         assert_eq!(concrete_to_json(&ConcreteValue::Str("hello".into())), serde_json::json!("hello"));
         assert_eq!(concrete_to_json(&ConcreteValue::Bool(true)), serde_json::json!(true));
     }

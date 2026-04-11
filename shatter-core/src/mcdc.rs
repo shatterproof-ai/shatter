@@ -335,7 +335,8 @@ mod tests {
         let mut table = McdcTable::default();
         let mut prev_independent = 0usize;
 
-        let observations: &[(&[(u32, Option<bool>, bool)], bool)] = &[
+        type ConditionSpec = (u32, Option<bool>, bool);
+        let observations: &[(&[ConditionSpec], bool)] = &[
             (&[(0, Some(true), false), (1, Some(true), false)], true),
             (&[(0, Some(false), false), (1, Some(true), false)], false),
             (&[(0, Some(true), false), (1, Some(false), false)], false),

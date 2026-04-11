@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn sym_expr_const_round_trips() {
         round_trip(&SymExpr::Const(ConstValue::Int(42)));
-        round_trip(&SymExpr::Const(ConstValue::Float(3.14)));
+        round_trip(&SymExpr::Const(ConstValue::Float(2.5)));
         round_trip(&SymExpr::Const(ConstValue::Str("hello".into())));
         round_trip(&SymExpr::Const(ConstValue::Bool(true)));
         round_trip(&SymExpr::Const(ConstValue::Null));

@@ -326,7 +326,7 @@ mod tests {
                 param_index: 3,
                 param_name: "y".into(),
                 classification: FloatClassification::FloatSensitive,
-                agreements: 1, total_probes: 5, divergent_values: vec![1.5, 3.14],
+                agreements: 1, total_probes: 5, divergent_values: vec![1.5, 2.5],
             },
         ];
         let map = build_bias_map(&results);

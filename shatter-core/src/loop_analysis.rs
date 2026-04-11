@@ -517,7 +517,7 @@ mod tests {
         let loop_info = make_loop_info(0, "i");
         let result = make_execute_result_with_loops(&[(0, 3)]);
 
-        let first_rewrite = rewrite_loop_constraints(&constraints, &[loop_info.clone()], &result);
+        let first_rewrite = rewrite_loop_constraints(&constraints, std::slice::from_ref(&loop_info), &result);
         let second_rewrite = rewrite_loop_constraints(&first_rewrite, &[loop_info], &result);
         assert_eq!(first_rewrite, second_rewrite);
     }
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn build_ite_chain_single_returns_expr() {
         let expr = SymExpr::Const(ConstValue::Int(42));
-        let chain = build_ite_chain("iter", &[expr.clone()]);
+        let chain = build_ite_chain("iter", std::slice::from_ref(&expr));
         assert_eq!(chain, Some(expr));
     }
 

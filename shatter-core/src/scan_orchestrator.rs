@@ -4797,11 +4797,13 @@ mod tests {
         .expect("skip-only scan should succeed");
 
         assert!(skipped_result.function_results.is_empty());
-        let skipped_events = skipped_events.lock().unwrap();
-        assert_eq!(skipped_events.len(), 1);
-        assert_eq!(skipped_events[0].status, ScanProgressStatus::Skipped);
-        assert_eq!(skipped_events[0].current, 1);
-        assert_eq!(skipped_events[0].total, 1);
+        {
+            let skipped_events = skipped_events.lock().unwrap();
+            assert_eq!(skipped_events.len(), 1);
+            assert_eq!(skipped_events[0].status, ScanProgressStatus::Skipped);
+            assert_eq!(skipped_events[0].current, 1);
+            assert_eq!(skipped_events[0].total, 1);
+        }
 
         let mut failed_file_map = HashMap::new();
         failed_file_map.insert("solo".to_string(), "test.ts".to_string());
@@ -4849,10 +4851,12 @@ mod tests {
 
         assert!(failed_result.function_results.is_empty());
         assert_eq!(failed_result.skipped.len(), 1);
-        let failed_events = failed_events.lock().unwrap();
-        assert_eq!(failed_events.len(), 2);
-        assert_eq!(failed_events[0].status, ScanProgressStatus::Started);
-        assert_eq!(failed_events[1].status, ScanProgressStatus::Failed);
+        {
+            let failed_events = failed_events.lock().unwrap();
+            assert_eq!(failed_events.len(), 2);
+            assert_eq!(failed_events[0].status, ScanProgressStatus::Started);
+            assert_eq!(failed_events[1].status, ScanProgressStatus::Failed);
+        }
     }
 
     /// Regression test: after a per-function timeout, the tainted frontend

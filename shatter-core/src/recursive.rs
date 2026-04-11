@@ -640,7 +640,7 @@ mod tests {
         assert!(d2.iter().any(|v| {
             v.first()
                 .and_then(|a| a.as_array())
-                .map_or(false, |a| a.len() == 2)
+                .is_some_and(|a| a.len() == 2)
         }));
     }
 

@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn format_value_handles_all_json_types() {
         assert_eq!(format_value(&json!(42)), "42");
-        assert_eq!(format_value(&json!(3.14)), "3.14");
+        assert_eq!(format_value(&json!(2.5)), "2.5");
         assert_eq!(format_value(&json!(true)), "true");
         assert_eq!(format_value(&json!(false)), "false");
         assert_eq!(format_value(&json!(null)), "null");
@@ -1082,7 +1082,7 @@ mod tests {
     fn go_generates_float_values() {
         let map = BehaviorMap {
             function_id: "half".to_string(),
-            behaviors: vec![make_behavior(0, vec![json!(3.14)], Some(json!(1.57)), None)],
+            behaviors: vec![make_behavior(0, vec![json!(2.5)], Some(json!(1.25)), None)],
             fingerprint: None,
             nondeterministic_fields: vec![],
         };
@@ -1176,7 +1176,7 @@ mod tests {
     #[test]
     fn go_type_detection_from_values() {
         assert_eq!(go_type_from_value(&json!(42)), "int");
-        assert_eq!(go_type_from_value(&json!(3.14)), "float64");
+        assert_eq!(go_type_from_value(&json!(2.5)), "float64");
         assert_eq!(go_type_from_value(&json!("hello")), "string");
         assert_eq!(go_type_from_value(&json!(true)), "bool");
         assert_eq!(go_type_from_value(&json!(null)), "interface{}");
@@ -1185,7 +1185,7 @@ mod tests {
     #[test]
     fn go_format_value_all_types() {
         assert_eq!(format_go_value(&json!(42)), "42");
-        assert_eq!(format_go_value(&json!(3.14)), "3.14");
+        assert_eq!(format_go_value(&json!(2.5)), "2.5");
         assert_eq!(format_go_value(&json!(true)), "true");
         assert_eq!(format_go_value(&json!(false)), "false");
         assert_eq!(format_go_value(&json!(null)), "nil");
@@ -1497,8 +1497,8 @@ mod tests {
         assert_eq!(ann0.branch_id, 0);
         assert_eq!(ann0.line, 15);
         assert_eq!(ann0.condition_index, 0);
-        assert_eq!(ann0.this_outcome, true);
-        assert_eq!(ann0.paired_outcome, false);
+        assert!(ann0.this_outcome);
+        assert!(!ann0.paired_outcome);
     }
 
     #[test]

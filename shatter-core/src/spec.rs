@@ -1747,7 +1747,7 @@ mod tests {
 
         let analysis = make_analysis("add", 1, 4);
         let deep_fps =
-            crate::fingerprint::compute_deep_fingerprints(&file, &[analysis.clone()], &std::collections::HashMap::new()).unwrap();
+            crate::fingerprint::compute_deep_fingerprints(&file, std::slice::from_ref(&analysis), &std::collections::HashMap::new()).unwrap();
         let fp = &deep_fps["add"];
 
         let existing = FileSpecBundle {
