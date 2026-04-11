@@ -85,6 +85,24 @@ fn batch_is_exhausted(
     }
 }
 
+/// Persist a behavior map to the cache, stamping the current deep fingerprint
+/// when one is available so `BehaviorMapCache::is_fresh` will not drop the
+/// entry as a legacy (unfingerprinted) map on the next run.
+///
+/// Callers in the explore path already compute deep fingerprints for the whole
+/// file; routing them through this helper is what keeps persisted maps
+/// reusable across identical runs (str-bo4z.11 regression).
+fn persist_behavior_map(
+    cache: &BehaviorMapCache,
+    map: &BehaviorMap,
+    fingerprint: Option<&str>,
+) -> Result<(), shatter_core::cache::CacheError> {
+    match fingerprint {
+        Some(fp) => cache.store_with_fingerprint(map, fp),
+        None => cache.store(map),
+    }
+}
+
 /// Accumulates `ObservationOutput`s from multiple round-robin batches that all
 /// explored the same function, and collapses them into a single merged output
 /// for the downstream Phase 3 processing loop.
@@ -2287,7 +2305,13 @@ pub(crate) async fn run_explore(
                                                 if added > 0
                                                     && let Some(ref cache) = cache
                                                 {
-                                                    if let Err(e) = cache.store(&bmap) {
+                                                    if let Err(e) = persist_behavior_map(
+                                                        cache,
+                                                        &bmap,
+                                                        deep_fingerprints
+                                                            .get(&func.name)
+                                                            .map(String::as_str),
+                                                    ) {
                                                         log::warn!(
                                                             "failed to cache GA-augmented behavior map for {}: {e}",
                                                             func.name
@@ -2361,7 +2385,11 @@ pub(crate) async fn run_explore(
                             let cache_result = {
                                 let _cache_store_span =
                                     tracing::info_span!("cache.store").entered();
-                                cache.store(&behavior_map)
+                                persist_behavior_map(
+                                    cache,
+                                    &behavior_map,
+                                    deep_fingerprints.get(&func.name).map(String::as_str),
+                                )
                             };
                             if let Err(e) = cache_result {
                                 log::warn!("failed to cache behavior map for {}: {e}", func.name);
@@ -3085,5 +3113,63 @@ mod tests {
     fn sanitize_artifact_component_replaces_path_separators() {
         assert_eq!(sanitize_artifact_component("src/user.ts"), "src_user.ts");
         assert_eq!(sanitize_artifact_component(""), "unknown");
+    }
+
+    // --- persist_behavior_map regression (str-bo4z.11) ---
+    //
+    // Before str-bo4z.11, run_explore persisted behavior maps via
+    // `cache.store(&bmap)` with no fingerprint. The resulting entry carried
+    // `fingerprint: None`, so the next explore run's `is_fresh` check dropped
+    // the file immediately. These tests pin the helper that replaces both
+    // legacy call sites.
+
+    use super::persist_behavior_map;
+    use shatter_core::behavior::BehaviorMap;
+    use shatter_core::cache::BehaviorMapCache;
+
+    fn make_empty_map(function_id: &str) -> BehaviorMap {
+        let obs = sample_observation();
+        BehaviorMap::from_exploration_result(function_id, &obs)
+    }
+
+    #[test]
+    fn persist_with_fingerprint_survives_is_fresh_on_identical_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).expect("cache");
+        let function_id = "load/user";
+        let fingerprint = "deadbeefcafebabe";
+
+        let map = make_empty_map(function_id);
+        persist_behavior_map(&cache, &map, Some(fingerprint)).expect("persist");
+
+        // Second explore run against unchanged source: same deep fingerprint,
+        // so is_fresh must return true and must NOT delete the entry. Before
+        // the fix the stored entry carried fingerprint: None and is_fresh
+        // dropped it.
+        assert!(
+            cache.is_fresh(function_id, fingerprint).expect("is_fresh"),
+            "freshly persisted map should be fresh under the same fingerprint",
+        );
+        assert!(
+            cache.load(function_id).expect("load").is_some(),
+            "cached map should still be present after is_fresh",
+        );
+    }
+
+    #[test]
+    fn persist_without_fingerprint_falls_back_to_legacy_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = BehaviorMapCache::new(dir.path().to_path_buf()).expect("cache");
+        let function_id = "load/user";
+
+        let map = make_empty_map(function_id);
+        persist_behavior_map(&cache, &map, None).expect("persist");
+
+        // No fingerprint recorded → is_fresh against any current fingerprint
+        // must report stale and prune the entry.
+        assert!(
+            !cache.is_fresh(function_id, "any-fp").expect("is_fresh"),
+            "unfingerprinted map must not be considered fresh",
+        );
     }
 }
