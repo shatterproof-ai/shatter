@@ -1,9 +1,19 @@
-//! Round-robin batch scheduler for multi-function exploration.
+//! Rank-ordered batch scheduler for multi-function exploration.
 //!
 //! When exploring many functions, the scheduler assigns each function a
 //! fixed-size iteration budget (one "batch") before moving to the next.
 //! Functions that aren't fully explored after their batch are re-enqueued
-//! at the tail, producing a round-robin traversal.
+//! along with a caller-supplied `rank` that describes how productive the
+//! most recent batch was. The next [`BatchScheduler::next_batch`] call
+//! picks whichever queued entry has the highest rank, breaking ties by
+//! earliest insertion order. The same function may therefore be chosen
+//! again back-to-back if it still ranks highest; once its rank drops to
+//! tie with its peers, standard FIFO round-robin resumes.
+//!
+//! With initial ranks at 0 and callers that always pass `rank: 0`, the
+//! scheduler degenerates to a strict round-robin (ties keep insertion
+//! order) — the str-b2my.6 round-robin semantics are preserved as the
+//! rank-0 special case.
 //!
 //! The batch size is an internal tuning parameter — it is not exposed
 //! through the user-facing CLI.
@@ -35,6 +45,14 @@ pub struct BatchOutcome {
     /// True when the function is fully explored or its total budget is spent.
     /// The scheduler will not re-enqueue exhausted functions.
     pub exhausted: bool,
+    /// Caller-supplied ranking score for this outcome. Higher ranks are
+    /// picked first on the next [`BatchScheduler::next_batch`] call; ties
+    /// fall back to insertion order (FIFO). The scheduler never inspects
+    /// the magnitude of the score — the caller owns the metric. Typical
+    /// use: "number of new branches discovered in this batch" so that a
+    /// function on a discovery streak continues to be scheduled while
+    /// functions that stop producing new work fall behind.
+    pub rank: i64,
 }
 
 /// Internal queue entry tracking per-function state.
@@ -44,15 +62,21 @@ struct Entry {
     /// Remaining iteration budget. `None` means unbounded.
     remaining: Option<u32>,
     batches_completed: u32,
+    /// Current ranking score — set on insertion (initial 0) and replaced
+    /// on every re-enqueue via [`BatchScheduler::record_outcome`]. Used
+    /// by [`BatchScheduler::next_batch`] to select the highest-ranked
+    /// pending entry.
+    rank: i64,
 }
 
-/// Round-robin batch scheduler.
+/// Rank-ordered batch scheduler.
 ///
 /// Assigns fixed-size iteration batches to functions. Callers may request
 /// multiple batches concurrently (one per function) and record their
-/// outcomes in any order; non-exhausted functions are re-enqueued at the
-/// tail for another round. Serial callers work unchanged: with at most one
-/// batch in flight the queue behaves like a single-slot round-robin.
+/// outcomes in any order; non-exhausted functions are re-enqueued with
+/// the outcome's rank and the next pick is whichever queued entry has
+/// the highest rank (FIFO tie-break). When every outcome is reported
+/// with `rank: 0` the scheduler collapses to a strict round-robin.
 #[derive(Debug)]
 pub struct BatchScheduler {
     queue: VecDeque<Entry>,
@@ -77,6 +101,7 @@ impl BatchScheduler {
                 task_index: i,
                 remaining: per_function_budget,
                 batches_completed: 0,
+                rank: 0,
             })
             .collect();
         Self {
@@ -97,6 +122,7 @@ impl BatchScheduler {
                 task_index: i,
                 remaining: budget,
                 batches_completed: 0,
+                rank: 0,
             })
             .collect();
         Self {
@@ -106,39 +132,62 @@ impl BatchScheduler {
         }
     }
 
-    /// Pop the next function and return its batch configuration.
+    /// Pick the highest-ranked pending function and return its batch
+    /// configuration.
     ///
-    /// Returns `None` when the queue is empty. Unlike a strict single-slot
-    /// scheduler, multiple calls without intervening [`record_outcome`]
-    /// calls are allowed: each returned batch is tracked in the in-flight
-    /// set until the matching outcome is recorded. The scheduler never
-    /// returns the same `task_index` twice while it is in flight, because
-    /// entries are only re-added via `record_outcome`.
+    /// Returns `None` when the queue is empty. Selection semantics:
+    ///
+    /// 1. Entries with zero remaining budget are dropped from the queue
+    ///    before selection — they will never be scheduled again.
+    /// 2. Among the surviving entries, the one with the largest `rank`
+    ///    is chosen. Ties resolve to the entry with the earliest queue
+    ///    position (FIFO), so a stream of equal ranks produces a strict
+    ///    round-robin.
+    ///
+    /// Unlike a strict single-slot scheduler, multiple calls without
+    /// intervening [`record_outcome`] calls are allowed: each returned
+    /// batch is tracked in the in-flight set until the matching outcome
+    /// is recorded. The scheduler never returns the same `task_index`
+    /// twice while it is in flight, because entries are only re-added
+    /// via [`record_outcome`].
     pub fn next_batch(&mut self) -> Option<BatchConfig> {
-        // Skip entries that have zero remaining budget.
-        while let Some(entry) = self.queue.pop_front() {
-            if entry.remaining == Some(0) {
-                continue;
-            }
-            let batch_iters = match entry.remaining {
-                Some(r) => r.min(self.batch_size),
-                None => self.batch_size,
-            };
-            let config = BatchConfig {
-                task_index: entry.task_index,
-                batch_size: batch_iters,
-                batch_number: entry.batches_completed,
-            };
-            self.in_flight.insert(entry.task_index, entry);
-            return Some(config);
-        }
-        None
+        // Drop any entries whose budget has been spent. They are inert
+        // but still occupy a queue slot until we compact them out.
+        self.queue.retain(|e| e.remaining != Some(0));
+
+        // Linear scan for the highest-ranked entry. `>` (strictly greater)
+        // keeps the earliest index on ties, yielding stable FIFO tie-break.
+        let best = self.queue.iter().enumerate().fold(
+            None,
+            |acc: Option<(usize, i64)>, (i, e)| match acc {
+                None => Some((i, e.rank)),
+                Some((_, best_rank)) if e.rank > best_rank => Some((i, e.rank)),
+                Some(prev) => Some(prev),
+            },
+        )?;
+
+        let entry = self.queue.remove(best.0)?;
+        let batch_iters = match entry.remaining {
+            Some(r) => r.min(self.batch_size),
+            None => self.batch_size,
+        };
+        let config = BatchConfig {
+            task_index: entry.task_index,
+            batch_size: batch_iters,
+            batch_number: entry.batches_completed,
+        };
+        self.in_flight.insert(entry.task_index, entry);
+        Some(config)
     }
 
     /// Record the outcome of an in-flight batch.
     ///
     /// If the function is not exhausted, it is re-enqueued at the tail
-    /// with its remaining budget reduced by `iterations_used`.
+    /// of the queue with its remaining budget reduced by `iterations_used`
+    /// and its stored rank replaced by `outcome.rank`. The next call to
+    /// [`next_batch`] will re-select based on the updated rank, so the
+    /// same function may be picked again back-to-back if it still ranks
+    /// highest.
     ///
     /// # Panics
     ///
@@ -146,9 +195,10 @@ impl BatchScheduler {
     /// batch (i.e., `next_batch` was not called for this index, or the
     /// outcome was already recorded).
     pub fn record_outcome(&mut self, outcome: BatchOutcome) {
-        let mut entry = self.in_flight.remove(&outcome.task_index).expect(
-            "record_outcome called for a task_index that is not in flight",
-        );
+        let mut entry = self
+            .in_flight
+            .remove(&outcome.task_index)
+            .expect("record_outcome called for a task_index that is not in flight");
 
         entry.batches_completed += 1;
 
@@ -164,6 +214,10 @@ impl BatchScheduler {
             }
         }
 
+        // Replace the stored rank with the outcome's. Rank is not
+        // accumulated across batches: each batch reports its own score
+        // and the scheduler uses only the latest signal.
+        entry.rank = outcome.rank;
         self.queue.push_back(entry);
     }
 
@@ -213,6 +267,7 @@ mod tests {
             task_index: 0,
             iterations_used: 30,
             exhausted: true,
+            rank: 0,
         });
         assert!(s.next_batch().is_none());
         assert!(s.is_complete());
@@ -242,6 +297,7 @@ mod tests {
             task_index: 0,
             iterations_used: 50,
             exhausted: false,
+            rank: 0,
         });
 
         let b2 = s.next_batch().expect("second batch");
@@ -253,6 +309,7 @@ mod tests {
             task_index: 1,
             iterations_used: 50,
             exhausted: true,
+            rank: 0,
         });
 
         let b3 = s.next_batch().expect("task 0 should be re-enqueued");
@@ -262,6 +319,7 @@ mod tests {
             task_index: 0,
             iterations_used: 50,
             exhausted: true,
+            rank: 0,
         });
 
         assert!(s.next_batch().is_none());
@@ -281,6 +339,7 @@ mod tests {
                 task_index: b.task_index,
                 iterations_used: 50,
                 exhausted: false,
+                rank: 0,
             });
         }
         assert_eq!(order, vec![0, 1, 2]);
@@ -294,6 +353,7 @@ mod tests {
                 task_index: b.task_index,
                 iterations_used: 50,
                 exhausted: true, // exhaust all on second round
+                rank: 0,
             });
         }
         assert_eq!(order, vec![0, 1, 2]);
@@ -312,6 +372,7 @@ mod tests {
             task_index: 0,
             iterations_used: 50,
             exhausted: false,
+            rank: 0,
         });
 
         let b2 = s.next_batch().unwrap();
@@ -321,6 +382,7 @@ mod tests {
             task_index: 0,
             iterations_used: 30,
             exhausted: false, // caller says not exhausted, but budget is now 0
+            rank: 0,
         });
 
         // Budget spent — scheduler should not re-enqueue.
@@ -342,6 +404,7 @@ mod tests {
                 iterations_used: 10,
                 // Exhaust both on the 3rd round.
                 exhausted: i >= 4,
+                rank: 0,
             });
         }
         assert_eq!(order, vec![0, 1, 0, 1, 0, 1]);
@@ -358,6 +421,7 @@ mod tests {
                 task_index: 0,
                 iterations_used: 10,
                 exhausted: expected == 4,
+                rank: 0,
             });
         }
     }
@@ -373,6 +437,7 @@ mod tests {
             task_index: 0,
             iterations_used: 20,
             exhausted: false,
+            rank: 0,
         });
         // Remaining = 100 - 20 = 80. Next batch = min(80, 50) = 50.
         let b2 = s.next_batch().unwrap();
@@ -383,6 +448,7 @@ mod tests {
             task_index: 0,
             iterations_used: 50,
             exhausted: true,
+            rank: 0,
         });
         assert!(s.is_complete());
     }
@@ -399,6 +465,7 @@ mod tests {
             task_index: b.task_index,
             iterations_used: 50,
             exhausted: true,
+            rank: 0,
         });
         assert_eq!(s.pending_count(), 2); // exhausted, not re-enqueued
     }
@@ -422,22 +489,140 @@ mod tests {
             task_index: 2,
             iterations_used: 50,
             exhausted: false,
+            rank: 0,
         });
         s.record_outcome(BatchOutcome {
             task_index: 0,
             iterations_used: 50,
             exhausted: true,
+            rank: 0,
         });
         s.record_outcome(BatchOutcome {
             task_index: 1,
             iterations_used: 50,
             exhausted: false,
+            rank: 0,
         });
 
         assert_eq!(s.in_flight_count(), 0);
         // 0 was exhausted; 1 and 2 re-enqueued. Round order: 2 then 1.
         let next = s.next_batch().unwrap();
         assert_eq!(next.task_index, 2);
+    }
+
+    #[test]
+    fn higher_rank_wins_next_pick() {
+        // str-b2my.7 regression: after a batch finishes, the scheduler
+        // must re-rank the queue and pick the highest-scored entry next,
+        // which may be the same task back-to-back rather than the next
+        // round-robin slot. Two unbounded tasks, batch=50.
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        // Both start at rank 0 → FIFO → task 0 wins the first pick.
+        let b = s.next_batch().expect("first batch");
+        assert_eq!(b.task_index, 0);
+
+        // Task 0 reports a highly productive batch. It re-enters the
+        // queue with rank 5; task 1 is still at rank 0.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 5,
+        });
+
+        // Next pick: task 0 again, because its stored rank (5) beats
+        // task 1's initial rank (0) — even though task 1 has never run.
+        let b = s.next_batch().expect("second batch");
+        assert_eq!(
+            b.task_index, 0,
+            "rank-5 task 0 should be picked back-to-back over rank-0 task 1"
+        );
+        assert_eq!(
+            b.batch_number, 1,
+            "back-to-back picks still advance batch_number"
+        );
+
+        // Task 0's streak ends — rank drops to 0. Task 1 now ties at 0
+        // and wins via FIFO tie-break (earliest queue position).
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+        });
+        let b = s.next_batch().expect("third batch");
+        assert_eq!(
+            b.task_index, 1,
+            "after task 0's rank drops to 0, FIFO tie-break yields to task 1"
+        );
+
+        // Task 1 converges early — dropped. Task 0 is the only survivor.
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        let b = s.next_batch().expect("fourth batch");
+        assert_eq!(b.task_index, 0);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        assert!(s.next_batch().is_none());
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn rerank_replaces_stored_rank_not_accumulates() {
+        // A task's stored rank must be the *latest* outcome's rank, not
+        // a running sum. Otherwise a task that scored highly once would
+        // starve its peers forever even after becoming unproductive.
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        // Pop both tasks so neither sits in the queue during priming.
+        let a = s.next_batch().unwrap();
+        let b = s.next_batch().unwrap();
+        assert_eq!(a.task_index, 0);
+        assert_eq!(b.task_index, 1);
+
+        // Prime task 0 to a very high rank, task 1 to a moderate rank.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 100,
+        });
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 10,
+        });
+
+        // Highest-rank task 0 wins the next pick.
+        let pick = s.next_batch().unwrap();
+        assert_eq!(pick.task_index, 0);
+
+        // Task 0 reports a low-rank outcome this time. The stored rank
+        // must drop from 100 to 3 — NOT stay at 100 and not accumulate.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 3,
+        });
+
+        // Task 1 (still rank 10 in the queue) should now outrank task 0
+        // (rank 3). If rank accumulated, task 0 would be at 103 and win.
+        let pick = s.next_batch().unwrap();
+        assert_eq!(
+            pick.task_index, 1,
+            "rank must be replaced on re-enqueue, not accumulated"
+        );
     }
 
     #[test]
@@ -448,6 +633,7 @@ mod tests {
             task_index: 0,
             iterations_used: 10,
             exhausted: false,
+            rank: 0,
         });
     }
 }
@@ -475,6 +661,7 @@ mod proptests {
                     task_index: config.task_index,
                     iterations_used: config.batch_size,
                     exhausted: false,
+                rank: 0,
                 });
             }
 
@@ -502,6 +689,7 @@ mod proptests {
                     task_index: config.task_index,
                     iterations_used: config.batch_size,
                     exhausted: false,
+                rank: 0,
                 });
             }
 
@@ -529,6 +717,7 @@ mod proptests {
                     task_index: config.task_index,
                     iterations_used: config.batch_size,
                     exhausted: false,
+                rank: 0,
                 });
             }
         }
@@ -559,12 +748,48 @@ mod proptests {
                     task_index: config.task_index,
                     iterations_used: batch_size,
                     exhausted: exhaust,
+                rank: 0,
                 });
                 rounds += 1;
                 if rounds > max_rounds * 3 {
                     break; // safety net for unbounded
                 }
             }
+        }
+
+        /// After every task has recorded at least one outcome with an
+        /// assigned rank, the next pick is always a task whose stored
+        /// rank equals the maximum rank currently in the queue.
+        #[test]
+        fn highest_rank_is_always_picked_next(
+            ranks in proptest::collection::vec(-50_i64..=50, 2..=6),
+        ) {
+            let task_count = ranks.len();
+            let mut scheduler = BatchScheduler::new(task_count, None, 100);
+
+            // First round: pop every task in FIFO order and record each
+            // with its assigned rank. No exhaustion — all are re-queued.
+            let mut first_round = Vec::new();
+            for _ in 0..task_count {
+                let c = scheduler.next_batch().unwrap();
+                first_round.push(c.task_index);
+            }
+            for ti in &first_round {
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: *ti,
+                    iterations_used: 100,
+                    exhausted: false,
+                    rank: ranks[*ti],
+                });
+            }
+
+            let max_rank = *ranks.iter().max().unwrap();
+            let picked = scheduler.next_batch().unwrap();
+            prop_assert_eq!(
+                ranks[picked.task_index],
+                max_rank,
+                "next pick must be a task tied with the maximum rank"
+            );
         }
     }
 }

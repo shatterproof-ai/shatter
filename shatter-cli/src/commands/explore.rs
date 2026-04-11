@@ -103,6 +103,26 @@ fn persist_behavior_map(
     }
 }
 
+/// Count how many branch discoveries in `obs` are not already present in the
+/// accumulator's `prior_discoveries`. This is the rerank score passed to
+/// `BatchScheduler::record_outcome`: batches that surface novel branches rank
+/// higher than batches that only rediscovered known work, so a function on a
+/// discovery streak keeps its slot instead of yielding round-robin. Errored
+/// batches (obs = None) contribute zero new discoveries and therefore rank 0.
+fn new_discoveries_in_batch(
+    obs: Option<&shatter_core::explorer::ObservationOutput>,
+    prior_discoveries: &HashMap<u32, shatter_core::coverage_metrics::DiscoveryMethod>,
+) -> usize {
+    match obs {
+        None => 0,
+        Some(obs) => obs
+            .discoveries
+            .iter()
+            .filter(|(branch_id, _)| !prior_discoveries.contains_key(branch_id))
+            .count(),
+    }
+}
+
 /// Accumulates `ObservationOutput`s from multiple round-robin batches that all
 /// explored the same function, and collapses them into a single merged output
 /// for the downstream Phase 3 processing loop.
@@ -210,11 +230,9 @@ impl ExploreResultAccumulator {
                         .or_insert(v);
                 }
                 self.mcdc_summary = match (self.mcdc_summary, obs.mcdc_summary) {
-                    (Some(cur), Some(new)) => Some((
-                        cur.0.max(new.0),
-                        cur.1.max(new.1),
-                        cur.2.max(new.2),
-                    )),
+                    (Some(cur), Some(new)) => {
+                        Some((cur.0.max(new.0), cur.1.max(new.1), cur.2.max(new.2)))
+                    }
                     (None, new) => new,
                     (cur, None) => cur,
                 };
@@ -399,8 +417,7 @@ fn write_artifact_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Strin
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, &json)
         .map_err(|e| format!("failed to write artifact temp file: {e}"))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("failed to finalize artifact: {e}"))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| format!("failed to finalize artifact: {e}"))?;
     Ok(())
 }
 
@@ -434,7 +451,10 @@ fn read_explore_artifact(path: &Path) -> Result<ExploreFunctionArtifact, String>
 /// Reads `summary.json` for ordering when available, otherwise scans for `*.json` files.
 fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, String> {
     if !dir.is_dir() {
-        return Err(format!("artifact directory does not exist: {}", dir.display()));
+        return Err(format!(
+            "artifact directory does not exist: {}",
+            dir.display()
+        ));
     }
 
     let mut artifacts = Vec::new();
@@ -445,8 +465,7 @@ fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, St
         let entries = std::fs::read_dir(&current_dir)
             .map_err(|e| format!("failed to read directory {}: {e}", current_dir.display()))?;
         for entry in entries {
-            let entry =
-                entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
+            let entry = entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
             let path = entry.path();
             if path.is_dir() {
                 dirs_to_visit.push(path);
@@ -612,10 +631,7 @@ fn assemble_function_result(
             }
         } else {
             let report_opts = ReportOptions {
-                location: Some(format!(
-                    "{file_str}:{}-{}",
-                    func.start_line, func.end_line
-                )),
+                location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
                 show_perf: opts.show_perf,
                 wall_time: Some(wall_time),
                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
@@ -734,7 +750,10 @@ fn finalize_explore(
     // Print header.
     if log::log_enabled!(log::Level::Info) {
         if output_format == crate::args::OutputFormat::Md {
-            print_markdown("# Shatter Explore (finalized from artifacts)\n\n", use_color);
+            print_markdown(
+                "# Shatter Explore (finalized from artifacts)\n\n",
+                use_color,
+            );
         } else {
             print!(
                 "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore (finalized) \u{2550}\u{2550}\u{2550}{reset}\n\n",
@@ -748,10 +767,7 @@ fn finalize_explore(
         total_function_count += 1;
 
         if artifact.status != "completed" {
-            let reason = artifact
-                .error
-                .as_deref()
-                .unwrap_or("unknown");
+            let reason = artifact.error.as_deref().unwrap_or("unknown");
             log::info!(
                 "Skipping {} (status={}, reason={})",
                 artifact.function_name,
@@ -1198,10 +1214,7 @@ pub(crate) async fn run_explore(
                         for active in &selection.active {
                             println!(
                                 "  {}adapter [active]: {} ({}){}",
-                                colors.bold,
-                                active.adapter.id,
-                                active.provenance,
-                                colors.reset,
+                                colors.bold, active.adapter.id, active.provenance, colors.reset,
                             );
                         }
                         for suggested in &selection.suggested {
@@ -1744,32 +1757,29 @@ pub(crate) async fn run_explore(
 
         // Periodic progress callback: prints a one-line summary to stderr every
         // PROGRESS_SUMMARY_INTERVAL_SECS. Suppressed by --quiet (log_level Warn+).
-        let periodic_progress: Option<Arc<Box<ProgressCallback>>> =
-            if log_level >= LogLevel::Info {
-                Some(Arc::new(Box::new(
-                    |snapshot: &ExploreProgressSnapshot| {
-                        let secs = snapshot.elapsed.as_secs();
-                        let branches = snapshot
-                            .total_branches
-                            .map_or("?".to_string(), |t| t.to_string());
-                        let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
-                            snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
-                        } else {
-                            0.0
-                        };
-                        eprintln!(
-                            "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
-                            snapshot.function_name,
-                            snapshot.iterations,
-                            snapshot.paths_found,
-                            branches,
-                            rate,
-                        );
-                    },
-                )))
-            } else {
-                None
-            };
+        let periodic_progress: Option<Arc<Box<ProgressCallback>>> = if log_level >= LogLevel::Info {
+            Some(Arc::new(Box::new(|snapshot: &ExploreProgressSnapshot| {
+                let secs = snapshot.elapsed.as_secs();
+                let branches = snapshot
+                    .total_branches
+                    .map_or("?".to_string(), |t| t.to_string());
+                let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
+                    snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
+                    snapshot.function_name,
+                    snapshot.iterations,
+                    snapshot.paths_found,
+                    branches,
+                    rate,
+                );
+            })))
+        } else {
+            None
+        };
 
         // --- Phase 2: Interleaved round-robin batch launch + collection ---
         //
@@ -1835,8 +1845,7 @@ pub(crate) async fn run_explore(
                     let mut task_frontend = match Frontend::spawn(&fe_config).await {
                         Ok(fe) => fe,
                         Err(e) => {
-                            let completed =
-                                completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                            let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
                             emit_explore_progress(
                                 &item.func.name,
                                 completed,
@@ -1948,7 +1957,11 @@ pub(crate) async fn run_explore(
                         completed,
                         progress_total,
                         func_start.elapsed(),
-                        if result.is_ok() { "completed" } else { "failed" },
+                        if result.is_ok() {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
                     );
 
                     let _ = task_frontend.shutdown().await;
@@ -1984,10 +1997,22 @@ pub(crate) async fn run_explore(
             let exhausted =
                 batch_is_exhausted(&batch_outcome.result, batch_outcome.batch_iteration_cap);
 
+            // Score this batch by the number of branch discoveries it added
+            // that the accumulator had never seen before. This is the rerank
+            // signal for str-b2my.7: a function still uncovering new paths
+            // each batch ranks higher than one whose last batch produced
+            // nothing new, so the scheduler keeps running the productive
+            // function back-to-back until its yield drops.
+            let batch_rank = new_discoveries_in_batch(
+                batch_outcome.result.as_ref().ok(),
+                &accumulators[work_index].discoveries,
+            ) as i64;
+
             batch_scheduler.record_outcome(shatter_core::batch_scheduler::BatchOutcome {
                 task_index: work_index,
                 iterations_used: iters_used,
                 exhausted,
+                rank: batch_rank,
             });
             batches_completed += 1;
 
@@ -2003,7 +2028,11 @@ pub(crate) async fn run_explore(
                     .as_ref()
                     .map(|obs| obs.unique_paths)
                     .unwrap_or(0);
-                let status = if batch_outcome.result.is_ok() { "ok" } else { "err" };
+                let status = if batch_outcome.result.is_ok() {
+                    "ok"
+                } else {
+                    "err"
+                };
                 eprintln!(
                     "[batch {}/{}] {}: {} iters, {} paths, {:.1}s ({})",
                     batches_completed,
@@ -2088,26 +2117,26 @@ pub(crate) async fn run_explore(
         outcomes.sort_by_key(|outcome| outcome.work_index);
 
         for outcome in &outcomes {
-            let artifact_relpath =
-                match write_explore_artifact(&artifact_root, &file_str, outcome) {
-                    Ok(path) => {
-                        log::info!(
-                            "Wrote explore artifact for {} -> {}",
-                            outcome.func.name,
-                            path.display()
-                        );
-                        path.strip_prefix(&artifact_root)
-                            .ok()
-                            .map(|p| p.to_string_lossy().to_string())
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to write explore artifact for {}: {e}",
-                            outcome.func.name
-                        );
-                        None
-                    }
-                };
+            let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, outcome)
+            {
+                Ok(path) => {
+                    log::info!(
+                        "Wrote explore artifact for {} -> {}",
+                        outcome.func.name,
+                        path.display()
+                    );
+                    path.strip_prefix(&artifact_root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to write explore artifact for {}: {e}",
+                        outcome.func.name
+                    );
+                    None
+                }
+            };
 
             let summary_status = if outcome.result.is_ok() {
                 explore_summary.completed += 1;
@@ -2600,10 +2629,10 @@ pub(crate) async fn run_explore(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
-        EXPLORE_ARTIFACT_VERSION, batch_is_exhausted, emit_explore_progress,
-        explore_summary_path, load_explore_artifacts, read_explore_artifact,
-        sanitize_artifact_component, write_explore_artifact, write_explore_summary,
+        EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
+        FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
+        load_explore_artifacts, read_explore_artifact, sanitize_artifact_component,
+        write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
@@ -2757,10 +2786,7 @@ mod tests {
             100,
             1,
             10,
-            vec![
-                (5, DiscoveryMethod::Random),
-                (7, DiscoveryMethod::Random),
-            ],
+            vec![(5, DiscoveryMethod::Random), (7, DiscoveryMethod::Random)],
             vec![],
         )));
         let obs = acc.into_result().expect("ok");
@@ -2864,10 +2890,16 @@ mod tests {
                 not_exhausted_count += 1;
             }
             accs[batch_cfg.task_index].merge(result);
+            // Hard-code rank=0 to exercise the rank-0 degenerate path
+            // (strict round-robin via FIFO tie-break). The rerank behavior
+            // is covered by
+            // `scheduler_and_accumulator_rerank_picks_streaking_function`
+            // below.
             scheduler.record_outcome(BatchOutcome {
                 task_index: batch_cfg.task_index,
                 iterations_used: iters,
                 exhausted,
+                rank: 0,
             });
         }
 
@@ -2889,6 +2921,155 @@ mod tests {
         let fn_b = accs.remove(0).into_result().expect("fn_b merged");
         assert_eq!(fn_b.iterations, 1100);
         assert_eq!(fn_b.unique_paths, 2);
+    }
+
+    #[test]
+    fn scheduler_and_accumulator_rerank_picks_streaking_function() {
+        use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+
+        // str-b2my.7 regression: after each batch the scheduler should
+        // re-rank the queue by the number of new branches the batch
+        // uncovered, and the next pick should be whichever function now
+        // ranks highest — which may be the same function back-to-back.
+        //
+        // Two unbounded functions, batch cap = 500. Scripted scenario:
+        //
+        //   pick A (rank 0 tie → FIFO). A discovers 1 new branch → rank 1.
+        //   pick A again (1 > 0). A discovers 5 new branches → rank 5.
+        //   pick A again (5 > 0). A discovers 0 new → rank 0.
+        //   pick B  (tie 0/0 → FIFO → B, the never-run task).
+        //   B discovers 3 new → rank 3.
+        //   pick B again (3 > 0). B converges early, exhausted.
+        //   pick A (only A left). A converges early, exhausted.
+        //
+        // Expected pick order: A, A, A, B, B, A.
+        //
+        // This is the core behavioural contract of str-b2my.7:
+        // (a) back-to-back selection of the streaking function, and
+        // (b) yield to the peer when the streak dries up.
+        const CAP: u32 = 500;
+        let mut scheduler = BatchScheduler::with_individual_budgets(&[None, None], CAP);
+        let mut accs = vec![
+            ExploreResultAccumulator::new("fn_a".to_string()),
+            ExploreResultAccumulator::new("fn_b".to_string()),
+        ];
+
+        // (iters_used, discoveries) per batch, indexed by task then
+        // invocation order for that task.
+        type BatchScript = (u32, Vec<(u32, DiscoveryMethod)>);
+        let scripts: Vec<Vec<BatchScript>> = vec![
+            vec![
+                (500, vec![(1, DiscoveryMethod::Z3)]),
+                (
+                    500,
+                    vec![
+                        (2, DiscoveryMethod::Z3),
+                        (3, DiscoveryMethod::Z3),
+                        (4, DiscoveryMethod::Z3),
+                        (5, DiscoveryMethod::Z3),
+                        (6, DiscoveryMethod::Z3),
+                    ],
+                ),
+                (500, vec![(1, DiscoveryMethod::Random)]), // re-discovery: 0 new
+                (200, vec![]),                             // early convergence
+            ],
+            vec![
+                (
+                    500,
+                    vec![
+                        (10, DiscoveryMethod::Z3),
+                        (11, DiscoveryMethod::Z3),
+                        (12, DiscoveryMethod::Z3),
+                    ],
+                ),
+                (100, vec![]), // early convergence
+            ],
+        ];
+        let mut cursors = [0usize, 0usize];
+        let mut order: Vec<usize> = Vec::new();
+        let mut ranks_recorded: Vec<i64> = Vec::new();
+
+        while let Some(batch_cfg) = scheduler.next_batch() {
+            order.push(batch_cfg.task_index);
+            let cursor = &mut cursors[batch_cfg.task_index];
+            let (iters, discoveries) = scripts[batch_cfg.task_index][*cursor].clone();
+            *cursor += 1;
+
+            let result: Result<shatter_core::explorer::ObservationOutput, String> =
+                Ok(obs_with(iters, 1, 5, discoveries, vec![]));
+            let exhausted = batch_is_exhausted(&result, batch_cfg.batch_size);
+
+            // Compute the rerank score BEFORE merging, matching the
+            // production order in `run_explore`.
+            let rank = super::new_discoveries_in_batch(
+                result.as_ref().ok(),
+                &accs[batch_cfg.task_index].discoveries,
+            ) as i64;
+            ranks_recorded.push(rank);
+            accs[batch_cfg.task_index].merge(result);
+            scheduler.record_outcome(BatchOutcome {
+                task_index: batch_cfg.task_index,
+                iterations_used: iters,
+                exhausted,
+                rank,
+            });
+        }
+
+        // Streaking-function pick order: A three times, then B twice, then A.
+        assert_eq!(
+            order,
+            vec![0, 0, 0, 1, 1, 0],
+            "rerank must pick the streaking function back-to-back and yield on 0-rank ties"
+        );
+
+        // Rank trace verifies the rerank signal the scheduler saw at each
+        // tick. The values are: A=1 new, A=5 new, A=0 new, B=3 new, B=0, A=0.
+        assert_eq!(ranks_recorded, vec![1, 5, 0, 3, 0, 0]);
+
+        assert!(scheduler.is_complete());
+
+        // Accumulator totals: fn_a ran 4 batches (1700 iters, 6 unique
+        // branches — branch 1 re-discovered on the 3rd batch is not
+        // double-counted). fn_b ran 2 batches (600 iters, 3 branches).
+        let fn_a = accs.remove(0).into_result().expect("fn_a merged");
+        assert_eq!(fn_a.iterations, 1700);
+        assert_eq!(fn_a.unique_paths, 6);
+
+        let fn_b = accs.remove(0).into_result().expect("fn_b merged");
+        assert_eq!(fn_b.iterations, 600);
+        assert_eq!(fn_b.unique_paths, 3);
+    }
+
+    #[test]
+    fn new_discoveries_in_batch_counts_only_novel_branches() {
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+        use std::collections::HashMap;
+
+        let mut prior: HashMap<u32, DiscoveryMethod> = HashMap::new();
+        prior.insert(1, DiscoveryMethod::Z3);
+        prior.insert(2, DiscoveryMethod::Random);
+
+        let obs = obs_with(
+            100,
+            1,
+            5,
+            vec![
+                (1, DiscoveryMethod::Random), // already seen
+                (2, DiscoveryMethod::Z3),     // already seen
+                (3, DiscoveryMethod::Z3),     // new
+                (4, DiscoveryMethod::Z3),     // new
+            ],
+            vec![],
+        );
+        assert_eq!(super::new_discoveries_in_batch(Some(&obs), &prior), 2);
+
+        // Errored batches (obs = None) contribute no new discoveries.
+        assert_eq!(super::new_discoveries_in_batch(None, &prior), 0);
+
+        // Empty prior: every discovery counts as new.
+        let empty: HashMap<u32, DiscoveryMethod> = HashMap::new();
+        assert_eq!(super::new_discoveries_in_batch(Some(&obs), &empty), 4);
     }
 
     #[test]
@@ -3057,10 +3238,7 @@ mod tests {
         assert_eq!(parsed.failed, 1);
         assert_eq!(parsed.functions.len(), 2);
         assert_eq!(parsed.functions[0].function_name, "load");
-        assert_eq!(
-            parsed.functions[1].reason.as_deref(),
-            Some("timeout")
-        );
+        assert_eq!(parsed.functions[1].reason.as_deref(), Some("timeout"));
     }
 
     #[test]
