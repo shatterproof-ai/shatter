@@ -34,7 +34,12 @@ import type {
   RuntimeCryptoBoundary,
 } from "./protocol.js";
 import { detectRuntimeHints } from "./runtime-hints.js";
-import type { SandboxProvider } from "./runtime-hooks.js";
+import type {
+  SandboxProvider,
+  InvocationHook,
+  InvocationContext,
+  AdapterInvocationModel,
+} from "./runtime-hooks.js";
 import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
@@ -1061,6 +1066,131 @@ export async function executeFunction(
       adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
     };
   }
+}
+
+/**
+ * Execute a target through an adapter-owned invocation hook instead of
+ * calling the exported symbol directly.
+ *
+ * Used when `FunctionAnalysis.invocation_model` reports `kind: "adapter"`.
+ * The hook is responsible for mounting, scenario-driving, or otherwise
+ * invoking the target with `inputs` (which conform to the synthetic
+ * parameter schema declared on the model). The hook's `InvocationOutcome`
+ * is funnelled into a `RawExecuteResult` so the response wire shape stays
+ * identical to direct-call execution — no new ExecuteResponse fields.
+ *
+ * Branch decisions, line coverage, path constraints, and call traces are
+ * empty: adapter-owned execution is opaque to the instrumentor for now.
+ * Surface them later when an instrumented adapter mode is required.
+ */
+export async function executeAdapterOwned(args: {
+  hook: InvocationHook;
+  invocationModel: AdapterInvocationModel;
+  fileForExec: string;
+  functionName: string;
+  inputs: unknown[];
+  capture?: boolean;
+  timing?: TimingCollector;
+}): Promise<RawExecuteResult> {
+  const capture = args.capture ?? true;
+  const sideEffects: SideEffect[] = [];
+  const previousTarget = consoleTarget;
+  consoleTarget = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
+
+  const reconstructedInputs = args.inputs.map(reconstructValue);
+  const ctx: InvocationContext = {
+    fileForExec: args.fileForExec,
+    functionName: args.functionName,
+    invocationModel: args.invocationModel,
+    inputs: reconstructedInputs,
+    capture,
+  };
+
+  let returnValue: unknown = null;
+  let thrownError: ErrorInfo | null = null;
+  let outcomeSideEffects: SideEffect[] = [];
+
+  tryGc();
+  const startMem = process.memoryUsage();
+  const startCpu = process.cpuUsage();
+  const startTime = process.hrtime.bigint();
+
+  try {
+    const invokeFn = () => Promise.resolve(args.hook.invoke(ctx));
+    const outcome = args.timing
+      ? await args.timing.async("execute.invoke_hook", invokeFn)
+      : await invokeFn();
+
+    if (outcome.thrownError) {
+      thrownError = {
+        error_type: outcome.thrownError.error_type,
+        message: outcome.thrownError.message,
+        stack: outcome.thrownError.stack,
+        error_category: outcome.thrownError.error_category
+          ?? classifyError(outcome.thrownError.error_type, outcome.thrownError.message),
+      };
+    } else {
+      returnValue = outcome.returnValue ?? null;
+    }
+    outcomeSideEffects = outcome.sideEffects ? [...outcome.sideEffects] : [];
+  } catch (e: unknown) {
+    // The hook itself threw (as opposed to returning a structured thrownError).
+    // Build an ErrorInfo the same way measureExecution does.
+    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    const errorType = err.constructor?.name ?? "Error";
+    const errorMessage = String(err.message ?? e);
+    thrownError = {
+      error_type: errorType,
+      message: errorMessage,
+      stack: err.stack ?? null,
+      error_category: classifyError(errorType, errorMessage),
+    };
+  } finally {
+    consoleTarget = previousTarget;
+  }
+
+  const endTime = process.hrtime.bigint();
+  const endCpu = process.cpuUsage(startCpu);
+  const endMem = process.memoryUsage();
+  const performance: PerformanceMetrics = {
+    wall_time_ms: Number(endTime - startTime) / 1_000_000,
+    cpu_time_us: endCpu.user + endCpu.system,
+    heap_used_bytes: Math.max(0, endMem.heapUsed - startMem.heapUsed),
+    heap_allocated_bytes: Math.max(0, endMem.heapTotal - startMem.heapTotal),
+  };
+
+  if (capture && thrownError) {
+    sideEffects.push({
+      kind: "thrown_error",
+      error_type: thrownError.error_type,
+      message: thrownError.message,
+      stack: thrownError.stack,
+    });
+  }
+
+  // Concatenate hook-supplied side effects after console-captured ones so the
+  // ordering matches what a user reading the response sees: stdout emitted
+  // during invoke() first, then structured events the adapter chose to
+  // surface.
+  if (outcomeSideEffects.length > 0) {
+    sideEffects.push(...outcomeSideEffects);
+  }
+
+  return {
+    return_value: thrownError ? null : returnValue,
+    thrown_error: thrownError,
+    side_effects: sideEffects,
+    branch_path: [],
+    path_constraints: [],
+    lines_executed: [],
+    performance,
+    calls_to_external: [],
+    scope_events: [],
+    discovered_dependencies: [],
+    connection_failures: [],
+    runtime_crypto_boundaries: [],
+    adapter_hints: thrownError ? detectRuntimeHints(thrownError) : [],
+  };
 }
 
 /**

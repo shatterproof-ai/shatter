@@ -3,6 +3,7 @@ import * as path from "node:path";
 import {
   executeFunction,
   executeInstrumented,
+  executeAdapterOwned,
   buildExecuteResponse,
   clearModuleCache,
   clearCompiledScriptCache,
@@ -25,6 +26,12 @@ import {
   createShatterImport,
 } from "./executor.js";
 import type { ResolverAdapter } from "./executor.js";
+import type {
+  InvocationHook,
+  InvocationContext,
+  InvocationOutcome,
+  AdapterInvocationModel,
+} from "./runtime-hooks.js";
 import { instrumentFunction } from "./instrumentor.js";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
@@ -1959,5 +1966,154 @@ describe("import.meta polyfill", () => {
   it("transformDynamicImports does not replace import.meta inside __shatter_import_meta", () => {
     const input = "__shatter_import_meta.env.FOO";
     expect(transformDynamicImports(input)).toBe(input);
+  });
+});
+
+describe("executeAdapterOwned", () => {
+  const adapterModel: AdapterInvocationModel = {
+    kind: "adapter",
+    adapter_id: "test/adapter",
+  };
+
+  function makeHook(
+    fn: (ctx: InvocationContext) => InvocationOutcome | Promise<InvocationOutcome>,
+  ): InvocationHook {
+    return { id: "test/adapter", invoke: fn };
+  }
+
+  it("returns structured return_value with empty branch_path/lines_executed", async () => {
+    const calls: InvocationContext[] = [];
+    const hook = makeHook((ctx) => {
+      calls.push(ctx);
+      return { returnValue: { ok: true, n: 42 } };
+    });
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [1, "two"],
+    });
+
+    expect(result.return_value).toEqual({ ok: true, n: 42 });
+    expect(result.thrown_error).toBeNull();
+    expect(result.branch_path).toEqual([]);
+    expect(result.lines_executed).toEqual([]);
+    expect(result.path_constraints).toEqual([]);
+    expect(result.calls_to_external).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.functionName).toBe("fakeFn");
+    expect(calls[0]?.inputs).toEqual([1, "two"]);
+    expect(calls[0]?.capture).toBe(true);
+  });
+
+  it("captures structured thrownError and emits a thrown_error side effect", async () => {
+    const hook = makeHook(() => ({
+      thrownError: {
+        error_type: "ValidationError",
+        message: "bad input",
+        stack: "stack-trace",
+      },
+    }));
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [],
+    });
+
+    expect(result.return_value).toBeNull();
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error?.error_type).toBe("ValidationError");
+    expect(result.thrown_error?.message).toBe("bad input");
+    const thrownSE = result.side_effects.find((se) => se.kind === "thrown_error");
+    expect(thrownSE).toBeDefined();
+    expect((thrownSE as { error_type: string }).error_type).toBe("ValidationError");
+  });
+
+  it("captures hook-thrown exceptions (non-structured) into thrown_error", async () => {
+    const hook = makeHook(() => {
+      throw new TypeError("hook crashed");
+    });
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [],
+    });
+
+    expect(result.return_value).toBeNull();
+    expect(result.thrown_error?.error_type).toBe("TypeError");
+    expect(result.thrown_error?.message).toBe("hook crashed");
+  });
+
+  it("surfaces hook-supplied side effects in the result", async () => {
+    const hook = makeHook(() => ({
+      returnValue: null,
+      sideEffects: [
+        {
+          kind: "global_state_change",
+          variable: "counter",
+          before: 0,
+          after: 1,
+        },
+        {
+          kind: "global_mutation",
+          name: "flag",
+        },
+      ],
+    }));
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [],
+      capture: true,
+    });
+
+    const kinds = result.side_effects.map((se) => se.kind);
+    expect(kinds).toContain("global_state_change");
+    expect(kinds).toContain("global_mutation");
+  });
+
+  it("does not capture console output when capture is false", async () => {
+    const hook = makeHook((ctx) => {
+      // eslint-disable-next-line no-console
+      console.log("should not be captured");
+      void ctx;
+      return { returnValue: 1 };
+    });
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [],
+      capture: false,
+    });
+
+    expect(result.side_effects.find((se) => se.kind === "console_output")).toBeUndefined();
+  });
+
+  it("populates performance metrics", async () => {
+    const hook = makeHook(() => ({ returnValue: "ok" }));
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: adapterModel,
+      fileForExec: "/tmp/fake.ts",
+      functionName: "fakeFn",
+      inputs: [],
+    });
+
+    expect(result.performance.wall_time_ms).toBeGreaterThanOrEqual(0);
+    expect(result.performance.cpu_time_us).toBeGreaterThanOrEqual(0);
   });
 });

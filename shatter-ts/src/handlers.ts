@@ -29,10 +29,17 @@ import {
   type ErrorResponse,
   type SetupLevel,
   type ExecutionProfile,
+  type FunctionAnalysis,
+  type InvocationModel,
 } from "./protocol.js";
 import { TimingCollector } from "./timing.js";
 import { InstrumentationWorker } from "./instrumentation-worker.js";
-import { resolveRuntimeHooks } from "./runtime-hooks.js";
+import {
+  resolveRuntimeHooks,
+  chooseInvocationStrategy,
+  DEFAULT_RUNTIME_HOOK_FACTORIES,
+  type RuntimeHookFactory,
+} from "./runtime-hooks.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
 
@@ -140,6 +147,14 @@ let lastProjectRoot: string | undefined;
 const instrumentedSources = new Map<string, string>();
 
 /**
+ * FunctionAnalysis records, keyed by "resolvedFile:functionName".
+ * Populated by the analyze handler so the execute handler can read
+ * `invocation_model` and decide whether to dispatch through an
+ * adapter-owned invocation hook (str-t4uo.2.3).
+ */
+const cachedAnalyses = new Map<string, FunctionAnalysis>();
+
+/**
  * Loaded setup modules, keyed by file path.
  * Cached so teardown can use the same module instance as setup.
  */
@@ -191,6 +206,17 @@ function wantsTimingFromHandshake(request: Request): boolean {
   return request.command === "handshake" && request.capabilities.includes("timing");
 }
 
+let testRuntimeHookFactories: readonly RuntimeHookFactory[] | null = null;
+
+/** Test seam: install (or clear) extra runtime hook factories. The supplied
+ *  factories are appended to the defaults so the production set still
+ *  resolves. Pass `null` to restore the defaults. */
+export function __setTestRuntimeHookFactoriesForTest(
+  factories: readonly RuntimeHookFactory[] | null,
+): void {
+  testRuntimeHookFactories = factories;
+}
+
 function resolveRuntimeHooksForRequest(
   executionProfile: ExecutionProfile | null | undefined,
   context: {
@@ -200,6 +226,10 @@ function resolveRuntimeHooksForRequest(
     function_name?: string;
   },
 ): ReturnType<typeof resolveRuntimeHooks> {
+  if (testRuntimeHookFactories) {
+    const merged = [...DEFAULT_RUNTIME_HOOK_FACTORIES, ...testRuntimeHookFactories];
+    return resolveRuntimeHooks(executionProfile, context, merged);
+  }
   return resolveRuntimeHooks(executionProfile, context);
 }
 
@@ -290,6 +320,13 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
           ),
           shutdown: false,
         };
+      }
+
+      // Cache analysis records so execute can read `invocation_model` and
+      // decide whether to dispatch through an adapter-owned hook.
+      const resolvedAnalyzedFile = path.resolve(request.file);
+      for (const fn of functions) {
+        cachedAnalyses.set(`${resolvedAnalyzedFile}:${fn.name}`, fn);
       }
 
       return {
@@ -458,6 +495,41 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
         const capture = request.capture ?? true;
         let rawResult;
+
+        // Adapter-owned invocation: if a prior analyze reported a non-direct
+        // invocation_model for this target, dispatch through an InvocationHook
+        // resolved from the ExecutionProfile instead of calling the exported
+        // symbol directly. Direct-call remains the default whenever the
+        // analysis is absent or reports kind: "direct".
+        const cachedAnalysis = cachedAnalyses.get(`${fileForExec}:${funcName}`);
+        const strategy = chooseInvocationStrategy(
+          cachedAnalysis?.invocation_model,
+          runtimeHooks.invocation_hooks,
+        );
+        if (strategy.kind === "unsupported") {
+          throw new Error(
+            `execution adapter not supported by TypeScript frontend: ${strategy.adapterId}`,
+          );
+        }
+        if (strategy.kind === "adapter") {
+          rawResult = await executor.executeAdapterOwned({
+            hook: strategy.hook,
+            invocationModel: strategy.model,
+            fileForExec,
+            functionName: funcName,
+            inputs: request.inputs,
+            capture,
+            timing,
+          });
+          return {
+            response: finalizeResponse(
+              executor.buildExecuteResponse(request.id, PROTOCOL_VERSION, rawResult, timing),
+              timing,
+            ),
+            shutdown: false,
+          };
+        }
+
         if (instrumentedSource) {
           rawResult = timing
             ? await timing.async("execute.total", () =>
@@ -603,6 +675,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         }
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
+        cachedAnalyses.clear();
         preparedKeys.clear();
         preparedTargets.clear();
         // Only clear executor caches if executor was loaded this session.
@@ -691,6 +764,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Only invoke cleanup on modules that were actually loaded this session.
       if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
+      cachedAnalyses.clear();
       preparedKeys.clear();
       preparedTargets.clear();
       if (_executor) {
@@ -806,6 +880,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
  */
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
+  cachedAnalyses.clear();
   preparedKeys.clear();
   preparedTargets.clear();
   if (_executor) _executor.clearCompiledScriptCache();
@@ -829,6 +904,46 @@ export async function terminateWorker(): Promise<void> {
 /** Number of cached instrumented sources. Exposed for testing. */
 export function instrumentedSourcesSize(): number {
   return instrumentedSources.size;
+}
+
+/** Number of cached analyses. Exposed for testing. */
+export function cachedAnalysesSize(): number {
+  return cachedAnalyses.size;
+}
+
+/**
+ * Inject (or clear) an invocation_model on the cached analysis for a given
+ * resolved file + function name. Test-only seam: the analyzer does not yet
+ * populate `invocation_model`, so tests need a way to construct the
+ * adapter-owned execute path without spinning up a fake recognizer.
+ */
+export function __setCachedInvocationModelForTest(
+  resolvedFile: string,
+  functionName: string,
+  invocationModel: InvocationModel | undefined,
+): void {
+  const key = `${resolvedFile}:${functionName}`;
+  const existing = cachedAnalyses.get(key);
+  if (existing) {
+    if (invocationModel === undefined) {
+      const { invocation_model: _drop, ...rest } = existing;
+      cachedAnalyses.set(key, rest as FunctionAnalysis);
+    } else {
+      cachedAnalyses.set(key, { ...existing, invocation_model: invocationModel });
+    }
+    return;
+  }
+  // Synthesize a minimal FunctionAnalysis when no real one was cached.
+  cachedAnalyses.set(key, {
+    name: functionName,
+    params: [],
+    branches: [],
+    dependencies: [],
+    return_type: { kind: "unknown" },
+    start_line: 0,
+    end_line: 0,
+    ...(invocationModel === undefined ? {} : { invocation_model: invocationModel }),
+  });
 }
 
 /** Number of cached setup contexts. Exposed for testing. */
