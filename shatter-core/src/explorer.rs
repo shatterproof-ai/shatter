@@ -179,6 +179,17 @@ pub struct ExploreProgressSnapshot {
     pub paths_found: usize,
     /// Total branches reported by static analysis (if known).
     pub total_branches: Option<usize>,
+    /// Number of distinct branches covered so far (unique branch IDs with
+    /// recorded discoveries). `None` when the explorer does not track per-branch
+    /// discovery attribution.
+    pub branches_covered: Option<usize>,
+    /// MC/DC summary when condition coverage tracking is enabled:
+    /// `(total_conditions, independent_conditions, opaque_conditions)`.
+    pub mcdc_summary: Option<(usize, usize, usize)>,
+    /// Iterations elapsed since the last newly-discovered branch. Non-zero
+    /// values mean the function is spinning without finding new coverage —
+    /// surfaces the "continuing without new discoveries" signal.
+    pub iters_since_new_discovery: u32,
 }
 
 /// Callback type for receiving periodic exploration progress summaries.
@@ -868,6 +879,14 @@ pub async fn explore_function(
     let mut iterations: u32 = 0;
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
 
+    // Tracked for progress reporting: number of branches observed at the last
+    // periodic snapshot, and the iteration index at which that observation was
+    // taken. Their difference feeds `iters_since_new_discovery` so the CLI can
+    // surface the "continuing without new discoveries" signal from the issue
+    // acceptance criteria.
+    let mut last_reported_branches: usize = 0;
+    let mut last_discovery_iteration: u32 = 0;
+
     // --- Prepare lifecycle ---
     // When the frontend supports `prepare`, pre-build the harness once so all
     // subsequent Execute calls can skip the compile phase.
@@ -1090,6 +1109,13 @@ pub async fn explore_function(
         iterations += 1;
 
         // --- Periodic progress summary ---
+        // Track branch discovery growth even when no callback is registered so
+        // the "iters since new discovery" counter remains accurate across
+        // subsequent periodic emissions.
+        if discoveries.len() > last_reported_branches {
+            last_reported_branches = discoveries.len();
+            last_discovery_iteration = iterations;
+        }
         if let Some(cb) = progress_cb {
             let since_last = last_summary_time.elapsed();
             if since_last >= Duration::from_secs(PROGRESS_SUMMARY_INTERVAL_SECS) {
@@ -1099,6 +1125,9 @@ pub async fn explore_function(
                     iterations,
                     paths_found: obs_state.seen_paths.len(),
                     total_branches: Some(analysis.branches.len()),
+                    branches_covered: Some(discoveries.len()),
+                    mcdc_summary: None,
+                    iters_since_new_discovery: iterations.saturating_sub(last_discovery_iteration),
                 });
                 last_summary_time = Instant::now();
             }
