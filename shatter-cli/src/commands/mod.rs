@@ -5,7 +5,6 @@ pub(crate) mod cache;
 pub(crate) mod compare;
 pub(crate) mod diff;
 pub(crate) mod explore;
-pub(crate) mod export;
 pub(crate) mod init;
 pub(crate) mod nondeterminism;
 pub(crate) mod observe;

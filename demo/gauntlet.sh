@@ -441,13 +441,6 @@ step 12 $TOTAL "Scan Rust Examples" \
     "Preview a dependency-ordered Rust scan plan on a representative sample" \
     $SHATTER scan --core-sample 3 --dry-run "$EXAMPLES_RUST_SRC_DIR"
 
-# Stage 12: Export tests
-step 13 $TOTAL "Export Generated Tests" \
-    "Generate Jest test files from explored behavior maps" \
-    $SHATTER export-tests --framework jest --module-path "./src/01-arithmetic" \
-    -o "$HTML_REPORT_DIR/export-tests.html" --stdout \
-    "$TS_ARITHMETIC_FN"
-
 # Stage 13: Run (full pipeline, analyze only)
 step 14 $TOTAL "Run: Analyze Only" \
     "Discover, analyze, and report on all files in the standalone TS directory" \
@@ -537,12 +530,6 @@ step 28 $TOTAL "Cross-Language Compare" \
 step 29 $TOTAL "Explore Without Boundary Values" \
     "Disable built-in boundary value seeding with --no-boundary-values" \
     $SHATTER explore --no-boundary-values "${EXAMPLES[0]}"
-
-# Stage 28: Emit tests from scan
-step 29 $TOTAL "Emit Tests from Scan" \
-    "Generate Jest test files from behavior maps discovered during scan" \
-    $SHATTER scan --emit-tests jest --tests-dir /tmp/shatter-demo-tests \
-    "$EXAMPLES_TS_DIR"
 
 # Stage 29: Markdown scan report
 step 30 $TOTAL "Markdown Scan Report" \

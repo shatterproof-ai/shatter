@@ -111,7 +111,7 @@ Useful follow-ons:
 
 ```bash
 shatter scan --changed src/
-shatter export-tests --framework jest shipping.ts:calculateShipping
+shatter diff snapshots/shipping.json current/shipping.json
 ```
 
 ## 6. Know Where To Look Next

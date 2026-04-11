@@ -107,7 +107,7 @@ The sanitizer operates on the raw `args` vector (after the binary name). It clas
 | Rule | Condition | Output | Example in → out |
 |---|---|---|---|
 | **1. Split `--flag=value`** | Token matches `--\w+=.+` | Split into flag + value; flag preserved, value sanitized by rules below | `--output=/tmp/results` → `--output=<path>` |
-| **2. Known subcommand** | Token ∈ `{explore, scan, run, diff, spec-diff, export-tests, build-frontend, stale, telemetry}` | Preserve | `scan` → `scan` |
+| **2. Known subcommand** | Token ∈ `{explore, scan, run, diff, spec-diff, build-frontend, stale, telemetry}` | Preserve | `scan` → `scan` |
 | **3. Flag name** | Token starts with `-` | Preserve (this is the signal we want — including unknown flags) | `--concolic-mode` → `--concolic-mode` |
 | **4. Path-like value** | Contains `/` or `\`, or matches `*.{ts,js,go,rs,json,yaml,yml,toml,md,txt,jsx,tsx,mjs,cjs}` | Replace with `<path>.{ext}` (preserving extension) or `<path>` if no extension | `src/deep/app.ts` → `<path>.ts`, `/home/user/project/` → `<path>` |
 | **5. Numeric value** | Matches `^\d+(\.\d+)?$` | Preserve (timeouts, iteration counts — not sensitive) | `30` → `30`, `1.5` → `1.5` |

@@ -296,12 +296,6 @@ step 10 $TOTAL "Explore Rust Functions" \
 # Stage 11: Scan Rust examples
 skip 11 $TOTAL "Scan Rust Examples" "Rust project deps not available in container"
 
-# Stage 12: Export tests
-step 12 $TOTAL "Export Generated Tests" \
-    "Generate Jest test files from explored behavior maps" \
-    export-tests --framework jest --module-path "./src/01-arithmetic" \
-    "examples/standalone/ts/01-arithmetic.ts:classifyNumber"
-
 # Stage 13: Run (analyze only)
 step 13 $TOTAL "Run: Analyze Only" \
     "Discover, analyze, and report on all files in the standalone TS directory" \
@@ -373,12 +367,6 @@ skip 26 $TOTAL "Specification Diff" "demo fixtures not mounted"
 step 27 $TOTAL "Explore Without Boundary Values" \
     "Disable built-in boundary value seeding with --no-boundary-values" \
     explore --no-boundary-values "${EXAMPLES[0]}"
-
-# Stage 28: Emit tests from scan
-step 28 $TOTAL "Emit Tests from Scan" \
-    "Generate Jest test files from behavior maps discovered during scan" \
-    scan --emit-tests jest --output /tmp/shatter-demo-tests \
-    examples/standalone/ts
 
 # Stage 29: Markdown scan report
 step 29 $TOTAL "Markdown Scan Report" \

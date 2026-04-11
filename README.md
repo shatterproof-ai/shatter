@@ -169,7 +169,6 @@ Use `shatter --help` and `shatter <command> --help` for the current CLI surface.
 
 - `shatter explore`: analyze one file or function and generate inputs for distinct behaviors
 - `shatter scan`: explore a project or directory in dependency order
-- `shatter export-tests`: turn discovered behaviors into test files
 - `shatter diff` and `shatter spec-diff`: compare current behavior against a saved baseline
 - `shatter observe`, `analyze`, `solve`, and `specify`: lower-level pipeline commands for offline and staged workflows
 
