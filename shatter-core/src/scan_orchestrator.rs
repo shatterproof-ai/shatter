@@ -24,8 +24,9 @@ use tokio::sync::Mutex;
 
 use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
-use crate::cache::BehaviorMapCache;
+use crate::cache::{BehaviorMapCache, StoredInputsCache};
 use crate::execution_record::ExecutionRecord;
+use crate::fingerprint::FunctionSignature;
 use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
@@ -226,6 +227,13 @@ pub struct ScanConfig {
     /// cache miss (missing, corrupt, or wrong-schema entry) degrades
     /// silently and the scheduler runs from scratch.
     pub scheduler_state_cache: Option<Arc<crate::cache::SchedulerStateCache>>,
+    /// Optional disk cache for persisting function input vectors across
+    /// runs. Keyed by [`crate::fingerprint::FunctionSignature`] so stored
+    /// inputs survive body edits that drop the behavior map cache
+    /// (str-bo4z.3). When `Some`, every successful scan of a function also
+    /// writes the exercised input vectors to this cache so a later run can
+    /// replay them as seeds (str-bo4z.4).
+    pub stored_inputs_cache: Option<Arc<crate::cache::StoredInputsCache>>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -383,6 +391,33 @@ pub struct ScanProgressUpdate {
 }
 
 pub type ProgressHandler = Arc<dyn Fn(ScanProgressUpdate) + Send + Sync>;
+
+/// Persist the input vectors from a behavior map to the signature-keyed
+/// [`StoredInputsCache`] (str-bo4z.3).
+///
+/// No-op when `cache` is `None` so callers can unconditionally invoke this
+/// alongside [`BehaviorMapCache::store`]. Failures to write are logged at
+/// `warn` and swallowed — stored inputs are advisory, not load-bearing, so
+/// a disk write failure must not fail the scan.
+fn persist_stored_inputs(
+    cache: Option<&StoredInputsCache>,
+    analysis: &FunctionAnalysis,
+    behavior_map: &BehaviorMap,
+) {
+    let Some(cache) = cache else { return };
+    let signature = FunctionSignature::from_analysis(analysis);
+    let inputs: Vec<Vec<serde_json::Value>> = behavior_map
+        .behaviors
+        .iter()
+        .map(|b| b.input_args.clone())
+        .collect();
+    if let Err(e) = cache.store(&behavior_map.function_id, &signature, &inputs) {
+        log::warn!(
+            "failed to persist stored inputs for {}: {e}",
+            behavior_map.function_id
+        );
+    }
+}
 
 fn emit_progress(
     progress_handler: Option<&ProgressHandler>,
@@ -1282,6 +1317,13 @@ pub async fn scan(
         if let Some(ref cache) = config.cache {
             let _ = cache.store(&analyze_out.behavior_map);
         }
+        // Persist input vectors to the signature-keyed store so they
+        // survive body edits that would drop the behavior map (str-bo4z.3).
+        persist_stored_inputs(
+            config.stored_inputs_cache.as_deref(),
+            analysis,
+            &analyze_out.behavior_map,
+        );
 
         // Record deep fingerprint for downstream functions.
         if let Some(ref dfp) = current_deep_fp {
@@ -1986,6 +2028,7 @@ async fn run_layer_function_mode(
     max_concurrent: usize,
     timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
+    stored_inputs_cache: &Option<Arc<StoredInputsCache>>,
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
     input_pool: &Arc<Mutex<InterestingPool>>,
     genetic_config: &crate::config::GeneticConfig,
@@ -2013,6 +2056,7 @@ async fn run_layer_function_mode(
         let behavior_maps = Arc::clone(behavior_maps);
         let input_pool = Arc::clone(input_pool);
         let cache = cache.clone();
+        let stored_inputs_cache = stored_inputs_cache.clone();
         let genetic_config = genetic_config.clone();
         let progress_handler = progress_handler.clone();
         let artifact_root = artifact_root.clone();
@@ -2080,6 +2124,11 @@ async fn run_layer_function_mode(
                     if let Some(ref cache) = cache {
                         let _ = cache.store(&func_result.behavior_map);
                     }
+                    persist_stored_inputs(
+                        stored_inputs_cache.as_deref(),
+                        &analysis,
+                        &func_result.behavior_map,
+                    );
                     write_completed_scan_artifact(
                         artifact_root.as_deref(),
                         progress_index,
@@ -2863,6 +2912,7 @@ pub async fn parallel_scan_with_progress(
                     effective_parallelism,
                     config.timeout_per_fn,
                     &config.cache,
+                    &config.stored_inputs_cache,
                     &behavior_maps,
                     &input_pool,
                     &config.genetic_config,
@@ -3130,6 +3180,23 @@ pub async fn parallel_scan_with_progress(
                     for outcome in &outcomes {
                         if let FunctionOutcome::Success(result) = outcome {
                             let _ = cache.store(&result.behavior_map);
+                        }
+                    }
+                }
+                // Persist input vectors to the signature-keyed store
+                // (str-bo4z.3). Looks up each success's analysis from the
+                // per-layer map so the signature reflects the source.
+                if config.stored_inputs_cache.is_some() {
+                    for outcome in &outcomes {
+                        if let FunctionOutcome::Success(result) = outcome
+                            && let Some(analysis) =
+                                analysis_map.get(result.function_name.as_str())
+                        {
+                            persist_stored_inputs(
+                                config.stored_inputs_cache.as_deref(),
+                                analysis,
+                                &result.behavior_map,
+                            );
                         }
                     }
                 }
@@ -4784,6 +4851,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4869,6 +4937,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4947,6 +5016,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5045,6 +5115,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5124,6 +5195,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -5207,6 +5279,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let skipped_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5263,6 +5336,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let failed_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5386,6 +5460,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5476,6 +5551,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5536,6 +5612,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5581,6 +5658,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -5615,6 +5693,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -6259,6 +6338,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -6383,6 +6463,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -6470,6 +6551,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6556,6 +6638,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6659,6 +6742,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6773,6 +6857,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6903,6 +6988,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7033,6 +7119,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7149,6 +7236,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7257,6 +7345,7 @@ mod tests {
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)

@@ -589,6 +589,7 @@ pub(crate) async fn run_scan(
             genetic_config: genetic_config.clone(),
             batch_size: None,
             scheduler_state_cache: None,
+            stored_inputs_cache: None,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -617,6 +618,26 @@ pub(crate) async fn run_scan(
         Some(std::sync::Arc::new(
             BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?,
         ))
+    };
+    // Stored-inputs sidecar cache (str-bo4z.3). Colocated with behavior maps
+    // so a single `ls` of the cache dir shows both artifacts. Disabled by the
+    // same `--no-cache` flag.
+    let stored_inputs_cache = if no_cache {
+        None
+    } else {
+        let dir = match cache_dir {
+            Some(d) => d.to_path_buf(),
+            None => shatter_core::cache::StoredInputsCache::default_dir(
+                &std::env::current_dir()?,
+            ),
+        };
+        shatter_core::cache::StoredInputsCache::new(dir)
+            .map_err(|e| {
+                log::warn!("failed to initialize stored-inputs cache: {e}");
+                e
+            })
+            .ok()
+            .map(std::sync::Arc::new)
     };
 
     // We need a single frontend config for parallel_scan. Pick from the first language.
@@ -718,6 +739,7 @@ pub(crate) async fn run_scan(
         genetic_config: genetic_config.clone(),
         batch_size: None,
         scheduler_state_cache: None,
+        stored_inputs_cache,
     };
 
     let scan_start = Instant::now();
