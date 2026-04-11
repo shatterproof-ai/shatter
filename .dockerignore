@@ -14,6 +14,9 @@
 !shatter-ts/
 !shatter-go/
 
+# Container entrypoint script
+!docker/
+
 # Exclude nested build artifacts even within included dirs
 shatter-ts/node_modules/
 shatter-ts/dist/
