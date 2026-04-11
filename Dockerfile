@@ -70,10 +70,16 @@ RUN ldconfig 2>/dev/null || true; rm -f /usr/local/lib/.keep
 COPY --from=builder /build/target/release/shatter /usr/local/bin/shatter
 COPY --from=builder /build/shatter-rust/target/release/shatter-rust /usr/local/bin/shatter-rust
 
+# Entrypoint wrapper: ensures .shatter/ scratch dir exists under the bind mount
+# before exec'ing shatter, so users do not need to pre-create it on the host.
+COPY docker/entrypoint.sh /usr/local/bin/shatter-entrypoint
+RUN chmod +x /usr/local/bin/shatter-entrypoint
+
 # OCI image labels
 LABEL org.opencontainers.image.source="https://github.com/shatter-dev/shatter"
 LABEL org.opencontainers.image.description="Automatic exploratory testing via concolic execution"
 LABEL org.opencontainers.image.licenses="MIT"
 
-WORKDIR /repo
-ENTRYPOINT ["shatter"]
+# /work is the conventional bind-mount target: `docker run -v "$PWD:/work" ...`
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/shatter-entrypoint"]
