@@ -399,7 +399,7 @@ step 4 $TOTAL "Generate & Execute Inputs" \
 # Stage 4: Clusters
 step 5 $TOTAL "Show Behavior Clusters" \
     "Group executions by branch path into distinct behaviors" \
-    $SHATTER explore --show-clusters "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --show-clusters "${EXAMPLES[@]}"
 
 # Stage 5: Scan standalone TS files
 step 6 $TOTAL "Scan Standalone TypeScript" \
@@ -409,7 +409,7 @@ step 6 $TOTAL "Scan Standalone TypeScript" \
 # Stage 6: Cache behavior maps
 step 7 $TOTAL "Explore with Disk Cache" \
     "Persist behavior maps to disk for reuse across runs (SHATTER_CACHE_DIR)" \
-    $SHATTER explore "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 "${EXAMPLES[@]}"
 
 # Stage 7: Analyze Go functions
 step 8 $TOTAL "Analyze Go Functions" \
@@ -459,7 +459,7 @@ step 16 $TOTAL "Verbose Output with Debug Log Level" \
 # Stage 16: Request timeout
 step 17 $TOTAL "Request Timeout" \
     "Set a per-request timeout to bound frontend communication" \
-    $SHATTER explore --request-timeout 15 "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --request-timeout 15 "${EXAMPLES[@]}"
 
 # Stage 17: User-provided inputs via config
 step 18 $TOTAL "User-Provided Inputs via Config" \
@@ -470,7 +470,7 @@ step 18 $TOTAL "User-Provided Inputs via Config" \
 # Stage 18: Performance stats
 step 19 $TOTAL "Performance Stats" \
     "Show gauntlet timing summaries using structured timing artifacts" \
-    $SHATTER explore "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 "${EXAMPLES[@]}"
 
 # Stage 19: Parallel scan with worker pool
 step 20 $TOTAL "Parallel Scan" \
@@ -480,7 +480,7 @@ step 20 $TOTAL "Parallel Scan" \
 # Stage 20: Parallel explore with --jobs
 step 21 $TOTAL "Parallel Explore" \
     "Explore multiple functions in parallel using --jobs (limits concurrency)" \
-    $SHATTER explore --jobs 2 "${EXAMPLES[@]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --jobs 2 "${EXAMPLES[@]}"
 
 # Stage 22: Execution timeout
 step 22 $TOTAL "Execution Timeout" \
