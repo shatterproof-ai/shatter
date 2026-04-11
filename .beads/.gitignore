@@ -1,6 +1,10 @@
 # Dolt database (managed by Dolt, not git)
 dolt/
+embeddeddolt/
 dolt-access.lock
+
+# Push state (runtime, per-machine)
+push-state.json
 
 # Runtime files
 bd.sock
