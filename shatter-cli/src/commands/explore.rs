@@ -65,6 +65,26 @@ const EXPLORE_ARTIFACT_VERSION: u32 = 2;
 /// Not exposed through the user-facing CLI — tuning happens here.
 const EXPLORE_BATCH_ITERATIONS: u32 = 500;
 
+/// Decide whether a completed batch has exhausted its function.
+///
+/// A function is exhausted — and should NOT be re-enqueued — when either
+/// (a) the batch errored (re-running won't help this run), or
+/// (b) the orchestrator converged early, using strictly fewer iterations
+///     than the batch cap (nothing left to explore).
+/// Otherwise the scheduler re-queues the task for another slice. This is
+/// the sole criterion separating true round-robin batching from the
+/// degenerate "one batch per function" mode, so it is extracted as a
+/// free function to be unit-tested without spinning up a frontend.
+fn batch_is_exhausted(
+    result: &Result<shatter_core::explorer::ObservationOutput, String>,
+    batch_iteration_cap: u32,
+) -> bool {
+    match result {
+        Err(_) => true,
+        Ok(obs) => obs.iterations < batch_iteration_cap,
+    }
+}
+
 /// Accumulates `ObservationOutput`s from multiple round-robin batches that all
 /// explored the same function, and collapses them into a single merged output
 /// for the downstream Phase 3 processing loop.
@@ -1943,13 +1963,8 @@ pub(crate) async fn run_explore(
                 .as_ref()
                 .map(|obs| obs.iterations)
                 .unwrap_or(0);
-            // Mark exhausted when:
-            //   - the batch errored (re-running won't help this run), OR
-            //   - the orchestrator converged early (used fewer iters than the
-            //     cap), meaning the function is done.
-            // Otherwise the scheduler re-enqueues for another slice.
-            let exhausted = batch_outcome.result.is_err()
-                || iters_used < batch_outcome.batch_iteration_cap;
+            let exhausted =
+                batch_is_exhausted(&batch_outcome.result, batch_outcome.batch_iteration_cap);
 
             batch_scheduler.record_outcome(shatter_core::batch_scheduler::BatchOutcome {
                 task_index: work_index,
@@ -2558,9 +2573,9 @@ pub(crate) async fn run_explore(
 mod tests {
     use super::{
         ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
-        EXPLORE_ARTIFACT_VERSION, emit_explore_progress, explore_summary_path,
-        load_explore_artifacts, read_explore_artifact, sanitize_artifact_component,
-        write_explore_artifact, write_explore_summary,
+        EXPLORE_ARTIFACT_VERSION, batch_is_exhausted, emit_explore_progress,
+        explore_summary_path, load_explore_artifacts, read_explore_artifact,
+        sanitize_artifact_component, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
@@ -2737,6 +2752,115 @@ mod tests {
         let obs = acc.into_result().expect("ok");
         assert_eq!(obs.lines_covered, 7);
         assert_eq!(obs.total_lines, 10);
+    }
+
+    #[test]
+    fn batch_is_exhausted_covers_all_four_branches() {
+        // (a) Error → exhausted, regardless of cap.
+        let err: Result<shatter_core::explorer::ObservationOutput, String> =
+            Err("boom".to_string());
+        assert!(batch_is_exhausted(&err, 500));
+
+        // (b) Ok with iters < cap → converged early → exhausted.
+        assert!(batch_is_exhausted(
+            &Ok(obs_with(499, 0, 0, vec![], vec![])),
+            500
+        ));
+        assert!(batch_is_exhausted(
+            &Ok(obs_with(0, 0, 0, vec![], vec![])),
+            500
+        ));
+
+        // (c) Ok with iters == cap → NOT exhausted → scheduler re-enqueues.
+        assert!(!batch_is_exhausted(
+            &Ok(obs_with(500, 0, 0, vec![], vec![])),
+            500
+        ));
+
+        // (d) Ok with iters > cap (defensive; shouldn't happen but must not
+        //     flip the polarity) → NOT exhausted.
+        assert!(!batch_is_exhausted(
+            &Ok(obs_with(600, 0, 0, vec![], vec![])),
+            500
+        ));
+    }
+
+    #[test]
+    fn scheduler_and_accumulator_drive_multi_batch_round_robin() {
+        use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+
+        // Two unbounded functions, batch cap = 500. Simulate what the
+        // run_explore launch loop does on each tick: pop a batch,
+        // synthesise a completed ObservationOutput, run batch_is_exhausted
+        // → record_outcome → merge. This exercises the critical re-enqueue
+        // branch (exhausted: false) that separates round-robin from
+        // Option-A degenerate mode.
+        const CAP: u32 = 500;
+        let mut scheduler = BatchScheduler::with_individual_budgets(&[None, None], CAP);
+        let mut accs = vec![
+            ExploreResultAccumulator::new("fn_a".to_string()),
+            ExploreResultAccumulator::new("fn_b".to_string()),
+        ];
+
+        // Scripted per-batch outcomes: (iterations, discoveries).
+        // fn_a: three full-cap batches then converges early on batch 4.
+        // fn_b: two full-cap batches then converges early on batch 3.
+        let scripts: Vec<Vec<(u32, Vec<(u32, DiscoveryMethod)>)>> = vec![
+            vec![
+                (500, vec![(1, DiscoveryMethod::Z3)]),
+                (500, vec![(2, DiscoveryMethod::Z3)]),
+                (500, vec![(1, DiscoveryMethod::Random)]), // re-discover branch 1
+                (200, vec![(3, DiscoveryMethod::Z3)]),     // early convergence
+            ],
+            vec![
+                (500, vec![(10, DiscoveryMethod::Z3)]),
+                (500, vec![(11, DiscoveryMethod::Random)]),
+                (100, vec![]), // early convergence, no new branches
+            ],
+        ];
+        let mut cursors = vec![0usize, 0usize];
+        let mut order: Vec<usize> = Vec::new();
+        let mut not_exhausted_count = 0u32;
+
+        while let Some(batch_cfg) = scheduler.next_batch() {
+            order.push(batch_cfg.task_index);
+            let cursor = &mut cursors[batch_cfg.task_index];
+            let (iters, discoveries) = scripts[batch_cfg.task_index][*cursor].clone();
+            *cursor += 1;
+
+            let result: Result<shatter_core::explorer::ObservationOutput, String> =
+                Ok(obs_with(iters, 1, 5, discoveries, vec![]));
+            let exhausted = batch_is_exhausted(&result, batch_cfg.batch_size);
+            if !exhausted {
+                not_exhausted_count += 1;
+            }
+            accs[batch_cfg.task_index].merge(result);
+            scheduler.record_outcome(BatchOutcome {
+                task_index: batch_cfg.task_index,
+                iterations_used: iters,
+                exhausted,
+            });
+        }
+
+        // Round-robin: a,b,a,b,a,b,a — fn_b early-converges on its 3rd batch
+        // (position 6), leaving fn_a's 4th batch at position 7.
+        assert_eq!(order, vec![0, 1, 0, 1, 0, 1, 0]);
+        // record_outcome(exhausted: false) fires for the 5 full-cap batches
+        // (fn_a batches 1..=3 and fn_b batches 1..=2).
+        assert_eq!(not_exhausted_count, 5);
+        assert!(scheduler.is_complete());
+
+        // Accumulator semantics: fn_a summed 1700 iters across 4 batches and
+        // unique_paths is the cardinality of the discovery-id union
+        // (branches 1, 2, 3 — branch 1 re-discovered, not double-counted).
+        let fn_a = accs.remove(0).into_result().expect("fn_a merged");
+        assert_eq!(fn_a.iterations, 1700);
+        assert_eq!(fn_a.unique_paths, 3);
+
+        let fn_b = accs.remove(0).into_result().expect("fn_b merged");
+        assert_eq!(fn_b.iterations, 1100);
+        assert_eq!(fn_b.unique_paths, 2);
     }
 
     #[test]
