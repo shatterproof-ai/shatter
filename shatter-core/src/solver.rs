@@ -1514,7 +1514,7 @@ mod tests {
                     Some(ConcreteValue::Str(v)) => v.clone(),
                     other => panic!("expected Str for s, got {other:?}"),
                 };
-                assert!(s < "hello".to_string(), "expected s < \"hello\", got s=\"{s}\"");
+                assert!(s.as_str() < "hello", "expected s < \"hello\", got s=\"{s}\"");
             }
             SolveResult::Unsat => panic!("expected sat"),
         }
@@ -2560,12 +2560,12 @@ mod tests {
                 let result = solve_constraints(
                     &[constraint],
                     Some(5000),
-                    &[param.clone()],
+                    std::slice::from_ref(&param),
                 );
                 match result {
                     Ok(SolveResult::Sat(values)) => {
                         let expected_sort = sort_for_type_info(&param.typ);
-                        for (_, value) in &values {
+                        for value in values.values() {
                             prop_assert!(
                                 concrete_matches_sort(value, expected_sort),
                                 "solved value {:?} doesn't match expected sort {:?} for param {:?}",
@@ -2657,14 +2657,14 @@ mod tests {
                     Some(5000),
                     &[param],
                 );
-                if let Ok(SolveResult::Sat(values)) = result {
-                    if let Some(value) = values.get(&param_name) {
-                        prop_assert!(
-                            matches!(value, ConcreteValue::Str(_)),
-                            "string param '{}' solved as {:?}, expected Str",
-                            param_name, value
-                        );
-                    }
+                if let Ok(SolveResult::Sat(values)) = result
+                    && let Some(value) = values.get(&param_name)
+                {
+                    prop_assert!(
+                        matches!(value, ConcreteValue::Str(_)),
+                        "string param '{}' solved as {:?}, expected Str",
+                        param_name, value
+                    );
                 }
             }
 
@@ -2681,11 +2681,11 @@ mod tests {
                     &constraints,
                     0,
                     Some(5000),
-                    &[param.clone()],
+                    std::slice::from_ref(&param),
                 );
                 if let Ok(SolveResult::Sat(values)) = result {
                     let expected_sort = sort_for_type_info(&param.typ);
-                    for (_, value) in &values {
+                    for value in values.values() {
                         prop_assert!(
                             concrete_matches_sort(value, expected_sort),
                             "negated path produced {:?} for sort {:?}",
@@ -3097,14 +3097,6 @@ mod tests {
     mod mcdc_proptest {
         use super::*;
         use proptest::prelude::*;
-
-        fn arb_simple_condition(param: &'static str) -> impl Strategy<Value = SymExpr> {
-            (any::<i64>()).prop_map(move |k| SymExpr::BinOp {
-                op: BinOpKind::Gt,
-                left: Box::new(SymExpr::Param { name: param.into(), path: vec![] }),
-                right: Box::new(SymExpr::Const(ConstValue::Int(k))),
-            })
-        }
 
         proptest! {
             #[test]

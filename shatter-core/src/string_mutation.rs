@@ -371,10 +371,10 @@ mod tests {
         for _ in 0..100 {
             let result = mutate_weighted_char("aaaa", &mut rng);
             let replaced = result.chars().find(|c| *c != 'a');
-            if let Some(c) = replaced {
-                if WEIGHTED_SPECIAL_CHARS.contains(&c) {
-                    special_count += 1;
-                }
+            if let Some(c) = replaced
+                && WEIGHTED_SPECIAL_CHARS.contains(&c)
+            {
+                special_count += 1;
             }
         }
         // With 60% weight, expect ~60 special chars out of 100

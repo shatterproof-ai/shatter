@@ -621,7 +621,7 @@ mod proptests {
         #[test]
         fn reverse_index_no_duplicates(data in arb_coverage_map_data()) {
             let reverse = build_reverse_index(&data.entries);
-            for (_, tests) in &reverse {
+            for tests in reverse.values() {
                 let unique: HashSet<_> = tests.iter().collect();
                 prop_assert_eq!(tests.len(), unique.len());
             }

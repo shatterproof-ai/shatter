@@ -741,8 +741,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("seeds/pool.json");
 
-        let mut pool = InterestingPool::default();
-        pool.epoch = 3;
+        let mut pool = InterestingPool {
+            epoch: 3,
+            ..Default::default()
+        };
         pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
 
         save_pool(&pool, &path).expect("save pool");
@@ -873,8 +875,10 @@ mod tests {
 
     #[test]
     fn harvest_handles_empty_results() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let count = harvest_from_exploration(&mut pool, &[], &make_params(&[TypeInfo::Int]), "f");
         assert_eq!(count, 0);
         assert!(pool.buckets.is_empty());
@@ -882,8 +886,10 @@ mod tests {
 
     #[test]
     fn harvest_inserts_error_inputs() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Int]);
         // Value 999 is not a boundary value for Int
         let raw = vec![(
@@ -904,8 +910,10 @@ mod tests {
 
     #[test]
     fn harvest_inserts_rare_path_inputs() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Str]);
         // Single execution → path count = 1, which is ≤ DEFAULT_RARITY_THRESHOLD
         let raw = vec![(
@@ -919,8 +927,10 @@ mod tests {
 
     #[test]
     fn harvest_skips_common_paths() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Int]);
         // Same branch path for all 3 executions → count = 3 > threshold
         let exec = make_exec_result_ok(1);
@@ -935,8 +945,10 @@ mod tests {
 
     #[test]
     fn harvest_skips_boundary_values() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Int]);
         // 0 and -1 are boundary values for Int; should be skipped even on error paths
         let raw = vec![
@@ -957,8 +969,10 @@ mod tests {
 
     #[test]
     fn harvest_decomposes_vectors() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
         let raw = vec![(
             vec![serde_json::json!(42), serde_json::json!("hello")],
@@ -976,8 +990,10 @@ mod tests {
 
     #[test]
     fn harvest_merges_same_value() {
-        let mut pool = InterestingPool::default();
-        pool.epoch = 1;
+        let mut pool = InterestingPool {
+            epoch: 1,
+            ..Default::default()
+        };
         let params = make_params(&[TypeInfo::Int]);
         // Same value (999) from two different error executions
         let raw = vec![

@@ -57,7 +57,7 @@ pub fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
         Just(json!(null)),
         Just(json!(42)),
         Just(json!(-1)),
-        Just(json!(3.14)),
+        Just(json!(2.5)),
         Just(json!("hello")),
         Just(json!("")),
         Just(json!(true)),
@@ -73,7 +73,7 @@ fn arb_json_value_non_null() -> impl Strategy<Value = serde_json::Value> {
     prop_oneof![
         Just(json!(42)),
         Just(json!(-1)),
-        Just(json!(3.14)),
+        Just(json!(2.5)),
         Just(json!("hello")),
         Just(json!("")),
         Just(json!(true)),

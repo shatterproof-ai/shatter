@@ -1310,7 +1310,7 @@ mod tests {
         assert_eq!(output.metrics.total_uncovered, 1);
         assert_eq!(output.metrics.opaque_count, 1);
         assert_eq!(output.solved_branches.len(), 1);
-        assert_eq!(output.solved_branches[0].target_taken, false);
+        assert!(!output.solved_branches[0].target_taken);
         assert!(matches!(output.solved_branches[0].outcome, SolveOutcome::Opaque { .. }));
     }
 
@@ -1348,7 +1348,7 @@ mod tests {
         assert_eq!(output.metrics.total_uncovered, 1);
         assert_eq!(output.solved_branches.len(), 1);
         assert_eq!(output.solved_branches[0].branch_id, 0);
-        assert_eq!(output.solved_branches[0].target_taken, false);
+        assert!(!output.solved_branches[0].target_taken);
         // Z3 should find x <= 0 as satisfying.
         assert!(
             matches!(output.solved_branches[0].outcome, SolveOutcome::Sat { .. }),
@@ -1490,7 +1490,7 @@ mod tests {
                     Just(json!(42)),
                     Just(json!("hello")),
                     Just(json!(true)),
-                    Just(json!(3.14)),
+                    Just(json!(2.5)),
                     Just(json!(null)),
                 ],
                 0..5,

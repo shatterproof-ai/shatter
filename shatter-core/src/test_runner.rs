@@ -694,9 +694,11 @@ mod tests {
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(pkg_dir.join("handler.go"), "package pkg").unwrap();
 
-        let result = parse_go_coverprofile(&cover_file, dir.path(), dir.path());
-        // Should find the handler.go file
-        assert!(!result.is_empty() || true); // File may or may not be found depending on structure
+        // Smoke test: parse_go_coverprofile accepts a well-formed coverprofile
+        // without panicking. Whether the referenced handler.go resolves to the
+        // fixture file depends on module-prefix handling that is outside this
+        // test's scope.
+        let _ = parse_go_coverprofile(&cover_file, dir.path(), dir.path());
     }
 
     #[test]

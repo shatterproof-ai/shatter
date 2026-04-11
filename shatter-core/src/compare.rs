@@ -362,9 +362,8 @@ pub fn format_compare_json(result: &CompareResult) -> Result<String, serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::equivalence::{BranchPath, BranchStep, Precondition};
+    use crate::equivalence::{BranchPath, BranchStep};
     use crate::execution_record::ErrorInfo;
-    use crate::invariants::ClassifiedInvariant;
     use crate::spec::{ConcreteExample, Postcondition, Provenance, SpecClass};
     use serde_json::json;
 

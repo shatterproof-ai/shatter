@@ -411,7 +411,7 @@ mod proptests {
             let mut rng = StdRng::seed_from_u64(seed);
             let pop = Population::new(&empty_bmap(), &simple_params(), pop_size, &mut rng, None);
             let d = pop.diversity();
-            prop_assert!(d >= 0.0 && d <= 1.0, "diversity={d} out of range");
+            prop_assert!((0.0..=1.0).contains(&d), "diversity={d} out of range");
         }
 
         #[test]

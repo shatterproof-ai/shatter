@@ -880,7 +880,7 @@ mod tests {
             (json!(-1), TypeInfo::Int),
             (json!(42), TypeInfo::Int),
             (json!(0.0), TypeInfo::Float),
-            (json!(3.14), TypeInfo::Float),
+            (json!(2.5), TypeInfo::Float),
             (json!(""), TypeInfo::Str),
             (json!("a"), TypeInfo::Str),
             (json!("hello"), TypeInfo::Str),
@@ -943,7 +943,7 @@ mod tests {
 
             #[test]
             fn shrink_never_contains_original_float(
-                n in (-1000i32..1000).prop_map(|n| f64::from(n))
+                n in (-1000i32..1000).prop_map(f64::from)
             ) {
                 let val = json!(n);
                 let candidates = shrink_candidates(&val, &TypeInfo::Float);
@@ -976,7 +976,7 @@ mod tests {
 
             #[test]
             fn shrink_float_candidates_are_floats(
-                n in (-1000i32..1000).prop_map(|n| f64::from(n))
+                n in (-1000i32..1000).prop_map(f64::from)
             ) {
                 let val = json!(n);
                 for c in shrink_candidates(&val, &TypeInfo::Float) {
@@ -1458,10 +1458,6 @@ mod tests {
             make_result(true).branch_path
         }
 
-        fn branch_not_taken() -> Vec<BranchDecision> {
-            make_result(false).branch_path
-        }
-
         fn int_param(name: &str) -> ParamInfo {
             ParamInfo { name: name.into(), typ: TypeInfo::Int, type_name: None }
         }
@@ -1700,11 +1696,8 @@ mod tests {
         #[test]
         fn grouped_candidates_all_minimal() {
             // All params already minimal → no trials returned.
-            let inputs = vec![json!(0i64), json!(0i64), json!(0i64)];
-            let params = vec![int_param("a"), int_param("b"), int_param("c")];
-            // 0 has no int shrink candidates (shrink_int returns only 1,-1 which are kept,
-            // but 0 itself has no halving candidate). Actually shrink_int(0) does return
-            // candidates (1 and -1 are offered). Use booleans instead — false is minimal.
+            // shrink_int(0) still offers candidates (1 and -1), so ints are not
+            // actually minimal. Use booleans instead — `false` is minimal.
             let false_inputs = vec![json!(false), json!(false), json!(false)];
             let bool_params = vec![
                 ParamInfo { name: "a".into(), typ: TypeInfo::Bool, type_name: None },

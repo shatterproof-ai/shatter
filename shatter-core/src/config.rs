@@ -1736,7 +1736,7 @@ functions:
         };
 
         let resolved =
-            resolve_function_config("src/generated/api.ts:handler", &[config.clone()], Some(100), 60)
+            resolve_function_config("src/generated/api.ts:handler", std::slice::from_ref(&config), Some(100), 60)
                 .unwrap();
         assert!(resolved.skip);
 
@@ -3347,7 +3347,7 @@ mod config_proptests {
                 reason: "test".to_string(),
             };
 
-            update_nondeterminism_config(&config_path, &[decl.clone()], &[]).unwrap();
+            update_nondeterminism_config(&config_path, std::slice::from_ref(&decl), &[]).unwrap();
             update_nondeterminism_config(&config_path, &[decl], &[]).unwrap();
 
             let loaded = parse_config(&config_path).unwrap();

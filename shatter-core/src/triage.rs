@@ -798,11 +798,11 @@ mod tests {
     #[test]
     fn const_float() {
         let result = evaluate_constraint(
-            &SymExpr::Const(ConstValue::Float(3.14)),
+            &SymExpr::Const(ConstValue::Float(2.5)),
             &[],
             &[],
         );
-        assert_eq!(result, Some(json!(3.14)));
+        assert_eq!(result, Some(json!(2.5)));
     }
 
     #[test]

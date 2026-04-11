@@ -100,14 +100,14 @@ mod proptests {
     /// Generate a BranchProfile with frequencies clamped to [0.0, 1.0].
     fn arb_branch_profile() -> impl Strategy<Value = BranchProfile> {
         proptest::collection::hash_map(any::<u32>(), 0.0..=1.0f64, 0..20)
-            .prop_map(|freqs| BranchProfile::new(freqs))
+            .prop_map(BranchProfile::new)
     }
 
     proptest! {
         #[test]
         fn rarity_always_in_zero_one(profile in arb_branch_profile(), branch_id in any::<u32>()) {
             let r = profile.rarity(branch_id);
-            prop_assert!(r >= 0.0 && r <= 1.0, "rarity {r} out of [0, 1]");
+            prop_assert!((0.0..=1.0).contains(&r), "rarity {r} out of [0, 1]");
         }
 
         #[test]
@@ -123,7 +123,7 @@ mod proptests {
         #[test]
         fn frequencies_are_bounded(profile in arb_branch_profile()) {
             for (_, &freq) in profile.iter() {
-                prop_assert!(freq >= 0.0 && freq <= 1.0,
+                prop_assert!((0.0..=1.0).contains(&freq),
                     "frequency {freq} out of [0, 1]");
             }
         }

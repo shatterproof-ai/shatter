@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(fps.len(), 4);
 
         // All should have valid 64-char hex fingerprints.
-        for (_, fp) in &fps {
+        for fp in fps.values() {
             assert_eq!(fp.len(), 64);
         }
     }
@@ -910,8 +910,10 @@ mod tests {
         use crate::protocol::{DependencyKind, ExternalDependency};
         use std::path::PathBuf;
 
+        type FuncSpec<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
+
         fn make_registry_for_graph(
-            funcs: &[(&str, &str, Vec<(&str, &str)>)],
+            funcs: &[FuncSpec<'_>],
         ) -> FunctionRegistry {
             let mut entries = Vec::new();
             let mut index = HashMap::new();

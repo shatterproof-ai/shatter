@@ -679,7 +679,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(is_enabled_with(&lookup));
+        assert!(is_enabled_with(lookup));
     }
 
     #[test]
@@ -690,7 +690,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(!is_enabled_with(&lookup));
+        assert!(!is_enabled_with(lookup));
     }
 
     #[test]
@@ -701,7 +701,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(!is_enabled_with(&lookup));
+        assert!(!is_enabled_with(lookup));
     }
 
     #[test]
@@ -712,7 +712,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(is_enabled_with(&lookup));
+        assert!(is_enabled_with(lookup));
     }
 
     #[test]
@@ -723,7 +723,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(!is_enabled_with(&lookup));
+        assert!(!is_enabled_with(lookup));
     }
 
     #[test]
@@ -735,7 +735,7 @@ mod tests {
             }
         };
         // Empty DO_NOT_TRACK doesn't disable; falls through to default
-        assert!(is_enabled_with(&lookup));
+        assert!(is_enabled_with(lookup));
     }
 
     #[test]
@@ -743,7 +743,7 @@ mod tests {
         let lookup = |_name: &str| -> Result<String, env::VarError> {
             Err(env::VarError::NotPresent)
         };
-        assert!(is_enabled_with(&lookup));
+        assert!(is_enabled_with(lookup));
     }
 
     #[test]
@@ -756,7 +756,7 @@ mod tests {
                 _ => Err(env::VarError::NotPresent),
             }
         };
-        assert!(is_enabled_with(&lookup));
+        assert!(is_enabled_with(lookup));
     }
 
     // ── Sanitization ──────────────────────────────────────────────
@@ -1087,7 +1087,7 @@ mod property_tests {
         /// Flags are always preserved.
         #[test]
         fn sanitize_preserves_flags(flag in "--[a-z][a-z-]{0,20}") {
-            let result = sanitize_args(&[flag.clone()]);
+            let result = sanitize_args(std::slice::from_ref(&flag));
             prop_assert_eq!(&result[0], &flag);
         }
 
@@ -1097,7 +1097,7 @@ mod property_tests {
             idx in 0..KNOWN_SUBCOMMANDS.len()
         ) {
             let cmd = KNOWN_SUBCOMMANDS[idx].to_string();
-            let result = sanitize_args(&[cmd.clone()]);
+            let result = sanitize_args(std::slice::from_ref(&cmd));
             prop_assert_eq!(&result[0], &cmd);
         }
 
@@ -1105,7 +1105,7 @@ mod property_tests {
         #[test]
         fn sanitize_preserves_numbers(n in any::<i64>()) {
             let s = n.to_string();
-            let result = sanitize_args(&[s.clone()]);
+            let result = sanitize_args(std::slice::from_ref(&s));
             prop_assert_eq!(&result[0], &s);
         }
 
