@@ -20,6 +20,7 @@ steps:
     title: "Explore TypeScript Functions"
     description: "Concolic execution: generate inputs to cover all branches"
     command: "explore"
+    args: ["--max-iterations", "20", "--timeout-explore", "15"]
     targets: walkthrough.typescript
     language: typescript
 
@@ -41,6 +42,7 @@ steps:
     title: "Explore Go Functions"
     description: "Concolic execution on Go: generate inputs to cover all branches"
     command: "explore"
+    args: ["--max-iterations", "3", "--timeout-explore", "25"]
     targets: walkthrough.go
     language: go
 
@@ -55,6 +57,7 @@ steps:
     title: "Explore Rust Functions"
     description: "Concolic execution on Rust: generate inputs to cover all branches"
     command: "explore"
+    args: ["--max-iterations", "3", "--timeout-explore", "25"]
     targets: walkthrough.rust
     language: rust
 
@@ -62,6 +65,7 @@ steps:
     title: "Concolic Exploration (Z3)"
     description: "Use the Z3-backed concolic explorer to solve branch constraints"
     command: "explore --concolic"
+    args: ["--max-iterations", "20", "--timeout-explore", "15"]
     targets_first: walkthrough.typescript
     language: typescript
 
@@ -69,6 +73,7 @@ steps:
     title: "Behavioral Specification"
     description: "Generate a behavioral spec with equivalence classes and pre/postconditions"
     command: "explore --spec"
+    args: ["--max-iterations", "20", "--timeout-explore", "15"]
     targets_first: walkthrough.typescript
     language: typescript
 
