@@ -11,48 +11,30 @@ Go language frontend. Go binary subprocess implementing the JSON-over-stdio prot
 ## Property-Based Testing (rapid + native fuzzing)
 
 Two complementary approaches:
+
 - **rapid** (`protocol/property_test.go`, `instrument/property_test.go`): semantic property tests — roundtrips, behavioral invariants, idempotency. Use for logical properties.
 - **Native fuzzing** (`testing.F` in `*_fuzz_test.go`): byte-level mutation for crash/panic discovery at parsing boundaries. Use for any code that deserializes untrusted input.
 
-When adding a protocol message type or parsing function, add both: a rapid property test for semantic correctness and a fuzz target for crash resistance. Seed corpus from existing test fixtures.
+When adding a protocol message type or parsing function, add both. Seed corpus from existing test fixtures.
 
 ## Ite SymExpr Parity Contract
 
-Go can deserialize `ite` SymExpr nodes (struct fields on `SymExpr` and local `symExpr`) but does not produce them. Go lacks data flow tracking — `exprToSymExpr` only resolves function parameters. Adding SSA phi-node merging to Go is a separate effort. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
+Go can deserialize `ite` SymExpr nodes but does not produce them — Go lacks data flow tracking; `exprToSymExpr` only resolves function parameters. Adding SSA phi-node merging is a separate effort. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
 ## Side Effect Parity Contract
 
-Go captures 2 of the 7 canonical side effect kinds. The `instrument.SideEffect` struct in `executor.go` and `protocol.SideEffect` in `protocol/types.go` both carry fields for all 7 kinds; only the capture logic is missing for the unimplemented kinds.
+Go captures 2 of 7 canonical kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7; only capture logic is missing.
 
-| Kind | Captured? | Source | Notes |
-|---|---|---|---|
-| `console_output` | Yes | `executor.go` stdout/stderr buffers | stdout → level "log", stderr → level "error"; no per-message truncation |
-| `global_state_change` | Yes | `executor.go` pre/post diff | Tracks exported (capitalized) package-level variables |
-| `thrown_error` | No | — | Panics handled internally; not yet surfaced as side effects (see `go-side-effects-partial` in parity-matrix.yaml) |
-| `global_mutation` | No | — | Not yet captured |
-| `file_write` | No | — | Requires OS-level interception; not yet planned |
-| `network_request` | No | — | Requires HTTP interception; not yet planned |
-| `environment_read` | No | — | Requires env-read interception; not yet planned |
+Captured: `console_output` (stdout/stderr buffers in `executor.go`, stdout→"log" stderr→"error", no per-message truncation), `global_state_change` (pre/post diff of exported package-level variables). Not captured: `thrown_error` (panics handled internally — see `go-side-effects-partial`), `global_mutation`, `file_write`, `network_request`, `environment_read`.
 
-The `convertSideEffects()` function in `protocol/handler.go` maps all 7 fields from `instrument.SideEffect` to `protocol.SideEffect`. Adding a new capture kind only requires populating the struct in `executor.go` — the conversion layer already handles it.
+`convertSideEffects()` in `protocol/handler.go` maps all 7 fields, so adding a new capture kind only requires populating the struct in `executor.go`.
 
-See `protocol/parity-matrix.yaml` `side_effect_capabilities` and `allowed_divergences: go-side-effects-partial` for tracking.
+Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` and `allowed_divergences: go-side-effects-partial`.
 
 ## Prepare Parity Contract
 
-Go implements the `prepare` command. It pre-builds the instrumented harness binary once so subsequent execute calls skip `go build`.
-
-| Aspect | Detail |
-|---|---|
-| Handler | `handlePrepare()` in `protocol/handler.go` |
-| Advertised | Yes — `"prepare"` in `CommandCapabilities` in `protocol/constants.go` |
-| Key type | `PreparedHarness` struct in `instrument/executor.go` |
-| prepare_id | SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`) |
-| Storage | `handler.preparedHarnesses map[string]*instrument.PreparedHarness` |
-| Idempotent | Yes — returns existing harness if prepare_id already exists |
-| Input handling | `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime |
-| Cleanup | `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses |
+Go implements `prepare` to pre-build the instrumented harness binary so subsequent execute calls skip `go build`. Handler: `handlePrepare()` in `protocol/handler.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]*instrument.PreparedHarness`. Idempotent. `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses.
 
 ## Timeout Contract
 
-Execution timeout: 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
