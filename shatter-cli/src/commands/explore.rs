@@ -340,6 +340,61 @@ struct ExploreSummary {
     functions: Vec<ExploreSummaryEntry>,
 }
 
+/// One function ready to be scheduled for exploration. Cloned per batch because
+/// the scheduler re-enqueues a work item across batches (each with its own
+/// per-batch iteration cap).
+///
+/// Carries its source target's language and file path so the batch loop —
+/// unified across targets since str-b2my.10 hoisted the scheduler — can spawn
+/// the right frontend and route instrument/prepare calls without cross-
+/// referencing the owning PreparedTarget.
+#[derive(Clone)]
+struct FuncWorkItem {
+    func: shatter_core::protocol::FunctionAnalysis,
+    explore_config: ExploreConfig,
+    mock_symbols: Vec<String>,
+    concolic_config: Option<shatter_core::orchestrator::ExploreConfig>,
+    seed_inputs: Vec<Vec<serde_json::Value>>,
+    user_inputs: Vec<Vec<serde_json::Value>>,
+    genetic_config: GeneticConfig,
+    language: crate::args::Language,
+    file_str: String,
+    project_root_str: Option<String>,
+    /// Index into the `prepared_targets` vector the owning run_explore call
+    /// maintains. Post-processing uses this to find per-target state like the
+    /// incremental plan and deep fingerprints without a secondary lookup.
+    target_idx: usize,
+}
+
+/// All per-target state produced by the analyze + prepare phase. Held across
+/// the unified batch loop (which is shared across targets once str-b2my.10
+/// hoists the scheduler out of the per-target loop) and consumed by the
+/// post-batch processing pass that writes artifacts, runs GA follow-up, and
+/// emits spec bundles per target.
+///
+/// `work_item_indices` maps into the global `work_items` vector that the main
+/// loop owns, so post-processing can iterate a target's own functions after
+/// the batch loop has finished merging every function's accumulator.
+struct PreparedTarget {
+    language: crate::args::Language,
+    file_str: String,
+    project_root_str: Option<String>,
+    functions: Vec<shatter_core::protocol::FunctionAnalysis>,
+    #[allow(dead_code)]
+    fresh_set: HashSet<String>,
+    incremental_plan: Option<(
+        shatter_core::spec::IncrementalPlan,
+        shatter_core::spec::FileSpecBundle,
+    )>,
+    deep_fingerprints: HashMap<String, String>,
+    skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)>,
+    artifact_root: PathBuf,
+    target_start: Instant,
+    explore_summary: ExploreSummary,
+    #[allow(dead_code)]
+    work_item_indices: Vec<usize>,
+}
+
 fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
     project_root
         .map(PathBuf::from)
@@ -1134,6 +1189,65 @@ pub(crate) async fn run_explore(
     let mut html_fragments: Vec<String> = Vec::new();
     let mut md_fragments: Vec<String> = Vec::new();
 
+    // --- Shared state across all targets (str-b2my.10) ---
+    //
+    // Before str-b2my.10, each target ran a self-contained prepare → batch →
+    // post-processing cycle. The scheduler hoist unifies the batch loop across
+    // targets so newly discovered functions can enter the queue via
+    // BatchScheduler::enqueue while workers started by an earlier target are
+    // still active. Prepare writes into the shared vectors; the unified batch
+    // loop drains them; the post-processing pass walks `prepared_targets`.
+    let mut prepared_targets: Vec<PreparedTarget> = Vec::new();
+    let mut work_items: Vec<FuncWorkItem> = Vec::new();
+    let mut accumulators: Vec<ExploreResultAccumulator> = Vec::new();
+    let mut func_wall_time: Vec<Duration> = Vec::new();
+    let mut func_first_error: Vec<Option<String>> = Vec::new();
+
+    let mut batch_scheduler = shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
+        &[],
+        EXPLORE_BATCH_ITERATIONS,
+    );
+    let mut batches_launched: u32 = 0;
+    let mut batches_completed: u32 = 0;
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
+    let completed_functions = Arc::new(AtomicUsize::new(0));
+    let mut join_set: tokio::task::JoinSet<BatchExploreOutcome> = tokio::task::JoinSet::new();
+
+    let time_limit_dur = time_limit.map(Duration::from_secs_f64);
+    let run_start = Instant::now();
+
+    let mut stop_early = false;
+    let mut stop_reason: Option<String> = None;
+    let mut total_executions_count: u64 = 0;
+    let mut total_branches_seen: usize = 0;
+    let mut total_branches_covered: usize = 0;
+
+    // Periodic progress callback (hoisted — value does not depend on target).
+    let periodic_progress: Option<Arc<Box<ProgressCallback>>> = if log_level >= LogLevel::Info {
+        Some(Arc::new(Box::new(|snapshot: &ExploreProgressSnapshot| {
+            let secs = snapshot.elapsed.as_secs();
+            let branches = snapshot
+                .total_branches
+                .map_or("?".to_string(), |t| t.to_string());
+            let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
+                snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
+                snapshot.function_name,
+                snapshot.iterations,
+                snapshot.paths_found,
+                branches,
+                rate,
+            );
+        })))
+    } else {
+        None
+    };
+
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target.function.as_deref().unwrap_or("(all)");
@@ -1360,29 +1474,21 @@ pub(crate) async fn run_explore(
         //   2. Parallel exploration (tokio::spawn per function, each with its own frontend)
         //   3. Process results (sequential — stats, reports, specs)
         let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
-        let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
 
         // Capture capabilities from the shared analysis frontend for ExploreConfig construction.
         let frontend_caps =
             shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
 
-        // --- Phase 1: Collect work items (fast, sequential) ---
-        // Clone is required because the round-robin batch scheduler re-
-        // enqueues a work item each batch until its budget is exhausted.
-        // Every dispatched batch gets a fresh clone with per-batch
-        // max_iterations overridden to the scheduler's slice size.
-        #[derive(Clone)]
-        struct FuncWorkItem {
-            func: shatter_core::protocol::FunctionAnalysis,
-            explore_config: ExploreConfig,
-            mock_symbols: Vec<String>,
-            concolic_config: Option<shatter_core::orchestrator::ExploreConfig>,
-            seed_inputs: Vec<Vec<serde_json::Value>>,
-            user_inputs: Vec<Vec<serde_json::Value>>,
-            genetic_config: GeneticConfig,
-        }
-
-        let mut work_items: Vec<FuncWorkItem> = Vec::new();
+        // --- Phase 1: Collect work items for this target ---
+        // Pushes into the shared `work_items` vector hoisted out of the per-
+        // target loop by str-b2my.10. The scheduler clones each work item per
+        // dispatched batch and overrides `max_iterations` to the scheduler's
+        // per-batch slice size; multi-batch functions re-enqueue until their
+        // budget is exhausted.
+        //
+        // `first_work_index` captures the slice start in the shared vector so
+        // the post-prepare enqueue loop can walk only this target's items.
+        let first_work_index = work_items.len();
         for func in &functions {
             // Skip fresh functions in incremental mode
             if fresh_set.contains(&func.name) {
@@ -1681,22 +1787,35 @@ pub(crate) async fn run_explore(
                 seed_inputs,
                 user_inputs,
                 genetic_config: effective_genetic,
+                language: target.language,
+                file_str: file_str.to_string(),
+                project_root_str: project_root_str.clone(),
+                target_idx: prepared_targets.len(),
             });
         }
 
-        // --- Phase 2: Parallel exploration ---
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
-        let completed_functions = Arc::new(AtomicUsize::new(0));
-        let mut join_set = tokio::task::JoinSet::new();
-        let total_work_items = work_items.len();
+        // --- Append this target's work items to the shared scheduler. ---
+        //
+        // The unified batch loop runs after the target loop; it drains the
+        // shared scheduler across every prepared target. Walking by index
+        // rather than consuming `work_items` keeps the slice available for
+        // spawn closures in the batch loop.
         let artifact_root = explore_artifact_root(project_root_str.as_deref());
+        let target_start = Instant::now();
+        for (work_index, item) in work_items.iter().enumerate().skip(first_work_index) {
+            let budget = item.explore_config.max_iterations;
+            accumulators.push(ExploreResultAccumulator::new(item.func.name.clone()));
+            func_wall_time.push(Duration::ZERO);
+            func_first_error.push(None);
+            batch_scheduler.enqueue(work_index, budget);
+        }
 
         // Initialize explore summary for crash-recovery.
-        let mut explore_summary = ExploreSummary {
+        let explore_summary = ExploreSummary {
             version: EXPLORE_ARTIFACT_VERSION,
             status: "running".to_string(),
             file: file_str.to_string(),
-            total_functions: total_work_items,
+            total_functions: work_items.len() - first_work_index,
             completed: 0,
             failed: 0,
             skipped: skipped_unexecutable.len(),
@@ -1711,90 +1830,39 @@ pub(crate) async fn run_explore(
                 })
                 .collect(),
         };
-        let target_start = Instant::now();
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to write initial explore summary: {e}");
         }
 
-        let fe_config_for_lang = fe_configs
-            .get(&target.language)
-            .expect("fe_config must exist for target language")
-            .clone();
+        let work_item_indices: Vec<usize> = (first_work_index..work_items.len()).collect();
 
-        let time_limit_dur = time_limit.map(Duration::from_secs_f64);
-        let run_start = Instant::now();
+        prepared_targets.push(PreparedTarget {
+            language: target.language,
+            file_str: file_str.to_string(),
+            project_root_str: project_root_str.clone(),
+            functions: functions.clone(),
+            fresh_set: fresh_set.clone(),
+            incremental_plan,
+            deep_fingerprints,
+            skipped_unexecutable,
+            artifact_root,
+            target_start,
+            explore_summary,
+            work_item_indices,
+        });
+    }
 
-        // Round-robin batch scheduler. Each batch explores one function for up
-        // to EXPLORE_BATCH_ITERATIONS iterations; the scheduler re-enqueues a
-        // function after each batch until its per-function budget is
-        // exhausted. Budgets come from each function's configured
-        // max_iterations (None = unbounded, Some(n) = hard cap). Multi-batch
-        // outputs for the same function are merged by per-function
-        // ExploreResultAccumulator entries.
-        //
-        // Re-exploration tax: today's orchestrator::explore() does not
-        // resume-from-state — every batch starts fresh and rediscovers prior
-        // paths via the seed/discoveries fast path. Larger
-        // EXPLORE_BATCH_ITERATIONS amortizes this overhead; 500 balances
-        // per-batch setup cost against round-robin fairness.
-        let scheduler_budgets: Vec<Option<u32>> = work_items
-            .iter()
-            .map(|w| w.explore_config.max_iterations)
-            .collect();
-        let mut batch_scheduler =
-            shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
-                &scheduler_budgets,
-                EXPLORE_BATCH_ITERATIONS,
-            );
-        let mut batches_launched: u32 = 0;
-        let mut batches_completed: u32 = 0;
-        let mut accumulators: Vec<ExploreResultAccumulator> = work_items
-            .iter()
-            .map(|w| ExploreResultAccumulator::new(w.func.name.clone()))
-            .collect();
-        let mut func_wall_time: Vec<Duration> = vec![Duration::ZERO; total_work_items];
-        let mut func_first_error: Vec<Option<String>> = vec![None; total_work_items];
+    // --- Unified batch loop: drain the shared scheduler across all targets ---
+    //
+    // The loop keeps up to `effective_jobs` batches in flight at once. After
+    // each join_next(), it merges the outcome into the owning function's
+    // accumulator and records its exhaustion state back to the scheduler,
+    // which may re-enqueue the function for another batch if budget remains
+    // and it didn't converge early. Because the scheduler is shared across
+    // every target's work items (str-b2my.10), a single loop drains the
+    // whole run instead of one per target.
 
-        // Periodic progress callback: prints a one-line summary to stderr every
-        // PROGRESS_SUMMARY_INTERVAL_SECS. Suppressed by --quiet (log_level Warn+).
-        let periodic_progress: Option<Arc<Box<ProgressCallback>>> = if log_level >= LogLevel::Info {
-            Some(Arc::new(Box::new(|snapshot: &ExploreProgressSnapshot| {
-                let secs = snapshot.elapsed.as_secs();
-                let branches = snapshot
-                    .total_branches
-                    .map_or("?".to_string(), |t| t.to_string());
-                let rate = if snapshot.elapsed.as_secs_f64() > 0.0 {
-                    snapshot.iterations as f64 / snapshot.elapsed.as_secs_f64()
-                } else {
-                    0.0
-                };
-                eprintln!(
-                    "[{secs}s] {}: {} iterations, {}/{} paths, {:.1} iter/s",
-                    snapshot.function_name,
-                    snapshot.iterations,
-                    snapshot.paths_found,
-                    branches,
-                    rate,
-                );
-            })))
-        } else {
-            None
-        };
-
-        // --- Phase 2: Interleaved round-robin batch launch + collection ---
-        //
-        // The loop keeps up to `effective_jobs` batches in flight at once.
-        // After each join_next(), we merge the outcome into the owning
-        // function's accumulator and record its exhaustion state back to the
-        // scheduler, which may re-enqueue the function for another batch if
-        // budget remains and it didn't converge early.
-        let mut total_executions_count: u64 = 0;
-        let mut total_branches_seen: usize = 0;
-        let mut total_branches_covered: usize = 0;
-        let mut stop_early = false;
-        let mut stop_reason: Option<String> = None;
-
-        loop {
+    loop {
             // Launch sub-loop: fill in-flight slots up to --jobs.
             while join_set.len() < effective_jobs && !stop_early {
                 if let Some(limit) = time_limit_dur
@@ -1824,11 +1892,14 @@ pub(crate) async fn run_explore(
 
                 let sem = Arc::clone(&semaphore);
                 let completed_functions = Arc::clone(&completed_functions);
-                let fe_config = fe_config_for_lang.clone();
-                let file_str_owned = file_str.to_string();
-                let project_root_owned = project_root_str.clone();
+                let fe_config = fe_configs
+                    .get(&item.language)
+                    .expect("fe_config must exist for target language")
+                    .clone();
+                let file_str_owned = item.file_str.clone();
+                let project_root_owned = item.project_root_str.clone();
                 let progress_index = work_index + 1;
-                let progress_total = total_work_items;
+                let progress_total = work_items.len();
                 let periodic_progress_clone = periodic_progress.clone();
 
                 join_set.spawn(async move {
@@ -2096,47 +2167,78 @@ pub(crate) async fn run_explore(
             }
         }
 
-        // --- Phase 3a: Flush accumulators → outcomes + write per-function artifacts ---
-        let mut outcomes: Vec<FuncExploreOutcome> = Vec::with_capacity(total_work_items);
-        for (work_index, accum) in accumulators.into_iter().enumerate() {
-            // Skip functions that never had a batch launched (only possible if
-            // stop_early fired before any batch for this work_index dispatched).
-            if accum.batches_merged == 0 {
-                continue;
-            }
-            let result = accum.into_result();
-            outcomes.push(FuncExploreOutcome {
-                work_index,
-                func: work_items[work_index].func.clone(),
-                mock_symbols: work_items[work_index].mock_symbols.clone(),
-                result,
-                wall_time: func_wall_time[work_index],
-                genetic_config: work_items[work_index].genetic_config.clone(),
-            });
+    // --- Phase 3a: Flush every accumulator → outcomes ---
+    // Build the full global list, then group by target so each prepared
+    // target's post-processing pass can write its own artifacts and spec
+    // bundle against its owning context (file_str, artifact_root, etc.).
+    let taken_accumulators = std::mem::take(&mut accumulators);
+    let mut outcomes_by_target: HashMap<usize, Vec<FuncExploreOutcome>> = HashMap::new();
+    for (work_index, accum) in taken_accumulators.into_iter().enumerate() {
+        // Skip functions that never had a batch launched (only possible if
+        // stop_early fired before any batch for this work_index dispatched).
+        if accum.batches_merged == 0 {
+            continue;
         }
-        outcomes.sort_by_key(|outcome| outcome.work_index);
+        let result = accum.into_result();
+        let target_idx = work_items[work_index].target_idx;
+        let outcome = FuncExploreOutcome {
+            work_index,
+            func: work_items[work_index].func.clone(),
+            mock_symbols: work_items[work_index].mock_symbols.clone(),
+            result,
+            wall_time: func_wall_time[work_index],
+            genetic_config: work_items[work_index].genetic_config.clone(),
+        };
+        outcomes_by_target.entry(target_idx).or_default().push(outcome);
+    }
 
-        for outcome in &outcomes {
-            let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, outcome)
-            {
-                Ok(path) => {
-                    log::info!(
-                        "Wrote explore artifact for {} -> {}",
-                        outcome.func.name,
-                        path.display()
-                    );
-                    path.strip_prefix(&artifact_root)
-                        .ok()
-                        .map(|p| p.to_string_lossy().to_string())
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to write explore artifact for {}: {e}",
-                        outcome.func.name
-                    );
-                    None
-                }
-            };
+    // --- Phase 3b: Per-target post-processing ---
+    // Walk prepared_targets (destructively so we can take ownership of the
+    // per-target state carried in `PreparedTarget`). For each target, emit
+    // its artifacts, run the GA follow-up pass, assemble reports / spec
+    // bundles, and finalize the crash-recovery explore summary.
+    let taken_prepared = std::mem::take(&mut prepared_targets);
+    for (target_idx, prepared) in taken_prepared.into_iter().enumerate() {
+        let mut target_outcomes = outcomes_by_target.remove(&target_idx).unwrap_or_default();
+        target_outcomes.sort_by_key(|outcome| outcome.work_index);
+
+        let PreparedTarget {
+            language: target_language,
+            file_str,
+            project_root_str,
+            functions: target_functions,
+            fresh_set: _,
+            incremental_plan,
+            deep_fingerprints,
+            skipped_unexecutable,
+            artifact_root,
+            target_start,
+            mut explore_summary,
+            work_item_indices: _,
+        } = prepared;
+        let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
+
+        for outcome in &target_outcomes {
+            let artifact_relpath =
+                match write_explore_artifact(&artifact_root, &file_str, outcome) {
+                    Ok(path) => {
+                        log::info!(
+                            "Wrote explore artifact for {} -> {}",
+                            outcome.func.name,
+                            path.display()
+                        );
+                        path.strip_prefix(&artifact_root)
+                            .ok()
+                            .map(|p| p.to_string_lossy().to_string())
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to write explore artifact for {}: {e}",
+                            outcome.func.name
+                        );
+                        None
+                    }
+                };
 
             let summary_status = if outcome.result.is_ok() {
                 explore_summary.completed += 1;
@@ -2157,7 +2259,7 @@ pub(crate) async fn run_explore(
             log::warn!("Failed to update explore summary: {e}");
         }
 
-        for outcome in outcomes {
+        for outcome in target_outcomes {
             let func = &outcome.func;
 
             match outcome.result {
@@ -2173,14 +2275,16 @@ pub(crate) async fn run_explore(
                                 None
                             })
                             .unwrap_or_default();
-                        let harvested = shatter_core::interesting_pool::harvest_from_exploration(
-                            &mut pool,
-                            &result.raw_results,
-                            &func.params,
-                            &func.name,
-                        );
+                        let harvested =
+                            shatter_core::interesting_pool::harvest_from_exploration(
+                                &mut pool,
+                                &result.raw_results,
+                                &func.params,
+                                &func.name,
+                            );
                         if harvested > 0
-                            && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
+                            && let Err(e) =
+                                shatter_core::interesting_pool::save_pool(&pool, pp)
                         {
                             log::warn!("failed to save interesting pool: {e}");
                         }
@@ -2193,9 +2297,10 @@ pub(crate) async fn run_explore(
                             &func.dependencies,
                         );
                         if !behaviors.is_empty() {
-                            let mock_file = shatter_core::recorded_mocks::build_recorded_mock_file(
-                                &func.name, &file_str, behaviors,
-                            );
+                            let mock_file =
+                                shatter_core::recorded_mocks::build_recorded_mock_file(
+                                    &func.name, &file_str, behaviors,
+                                );
                             let artifacts_dir = std::path::Path::new("shatter-artifacts");
                             match shatter_core::recorded_mocks::save_recorded_mocks(
                                 &mock_file,
@@ -2214,9 +2319,6 @@ pub(crate) async fn run_explore(
                             }
                         }
                     }
-
-                    // Harvest interesting inputs into the cross-function pool.
-                    // (Live-only: requires timing relative to other functions.)
 
                     // Save raw observation data for offline analysis if requested.
                     if let Some(obs_dir) = observe_output {
@@ -2240,7 +2342,10 @@ pub(crate) async fn run_explore(
                                         func.name
                                     );
                                 } else {
-                                    log::info!("Wrote observe output: {}", obs_path.display());
+                                    log::info!(
+                                        "Wrote observe output: {}",
+                                        obs_path.display()
+                                    );
                                 }
                             }
                             Err(e) => log::error!(
@@ -2270,7 +2375,6 @@ pub(crate) async fn run_explore(
                                 .iter()
                                 .map(|(inputs, _, _)| inputs.clone())
                                 .collect();
-                            // Extend GA seeds with cached inputs from prior runs.
                             if let Some(ref cache) = cache {
                                 let ga_function_id = format!("{}:{}", file_str, func.name);
                                 if let Ok(Some(cached_map)) = cache.load(&ga_function_id) {
@@ -2278,12 +2382,11 @@ pub(crate) async fn run_explore(
                                 }
                             }
                             let ga_fe_config = fe_configs
-                                .get(&target.language)
+                                .get(&target_language)
                                 .expect("fe_config must exist for target language")
                                 .clone();
                             match Frontend::spawn(&ga_fe_config).await {
                                 Ok(mut ga_frontend) => {
-                                    // Instrument before running GA so execute calls work.
                                     let mock_symbols_for_ga: Vec<shatter_core::protocol::MockConfig> =
                                         outcome.mock_symbols.iter().map(|s| {
                                             shatter_core::protocol::MockConfig {
@@ -2295,7 +2398,7 @@ pub(crate) async fn run_explore(
                                         }).collect();
                                     let _ = ga_frontend
                                         .send(ProtoCommand::Instrument {
-                                            file: file_str.to_string(),
+                                            file: file_str.clone(),
                                             function: func.name.clone(),
                                             mocks: mock_symbols_for_ga,
                                             project_root: project_root_str.clone(),
@@ -2325,12 +2428,14 @@ pub(crate) async fn run_explore(
                                                     ga_result.discoveries.len(),
                                                     func.name,
                                                 );
-                                                // Persist GA discoveries to cache.
-                                                let mut bmap = BehaviorMap::from_exploration_result(
-                                                    &func.name, &result,
+                                                let mut bmap =
+                                                    BehaviorMap::from_exploration_result(
+                                                        &func.name,
+                                                        &result,
+                                                    );
+                                                let added = bmap.merge_ga_discoveries(
+                                                    &ga_result.discoveries,
                                                 );
-                                                let added = bmap
-                                                    .merge_ga_discoveries(&ga_result.discoveries);
                                                 if added > 0
                                                     && let Some(ref cache) = cache
                                                 {
@@ -2373,7 +2478,6 @@ pub(crate) async fn run_explore(
                         None
                     };
 
-                    // Shared report/spec assembly (used by both live and finalize paths).
                     let assembly_opts = AssemblyOpts {
                         show_spec,
                         spec_as_json,
@@ -2421,7 +2525,10 @@ pub(crate) async fn run_explore(
                                 )
                             };
                             if let Err(e) = cache_result {
-                                log::warn!("failed to cache behavior map for {}: {e}", func.name);
+                                log::warn!(
+                                    "failed to cache behavior map for {}: {e}",
+                                    func.name
+                                );
                             }
                         }
                     }
@@ -2432,7 +2539,6 @@ pub(crate) async fn run_explore(
             }
         }
 
-        // Print summary of skipped unexecutable functions.
         if !skipped_unexecutable.is_empty() && log::log_enabled!(log::Level::Info) {
             log::info!(
                 "Skipped {} function(s) (unexecutable parameter types):",
@@ -2445,7 +2551,6 @@ pub(crate) async fn run_explore(
             }
         }
 
-        // Finalize the explore summary.
         explore_summary.status = if explore_summary.failed > 0 {
             "failed".to_string()
         } else {
@@ -2456,13 +2561,11 @@ pub(crate) async fn run_explore(
             log::warn!("Failed to finalize explore summary: {e}");
         }
 
-        // Collect file-level spec bundle when --output is set.
         if output_path.is_some() {
             let current_function_names: HashSet<String> =
-                functions.iter().map(|f| f.name.clone()).collect();
+                target_functions.iter().map(|f| f.name.clone()).collect();
 
             let bundle = if let Some((_, ref existing)) = incremental_plan {
-                // Merge newly explored specs with fresh specs carried over from existing
                 shatter_core::spec::merge_file_spec_bundles(
                     existing,
                     &file_specs,
@@ -2470,7 +2573,7 @@ pub(crate) async fn run_explore(
                 )
             } else {
                 FileSpecBundle {
-                    file: file_str.to_string(),
+                    file: file_str.clone(),
                     functions: file_specs,
                 }
             };
@@ -3041,6 +3144,83 @@ mod tests {
         let fn_b = accs.remove(0).into_result().expect("fn_b merged");
         assert_eq!(fn_b.iterations, 600);
         assert_eq!(fn_b.unique_paths, 3);
+    }
+
+    #[test]
+    fn scheduler_enqueue_admits_later_target_work_items_mid_run() {
+        // Regression for str-b2my.10: the per-target batch loop was hoisted
+        // into a single unified batch loop that drains the shared scheduler,
+        // so newly discovered functions from a later target are admitted via
+        // `BatchScheduler::enqueue` while prior-target batches may still be
+        // pending. This test drives that sequence directly: enqueue target 0,
+        // pop some batches, then enqueue target 1 and verify every function
+        // from both targets is drained before the scheduler reports complete.
+        use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+
+        const CAP: u32 = 500;
+        let mut scheduler = BatchScheduler::with_individual_budgets(&[], CAP);
+
+        // Target 0 prepares with two unbounded functions.
+        scheduler.enqueue(0, None);
+        scheduler.enqueue(1, None);
+        let mut accs = vec![
+            ExploreResultAccumulator::new("t0_f0".to_string()),
+            ExploreResultAccumulator::new("t0_f1".to_string()),
+        ];
+
+        // Pop and complete one batch for each to simulate a little work.
+        let mut order: Vec<usize> = Vec::new();
+        for _ in 0..2 {
+            let cfg = scheduler.next_batch().expect("t0 queue non-empty");
+            order.push(cfg.task_index);
+            let obs =
+                obs_with(CAP, 1, 5, vec![(cfg.task_index as u32, DiscoveryMethod::Z3)], vec![]);
+            accs[cfg.task_index].merge(Ok(obs));
+            scheduler.record_outcome(BatchOutcome {
+                task_index: cfg.task_index,
+                iterations_used: CAP,
+                exhausted: false,
+                rank: 1,
+            });
+        }
+
+        // Target 1 finishes preparing mid-run and enqueues two more functions.
+        // This is the path str-b2my.17 exposes and str-b2my.10 exercises in
+        // the CLI: indices are appended to the global work_items vector and
+        // the scheduler accepts them without being reset.
+        scheduler.enqueue(2, None);
+        scheduler.enqueue(3, None);
+        accs.push(ExploreResultAccumulator::new("t1_f0".to_string()));
+        accs.push(ExploreResultAccumulator::new("t1_f1".to_string()));
+
+        // Drain every remaining batch. Every task must surface at least once.
+        let mut seen = [false; 4];
+        for &i in &order {
+            seen[i] = true;
+        }
+        while let Some(cfg) = scheduler.next_batch() {
+            seen[cfg.task_index] = true;
+            // Converge early so each function exhausts after one more batch.
+            let obs = obs_with(100, 1, 5, vec![], vec![]);
+            accs[cfg.task_index].merge(Ok(obs));
+            scheduler.record_outcome(BatchOutcome {
+                task_index: cfg.task_index,
+                iterations_used: 100,
+                exhausted: true,
+                rank: 0,
+            });
+        }
+
+        assert!(scheduler.is_complete(), "scheduler must drain every task");
+        assert!(
+            seen.iter().all(|&s| s),
+            "every task across both targets must be picked at least once: {seen:?}",
+        );
+        assert_eq!(accs.len(), 4);
+        for acc in accs {
+            assert!(acc.batches_merged >= 1, "every accumulator must receive at least one batch");
+        }
     }
 
     #[test]
