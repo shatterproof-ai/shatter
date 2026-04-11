@@ -238,7 +238,7 @@ impl BehaviorMapCache {
             if path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.ends_with(".spec"))
+                .is_some_and(|s| s.ends_with(".spec") || s.contains(".scheduler."))
             {
                 continue;
             }
@@ -313,7 +313,7 @@ fn collect_all_maps(dir: &Path, out: &mut Vec<BehaviorMap>) -> Result<(), CacheE
             && !path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.ends_with(".spec"))
+                .is_some_and(|s| s.ends_with(".spec") || s.contains(".scheduler."))
             && let Ok(contents) = fs::read_to_string(&path)
             && let Ok(entry) = serde_json::from_str::<BehaviorMapCacheEntry>(&contents)
             && entry.protocol_version == PROTOCOL_VERSION
@@ -425,6 +425,218 @@ fn sanitize_component(component: &str) -> String {
             _ => c,
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler-state cache (str-bo4z.5)
+// ---------------------------------------------------------------------------
+
+/// Default mode tag used when no explicit scheduler mode is supplied.
+///
+/// Scheduler state is namespaced by mode so that downstream work (str-bo4z.6
+/// split-by-mode) can keep independent records per exploration mode without a
+/// schema migration. Today every caller passes this constant.
+pub const DEFAULT_SCHEDULER_MODE: &str = "default";
+
+/// Schema version for the scheduler-state sidecar file.
+///
+/// Bumped independently of `PROTOCOL_VERSION` when the [`SchedulerState`] field
+/// layout changes in a way existing readers cannot tolerate. Additive changes
+/// are absorbed by `#[serde(default)]` on every field and do not require a
+/// bump; removing or retyping a field does.
+pub const SCHEDULER_SCHEMA_VERSION: u32 = 1;
+
+/// Per-function scheduler metadata persisted between explore runs.
+///
+/// **Advisory and reconstructible**: the explore loop must work correctly when
+/// the persisted state is missing, corrupt, or rejected by schema validation.
+/// Canonical sources of truth remain [`BehaviorMap`] and stored inputs; this
+/// record is a cache/hint that lets the round-robin scheduler resume a run
+/// without re-learning per-function batch progress from scratch.
+///
+/// Every field is `#[serde(default)]` so future optional additions do not
+/// invalidate older files — a file written by today's binary can be read by a
+/// future binary that has added new fields, and vice versa (the new reader
+/// fills defaults; the old reader drops unknown fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SchedulerState {
+    /// Function identifier this record describes (e.g. `src/auth.ts:login`).
+    pub function_id: String,
+    /// Body fingerprint at the time this record was written. Enables
+    /// body-change invalidation (see [`SchedulerStateCache::is_fresh`]).
+    pub fingerprint: Option<String>,
+    /// Total iterations consumed across all batches so far.
+    pub iterations_consumed: u32,
+    /// Number of batches that completed for this function.
+    pub batches_completed: u32,
+    /// Whether the caller marked this function exhausted (fully explored or
+    /// out of budget).
+    pub exhausted: bool,
+    /// Optional exploration-mode tag recorded inside the state for diagnostics.
+    /// The on-disk path already namespaces by mode; this field is informational.
+    pub mode: Option<String>,
+    /// Branches the scheduler believes remain uncovered. Placeholder for
+    /// str-bo4z.2 / str-bo4z.7; empty today.
+    pub uncovered_branches: Vec<String>,
+}
+
+/// Versioned envelope for cached [`SchedulerState`] entries.
+///
+/// A protocol-version or schema-version mismatch invalidates the entry
+/// silently on read, mirroring the behavior map and spec caches.
+#[derive(Debug, Serialize, Deserialize)]
+struct SchedulerStateCacheEntry {
+    protocol_version: String,
+    schema_version: u32,
+    scheduler_state: SchedulerState,
+}
+
+/// Disk-backed cache for storing and loading per-function [`SchedulerState`].
+///
+/// Sidecar layout: colocated with the behavior map under the same hierarchical
+/// path, with extension `scheduler.<mode>.json`. Multiple modes per function
+/// coexist as distinct files so downstream split-by-mode work is a parameter
+/// change, not a schema change.
+#[derive(Debug)]
+pub struct SchedulerStateCache {
+    cache_dir: PathBuf,
+}
+
+impl SchedulerStateCache {
+    /// Create a new scheduler-state cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Default scheduler-state cache directory: colocated with behavior maps
+    /// under `<project_root>/.shatter-cache/behavior-maps/`.
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root.join(".shatter-cache").join("behavior-maps")
+    }
+
+    /// Load the scheduler state for `(function_id, mode)`, if one exists.
+    ///
+    /// Returns `Ok(None)` on cache miss, non-UTF8 contents, parse error,
+    /// protocol version mismatch, or schema version mismatch. The only `Err`
+    /// path is a genuine filesystem I/O failure other than `NotFound` /
+    /// `InvalidData`. This aligns with the "advisory and reconstructible"
+    /// contract: a corrupt persisted file must degrade to a cache miss so the
+    /// engine can rebuild scheduler state from scratch.
+    pub fn load(
+        &self,
+        function_id: &str,
+        mode: &str,
+    ) -> Result<Option<SchedulerState>, CacheError> {
+        let path = self.path_for(function_id, mode);
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(CacheError::Io(e)),
+        };
+        let contents = match std::str::from_utf8(&bytes) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+        let entry: SchedulerStateCacheEntry = match serde_json::from_str(contents) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
+        if entry.protocol_version != PROTOCOL_VERSION
+            || entry.schema_version != SCHEDULER_SCHEMA_VERSION
+        {
+            return Ok(None);
+        }
+        Ok(Some(entry.scheduler_state))
+    }
+
+    /// Store scheduler state to disk using atomic write (temp file + rename).
+    ///
+    /// The file path is derived from `state.function_id` and `mode`; callers
+    /// set the mode explicitly (typically [`DEFAULT_SCHEDULER_MODE`]).
+    pub fn store(&self, state: &SchedulerState, mode: &str) -> Result<(), CacheError> {
+        let path = self.path_for(&state.function_id, mode);
+        let entry = SchedulerStateCacheEntry {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            schema_version: SCHEDULER_SCHEMA_VERSION,
+            scheduler_state: state.clone(),
+        };
+        let json = serde_json::to_string_pretty(&entry)?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Append `.tmp` to the full filename so concurrent writes for
+        // different modes do not collide on the same temp file (a plain
+        // `with_extension("tmp")` would replace the `.scheduler.<mode>.json`
+        // suffix entirely).
+        let mut tmp_os = path.clone().into_os_string();
+        tmp_os.push(".tmp");
+        let tmp_path = PathBuf::from(tmp_os);
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
+
+        Ok(())
+    }
+
+    /// Check whether a cached scheduler state is fresh under
+    /// `current_fingerprint`, and drop the on-disk entry when it is stale.
+    ///
+    /// Returns `true` iff the cache contains a version-compatible record for
+    /// `(function_id, mode)` whose stored fingerprint equals
+    /// `current_fingerprint`. On mismatch — including legacy entries written
+    /// without a fingerprint — the backing file is unlinked before returning
+    /// `false`, mirroring [`BehaviorMapCache::is_fresh`]. A failure to unlink
+    /// is logged but does not propagate as an error.
+    pub fn is_fresh(
+        &self,
+        function_id: &str,
+        mode: &str,
+        current_fingerprint: &str,
+    ) -> Result<bool, CacheError> {
+        let path = self.path_for(function_id, mode);
+        let state = match self.load(function_id, mode)? {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+        let fresh = state
+            .fingerprint
+            .as_deref()
+            .is_some_and(|fp| fp == current_fingerprint);
+        if !fresh
+            && path.exists()
+            && let Err(e) = fs::remove_file(&path)
+        {
+            log::warn!(
+                "failed to drop stale scheduler state {} at {}: {e}",
+                function_id,
+                path.display()
+            );
+        }
+        Ok(fresh)
+    }
+
+    /// Remove the on-disk entry for `(function_id, mode)` if present.
+    ///
+    /// Missing files are not an error — this is a best-effort cleanup.
+    pub fn clear_function(&self, function_id: &str, mode: &str) -> Result<(), CacheError> {
+        let path = self.path_for(function_id, mode);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CacheError::Io(e)),
+        }
+    }
+
+    fn path_for(&self, function_id: &str, mode: &str) -> PathBuf {
+        let base = cache_base_path(&self.cache_dir, function_id);
+        let safe_mode = sanitize_component(mode);
+        base.with_extension(format!("scheduler.{safe_mode}.json"))
+    }
 }
 
 #[cfg(test)]
@@ -938,6 +1150,363 @@ mod tests {
         assert!(bm_file.exists());
         assert!(spec_file.exists());
     }
+
+    // --- SchedulerStateCache tests (str-bo4z.5) ---
+
+    fn sample_scheduler_state(function_id: &str) -> SchedulerState {
+        SchedulerState {
+            function_id: function_id.to_string(),
+            fingerprint: Some("fp-v1".to_string()),
+            iterations_consumed: 125,
+            batches_completed: 3,
+            exhausted: false,
+            mode: Some(DEFAULT_SCHEDULER_MODE.to_string()),
+            uncovered_branches: vec!["branch-a".to_string(), "branch-b".to_string()],
+        }
+    }
+
+    #[test]
+    fn scheduler_state_store_and_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("src/auth.ts:login");
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let loaded = cache
+            .load("src/auth.ts:login", DEFAULT_SCHEDULER_MODE)
+            .unwrap();
+        assert_eq!(loaded, Some(state));
+    }
+
+    #[test]
+    fn scheduler_state_load_returns_none_for_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            cache.load("nonexistent", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_hierarchical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("src/auth.ts:TokenValidator.validate");
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let expected = dir
+            .path()
+            .join("src")
+            .join("auth.ts")
+            .join("TokenValidator")
+            .join("validate.scheduler.default.json");
+        assert!(expected.exists(), "sidecar should exist at {expected:?}");
+    }
+
+    #[test]
+    fn scheduler_state_modes_are_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut random = sample_scheduler_state("myFunc");
+        random.iterations_consumed = 10;
+        random.mode = Some("random".to_string());
+
+        let mut concolic = sample_scheduler_state("myFunc");
+        concolic.iterations_consumed = 50;
+        concolic.mode = Some("concolic".to_string());
+
+        cache.store(&random, "random").unwrap();
+        cache.store(&concolic, "concolic").unwrap();
+
+        let loaded_random = cache.load("myFunc", "random").unwrap().unwrap();
+        let loaded_concolic = cache.load("myFunc", "concolic").unwrap().unwrap();
+        assert_eq!(loaded_random.iterations_consumed, 10);
+        assert_eq!(loaded_concolic.iterations_consumed, 50);
+
+        // A third mode that was never written is a cache miss, not cross-talk.
+        assert_eq!(cache.load("myFunc", "other").unwrap(), None);
+    }
+
+    #[test]
+    fn scheduler_state_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("myFunc");
+        state.iterations_consumed = 10;
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        state.iterations_consumed = 100;
+        state.batches_completed = 10;
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let loaded = cache
+            .load("myFunc", DEFAULT_SCHEDULER_MODE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.iterations_consumed, 100);
+        assert_eq!(loaded.batches_completed, 10);
+    }
+
+    #[test]
+    fn scheduler_state_corrupt_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        // Write garbage directly to the expected path.
+        let path = dir.path().join("badFunc.scheduler.default.json");
+        std::fs::write(&path, b"\x00\xff not json at all").unwrap();
+
+        assert_eq!(
+            cache.load("badFunc", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None,
+            "corrupt file must degrade to cache miss"
+        );
+    }
+
+    #[test]
+    fn scheduler_state_truncated_json_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("truncFunc");
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("truncFunc.scheduler.default.json");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        // Chop the last 10 characters, guaranteed to break the closing braces.
+        let truncated = &contents[..contents.len().saturating_sub(10)];
+        std::fs::write(&path, truncated).unwrap();
+
+        assert_eq!(
+            cache.load("truncFunc", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_protocol_version_mismatch_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("oldFunc");
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("oldFunc.scheduler.default.json");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let tampered = contents.replace(PROTOCOL_VERSION, "0.0.0-fake");
+        std::fs::write(&path, tampered).unwrap();
+
+        assert_eq!(
+            cache.load("oldFunc", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_schema_version_mismatch_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("schemaDrift");
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        // Rewrite with a bumped schema_version so the reader rejects it.
+        let path = dir.path().join("schemaDrift.scheduler.default.json");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let tampered = contents.replace(
+            &format!("\"schema_version\": {SCHEDULER_SCHEMA_VERSION}"),
+            &format!("\"schema_version\": {}", SCHEDULER_SCHEMA_VERSION + 1),
+        );
+        assert_ne!(
+            contents, tampered,
+            "schema_version substitution should have replaced something"
+        );
+        std::fs::write(&path, tampered).unwrap();
+
+        assert_eq!(
+            cache.load("schemaDrift", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_forward_compat_unknown_field() {
+        // A future schema version that adds a field must not break today's
+        // reader when `schema_version` is unchanged — `#[serde(default)]` on
+        // every field, combined with serde's default behavior of ignoring
+        // unknown fields, absorbs additive extensions.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let path = dir.path().join("futureFunc.scheduler.default.json");
+        let payload = format!(
+            r#"{{
+                "protocol_version": "{PROTOCOL_VERSION}",
+                "schema_version": {SCHEDULER_SCHEMA_VERSION},
+                "future_envelope_field": "ignored",
+                "scheduler_state": {{
+                    "function_id": "futureFunc",
+                    "iterations_consumed": 7,
+                    "batches_completed": 2,
+                    "exhausted": false,
+                    "uncovered_branches": [],
+                    "hypothetical_future_field": {{"nested": true}}
+                }}
+            }}"#
+        );
+        std::fs::write(&path, payload).unwrap();
+
+        let loaded = cache
+            .load("futureFunc", DEFAULT_SCHEDULER_MODE)
+            .unwrap()
+            .expect("forward-compat file should load, not be a cache miss");
+        assert_eq!(loaded.function_id, "futureFunc");
+        assert_eq!(loaded.iterations_consumed, 7);
+        assert_eq!(loaded.batches_completed, 2);
+        // fingerprint was omitted → default (None) applied.
+        assert!(loaded.fingerprint.is_none());
+    }
+
+    #[test]
+    fn scheduler_state_is_fresh_drops_stale_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("edited");
+        state.fingerprint = Some("before".to_string());
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("edited.scheduler.default.json");
+        assert!(path.exists());
+
+        assert!(
+            !cache
+                .is_fresh("edited", DEFAULT_SCHEDULER_MODE, "after")
+                .unwrap()
+        );
+        assert!(!path.exists(), "stale entry should be unlinked");
+        assert_eq!(
+            cache.load("edited", DEFAULT_SCHEDULER_MODE).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_state_is_fresh_returns_true_when_fingerprint_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("fresh");
+        state.fingerprint = Some("fp".to_string());
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        assert!(
+            cache
+                .is_fresh("fresh", DEFAULT_SCHEDULER_MODE, "fp")
+                .unwrap()
+        );
+        let path = dir.path().join("fresh.scheduler.default.json");
+        assert!(path.exists(), "fresh entry must not be deleted");
+    }
+
+    #[test]
+    fn scheduler_state_is_fresh_drops_legacy_none_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let mut state = sample_scheduler_state("legacy");
+        state.fingerprint = None;
+        cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        let path = dir.path().join("legacy.scheduler.default.json");
+        assert!(path.exists());
+
+        assert!(
+            !cache
+                .is_fresh("legacy", DEFAULT_SCHEDULER_MODE, "any")
+                .unwrap()
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn scheduler_state_clear_function_removes_only_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let a = sample_scheduler_state("funcA");
+        let b = sample_scheduler_state("funcB");
+        cache.store(&a, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&b, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        cache.clear_function("funcA", DEFAULT_SCHEDULER_MODE).unwrap();
+        assert_eq!(cache.load("funcA", DEFAULT_SCHEDULER_MODE).unwrap(), None);
+        assert!(cache.load("funcB", DEFAULT_SCHEDULER_MODE).unwrap().is_some());
+
+        // Clearing a missing entry is not an error.
+        cache
+            .clear_function("never-stored", DEFAULT_SCHEDULER_MODE)
+            .unwrap();
+    }
+
+    #[test]
+    fn scheduler_state_sidecar_does_not_leak_into_behavior_map_cache() {
+        // str-bo4z.5: SchedulerStateCache sidecars must be ignored by
+        // BehaviorMapCache::{load_all, load_all_for_file}. A regression here
+        // would have the behavior map iterator try to deserialize scheduler
+        // JSON as a BehaviorMap and silently drop real entries on parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let sched_cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let map = sample_map("src/math.ts:add");
+        bm_cache.store(&map).unwrap();
+
+        let state = sample_scheduler_state("src/math.ts:add");
+        sched_cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+        // Both sidecars on disk.
+        let bm_file = dir.path().join("src").join("math.ts").join("add.json");
+        let sched_file = dir
+            .path()
+            .join("src")
+            .join("math.ts")
+            .join("add.scheduler.default.json");
+        assert!(bm_file.exists());
+        assert!(sched_file.exists());
+
+        // load_all returns only the behavior map.
+        let all = bm_cache.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].function_id, "src/math.ts:add");
+
+        // load_all_for_file returns only the behavior map.
+        let for_file = bm_cache.load_all_for_file("src/math.ts").unwrap();
+        assert_eq!(for_file.len(), 1);
+        assert_eq!(for_file[0].function_id, "src/math.ts:add");
+    }
+
+    #[test]
+    fn scheduler_state_mode_is_sanitized() {
+        // Path-unsafe characters in the mode tag must not escape the cache
+        // directory — sanitize_component maps them to `_`.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+        let state = sample_scheduler_state("safeFunc");
+        cache.store(&state, "weird*mode?").unwrap();
+
+        let expected = dir.path().join("safeFunc.scheduler.weird_mode_.json");
+        assert!(expected.exists(), "mode should be sanitized");
+        let loaded = cache.load("safeFunc", "weird*mode?").unwrap();
+        assert_eq!(loaded, Some(state));
+    }
 }
 
 #[cfg(test)]
@@ -1049,6 +1618,207 @@ mod proptests {
             prop_assert!(reloaded.is_some());
             let reloaded_map = reloaded.unwrap();
             prop_assert_eq!(reloaded_map.fingerprint.as_deref(), Some(sibling_fp));
+        }
+    }
+
+    // --- SchedulerStateCache proptests (str-bo4z.5) ---
+
+    fn arb_scheduler_state() -> impl Strategy<Value = SchedulerState> {
+        (
+            // Restrict to realistic function_id shapes:
+            // `<name>` or `<name>:<name>`, with names made of letters,
+            // digits, and underscores. This avoids path-unsafe values like
+            // "/", "..", "./x", or leading colons which would be rejected
+            // by `cache_base_path` / filesystem rules.
+            "[a-zA-Z][a-zA-Z0-9_]{0,20}(:[a-zA-Z][a-zA-Z0-9_]{0,20})?",
+            proptest::option::of("[a-f0-9]{16,32}"),
+            any::<u32>(),
+            any::<u32>(),
+            any::<bool>(),
+            proptest::option::of("[a-z_]{1,16}"),
+            proptest::collection::vec("[a-zA-Z0-9_.]{1,20}", 0..8),
+        )
+            .prop_map(
+                |(function_id, fingerprint, iterations_consumed, batches_completed, exhausted, mode, uncovered_branches)| {
+                    SchedulerState {
+                        function_id,
+                        fingerprint,
+                        iterations_consumed,
+                        batches_completed,
+                        exhausted,
+                        mode,
+                        uncovered_branches,
+                    }
+                },
+            )
+    }
+
+    proptest! {
+        /// Invariant 1: SchedulerState survives store → load roundtrip with
+        /// full semantic equality.
+        #[test]
+        fn scheduler_state_roundtrip(state in arb_scheduler_state()) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let loaded = cache
+                .load(&state.function_id, DEFAULT_SCHEDULER_MODE)
+                .unwrap();
+            prop_assert_eq!(loaded, Some(state));
+        }
+
+        /// Invariant 2 (reconstruction safety): arbitrary bytes written to a
+        /// scheduler-state file never panic on load and always degrade to a
+        /// cache miss. Advisory-and-reconstructible: callers can rebuild.
+        #[test]
+        fn scheduler_state_corrupt_bytes_never_panic(
+            bytes in proptest::collection::vec(any::<u8>(), 0..512),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            let path = dir.path().join("corruptFn.scheduler.default.json");
+            std::fs::write(&path, &bytes).unwrap();
+
+            // Must not panic. Must return Ok(Some(..)) only on the vanishingly
+            // rare case that random bytes happen to form a valid envelope;
+            // otherwise Ok(None).
+            let loaded = cache
+                .load("corruptFn", DEFAULT_SCHEDULER_MODE)
+                .expect("load must never return Err on corrupt data");
+            if loaded.is_some() {
+                // If it did parse, re-storing and reloading must still round-trip.
+                let round = cache
+                    .load("corruptFn", DEFAULT_SCHEDULER_MODE)
+                    .unwrap();
+                prop_assert_eq!(loaded, round);
+            }
+        }
+
+        /// Invariant 3 (sidecar isolation): a SchedulerState stored for any
+        /// function must not appear as, or displace, a BehaviorMap entry in
+        /// load_all / load_all_for_file. Regression guard for the filter
+        /// extension in collect_all_maps / load_all_for_file.
+        #[test]
+        fn scheduler_sidecar_isolated_from_behavior_map_cache(
+            state in arb_scheduler_state(),
+            map in arb_behavior_map(),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+            let sched_cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            bm_cache.store(&map).unwrap();
+            sched_cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+            // load_all sees the behavior map, never the scheduler sidecar.
+            let all = bm_cache.load_all().unwrap();
+            prop_assert!(
+                all.iter().any(|m| m.function_id == map.function_id),
+                "behavior map should appear in load_all"
+            );
+            prop_assert!(
+                all.iter().all(|m| !m.function_id.is_empty()),
+                "no spurious entries from scheduler sidecar"
+            );
+            // Count: exactly the behavior maps we stored (scheduler sidecar
+            // never increments the count, even if state.function_id happens to
+            // equal map.function_id).
+            let distinct_bm_ids: std::collections::HashSet<_> =
+                all.iter().map(|m| m.function_id.clone()).collect();
+            prop_assert_eq!(distinct_bm_ids.len(), 1);
+            prop_assert!(distinct_bm_ids.contains(&map.function_id));
+        }
+
+        /// Invariant 4 (stale invalidation): storing with fingerprint X, then
+        /// checking freshness under Y != X, must return false AND unlink the
+        /// on-disk entry so the next load is a clean cache miss.
+        #[test]
+        fn scheduler_state_body_change_drops_entry(
+            mut state in arb_scheduler_state(),
+            fp_a in "[a-f0-9]{32}",
+            fp_b in "[a-f0-9]{32}",
+        ) {
+            prop_assume!(fp_a != fp_b);
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            state.fingerprint = Some(fp_a.clone());
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+
+            prop_assert!(
+                !cache
+                    .is_fresh(&state.function_id, DEFAULT_SCHEDULER_MODE, &fp_b)
+                    .unwrap()
+            );
+            prop_assert_eq!(
+                cache.load(&state.function_id, DEFAULT_SCHEDULER_MODE).unwrap(),
+                None
+            );
+        }
+
+        /// Invariant 5 (per-mode independence): storing state for (fn, "a")
+        /// must not affect load(fn, "b") or load(fn, DEFAULT_SCHEDULER_MODE).
+        #[test]
+        fn scheduler_state_modes_independent(
+            mut a in arb_scheduler_state(),
+            mut b in arb_scheduler_state(),
+        ) {
+            // Force a shared function_id so we can stress cross-mode isolation.
+            b.function_id = a.function_id.clone();
+            a.mode = Some("mode_a".to_string());
+            b.mode = Some("mode_b".to_string());
+
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            cache.store(&a, "mode_a").unwrap();
+            cache.store(&b, "mode_b").unwrap();
+
+            let loaded_a = cache.load(&a.function_id, "mode_a").unwrap();
+            let loaded_b = cache.load(&b.function_id, "mode_b").unwrap();
+            prop_assert_eq!(loaded_a, Some(a.clone()));
+            prop_assert_eq!(loaded_b, Some(b));
+
+            // A mode that was never written is a clean miss.
+            prop_assert_eq!(
+                cache.load(&a.function_id, DEFAULT_SCHEDULER_MODE).unwrap(),
+                None
+            );
+        }
+
+        /// Invariant 6 (forward-compat): a stored envelope survives an extra
+        /// unknown top-level field and an extra unknown payload field without
+        /// degrading to cache miss. Future schemas that add fields must
+        /// remain readable by today's binary at the same schema_version.
+        #[test]
+        fn scheduler_state_forward_compat_additive_fields(
+            state in arb_scheduler_state(),
+            extra_key in "[a-z_]{1,12}",
+        ) {
+            prop_assume!(extra_key != "protocol_version" && extra_key != "schema_version"
+                && extra_key != "scheduler_state" && extra_key != "function_id"
+                && extra_key != "fingerprint" && extra_key != "iterations_consumed"
+                && extra_key != "batches_completed" && extra_key != "exhausted"
+                && extra_key != "mode" && extra_key != "uncovered_branches");
+
+            let dir = tempfile::tempdir().unwrap();
+            let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+
+            // Build a canonical envelope, inject two unknown fields, write it.
+            cache.store(&state, DEFAULT_SCHEDULER_MODE).unwrap();
+            let path = cache.path_for(&state.function_id, DEFAULT_SCHEDULER_MODE);
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+            value[&extra_key] = serde_json::json!("future top-level");
+            value["scheduler_state"][&extra_key] = serde_json::json!({"nested": 42});
+            std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+            let loaded = cache
+                .load(&state.function_id, DEFAULT_SCHEDULER_MODE)
+                .unwrap();
+            prop_assert_eq!(loaded, Some(state));
         }
     }
 }
