@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ecea4d97614f8c066cf38186e091e9b8cad64c280a3497a7dd1ec8b9bb9d5b28 # shrinks to state = SchedulerState { function_id: "/", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }
+cc 0fa95580c4898f7e49d44bc728fa54ebf6f49f4ba56bdc3e37f3ab883ee30593 # shrinks to state = SchedulerState { function_id: "/", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }, extra_key = "a"
+cc e3cbc659969023773de3c5765f6bdc86c8b0d9472ffd327d841d4e5bd9d6d431 # shrinks to mut a = SchedulerState { function_id: "/", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }, mut b = SchedulerState { function_id: "0", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }
+cc ba489d9eae24c7043712a68e9b87835618d16a39b73b08f70ebcad5ca8a759b7 # shrinks to mut state = SchedulerState { function_id: "/", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }, fp_a = "00000aa000a000a00a000a0aaaaa0a00", fp_b = "a0aa00aa00a0a0a0aaa0a0a000000aa0"
+cc 9b895081f97b7dbf8672ab1c61d8efde023d0b14238f1eb821df2a8135389b22 # shrinks to state = SchedulerState { function_id: "/", fingerprint: None, iterations_consumed: 0, batches_completed: 0, exhausted: false, mode: None, uncovered_branches: [] }, map = BehaviorMap { function_id: "A", behaviors: [], fingerprint: None, nondeterministic_fields: [] }
+cc 0a2fe2d64c544f3fa558faa1d26f301051cc990827b0cdaae99c6710029201a3 # shrinks to bytes = [128]

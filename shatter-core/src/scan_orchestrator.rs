@@ -218,6 +218,14 @@ pub struct ScanConfig {
     ///
     /// This is an internal tuning parameter — not exposed via CLI.
     pub batch_size: Option<u32>,
+    /// Optional disk cache for persisting per-function scheduler state
+    /// across runs. When `Some` and batched mode is active
+    /// (`batch_size` is `Some`), `run_layer_batched` loads advisory
+    /// state on entry and stores it when a function's batch loop
+    /// finishes. Scheduler state is advisory and reconstructible — a
+    /// cache miss (missing, corrupt, or wrong-schema entry) degrades
+    /// silently and the scheduler runs from scratch.
+    pub scheduler_state_cache: Option<Arc<crate::cache::SchedulerStateCache>>,
 }
 
 /// Context about sampling mode, for report headers.
@@ -1593,6 +1601,7 @@ async fn run_layer_batched(
     batch_size: u32,
     timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
+    scheduler_state_cache: &Option<Arc<crate::cache::SchedulerStateCache>>,
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
     input_pool: &Arc<Mutex<InterestingPool>>,
     genetic_config: &crate::config::GeneticConfig,
@@ -1602,6 +1611,7 @@ async fn run_layer_batched(
     scan_start: Instant,
 ) -> Vec<FunctionOutcome> {
     use crate::batch_scheduler::{BatchOutcome, BatchScheduler};
+    use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState};
 
     let task_count = tasks.len();
     // Each function's per-batch budget is capped at batch_size; the total
@@ -1615,6 +1625,51 @@ async fn run_layer_batched(
         &per_function_budgets,
         batch_size,
     );
+
+    // Per-task live scheduler state accumulator. Populated from disk on
+    // layer entry (advisory — load failures become fresh state) and
+    // flushed to disk when a function exhausts or the layer ends.
+    // Current entries have no fingerprint stamped yet (str-bo4z.1
+    // wired fingerprint-based freshness for behavior maps; scheduler
+    // state fingerprinting is a follow-up task in the str-bo4z epic).
+    let mut live_states: Vec<SchedulerState> = tasks
+        .iter()
+        .map(|t| SchedulerState {
+            function_id: t.func_name.clone(),
+            ..SchedulerState::default()
+        })
+        .collect();
+    let mut persisted_flags: Vec<bool> = vec![false; task_count];
+
+    if let Some(ssc) = scheduler_state_cache.as_ref() {
+        for (idx, task) in tasks.iter().enumerate() {
+            match ssc.load(&task.func_name, DEFAULT_SCHEDULER_MODE) {
+                Ok(Some(prior)) => {
+                    log::debug!(
+                        "scheduler-state cache hit for {}: iterations_consumed={}, batches_completed={}, exhausted={}",
+                        task.func_name,
+                        prior.iterations_consumed,
+                        prior.batches_completed,
+                        prior.exhausted,
+                    );
+                    live_states[idx] = prior;
+                    live_states[idx].function_id = task.func_name.clone();
+                }
+                Ok(None) => {
+                    log::debug!(
+                        "scheduler-state cache miss for {} — starting fresh",
+                        task.func_name,
+                    );
+                }
+                Err(e) => {
+                    log::warn!(
+                        "scheduler-state cache load error for {}: {e}",
+                        task.func_name,
+                    );
+                }
+            }
+        }
+    }
 
     let mut outcomes: Vec<Option<FunctionOutcome>> = (0..task_count).map(|_| None).collect();
 
@@ -1651,6 +1706,15 @@ async fn run_layer_batched(
                         iterations_used: 0,
                         exhausted: true,
                     });
+                    {
+                        let st = &mut live_states[batch_config.task_index];
+                        st.exhausted = true;
+                    }
+                    persist_scheduler_state_if_exhausted(
+                        scheduler_state_cache,
+                        &live_states[batch_config.task_index],
+                        &mut persisted_flags[batch_config.task_index],
+                    );
                     outcomes[batch_config.task_index] = Some(FunctionOutcome::Error {
                         function_name: task.func_name.clone(),
                         error: format!("frontend respawn failed: {e}"),
@@ -1737,6 +1801,18 @@ async fn run_layer_batched(
                     iterations_used,
                     exhausted,
                 });
+                {
+                    let st = &mut live_states[batch_config.task_index];
+                    st.iterations_consumed =
+                        st.iterations_consumed.saturating_add(iterations_used);
+                    st.batches_completed = st.batches_completed.saturating_add(1);
+                    st.exhausted = exhausted;
+                }
+                persist_scheduler_state_if_exhausted(
+                    scheduler_state_cache,
+                    &live_states[batch_config.task_index],
+                    &mut persisted_flags[batch_config.task_index],
+                );
             }
             Ok(Err(e)) => {
                 let reason = format!("error: {e}");
@@ -1768,6 +1844,15 @@ async fn run_layer_batched(
                     iterations_used: 0,
                     exhausted: true,
                 });
+                {
+                    let st = &mut live_states[batch_config.task_index];
+                    st.exhausted = true;
+                }
+                persist_scheduler_state_if_exhausted(
+                    scheduler_state_cache,
+                    &live_states[batch_config.task_index],
+                    &mut persisted_flags[batch_config.task_index],
+                );
             }
             Err(_) => {
                 let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
@@ -1799,6 +1884,15 @@ async fn run_layer_batched(
                     iterations_used: 0,
                     exhausted: true,
                 });
+                {
+                    let st = &mut live_states[batch_config.task_index];
+                    st.exhausted = true;
+                }
+                persist_scheduler_state_if_exhausted(
+                    scheduler_state_cache,
+                    &live_states[batch_config.task_index],
+                    &mut persisted_flags[batch_config.task_index],
+                );
             }
         }
     }
@@ -1808,7 +1902,55 @@ async fn run_layer_batched(
         let _ = fe.shutdown().await;
     }
 
+    // Flush any remaining live scheduler states that were not written
+    // on exhaustion — e.g. functions still mid-exploration when the
+    // layer ended. This preserves advisory progress across runs.
+    if let Some(ssc) = scheduler_state_cache.as_ref() {
+        for (idx, persisted) in persisted_flags.iter().enumerate() {
+            if !persisted && let Err(e) = ssc.store(&live_states[idx], DEFAULT_SCHEDULER_MODE) {
+                log::warn!(
+                    "scheduler-state cache store error for {}: {e}",
+                    live_states[idx].function_id,
+                );
+            }
+        }
+    }
+
     outcomes.into_iter().flatten().collect()
+}
+
+/// Persist scheduler state to the advisory on-disk cache if this
+/// function has just hit exhaustion. Idempotent per task — once
+/// `persisted` is `true`, further calls are no-ops. Store errors are
+/// logged and swallowed: scheduler state is advisory.
+fn persist_scheduler_state_if_exhausted(
+    scheduler_state_cache: &Option<Arc<crate::cache::SchedulerStateCache>>,
+    state: &crate::cache::SchedulerState,
+    persisted: &mut bool,
+) {
+    if *persisted || !state.exhausted {
+        return;
+    }
+    let Some(ssc) = scheduler_state_cache.as_ref() else {
+        return;
+    };
+    match ssc.store(state, crate::cache::DEFAULT_SCHEDULER_MODE) {
+        Ok(()) => {
+            *persisted = true;
+            log::debug!(
+                "scheduler-state persisted for {} (iterations={}, batches={})",
+                state.function_id,
+                state.iterations_consumed,
+                state.batches_completed,
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "scheduler-state cache store error for {}: {e}",
+                state.function_id,
+            );
+        }
+    }
 }
 
 /// Execute a layer of function tasks in Function isolation mode.
@@ -2678,6 +2820,7 @@ pub async fn parallel_scan_with_progress(
                     bs,
                     config.timeout_per_fn,
                     &config.cache,
+                    &config.scheduler_state_cache,
                     &behavior_maps,
                     &input_pool,
                     &config.genetic_config,
@@ -4626,6 +4769,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4710,6 +4854,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4787,6 +4932,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4884,6 +5030,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4962,6 +5109,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -5044,6 +5192,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let skipped_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5099,6 +5248,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let failed_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5221,6 +5371,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5310,6 +5461,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5369,6 +5521,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5413,6 +5566,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -5446,6 +5600,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -6089,6 +6244,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -6212,6 +6368,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -6298,6 +6455,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6383,6 +6541,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6485,6 +6644,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6598,6 +6758,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6727,6 +6888,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6856,6 +7018,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6971,6 +7134,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7078,6 +7242,7 @@ mod tests {
             capabilities: crate::orchestrator::FrontendCapabilities::default(),
             genetic_config: crate::config::GeneticConfig::default(),
             batch_size: None,
+            scheduler_state_cache: None,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -8340,5 +8505,121 @@ mod tests {
         assert_eq!(summary.skipped, 1);
         assert_eq!(summary.failed, 0);
         assert_eq!(summary.functions.len(), 3);
+    }
+
+    // --- SchedulerStateCache wiring (str-bo4z.5) ---
+
+    #[test]
+    fn persist_scheduler_state_if_exhausted_writes_on_exhaustion() {
+        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
+        let cache_opt: Option<Arc<SchedulerStateCache>> = Some(Arc::clone(&cache));
+
+        let state = SchedulerState {
+            function_id: "pkg:fn_alpha".into(),
+            iterations_consumed: 42,
+            batches_completed: 3,
+            exhausted: true,
+            ..SchedulerState::default()
+        };
+        let mut persisted = false;
+
+        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        assert!(persisted, "first call on an exhausted state must persist");
+
+        let loaded = cache
+            .load("pkg:fn_alpha", DEFAULT_SCHEDULER_MODE)
+            .unwrap()
+            .expect("stored state must round-trip");
+        assert_eq!(loaded.iterations_consumed, 42);
+        assert_eq!(loaded.batches_completed, 3);
+        assert!(loaded.exhausted);
+    }
+
+    #[test]
+    fn persist_scheduler_state_if_exhausted_is_idempotent() {
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
+        let cache_opt: Option<Arc<SchedulerStateCache>> = Some(Arc::clone(&cache));
+
+        let state = SchedulerState {
+            function_id: "fn_once".into(),
+            exhausted: true,
+            ..SchedulerState::default()
+        };
+        let mut persisted = false;
+
+        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        assert!(persisted);
+
+        // Second call with a mutated state should not re-write the
+        // cache entry — the persisted flag prevents it.
+        let state2 = SchedulerState {
+            function_id: "fn_once".into(),
+            iterations_consumed: 999,
+            exhausted: true,
+            ..SchedulerState::default()
+        };
+        persist_scheduler_state_if_exhausted(&cache_opt, &state2, &mut persisted);
+
+        let loaded = cache
+            .load("fn_once", crate::cache::DEFAULT_SCHEDULER_MODE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.iterations_consumed, 0,
+            "idempotent helper must not overwrite persisted state"
+        );
+    }
+
+    #[test]
+    fn persist_scheduler_state_if_exhausted_skips_non_exhausted() {
+        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
+        let cache_opt: Option<Arc<SchedulerStateCache>> = Some(Arc::clone(&cache));
+
+        let state = SchedulerState {
+            function_id: "fn_mid".into(),
+            exhausted: false,
+            ..SchedulerState::default()
+        };
+        let mut persisted = false;
+
+        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        assert!(
+            !persisted,
+            "non-exhausted states are flushed at layer end, not on-outcome"
+        );
+        assert!(
+            cache
+                .load("fn_mid", DEFAULT_SCHEDULER_MODE)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn persist_scheduler_state_if_exhausted_noop_when_cache_absent() {
+        use crate::cache::SchedulerState;
+
+        let cache_opt: Option<Arc<crate::cache::SchedulerStateCache>> = None;
+        let state = SchedulerState {
+            function_id: "fn_none".into(),
+            exhausted: true,
+            ..SchedulerState::default()
+        };
+        let mut persisted = false;
+
+        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        assert!(
+            !persisted,
+            "cache=None must not flip persisted flag — nothing was stored"
+        );
     }
 }
