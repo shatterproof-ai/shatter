@@ -426,6 +426,7 @@ async fn run_concolic_observe(
         None,
         input.prepare_id.clone(),
         input.analysis.loops.clone(),
+    None,
     )
     .await?;
 

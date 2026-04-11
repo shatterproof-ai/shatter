@@ -195,6 +195,21 @@ pub struct ExploreProgressSnapshot {
 /// Callback type for receiving periodic exploration progress summaries.
 pub type ProgressCallback = dyn Fn(&ExploreProgressSnapshot) + Send + Sync;
 
+/// Bundle of metadata the explorer / orchestrator loops need in order to emit
+/// enriched progress snapshots. Wrapping the callback and the
+/// explorer-external hints (e.g. `total_branches` from static analysis) keeps
+/// the `explore` / `explore_function` signatures stable when future snapshot
+/// fields are added.
+#[derive(Copy, Clone)]
+pub struct ProgressHints<'a> {
+    /// Where to send snapshots. Invoked on the periodic cadence defined by
+    /// [`PROGRESS_SUMMARY_INTERVAL_SECS`].
+    pub callback: &'a ProgressCallback,
+    /// Total branches reported by static analysis, if known. Surfaces as the
+    /// denominator in "N/M branches" output.
+    pub total_branches: Option<usize>,
+}
+
 /// Summary of a single function execution during exploration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionSummary {
@@ -761,7 +776,7 @@ pub async fn explore_function(
     analysis: &FunctionAnalysis,
     config: &ExploreConfig,
     mut setup_mgr: Option<&mut SetupManager>,
-    progress_cb: Option<&ProgressCallback>,
+    progress_hints: Option<ProgressHints<'_>>,
 ) -> Result<ObservationOutput, ExploreError> {
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
@@ -1116,15 +1131,16 @@ pub async fn explore_function(
             last_reported_branches = discoveries.len();
             last_discovery_iteration = iterations;
         }
-        if let Some(cb) = progress_cb {
+        if let Some(hints) = progress_hints.as_ref() {
             let since_last = last_summary_time.elapsed();
             if since_last >= Duration::from_secs(PROGRESS_SUMMARY_INTERVAL_SECS) {
-                cb(&ExploreProgressSnapshot {
+                let total_branches = hints.total_branches.or(Some(analysis.branches.len()));
+                (hints.callback)(&ExploreProgressSnapshot {
                     function_name: analysis.name.clone(),
                     elapsed: explore_start.elapsed(),
                     iterations,
                     paths_found: obs_state.seen_paths.len(),
-                    total_branches: Some(analysis.branches.len()),
+                    total_branches,
                     branches_covered: Some(discoveries.len()),
                     mcdc_summary: None,
                     iters_since_new_discovery: iterations.saturating_sub(last_discovery_iteration),

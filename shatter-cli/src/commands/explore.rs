@@ -1933,6 +1933,17 @@ pub(crate) async fn run_explore(
                         }
                     };
 
+                    // Build progress hints shared across both explorer paths so
+                    // concolic and random runs surface identical stat lines.
+                    let cb_ref: Option<&ProgressCallback> = periodic_progress_clone
+                        .as_ref()
+                        .map(|arc| arc.as_ref().as_ref());
+                    let progress_hints =
+                        cb_ref.map(|cb| shatter_core::explorer::ProgressHints {
+                            callback: cb,
+                            total_branches: Some(item.func.branches.len()),
+                        });
+
                     let explore_result = if let Some(ref concolic_config) = item.concolic_config {
                         if let Err(e) = task_frontend
                             .send(ProtoCommand::Instrument {
@@ -1992,6 +2003,7 @@ pub(crate) async fn run_explore(
                             None,
                             prepare_id,
                             item.func.loops.clone(),
+                            progress_hints,
                         )
                         .await
                         {
@@ -2007,15 +2019,12 @@ pub(crate) async fn run_explore(
                             }
                         }
                     } else {
-                        let cb_ref: Option<&ProgressCallback> = periodic_progress_clone
-                            .as_ref()
-                            .map(|arc| arc.as_ref().as_ref());
                         explorer::explore_function(
                             &mut task_frontend,
                             &item.func,
                             &item.explore_config,
                             None,
-                            cb_ref,
+                            progress_hints,
                         )
                         .instrument(tracing::info_span!("explore.function"))
                         .await

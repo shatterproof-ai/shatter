@@ -1376,6 +1376,7 @@ pub async fn explore(
     setup_context: Option<SetupContextStack>,
     prepare_id: Option<String>,
     loops: Vec<crate::protocol::LoopInfo>,
+    progress_hints: Option<crate::explorer::ProgressHints<'_>>,
 ) -> Result<ExploreResult, ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
@@ -1545,6 +1546,14 @@ pub async fn explore(
     let mut plateau_counter: usize = 0;
     let pipeline_overlaps: usize = 0; // pipelining removed; field kept for ExploreResult compat
 
+    // Periodic progress reporting state (parity with explorer.rs random path).
+    // Tracks the 15-second cadence for ExploreProgressSnapshot emission and the
+    // iteration index of the most recent new-branch discovery so the snapshot
+    // can surface "continuing without new discoveries" to the CLI.
+    let mut last_summary_time = Instant::now();
+    let mut last_reported_branches: usize = 0;
+    let mut last_discovery_iteration: u64 = 0;
+
     // --- Strategy-driven exploration loop: Observe → Feedback → Generate ---
     //
     // Each iteration:
@@ -1556,6 +1565,37 @@ pub async fn explore(
     //   4. If new path, call solve_and_generate() for drilling/boundary candidates
     //      and push them to the supplementary queue.
     loop {
+        // --- Periodic progress summary (parity with random explorer) ---
+        // Keep the discovery tracker current even when no callback is
+        // registered so the `iters_since_new_discovery` field stays accurate
+        // across future emissions.
+        if discoveries.len() > last_reported_branches {
+            last_reported_branches = discoveries.len();
+            last_discovery_iteration = total_executions as u64;
+        }
+        if let Some(hints) = progress_hints.as_ref() {
+            let since_last = last_summary_time.elapsed();
+            if since_last
+                >= Duration::from_secs(crate::explorer::PROGRESS_SUMMARY_INTERVAL_SECS)
+            {
+                let mcdc_snapshot = mcdc_table.as_ref().map(|t| t.summary());
+                let iters_since_new = (total_executions as u64)
+                    .saturating_sub(last_discovery_iteration)
+                    as u32;
+                (hints.callback)(&crate::explorer::ExploreProgressSnapshot {
+                    function_name: function_name.to_string(),
+                    elapsed: explore_start.elapsed(),
+                    iterations: total_executions as u32,
+                    paths_found: executions.len(),
+                    total_branches: hints.total_branches,
+                    branches_covered: Some(discoveries.len()),
+                    mcdc_summary: mcdc_snapshot,
+                    iters_since_new_discovery: iters_since_new,
+                });
+                last_summary_time = Instant::now();
+            }
+        }
+
         // Priority: supplementary (drilling/boundary/MC-DC) > MetaStrategy.
         let (mut entry, strategy_idx) = if let Some(e) = supplementary.pop() {
             (e, None)
