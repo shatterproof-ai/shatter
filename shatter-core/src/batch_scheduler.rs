@@ -507,6 +507,16 @@ impl BatchScheduler {
         self.deferred.len()
     }
 
+    /// Task indices currently waiting in the queue (not in-flight).
+    pub fn queued_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.queue.iter().map(|e| e.task_index)
+    }
+
+    /// Task indices currently leased (in-flight).
+    pub fn in_flight_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.in_flight.keys().copied()
+    }
+
     /// Returns the current cooldown penalty for the given function.
     ///
     /// Returns 0 if the function has no active cooldown (either it hasn't
@@ -1868,6 +1878,54 @@ mod tests {
         let s = BatchScheduler::new(2, None, 50);
         assert_eq!(s.cooldown_score(0), 0);
         assert_eq!(s.cooldown_score(999), 0);
+    }
+
+    #[test]
+    fn queued_and_in_flight_indices() {
+        let mut s = BatchScheduler::new(3, None, 50);
+
+        // Initially all 3 are queued, none in-flight.
+        let mut queued: Vec<usize> = s.queued_indices().collect();
+        queued.sort();
+        assert_eq!(queued, vec![0, 1, 2]);
+        assert_eq!(s.in_flight_indices().count(), 0);
+
+        // Pop one batch — task 0 moves to in-flight.
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+        let mut queued: Vec<usize> = s.queued_indices().collect();
+        queued.sort();
+        assert_eq!(queued, vec![1, 2]);
+        let in_flight: Vec<usize> = s.in_flight_indices().collect();
+        assert_eq!(in_flight, vec![0]);
+
+        // Complete task 0 as non-exhausted — it re-enqueues.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+        assert_eq!(s.in_flight_indices().count(), 0);
+        // Queue now: [1, 2, 0] (re-enqueued at back).
+        let queued: Vec<usize> = s.queued_indices().collect();
+        assert_eq!(queued, vec![1, 2, 0]);
+
+        // Complete task 0 as exhausted — it should not appear anywhere.
+        let b = s.next_batch().unwrap(); // pops task 1
+        assert_eq!(b.task_index, 1);
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+            summary: None,
+        });
+        let queued: Vec<usize> = s.queued_indices().collect();
+        assert_eq!(queued, vec![2, 0]);
+        assert!(!queued.contains(&1), "exhausted task should not be queued");
+        assert_eq!(s.in_flight_indices().count(), 0);
     }
 }
 
