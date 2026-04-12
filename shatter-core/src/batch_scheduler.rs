@@ -32,6 +32,10 @@ use std::collections::{HashMap, VecDeque};
 /// Default number of iterations per batch.
 pub const DEFAULT_BATCH_SIZE: u32 = 50;
 
+/// Cooldown penalty applied to a function's effective rank immediately
+/// after it completes a batch (str-b2my.8).
+pub const COOLDOWN_PENALTY: i64 = 3;
+
 /// Configuration for one batch of exploration, returned by
 /// [`BatchScheduler::next_batch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +123,9 @@ pub struct BatchScheduler {
     /// released. `None` means unbounded; `Some(n)` is additive across
     /// repeated deferrals.
     deferred: HashMap<usize, Option<u32>>,
+    /// Per-function cooldown penalty (str-b2my.8). Set to [`COOLDOWN_PENALTY`]
+    /// on batch completion; decays by 1 per subsequent batch completion.
+    cooldown: HashMap<usize, i64>,
 }
 
 impl BatchScheduler {
@@ -144,6 +151,7 @@ impl BatchScheduler {
             batch_size,
             in_flight: HashMap::new(),
             deferred: HashMap::new(),
+            cooldown: HashMap::new(),
         }
     }
 
@@ -166,6 +174,7 @@ impl BatchScheduler {
             batch_size,
             in_flight: HashMap::new(),
             deferred: HashMap::new(),
+            cooldown: HashMap::new(),
         }
     }
 
@@ -192,14 +201,20 @@ impl BatchScheduler {
         // but still occupy a queue slot until we compact them out.
         self.queue.retain(|e| e.remaining != Some(0));
 
-        // Linear scan for the highest-ranked entry. `>` (strictly greater)
-        // keeps the earliest index on ties, yielding stable FIFO tie-break.
+        // Linear scan for the highest effective-ranked entry. Effective rank
+        // is `stored_rank - cooldown_penalty` (str-b2my.8). `>` (strictly
+        // greater) keeps the earliest index on ties, yielding stable FIFO
+        // tie-break.
         let best = self.queue.iter().enumerate().fold(
             None,
-            |acc: Option<(usize, i64)>, (i, e)| match acc {
-                None => Some((i, e.rank)),
-                Some((_, best_rank)) if e.rank > best_rank => Some((i, e.rank)),
-                Some(prev) => Some(prev),
+            |acc: Option<(usize, i64)>, (i, e)| {
+                let effective =
+                    e.rank - self.cooldown.get(&e.task_index).copied().unwrap_or(0);
+                match acc {
+                    None => Some((i, effective)),
+                    Some((_, best_rank)) if effective > best_rank => Some((i, effective)),
+                    Some(prev) => Some(prev),
+                }
             },
         )?;
 
@@ -258,6 +273,8 @@ impl BatchScheduler {
             // Reset batch counter — the deferred work is logically a fresh
             // scheduling request for this function.
             entry.batches_completed = 0;
+            // Deferred re-enqueue is a fresh arrival — clear cooldown.
+            self.cooldown.remove(&outcome.task_index);
             false
         } else if outcome.exhausted {
             true
@@ -266,8 +283,23 @@ impl BatchScheduler {
             entry.remaining == Some(0)
         };
 
+        // --- Cooldown decay (str-b2my.8) ---
+        // Every completed batch ticks all existing cooldowns down by 1,
+        // promoting breadth-first exploration across functions.
+        self.cooldown.retain(|_, penalty| {
+            *penalty -= 1;
+            *penalty > 0
+        });
+
         if should_drop {
+            self.cooldown.remove(&outcome.task_index);
             return;
+        }
+
+        // Apply fresh cooldown to the re-enqueued function, unless this
+        // is a deferred re-enqueue (logically a fresh arrival, no cooldown).
+        if deferred_budget.is_none() {
+            self.cooldown.insert(outcome.task_index, COOLDOWN_PENALTY);
         }
 
         // Replace the stored rank with the outcome's. Rank is not
@@ -368,6 +400,15 @@ impl BatchScheduler {
     /// Number of deferred enqueue requests waiting for a lease release.
     pub fn deferred_count(&self) -> usize {
         self.deferred.len()
+    }
+
+    /// Returns the current cooldown penalty for the given function.
+    ///
+    /// Returns 0 if the function has no active cooldown (either it hasn't
+    /// run recently or the cooldown has fully decayed). Used by callers
+    /// to display cooldown state in batch summary logs.
+    pub fn cooldown_score(&self, task_index: usize) -> i64 {
+        self.cooldown.get(&task_index).copied().unwrap_or(0)
     }
 
     /// Configured batch size.
