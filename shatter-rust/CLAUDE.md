@@ -28,6 +28,19 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-s
 
 Rust implements `prepare` to pre-build the harness binary so subsequent execute calls skip compilation. Handler: `handle_prepare()` in `src/handler.rs`. Advertised in capabilities list. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`). Storage: `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>`. Idempotent. Source file must exist and function must be analyzable. `prepared_harnesses.clear()` on function-level teardown + shutdown.
 
+## Adapter Parity Contract
+
+Rust implements the adapter substrate (str-t4uo.6.1) with recognizer, registry, and invocation strategy dispatch:
+
+- **Supported adapters**: `rust/async-tokio` — wraps async function calls in `tokio::runtime::Runtime::new().unwrap().block_on(...)`. Recognized automatically when `is_async: true` on `FunctionAnalysis`.
+- **Stub adapters**: `rust/framework/axum-handler` — constant defined, no recognizer or invocation handler yet.
+- **Invocation model**: `InvocationModel::Direct` (default) or `InvocationModel::Adapter { adapter_id, synthetic_params, scenario_schema }`.
+- **Adapter-owned execution**: delegates to the standard executor with `harness_mode = "async_tokio"`, which generates a Tokio-wrapped harness.
+- **Wire compatibility**: adapter types (`ExecutionProfile`, `AdapterHint`, `InvocationModel`, etc.) serialize to JSON matching shatter-core equivalents.
+- **Cached analyses**: `Handler.cached_analyses` maps `"file:function"` → `FunctionAnalysis` for execute-time invocation model lookup. Cleared on function-level teardown and shutdown.
+
+Authoritative matrix: `protocol/parity-matrix.yaml`.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

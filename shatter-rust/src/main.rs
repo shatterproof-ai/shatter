@@ -2,6 +2,7 @@
 // the library crate's tests, not from `main()` directly.
 #![allow(dead_code)]
 
+mod adapters;
 mod analyzer;
 mod executor;
 mod generators;

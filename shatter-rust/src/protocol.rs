@@ -294,6 +294,117 @@ pub struct LoopInfo {
     pub induction_var: InductionVar,
 }
 
+// ---------------------------------------------------------------------------
+// Adapter framework types
+// ---------------------------------------------------------------------------
+
+/// Confidence level for recognizer-generated hints.
+/// Ordered low-to-high so that [`Ord`] gives natural comparison.
+/// Matches `nondeterminism::Confidence` in shatter-core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+fn default_confidence() -> Confidence {
+    Confidence::High
+}
+
+/// Application policy for one execution adapter descriptor.
+/// Matches `ExecutionAdapterApply` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionAdapterApply {
+    Required,
+    Auto,
+    Suggest,
+    Disabled,
+}
+
+/// Opaque descriptor for one execution adapter.
+/// Matches `ExecutionAdapter` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionAdapter {
+    /// Namespaced adapter identifier, for example `rust/async-tokio`.
+    pub id: String,
+    /// Policy for whether this adapter is required, auto-applied, suggested, or disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply: Option<ExecutionAdapterApply>,
+    /// Adapter-local opaque options payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+}
+
+/// Ordered adapter descriptors that customize how a target should be executed.
+/// Matches `ExecutionProfile` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionProfile {
+    /// Ordered adapter descriptors to apply for this target.
+    pub adapters: Vec<ExecutionAdapter>,
+}
+
+/// Generic relation between execution adapters used by hinting and policy.
+/// Matches `AdapterRelation` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterRelation {
+    /// Related adapter identifier.
+    pub adapter_id: String,
+    /// Optional human-readable explanation for the relation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Recognizer-generated hint that an adapter may be relevant for a target.
+/// Matches `AdapterHint` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdapterHint {
+    /// Adapter descriptor suggested by the frontend.
+    pub adapter: ExecutionAdapter,
+    /// Frontend confidence in the hint.
+    #[serde(default = "default_confidence")]
+    pub confidence: Confidence,
+    /// Human-readable evidence explaining why the hint matched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    /// Adapters that should also be present for this hint to make sense.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<AdapterRelation>,
+    /// Adapters that conflict with this hint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<AdapterRelation>,
+}
+
+/// Describes how a discovered target should be invoked.
+/// Matches `InvocationModel` in shatter-core/src/protocol.rs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InvocationModel {
+    /// The target can be called directly with `FunctionAnalysis.params`.
+    #[default]
+    Direct,
+    /// The target requires adapter-owned invocation.
+    Adapter {
+        /// Adapter responsible for invoking the target.
+        adapter_id: String,
+        /// Synthetic parameters accepted by the adapter-owned surface.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        synthetic_params: Vec<ParamInfo>,
+        /// Opaque schema or shape descriptor for multi-step scenarios.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario_schema: Option<serde_json::Value>,
+    },
+}
+
+impl InvocationModel {
+    /// Returns true when the model is `Direct` (used for `skip_serializing_if`).
+    pub fn is_direct(model: &InvocationModel) -> bool {
+        matches!(model, InvocationModel::Direct)
+    }
+}
+
 /// Analysis result for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionAnalysis {
@@ -314,6 +425,19 @@ pub struct FunctionAnalysis {
     pub loops: Vec<LoopInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
+    /// Whether the function signature is `async fn`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_async: bool,
+    /// Recognizer-generated hints that describe relevant execution adapters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_hints: Vec<AdapterHint>,
+    /// How this target should be invoked (direct call or adapter-owned).
+    #[serde(default, skip_serializing_if = "InvocationModel::is_direct")]
+    pub invocation_model: InvocationModel,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 /// Current protocol version.
@@ -416,6 +540,11 @@ pub struct Request {
     #[allow(dead_code)] // carried on Execute requests; handler will forward when execute passes context
     #[serde(default)]
     pub setup_context: Option<SetupContextStack>,
+
+    // Adapter fields
+    /// Execution profile with ordered adapter descriptors.
+    #[serde(default)]
+    pub execution_profile: Option<ExecutionProfile>,
 
     // Setup fields
     /// Lifecycle level for this setup/teardown (session, file, function, execution).
@@ -993,6 +1122,9 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            is_async: false,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::default(),
         });
     }
 
@@ -1011,6 +1143,9 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            is_async: false,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::default(),
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -1075,6 +1210,9 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
+            is_async: false,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::default(),
         };
         let json = serde_json::to_value(&fa).expect("serialize");
         assert!(
@@ -1201,5 +1339,217 @@ mod tests {
             !json.as_object().unwrap().contains_key("phases"),
             "empty phases should be omitted"
         );
+    }
+
+    // ── Adapter framework round-trip tests ──
+
+    #[test]
+    fn confidence_round_trips() {
+        round_trip(&Confidence::Low);
+        round_trip(&Confidence::Medium);
+        round_trip(&Confidence::High);
+    }
+
+    #[test]
+    fn confidence_serializes_to_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Confidence::High).unwrap(),
+            serde_json::json!("high")
+        );
+        assert_eq!(
+            serde_json::to_value(Confidence::Medium).unwrap(),
+            serde_json::json!("medium")
+        );
+        assert_eq!(
+            serde_json::to_value(Confidence::Low).unwrap(),
+            serde_json::json!("low")
+        );
+    }
+
+    #[test]
+    fn execution_adapter_apply_round_trips() {
+        round_trip(&ExecutionAdapterApply::Required);
+        round_trip(&ExecutionAdapterApply::Auto);
+        round_trip(&ExecutionAdapterApply::Suggest);
+        round_trip(&ExecutionAdapterApply::Disabled);
+    }
+
+    #[test]
+    fn execution_adapter_round_trips() {
+        round_trip(&ExecutionAdapter {
+            id: "rust/async-tokio".into(),
+            apply: Some(ExecutionAdapterApply::Auto),
+            options: None,
+        });
+        round_trip(&ExecutionAdapter {
+            id: "rust/framework/axum-handler".into(),
+            apply: None,
+            options: Some(serde_json::json!({"port": 8080})),
+        });
+    }
+
+    #[test]
+    fn execution_profile_round_trips() {
+        round_trip(&ExecutionProfile {
+            adapters: vec![
+                ExecutionAdapter {
+                    id: "rust/async-tokio".into(),
+                    apply: Some(ExecutionAdapterApply::Auto),
+                    options: None,
+                },
+            ],
+        });
+    }
+
+    #[test]
+    fn adapter_relation_round_trips() {
+        round_trip(&AdapterRelation {
+            adapter_id: "rust/async-tokio".into(),
+            reason: Some("requires async runtime".into()),
+        });
+        round_trip(&AdapterRelation {
+            adapter_id: "rust/other".into(),
+            reason: None,
+        });
+    }
+
+    #[test]
+    fn adapter_hint_round_trips() {
+        round_trip(&AdapterHint {
+            adapter: ExecutionAdapter {
+                id: "rust/async-tokio".into(),
+                apply: Some(ExecutionAdapterApply::Auto),
+                options: None,
+            },
+            confidence: Confidence::High,
+            reasons: vec!["function is async".into()],
+            requirements: vec![],
+            conflicts: vec![],
+        });
+    }
+
+    #[test]
+    fn invocation_model_direct_round_trips() {
+        round_trip(&InvocationModel::Direct);
+    }
+
+    #[test]
+    fn invocation_model_direct_json_shape() {
+        let json = serde_json::to_value(InvocationModel::Direct).unwrap();
+        assert_eq!(json["kind"], "direct");
+    }
+
+    #[test]
+    fn invocation_model_adapter_round_trips() {
+        round_trip(&InvocationModel::Adapter {
+            adapter_id: "rust/async-tokio".into(),
+            synthetic_params: vec![],
+            scenario_schema: None,
+        });
+    }
+
+    #[test]
+    fn invocation_model_adapter_json_shape() {
+        let model = InvocationModel::Adapter {
+            adapter_id: "rust/async-tokio".into(),
+            synthetic_params: vec![],
+            scenario_schema: None,
+        };
+        let json = serde_json::to_value(&model).unwrap();
+        assert_eq!(json["kind"], "adapter");
+        assert_eq!(json["adapter_id"], "rust/async-tokio");
+    }
+
+    #[test]
+    fn function_analysis_omits_direct_invocation_model() {
+        let fa = FunctionAnalysis {
+            name: "stub".into(),
+            exported: false,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            is_async: false,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        };
+        let json = serde_json::to_value(&fa).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(
+            !obj.contains_key("invocation_model"),
+            "Direct invocation_model should be omitted from JSON"
+        );
+        assert!(
+            !obj.contains_key("adapter_hints"),
+            "empty adapter_hints should be omitted from JSON"
+        );
+        assert!(
+            !obj.contains_key("is_async"),
+            "is_async: false should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn function_analysis_includes_adapter_fields_when_present() {
+        let fa = FunctionAnalysis {
+            name: "my_async".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            is_async: true,
+            adapter_hints: vec![AdapterHint {
+                adapter: ExecutionAdapter {
+                    id: "rust/async-tokio".into(),
+                    apply: Some(ExecutionAdapterApply::Auto),
+                    options: None,
+                },
+                confidence: Confidence::High,
+                reasons: vec!["function is async".into()],
+                requirements: vec![],
+                conflicts: vec![],
+            }],
+            invocation_model: InvocationModel::Adapter {
+                adapter_id: "rust/async-tokio".into(),
+                synthetic_params: vec![],
+                scenario_schema: None,
+            },
+        };
+        let json = serde_json::to_value(&fa).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("is_async"), "is_async should be present when true");
+        assert!(obj.contains_key("adapter_hints"), "adapter_hints should be present when non-empty");
+        assert!(obj.contains_key("invocation_model"), "invocation_model should be present when Adapter");
+        round_trip(&fa);
+    }
+
+    #[test]
+    fn request_with_execution_profile_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":99,"command":"execute","function":"f","inputs":[],"mocks":[],"execution_profile":{"adapters":[{"id":"rust/async-tokio","apply":"auto"}]}}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize");
+        let profile = req.execution_profile.expect("execution_profile present");
+        assert_eq!(profile.adapters.len(), 1);
+        assert_eq!(profile.adapters[0].id, "rust/async-tokio");
+        assert_eq!(profile.adapters[0].apply, Some(ExecutionAdapterApply::Auto));
+    }
+
+    #[test]
+    fn request_without_execution_profile_defaults_to_none() {
+        let json = r#"{"protocol_version":"0.1.0","id":100,"command":"execute","function":"f","inputs":[],"mocks":[]}"#;
+        let req: Request = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.execution_profile, None);
     }
 }
