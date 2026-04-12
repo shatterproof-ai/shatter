@@ -3703,6 +3703,7 @@ mod tests {
             &result.raw_results,
             &analysis.params,
             &analysis.name,
+            crate::interesting_pool::CoverageMode::Branch,
         );
         assert!(
             harvested > 0,

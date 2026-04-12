@@ -1247,6 +1247,7 @@ pub async fn scan(
             &exploration.raw_results,
             &analysis.params,
             func_name,
+            interesting_pool::CoverageMode::Branch,
         );
 
         // Genetic algorithm follow-up phase: target unsolved branches.
@@ -3508,6 +3509,7 @@ async fn explore_single_function(
             &exploration.raw_results,
             &analysis.params,
             func_name,
+            interesting_pool::CoverageMode::Branch,
         );
     }
 

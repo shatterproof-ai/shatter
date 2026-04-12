@@ -2614,6 +2614,11 @@ pub(crate) async fn run_explore(
                                 &result.raw_results,
                                 &func.params,
                                 &func.name,
+                                if mcdc {
+                                    shatter_core::interesting_pool::CoverageMode::Mcdc
+                                } else {
+                                    shatter_core::interesting_pool::CoverageMode::Branch
+                                },
                             );
                         if harvested > 0
                             && let Err(e) =
