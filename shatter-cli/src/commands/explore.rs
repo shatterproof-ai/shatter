@@ -3583,26 +3583,25 @@ mod tests {
         use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
         use shatter_core::coverage_metrics::DiscoveryMethod;
 
-        // str-b2my.7 regression: after each batch the scheduler should
-        // re-rank the queue by the number of new branches the batch
-        // uncovered, and the next pick should be whichever function now
-        // ranks highest — which may be the same function back-to-back.
+        // str-b2my.7 + str-b2my.8 regression: after each batch the
+        // scheduler re-ranks by new branch discoveries, but recency
+        // cooldown (str-b2my.8) deprioritizes recently-completed
+        // functions, promoting breadth-first exploration.
         //
         // Two unbounded functions, batch cap = 500. Scripted scenario:
         //
         //   pick A (rank 0 tie → FIFO). A discovers 1 new branch → rank 1.
-        //   pick A again (1 > 0). A discovers 5 new branches → rank 5.
-        //   pick A again (5 > 0). A discovers 0 new → rank 0.
-        //   pick B  (tie 0/0 → FIFO → B, the never-run task).
-        //   B discovers 3 new → rank 3.
-        //   pick B again (3 > 0). B converges early, exhausted.
-        //   pick A (only A left). A converges early, exhausted.
+        //   cooldown pushes A to effective -2; B (effective 0) wins.
+        //   pick B. B discovers 3 new → rank 3. B exhausts on next pick.
+        //   pick B again (effective 0 > A effective -1). B converges early.
+        //   pick A (only left). A discovers 5 new → rank 5.
+        //   pick A. A discovers 0 new → rank 0.
+        //   pick A. A converges early, exhausted.
         //
-        // Expected pick order: A, A, A, B, B, A.
+        // Expected pick order: A, B, B, A, A, A.
         //
-        // This is the core behavioural contract of str-b2my.7:
-        // (a) back-to-back selection of the streaking function, and
-        // (b) yield to the peer when the streak dries up.
+        // Cooldown promotes B earlier than pure rank would: breadth-first
+        // exploration interleaved with rank-driven streaking.
         const CAP: u32 = 500;
         let mut scheduler = BatchScheduler::with_individual_budgets(&[None, None], CAP);
         let mut accs = vec![
