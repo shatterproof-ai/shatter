@@ -34,6 +34,8 @@ type Handler struct {
 	timingEnabled      bool
 	preparedHarnesses  map[string]*instrument.PreparedHarness
 	preparedTargets    map[string]string // "file\x00function" → current prepare_id for stale detection
+	hookFactories      []RuntimeHookFactory
+	cachedAnalyses     map[string]*FunctionAnalysis // "file\x00function" → cached analysis
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -49,6 +51,7 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 		setupLoader:       setup.NewLoader(),
 		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
 		preparedTargets:   make(map[string]string),
+		cachedAnalyses:    make(map[string]*FunctionAnalysis),
 	}
 }
 
@@ -64,6 +67,7 @@ func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level stri
 		setupLoader:       setup.NewLoader(),
 		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
 		preparedTargets:   make(map[string]string),
+		cachedAnalyses:    make(map[string]*FunctionAnalysis),
 	}
 }
 
@@ -259,6 +263,14 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	if functions == nil {
 		functions = []FunctionAnalysis{}
 	}
+
+	// Cache analysis records so execute can read invocation_model and
+	// decide whether to dispatch through an adapter-owned hook.
+	for i := range functions {
+		key := req.File + "\x00" + functions[i].Name
+		h.cachedAnalyses[key] = &functions[i]
+	}
+
 	resp.Functions = functions
 	return finalizeResponse(resp, timing)
 }
@@ -446,6 +458,67 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return resp
 	}
 
+	// capture defaults to true when omitted (nil), matching protocol semantics.
+	capture := req.Capture == nil || *req.Capture
+
+	// --- Adapter dispatch ---
+	// If the cached analysis reports an adapter invocation model, resolve the
+	// matching hook from the execution profile and dispatch through it instead
+	// of the instrumented subprocess harness.
+	cacheKey := file + "\x00" + *req.Function
+	cachedAnalysis := h.cachedAnalyses[cacheKey]
+
+	var runtimeHooks RuntimeHooks
+	if len(h.hookFactories) > 0 {
+		var projectRoot string
+		if req.ProjectRoot != nil {
+			projectRoot = *req.ProjectRoot
+		}
+		var resolveErr error
+		runtimeHooks, resolveErr = ResolveRuntimeHooks(req.ExecutionProfile, RuntimeHookContext{
+			Phase:        "execute",
+			ProjectRoot:  projectRoot,
+			EntryFile:    file,
+			FunctionName: *req.Function,
+		}, h.hookFactories)
+		if resolveErr != nil {
+			h.log.Debug("adapter resolve failed, falling through to direct", "err", resolveErr)
+		}
+	}
+
+	var invocationModel *InvocationModel
+	if cachedAnalysis != nil {
+		invocationModel = cachedAnalysis.InvocationModel
+	}
+	strategy := ChooseInvocationStrategy(invocationModel, runtimeHooks.InvocationHooks)
+
+	switch strategy.Kind {
+	case "unsupported":
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("execution adapter not supported by Go frontend: %s", strategy.AdapterID)
+		return resp
+	case "adapter":
+		finishExecute := timing.Start("execute.total")
+		result, err := ExecuteAdapterOwned(strategy.Hook, InvocationContext{
+			File:            file,
+			FunctionName:    *req.Function,
+			InvocationModel: strategy.Model,
+			Inputs:          req.Inputs,
+			Capture:         capture,
+		})
+		finishExecute()
+		if err != nil {
+			resp.Status = "error"
+			resp.Code = ErrInternalError
+			resp.Message = err.Error()
+			return resp
+		}
+		return mapExecuteResult(resp, result, timing)
+	}
+
+	// --- Direct execution (default path, unchanged) ---
+
 	// Convert protocol MockConfigs to instrument MockConfigs and pass to executor.
 	var execMocks []instrument.MockConfig
 	for _, m := range req.Mocks {
@@ -456,8 +529,6 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			DefaultBehavior:  m.DefaultBehavior,
 		})
 	}
-	// capture defaults to true when omitted (nil), matching protocol semantics.
-	capture := req.Capture == nil || *req.Capture
 
 	var result *instrument.ExecuteResult
 	var err error
@@ -505,6 +576,12 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return resp
 	}
 
+	return mapExecuteResult(resp, result, timing)
+}
+
+// mapExecuteResult maps an instrument.ExecuteResult to a protocol Response.
+// Shared by both the direct execution path and the adapter-owned path.
+func mapExecuteResult(resp Response, result *instrument.ExecuteResult, timing *frontendtiming.Collector) Response {
 	resp.Status = "execute"
 	resp.ReturnValue = result.ReturnValue
 	resp.ThrownError = convertErrorInfo(result.ThrownError)
@@ -521,7 +598,6 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		HeapUsedBytes:      result.Performance.HeapUsedBytes,
 		HeapAllocatedBytes: result.Performance.HeapAllocatedBytes,
 	}
-
 	return finalizeResponse(resp, timing)
 }
 
@@ -792,6 +868,7 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 		}
 		h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
 		h.preparedTargets = make(map[string]string)
+		h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	}
 
 	// Clear stale session state so the next setup/execute cycle starts clean.
@@ -849,6 +926,13 @@ func (h *Handler) Registry() *generators.Registry {
 	return h.registry
 }
 
+// RegisterHookFactory adds a RuntimeHookFactory to the handler. Factories are
+// consulted when an ExecutionProfile is present in an execute request.
+// Call before Run().
+func (h *Handler) RegisterHookFactory(f RuntimeHookFactory) {
+	h.hookFactories = append(h.hookFactories, f)
+}
+
 func (h *Handler) handleShutdown(resp Response) Response {
 	instrument.CloseAllHarnesses()
 	h.pruneOrphans()
@@ -857,6 +941,7 @@ func (h *Handler) handleShutdown(resp Response) Response {
 	}
 	h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
 	h.preparedTargets = make(map[string]string)
+	h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	h.registry.Close()
 	h.setupLoader.Close()
 	resp.Status = "shutdown_ack"

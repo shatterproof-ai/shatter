@@ -1298,3 +1298,66 @@ func TestPropertySymExprArgsNeverNull(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Adapter strategy properties
+// ---------------------------------------------------------------------------
+
+func TestProperty_ChooseInvocationStrategy_DirectAlwaysDirect(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		nHooks := rapid.IntRange(0, 5).Draw(t, "nHooks")
+		hooks := make([]InvocationHook, nHooks)
+		for i := range hooks {
+			hooks[i] = &stubHook{id: rapid.StringMatching(`[a-z]{3,10}`).Draw(t, fmt.Sprintf("hookID_%d", i))}
+		}
+
+		// nil model → direct
+		s1 := ChooseInvocationStrategy(nil, hooks)
+		if s1.Kind != "direct" {
+			t.Fatalf("nil model: expected direct, got %s", s1.Kind)
+		}
+
+		// explicit direct model → direct
+		s2 := ChooseInvocationStrategy(&InvocationModel{Kind: "direct"}, hooks)
+		if s2.Kind != "direct" {
+			t.Fatalf("direct model: expected direct, got %s", s2.Kind)
+		}
+	})
+}
+
+func TestProperty_ChooseInvocationStrategy_AdapterMatchYieldsAdapter(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-z/]{3,20}`).Draw(t, "adapterID")
+		hook := &stubHook{id: id}
+		// Possibly add extra hooks to verify it picks the right one
+		nExtra := rapid.IntRange(0, 3).Draw(t, "nExtra")
+		hooks := []InvocationHook{hook}
+		for i := 0; i < nExtra; i++ {
+			hooks = append(hooks, &stubHook{id: fmt.Sprintf("other-%d", i)})
+		}
+		model := &InvocationModel{Kind: "adapter", AdapterID: id}
+		s := ChooseInvocationStrategy(model, hooks)
+		if s.Kind != "adapter" {
+			t.Fatalf("expected adapter, got %s", s.Kind)
+		}
+		if s.Hook.ID() != id {
+			t.Fatalf("expected hook %s, got %s", id, s.Hook.ID())
+		}
+	})
+}
+
+func TestProperty_ChooseInvocationStrategy_Deterministic(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		kind := rapid.SampledFrom([]string{"direct", "adapter"}).Draw(t, "kind")
+		adapterID := rapid.StringMatching(`[a-z]{3,10}`).Draw(t, "adapterID")
+		model := &InvocationModel{Kind: kind, AdapterID: adapterID}
+		hook := &stubHook{id: adapterID}
+		hooks := []InvocationHook{hook}
+
+		s1 := ChooseInvocationStrategy(model, hooks)
+		s2 := ChooseInvocationStrategy(model, hooks)
+		if s1.Kind != s2.Kind {
+			t.Fatalf("non-deterministic: %s vs %s", s1.Kind, s2.Kind)
+		}
+	})
+}
