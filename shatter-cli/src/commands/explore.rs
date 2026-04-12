@@ -402,6 +402,9 @@ struct FuncWorkItem {
     /// maintains. Post-processing uses this to find per-target state like the
     /// incremental plan and deep fingerprints without a secondary lookup.
     target_idx: usize,
+    /// Pre-computed known uncovered targets from static analysis.
+    /// Empty means the function has no branch targets to explore.
+    known_targets: Vec<shatter_core::coverage_metrics::KnownTarget>,
 }
 
 /// All per-target state produced by the analyze + prepare phase. Held across
@@ -1959,6 +1962,8 @@ pub(crate) async fn run_explore(
 
             let _ = &shatter_configs; // suppress unused warning
 
+            let known_targets =
+                shatter_core::coverage_metrics::discover_known_targets(func);
             work_items.push(FuncWorkItem {
                 func: func.clone(),
                 explore_config,
@@ -1971,6 +1976,7 @@ pub(crate) async fn run_explore(
                 file_str: file_str.to_string(),
                 project_root_str: project_root_str.clone(),
                 target_idx: prepared_targets.len(),
+                known_targets,
             });
         }
 
@@ -2031,6 +2037,17 @@ pub(crate) async fn run_explore(
                     item.func.name,
                     paths_count,
                 );
+            }
+
+            // Only enqueue functions with concrete branch targets (str-b2my.11).
+            // Functions with no branches have nothing to explore — skip them
+            // rather than scheduling speculative work.
+            if item.known_targets.is_empty() {
+                log::debug!(
+                    "Skipping {} — no branch targets to explore",
+                    item.func.name,
+                );
+                continue;
             }
 
             let budget = item.explore_config.max_iterations;
