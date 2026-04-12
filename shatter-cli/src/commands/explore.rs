@@ -1426,6 +1426,7 @@ pub(crate) async fn run_explore(
     let run_start = Instant::now();
 
     let mut stop_early = false;
+    let mut frontier_exhausted_announced = false;
     let mut stop_reason: Option<String> = None;
     let mut total_executions_count: u64 = 0;
     let mut total_branches_seen: usize = 0;
@@ -2432,6 +2433,7 @@ pub(crate) async fn run_explore(
                 iterations_used: iters_used,
                 exhausted,
                 rank: batch_rank,
+                summary: None,
             });
             batches_completed += 1;
 
@@ -2503,10 +2505,31 @@ pub(crate) async fn run_explore(
                 // no new branch discoveries, and the function will keep being
                 // scheduled because it did not exhaust its iteration cap.
                 if prior_batches_merged > 0 && new_branches_this_batch == 0 && !exhausted {
-                    line.push_str(" (continuing without new discoveries)");
+                    if batch_scheduler.is_frontier_exhausted() {
+                        line.push_str(" (revisiting)");
+                    } else {
+                        line.push_str(" (continuing without new discoveries)");
+                    }
                 }
 
                 eprintln!("{line}");
+            }
+
+            // Cross-function fallback detection (str-b2my.5).
+            if batch_scheduler.is_frontier_exhausted() {
+                if !frontier_exhausted_announced {
+                    frontier_exhausted_announced = true;
+                    if log_level >= LogLevel::Info {
+                        eprintln!(
+                            "  frontier work exhausted across all functions; \
+                             continuing with corpus mutations"
+                        );
+                    }
+                }
+            } else {
+                // New frontier work appeared (e.g., dynamically enqueued
+                // function); allow re-announcement if fallback is re-entered.
+                frontier_exhausted_announced = false;
             }
 
             func_wall_time[work_index] += batch_outcome.wall_time;
@@ -3518,6 +3541,7 @@ mod tests {
                 iterations_used: iters,
                 exhausted,
                 rank: 0,
+                summary: None,
             });
         }
 
@@ -3631,6 +3655,7 @@ mod tests {
                 iterations_used: iters,
                 exhausted,
                 rank,
+                summary: None,
             });
         }
 
@@ -3695,6 +3720,7 @@ mod tests {
                 iterations_used: CAP,
                 exhausted: false,
                 rank: 1,
+                summary: None,
             });
         }
 
@@ -3722,6 +3748,7 @@ mod tests {
                 iterations_used: 100,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
         }
 
@@ -3734,6 +3761,85 @@ mod tests {
         for acc in accs {
             assert!(acc.batches_merged >= 1, "every accumulator must receive at least one batch");
         }
+    }
+
+    #[test]
+    fn fallback_transition_across_scheduler_lifecycle() {
+        // str-b2my.5: verify is_frontier_exhausted() transitions correctly
+        // when driven through the explore-loop pattern.
+        use shatter_core::batch_scheduler::{BatchOutcome, BatchScheduler};
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+
+        const CAP: u32 = 500;
+        let mut scheduler = BatchScheduler::new(2, None, CAP);
+        let mut accs = vec![
+            ExploreResultAccumulator::new("funcA".to_string()),
+            ExploreResultAccumulator::new("funcB".to_string()),
+        ];
+
+        // Round 1: both functions find new branches — NOT in fallback.
+        for _ in 0..2 {
+            let cfg = scheduler.next_batch().unwrap();
+            let obs = obs_with(
+                CAP, 1, 5,
+                vec![(cfg.task_index as u32, DiscoveryMethod::Random)],
+                vec![],
+            );
+            let rank =
+                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
+            assert!(rank > 0, "first batch should find new branches");
+            accs[cfg.task_index].merge(Ok(obs));
+            scheduler.record_outcome(BatchOutcome {
+                task_index: cfg.task_index,
+                iterations_used: CAP,
+                exhausted: false,
+                rank,
+                summary: None,
+            });
+        }
+        assert!(!scheduler.is_frontier_exhausted(), "both functions had discoveries");
+
+        // Round 2: both functions find nothing new — fallback.
+        for _ in 0..2 {
+            let cfg = scheduler.next_batch().unwrap();
+            let obs = obs_with(
+                CAP, 1, 5,
+                vec![(cfg.task_index as u32, DiscoveryMethod::Random)],
+                vec![],
+            );
+            let rank =
+                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
+            assert_eq!(rank, 0, "rediscovery should yield rank 0");
+            accs[cfg.task_index].merge(Ok(obs));
+            scheduler.record_outcome(BatchOutcome {
+                task_index: cfg.task_index,
+                iterations_used: CAP,
+                exhausted: false,
+                rank,
+                summary: None,
+            });
+        }
+        assert!(scheduler.is_frontier_exhausted(), "all functions explored with no new discoveries");
+
+        // Round 3: funcA finds something new — exits fallback.
+        let cfg = scheduler.next_batch().unwrap();
+        let obs = obs_with(
+            CAP, 1, 5,
+            vec![(99, DiscoveryMethod::Z3)],
+            vec![],
+        );
+        let rank =
+            super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
+        assert!(rank > 0, "new branch should yield positive rank");
+        accs[cfg.task_index].merge(Ok(obs));
+        scheduler.record_outcome(BatchOutcome {
+            task_index: cfg.task_index,
+            iterations_used: CAP,
+            exhausted: false,
+            rank,
+            summary: None,
+        });
+        assert!(!scheduler.is_frontier_exhausted(), "funcA has positive rank — no longer in fallback");
     }
 
     #[test]

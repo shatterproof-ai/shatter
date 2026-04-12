@@ -2163,6 +2163,7 @@ async fn run_layer_function_mode(
         callees,
         deep_fp,
         progress_index,
+        known_targets: _,
     } in tasks
     {
         let semaphore = Arc::clone(&semaphore);
@@ -2337,6 +2338,62 @@ fn derive_replica_seed(base: Option<u64>, fn_idx: usize, replica: usize) -> Opti
     })
 }
 
+/// Concrete branch targets known to be uncovered at enqueue time.
+///
+/// Computed during discovery from static analysis (all branches on first run)
+/// or by diffing against prior exploration results (continuous mode).
+/// Functions are only scheduled when they have non-empty known targets,
+/// preventing speculative exploration of fully-covered functions.
+#[derive(Debug, Clone)]
+pub(crate) struct KnownTargets {
+    /// Branch IDs known to be uncovered.
+    pub branch_ids: Vec<u32>,
+    /// Maximum estimated nesting depth among the uncovered targets.
+    /// Conservative upper bound from static analysis — refined at runtime
+    /// by `branch_depth()` from execution traces.
+    pub max_nesting_depth: u32,
+}
+
+/// Estimate the maximum nesting depth for a set of target branches.
+///
+/// Since [`BranchInfo`] doesn't carry explicit nesting depth, this uses a
+/// conservative heuristic: for each target branch, count the number of
+/// flow-control branches (If, While, For, Switch, Select) with strictly
+/// earlier line numbers. The maximum across all targets is returned.
+///
+/// This is an upper bound — it counts all preceding flow-control constructs,
+/// not just enclosing ones. Accurate depth requires per-branch end-line info
+/// (a future frontend enhancement).
+fn estimate_nesting_depth(branches: &[BranchInfo], target_ids: &[u32]) -> u32 {
+    if target_ids.is_empty() {
+        return 0;
+    }
+    let target_set: HashSet<u32> = target_ids.iter().copied().collect();
+
+    let mut max_depth = 0u32;
+    for &target_id in &target_set {
+        if let Some(target) = branches.iter().find(|b| b.id == target_id) {
+            let depth = branches
+                .iter()
+                .filter(|b| {
+                    b.id != target_id
+                        && b.line < target.line
+                        && matches!(
+                            b.branch_type,
+                            BranchType::If
+                                | BranchType::While
+                                | BranchType::For
+                                | BranchType::Switch
+                                | BranchType::Select
+                        )
+                })
+                .count() as u32;
+            max_depth = max_depth.max(depth);
+        }
+    }
+    max_depth
+}
+
 /// Internal task descriptor for a single-function exploration slot.
 ///
 /// Carries all per-function data needed to dispatch one worker. When
@@ -2351,6 +2408,8 @@ struct ExploreTask {
     callees: std::collections::HashSet<String>,
     deep_fp: Option<String>,
     progress_index: usize,
+    /// Concrete uncovered branch targets this task is scheduled to cover.
+    known_targets: KnownTargets,
 }
 
 /// Merge outcomes for replicas of the same function into one outcome per function.
@@ -2844,6 +2903,98 @@ pub async fn parallel_scan_with_progress(
                 continue;
             }
 
+            // Compute known uncovered targets. On first exploration all
+            // branches are targets; on subsequent runs subtract already-covered
+            // branches recovered from the scheduler state cache.
+            let all_branch_ids: Vec<u32> =
+                analysis.branches.iter().map(|b| b.id).collect();
+            let covered_ids: HashSet<u32> = if !all_branch_ids.is_empty() {
+                let all_ids: HashSet<u32> = all_branch_ids.iter().copied().collect();
+                if let Some(ssc) = &config.scheduler_state_cache {
+                    match ssc.load(func_name, config.coverage_mode.as_str()) {
+                        Ok(Some(ref prior))
+                            if prior.exhausted && prior.uncovered_branches.is_empty() =>
+                        {
+                            all_ids // All branches covered in prior run.
+                        }
+                        Ok(Some(ref prior)) if !prior.uncovered_branches.is_empty() => {
+                            let still_uncovered: HashSet<u32> = prior
+                                .uncovered_branches
+                                .iter()
+                                .filter_map(|s| s.split(':').next()?.parse().ok())
+                                .collect();
+                            all_ids.difference(&still_uncovered).copied().collect()
+                        }
+                        _ => HashSet::new(),
+                    }
+                } else {
+                    HashSet::new()
+                }
+            } else {
+                HashSet::new()
+            };
+            let uncovered_ids: Vec<u32> = all_branch_ids
+                .iter()
+                .filter(|id| !covered_ids.contains(id))
+                .copied()
+                .collect();
+
+            // Skip functions whose branches are all covered — no speculative work.
+            // Functions with no branches still get explored (they have execution
+            // behavior worth recording as behavior maps).
+            if uncovered_ids.is_empty() && !analysis.branches.is_empty() {
+                log::debug!(
+                    "{}: all {} branch(es) covered — skipping",
+                    func_name,
+                    analysis.branches.len(),
+                );
+                skipped.push(SkippedFunction {
+                    function_name: func_name.clone(),
+                    reason: "all branches covered".into(),
+                    category: SkipCategory::Expected,
+                });
+                write_skipped_scan_artifact(
+                    Some(&artifact_root),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "all branches covered",
+                    SkipCategory::Expected,
+                );
+                summary_record_skipped(
+                    &mut summary,
+                    func_name,
+                    current_progress,
+                    "all branches covered",
+                    SkipCategory::Expected,
+                    scan_start.elapsed(),
+                );
+                write_scan_summary(&scan_root_dir, &summary);
+                emit_progress(
+                    progress_handler.as_ref(),
+                    func_name,
+                    current_progress,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Skipped,
+                );
+                continue;
+            }
+
+            let known_targets = KnownTargets {
+                max_nesting_depth: estimate_nesting_depth(
+                    &analysis.branches,
+                    &uncovered_ids,
+                ),
+                branch_ids: uncovered_ids,
+            };
+            log::debug!(
+                "{}: enqueuing with {} known target(s), max nesting depth {}",
+                func_name,
+                known_targets.branch_ids.len(),
+                known_targets.max_nesting_depth,
+            );
+
             // Try loading cached behavior maps for callees not yet in memory.
             if let Some(ref cache) = config.cache {
                 let mut maps = behavior_maps.lock().await;
@@ -2959,6 +3110,7 @@ pub async fn parallel_scan_with_progress(
                 callees,
                 deep_fp: current_deep_fp,
                 progress_index: current_progress,
+                known_targets,
             });
         }
 
@@ -3069,6 +3221,7 @@ pub async fn parallel_scan_with_progress(
                                 callees: task.callees.clone(),
                                 deep_fp: task.deep_fp.clone(),
                                 progress_index: task.progress_index,
+                                known_targets: task.known_targets.clone(),
                             });
                         }
                     }
@@ -3113,6 +3266,7 @@ pub async fn parallel_scan_with_progress(
                     callees,
                     deep_fp,
                     progress_index,
+                    known_targets: _,
                 } in expanded_tasks
                 {
                     let pool = Arc::clone(&pool);
@@ -9304,6 +9458,183 @@ mod proptests_uncovered {
                 prop_assert!(parts[0].parse::<u32>().is_ok(), "bad id: {}", entry);
                 prop_assert!(parts[1].parse::<u32>().is_ok(), "bad line: {}", entry);
             }
+        }
+    }
+}
+
+// ---- str-b2my.11: estimate_nesting_depth and KnownTargets tests ----
+
+#[cfg(test)]
+mod tests_nesting_depth {
+    use super::*;
+
+    fn branch(id: u32, line: u32, bt: BranchType) -> BranchInfo {
+        BranchInfo {
+            id,
+            line,
+            condition_text: format!("cond_{id}"),
+            condition: None,
+            branch_type: bt,
+        }
+    }
+
+    #[test]
+    fn empty_branches_yields_zero() {
+        assert_eq!(estimate_nesting_depth(&[], &[]), 0);
+    }
+
+    #[test]
+    fn empty_targets_yields_zero() {
+        let branches = vec![branch(0, 10, BranchType::If)];
+        assert_eq!(estimate_nesting_depth(&branches, &[]), 0);
+    }
+
+    #[test]
+    fn single_branch_single_target_depth_zero() {
+        let branches = vec![branch(0, 10, BranchType::If)];
+        assert_eq!(estimate_nesting_depth(&branches, &[0]), 0);
+    }
+
+    #[test]
+    fn nested_if_branches() {
+        let branches = vec![
+            branch(0, 10, BranchType::If),
+            branch(1, 12, BranchType::If),
+            branch(2, 14, BranchType::If),
+        ];
+        assert_eq!(estimate_nesting_depth(&branches, &[2]), 2);
+        assert_eq!(estimate_nesting_depth(&branches, &[1]), 1);
+        assert_eq!(estimate_nesting_depth(&branches, &[0, 1, 2]), 2);
+    }
+
+    #[test]
+    fn only_flow_control_types_count() {
+        let branches = vec![
+            branch(0, 5, BranchType::LogicalAnd),
+            branch(1, 8, BranchType::Ternary),
+            branch(2, 10, BranchType::If),
+            branch(3, 12, BranchType::ElseIf),
+            branch(4, 15, BranchType::If),
+        ];
+        assert_eq!(estimate_nesting_depth(&branches, &[4]), 1);
+    }
+
+    #[test]
+    fn while_for_switch_select_count_as_depth() {
+        let branches = vec![
+            branch(0, 10, BranchType::While),
+            branch(1, 15, BranchType::For),
+            branch(2, 20, BranchType::Switch),
+            branch(3, 25, BranchType::Select),
+            branch(4, 30, BranchType::If),
+        ];
+        assert_eq!(estimate_nesting_depth(&branches, &[4]), 4);
+    }
+
+    #[test]
+    fn subset_targets_only_considers_given_ids() {
+        let branches = vec![
+            branch(0, 10, BranchType::If),
+            branch(1, 20, BranchType::If),
+            branch(2, 30, BranchType::If),
+        ];
+        assert_eq!(estimate_nesting_depth(&branches, &[1]), 1);
+    }
+
+    #[test]
+    fn nonexistent_target_id_ignored() {
+        let branches = vec![branch(0, 10, BranchType::If)];
+        assert_eq!(estimate_nesting_depth(&branches, &[99]), 0);
+    }
+
+    #[test]
+    fn known_targets_struct_construction() {
+        let branches = vec![
+            branch(0, 10, BranchType::If),
+            branch(1, 20, BranchType::If),
+        ];
+        let uncovered = vec![0, 1];
+        let targets = KnownTargets {
+            max_nesting_depth: estimate_nesting_depth(&branches, &uncovered),
+            branch_ids: uncovered,
+        };
+        assert_eq!(targets.branch_ids, vec![0, 1]);
+        assert_eq!(targets.max_nesting_depth, 1);
+    }
+}
+
+#[cfg(test)]
+mod proptests_nesting_depth {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_branch_type() -> impl Strategy<Value = BranchType> {
+        prop_oneof![
+            Just(BranchType::If),
+            Just(BranchType::ElseIf),
+            Just(BranchType::Switch),
+            Just(BranchType::Ternary),
+            Just(BranchType::LogicalAnd),
+            Just(BranchType::LogicalOr),
+            Just(BranchType::While),
+            Just(BranchType::For),
+            Just(BranchType::Select),
+        ]
+    }
+
+    fn arb_branch_info() -> impl Strategy<Value = BranchInfo> {
+        (0_u32..100, 1_u32..500, arb_branch_type()).prop_map(|(id, line, bt)| BranchInfo {
+            id,
+            line,
+            condition_text: format!("cond_{id}"),
+            condition: None,
+            branch_type: bt,
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn depth_bounded_by_flow_control_count(
+            branches in proptest::collection::vec(arb_branch_info(), 0..20),
+            target_ratio in 0.0_f64..=1.0,
+        ) {
+            let mut seen = std::collections::HashSet::new();
+            let branches: Vec<_> = branches
+                .into_iter()
+                .filter(|b| seen.insert(b.id))
+                .collect();
+
+            let flow_control_count = branches
+                .iter()
+                .filter(|b| matches!(
+                    b.branch_type,
+                    BranchType::If | BranchType::While | BranchType::For
+                    | BranchType::Switch | BranchType::Select
+                ))
+                .count() as u32;
+
+            let target_count =
+                (branches.len() as f64 * target_ratio).ceil() as usize;
+            let target_ids: Vec<u32> = branches
+                .iter()
+                .take(target_count)
+                .map(|b| b.id)
+                .collect();
+
+            let depth = estimate_nesting_depth(&branches, &target_ids);
+            prop_assert!(
+                depth <= flow_control_count,
+                "depth {} exceeds flow-control count {}",
+                depth,
+                flow_control_count,
+            );
+        }
+
+        #[test]
+        fn empty_targets_always_zero(
+            branches in proptest::collection::vec(arb_branch_info(), 0..20),
+        ) {
+            prop_assert_eq!(estimate_nesting_depth(&branches, &[]), 0);
         }
     }
 }
