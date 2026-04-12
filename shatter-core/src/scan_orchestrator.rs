@@ -1655,7 +1655,7 @@ async fn run_layer_batched(
     scan_start: Instant,
     scheduler_mode: &str,
 ) -> Vec<FunctionOutcome> {
-    use crate::batch_scheduler::{BatchOutcome, BatchScheduler};
+    use crate::batch_scheduler::{BatchOutcome, BatchScheduler, CoverageCounts, WorkerBatchSummary};
     use crate::cache::SchedulerState;
 
     let task_count = tasks.len();
@@ -1687,6 +1687,25 @@ async fn run_layer_batched(
         })
         .collect();
     let mut persisted_flags: Vec<bool> = vec![false; task_count];
+
+    // str-b2my.14: per-task accumulator for computing batch summary deltas.
+    struct BatchAccumulator {
+        last_coverage: CoverageCounts,
+        cumulative_unique_paths: usize,
+        cumulative_behaviors: usize,
+    }
+    let mut accumulators: Vec<BatchAccumulator> = tasks
+        .iter()
+        .map(|t| BatchAccumulator {
+            last_coverage: CoverageCounts {
+                total_branches: t.analysis.branches.len(),
+                uncovered: t.analysis.branches.len(),
+                ..CoverageCounts::default()
+            },
+            cumulative_unique_paths: 0,
+            cumulative_behaviors: 0,
+        })
+        .collect();
 
     if let Some(ssc) = scheduler_state_cache.as_ref() {
         for (idx, task) in tasks.iter().enumerate() {
@@ -1769,6 +1788,7 @@ async fn run_layer_batched(
                         iterations_used: 0,
                         exhausted: true,
                         rank: 0,
+                        summary: None,
                     });
                     {
                         let st = &mut live_states[batch_config.task_index];
@@ -1880,6 +1900,44 @@ async fn run_layer_batched(
                 // with uncovered targets stay alive for further scheduling.
                 let exhausted = iterations_used < batch_config.batch_size && !has_uncovered;
 
+                // str-b2my.14: build worker summary before func_result is moved.
+                let batch_summary = {
+                    let acc = &accumulators[batch_config.task_index];
+                    let coverage_after = CoverageCounts::from(&func_result.coverage_metrics);
+                    let new_classes = func_result
+                        .exploration
+                        .unique_paths
+                        .saturating_sub(acc.cumulative_unique_paths);
+                    let new_retained = func_result
+                        .behavior_map
+                        .behaviors
+                        .len()
+                        .saturating_sub(acc.cumulative_behaviors);
+                    let failures = func_result
+                        .exploration
+                        .raw_results
+                        .iter()
+                        .filter(|(_, _, r)| r.thrown_error.is_some())
+                        .count();
+                    WorkerBatchSummary {
+                        executions_run: iterations_used,
+                        coverage_before: acc.last_coverage.clone(),
+                        coverage_after,
+                        uncovered_remaining: uncovered.len(),
+                        new_classes,
+                        new_retained_inputs: new_retained,
+                        failures,
+                    }
+                };
+
+                // Update accumulator for next batch.
+                {
+                    let acc = &mut accumulators[batch_config.task_index];
+                    acc.last_coverage = batch_summary.coverage_after.clone();
+                    acc.cumulative_unique_paths = func_result.exploration.unique_paths;
+                    acc.cumulative_behaviors = func_result.behavior_map.behaviors.len();
+                }
+
                 outcomes[batch_config.task_index] =
                     Some(FunctionOutcome::Success(Box::new(func_result)));
 
@@ -1888,6 +1946,7 @@ async fn run_layer_batched(
                     iterations_used,
                     exhausted,
                     rank: 0,
+                    summary: Some(batch_summary),
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
@@ -1933,6 +1992,7 @@ async fn run_layer_batched(
                     iterations_used: 0,
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
@@ -1975,6 +2035,7 @@ async fn run_layer_batched(
                     iterations_used: 0,
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
                 {
                     let st = &mut live_states[batch_config.task_index];
