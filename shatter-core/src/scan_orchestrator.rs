@@ -31,7 +31,7 @@ use crate::fingerprint::FunctionSignature;
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
-use crate::protocol::{ExecuteResult, FunctionAnalysis, MockConfig};
+use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
 use crate::types::TypeInfo;
 
