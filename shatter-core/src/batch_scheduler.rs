@@ -1,4 +1,4 @@
-//! Rank-ordered batch scheduler for multi-function exploration.
+//! Rank-ordered batch scheduler with per-function worker leasing.
 //!
 //! When exploring many functions, the scheduler assigns each function a
 //! fixed-size iteration budget (one "batch") before moving to the next.
@@ -9,6 +9,15 @@
 //! earliest insertion order. The same function may therefore be chosen
 //! again back-to-back if it still ranks highest; once its rank drops to
 //! tie with its peers, standard FIFO round-robin resumes.
+//!
+//! **Worker leasing (str-b2my.12):** Each function is leased to at most
+//! one worker at a time. A call to [`BatchScheduler::next_batch`] acquires
+//! the lease; [`BatchScheduler::record_outcome`] releases it. If
+//! [`BatchScheduler::enqueue`] is called for a function that is currently
+//! leased (in-flight) or already queued, the request is deferred or merged
+//! rather than panicking. Deferred work is drained automatically when the
+//! lease is released, ensuring that targets discovered for an active
+//! function wait until that function is released and requeued.
 //!
 //! With initial ranks at 0 and callers that always pass `rank: 0`, the
 //! scheduler degenerates to a strict round-robin (ties keep insertion
@@ -55,6 +64,21 @@ pub struct BatchOutcome {
     pub rank: i64,
 }
 
+/// Result of an [`BatchScheduler::enqueue`] call, indicating how the
+/// request was handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueResult {
+    /// Function was new — added to the queue tail with rank 0.
+    Queued,
+    /// Function is currently leased (in-flight). The budget was stored
+    /// in the deferred map and will be applied when the lease is released
+    /// via [`BatchScheduler::record_outcome`].
+    Deferred,
+    /// Function was already in the queue. The budget was merged into the
+    /// existing queue entry.
+    Merged,
+}
+
 /// Internal queue entry tracking per-function state.
 #[derive(Debug, Clone)]
 struct Entry {
@@ -69,7 +93,7 @@ struct Entry {
     rank: i64,
 }
 
-/// Rank-ordered batch scheduler.
+/// Rank-ordered batch scheduler with per-function worker leasing.
 ///
 /// Assigns fixed-size iteration batches to functions. Callers may request
 /// multiple batches concurrently (one per function) and record their
@@ -77,6 +101,12 @@ struct Entry {
 /// the outcome's rank and the next pick is whichever queued entry has
 /// the highest rank (FIFO tie-break). When every outcome is reported
 /// with `rank: 0` the scheduler collapses to a strict round-robin.
+///
+/// Each in-flight batch constitutes a *lease* on that function: no other
+/// worker can receive a batch for the same function until the lease is
+/// released via [`BatchScheduler::record_outcome`]. If new work is
+/// enqueued for a leased function, it is deferred and drained
+/// automatically on release.
 #[derive(Debug)]
 pub struct BatchScheduler {
     queue: VecDeque<Entry>,
@@ -84,6 +114,11 @@ pub struct BatchScheduler {
     /// Entries popped by [`next_batch`] but not yet resolved via
     /// [`record_outcome`], keyed by `task_index`.
     in_flight: HashMap<usize, Entry>,
+    /// Budgets enqueued for functions that are currently leased
+    /// (in-flight). Drained by [`record_outcome`] when the lease is
+    /// released. `None` means unbounded; `Some(n)` is additive across
+    /// repeated deferrals.
+    deferred: HashMap<usize, Option<u32>>,
 }
 
 impl BatchScheduler {
@@ -108,6 +143,7 @@ impl BatchScheduler {
             queue,
             batch_size,
             in_flight: HashMap::new(),
+            deferred: HashMap::new(),
         }
     }
 
@@ -129,6 +165,7 @@ impl BatchScheduler {
             queue,
             batch_size,
             in_flight: HashMap::new(),
+            deferred: HashMap::new(),
         }
     }
 
@@ -202,76 +239,113 @@ impl BatchScheduler {
 
         entry.batches_completed += 1;
 
-        if outcome.exhausted {
-            return; // drop entry — function is done
-        }
-
         // Deduct used iterations from the remaining budget.
         if let Some(ref mut r) = entry.remaining {
             *r = r.saturating_sub(outcome.iterations_used);
-            if *r == 0 {
-                return; // budget spent — don't re-enqueue
-            }
+        }
+
+        // Check for deferred work enqueued while this function was leased.
+        let deferred_budget = self.deferred.remove(&outcome.task_index);
+
+        // Determine whether the function should be re-enqueued. Without
+        // deferred work, the original exhaustion/budget logic applies.
+        // With deferred work, the function is always re-enqueued — deferred
+        // targets override exhaustion because the caller signalled that new
+        // work exists for this function.
+        let should_drop = if let Some(def_budget) = deferred_budget {
+            // Merge deferred budget into remaining.
+            entry.remaining = merge_budgets(entry.remaining, def_budget);
+            // Reset batch counter — the deferred work is logically a fresh
+            // scheduling request for this function.
+            entry.batches_completed = 0;
+            false
+        } else if outcome.exhausted {
+            true
+        } else {
+            // Not exhausted, no deferred — check budget.
+            entry.remaining == Some(0)
+        };
+
+        if should_drop {
+            return;
         }
 
         // Replace the stored rank with the outcome's. Rank is not
         // accumulated across batches: each batch reports its own score
-        // and the scheduler uses only the latest signal.
-        entry.rank = outcome.rank;
+        // and the scheduler uses only the latest signal. When re-enqueuing
+        // from deferred, rank resets to 0 (the deferred work hasn't run
+        // yet, so there's no productivity signal).
+        entry.rank = if deferred_budget.is_some() {
+            0
+        } else {
+            outcome.rank
+        };
         self.queue.push_back(entry);
     }
 
-    /// Append a brand-new function to the queue mid-flight.
+    /// Enqueue a function for scheduling, deferring if it is currently
+    /// leased (in-flight) or merging if it is already queued.
     ///
     /// Use this when the caller's task list grows after construction —
     /// for example, when target discovery runs concurrently with batch
-    /// execution and a new function appears that needs scheduling. The
-    /// new entry starts with rank 0 and zero batches completed, exactly
-    /// like an entry installed by [`BatchScheduler::new`] or
-    /// [`BatchScheduler::with_individual_budgets`].
+    /// execution and a new function appears that needs scheduling.
     ///
-    /// `task_index` must be unique across both the queue and the
-    /// in-flight set; the caller owns the indexing scheme and is
-    /// responsible for picking a fresh value (typically `current_len`).
+    /// **Lease-aware behaviour (str-b2my.12):**
+    ///
+    /// | Current state of `task_index` | Action | Return |
+    /// |-------------------------------|--------|--------|
+    /// | Not known (new function) | Added to queue tail, rank 0 | [`EnqueueResult::Queued`] |
+    /// | In-flight (leased to a worker) | Budget stored in deferred map | [`EnqueueResult::Deferred`] |
+    /// | Already in queue | Budget merged into queue entry | [`EnqueueResult::Merged`] |
+    ///
+    /// Deferred work is drained automatically by [`record_outcome`] when
+    /// the lease is released. Multiple deferrals for the same in-flight
+    /// function accumulate their budgets (with `None` meaning unbounded
+    /// overriding any bounded value).
+    ///
     /// `budget` matches the per-function budget semantics of the other
     /// constructors: `None` is unbounded, `Some(n)` caps total iterations
     /// across batches, `Some(0)` is silently inert (the entry is dropped
     /// on the next [`next_batch`] selection scan, mirroring how
     /// [`record_outcome`] handles a fully-spent budget).
     ///
-    /// FIFO tie-break is preserved: among rank-0 entries, the new entry
-    /// is picked after every existing rank-0 entry, because it is pushed
-    /// to the tail of the queue.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `task_index` is already in flight (returned by an
-    /// earlier [`next_batch`] without a matching [`record_outcome`]) or
-    /// already present in the queue. Both conditions indicate a caller
-    /// bug — duplicate task indices would corrupt the in-flight tracking
-    /// and lead to silently mis-routed outcomes.
+    /// FIFO tie-break is preserved for new entries: among rank-0 entries,
+    /// a newly queued entry is picked after every existing rank-0 entry,
+    /// because it is pushed to the tail of the queue.
     ///
     /// [`next_batch`]: BatchScheduler::next_batch
     /// [`record_outcome`]: BatchScheduler::record_outcome
-    pub fn enqueue(&mut self, task_index: usize, budget: Option<u32>) {
+    pub fn enqueue(&mut self, task_index: usize, budget: Option<u32>) -> EnqueueResult {
+        // In-flight: defer until lease is released.
         if self.in_flight.contains_key(&task_index) {
-            panic!("enqueue task_index {task_index} is already in flight");
+            let merged = match self.deferred.get(&task_index).copied() {
+                Some(existing_budget) => merge_budgets(existing_budget, budget),
+                None => budget,
+            };
+            self.deferred.insert(task_index, merged);
+            return EnqueueResult::Deferred;
         }
-        if self.queue.iter().any(|e| e.task_index == task_index) {
-            panic!("enqueue task_index {task_index} is already in the queue");
+
+        // Already queued: merge budget into the existing entry.
+        if let Some(entry) = self.queue.iter_mut().find(|e| e.task_index == task_index) {
+            entry.remaining = merge_budgets(entry.remaining, budget);
+            return EnqueueResult::Merged;
         }
+
+        // New function — append to queue.
         self.queue.push_back(Entry {
             task_index,
             remaining: budget,
             batches_completed: 0,
             rank: 0,
         });
+        EnqueueResult::Queued
     }
 
-    /// Returns `true` when all functions have been exhausted and there is
-    /// no batch in flight.
+    /// Returns `true` when all functions have been exhausted, there is
+    /// no batch in flight, and no deferred work is pending.
     pub fn is_complete(&self) -> bool {
-        self.in_flight.is_empty() && self.queue.is_empty()
+        self.in_flight.is_empty() && self.queue.is_empty() && self.deferred.is_empty()
     }
 
     /// Number of functions still in the queue (excludes in-flight batches).
@@ -284,9 +358,30 @@ impl BatchScheduler {
         self.in_flight.len()
     }
 
+    /// Returns `true` if the given function is currently leased — i.e.,
+    /// a worker is executing a batch for it and the outcome has not yet
+    /// been recorded.
+    pub fn is_leased(&self, task_index: usize) -> bool {
+        self.in_flight.contains_key(&task_index)
+    }
+
+    /// Number of deferred enqueue requests waiting for a lease release.
+    pub fn deferred_count(&self) -> usize {
+        self.deferred.len()
+    }
+
     /// Configured batch size.
     pub fn batch_size(&self) -> u32 {
         self.batch_size
+    }
+}
+
+/// Merge two optional budgets. `None` (unbounded) absorbs any bounded
+/// value; two bounded values are summed.
+fn merge_budgets(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (None, _) | (_, None) => None,
+        (Some(x), Some(y)) => Some(x.saturating_add(y)),
     }
 }
 
@@ -830,20 +925,291 @@ mod tests {
         assert!(s.is_complete());
     }
 
+    // --- Worker lease tests (str-b2my.12) ---
+
     #[test]
-    #[should_panic(expected = "already in flight")]
-    fn enqueue_panics_on_in_flight_duplicate() {
+    fn enqueue_defers_when_in_flight() {
         let mut s = BatchScheduler::new(1, None, 50);
-        let _ = s.next_batch().unwrap(); // task 0 now in flight
-        s.enqueue(0, None);
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+        assert!(s.is_leased(0));
+
+        // Enqueue for an in-flight function → deferred.
+        let result = s.enqueue(0, Some(100));
+        assert_eq!(result, EnqueueResult::Deferred);
+        assert_eq!(s.deferred_count(), 1);
+
+        // Record exhaustion — deferred work overrides it, function re-enqueues.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 5,
+        });
+        assert!(!s.is_leased(0));
+        assert_eq!(s.deferred_count(), 0);
+        assert_eq!(s.pending_count(), 1);
+
+        // The re-enqueued entry gets the deferred budget.
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b2.task_index, 0);
+        // Deferred resets batch counter.
+        assert_eq!(b2.batch_number, 0);
+        assert_eq!(b2.batch_size, 50); // min(100, 50)
     }
 
     #[test]
-    #[should_panic(expected = "already in the queue")]
-    fn enqueue_panics_on_queued_duplicate() {
+    fn enqueue_merges_when_queued() {
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        // Task 0 is in the queue with budget 50.
+        let result = s.enqueue(0, Some(100));
+        assert_eq!(result, EnqueueResult::Merged);
+
+        // Budget should now be 150 (50 + 100). First batch uses 50,
+        // leaving 100. Second batch uses 50, leaving 50. Third uses 50.
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.batch_size, 50);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+        });
+
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b2.batch_size, 50);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+        });
+
+        let b3 = s.next_batch().unwrap();
+        assert_eq!(b3.batch_size, 50);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+        });
+
+        // Budget should be exhausted (150 - 50*3 = 0).
+        assert!(s.next_batch().is_none());
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn deferred_overrides_exhaustion() {
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+
+        // Defer new work while in-flight.
+        s.enqueue(0, Some(200));
+
+        // Mark exhausted — but deferred work exists, so it re-enqueues.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 10,
+        });
+
+        assert!(!s.is_complete());
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b2.task_index, 0);
+        // Deferred budget (200) merged with remaining (0): 200.
+        // batch_size is 50, so clamped.
+        assert_eq!(b2.batch_size, 50);
+        // Deferred resets batch_number.
+        assert_eq!(b2.batch_number, 0);
+    }
+
+    #[test]
+    fn multiple_deferred_accumulate() {
+        // Start with bounded budget so we can verify the deferred merge.
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let _ = s.next_batch().unwrap();
+
+        // Defer twice while in-flight — budgets accumulate.
+        assert_eq!(s.enqueue(0, Some(100)), EnqueueResult::Deferred);
+        assert_eq!(s.enqueue(0, Some(200)), EnqueueResult::Deferred);
+        assert_eq!(s.deferred_count(), 1);
+
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+
+        // First batch consumed 50 of original budget (50), leaving 0.
+        // Deferred merge: merge_budgets(Some(0), Some(300)) = Some(300).
+        // With batch_size=50: 6 batches to exhaust.
+        let mut batch_count = 0;
+        while let Some(b) = s.next_batch() {
+            assert_eq!(b.task_index, 0);
+            batch_count += 1;
+            s.record_outcome(BatchOutcome {
+                task_index: 0,
+                iterations_used: b.batch_size,
+                exhausted: false,
+                rank: 0,
+            });
+        }
+        assert_eq!(batch_count, 6); // 300 / 50 = 6
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn deferred_unbounded_wins() {
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let _ = s.next_batch().unwrap();
+
+        // First defer bounded, then unbounded.
+        s.enqueue(0, Some(100));
+        s.enqueue(0, None); // unbounded overrides
+
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+
+        // Re-enqueued with unbounded budget — keeps cycling.
+        for i in 0..5 {
+            let b = s.next_batch().unwrap();
+            assert_eq!(b.task_index, 0);
+            assert_eq!(b.batch_size, 50);
+            s.record_outcome(BatchOutcome {
+                task_index: 0,
+                iterations_used: 50,
+                exhausted: i == 4,
+                rank: 0,
+            });
+        }
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn is_leased_tracks_in_flight() {
         let mut s = BatchScheduler::new(2, None, 50);
-        // Both 0 and 1 are in the queue. Enqueueing 1 must panic.
-        s.enqueue(1, None);
+        assert!(!s.is_leased(0));
+        assert!(!s.is_leased(1));
+
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+        assert!(s.is_leased(0));
+        assert!(!s.is_leased(1));
+
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        assert!(!s.is_leased(0));
+    }
+
+    #[test]
+    fn is_complete_considers_deferred() {
+        let mut s = BatchScheduler::new(1, None, 50);
+        let _ = s.next_batch().unwrap();
+        s.enqueue(0, Some(50));
+
+        // In-flight + deferred → not complete.
+        assert!(!s.is_complete());
+
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+        // Deferred drained → re-enqueued → not complete yet.
+        assert!(!s.is_complete());
+
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: b.batch_size,
+            exhausted: true,
+            rank: 0,
+        });
+        // No deferred, no in-flight, no queued → complete.
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn deferred_resets_batch_counter() {
+        let mut s = BatchScheduler::new(1, None, 50);
+
+        // Run 3 batches to advance batch_number.
+        for _ in 0..3 {
+            let b = s.next_batch().unwrap();
+            s.record_outcome(BatchOutcome {
+                task_index: 0,
+                iterations_used: 50,
+                exhausted: false,
+                rank: 0,
+            });
+            let _ = b;
+        }
+
+        // Start batch 3 and defer work.
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.batch_number, 3);
+        s.enqueue(0, Some(50));
+
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+        });
+
+        // Deferred re-enqueue resets batch_number to 0.
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b2.batch_number, 0);
+    }
+
+    #[test]
+    fn deferred_rank_resets_to_zero() {
+        // When a function is re-enqueued from deferred, its rank should
+        // reset to 0 (no productivity signal yet for the deferred work).
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        // Pop task 0, set task 1's rank high via a batch.
+        let _ = s.next_batch().unwrap(); // task 0
+        let _b1 = s.next_batch().unwrap(); // task 1
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 10,
+        });
+
+        // Defer work for task 0 while it's in-flight.
+        s.enqueue(0, Some(100));
+
+        // Release task 0 as exhausted. Deferred overrides, re-enqueues
+        // with rank 0.
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 99, // high rank, but should be overridden by deferred
+        });
+
+        // Task 1 has rank 10, task 0 has rank 0 (from deferred).
+        // Task 1 should win.
+        let next = s.next_batch().unwrap();
+        assert_eq!(
+            next.task_index, 1,
+            "task 1 (rank 10) should beat deferred task 0 (rank 0)"
+        );
     }
 }
 
@@ -1086,6 +1452,200 @@ mod proptests {
                 exhausted: true,
                 rank: 0,
             });
+        }
+
+        // --- Worker lease property tests (str-b2my.12) ---
+
+        /// No task_index ever appears in two concurrent next_batch results.
+        /// This is the core lease invariant: a function can only be leased
+        /// to one worker at a time.
+        #[test]
+        fn no_double_lease(
+            task_count in 2_usize..8,
+            batch_size in 1_u32..50,
+        ) {
+            let mut scheduler = BatchScheduler::new(task_count, None, batch_size);
+            let mut in_flight_set = std::collections::HashSet::new();
+            let max_ops = task_count * 6;
+
+            for _ in 0..max_ops {
+                // Try to pop as many as available.
+                while let Some(config) = scheduler.next_batch() {
+                    prop_assert!(
+                        in_flight_set.insert(config.task_index),
+                        "task {} was dispatched while already in flight — lease violated",
+                        config.task_index,
+                    );
+                }
+                // Release all in-flight tasks.
+                let to_release: Vec<_> = in_flight_set.drain().collect();
+                if to_release.is_empty() {
+                    break;
+                }
+                for ti in to_release {
+                    scheduler.record_outcome(BatchOutcome {
+                        task_index: ti,
+                        iterations_used: batch_size,
+                        exhausted: false,
+                        rank: 0,
+                    });
+                }
+            }
+        }
+
+        /// After interleaved enqueue-while-in-flight sequences, all
+        /// deferred work eventually enters the queue and is scheduled.
+        #[test]
+        fn deferred_always_drains(
+            task_count in 1_usize..5,
+            defer_count in 1_usize..4,
+            defer_budget in 1_u32..100,
+            batch_size in 1_u32..50,
+        ) {
+            let mut scheduler = BatchScheduler::new(task_count, Some(defer_budget), batch_size);
+
+            // Pop all tasks.
+            let mut popped = Vec::new();
+            while let Some(config) = scheduler.next_batch() {
+                popped.push(config.task_index);
+            }
+
+            // Defer additional work for task 0 while it's in-flight.
+            for _ in 0..defer_count {
+                let result = scheduler.enqueue(popped[0], Some(defer_budget));
+                prop_assert_eq!(result, EnqueueResult::Deferred);
+            }
+            prop_assert!(scheduler.deferred_count() > 0);
+
+            // Release all tasks.
+            for &ti in &popped {
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: ti,
+                    iterations_used: batch_size.min(defer_budget),
+                    exhausted: true,
+                    rank: 0,
+                });
+            }
+
+            // Deferred should have been drained.
+            prop_assert_eq!(scheduler.deferred_count(), 0);
+
+            // Task 0 must be schedulable again (from deferred work).
+            let mut saw_task_0 = false;
+            while let Some(config) = scheduler.next_batch() {
+                if config.task_index == popped[0] {
+                    saw_task_0 = true;
+                }
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: config.task_index,
+                    iterations_used: config.batch_size,
+                    exhausted: true,
+                    rank: 0,
+                });
+            }
+            prop_assert!(saw_task_0, "deferred task 0 was never re-scheduled");
+            prop_assert!(scheduler.is_complete());
+        }
+
+        /// Total iterations assigned across all batches for a task never
+        /// exceeds original budget + all deferred budgets.
+        #[test]
+        fn deferred_budget_bounded(
+            budget in 1_u32..200,
+            deferred_budget in 1_u32..200,
+            batch_size in 1_u32..100,
+        ) {
+            let mut scheduler = BatchScheduler::new(1, Some(budget), batch_size);
+
+            // Pop the task.
+            let config = scheduler.next_batch().unwrap();
+            let mut total_assigned = config.batch_size as u64;
+
+            // Defer additional budget while in-flight.
+            scheduler.enqueue(0, Some(deferred_budget));
+
+            // Release.
+            scheduler.record_outcome(BatchOutcome {
+                task_index: 0,
+                iterations_used: config.batch_size,
+                exhausted: true,
+                rank: 0,
+            });
+
+            // Drain remaining batches.
+            while let Some(config) = scheduler.next_batch() {
+                total_assigned += config.batch_size as u64;
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: config.task_index,
+                    iterations_used: config.batch_size,
+                    exhausted: false,
+                    rank: 0,
+                });
+            }
+
+            // The remaining budget after the first batch is
+            // (budget - batch_size) merged with deferred_budget.
+            // Total should not exceed budget + deferred_budget.
+            let max_total = budget as u64 + deferred_budget as u64;
+            prop_assert!(
+                total_assigned <= max_total,
+                "assigned {} > max {} (budget={}, deferred={}, batch={})",
+                total_assigned, max_total, budget, deferred_budget, batch_size,
+            );
+        }
+
+        /// Random interleaving of enqueue calls for arbitrary task_indices
+        /// (in-flight, queued, new, deferred) never panics and always
+        /// returns a valid EnqueueResult.
+        #[test]
+        fn enqueue_never_panics(
+            task_count in 1_usize..5,
+            batch_size in 1_u32..50,
+            ops in proptest::collection::vec(0_usize..10, 5..=20),
+        ) {
+            let mut scheduler = BatchScheduler::new(task_count, None, batch_size);
+            let mut in_flight = Vec::new();
+
+            for op in ops {
+                match op % 3 {
+                    0 => {
+                        // Try to pop a batch.
+                        if let Some(config) = scheduler.next_batch() {
+                            in_flight.push(config.task_index);
+                        }
+                    }
+                    1 => {
+                        // Enqueue for a random task_index — may be new,
+                        // in-flight, queued, or already deferred.
+                        let target = op % (task_count + 3);
+                        let result = scheduler.enqueue(target, Some(50));
+                        prop_assert!(
+                            matches!(result, EnqueueResult::Queued | EnqueueResult::Deferred | EnqueueResult::Merged),
+                        );
+                    }
+                    _ => {
+                        // Release one in-flight task if any.
+                        if let Some(ti) = in_flight.pop() {
+                            scheduler.record_outcome(BatchOutcome {
+                                task_index: ti,
+                                iterations_used: batch_size,
+                                exhausted: false,
+                                rank: 0,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Clean up: release all remaining in-flight.
+            for ti in in_flight {
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: ti,
+                    iterations_used: batch_size,
+                    exhausted: true,
+                    rank: 0,
+                });
+            }
         }
     }
 }
