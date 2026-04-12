@@ -501,11 +501,11 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value = "markdown")]
         format: StdoutFormat,
 
-        /// Maximum number of functions to explore in parallel.
-        /// Each parallel function spawns its own frontend process.
+        /// Maximum number of parallel exploration workers.
+        /// Each worker spawns its own frontend process.
         /// Default: number of available CPUs (0 = auto-detect).
-        #[arg(long, short = 'j', default_value_t = 0)]
-        jobs: usize,
+        #[arg(long, short = 'w', default_value_t = 0, alias = "jobs")]
+        workers: usize,
 
         /// Finalize a previous explore run from saved artifacts on disk.
         /// Skips exploration and produces reports/specs from saved per-function

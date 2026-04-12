@@ -477,10 +477,10 @@ step 20 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
     $SHATTER scan --parallelism 2 --timeout-per-fn 30 "$EXAMPLES_TS_DIR"
 
-# Stage 20: Parallel explore with --jobs
+# Stage 20: Parallel explore with --workers
 step 21 $TOTAL "Parallel Explore" \
-    "Explore multiple functions in parallel using --jobs (limits concurrency)" \
-    $SHATTER explore --max-iterations 20 --timeout-explore 15 --jobs 2 "${EXAMPLES[@]}"
+    "Explore multiple functions in parallel using --workers (limits concurrency)" \
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --workers 2 "${EXAMPLES[@]}"
 
 # Stage 22: Execution timeout
 step 22 $TOTAL "Execution Timeout" \

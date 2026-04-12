@@ -1238,7 +1238,7 @@ pub(crate) async fn run_explore(
     report_outputs: &[std::path::PathBuf],
     stdout: bool,
     format: crate::args::StdoutFormat,
-    jobs: usize,
+    workers: usize,
     cli_genetic: bool,
     cli_genetic_population: Option<u32>,
     cli_genetic_generations: Option<u32>,
@@ -1318,13 +1318,13 @@ pub(crate) async fn run_explore(
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
 
-    // Resolve effective parallelism: 0 means auto-detect (CPU count).
-    let effective_jobs = if jobs == 0 {
+    // Resolve effective worker count: 0 means auto-detect (CPU count).
+    let effective_workers = if workers == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
     } else {
-        jobs
+        workers
     };
 
     // Resolve project root once for harness storage env propagation.
@@ -1366,10 +1366,10 @@ pub(crate) async fn run_explore(
         frontends.insert(lang, frontend);
     }
     log::info!(
-        "Spawned {} frontend session(s) for {} target(s) ({} parallel job(s))",
+        "Spawned {} frontend session(s) for {} target(s) ({} parallel worker(s))",
         frontends.len(),
         parsed.len(),
-        effective_jobs,
+        effective_workers,
     );
 
     // Accumulate HTML and markdown fragments for -o report files.
@@ -1397,7 +1397,7 @@ pub(crate) async fn run_explore(
     let mut batches_launched: u32 = 0;
     let mut batches_completed: u32 = 0;
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_jobs));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_workers));
     let completed_functions = Arc::new(AtomicUsize::new(0));
     let mut join_set: tokio::task::JoinSet<BatchExploreOutcome> = tokio::task::JoinSet::new();
 
@@ -2091,7 +2091,7 @@ pub(crate) async fn run_explore(
 
     // --- Unified batch loop: drain the shared scheduler across all targets ---
     //
-    // The loop keeps up to `effective_jobs` batches in flight at once. After
+    // The loop keeps up to `effective_workers` batches in flight at once. After
     // each join_next(), it merges the outcome into the owning function's
     // accumulator and records its exhaustion state back to the scheduler,
     // which may re-enqueue the function for another batch if budget remains
@@ -2103,8 +2103,8 @@ pub(crate) async fn run_explore(
         format == crate::args::StdoutFormat::Json || log_level >= LogLevel::Debug;
 
     loop {
-            // Launch sub-loop: fill in-flight slots up to --jobs.
-            while join_set.len() < effective_jobs && !stop_early {
+            // Launch sub-loop: fill in-flight slots up to --workers.
+            while join_set.len() < effective_workers && !stop_early {
                 if let Some(limit) = time_limit_dur
                     && run_start.elapsed() >= limit
                 {
