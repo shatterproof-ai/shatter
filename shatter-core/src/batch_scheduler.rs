@@ -1775,6 +1775,100 @@ mod tests {
         });
         assert_eq!(s.attempt_penalty(0), 0);
     }
+
+    // --- Recency cooldown tests (str-b2my.8) ---
+
+    #[test]
+    fn cooldown_deprioritizes_recently_completed() {
+        let mut s = BatchScheduler::new(3, None, 50);
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 1, "cooldown should deprioritize function 0");
+        s.record_outcome(BatchOutcome { task_index: 1, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 2, "function 2 should be picked next (no cooldown)");
+    }
+
+    #[test]
+    fn high_rank_overrides_cooldown() {
+        let mut s = BatchScheduler::new(2, None, 50);
+        let _b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 5, summary: None });
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0, "rank 5 - cooldown 3 = effective 2 beats idle rank 0");
+    }
+
+    #[test]
+    fn moderate_rank_loses_to_idle_with_cooldown() {
+        let mut s = BatchScheduler::new(2, None, 50);
+        let _b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 2, summary: None });
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 1, "rank 2 - cooldown 3 = effective -1 loses to idle rank 0");
+    }
+
+    #[test]
+    fn cooldown_decays_over_ticks() {
+        let mut s = BatchScheduler::new(3, None, 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY - 1);
+        assert_eq!(s.cooldown_score(1), COOLDOWN_PENALTY);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY - 2);
+        assert_eq!(s.cooldown_score(1), COOLDOWN_PENALTY - 1);
+        assert_eq!(s.cooldown_score(2), COOLDOWN_PENALTY);
+    }
+
+    #[test]
+    fn cooldown_cleared_on_deferred_requeue() {
+        let mut s = BatchScheduler::new(1, None, 50);
+        let _b = s.next_batch().unwrap();
+        s.enqueue(0, Some(100));
+        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: true, rank: 5, summary: None });
+        assert_eq!(s.cooldown_score(0), 0, "deferred re-enqueue must clear cooldown");
+    }
+
+    #[test]
+    fn cooldown_removed_on_exhaustion() {
+        let mut s = BatchScheduler::new(2, None, 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        let b = s.next_batch().unwrap();
+        assert_eq!(b.task_index, 0);
+        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: true, rank: 0, summary: None });
+        assert_eq!(s.cooldown_score(0), 0, "exhausted function must not leak cooldown entries");
+    }
+
+    #[test]
+    fn cooldown_preserves_round_robin_all_rank_zero() {
+        let n = 4;
+        let mut s = BatchScheduler::new(n, None, 50);
+        for round in 0..3 {
+            for expected in 0..n {
+                let b = s.next_batch().unwrap();
+                assert_eq!(b.task_index, expected, "round {round}: expected task {expected}, got {}", b.task_index);
+                s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+            }
+        }
+    }
+
+    #[test]
+    fn cooldown_score_returns_zero_for_unknown() {
+        let s = BatchScheduler::new(2, None, 50);
+        assert_eq!(s.cooldown_score(0), 0);
+        assert_eq!(s.cooldown_score(999), 0);
+    }
 }
 
 #[cfg(test)]
@@ -2182,6 +2276,73 @@ mod proptests {
                 "assigned {} > max {} (budget={}, deferred={}, batch={})",
                 total_assigned, max_total, budget, deferred_budget, batch_size,
             );
+        }
+
+        // --- Cooldown proptest properties (str-b2my.8) ---
+
+        /// Round-robin order is preserved when all ranks are zero:
+        /// cooldown decays uniformly and the FIFO tie-break ensures
+        /// each function runs once per round.
+        #[test]
+        fn cooldown_preserves_round_robin_with_all_rank_zero(
+            task_count in 2_usize..8,
+        ) {
+            let mut scheduler = BatchScheduler::new(task_count, None, 50);
+            for _ in 0..4 {
+                for expected in 0..task_count {
+                    let config = scheduler.next_batch().unwrap();
+                    prop_assert_eq!(config.task_index, expected);
+                    scheduler.record_outcome(BatchOutcome {
+                        task_index: config.task_index,
+                        iterations_used: 50,
+                        exhausted: false,
+                        rank: 0,
+                        summary: None,
+                    });
+                }
+            }
+        }
+
+        /// Cooldown scores are always in [0, COOLDOWN_PENALTY] during
+        /// arbitrary interleaved next_batch / record_outcome sequences.
+        #[test]
+        fn cooldown_scores_bounded(
+            task_count in 1_usize..6,
+            batch_size in 1_u32..50,
+            ops in proptest::collection::vec(0_usize..10, 5..=30),
+        ) {
+            let mut scheduler = BatchScheduler::new(task_count, None, batch_size);
+            let mut in_flight = Vec::new();
+            for op in ops {
+                match op % 2 {
+                    0 => {
+                        if let Some(config) = scheduler.next_batch() {
+                            in_flight.push(config.task_index);
+                        }
+                    }
+                    _ => {
+                        if let Some(ti) = in_flight.pop() {
+                            scheduler.record_outcome(BatchOutcome {
+                                task_index: ti,
+                                iterations_used: batch_size,
+                                exhausted: false,
+                                rank: (op % 10) as i64,
+                                summary: None,
+                            });
+                        }
+                    }
+                }
+                for i in 0..task_count {
+                    let cd = scheduler.cooldown_score(i);
+                    prop_assert!(cd >= 0 && cd <= COOLDOWN_PENALTY);
+                }
+            }
+            for ti in in_flight {
+                scheduler.record_outcome(BatchOutcome {
+                    task_index: ti, iterations_used: batch_size, exhausted: true, rank: 0,
+                    summary: None,
+                });
+            }
         }
 
         /// Random interleaving of enqueue calls for arbitrary task_indices

@@ -2519,6 +2519,12 @@ pub(crate) async fn run_explore(
                     }
                 }
 
+                // Show cooldown score when non-zero (str-b2my.8).
+                let cd = batch_scheduler.cooldown_score(work_index);
+                if cd > 0 {
+                    line.push_str(&format!(" [cooldown: {cd}]"));
+                }
+
                 eprintln!("{line}");
             }
 
