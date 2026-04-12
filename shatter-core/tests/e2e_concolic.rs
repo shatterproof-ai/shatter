@@ -172,7 +172,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
     // Seed with a few diverse values to start exploration.
     let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "classifyNumber",
         seed_inputs,
@@ -182,6 +182,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -259,7 +260,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         vec![serde_json::json!(200), serde_json::json!(200)],
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "compareMagnitudes",
         seed_inputs,
@@ -269,6 +270,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -337,7 +339,7 @@ async fn concolic_safedivide_discovers_error_paths() {
         vec![serde_json::json!(-7), serde_json::json!(2)],
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "safeDivide",
         seed_inputs,
@@ -347,6 +349,7 @@ async fn concolic_safedivide_discovers_error_paths() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -422,7 +425,7 @@ async fn concolic_validateemail_discovers_string_paths() {
         vec![serde_json::json!("test@example.com")], // standard valid
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "validateEmail",
         seed_inputs,
@@ -432,6 +435,7 @@ async fn concolic_validateemail_discovers_string_paths() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -506,7 +510,7 @@ async fn concolic_validateemail_with_literal_seeds() {
         shatter_core::input_gen::literals_to_candidate_inputs(&analysis.params, &analysis.literals);
     seed_inputs.extend(literal_candidates);
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "validateEmail",
         seed_inputs,
@@ -516,6 +520,7 @@ async fn concolic_validateemail_with_literal_seeds() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -1070,7 +1075,7 @@ async fn orchestrator_explore_with_setup_context() {
 
     let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "classifyNumber",
         seed_inputs,
@@ -1080,6 +1085,7 @@ async fn orchestrator_explore_with_setup_context() {
         Some(setup_ctx),
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -1484,7 +1490,7 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
         vec![serde_json::json!(-1), serde_json::json!(5)], // a <= 0 -> "neither"
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "compoundAnd",
         seed_inputs,
@@ -1494,6 +1500,7 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -1573,7 +1580,7 @@ async fn mcdc_compound_or_discovers_all_branches() {
         vec![serde_json::json!(false), serde_json::json!(false)], // "none"
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "compoundOr",
         seed_inputs,
@@ -1583,6 +1590,7 @@ async fn mcdc_compound_or_discovers_all_branches() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -1668,7 +1676,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         vec![serde_json::json!("")],
     ];
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "classifyWithChecksum",
         seed_inputs,
@@ -1678,6 +1686,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await

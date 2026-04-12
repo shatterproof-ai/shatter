@@ -128,7 +128,7 @@ async fn float_probe_classifies_integer_treating() {
         ..Default::default()
     };
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "integerBucket",
         vec![vec![serde_json::json!(5)]],
@@ -138,6 +138,7 @@ async fn float_probe_classifies_integer_treating() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -178,7 +179,7 @@ async fn float_probe_classifies_float_sensitive() {
         ..Default::default()
     };
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "precisionCheck",
         vec![vec![serde_json::json!(5)]],
@@ -188,6 +189,7 @@ async fn float_probe_classifies_float_sensitive() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await
@@ -224,7 +226,7 @@ async fn float_probe_skips_non_float_params() {
         ..Default::default()
     };
 
-    let result = orchestrator::explore(
+    let (result, _) = orchestrator::explore(
         &mut frontend,
         "greet",
         vec![vec![serde_json::json!("Alice")]],
@@ -234,6 +236,7 @@ async fn float_probe_skips_non_float_params() {
         None,
         None,
         vec![],
+    None,
     None,
     )
     .await

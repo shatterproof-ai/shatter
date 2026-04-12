@@ -416,7 +416,7 @@ async fn run_concolic_observe(
     let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&input.analysis.params);
     seed_inputs.extend(extra_seeds.iter().cloned());
 
-    let result = orchestrator::explore(
+    let (result, _resume_state) = orchestrator::explore(
         input.frontend,
         &input.function_name,
         seed_inputs,
@@ -426,6 +426,7 @@ async fn run_concolic_observe(
         None,
         input.prepare_id.clone(),
         input.analysis.loops.clone(),
+    None,
     None,
     )
     .await?;
