@@ -40,6 +40,12 @@ pub const DEFAULT_BATCH_SIZE: u32 = 50;
 /// after it completes a batch (str-b2my.8).
 pub const COOLDOWN_PENALTY: i64 = 3;
 
+/// Per-streak-count penalty applied when a function completes consecutive
+/// batches without producing new coverage (str-b2my.9). The total attempt
+/// penalty is `miss_streak * MISS_PENALTY_PER_STREAK`, so a function that
+/// has missed 3 batches in a row pays an effective rank penalty of 6.
+pub const MISS_PENALTY_PER_STREAK: i64 = 2;
+
 /// Configuration for one batch of exploration, returned by
 /// [`BatchScheduler::next_batch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +196,11 @@ pub struct BatchScheduler {
     /// Per-function cooldown penalty (str-b2my.8). Set to [`COOLDOWN_PENALTY`]
     /// on batch completion; decays by 1 per subsequent batch completion.
     cooldown: HashMap<usize, i64>,
+    /// Per-function consecutive no-progress batch count (str-b2my.9).
+    /// Incremented when a batch produces no new coverage; reset on progress
+    /// or deferred re-enqueue. The effective penalty applied to rank is
+    /// `miss_streak * MISS_PENALTY_PER_STREAK`.
+    miss_streak: HashMap<usize, u32>,
 }
 
 impl BatchScheduler {
@@ -216,6 +227,7 @@ impl BatchScheduler {
             in_flight: HashMap::new(),
             deferred: HashMap::new(),
             cooldown: HashMap::new(),
+            miss_streak: HashMap::new(),
         }
     }
 
@@ -239,6 +251,7 @@ impl BatchScheduler {
             in_flight: HashMap::new(),
             deferred: HashMap::new(),
             cooldown: HashMap::new(),
+            miss_streak: HashMap::new(),
         }
     }
 
@@ -266,14 +279,17 @@ impl BatchScheduler {
         self.queue.retain(|e| e.remaining != Some(0));
 
         // Linear scan for the highest effective-ranked entry. Effective rank
-        // is `stored_rank - cooldown_penalty` (str-b2my.8). `>` (strictly
-        // greater) keeps the earliest index on ties, yielding stable FIFO
-        // tie-break.
+        // is `stored_rank - cooldown_penalty - attempt_penalty` (str-b2my.8,
+        // str-b2my.9). `>` (strictly greater) keeps the earliest index on
+        // ties, yielding stable FIFO tie-break.
         let best = self.queue.iter().enumerate().fold(
             None,
             |acc: Option<(usize, i64)>, (i, e)| {
-                let effective =
-                    e.rank - self.cooldown.get(&e.task_index).copied().unwrap_or(0);
+                let cooldown = self.cooldown.get(&e.task_index).copied().unwrap_or(0);
+                let attempt = self.miss_streak.get(&e.task_index).copied().unwrap_or(0)
+                    as i64
+                    * MISS_PENALTY_PER_STREAK;
+                let effective = e.rank - cooldown - attempt;
                 match acc {
                     None => Some((i, effective)),
                     Some((_, best_rank)) if effective > best_rank => Some((i, effective)),
@@ -337,8 +353,10 @@ impl BatchScheduler {
             // Reset batch counter — the deferred work is logically a fresh
             // scheduling request for this function.
             entry.batches_completed = 0;
-            // Deferred re-enqueue is a fresh arrival — clear cooldown.
+            // Deferred re-enqueue is a fresh arrival — clear cooldown
+            // and miss streak.
             self.cooldown.remove(&outcome.task_index);
+            self.miss_streak.remove(&outcome.task_index);
             false
         } else if outcome.exhausted {
             true
@@ -357,7 +375,30 @@ impl BatchScheduler {
 
         if should_drop {
             self.cooldown.remove(&outcome.task_index);
+            self.miss_streak.remove(&outcome.task_index);
             return;
+        }
+
+        // --- Miss streak tracking (str-b2my.9) ---
+        // A batch is a "miss" when it ran but produced no new coverage.
+        // Detection uses two tiers:
+        // 1. If `summary` is present: precise check via coverage delta.
+        // 2. If `summary` is absent (explore CLI path): rank == 0 on a
+        //    non-exhausted, non-deferred batch signals no new discoveries.
+        // Deferred re-enqueues already cleared the streak above.
+        if deferred_budget.is_none() {
+            let is_miss = match &outcome.summary {
+                Some(s) => {
+                    s.coverage_after.covered == s.coverage_before.covered
+                        && s.new_classes == 0
+                }
+                None => outcome.rank == 0,
+            };
+            if is_miss {
+                *self.miss_streak.entry(outcome.task_index).or_insert(0) += 1;
+            } else {
+                self.miss_streak.remove(&outcome.task_index);
+            }
         }
 
         // Apply fresh cooldown to the re-enqueued function, unless this
@@ -473,6 +514,17 @@ impl BatchScheduler {
     /// to display cooldown state in batch summary logs.
     pub fn cooldown_score(&self, task_index: usize) -> i64 {
         self.cooldown.get(&task_index).copied().unwrap_or(0)
+    }
+
+    /// Returns the current attempt penalty for the given function
+    /// (str-b2my.9).
+    ///
+    /// The penalty equals `miss_streak * MISS_PENALTY_PER_STREAK`. Returns 0
+    /// when the function has no consecutive no-progress batches. Used by
+    /// callers to display attempt penalty in periodic batch summaries.
+    pub fn attempt_penalty(&self, task_index: usize) -> i64 {
+        self.miss_streak.get(&task_index).copied().unwrap_or(0) as i64
+            * MISS_PENALTY_PER_STREAK
     }
 
     /// Configured batch size.
@@ -1440,6 +1492,262 @@ mod tests {
         });
         assert!(s.is_complete());
     }
+
+    // --- Miss streak / attempt penalty tests (str-b2my.9) ---
+
+    /// Helper: a WorkerBatchSummary that represents a no-progress batch.
+    fn no_progress_summary() -> Option<WorkerBatchSummary> {
+        Some(WorkerBatchSummary {
+            executions_run: 50,
+            coverage_before: CoverageCounts {
+                total_branches: 8,
+                covered: 3,
+                z3_solved: 2,
+                random_found: 1,
+                user_provided: 0,
+                uncovered: 5,
+            },
+            coverage_after: CoverageCounts {
+                total_branches: 8,
+                covered: 3,
+                z3_solved: 2,
+                random_found: 1,
+                user_provided: 0,
+                uncovered: 5,
+            },
+            uncovered_remaining: 5,
+            new_classes: 0,
+            new_retained_inputs: 0,
+            failures: 0,
+        })
+    }
+
+    /// Helper: a WorkerBatchSummary that represents a productive batch.
+    fn progress_summary() -> Option<WorkerBatchSummary> {
+        Some(WorkerBatchSummary {
+            executions_run: 50,
+            coverage_before: CoverageCounts {
+                total_branches: 8,
+                covered: 3,
+                z3_solved: 2,
+                random_found: 1,
+                user_provided: 0,
+                uncovered: 5,
+            },
+            coverage_after: CoverageCounts {
+                total_branches: 8,
+                covered: 5,
+                z3_solved: 4,
+                random_found: 1,
+                user_provided: 0,
+                uncovered: 3,
+            },
+            uncovered_remaining: 3,
+            new_classes: 2,
+            new_retained_inputs: 2,
+            failures: 0,
+        })
+    }
+
+    #[test]
+    fn miss_streak_accumulates_penalty() {
+        // Two functions; task 0 misses repeatedly while task 1 succeeds.
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        // Batch 1: both miss (first batch, streak = 1 each).
+        let b0 = s.next_batch().unwrap();
+        assert_eq!(b0.task_index, 0);
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        assert_eq!(s.attempt_penalty(0), MISS_PENALTY_PER_STREAK);
+
+        let b1 = s.next_batch().unwrap();
+        assert_eq!(b1.task_index, 1);
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        assert_eq!(s.attempt_penalty(1), MISS_PENALTY_PER_STREAK);
+
+        // Batch 2: task 0 misses again (streak = 2), task 1 makes progress
+        // (streak reset).
+        let b0 = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b0.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+
+        let b1 = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b1.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 3,
+            summary: progress_summary(),
+        });
+
+        // Task 0 should have streak=2, task 1 should have streak=0.
+        assert_eq!(s.attempt_penalty(0), 2 * MISS_PENALTY_PER_STREAK);
+        assert_eq!(s.attempt_penalty(1), 0);
+    }
+
+    #[test]
+    fn miss_streak_resets_on_progress() {
+        let mut s = BatchScheduler::new(1, None, 50);
+
+        // Miss twice.
+        for _ in 0..2 {
+            let _ = s.next_batch().unwrap();
+            s.record_outcome(BatchOutcome {
+                task_index: 0,
+                iterations_used: 50,
+                exhausted: false,
+                rank: 0,
+                summary: no_progress_summary(),
+            });
+        }
+        assert_eq!(s.attempt_penalty(0), 2 * MISS_PENALTY_PER_STREAK);
+
+        // Make progress — streak resets.
+        let _ = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 5,
+            summary: progress_summary(),
+        });
+        assert_eq!(s.attempt_penalty(0), 0);
+    }
+
+    #[test]
+    fn miss_streak_cleared_on_deferred_reenqueue() {
+        let mut s = BatchScheduler::new(1, None, 50);
+
+        // Build up a miss streak.
+        let _ = s.next_batch().unwrap();
+        // While in-flight, enqueue deferred work.
+        s.enqueue(0, Some(100));
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        // Deferred re-enqueue should clear the miss streak.
+        assert_eq!(s.attempt_penalty(0), 0);
+    }
+
+    #[test]
+    fn miss_streak_removed_on_exhaustion() {
+        let mut s = BatchScheduler::new(1, None, 50);
+
+        // Miss once to build streak.
+        let _ = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        assert_eq!(s.attempt_penalty(0), MISS_PENALTY_PER_STREAK);
+
+        // Exhaust — streak should be removed.
+        let _ = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 10,
+            exhausted: true,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        assert_eq!(s.attempt_penalty(0), 0);
+        assert!(s.is_complete());
+    }
+
+    #[test]
+    fn miss_penalty_demotes_stuck_function_below_productive_one() {
+        // Task 0 misses twice, task 1 has been productive. With equal
+        // base ranks, the attempt penalty should cause task 1 to be
+        // scheduled first.
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        // Round 1: both complete with rank 0 (miss).
+        for _ in 0..2 {
+            let b = s.next_batch().unwrap();
+            s.record_outcome(BatchOutcome {
+                task_index: b.task_index,
+                iterations_used: 50,
+                exhausted: false,
+                rank: 0,
+                summary: no_progress_summary(),
+            });
+        }
+
+        // Round 2: task 0 misses again (streak=2), task 1 makes progress
+        // (streak resets to 0).
+        let pick = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: pick.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: no_progress_summary(),
+        });
+        let pick = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: pick.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 5,
+            summary: progress_summary(),
+        });
+
+        // Round 3: task 1 should be picked first because task 0 has a
+        // higher attempt penalty.
+        let next = s.next_batch().unwrap();
+        assert_eq!(next.task_index, 1, "productive task should be scheduled before stuck one");
+    }
+
+    #[test]
+    fn miss_streak_via_rank_zero_without_summary() {
+        // Explore CLI path: no summary, rank 0 signals miss.
+        let mut s = BatchScheduler::new(1, None, 50);
+
+        let _ = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+        assert_eq!(s.attempt_penalty(0), MISS_PENALTY_PER_STREAK);
+
+        // Non-zero rank without summary clears streak.
+        let _ = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 3,
+            summary: None,
+        });
+        assert_eq!(s.attempt_penalty(0), 0);
+    }
 }
 
 #[cfg(test)]
@@ -1566,11 +1874,13 @@ mod proptests {
         }
 
         /// After every task has recorded at least one outcome with an
-        /// assigned rank, the next pick is always a task whose stored
-        /// rank equals the maximum rank currently in the queue.
+        /// assigned rank, the next pick is always the task with the
+        /// highest *effective* rank (stored rank minus cooldown and
+        /// attempt penalties). We use strictly positive ranks so no
+        /// batch triggers a miss-streak penalty (rank > 0 ⇒ not a miss).
         #[test]
         fn highest_rank_is_always_picked_next(
-            ranks in proptest::collection::vec(-50_i64..=50, 2..=6),
+            ranks in proptest::collection::vec(1_i64..=50, 2..=6),
         ) {
             let task_count = ranks.len();
             let mut scheduler = BatchScheduler::new(task_count, None, 100);
@@ -1592,12 +1902,23 @@ mod proptests {
                 });
             }
 
-            let max_rank = *ranks.iter().max().unwrap();
+            // Compute expected effective ranks before the pick. Effective
+            // rank = stored_rank - cooldown - attempt_penalty. All ranks
+            // are > 0 so attempt_penalty is 0 for all tasks.
+            let effective_ranks: Vec<i64> = (0..task_count)
+                .map(|i| {
+                    ranks[i]
+                        - scheduler.cooldown_score(i)
+                        - scheduler.attempt_penalty(i)
+                })
+                .collect();
+            let max_effective = *effective_ranks.iter().max().unwrap();
+
             let picked = scheduler.next_batch().unwrap();
             prop_assert_eq!(
-                ranks[picked.task_index],
-                max_rank,
-                "next pick must be a task tied with the maximum rank"
+                effective_ranks[picked.task_index],
+                max_effective,
+                "next pick must be the task with the highest effective rank"
             );
         }
 

@@ -2432,6 +2432,7 @@ pub(crate) async fn run_explore(
                 iterations_used: iters_used,
                 exhausted,
                 rank: batch_rank,
+                summary: None,
             });
             batches_completed += 1;
 
@@ -2498,6 +2499,13 @@ pub(crate) async fn run_explore(
                     batch_outcome.wall_time.as_secs_f64(),
                     status,
                 ));
+
+                // Show attempt penalty when a function has consecutive
+                // no-progress batches (str-b2my.9).
+                let attempt_pen = batch_scheduler.attempt_penalty(work_index);
+                if attempt_pen > 0 {
+                    line.push_str(&format!(", penalty -{attempt_pen}"));
+                }
 
                 // Re-enqueue idle signal: prior batches exist, this one added
                 // no new branch discoveries, and the function will keep being
@@ -3518,6 +3526,7 @@ mod tests {
                 iterations_used: iters,
                 exhausted,
                 rank: 0,
+                summary: None,
             });
         }
 
@@ -3631,19 +3640,22 @@ mod tests {
                 iterations_used: iters,
                 exhausted,
                 rank,
+                summary: None,
             });
         }
 
-        // Streaking-function pick order: A three times, then B twice, then A.
+        // Pick order with attempt penalty (str-b2my.9): A's first batch
+        // (rank 1) gives it cooldown 3, making its effective rank -2;
+        // fresh B (effective 0) gets picked next, streaks twice (rank 3
+        // then exhausted), then A runs its remaining batches.
         assert_eq!(
             order,
-            vec![0, 0, 0, 1, 1, 0],
-            "rerank must pick the streaking function back-to-back and yield on 0-rank ties"
+            vec![0, 1, 1, 0, 0, 0],
+            "cooldown and attempt penalty must yield to a fresh peer after the first batch"
         );
 
-        // Rank trace verifies the rerank signal the scheduler saw at each
-        // tick. The values are: A=1 new, A=5 new, A=0 new, B=3 new, B=0, A=0.
-        assert_eq!(ranks_recorded, vec![1, 5, 0, 3, 0, 0]);
+        // Rank trace: A=1 new, B=3 new, B=0 (converge), A=5 new, A=0 (re-discover), A=0 (converge).
+        assert_eq!(ranks_recorded, vec![1, 3, 0, 5, 0, 0]);
 
         assert!(scheduler.is_complete());
 
@@ -3695,6 +3707,7 @@ mod tests {
                 iterations_used: CAP,
                 exhausted: false,
                 rank: 1,
+                summary: None,
             });
         }
 
@@ -3722,6 +3735,7 @@ mod tests {
                 iterations_used: 100,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
         }
 
