@@ -248,7 +248,7 @@ export function recognizeReactHooks(
     const confidence = hasBuiltinCalls ? "high" : "medium";
 
     return {
-      adapter: { id: REACT_HOOK_ADAPTER_ID },
+      adapter: { id: REACT_HOOK_ADAPTER_ID, apply: "auto" },
       confidence,
       reasons,
     } satisfies AdapterHint;

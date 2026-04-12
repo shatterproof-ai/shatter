@@ -594,6 +594,22 @@ function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[], sand
 }
 
 /**
+ * Load a TypeScript module and return its exports. Public wrapper around
+ * the private `loadModule` for use by adapter InvocationHooks that need
+ * to load the target module themselves (e.g. the react-hook adapter).
+ *
+ * For `.tsx` files the default resolver adapters automatically inject
+ * React shims so hooks execute without a real React runtime.
+ */
+export function loadModuleExports(
+  filePath: string,
+  resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
+): Record<string, unknown> {
+  return loadModule(filePath, resolverAdapters, sandboxProviders);
+}
+
+/**
  * Look up a function from the file path and function name.
  *
  * The function name may be a simple name like "classifyNumber" which is

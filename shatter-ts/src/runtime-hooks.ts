@@ -11,6 +11,7 @@ import type {
 } from "./protocol.js";
 import type { ResolverAdapter } from "./executor.js";
 import { ADAPTER_ID_IMPORT_META_ENV } from "./runtime-hints.js";
+import { createReactHookFactory } from "./react-hook-invocation.js";
 
 export type RuntimeHookPhase = "execute" | "setup";
 
@@ -247,6 +248,7 @@ function createImportMetaEnvFactory(): RuntimeHookFactory {
 export const DEFAULT_RUNTIME_HOOK_FACTORIES: readonly RuntimeHookFactory[] = [
   createTsconfigPathsFactory(),
   createImportMetaEnvFactory(),
+  createReactHookFactory(),
 ];
 
 export function resolveRuntimeHooks(

@@ -9,7 +9,7 @@ import * as ts from "typescript";
 import * as path from "node:path";
 import { refineIntegerParams } from "./integer-heuristic.js";
 import { recognizeBrowserGlobals } from "./browser-globals-recognizer.js";
-import { recognizeReactHooks } from "./react-hook-recognizer.js";
+import { recognizeReactHooks, REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
 import type {
   FunctionAnalysis,
   ParamInfo,
@@ -247,6 +247,23 @@ export function analyzeFile(
       if (hint) {
         const fn = results[i]!;
         fn.adapter_hints = fn.adapter_hints ? [...fn.adapter_hints, hint] : [hint];
+      }
+    }
+
+    // Derive invocation_model from high-confidence react-hook hints.
+    // This converts detection signals into an execution strategy that the
+    // execute handler dispatches through the adapter-owned path.
+    for (const fn of results) {
+      if (fn.invocation_model) continue;
+      const reactHint = fn.adapter_hints?.find(
+        (h) => h.adapter.id === REACT_HOOK_ADAPTER_ID && h.confidence === "high",
+      );
+      if (reactHint) {
+        fn.invocation_model = {
+          kind: "adapter",
+          adapter_id: REACT_HOOK_ADAPTER_ID,
+          scenario_schema: { kind: "hook_callable_return" },
+        };
       }
     }
   }

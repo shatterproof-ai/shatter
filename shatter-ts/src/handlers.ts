@@ -502,10 +502,35 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         // symbol directly. Direct-call remains the default whenever the
         // analysis is absent or reports kind: "direct".
         const cachedAnalysis = cachedAnalyses.get(`${fileForExec}:${funcName}`);
-        const strategy = chooseInvocationStrategy(
+        let strategy = chooseInvocationStrategy(
           cachedAnalysis?.invocation_model,
           runtimeHooks.invocation_hooks,
         );
+
+        // Bridge: when the core does not yet send execution_profile but the
+        // analyzer detected an adapter invocation model, synthetically resolve
+        // the adapter's runtime hooks. Temporary until the core wires up
+        // adapter_selection → execution_profile on execute requests.
+        if (
+          strategy.kind === "unsupported" &&
+          !request.execution_profile &&
+          cachedAnalysis?.invocation_model?.kind === "adapter"
+        ) {
+          const bridgedHooks = resolveRuntimeHooksForRequest(
+            { adapters: [{ id: cachedAnalysis.invocation_model.adapter_id }] },
+            {
+              phase: "execute" as const,
+              project_root: lastProjectRoot,
+              entry_file: fileForExec,
+              function_name: funcName,
+            },
+          );
+          strategy = chooseInvocationStrategy(
+            cachedAnalysis.invocation_model,
+            bridgedHooks.invocation_hooks,
+          );
+        }
+
         if (strategy.kind === "unsupported") {
           throw new Error(
             `execution adapter not supported by TypeScript frontend: ${strategy.adapterId}`,
