@@ -283,6 +283,10 @@ fn promote_requirements(
             if active_ids.contains(req.adapter_id.as_str()) {
                 continue;
             }
+            // Skip adapters that were explicitly disabled (rejected).
+            if result.rejected.iter().any(|r| r.adapter_id == req.adapter_id) {
+                continue;
+            }
             // Check if the required adapter has a hint eligible for auto-apply.
             if let Some(req_hint) = hint_by_id.get(req.adapter_id.as_str())
                 && is_auto_apply_eligible(req_hint)
@@ -603,6 +607,42 @@ mod tests {
             .collect();
         assert!(active_ids.contains(&"ts/react-hooks"));
         assert!(active_ids.contains(&"ts/module-resolution"));
+    }
+
+    #[test]
+    fn disabled_not_overridden_by_requirement() {
+        // Regression: str-lj0h — an explicitly Disabled adapter was re-added
+        // to active when another active adapter listed it as a requirement.
+        let profile = ExecutionProfile {
+            adapters: vec![
+                adapter("ts/browser-dom", Some(ExecutionAdapterApply::Disabled)),
+                adapter("ts/react-hooks", None),
+            ],
+        };
+        let hints = vec![
+            AdapterHint {
+                adapter: adapter("ts/react-hooks", Some(ExecutionAdapterApply::Auto)),
+                confidence: Confidence::High,
+                reasons: vec!["uses hooks".into()],
+                requirements: vec![AdapterRelation {
+                    adapter_id: "ts/browser-dom".into(),
+                    reason: Some("needs DOM".into()),
+                }],
+                conflicts: vec![],
+            },
+            hint(
+                "ts/browser-dom",
+                Some(ExecutionAdapterApply::Auto),
+                Confidence::High,
+            ),
+        ];
+        let result = select_adapters(Some(&profile), &hints).unwrap();
+        assert!(
+            !result.active.iter().any(|a| a.adapter.id == "ts/browser-dom"),
+            "disabled adapter ts/browser-dom should not be in active"
+        );
+        assert_eq!(result.rejected.len(), 1);
+        assert_eq!(result.rejected[0].adapter_id, "ts/browser-dom");
     }
 
     #[test]
