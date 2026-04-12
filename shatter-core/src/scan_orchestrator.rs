@@ -1822,7 +1822,6 @@ async fn run_layer_batched(
         match result {
             Ok(Ok(func_result)) => {
                 let iterations_used = func_result.exploration.iterations;
-                let exhausted = iterations_used < batch_config.batch_size;
 
                 if let Some(ref artifact_root) = artifact_root {
                     write_completed_scan_artifact(
@@ -1853,6 +1852,26 @@ async fn run_layer_batched(
                     let _ = c.store(&func_result.behavior_map);
                 }
 
+                // str-bo4z.6: compute uncovered branches before moving func_result.
+                let uncovered = compute_uncovered_branch_strings(
+                    &task.analysis,
+                    &func_result.exploration,
+                );
+                let has_uncovered = !uncovered.is_empty();
+                if has_uncovered {
+                    log::debug!(
+                        "{}: {} uncovered branch(es) remain after batch {}",
+                        task.func_name,
+                        uncovered.len(),
+                        batch_config.batch_number,
+                    );
+                }
+
+                // A function is exhausted only if it under-consumed its batch
+                // AND has no remaining uncovered branches to target. Functions
+                // with uncovered targets stay alive for further scheduling.
+                let exhausted = iterations_used < batch_config.batch_size && !has_uncovered;
+
                 outcomes[batch_config.task_index] =
                     Some(FunctionOutcome::Success(Box::new(func_result)));
 
@@ -1867,6 +1886,7 @@ async fn run_layer_batched(
                     st.iterations_consumed = st.iterations_consumed.saturating_add(iterations_used);
                     st.batches_completed = st.batches_completed.saturating_add(1);
                     st.exhausted = exhausted;
+                    st.uncovered_branches = uncovered;
                 }
                 persist_scheduler_state_if_exhausted(
                     scheduler_state_cache,
@@ -1964,12 +1984,15 @@ async fn run_layer_batched(
         let _ = fe.shutdown().await;
     }
 
-    // Flush any remaining live scheduler states that were not written
-    // on exhaustion — e.g. functions still mid-exploration when the
-    // layer ended. This preserves advisory progress across runs.
+    // Flush remaining live scheduler states for functions with uncovered
+    // branches. Fully-covered functions (empty uncovered_branches) age out
+    // — their state is not persisted, so future runs treat them as done.
+    // str-bo4z.6: only uncovered targets are retained durably.
     if let Some(ssc) = scheduler_state_cache.as_ref() {
         for (idx, persisted) in persisted_flags.iter().enumerate() {
-            if !persisted && let Err(e) = ssc.store(&live_states[idx], DEFAULT_SCHEDULER_MODE) {
+            if !persisted && !live_states[idx].uncovered_branches.is_empty()
+                && let Err(e) = ssc.store(&live_states[idx], DEFAULT_SCHEDULER_MODE)
+            {
                 log::warn!(
                     "scheduler-state cache store error for {}: {e}",
                     live_states[idx].function_id,
@@ -2013,6 +2036,24 @@ fn persist_scheduler_state_if_exhausted(
             );
         }
     }
+}
+
+/// Compute uncovered branch identifiers as strings for scheduler state persistence.
+///
+/// Each entry is formatted as `"{branch_id}:{line}"` for human readability
+/// and machine parseability. Only branches with [`TargetReason::Uncovered`] are
+/// included — opaque-constraint branches were technically discovered, just not
+/// fully solved, so they don't count as "uncovered targets" for scheduling.
+fn compute_uncovered_branch_strings(
+    analysis: &crate::protocol::FunctionAnalysis,
+    exploration: &crate::explorer::ObservationOutput,
+) -> Vec<String> {
+    let targets = crate::coverage_metrics::extract_targets(analysis, exploration);
+    targets
+        .into_iter()
+        .filter(|t| t.reason == crate::coverage_metrics::TargetReason::Uncovered)
+        .map(|t| format!("{}:{}", t.branch_id, t.line))
+        .collect()
 }
 
 /// Execute a layer of function tasks in Function isolation mode.
@@ -8837,5 +8878,276 @@ mod tests {
             !persisted,
             "cache=None must not flip persisted flag — nothing was stored"
         );
+    }
+
+    // ---- str-bo4z.6: compute_uncovered_branch_strings tests ----
+
+    fn make_branch_info(id: u32, line: u32, condition: &str) -> crate::protocol::BranchInfo {
+        crate::protocol::BranchInfo {
+            id,
+            line,
+            condition_text: condition.to_string(),
+            condition: None,
+            branch_type: crate::protocol::BranchType::If,
+        }
+    }
+
+    fn make_analysis_with_branches(branches: Vec<crate::protocol::BranchInfo>) -> FunctionAnalysis {
+        let mut analysis = make_analysis("test_fn", vec![]);
+        analysis.branches = branches;
+        analysis
+    }
+
+    fn make_observation_with_discoveries(
+        discoveries: Vec<(u32, crate::coverage_metrics::DiscoveryMethod)>,
+    ) -> crate::explorer::ObservationOutput {
+        crate::explorer::ObservationOutput {
+            function_name: "test_fn".to_string(),
+            iterations: 10,
+            unique_paths: discoveries.len(),
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: Default::default(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+        }
+    }
+
+    #[test]
+    fn uncovered_branches_mixed_coverage() {
+        let analysis = make_analysis_with_branches(vec![
+            make_branch_info(0, 5, "x > 0"),
+            make_branch_info(1, 10, "x < 100"),
+            make_branch_info(2, 15, "x == 42"),
+        ]);
+        let observation = make_observation_with_discoveries(vec![
+            (0, crate::coverage_metrics::DiscoveryMethod::Random),
+            (2, crate::coverage_metrics::DiscoveryMethod::Z3),
+        ]);
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        assert_eq!(uncovered, vec!["1:10"]);
+    }
+
+    #[test]
+    fn uncovered_branches_all_covered() {
+        let analysis = make_analysis_with_branches(vec![
+            make_branch_info(0, 5, "x > 0"),
+            make_branch_info(1, 10, "x < 100"),
+        ]);
+        let observation = make_observation_with_discoveries(vec![
+            (0, crate::coverage_metrics::DiscoveryMethod::Z3),
+            (1, crate::coverage_metrics::DiscoveryMethod::Random),
+        ]);
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        assert!(uncovered.is_empty());
+    }
+
+    #[test]
+    fn uncovered_branches_no_branches() {
+        let analysis = make_analysis_with_branches(vec![]);
+        let observation = make_observation_with_discoveries(vec![]);
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        assert!(uncovered.is_empty());
+    }
+
+    #[test]
+    fn uncovered_branches_all_uncovered() {
+        let analysis = make_analysis_with_branches(vec![
+            make_branch_info(0, 5, "x > 0"),
+            make_branch_info(1, 10, "x < 100"),
+            make_branch_info(2, 15, "x == 42"),
+        ]);
+        let observation = make_observation_with_discoveries(vec![]);
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        assert_eq!(uncovered, vec!["0:5", "1:10", "2:15"]);
+    }
+
+    #[test]
+    fn uncovered_branches_format_is_id_colon_line() {
+        let analysis = make_analysis_with_branches(vec![
+            make_branch_info(42, 123, "foo"),
+        ]);
+        let observation = make_observation_with_discoveries(vec![]);
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        assert_eq!(uncovered, vec!["42:123"]);
+    }
+
+    #[test]
+    fn uncovered_branches_excludes_opaque_constraint() {
+        use crate::execution_record::{BranchDecision, SymConstraint};
+        // Branch 0 is discovered, branch 1 has an opaque constraint (discovered
+        // but Unknown), branch 2 is truly uncovered.
+        let analysis = make_analysis_with_branches(vec![
+            make_branch_info(0, 5, "x > 0"),
+            make_branch_info(1, 10, "isValid(x)"),
+            make_branch_info(2, 15, "x == 42"),
+        ]);
+
+        // Branch 1 is "discovered" (appears in discoveries) but has an opaque
+        // constraint at runtime. It should NOT appear in uncovered_branches
+        // because it was technically reached.
+        let mut observation = make_observation_with_discoveries(vec![
+            (0, crate::coverage_metrics::DiscoveryMethod::Z3),
+            (1, crate::coverage_metrics::DiscoveryMethod::Random),
+        ]);
+        // Add a raw result with an Unknown constraint for branch 1 so
+        // extract_targets classifies it as OpaqueConstraint rather than
+        // Uncovered — but since it's already in discoveries, it won't be
+        // in the uncovered list either way.
+        observation.raw_results.push((
+            vec![serde_json::json!(1)],
+            vec![],
+            crate::protocol::ExecuteResult {
+                branch_path: vec![BranchDecision {
+                    branch_id: 1,
+                    line: 10,
+                    taken: true,
+                    constraint: SymConstraint::Unknown {
+                        hint: "opaque call".to_string(),
+                    },
+                    conditions: None,
+                }],
+                return_value: None,
+                thrown_error: None,
+                lines_executed: vec![],
+                calls_to_external: vec![],
+                path_constraints: vec![],
+                side_effects: vec![],
+                scope_events: vec![],
+                capture_truncation: None,
+                discovered_dependencies: vec![],
+                connection_failures: vec![],
+                runtime_crypto_boundaries: vec![],
+                performance: empty_perf(),
+            },
+        ));
+
+        let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
+        // Only branch 2 is truly uncovered; branch 1 was discovered (opaque
+        // but reached). The filter on TargetReason::Uncovered excludes
+        // OpaqueConstraint targets.
+        assert_eq!(uncovered, vec!["2:15"]);
+    }
+}
+
+#[cfg(test)]
+mod proptests_uncovered {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_branch_info() -> impl Strategy<Value = crate::protocol::BranchInfo> {
+        (0_u32..100, 1_u32..500).prop_map(|(id, line)| crate::protocol::BranchInfo {
+            id,
+            line,
+            condition_text: format!("cond_{id}"),
+            condition: None,
+            branch_type: crate::protocol::BranchType::If,
+        })
+    }
+
+    proptest! {
+        /// The output of compute_uncovered_branch_strings is the exact set of
+        /// branches not in discoveries, formatted as "{id}:{line}".
+        #[test]
+        fn uncovered_is_complement_of_discoveries(
+            branches in proptest::collection::vec(arb_branch_info(), 0..15),
+            discovery_ratio in 0.0_f64..=1.0,
+        ) {
+            // Deduplicate branch IDs — real analyses never have duplicates.
+            let mut seen = std::collections::HashSet::new();
+            let branches: Vec<_> = branches
+                .into_iter()
+                .filter(|b| seen.insert(b.id))
+                .collect();
+
+            // Select a subset of branches as "discovered" based on ratio.
+            let discovery_count =
+                (branches.len() as f64 * discovery_ratio).round() as usize;
+            let discoveries: Vec<(u32, crate::coverage_metrics::DiscoveryMethod)> = branches
+                .iter()
+                .take(discovery_count)
+                .map(|b| (b.id, crate::coverage_metrics::DiscoveryMethod::Random))
+                .collect();
+
+            let discovered_ids: std::collections::HashSet<u32> =
+                discoveries.iter().map(|(id, _)| *id).collect();
+
+            let mut analysis =
+                crate::protocol::FunctionAnalysis {
+                    name: "prop_fn".into(),
+                    exported: true,
+                    params: vec![],
+                    branches: branches.clone(),
+                    dependencies: vec![],
+                    return_type: crate::types::TypeInfo::Unknown,
+                    start_line: 1,
+                    end_line: 100,
+                    literals: vec![],
+                    crypto_boundaries: vec![],
+                    loops: vec![],
+                    source_file: None,
+                    adapter_hints: vec![],
+                    invocation_model: crate::protocol::InvocationModel::Direct,
+                };
+            let _ = &mut analysis; // suppress unused-mut
+
+            let observation = crate::explorer::ObservationOutput {
+                function_name: "prop_fn".into(),
+                iterations: 10,
+                unique_paths: 0,
+                lines_covered: 0,
+                total_lines: 0,
+                new_path_executions: vec![],
+                raw_results: vec![],
+                discoveries,
+                nondeterministic_fields: vec![],
+                float_probe_results: vec![],
+                boundary_results: vec![],
+                shrunk_witnesses: Default::default(),
+                mcdc_summary: None,
+                shrink_stats: crate::shrink::ShrinkStats::default(),
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
+            };
+
+            let mut result = compute_uncovered_branch_strings(&analysis, &observation);
+
+            // Every result entry must correspond to a branch NOT in discoveries.
+            // Sort both sides — the function's iteration order depends on
+            // extract_targets_inner which iterates analysis.branches, but the
+            // exact ordering is an implementation detail, not a contract.
+            let mut expected: Vec<String> = branches
+                .iter()
+                .filter(|b| !discovered_ids.contains(&b.id))
+                .map(|b| format!("{}:{}", b.id, b.line))
+                .collect();
+            result.sort();
+            expected.sort();
+
+            prop_assert_eq!(&result, &expected);
+
+            // Every entry must match "{u32}:{u32}" format.
+            for entry in &result {
+                let parts: Vec<&str> = entry.split(':').collect();
+                prop_assert_eq!(parts.len(), 2, "bad format: {}", entry);
+                prop_assert!(parts[0].parse::<u32>().is_ok(), "bad id: {}", entry);
+                prop_assert!(parts[1].parse::<u32>().is_ok(), "bad line: {}", entry);
+            }
+        }
     }
 }
