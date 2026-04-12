@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use shatter_core::adapter_selection;
 use shatter_core::behavior::BehaviorMap;
-use shatter_core::cache::BehaviorMapCache;
+use shatter_core::cache::{BehaviorMapCache, StoredInputsCache};
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
+use shatter_core::fingerprint::FunctionSignature;
 use shatter_core::executability;
 use shatter_core::explorer::{
     self, ExploreConfig, ExploreProgressSnapshot, GeneticStats, ProgressCallback, ReportOptions,
@@ -1298,6 +1299,23 @@ pub(crate) async fn run_explore(
         Some(BehaviorMapCache::new(dir).map_err(|e| format!("failed to initialize cache: {e}"))?)
     };
 
+    // Stored-inputs sidecar cache (str-bo4z.3). Colocated with behavior maps;
+    // provides seed inputs that survive body edits (signature-keyed).
+    let stored_inputs_cache = if no_cache {
+        None
+    } else {
+        let dir = match cache_dir {
+            Some(p) => p.to_path_buf(),
+            None => StoredInputsCache::default_dir(&std::env::current_dir()?),
+        };
+        StoredInputsCache::new(dir)
+            .map_err(|e| {
+                log::warn!("failed to initialize stored-inputs cache: {e}");
+                e
+            })
+            .ok()
+    };
+
     let parsed: Vec<Target> = targets
         .iter()
         .map(|t| parse_target(t))
@@ -1848,6 +1866,23 @@ pub(crate) async fn run_explore(
                 }
             }
 
+            // Load stored inputs (str-bo4z.4): signature-keyed inputs that
+            // survive body edits where BehaviorMapCache would miss.
+            if let Some(ref sic) = stored_inputs_cache {
+                let sig = FunctionSignature::from_analysis(func);
+                match sic.load_compatible(&function_id, &sig) {
+                    Ok(Some(stored)) if !stored.is_empty() => {
+                        log::debug!(
+                            "Loaded {} stored input(s) for {}",
+                            stored.len(),
+                            func.name,
+                        );
+                        candidate_inputs.extend(stored);
+                    }
+                    _ => {}
+                }
+            }
+
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
@@ -1922,6 +1957,23 @@ pub(crate) async fn run_explore(
                             func.name,
                         );
                         seeds.extend(cached_seeds);
+                    }
+                }
+
+                // Load stored inputs (str-bo4z.4): signature-keyed inputs that
+                // survive body edits where BehaviorMapCache would miss.
+                if let Some(ref sic) = stored_inputs_cache {
+                    let sig = FunctionSignature::from_analysis(func);
+                    match sic.load_compatible(&function_id, &sig) {
+                        Ok(Some(stored)) if !stored.is_empty() => {
+                            log::debug!(
+                                "Loaded {} stored input(s) for concolic on {}",
+                                stored.len(),
+                                func.name,
+                            );
+                            seeds.extend(stored);
+                        }
+                        _ => {}
                     }
                 }
 
@@ -2882,6 +2934,27 @@ pub(crate) async fn run_explore(
                             if let Err(e) = cache_result {
                                 log::warn!(
                                     "failed to cache behavior map for {}: {e}",
+                                    func.name
+                                );
+                            }
+                        }
+
+                        // Persist to stored-inputs cache (str-bo4z.4) so
+                        // standalone explore builds the signature-keyed store.
+                        if let Some(ref sic) = stored_inputs_cache {
+                            let sig = FunctionSignature::from_analysis(func);
+                            let inputs: Vec<Vec<serde_json::Value>> = behavior_map
+                                .behaviors
+                                .iter()
+                                .map(|b| b.input_args.clone())
+                                .collect();
+                            if let Err(e) = sic.store(
+                                &format!("{}:{}", file_str, func.name),
+                                &sig,
+                                &inputs,
+                            ) {
+                                log::warn!(
+                                    "failed to persist stored inputs for {}: {e}",
                                     func.name
                                 );
                             }
