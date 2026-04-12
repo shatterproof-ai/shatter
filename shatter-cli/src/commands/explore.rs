@@ -49,6 +49,9 @@ struct BatchExploreOutcome {
     /// exhausted, don't re-enqueue) or hit the cap (re-enqueue for another
     /// slice).
     batch_iteration_cap: u32,
+    /// Resumable orchestrator state for the next batch of this function.
+    /// Present only when the concolic path succeeded.
+    resume_state: Option<shatter_core::orchestrator::ExploreState>,
 }
 
 const EXPLORE_ARTIFACT_VERSION: u32 = 2;
@@ -1893,6 +1896,12 @@ pub(crate) async fn run_explore(
     // every target's work items (str-b2my.10), a single loop drains the
     // whole run instead of one per target.
 
+    // Per-function resume state for the concolic orchestrator (str-b2my.16).
+    // Carries covered_paths and discovery inputs between batches so batch 2+
+    // skips path rediscovery and starts from frontier-adjacent seeds.
+    let mut explore_states: HashMap<usize, shatter_core::orchestrator::ExploreState> =
+        HashMap::new();
+
     loop {
             // Launch sub-loop: fill in-flight slots up to --jobs.
             while join_set.len() < effective_jobs && !stop_early {
@@ -1920,6 +1929,9 @@ pub(crate) async fn run_explore(
                 }
 
                 batches_launched += 1;
+
+                // Extract resume state for this function (if a prior batch completed).
+                let resume_state = explore_states.remove(&work_index);
 
                 let sem = Arc::clone(&semaphore);
                 let completed_functions = Arc::clone(&completed_functions);
@@ -1960,6 +1972,7 @@ pub(crate) async fn run_explore(
                                 result: Err(format!("failed to spawn frontend: {e}")),
                                 wall_time: func_start.elapsed(),
                                 batch_iteration_cap: batch_iters,
+                                resume_state: None,
                             };
                         }
                     };
@@ -1975,7 +1988,7 @@ pub(crate) async fn run_explore(
                             total_branches: Some(item.func.branches.len()),
                         });
 
-                    let explore_result = if let Some(ref concolic_config) = item.concolic_config {
+                    let explore_result_pair = if let Some(ref concolic_config) = item.concolic_config {
                         if let Err(e) = task_frontend
                             .send(ProtoCommand::Instrument {
                                 file: file_str_owned.clone(),
@@ -2035,22 +2048,23 @@ pub(crate) async fn run_explore(
                             prepare_id,
                             item.func.loops.clone(),
                             progress_hints,
+                            resume_state,
                         )
                         .await
                         {
-                            Ok(mut concolic_result) => {
+                            Ok((mut concolic_result, new_state)) => {
                                 concolic_result.total_lines =
                                     item.func.end_line.saturating_sub(item.func.start_line) + 1;
                                 let obs: shatter_core::explorer::ObservationOutput =
                                     concolic_result.into();
-                                Ok(obs)
+                                (Ok(obs), Some(new_state))
                             }
                             Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
-                                Err(shatter_core::explorer::ExploreError::Frontend(fe))
+                                (Err(shatter_core::explorer::ExploreError::Frontend(fe)), None)
                             }
                         }
                     } else {
-                        explorer::explore_function(
+                        let result = explorer::explore_function(
                             &mut task_frontend,
                             &item.func,
                             &item.explore_config,
@@ -2058,9 +2072,11 @@ pub(crate) async fn run_explore(
                             progress_hints,
                         )
                         .instrument(tracing::info_span!("explore.function"))
-                        .await
+                        .await;
+                        (result, None)
                     };
 
+                    let (explore_result, batch_resume_state) = explore_result_pair;
                     let result = explore_result.map_err(|e| e.to_string());
                     let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
                     emit_explore_progress(
@@ -2082,6 +2098,7 @@ pub(crate) async fn run_explore(
                         result,
                         wall_time: func_start.elapsed(),
                         batch_iteration_cap: batch_iters,
+                        resume_state: batch_resume_state,
                     }
                 });
             }
@@ -2100,6 +2117,12 @@ pub(crate) async fn run_explore(
             };
 
             let work_index = batch_outcome.work_index;
+
+            // Store resume state for the next batch of this function (str-b2my.16).
+            if let Some(state) = batch_outcome.resume_state {
+                explore_states.insert(work_index, state);
+            }
+
             let iters_used = batch_outcome
                 .result
                 .as_ref()

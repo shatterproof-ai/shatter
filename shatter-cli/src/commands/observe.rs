@@ -177,10 +177,11 @@ pub(crate) async fn run_observe(
             prepare_id,
             func.loops.clone(),
         None,
+        None,
         )
         .await
         {
-            Ok(mut concolic_result) => {
+            Ok((mut concolic_result, _resume_state)) => {
                 concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
                 Ok(concolic_result.into())
             }

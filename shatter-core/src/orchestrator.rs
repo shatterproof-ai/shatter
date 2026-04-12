@@ -329,6 +329,22 @@ pub struct ExploreResult {
     pub stubbed_modules: Vec<String>,
 }
 
+/// Resumable state from a completed `explore()` call.
+///
+/// Pass to the next batch of the same function to skip path rediscovery.
+/// Without this, each batch starts with an empty `covered_paths` set and
+/// wastes iterations rediscovering paths found in earlier batches.
+#[derive(Debug, Clone, Default)]
+pub struct ExploreState {
+    /// Path hashes already discovered — `observe_one()` will classify
+    /// these as duplicates immediately, avoiding rediscovery.
+    pub covered_paths: HashSet<u64>,
+    /// Inputs that discovered new paths in prior batches. Added to the
+    /// seed pool so the fuzzer/solver has frontier-adjacent starting
+    /// points instead of re-deriving them from scratch.
+    pub discovery_inputs: Vec<Vec<serde_json::Value>>,
+}
+
 /// Errors that can occur during concolic exploration.
 #[derive(Debug, thiserror::Error)]
 pub enum ExploreError {
@@ -1377,13 +1393,21 @@ pub async fn explore(
     prepare_id: Option<String>,
     loops: Vec<crate::protocol::LoopInfo>,
     progress_hints: Option<crate::explorer::ProgressHints<'_>>,
-) -> Result<ExploreResult, ExploreError> {
+    resume_state: Option<ExploreState>,
+) -> Result<(ExploreResult, ExploreState), ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
     // These are generated in-loop after new-path observations and need to be consumed
     // before MetaStrategy returns more inputs, preserving their InputSource attribution.
     let mut supplementary: BinaryHeap<WorklistEntry> = BinaryHeap::new();
-    let mut covered_paths: HashSet<u64> = HashSet::new();
+
+    // Resume state: pre-populate covered_paths and extract prior discovery
+    // inputs so batches 2..N skip rediscovery and start from frontier seeds.
+    let (mut covered_paths, prior_discovery_inputs) = match resume_state {
+        Some(state) => (state.covered_paths, state.discovery_inputs),
+        None => (HashSet::new(), Vec::new()),
+    };
+    let mut batch_discovery_inputs: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut executions = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
@@ -1434,6 +1458,7 @@ pub async fn explore(
     let combined_seed: Vec<Vec<serde_json::Value>> = {
         let mut v = user_inputs;
         v.extend(seed_inputs);
+        v.extend(prior_discovery_inputs.clone());
         v
     };
     let strategies: Vec<Box<dyn InputStrategy>> = vec![
@@ -1713,6 +1738,10 @@ pub async fn explore(
 
         // New path discovered — reset plateau counter.
         plateau_counter = 0;
+
+        // Capture this input for resume state — frontier-adjacent seeds
+        // help subsequent batches start from productive regions.
+        batch_discovery_inputs.push(obs.inputs.clone());
 
         // Track per-branch discovery attribution.
         let method = match obs.source {
@@ -2150,32 +2179,44 @@ pub async fn explore(
         crate::executability::build_opaque_suggestions(param_infos, &param_fail_counts);
     let stubbed_modules = crate::explorer::collect_stubbed_modules(&raw_results);
 
-    Ok(ExploreResult {
-        function_name: function_name.to_string(),
-        total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
-        executions,
-        unique_paths,
-        total_executions,
-        z3_generated,
-        fuzz_generated,
-        boundary_generated,
-        drill_generated,
-        termination_reason,
-        raw_results,
-        discoveries,
-        triage_skipped,
-        triage_mispredictions,
-        nondeterministic_fields: vec![],
-        float_probe_results,
-        boundary_results,
-        shrunk_witnesses,
-        mcdc_summary,
-        pipeline_overlaps,
-        shrink_stats,
-        abandoned_frontiers,
-        opaque_suggestions,
-        stubbed_modules,
-    })
+    // Build resume state: cumulative covered_paths + all discovery inputs
+    // (prior batches + this batch) for the next batch to use.
+    let mut all_discovery_inputs = prior_discovery_inputs;
+    all_discovery_inputs.extend(batch_discovery_inputs);
+    let output_state = ExploreState {
+        covered_paths: covered_paths.clone(),
+        discovery_inputs: all_discovery_inputs,
+    };
+
+    Ok((
+        ExploreResult {
+            function_name: function_name.to_string(),
+            total_lines: 0, // Caller must set from FunctionAnalysis (end_line - start_line + 1)
+            executions,
+            unique_paths,
+            total_executions,
+            z3_generated,
+            fuzz_generated,
+            boundary_generated,
+            drill_generated,
+            termination_reason,
+            raw_results,
+            discoveries,
+            triage_skipped,
+            triage_mispredictions,
+            nondeterministic_fields: vec![],
+            float_probe_results,
+            boundary_results,
+            shrunk_witnesses,
+            mcdc_summary,
+            pipeline_overlaps,
+            shrink_stats,
+            abandoned_frontiers,
+            opaque_suggestions,
+            stubbed_modules,
+        },
+        output_state,
+    ))
 }
 
 #[cfg(test)]
@@ -3170,7 +3211,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "stub",
             vec![vec![serde_json::json!(0)]],
@@ -3184,6 +3225,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3219,7 +3261,7 @@ mod tests {
         };
 
         // Start with x=0 (hits the x<=10 path).
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "f",
             vec![vec![serde_json::json!(0)]],
@@ -3233,6 +3275,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3273,7 +3316,7 @@ mod tests {
         let seeds: Vec<Vec<serde_json::Value>> =
             (0..5).map(|i| vec![serde_json::json!(i)]).collect();
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "f",
             seeds,
@@ -3287,6 +3330,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3320,7 +3364,7 @@ mod tests {
         // Provide multiple identical seeds so the worklist doesn't empty first.
         let seeds = (0..10).map(|i| vec![serde_json::json!(i)]).collect();
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "stub",
             seeds,
@@ -3334,6 +3378,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3367,7 +3412,7 @@ mod tests {
 
         let seeds = (0..10).map(|i| vec![serde_json::json!(i)]).collect();
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "stub",
             seeds,
@@ -3381,6 +3426,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3406,7 +3452,7 @@ mod tests {
         };
 
         // Provide seeds that will hit different paths.
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "f",
             vec![vec![serde_json::json!(0)], vec![serde_json::json!(20)]],
@@ -3420,6 +3466,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3499,7 +3546,7 @@ mod tests {
 
         let seeds = (0..100).map(|i| vec![serde_json::json!(i)]).collect();
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "stub",
             seeds,
@@ -3513,6 +3560,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -3549,7 +3597,7 @@ mod tests {
         let seeds: Vec<Vec<serde_json::Value>> =
             (0..20).map(|_| vec![serde_json::json!(5)]).collect();
 
-        let result = explore(
+        let (result, _) = explore(
             &mut frontend,
             "f",
             seeds,
@@ -3563,6 +3611,7 @@ mod tests {
             None,
             None,
             vec![],
+        None,
         None,
         )
         .await
@@ -4761,6 +4810,38 @@ mod tests {
                 prop_assert!(skip.is_empty());
             }
         }
+    }
+
+    // -- ExploreState tests --
+
+    #[test]
+    fn explore_state_default_is_empty() {
+        let state = ExploreState::default();
+        assert!(state.covered_paths.is_empty());
+        assert!(state.discovery_inputs.is_empty());
+    }
+
+    #[test]
+    fn explore_state_clone_preserves_contents() {
+        let mut state = ExploreState::default();
+        state.covered_paths.insert(12345);
+        state.covered_paths.insert(67890);
+        state.discovery_inputs.push(vec![serde_json::json!(1)]);
+
+        let cloned = state.clone();
+        assert_eq!(cloned.covered_paths.len(), 2);
+        assert!(cloned.covered_paths.contains(&12345));
+        assert!(cloned.covered_paths.contains(&67890));
+        assert_eq!(cloned.discovery_inputs.len(), 1);
+        assert_eq!(cloned.discovery_inputs[0], vec![serde_json::json!(1)]);
+    }
+
+    #[test]
+    fn explore_state_covered_paths_deduplicate() {
+        let mut state = ExploreState::default();
+        state.covered_paths.insert(42);
+        state.covered_paths.insert(42);
+        assert_eq!(state.covered_paths.len(), 1, "duplicate path hash should be deduplicated");
     }
 }
 
