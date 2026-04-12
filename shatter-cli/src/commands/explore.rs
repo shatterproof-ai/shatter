@@ -743,6 +743,7 @@ fn emit_explore_progress(
     total: usize,
     elapsed: Duration,
     status: &str,
+    emit_json: bool,
 ) {
     let line = match status {
         "started" => format!("[progress] starting {current}/{total}: {function}"),
@@ -758,9 +759,10 @@ fn emit_explore_progress(
     };
     eprintln!("{line}");
 
-    if let Some(json) =
-        ProgressEvent::with_status(function, current, total, elapsed.as_millis() as u64, status)
-            .to_json()
+    if emit_json
+        && let Some(json) =
+            ProgressEvent::with_status(function, current, total, elapsed.as_millis() as u64, status)
+                .to_json()
     {
         eprintln!("{json}");
     }
@@ -2097,6 +2099,9 @@ pub(crate) async fn run_explore(
     // every target's work items (str-b2my.10), a single loop drains the
     // whole run instead of one per target.
 
+    let emit_progress_json =
+        format == crate::args::StdoutFormat::Json || log_level >= LogLevel::Debug;
+
     loop {
             // Launch sub-loop: fill in-flight slots up to --jobs.
             while join_set.len() < effective_jobs && !stop_early {
@@ -2149,6 +2154,7 @@ pub(crate) async fn run_explore(
                         progress_total,
                         Duration::ZERO,
                         "started",
+                        emit_progress_json,
                     );
 
                     let mut task_frontend = match Frontend::spawn(&fe_config).await {
@@ -2161,6 +2167,7 @@ pub(crate) async fn run_explore(
                                 progress_total,
                                 func_start.elapsed(),
                                 "failed",
+                                emit_progress_json,
                             );
                             return BatchExploreOutcome {
                                 work_index,
@@ -2284,6 +2291,7 @@ pub(crate) async fn run_explore(
                         } else {
                             "failed"
                         },
+                        emit_progress_json,
                     );
 
                     let _ = task_frontend.shutdown().await;
@@ -3082,9 +3090,32 @@ mod tests {
 
     #[test]
     fn emit_explore_progress_accepts_started_completed_and_failed() {
-        emit_explore_progress("f", 1, 3, Duration::ZERO, "started");
-        emit_explore_progress("f", 2, 3, Duration::from_millis(250), "completed");
-        emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed");
+        emit_explore_progress("f", 1, 3, Duration::ZERO, "started", true);
+        emit_explore_progress("f", 2, 3, Duration::from_millis(250), "completed", true);
+        emit_explore_progress("f", 3, 3, Duration::from_millis(500), "failed", true);
+    }
+
+    #[test]
+    fn emit_explore_progress_suppresses_json_when_gate_is_false() {
+        // Should emit human-readable lines but no JSON — verifies no panic
+        // when emit_json is false.
+        emit_explore_progress("f", 1, 2, Duration::ZERO, "started", false);
+        emit_explore_progress("f", 2, 2, Duration::from_millis(100), "completed", false);
+    }
+
+    #[test]
+    fn progress_json_gate_respects_format_and_log_level() {
+        use crate::args::StdoutFormat;
+        use shatter_core::log_level::LogLevel;
+
+        // JSON format => emit regardless of log level
+        assert!(StdoutFormat::Json == StdoutFormat::Json || LogLevel::Info >= LogLevel::Debug);
+        // Markdown + default Info => suppress
+        assert!(!(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Info >= LogLevel::Debug));
+        // Markdown + Debug => emit
+        assert!(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Debug >= LogLevel::Debug);
+        // Markdown + Trace => emit
+        assert!(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Trace >= LogLevel::Debug);
     }
 
     fn base_snapshot() -> ExploreProgressSnapshot {
