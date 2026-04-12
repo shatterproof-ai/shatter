@@ -590,6 +590,7 @@ pub(crate) async fn run_scan(
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: shatter_core::interesting_pool::CoverageMode::Branch,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -738,6 +739,7 @@ pub(crate) async fn run_scan(
         batch_size: None,
         scheduler_state_cache: None,
         stored_inputs_cache,
+        coverage_mode: shatter_core::interesting_pool::CoverageMode::Branch,
     };
 
     let scan_start = Instant::now();
