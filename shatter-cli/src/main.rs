@@ -179,7 +179,7 @@ async fn main() -> ExitCode {
             report_outputs,
             stdout,
             format,
-            jobs,
+            workers,
             from_artifacts,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
@@ -262,7 +262,7 @@ async fn main() -> ExitCode {
                 &report_outputs,
                 stdout,
                 format,
-                jobs,
+                workers,
                 genetic,
                 genetic_population,
                 genetic_generations,
