@@ -56,6 +56,36 @@ struct BatchExploreOutcome {
 
 const EXPLORE_ARTIFACT_VERSION: u32 = 2;
 
+/// Serializable wrapper around `shatter_core::orchestrator::ExploreState`.
+///
+/// `ExploreState` in orchestrator.rs derives only `Debug, Clone, Default` (no
+/// Serialize/Deserialize — that file is owned by another workstream). This
+/// wrapper mirrors the fields with serde support for disk persistence of
+/// partial-function resume state between interrupted runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedExploreState {
+    covered_paths: Vec<u64>,
+    discovery_inputs: Vec<Vec<serde_json::Value>>,
+}
+
+impl PersistedExploreState {
+    fn from_explore_state(state: &shatter_core::orchestrator::ExploreState) -> Self {
+        let mut paths: Vec<u64> = state.covered_paths.iter().copied().collect();
+        paths.sort_unstable();
+        Self {
+            covered_paths: paths,
+            discovery_inputs: state.discovery_inputs.clone(),
+        }
+    }
+
+    fn into_explore_state(self) -> shatter_core::orchestrator::ExploreState {
+        shatter_core::orchestrator::ExploreState {
+            covered_paths: self.covered_paths.into_iter().collect(),
+            discovery_inputs: self.discovery_inputs,
+        }
+    }
+}
+
 /// Internal iteration budget per round-robin batch when broad-scope explore
 /// cycles across many functions. The scheduler re-enqueues non-exhausted
 /// functions at the tail after each batch, so long runs surface early coverage
@@ -327,6 +357,11 @@ struct ExploreSummaryEntry {
     artifact: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Deep fingerprint at the time this entry was written. Used by the
+    /// automatic resume logic to detect stale artifacts when the function
+    /// body (or any transitive callee) changed between runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deep_fingerprint: Option<String>,
 }
 
 /// Summary of an entire explore run, written incrementally to enable crash recovery.
@@ -489,6 +524,105 @@ fn write_explore_summary(root: &Path, file: &str, summary: &ExploreSummary) -> R
     write_artifact_json(&path, summary)
 }
 
+/// Load a prior explore summary from the artifact directory. Returns `None`
+/// when the file is missing, corrupt, or has a version older than the current
+/// artifact format (in which case re-exploration is the right call).
+fn read_explore_summary(root: &Path, file: &str) -> Option<ExploreSummary> {
+    let path = explore_summary_path(root, file);
+    let json = std::fs::read_to_string(&path).ok()?;
+    let summary: ExploreSummary = serde_json::from_str(&json).ok()?;
+    if summary.version < EXPLORE_ARTIFACT_VERSION {
+        return None;
+    }
+    Some(summary)
+}
+
+/// Try to resume a completed function from a prior explore run.
+///
+/// Returns the loaded `ObservationOutput` and wall time if **all** of the
+/// following hold:
+/// 1. The function appears in the prior summary with status "completed".
+/// 2. The summary entry carries a `deep_fingerprint` that matches the current
+///    deep fingerprint (source + transitive callees unchanged).
+/// 3. The artifact file referenced by the summary entry still exists on disk
+///    and parses successfully.
+/// 4. The artifact contains an `observation` (not just an error).
+///
+/// Any failure degrades to `None` — the function will be re-explored.
+fn try_resume_function(
+    artifact_root: &Path,
+    func: &shatter_core::protocol::FunctionAnalysis,
+    deep_fingerprints: &HashMap<String, String>,
+    prior_summary: Option<&ExploreSummary>,
+) -> Option<(shatter_core::explorer::ObservationOutput, Duration)> {
+    let summary = prior_summary?;
+    let entry = summary
+        .functions
+        .iter()
+        .find(|e| e.function_name == func.name && e.status == "completed")?;
+    // Require fingerprint match — legacy summaries without fingerprints
+    // gracefully cause re-exploration.
+    let stored_fp = entry.deep_fingerprint.as_deref()?;
+    let current_fp = deep_fingerprints.get(&func.name)?;
+    if stored_fp != current_fp {
+        return None;
+    }
+    let artifact_relpath = entry.artifact.as_deref()?;
+    let artifact_path = artifact_root.join(artifact_relpath);
+    let artifact = read_explore_artifact(&artifact_path).ok()?;
+    let observation = artifact.observation?;
+    Some((observation, Duration::from_millis(artifact.wall_time_ms)))
+}
+
+/// Path to the per-function resume-state sidecar, stored alongside the
+/// function's explore artifact.
+fn resume_state_path(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) -> PathBuf {
+    let file_component = sanitize_artifact_component(file);
+    let fn_component = sanitize_artifact_component(&func.name);
+    root.join(file_component)
+        .join(format!("{:05}_{}.resume-state.json", func.start_line, fn_component))
+}
+
+/// Persist the orchestrator's resume state for a partially-explored function.
+/// Called after each batch so a subsequent run can skip path rediscovery.
+fn write_resume_state(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+    state: &shatter_core::orchestrator::ExploreState,
+) -> Result<(), String> {
+    let persisted = PersistedExploreState::from_explore_state(state);
+    let path = resume_state_path(root, file, func);
+    write_artifact_json(&path, &persisted)
+}
+
+/// Load a persisted resume state for a partially-explored function.
+/// Returns `None` on any error (missing file, corrupt JSON, etc.).
+fn read_resume_state(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) -> Option<shatter_core::orchestrator::ExploreState> {
+    let path = resume_state_path(root, file, func);
+    let json = std::fs::read_to_string(&path).ok()?;
+    let persisted: PersistedExploreState = serde_json::from_str(&json).ok()?;
+    Some(persisted.into_explore_state())
+}
+
+/// Remove the resume-state sidecar after a function fully completes.
+fn cleanup_resume_state(
+    root: &Path,
+    file: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) {
+    let path = resume_state_path(root, file, func);
+    let _ = std::fs::remove_file(&path);
+}
+
 fn read_explore_artifact(path: &Path) -> Result<ExploreFunctionArtifact, String> {
     let json = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read artifact {}: {e}", path.display()))?;
@@ -530,8 +664,9 @@ fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, St
                 continue;
             }
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // Skip summary, temp files, and non-JSON.
+            // Skip summary, resume-state sidecars, temp files, and non-JSON.
             if file_name == "summary.json"
+                || file_name.ends_with(".resume-state.json")
                 || file_name.ends_with(".tmp")
                 || !file_name.ends_with(".json")
             {
@@ -1282,6 +1417,15 @@ pub(crate) async fn run_explore(
         None
     };
 
+    // Per-function resume state for the concolic orchestrator (str-b2my.16).
+    // Carries covered_paths and discovery inputs between batches so batch 2+
+    // skips path rediscovery and starts from frontier-adjacent seeds.
+    // Declared before the per-target loop so the resume logic (str-b2my.15)
+    // can pre-populate it from persisted sidecars during setup.
+    let mut explore_states: HashMap<usize, shatter_core::orchestrator::ExploreState> =
+        HashMap::new();
+    let mut resumed_total: usize = 0;
+
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
         let func_display = target.function.as_deref().unwrap_or("(all)");
@@ -1836,12 +1980,68 @@ pub(crate) async fn run_explore(
         // spawn closures in the batch loop.
         let artifact_root = explore_artifact_root(project_root_str.as_deref());
         let target_start = Instant::now();
+
+        // --- Resume detection (str-b2my.15): load prior summary and skip
+        // functions that completed in an earlier run with a fresh fingerprint.
+        let prior_summary = read_explore_summary(&artifact_root, &file_str);
+        let mut target_resumed_count: usize = 0;
+
+        if let Some(ref prior) = prior_summary {
+            log::info!(
+                "Found prior explore summary for {} ({} completed, {} failed)",
+                file_str,
+                prior.completed,
+                prior.failed,
+            );
+        }
+
         for (work_index, item) in work_items.iter().enumerate().skip(first_work_index) {
-            let budget = item.explore_config.max_iterations;
             accumulators.push(ExploreResultAccumulator::new(item.func.name.clone()));
             func_wall_time.push(Duration::ZERO);
             func_first_error.push(None);
+
+            // Try to resume from a prior completed artifact.
+            if let Some((observation, wall_time)) = try_resume_function(
+                &artifact_root,
+                &item.func,
+                &deep_fingerprints,
+                prior_summary.as_ref(),
+            ) {
+                accumulators[work_index].merge(Ok(observation));
+                func_wall_time[work_index] = wall_time;
+                target_resumed_count += 1;
+                log::info!(
+                    "[resumed] {}: {} branches, {:.1}s (prior run)",
+                    item.func.name,
+                    accumulators[work_index].discoveries.len(),
+                    wall_time.as_secs_f64(),
+                );
+                // Do NOT enqueue in scheduler — this function is already done.
+                continue;
+            }
+
+            // Check for partial resume state (ExploreState sidecar).
+            if let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func) {
+                let paths_count = state.covered_paths.len();
+                explore_states.insert(work_index, state);
+                log::info!(
+                    "Loaded partial resume state for {} ({} covered paths)",
+                    item.func.name,
+                    paths_count,
+                );
+            }
+
+            let budget = item.explore_config.max_iterations;
             batch_scheduler.enqueue(work_index, budget);
+        }
+
+        if target_resumed_count > 0 {
+            resumed_total += target_resumed_count;
+            log::info!(
+                "Resumed {target_resumed_count}/{} function(s) from prior artifacts for {}",
+                work_items.len() - first_work_index,
+                file_str,
+            );
         }
 
         // Initialize explore summary for crash-recovery.
@@ -1861,6 +2061,7 @@ pub(crate) async fn run_explore(
                     status: "skipped".to_string(),
                     artifact: None,
                     reason: Some("unexecutable parameter types".to_string()),
+                    deep_fingerprint: None,
                 })
                 .collect(),
         };
@@ -1895,12 +2096,6 @@ pub(crate) async fn run_explore(
     // and it didn't converge early. Because the scheduler is shared across
     // every target's work items (str-b2my.10), a single loop drains the
     // whole run instead of one per target.
-
-    // Per-function resume state for the concolic orchestrator (str-b2my.16).
-    // Carries covered_paths and discovery inputs between batches so batch 2+
-    // skips path rediscovery and starts from frontier-adjacent seeds.
-    let mut explore_states: HashMap<usize, shatter_core::orchestrator::ExploreState> =
-        HashMap::new();
 
     loop {
             // Launch sub-loop: fill in-flight slots up to --jobs.
@@ -2119,7 +2314,20 @@ pub(crate) async fn run_explore(
             let work_index = batch_outcome.work_index;
 
             // Store resume state for the next batch of this function (str-b2my.16).
+            // Also persist to disk so a subsequent run can skip path rediscovery
+            // for partially-explored functions (str-b2my.15).
             if let Some(state) = batch_outcome.resume_state {
+                let target_idx = work_items[work_index].target_idx;
+                if let Some(pt) = prepared_targets.get(target_idx)
+                    && let Err(e) = write_resume_state(
+                        &pt.artifact_root,
+                        &pt.file_str,
+                        &work_items[work_index].func,
+                        &state,
+                    )
+                {
+                    log::warn!("Failed to write resume state for {}: {e}", work_items[work_index].func.name);
+                }
                 explore_states.insert(work_index, state);
             }
 
@@ -2275,6 +2483,10 @@ pub(crate) async fn run_explore(
             }
         }
 
+    if resumed_total > 0 {
+        log::info!("Resumed {resumed_total} function(s) from prior explore artifacts");
+    }
+
     // --- Phase 3a: Flush every accumulator → outcomes ---
     // Build the full global list, then group by target so each prepared
     // target's post-processing pass can write its own artifacts and spec
@@ -2360,7 +2572,12 @@ pub(crate) async fn run_explore(
                 status: summary_status.to_string(),
                 artifact: artifact_relpath,
                 reason: outcome.result.as_ref().err().cloned(),
+                deep_fingerprint: deep_fingerprints.get(&outcome.func.name).cloned(),
             });
+
+            // Clean up the partial resume-state sidecar now that the function
+            // is fully done (str-b2my.15).
+            cleanup_resume_state(&artifact_root, &file_str, &outcome.func);
         }
         explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
@@ -3570,12 +3787,14 @@ mod tests {
                     status: "completed".to_string(),
                     artifact: Some("src_user.ts/00012_load.json".to_string()),
                     reason: None,
+                    deep_fingerprint: None,
                 },
                 ExploreSummaryEntry {
                     function_name: "save".to_string(),
                     status: "failed".to_string(),
                     artifact: Some("src_user.ts/00025_save.json".to_string()),
                     reason: Some("timeout".to_string()),
+                    deep_fingerprint: None,
                 },
             ],
         };
@@ -3701,5 +3920,372 @@ mod tests {
             !cache.is_fresh(function_id, "any-fp").expect("is_fresh"),
             "unfingerprinted map must not be considered fresh",
         );
+    }
+
+    // --- Resume logic tests (str-b2my.15) ---
+
+    use super::{
+        PersistedExploreState, cleanup_resume_state, read_explore_summary, read_resume_state,
+        resume_state_path, try_resume_function, write_resume_state,
+    };
+
+    #[test]
+    fn persisted_explore_state_roundtrips() {
+        let original = shatter_core::orchestrator::ExploreState {
+            covered_paths: [42, 99, 7].into_iter().collect(),
+            discovery_inputs: vec![
+                vec![serde_json::json!(1), serde_json::json!("hello")],
+                vec![serde_json::json!(null)],
+            ],
+        };
+        let persisted = PersistedExploreState::from_explore_state(&original);
+        // covered_paths should be sorted for deterministic serialization
+        assert_eq!(persisted.covered_paths, vec![7, 42, 99]);
+
+        let json = serde_json::to_string(&persisted).expect("serialize");
+        let deserialized: PersistedExploreState =
+            serde_json::from_str(&json).expect("deserialize");
+        let restored = deserialized.into_explore_state();
+
+        assert_eq!(restored.covered_paths, original.covered_paths);
+        assert_eq!(restored.discovery_inputs, original.discovery_inputs);
+    }
+
+    #[test]
+    fn read_explore_summary_loads_valid_summary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 2,
+            completed: 1,
+            failed: 1,
+            skipped: 0,
+            elapsed_secs: 5.0,
+            functions: vec![
+                ExploreSummaryEntry {
+                    function_name: "load".to_string(),
+                    status: "completed".to_string(),
+                    artifact: Some("src_user.ts/00012_load.json".to_string()),
+                    reason: None,
+                    deep_fingerprint: Some("abc123".to_string()),
+                },
+                ExploreSummaryEntry {
+                    function_name: "save".to_string(),
+                    status: "failed".to_string(),
+                    artifact: None,
+                    reason: Some("timeout".to_string()),
+                    deep_fingerprint: Some("def456".to_string()),
+                },
+            ],
+        };
+        write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
+        let loaded = read_explore_summary(dir.path(), "src/user.ts");
+        assert!(loaded.is_some(), "should load valid summary");
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.completed, 1);
+        assert_eq!(loaded.functions.len(), 2);
+        assert_eq!(
+            loaded.functions[0].deep_fingerprint.as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn read_explore_summary_returns_none_on_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(read_explore_summary(dir.path(), "nonexistent.ts").is_none());
+    }
+
+    #[test]
+    fn read_explore_summary_returns_none_on_corrupt_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = explore_summary_path(dir.path(), "src/user.ts");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, "not valid json").expect("write");
+        assert!(read_explore_summary(dir.path(), "src/user.ts").is_none());
+    }
+
+    #[test]
+    fn read_explore_summary_returns_none_on_old_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = explore_summary_path(dir.path(), "src/user.ts");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        let old_summary = serde_json::json!({
+            "version": 1,
+            "status": "completed",
+            "file": "src/user.ts",
+            "total_functions": 1,
+            "completed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "elapsed_secs": 1.0,
+            "functions": []
+        });
+        std::fs::write(&path, old_summary.to_string()).expect("write");
+        assert!(read_explore_summary(dir.path(), "src/user.ts").is_none());
+    }
+
+    #[test]
+    fn try_resume_matching_fingerprint_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let outcome = sample_outcome();
+
+        // Write a completed artifact.
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
+        let artifact_relpath = {
+            let p = super::explore_artifact_path(dir.path(), "src/user.ts", &func);
+            p.strip_prefix(dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 1,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: func.name.clone(),
+                status: "completed".to_string(),
+                artifact: Some(artifact_relpath),
+                reason: None,
+                deep_fingerprint: Some("fp-abc".to_string()),
+            }],
+        };
+
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-abc".to_string());
+
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        assert!(result.is_some(), "should resume with matching fingerprint");
+        let (obs, wall_time) = result.unwrap();
+        assert_eq!(obs.function_name, "load/user");
+        assert_eq!(wall_time, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn try_resume_mismatched_fingerprint_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 1,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: func.name.clone(),
+                status: "completed".to_string(),
+                artifact: Some("src_user.ts/00012_load_user.json".to_string()),
+                reason: None,
+                deep_fingerprint: Some("fp-old".to_string()),
+            }],
+        };
+
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-new".to_string());
+
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        assert!(result.is_none(), "should not resume with mismatched fingerprint");
+    }
+
+    #[test]
+    fn try_resume_missing_fingerprint_returns_none() {
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 1,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: "load/user".to_string(),
+                status: "completed".to_string(),
+                artifact: Some("src_user.ts/00012_load_user.json".to_string()),
+                reason: None,
+                deep_fingerprint: None, // legacy summary
+            }],
+        };
+
+        let func = sample_func_analysis();
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-abc".to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        assert!(result.is_none(), "should not resume without stored fingerprint");
+    }
+
+    #[test]
+    fn try_resume_failed_status_returns_none() {
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 0,
+            failed: 1,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: "load/user".to_string(),
+                status: "failed".to_string(),
+                artifact: None,
+                reason: Some("timeout".to_string()),
+                deep_fingerprint: Some("fp-abc".to_string()),
+            }],
+        };
+
+        let func = sample_func_analysis();
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-abc".to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        assert!(result.is_none(), "should not resume failed function");
+    }
+
+    #[test]
+    fn try_resume_missing_artifact_returns_none() {
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 1,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: "load/user".to_string(),
+                status: "completed".to_string(),
+                artifact: Some("src_user.ts/00012_nonexistent.json".to_string()),
+                reason: None,
+                deep_fingerprint: Some("fp-abc".to_string()),
+            }],
+        };
+
+        let func = sample_func_analysis();
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-abc".to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        assert!(result.is_none(), "should not resume when artifact file missing");
+    }
+
+    #[test]
+    fn load_explore_artifacts_skips_resume_state_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let subdir = dir.path().join("src_user.ts");
+        std::fs::create_dir_all(&subdir).expect("mkdir");
+
+        // Write a valid artifact.
+        let outcome = sample_outcome();
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write");
+
+        // Write a resume-state sidecar.
+        let func = sample_func_analysis();
+        let state = shatter_core::orchestrator::ExploreState {
+            covered_paths: [1, 2].into_iter().collect(),
+            discovery_inputs: vec![],
+        };
+        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write state");
+
+        let artifacts = load_explore_artifacts(dir.path()).expect("load");
+        assert_eq!(artifacts.len(), 1, "resume-state file should be skipped");
+        assert_eq!(artifacts[0].function_name, "load/user");
+    }
+
+    #[test]
+    fn resume_state_write_read_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let state = shatter_core::orchestrator::ExploreState {
+            covered_paths: [10, 20, 30].into_iter().collect(),
+            discovery_inputs: vec![
+                vec![serde_json::json!(42)],
+                vec![serde_json::json!("test"), serde_json::json!(true)],
+            ],
+        };
+
+        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write");
+        let loaded = read_resume_state(dir.path(), "src/user.ts", &func);
+        assert!(loaded.is_some(), "should load resume state");
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.covered_paths, state.covered_paths);
+        assert_eq!(loaded.discovery_inputs, state.discovery_inputs);
+    }
+
+    #[test]
+    fn cleanup_resume_state_removes_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let state = shatter_core::orchestrator::ExploreState::default();
+
+        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write");
+        let path = resume_state_path(dir.path(), "src/user.ts", &func);
+        assert!(path.exists(), "sidecar should exist before cleanup");
+
+        cleanup_resume_state(dir.path(), "src/user.ts", &func);
+        assert!(!path.exists(), "sidecar should be removed after cleanup");
+    }
+
+    #[test]
+    fn summary_entry_fingerprint_backward_compatible() {
+        // Simulate a legacy summary entry without deep_fingerprint field.
+        let json = r#"{
+            "function_name": "load",
+            "status": "completed",
+            "artifact": "src_user.ts/00012_load.json"
+        }"#;
+        let entry: ExploreSummaryEntry = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entry.function_name, "load");
+        assert!(
+            entry.deep_fingerprint.is_none(),
+            "missing field should default to None"
+        );
+    }
+
+    #[test]
+    fn try_resume_no_prior_summary_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let mut deep_fps = std::collections::HashMap::new();
+        deep_fps.insert(func.name.clone(), "fp-abc".to_string());
+
+        let result = try_resume_function(dir.path(), &func, &deep_fps, None);
+        assert!(result.is_none(), "should not resume without prior summary");
+    }
+
+    #[test]
+    fn accumulator_with_resumed_observation_flows_through() {
+        // Simulate the resume path: merge a loaded observation, then finalize.
+        let obs = sample_observation();
+        let mut acc = ExploreResultAccumulator::new("load/user".to_string());
+        acc.merge(Ok(obs));
+
+        assert_eq!(acc.batches_merged, 1);
+        assert_eq!(acc.successful_batches, 1);
+
+        let result = acc.into_result();
+        assert!(result.is_ok(), "resumed accumulator should produce Ok result");
+        let output = result.unwrap();
+        assert_eq!(output.function_name, "load/user");
+        assert_eq!(output.iterations, 1);
     }
 }
