@@ -234,6 +234,10 @@ pub struct ScanConfig {
     /// writes the exercised input vectors to this cache so a later run can
     /// replay them as seeds (str-bo4z.4).
     pub stored_inputs_cache: Option<Arc<crate::cache::StoredInputsCache>>,
+    /// Active coverage mode for this scan. Determines the on-disk namespace
+    /// for persisted scheduler state so branch-mode and MC/DC-mode runs
+    /// maintain independent cooldown and attempt histories (str-bo4z.7).
+    pub coverage_mode: crate::interesting_pool::CoverageMode,
 }
 
 /// Context about sampling mode, for report headers.
@@ -1649,9 +1653,10 @@ async fn run_layer_batched(
     artifact_root: Option<Arc<PathBuf>>,
     total_functions: usize,
     scan_start: Instant,
+    scheduler_mode: &str,
 ) -> Vec<FunctionOutcome> {
     use crate::batch_scheduler::{BatchOutcome, BatchScheduler};
-    use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState};
+    use crate::cache::SchedulerState;
 
     let task_count = tasks.len();
     // Each function's per-batch budget is capped at batch_size; the total
@@ -1677,6 +1682,7 @@ async fn run_layer_batched(
         .map(|t| SchedulerState {
             function_id: t.func_name.clone(),
             fingerprint: t.deep_fp.clone(),
+            mode: Some(scheduler_mode.to_string()),
             ..SchedulerState::default()
         })
         .collect();
@@ -1691,8 +1697,8 @@ async fn run_layer_batched(
             // uninstrumented call sites) fall back to `load` so we don't
             // regress behavior that pre-dated fingerprint propagation.
             let result = match task.deep_fp.as_deref() {
-                Some(fp) => ssc.load_if_fresh(&task.func_name, DEFAULT_SCHEDULER_MODE, fp),
-                None => ssc.load(&task.func_name, DEFAULT_SCHEDULER_MODE),
+                Some(fp) => ssc.load_if_fresh(&task.func_name, scheduler_mode, fp),
+                None => ssc.load(&task.func_name, scheduler_mode),
             };
             match result {
                 Ok(Some(prior)) => {
@@ -1772,6 +1778,7 @@ async fn run_layer_batched(
                         scheduler_state_cache,
                         &live_states[batch_config.task_index],
                         &mut persisted_flags[batch_config.task_index],
+                        scheduler_mode,
                     );
                     outcomes[batch_config.task_index] = Some(FunctionOutcome::Error {
                         function_name: task.func_name.clone(),
@@ -1893,6 +1900,7 @@ async fn run_layer_batched(
                     scheduler_state_cache,
                     &live_states[batch_config.task_index],
                     &mut persisted_flags[batch_config.task_index],
+                    scheduler_mode,
                 );
             }
             Ok(Err(e)) => {
@@ -1934,6 +1942,7 @@ async fn run_layer_batched(
                     scheduler_state_cache,
                     &live_states[batch_config.task_index],
                     &mut persisted_flags[batch_config.task_index],
+                    scheduler_mode,
                 );
             }
             Err(_) => {
@@ -1975,6 +1984,7 @@ async fn run_layer_batched(
                     scheduler_state_cache,
                     &live_states[batch_config.task_index],
                     &mut persisted_flags[batch_config.task_index],
+                    scheduler_mode,
                 );
             }
         }
@@ -1992,7 +2002,7 @@ async fn run_layer_batched(
     if let Some(ssc) = scheduler_state_cache.as_ref() {
         for (idx, persisted) in persisted_flags.iter().enumerate() {
             if !persisted && !live_states[idx].uncovered_branches.is_empty()
-                && let Err(e) = ssc.store(&live_states[idx], DEFAULT_SCHEDULER_MODE)
+                && let Err(e) = ssc.store(&live_states[idx], scheduler_mode)
             {
                 log::warn!(
                     "scheduler-state cache store error for {}: {e}",
@@ -2013,6 +2023,7 @@ fn persist_scheduler_state_if_exhausted(
     scheduler_state_cache: &Option<Arc<crate::cache::SchedulerStateCache>>,
     state: &crate::cache::SchedulerState,
     persisted: &mut bool,
+    mode: &str,
 ) {
     if *persisted || !state.exhausted {
         return;
@@ -2020,7 +2031,7 @@ fn persist_scheduler_state_if_exhausted(
     let Some(ssc) = scheduler_state_cache.as_ref() else {
         return;
     };
-    match ssc.store(state, crate::cache::DEFAULT_SCHEDULER_MODE) {
+    match ssc.store(state, mode) {
         Ok(()) => {
             *persisted = true;
             log::debug!(
@@ -2936,6 +2947,7 @@ pub async fn parallel_scan_with_progress(
                     Some(Arc::clone(&artifact_root)),
                     total_functions,
                     scan_start,
+                    config.coverage_mode.as_str(),
                 )
                 .await
             } else if config.isolation == IsolationMode::Function {
@@ -4894,6 +4906,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -4980,6 +4993,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5059,6 +5073,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5158,6 +5173,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5238,6 +5254,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -5322,6 +5339,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let skipped_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5379,6 +5397,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let failed_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5503,6 +5522,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5594,6 +5614,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5655,6 +5676,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -5701,6 +5723,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -5736,6 +5759,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -6381,6 +6405,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -6506,6 +6531,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -6594,6 +6620,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6681,6 +6708,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6785,6 +6813,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6900,6 +6929,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7031,6 +7061,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7162,6 +7193,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7279,6 +7311,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7388,6 +7421,7 @@ mod tests {
             batch_size: None,
             scheduler_state_cache: None,
             stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -8656,7 +8690,8 @@ mod tests {
 
     #[test]
     fn persist_scheduler_state_if_exhausted_writes_on_exhaustion() {
-        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
@@ -8671,11 +8706,13 @@ mod tests {
         };
         let mut persisted = false;
 
-        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        persist_scheduler_state_if_exhausted(
+            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+        );
         assert!(persisted, "first call on an exhausted state must persist");
 
         let loaded = cache
-            .load("pkg:fn_alpha", DEFAULT_SCHEDULER_MODE)
+            .load("pkg:fn_alpha", CoverageMode::Branch.as_str())
             .unwrap()
             .expect("stored state must round-trip");
         assert_eq!(loaded.iterations_consumed, 42);
@@ -8686,6 +8723,7 @@ mod tests {
     #[test]
     fn persist_scheduler_state_if_exhausted_is_idempotent() {
         use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
@@ -8698,7 +8736,9 @@ mod tests {
         };
         let mut persisted = false;
 
-        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        persist_scheduler_state_if_exhausted(
+            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+        );
         assert!(persisted);
 
         // Second call with a mutated state should not re-write the
@@ -8709,10 +8749,12 @@ mod tests {
             exhausted: true,
             ..SchedulerState::default()
         };
-        persist_scheduler_state_if_exhausted(&cache_opt, &state2, &mut persisted);
+        persist_scheduler_state_if_exhausted(
+            &cache_opt, &state2, &mut persisted, CoverageMode::Branch.as_str(),
+        );
 
         let loaded = cache
-            .load("fn_once", crate::cache::DEFAULT_SCHEDULER_MODE)
+            .load("fn_once", CoverageMode::Branch.as_str())
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -8723,7 +8765,8 @@ mod tests {
 
     #[test]
     fn persist_scheduler_state_if_exhausted_skips_non_exhausted() {
-        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
@@ -8736,14 +8779,16 @@ mod tests {
         };
         let mut persisted = false;
 
-        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        persist_scheduler_state_if_exhausted(
+            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+        );
         assert!(
             !persisted,
             "non-exhausted states are flushed at layer end, not on-outcome"
         );
         assert!(
             cache
-                .load("fn_mid", DEFAULT_SCHEDULER_MODE)
+                .load("fn_mid", CoverageMode::Branch.as_str())
                 .unwrap()
                 .is_none()
         );
@@ -8758,10 +8803,12 @@ mod tests {
 
     #[test]
     fn load_if_fresh_clears_stale_state_for_changed_function() {
-        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+        let mode = CoverageMode::Branch.as_str();
 
         // Pre-populate as if a previous run had partially explored
         // `pkg:fn_changed` and recorded substantial progress under
@@ -8774,12 +8821,12 @@ mod tests {
             exhausted: true,
             ..SchedulerState::default()
         };
-        cache.store(&prior, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&prior, mode).unwrap();
 
         // Same call shape the load loop uses when the task's current
         // deep_fp is "NEW".
         let loaded = cache
-            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .load_if_fresh("pkg:fn_changed", mode, "NEW")
             .unwrap();
         assert_eq!(
             loaded, None,
@@ -8788,25 +8835,22 @@ mod tests {
 
         // Idempotency: a second pass observes a clean cache miss.
         let loaded_again = cache
-            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .load_if_fresh("pkg:fn_changed", mode, "NEW")
             .unwrap();
         assert_eq!(loaded_again, None);
 
         // The on-disk file is gone — a plain `load` also reports a miss.
-        assert_eq!(
-            cache
-                .load("pkg:fn_changed", DEFAULT_SCHEDULER_MODE)
-                .unwrap(),
-            None
-        );
+        assert_eq!(cache.load("pkg:fn_changed", mode).unwrap(), None);
     }
 
     #[test]
     fn load_if_fresh_preserves_state_for_unchanged_function() {
-        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+        let mode = CoverageMode::Branch.as_str();
 
         let prior = SchedulerState {
             function_id: "pkg:fn_stable".into(),
@@ -8816,10 +8860,10 @@ mod tests {
             exhausted: false,
             ..SchedulerState::default()
         };
-        cache.store(&prior, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&prior, mode).unwrap();
 
         let loaded = cache
-            .load_if_fresh("pkg:fn_stable", DEFAULT_SCHEDULER_MODE, "FP")
+            .load_if_fresh("pkg:fn_stable", mode, "FP")
             .unwrap()
             .expect("matching fingerprint must reload state");
         assert_eq!(loaded.iterations_consumed, 75);
@@ -8829,10 +8873,12 @@ mod tests {
 
     #[test]
     fn load_if_fresh_does_not_disturb_sibling_functions() {
-        use crate::cache::{DEFAULT_SCHEDULER_MODE, SchedulerState, SchedulerStateCache};
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
 
         let dir = tempfile::tempdir().unwrap();
         let cache = SchedulerStateCache::new(dir.path().to_path_buf()).unwrap();
+        let mode = CoverageMode::Branch.as_str();
 
         let changed = SchedulerState {
             function_id: "pkg:fn_changed".into(),
@@ -8846,18 +8892,18 @@ mod tests {
             iterations_consumed: 100,
             ..SchedulerState::default()
         };
-        cache.store(&changed, DEFAULT_SCHEDULER_MODE).unwrap();
-        cache.store(&stable, DEFAULT_SCHEDULER_MODE).unwrap();
+        cache.store(&changed, mode).unwrap();
+        cache.store(&stable, mode).unwrap();
 
         // Invalidate the changed function.
         let dropped = cache
-            .load_if_fresh("pkg:fn_changed", DEFAULT_SCHEDULER_MODE, "NEW")
+            .load_if_fresh("pkg:fn_changed", mode, "NEW")
             .unwrap();
         assert_eq!(dropped, None);
 
         // Sibling is fully recoverable under its own (matching) fingerprint.
         let kept = cache
-            .load_if_fresh("pkg:fn_stable", DEFAULT_SCHEDULER_MODE, "STABLE")
+            .load_if_fresh("pkg:fn_stable", mode, "STABLE")
             .unwrap()
             .expect("unrelated function must keep its state");
         assert_eq!(kept.iterations_consumed, 100);
@@ -8866,6 +8912,7 @@ mod tests {
     #[test]
     fn persist_scheduler_state_if_exhausted_noop_when_cache_absent() {
         use crate::cache::SchedulerState;
+        use crate::interesting_pool::CoverageMode;
 
         let cache_opt: Option<Arc<crate::cache::SchedulerStateCache>> = None;
         let state = SchedulerState {
@@ -8875,11 +8922,57 @@ mod tests {
         };
         let mut persisted = false;
 
-        persist_scheduler_state_if_exhausted(&cache_opt, &state, &mut persisted);
+        persist_scheduler_state_if_exhausted(
+            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+        );
         assert!(
             !persisted,
             "cache=None must not flip persisted flag — nothing was stored"
         );
+    }
+
+    /// str-bo4z.7: branch-mode and MC/DC-mode scheduler states are independent.
+    #[test]
+    fn persist_scheduler_state_partitions_by_mode() {
+        use crate::cache::{SchedulerState, SchedulerStateCache};
+        use crate::interesting_pool::CoverageMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(SchedulerStateCache::new(dir.path().to_path_buf()).unwrap());
+        let cache_opt: Option<Arc<SchedulerStateCache>> = Some(Arc::clone(&cache));
+
+        let branch_state = SchedulerState {
+            function_id: "pkg:my_func".into(),
+            exhausted: true,
+            iterations_consumed: 100,
+            mode: Some("branch".into()),
+            ..SchedulerState::default()
+        };
+        let mut branch_persisted = false;
+        persist_scheduler_state_if_exhausted(
+            &cache_opt,
+            &branch_state,
+            &mut branch_persisted,
+            CoverageMode::Branch.as_str(),
+        );
+        assert!(branch_persisted);
+
+        // MC/DC mode for the same function must be a cache miss.
+        assert!(
+            cache
+                .load("pkg:my_func", CoverageMode::Mcdc.as_str())
+                .unwrap()
+                .is_none(),
+            "branch-mode exhaustion must not contaminate MC/DC mode"
+        );
+
+        // Branch mode must round-trip.
+        let loaded = cache
+            .load("pkg:my_func", CoverageMode::Branch.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.iterations_consumed, 100);
+        assert!(loaded.exhausted);
     }
 
     // ---- str-bo4z.6: compute_uncovered_branch_strings tests ----

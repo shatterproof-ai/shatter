@@ -41,6 +41,18 @@ pub enum CoverageMode {
     Mcdc,
 }
 
+impl CoverageMode {
+    /// Stable string tag used as the on-disk namespace key for
+    /// `SchedulerStateCache` sidecars. Matches the `serde(rename_all)`
+    /// convention so JSON payloads and file names stay consistent.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CoverageMode::Branch => "branch",
+            CoverageMode::Mcdc => "mcdc",
+        }
+    }
+}
+
 fn default_coverage_mode() -> CoverageMode {
     CoverageMode::Branch
 }
@@ -823,6 +835,14 @@ pub fn harvest_from_exploration(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn coverage_mode_as_str_matches_serde() {
+        for mode in [CoverageMode::Branch, CoverageMode::Mcdc] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(format!("\"{}\"", mode.as_str()), json);
+        }
+    }
 
     #[test]
     fn severity_ordering() {
