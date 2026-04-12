@@ -29,6 +29,10 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use serde::{Deserialize, Serialize};
+
+use crate::coverage_metrics::CoverageMetrics;
+
 /// Default number of iterations per batch.
 pub const DEFAULT_BATCH_SIZE: u32 = 50;
 
@@ -46,6 +50,63 @@ pub struct BatchConfig {
     pub batch_size: u32,
     /// How many batches this function has already completed (0-indexed).
     pub batch_number: u32,
+}
+
+/// Integer-only coverage counts suitable for scheduler ranking.
+///
+/// Extracted from [`CoverageMetrics`] but limited to integer fields
+/// so the type can derive `Eq` (required by [`BatchOutcome`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageCounts {
+    /// Total number of branch points in the function.
+    pub total_branches: usize,
+    /// Branches covered by any method (`z3_solved + random_found + user_provided`).
+    pub covered: usize,
+    /// Branches discovered by Z3 constraint solving.
+    pub z3_solved: usize,
+    /// Branches discovered by random/boundary generation.
+    pub random_found: usize,
+    /// Branches discovered via user-provided inputs.
+    pub user_provided: usize,
+    /// Branches that remain uncovered.
+    pub uncovered: usize,
+}
+
+impl From<&CoverageMetrics> for CoverageCounts {
+    fn from(m: &CoverageMetrics) -> Self {
+        Self {
+            total_branches: m.total_branches,
+            covered: m.z3_solved + m.random_found + m.user_provided,
+            z3_solved: m.z3_solved,
+            random_found: m.random_found,
+            user_provided: m.user_provided,
+            uncovered: m.uncovered,
+        }
+    }
+}
+
+/// Generator-agnostic summary of work performed in a single batch.
+///
+/// Attached to [`BatchOutcome`] so the global scheduler can rank
+/// functions without depending on per-generator internals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerBatchSummary {
+    /// Total executions performed in this batch.
+    pub executions_run: u32,
+    /// Branch coverage snapshot before this batch started.
+    pub coverage_before: CoverageCounts,
+    /// Branch coverage snapshot after this batch completed.
+    pub coverage_after: CoverageCounts,
+    /// Number of branches that remain uncovered after this batch.
+    pub uncovered_remaining: usize,
+    /// Number of new equivalence classes (unique branch paths) discovered
+    /// in this batch.
+    pub new_classes: usize,
+    /// Number of new behaviors retained in the behavior map after
+    /// deduplication (delta from prior batches, or total if first batch).
+    pub new_retained_inputs: usize,
+    /// Number of executions that resulted in a thrown error.
+    pub failures: usize,
 }
 
 /// Outcome of one batch, passed to [`BatchScheduler::record_outcome`].
@@ -66,6 +127,9 @@ pub struct BatchOutcome {
     /// function on a discovery streak continues to be scheduled while
     /// functions that stop producing new work fall behind.
     pub rank: i64,
+    /// Optional structured summary of the batch's work. `None` for
+    /// error/timeout/respawn-failure outcomes where no exploration ran.
+    pub summary: Option<WorkerBatchSummary>,
 }
 
 /// Result of an [`BatchScheduler::enqueue`] call, indicating how the
@@ -451,6 +515,7 @@ mod tests {
             iterations_used: 30,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(s.next_batch().is_none());
         assert!(s.is_complete());
@@ -481,6 +546,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         let b2 = s.next_batch().expect("second batch");
@@ -493,6 +559,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
 
         let b3 = s.next_batch().expect("task 0 should be re-enqueued");
@@ -503,6 +570,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
 
         assert!(s.next_batch().is_none());
@@ -523,6 +591,7 @@ mod tests {
                 iterations_used: 50,
                 exhausted: false,
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(order, vec![0, 1, 2]);
@@ -537,6 +606,7 @@ mod tests {
                 iterations_used: 50,
                 exhausted: true, // exhaust all on second round
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(order, vec![0, 1, 2]);
@@ -556,6 +626,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         let b2 = s.next_batch().unwrap();
@@ -566,6 +637,7 @@ mod tests {
             iterations_used: 30,
             exhausted: false, // caller says not exhausted, but budget is now 0
             rank: 0,
+            summary: None,
         });
 
         // Budget spent — scheduler should not re-enqueue.
@@ -588,6 +660,7 @@ mod tests {
                 // Exhaust both on the 3rd round.
                 exhausted: i >= 4,
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(order, vec![0, 1, 0, 1, 0, 1]);
@@ -605,6 +678,7 @@ mod tests {
                 iterations_used: 10,
                 exhausted: expected == 4,
                 rank: 0,
+                summary: None,
             });
         }
     }
@@ -621,6 +695,7 @@ mod tests {
             iterations_used: 20,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
         // Remaining = 100 - 20 = 80. Next batch = min(80, 50) = 50.
         let b2 = s.next_batch().unwrap();
@@ -632,6 +707,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(s.is_complete());
     }
@@ -649,6 +725,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert_eq!(s.pending_count(), 2); // exhausted, not re-enqueued
     }
@@ -673,18 +750,21 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
         s.record_outcome(BatchOutcome {
             task_index: 0,
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         s.record_outcome(BatchOutcome {
             task_index: 1,
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         assert_eq!(s.in_flight_count(), 0);
@@ -712,6 +792,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 5,
+            summary: None,
         });
 
         // Next pick: task 0 again, because its stored rank (5) beats
@@ -733,6 +814,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
         let b = s.next_batch().expect("third batch");
         assert_eq!(
@@ -746,6 +828,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         let b = s.next_batch().expect("fourth batch");
         assert_eq!(b.task_index, 0);
@@ -754,6 +837,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(s.next_batch().is_none());
         assert!(s.is_complete());
@@ -778,12 +862,14 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 100,
+            summary: None,
         });
         s.record_outcome(BatchOutcome {
             task_index: 1,
             iterations_used: 50,
             exhausted: false,
             rank: 10,
+            summary: None,
         });
 
         // Highest-rank task 0 wins the next pick.
@@ -797,6 +883,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 3,
+            summary: None,
         });
 
         // Task 1 (still rank 10 in the queue) should now outrank task 0
@@ -817,6 +904,7 @@ mod tests {
             iterations_used: 10,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
     }
 
@@ -848,6 +936,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(s.is_complete(), "scheduler drained");
         assert!(s.next_batch().is_none());
@@ -885,12 +974,14 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         s.record_outcome(BatchOutcome {
             task_index: 99,
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(s.is_complete());
     }
@@ -912,6 +1003,7 @@ mod tests {
                     iterations_used: 50,
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
                 ti
             })
@@ -939,6 +1031,7 @@ mod tests {
                 iterations_used: 50,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(seen, [0, 1, 2, 3].into_iter().collect());
@@ -960,6 +1053,7 @@ mod tests {
                 iterations_used: 10,
                 exhausted: i >= 4,
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(order, vec![0, 7, 0, 7, 0, 7]);
@@ -986,6 +1080,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 5,
+            summary: None,
         });
         assert!(!s.is_leased(0));
         assert_eq!(s.deferred_count(), 0);
@@ -1015,6 +1110,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         let b2 = s.next_batch().unwrap();
@@ -1024,6 +1120,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         let b3 = s.next_batch().unwrap();
@@ -1033,6 +1130,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 0,
+            summary: None,
         });
 
         // Budget should be exhausted (150 - 50*3 = 0).
@@ -1055,6 +1153,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 10,
+            summary: None,
         });
 
         assert!(!s.is_complete());
@@ -1083,6 +1182,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
 
         // First batch consumed 50 of original budget (50), leaving 0.
@@ -1097,6 +1197,7 @@ mod tests {
                 iterations_used: b.batch_size,
                 exhausted: false,
                 rank: 0,
+                summary: None,
             });
         }
         assert_eq!(batch_count, 6); // 300 / 50 = 6
@@ -1117,6 +1218,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
 
         // Re-enqueued with unbounded budget — keeps cycling.
@@ -1129,6 +1231,7 @@ mod tests {
                 iterations_used: 50,
                 exhausted: i == 4,
                 rank: 0,
+                summary: None,
             });
         }
         assert!(s.is_complete());
@@ -1150,6 +1253,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         assert!(!s.is_leased(0));
     }
@@ -1168,6 +1272,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         // Deferred drained → re-enqueued → not complete yet.
         assert!(!s.is_complete());
@@ -1178,6 +1283,7 @@ mod tests {
             iterations_used: b.batch_size,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
         // No deferred, no in-flight, no queued → complete.
         assert!(s.is_complete());
@@ -1195,6 +1301,7 @@ mod tests {
                 iterations_used: 50,
                 exhausted: false,
                 rank: 0,
+                summary: None,
             });
             let _ = b;
         }
@@ -1209,6 +1316,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 0,
+            summary: None,
         });
 
         // Deferred re-enqueue resets batch_number to 0.
@@ -1230,6 +1338,7 @@ mod tests {
             iterations_used: 50,
             exhausted: false,
             rank: 10,
+            summary: None,
         });
 
         // Defer work for task 0 while it's in-flight.
@@ -1242,6 +1351,7 @@ mod tests {
             iterations_used: 50,
             exhausted: true,
             rank: 99, // high rank, but should be overridden by deferred
+            summary: None,
         });
 
         // Task 1 has rank 10, task 0 has rank 0 (from deferred).
@@ -1251,6 +1361,84 @@ mod tests {
             next.task_index, 1,
             "task 1 (rank 10) should beat deferred task 0 (rank 0)"
         );
+    }
+
+    // --- Worker batch summary tests (str-b2my.14) ---
+
+    #[test]
+    fn coverage_counts_from_metrics() {
+        use crate::coverage_metrics::CoverageMetrics;
+        let m = CoverageMetrics {
+            total_branches: 10,
+            z3_solved: 3,
+            random_found: 2,
+            user_provided: 1,
+            uncovered: 4,
+            symexpr_count: 8,
+            unknown_count: 2,
+            mcdc_metrics: None,
+        };
+        let c = CoverageCounts::from(&m);
+        assert_eq!(c.total_branches, 10);
+        assert_eq!(c.covered, 6); // 3 + 2 + 1
+        assert_eq!(c.z3_solved, 3);
+        assert_eq!(c.random_found, 2);
+        assert_eq!(c.user_provided, 1);
+        assert_eq!(c.uncovered, 4);
+    }
+
+    #[test]
+    fn default_coverage_counts_is_all_zeros() {
+        let c = CoverageCounts::default();
+        assert_eq!(c.total_branches, 0);
+        assert_eq!(c.covered, 0);
+        assert_eq!(c.uncovered, 0);
+    }
+
+    #[test]
+    fn summary_passes_through_record_outcome() {
+        let mut s = BatchScheduler::new(1, None, 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 5,
+            summary: Some(WorkerBatchSummary {
+                executions_run: 50,
+                coverage_before: CoverageCounts::default(),
+                coverage_after: CoverageCounts {
+                    total_branches: 8,
+                    covered: 3,
+                    z3_solved: 2,
+                    random_found: 1,
+                    user_provided: 0,
+                    uncovered: 5,
+                },
+                uncovered_remaining: 5,
+                new_classes: 3,
+                new_retained_inputs: 3,
+                failures: 0,
+            }),
+        });
+        // Function re-enqueued with rank 5.
+        let b2 = s.next_batch().unwrap();
+        assert_eq!(b2.task_index, 0);
+        assert_eq!(b2.batch_number, 1);
+    }
+
+    #[test]
+    fn summary_none_for_exhausted_outcome() {
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+            summary: None,
+        });
+        assert!(s.is_complete());
     }
 }
 
@@ -1278,6 +1466,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: false,
                 rank: 0,
+                summary: None,
                 });
             }
 
@@ -1306,6 +1495,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: false,
                 rank: 0,
+                summary: None,
                 });
             }
 
@@ -1334,6 +1524,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: false,
                 rank: 0,
+                summary: None,
                 });
             }
         }
@@ -1365,6 +1556,7 @@ mod proptests {
                     iterations_used: batch_size,
                     exhausted: exhaust,
                 rank: 0,
+                summary: None,
                 });
                 rounds += 1;
                 if rounds > max_rounds * 3 {
@@ -1396,6 +1588,7 @@ mod proptests {
                     iterations_used: 100,
                     exhausted: false,
                     rank: ranks[*ti],
+                    summary: None,
                 });
             }
 
@@ -1442,6 +1635,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: false,
                     rank: 0,
+                    summary: None,
                 });
             }
 
@@ -1486,12 +1680,14 @@ mod proptests {
                 iterations_used: batch_size,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
             scheduler.record_outcome(BatchOutcome {
                 task_index: popped_new.task_index,
                 iterations_used: batch_size,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
         }
 
@@ -1529,6 +1725,7 @@ mod proptests {
                         iterations_used: batch_size,
                         exhausted: false,
                         rank: 0,
+                        summary: None,
                     });
                 }
             }
@@ -1565,6 +1762,7 @@ mod proptests {
                     iterations_used: batch_size.min(defer_budget),
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
             }
 
@@ -1582,6 +1780,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
             }
             prop_assert!(saw_task_0, "deferred task 0 was never re-scheduled");
@@ -1611,6 +1810,7 @@ mod proptests {
                 iterations_used: config.batch_size,
                 exhausted: true,
                 rank: 0,
+                summary: None,
             });
 
             // Drain remaining batches.
@@ -1621,6 +1821,7 @@ mod proptests {
                     iterations_used: config.batch_size,
                     exhausted: false,
                     rank: 0,
+                    summary: None,
                 });
             }
 
@@ -1672,6 +1873,7 @@ mod proptests {
                                 iterations_used: batch_size,
                                 exhausted: false,
                                 rank: 0,
+                                summary: None,
                             });
                         }
                     }
@@ -1685,6 +1887,7 @@ mod proptests {
                     iterations_used: batch_size,
                     exhausted: true,
                     rank: 0,
+                    summary: None,
                 });
             }
         }
