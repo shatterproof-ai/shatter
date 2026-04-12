@@ -531,6 +531,33 @@ impl BatchScheduler {
     pub fn batch_size(&self) -> u32 {
         self.batch_size
     }
+
+    /// Returns `true` when all remaining work is revisiting known targets
+    /// rather than exploring new frontier.
+    ///
+    /// Specifically, this is true when the queue and/or in-flight set is
+    /// non-empty (there IS remaining work), every entry has completed at
+    /// least one batch (`batches_completed > 0`), every entry's most recent
+    /// rank is zero or below (no recent discoveries), and no deferred work
+    /// is pending (no newly discovered targets waiting).
+    ///
+    /// This is a derived query over existing scheduler state — it does not
+    /// introduce a separate scheduler mode or affect scheduling decisions.
+    pub fn is_frontier_exhausted(&self) -> bool {
+        if self.queue.is_empty() && self.in_flight.is_empty() {
+            return false; // nothing left — complete, not fallback
+        }
+        if !self.deferred.is_empty() {
+            return false; // new targets pending
+        }
+        self.queue
+            .iter()
+            .all(|e| e.batches_completed > 0 && e.rank <= 0)
+            && self
+                .in_flight
+                .values()
+                .all(|e| e.batches_completed > 0 && e.rank <= 0)
+    }
 }
 
 /// Merge two optional budgets. `None` (unbounded) absorbs any bounded
@@ -2213,4 +2240,152 @@ mod proptests {
             }
         }
     }
+
+    // --- is_frontier_exhausted tests (str-b2my.5) ---
+
+    #[test]
+    fn frontier_exhausted_false_on_first_batch() {
+        let mut s = BatchScheduler::new(2, None, 50);
+        assert!(!s.is_frontier_exhausted(), "before any batch");
+
+        let _b = s.next_batch().unwrap();
+        assert!(
+            !s.is_frontier_exhausted(),
+            "in-flight entry on its first batch"
+        );
+    }
+
+    #[test]
+    fn frontier_exhausted_true_when_all_rank_zero() {
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        let b0 = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b0.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+        let b1 = s.next_batch().unwrap();
+        assert!(
+            !s.is_frontier_exhausted(),
+            "second function still on first batch"
+        );
+        s.record_outcome(BatchOutcome {
+            task_index: b1.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+
+        assert!(
+            s.is_frontier_exhausted(),
+            "all functions explored with no discoveries"
+        );
+    }
+
+    #[test]
+    fn frontier_exhausted_false_when_any_rank_positive() {
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        let b0 = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b0.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 3,
+            summary: None,
+        });
+        let b1 = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b1.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+
+        assert!(
+            !s.is_frontier_exhausted(),
+            "function 0 still has positive rank"
+        );
+    }
+
+    #[test]
+    fn frontier_exhausted_false_with_deferred_work() {
+        let mut s = BatchScheduler::new(1, None, 50);
+        let b = s.next_batch().unwrap();
+
+        assert_eq!(s.enqueue(0, Some(100)), EnqueueResult::Deferred);
+        assert!(
+            !s.is_frontier_exhausted(),
+            "deferred work pending"
+        );
+
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
+
+        assert!(
+            !s.is_frontier_exhausted(),
+            "deferred work just drained, batches_completed reset"
+        );
+    }
+
+    #[test]
+    fn frontier_exhausted_false_when_complete() {
+        let mut s = BatchScheduler::new(1, Some(50), 50);
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+            summary: None,
+        });
+
+        assert!(s.is_complete());
+        assert!(
+            !s.is_frontier_exhausted(),
+            "complete means nothing left, not fallback"
+        );
+    }
+
+    #[test]
+    fn frontier_exhausted_clears_on_new_discovery() {
+        let mut s = BatchScheduler::new(2, None, 50);
+
+        for _ in 0..2 {
+            let b = s.next_batch().unwrap();
+            s.record_outcome(BatchOutcome {
+                task_index: b.task_index,
+                iterations_used: 50,
+                exhausted: false,
+                rank: 0,
+                summary: None,
+            });
+        }
+        assert!(s.is_frontier_exhausted());
+
+        let b = s.next_batch().unwrap();
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 2,
+            summary: None,
+        });
+
+        assert!(
+            !s.is_frontier_exhausted(),
+            "function 0 has positive rank again"
+        );
+    }
+
 }
