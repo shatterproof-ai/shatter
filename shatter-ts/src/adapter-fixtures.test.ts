@@ -9,7 +9,7 @@
 import * as path from "node:path";
 
 import { analyzeFile } from "./analyzer.js";
-import { executeFunction } from "./executor.js";
+import { executeFunction, executeAdapterOwned } from "./executor.js";
 import { REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
 import { resolveRuntimeHooks } from "./runtime-hooks.js";
 
@@ -66,6 +66,73 @@ describe("adapter-hooks fixture", () => {
     const result = await executeFunction(fixture, "plainHelper", [5]);
     expect(result.return_value).toBe(10);
     expect(result.thrown_error).toBeNull();
+  });
+
+  it("assigns invocation_model to high-confidence hook functions", () => {
+    const results = analyzeFile(fixture);
+    for (const fn of results) {
+      if (fn.name === "plainHelper") {
+        expect(fn.invocation_model).toBeUndefined();
+        continue;
+      }
+      // useToggle, useGreeting, useDebounced all call builtin hooks
+      expect(fn.invocation_model).toBeDefined();
+      expect(fn.invocation_model!.kind).toBe("adapter");
+      if (fn.invocation_model!.kind === "adapter") {
+        expect(fn.invocation_model!.adapter_id).toBe(REACT_HOOK_ADAPTER_ID);
+        expect(fn.invocation_model!.scenario_schema).toEqual({
+          kind: "hook_callable_return",
+        });
+      }
+    }
+  });
+
+  it("executes useToggle through adapter hook", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      { adapters: [{ id: REACT_HOOK_ADAPTER_ID, apply: "required" }] },
+      { phase: "execute", entry_file: fixture },
+    );
+    expect(runtimeHooks.invocation_hooks).toHaveLength(1);
+    const hook = runtimeHooks.invocation_hooks[0]!;
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: fixture,
+      functionName: "useToggle",
+      inputs: [true],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    const rv = result.return_value as Record<string, unknown>;
+    expect(rv.state).toBe("on");
+  });
+
+  it("executes useGreeting through adapter hook", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      { adapters: [{ id: REACT_HOOK_ADAPTER_ID, apply: "required" }] },
+      { phase: "execute", entry_file: fixture },
+    );
+    const hook = runtimeHooks.invocation_hooks[0]!;
+
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: fixture,
+      functionName: "useGreeting",
+      inputs: ["World"],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("Hello, World!");
   });
 });
 
