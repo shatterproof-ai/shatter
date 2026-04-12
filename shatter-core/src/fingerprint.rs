@@ -15,10 +15,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::call_graph::CallGraph;
 use crate::protocol::FunctionAnalysis;
+use crate::types::TypeInfo;
 
 /// Compute a hex-encoded SHA-256 fingerprint for a function.
 ///
@@ -493,6 +495,147 @@ fn find_stale_callee(
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// FunctionSignature — signature-keyed identity for stored-input persistence
+// ---------------------------------------------------------------------------
+
+/// Structural parameter-list identity for a function, used by
+/// [`StoredInputsCache`](crate::cache::StoredInputsCache) to decide whether
+/// previously recorded input vectors can still be replayed against the
+/// current definition of a function.
+///
+/// Unlike [`compute_function_fingerprint`] — which intentionally changes
+/// whenever the source text, parameter names, or branch structure changes —
+/// `FunctionSignature` captures only the shape that matters for "can I call
+/// this function with an old input vector": the ordered list of parameter
+/// type identities. A body-only edit (rename local variables, add a branch,
+/// swap an `if` for a `switch`) leaves the signature untouched, which is
+/// exactly the invariant str-bo4z.3 exists to preserve.
+///
+/// **Parameter type identity includes the nominal `type_name`.** Shatter is a
+/// test-generation tool, and a false positive (replaying inputs that were
+/// valid for a `User` against a parameter that is now `Customer`) poisons
+/// results and destroys user trust; a false negative just costs a re-explore,
+/// which is cheap. So two parameters with the same structural [`TypeInfo`]
+/// but different `type_name` are treated as incompatible. Anonymous types
+/// (`type_name == None`) compare on structural shape alone.
+///
+/// Deliberately excluded from the signature:
+/// - Parameter **names**, because a parameter rename is a body-only concern
+///   that does not change the shape or identity of an input vector.
+/// - Return type and branch structure, which cannot affect whether a given
+///   input vector is call-compatible with the function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionSignature {
+    /// Parameters in declaration order.
+    pub params: Vec<ParamSignature>,
+}
+
+/// Nominal + structural identity of a single parameter, used inside
+/// [`FunctionSignature`] to decide stored-input compatibility. See the
+/// `FunctionSignature` rustdoc for why `type_name` participates in equality.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParamSignature {
+    /// Structural type shape.
+    pub typ: TypeInfo,
+    /// Nominal type name (e.g. a frontend-reported class or alias), if any.
+    /// Participates in equality — renaming `User` to `Customer` invalidates
+    /// stored inputs even when the structural `typ` is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
+impl FunctionSignature {
+    /// Build a [`FunctionSignature`] from a [`FunctionAnalysis`].
+    ///
+    /// Parameter order is preserved verbatim — the signature is order-sensitive
+    /// because function call inputs are positional.
+    #[must_use]
+    pub fn from_analysis(analysis: &FunctionAnalysis) -> Self {
+        Self {
+            params: analysis
+                .params
+                .iter()
+                .map(|p| ParamSignature {
+                    typ: p.typ.clone(),
+                    type_name: p.type_name.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Number of parameters in this signature.
+    #[must_use]
+    pub fn arity(&self) -> usize {
+        self.params.len()
+    }
+
+    /// Classify how `self` (a stored signature) compares to `current` (the
+    /// signature the caller is about to explore) for input-replay purposes.
+    ///
+    /// The classification is strictly **prefix-preserving**: stored inputs are
+    /// only adapted when every shared parameter position agrees on its full
+    /// [`ParamSignature`] identity (both structural [`TypeInfo`] and nominal
+    /// `type_name`) and the arity change is a pure trailing addition or
+    /// subtraction. Any other change — a type mismatch within the shared
+    /// prefix, a nominal type rename, a middle insertion, a reorder — is
+    /// [`Incompatible`]. This is the narrowest reading of the str-bo4z.3
+    /// acceptance criterion ("only obvious additive and subtractive arity
+    /// cases are adapted; ambiguous changes are rejected") and guarantees we
+    /// never silently hand a caller an input vector whose positions no longer
+    /// line up with the function's parameters.
+    ///
+    /// [`Incompatible`]: SignatureCompat::Incompatible
+    #[must_use]
+    pub fn compatibility_with(&self, current: &FunctionSignature) -> SignatureCompat {
+        let stored_arity = self.arity();
+        let current_arity = current.arity();
+
+        // Every position they share must agree on full parameter identity
+        // (both structural type and nominal `type_name`). If any shared
+        // position disagrees we bail out immediately — trailing arity deltas
+        // cannot rescue a prefix mismatch.
+        let shared = stored_arity.min(current_arity);
+        for i in 0..shared {
+            if self.params[i] != current.params[i] {
+                return SignatureCompat::Incompatible;
+            }
+        }
+
+        match stored_arity.cmp(&current_arity) {
+            std::cmp::Ordering::Equal => SignatureCompat::Exact,
+            std::cmp::Ordering::Less => SignatureCompat::Additive {
+                added: current_arity - stored_arity,
+            },
+            std::cmp::Ordering::Greater => SignatureCompat::Subtractive {
+                removed: stored_arity - current_arity,
+            },
+        }
+    }
+}
+
+/// Outcome of comparing a stored [`FunctionSignature`] against a current one.
+///
+/// See [`FunctionSignature::compatibility_with`] for the classification rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureCompat {
+    /// Arities and every parameter type match — stored inputs are reusable
+    /// as-is.
+    Exact,
+    /// The current signature has `added` parameters appended to the stored
+    /// signature. Stored inputs can be adapted by padding each vector with
+    /// `added` trailing JSON `null`s.
+    Additive { added: usize },
+    /// The current signature has `removed` parameters removed from the tail
+    /// of the stored signature. Stored inputs can be adapted by truncating
+    /// each vector to `current.arity()` elements.
+    Subtractive { removed: usize },
+    /// The signature change is ambiguous — prefix type mismatch, middle
+    /// insertion, reorder, or a combined add+remove. Stored inputs cannot be
+    /// safely replayed and should be dropped.
+    Incompatible,
 }
 
 #[cfg(test)]
@@ -1267,6 +1410,206 @@ mod tests {
         let caller_no_deps =
             compute_deep_fingerprint(&caller_shallow, &HashMap::new(), &HashSet::new());
         assert_ne!(fps["caller"], caller_no_deps);
+    }
+
+    // -- FunctionSignature / SignatureCompat (str-bo4z.3) --
+
+    fn analysis_with_params(name: &str, param_types: &[TypeInfo]) -> FunctionAnalysis {
+        let mut a = sample_analysis();
+        a.name = name.to_string();
+        a.params = param_types
+            .iter()
+            .enumerate()
+            .map(|(i, typ)| ParamInfo {
+                name: format!("p{i}"),
+                typ: typ.clone(),
+                type_name: None,
+            })
+            .collect();
+        a
+    }
+
+    fn ps(t: TypeInfo) -> ParamSignature {
+        ParamSignature {
+            typ: t,
+            type_name: None,
+        }
+    }
+
+    #[test]
+    fn function_signature_from_analysis_extracts_param_types_in_order() {
+        let analysis = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str, TypeInfo::Bool]);
+        let sig = FunctionSignature::from_analysis(&analysis);
+        assert_eq!(
+            sig.params,
+            vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)]
+        );
+        assert_eq!(sig.arity(), 3);
+    }
+
+    #[test]
+    fn function_signature_ignores_param_names() {
+        let a = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        b.params[0].name = "renamed".into();
+        b.params[1].name = "also_renamed".into();
+        let sa = FunctionSignature::from_analysis(&a);
+        let sb = FunctionSignature::from_analysis(&b);
+        assert_eq!(sa, sb);
+        assert_eq!(sa.compatibility_with(&sb), SignatureCompat::Exact);
+    }
+
+    #[test]
+    fn function_signature_respects_type_name_alias() {
+        // Two ParamInfos with identical structural TypeInfo but different
+        // nominal `type_name` must NOT compare equal — a rename from `User`
+        // to `Customer` invalidates stored inputs even though the structural
+        // shape is unchanged. See the `FunctionSignature` rustdoc for the
+        // false-positive-versus-false-negative rationale.
+        let mut a = analysis_with_params("f", &[TypeInfo::Int]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int]);
+        a.params[0].type_name = Some("UserId".into());
+        b.params[0].type_name = Some("CustomerId".into());
+        let sa = FunctionSignature::from_analysis(&a);
+        let sb = FunctionSignature::from_analysis(&b);
+        assert_ne!(sa, sb);
+        assert_eq!(sa.compatibility_with(&sb), SignatureCompat::Incompatible);
+    }
+
+    #[test]
+    fn function_signature_anonymous_types_compare_structurally() {
+        // Two params with `type_name == None` and identical structural
+        // TypeInfo ARE compatible — anonymous types compare on shape alone.
+        let a = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        let b = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        let sa = FunctionSignature::from_analysis(&a);
+        let sb = FunctionSignature::from_analysis(&b);
+        assert_eq!(sa, sb);
+        assert_eq!(sa.compatibility_with(&sb), SignatureCompat::Exact);
+    }
+
+    #[test]
+    fn function_signature_named_and_anonymous_are_incompatible() {
+        // A stored anonymous `Int` and a current `UserId`-tagged `Int`
+        // should also be treated as incompatible — the nominal type did not
+        // exist before, and replaying generic inputs against a nominal
+        // constraint risks the same poisoning as a rename.
+        let mut a = analysis_with_params("f", &[TypeInfo::Int]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int]);
+        a.params[0].type_name = None;
+        b.params[0].type_name = Some("UserId".into());
+        let sa = FunctionSignature::from_analysis(&a);
+        let sb = FunctionSignature::from_analysis(&b);
+        assert_eq!(sa.compatibility_with(&sb), SignatureCompat::Incompatible);
+    }
+
+    #[test]
+    fn compat_exact_on_identical_signatures() {
+        let sig = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+        };
+        assert_eq!(sig.compatibility_with(&sig), SignatureCompat::Exact);
+    }
+
+    #[test]
+    fn compat_additive_when_tail_appended() {
+        let stored = FunctionSignature {
+            params: vec![ps(TypeInfo::Int)],
+        };
+        let current = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+        };
+        assert_eq!(
+            stored.compatibility_with(&current),
+            SignatureCompat::Additive { added: 1 }
+        );
+    }
+
+    #[test]
+    fn compat_subtractive_when_tail_removed() {
+        let stored = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
+        };
+        let current = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+        };
+        assert_eq!(
+            stored.compatibility_with(&current),
+            SignatureCompat::Subtractive { removed: 1 }
+        );
+    }
+
+    #[test]
+    fn compat_rejects_prefix_type_mismatch() {
+        let stored = FunctionSignature {
+            params: vec![ps(TypeInfo::Int)],
+        };
+        let current = FunctionSignature {
+            params: vec![ps(TypeInfo::Str)],
+        };
+        assert_eq!(
+            stored.compatibility_with(&current),
+            SignatureCompat::Incompatible
+        );
+    }
+
+    #[test]
+    fn compat_rejects_middle_insertion() {
+        // stored = [Int, Bool], current = [Int, Str, Bool] — the shared
+        // prefix agrees only at index 0 (Int), but position 1 disagrees
+        // (Bool vs Str). This is an ambiguous change: the caller cannot tell
+        // whether the old Bool values belong at position 1 or position 2.
+        let stored = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+        };
+        let current = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
+        };
+        assert_eq!(
+            stored.compatibility_with(&current),
+            SignatureCompat::Incompatible
+        );
+    }
+
+    #[test]
+    fn compat_rejects_reorder() {
+        let stored = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+        };
+        let current = FunctionSignature {
+            params: vec![ps(TypeInfo::Str), ps(TypeInfo::Int)],
+        };
+        assert_eq!(
+            stored.compatibility_with(&current),
+            SignatureCompat::Incompatible
+        );
+    }
+
+    #[test]
+    fn compat_additive_subtractive_are_dual() {
+        // Asymmetry check: adding one param and removing one param are
+        // mirror images of each other across the two directions of
+        // compatibility_with.
+        let short = FunctionSignature {
+            params: vec![ps(TypeInfo::Int)],
+        };
+        let long = FunctionSignature {
+            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+        };
+        assert_eq!(
+            short.compatibility_with(&long),
+            SignatureCompat::Additive { added: 1 }
+        );
+        assert_eq!(
+            long.compatibility_with(&short),
+            SignatureCompat::Subtractive { removed: 1 }
+        );
+    }
+
+    #[test]
+    fn compat_empty_signatures_match() {
+        let empty = FunctionSignature { params: vec![] };
+        assert_eq!(empty.compatibility_with(&empty), SignatureCompat::Exact);
     }
 }
 
