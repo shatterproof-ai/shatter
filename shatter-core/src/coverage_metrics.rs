@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution_record::SymConstraint;
 use crate::explorer::ObservationOutput;
 use crate::orchestrator::ExploreResult;
-use crate::protocol::{BranchInfo, ExecuteResult, FunctionAnalysis, MockConfig};
+use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 
 /// How a branch was discovered during exploration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -362,6 +362,67 @@ pub struct TargetBranch {
     pub reason: TargetReason,
     /// Hint about the constraint to guide mutation strategy.
     pub constraint_hint: Option<String>,
+}
+
+/// A branch target identified at discovery time, before exploration begins.
+///
+/// Unlike [`TargetBranch`] (computed post-exploration from runtime discoveries),
+/// this represents the initial set of targets derived from static analysis.
+/// Every branch in a function is a known target until exploration proves it
+/// covered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownTarget {
+    /// Unique branch identifier within the function.
+    pub branch_id: u32,
+    /// Source line number of the branch.
+    pub line: u32,
+    /// Estimated nesting depth: count of preceding flow-control branches.
+    /// Higher depth means the branch is harder to reach (more constraints
+    /// must be satisfied).
+    pub nesting_depth: u32,
+}
+
+/// Compute known uncovered targets from static analysis.
+///
+/// Before any exploration, every branch in a function is uncovered. This
+/// function converts the static branch list into [`KnownTarget`]s with
+/// estimated nesting depths. Returns an empty vec for functions with no
+/// branches — such functions have no concrete targets to explore.
+pub fn discover_known_targets(analysis: &FunctionAnalysis) -> Vec<KnownTarget> {
+    analysis
+        .branches
+        .iter()
+        .map(|branch| KnownTarget {
+            branch_id: branch.id,
+            line: branch.line,
+            nesting_depth: estimate_nesting_depth(branch, &analysis.branches),
+        })
+        .collect()
+}
+
+/// Upper-bound estimate of a branch's nesting depth within a function.
+///
+/// Counts flow-control branches (`If`, `While`, `For`, `Select`) that appear
+/// on earlier source lines. Expression-level branches (`ElseIf`, `Ternary`,
+/// `LogicalAnd`, `LogicalOr`, `Switch`) don't create new nesting levels.
+///
+/// This is an upper bound: it counts all preceding flow-control, not just
+/// enclosing flow-control. For scheduler prioritisation this is sufficient —
+/// it distinguishes top-level branches (depth 0) from deeply nested ones.
+fn estimate_nesting_depth(branch: &BranchInfo, all_branches: &[BranchInfo]) -> u32 {
+    all_branches
+        .iter()
+        .filter(|b| b.line < branch.line && is_nesting_branch(&b.branch_type))
+        .count() as u32
+}
+
+/// Returns `true` for branch types that create a new nesting level in
+/// control flow. Expression-level branches do not nest.
+fn is_nesting_branch(bt: &BranchType) -> bool {
+    matches!(
+        bt,
+        BranchType::If | BranchType::While | BranchType::For | BranchType::Select
+    )
 }
 
 /// Extract unsolved branch targets from a random exploration result.
@@ -1193,5 +1254,86 @@ mod tests {
         );
         assert_eq!(metrics.random_found, 1);
         assert_eq!(metrics.uncovered, 0);
+    }
+
+    // --- discover_known_targets tests ---
+
+    fn make_branch_typed(id: u32, line: u32, bt: BranchType) -> BranchInfo {
+        BranchInfo {
+            id,
+            line,
+            condition_text: format!("cond_{id}"),
+            condition: None,
+            branch_type: bt,
+        }
+    }
+
+    #[test]
+    fn discover_known_targets_empty_for_zero_branches() {
+        let analysis = make_analysis(vec![]);
+        let targets = discover_known_targets(&analysis);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn discover_known_targets_returns_all_branches() {
+        let analysis = make_analysis(vec![
+            make_branch(0, 5, "x > 0"),
+            make_branch(1, 10, "x < 100"),
+            make_branch(2, 15, "x == 42"),
+        ]);
+        let targets = discover_known_targets(&analysis);
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].branch_id, 0);
+        assert_eq!(targets[1].branch_id, 1);
+        assert_eq!(targets[2].branch_id, 2);
+    }
+
+    #[test]
+    fn nesting_depth_first_branch_is_zero() {
+        let analysis = make_analysis(vec![make_branch(0, 5, "x > 0")]);
+        let targets = discover_known_targets(&analysis);
+        assert_eq!(targets[0].nesting_depth, 0);
+    }
+
+    #[test]
+    fn nesting_depth_counts_preceding_flow_control() {
+        let analysis = make_analysis(vec![
+            make_branch_typed(0, 5, BranchType::If),
+            make_branch_typed(1, 10, BranchType::If),
+            make_branch_typed(2, 15, BranchType::While),
+        ]);
+        let targets = discover_known_targets(&analysis);
+        // First If at line 5: nothing precedes it
+        assert_eq!(targets[0].nesting_depth, 0);
+        // Second If at line 10: one If precedes it
+        assert_eq!(targets[1].nesting_depth, 1);
+        // While at line 15: two flow-control branches precede it
+        assert_eq!(targets[2].nesting_depth, 2);
+    }
+
+    #[test]
+    fn nesting_depth_ignores_expression_level_branches() {
+        let analysis = make_analysis(vec![
+            make_branch_typed(0, 5, BranchType::If),
+            make_branch_typed(1, 8, BranchType::LogicalAnd),
+            make_branch_typed(2, 10, BranchType::Ternary),
+            make_branch_typed(3, 15, BranchType::For),
+        ]);
+        let targets = discover_known_targets(&analysis);
+        // For at line 15: only If(5) counts; LogicalAnd(8) and Ternary(10) don't
+        assert_eq!(targets[3].nesting_depth, 1);
+    }
+
+    #[test]
+    fn nesting_depth_for_and_select_count() {
+        let analysis = make_analysis(vec![
+            make_branch_typed(0, 2, BranchType::For),
+            make_branch_typed(1, 5, BranchType::Select),
+            make_branch_typed(2, 10, BranchType::If),
+        ]);
+        let targets = discover_known_targets(&analysis);
+        // If at line 10: For(2) and Select(5) both count
+        assert_eq!(targets[2].nesting_depth, 2);
     }
 }
