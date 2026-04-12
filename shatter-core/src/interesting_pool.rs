@@ -142,8 +142,10 @@ pub const DEFAULT_BUCKET_CAP: usize = 50;
 /// Maximum distinct representatives (witnessing entries) retained per behavior
 /// class (`BehaviorSig`). Once this many entries across the pool witness the
 /// same `(function_id, branch_id, severity)`, further attempts to introduce
-/// *new* witnesses for that class are dropped. The first representatives for
-/// a class are preserved — they are never displaced by this cap.
+/// *new* witnesses for that class are dropped — unless the newcomer is more
+/// distinct from the existing witness set than the least-distinct current
+/// witness, in which case diversity-based eviction replaces the redundant
+/// witness (see [`InterestingPool::try_diversity_eviction`]).
 pub const MAX_REPRESENTATIVES_PER_BEHAVIOR: usize = 10;
 
 /// Coverage tier for eviction decisions.
@@ -185,6 +187,98 @@ pub struct InterestingPool {
 
 fn default_bucket_cap() -> usize {
     DEFAULT_BUCKET_CAP
+}
+
+/// Maximum recursion depth for [`json_distance`].
+const JSON_DISTANCE_MAX_DEPTH: u32 = 2;
+
+/// Shallow distance between two JSON values, in \[0.0, 1.0\].
+///
+/// Used to gauge how "distinct" two values are for diversity-based eviction
+/// in the per-behavior representative cap. A distance of 0.0 means the
+/// values are structurally identical; 1.0 means maximally different
+/// (different JSON types, unrelated strings, etc.).
+///
+/// Recursion is bounded by [`JSON_DISTANCE_MAX_DEPTH`] to keep the metric
+/// shallow — deep structural differences beyond that depth collapse to
+/// equality/inequality.
+fn json_distance(a: &serde_json::Value, b: &serde_json::Value) -> f64 {
+    json_distance_inner(a, b, JSON_DISTANCE_MAX_DEPTH)
+}
+
+fn json_distance_inner(a: &serde_json::Value, b: &serde_json::Value, depth: u32) -> f64 {
+    use serde_json::Value;
+    if depth == 0 {
+        return if a == b { 0.0 } else { 1.0 };
+    }
+    match (a, b) {
+        (Value::Null, Value::Null) => 0.0,
+        (Value::Bool(x), Value::Bool(y)) => {
+            if x == y {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+            (Some(xf), Some(yf)) => {
+                let denom = xf.abs().max(yf.abs()).max(1.0);
+                ((xf - yf).abs() / denom).min(1.0)
+            }
+            _ => {
+                if x == y {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        },
+        (Value::String(x), Value::String(y)) => {
+            if x == y {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            let max_len = x.len().max(y.len());
+            if max_len == 0 {
+                return 0.0;
+            }
+            let sum: f64 = (0..max_len)
+                .map(|i| match (x.get(i), y.get(i)) {
+                    (Some(a), Some(b)) => json_distance_inner(a, b, depth - 1),
+                    _ => 1.0,
+                })
+                .sum();
+            sum / max_len as f64
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            let all_keys: HashSet<&str> = x.keys().chain(y.keys()).map(|k| k.as_str()).collect();
+            if all_keys.is_empty() {
+                return 0.0;
+            }
+            let sum: f64 = all_keys
+                .iter()
+                .map(|k| match (x.get(*k), y.get(*k)) {
+                    (Some(a), Some(b)) => json_distance_inner(a, b, depth - 1),
+                    _ => 1.0,
+                })
+                .sum();
+            sum / all_keys.len() as f64
+        }
+        _ => 1.0, // different discriminants
+    }
+}
+
+/// Minimum distance from `value` to any element in `others`.
+///
+/// Returns [`f64::INFINITY`] when `others` is empty.
+fn min_distance(value: &serde_json::Value, others: &[&serde_json::Value]) -> f64 {
+    others
+        .iter()
+        .map(|other| json_distance(value, other))
+        .fold(f64::INFINITY, f64::min)
 }
 
 impl Default for InterestingPool {
@@ -283,6 +377,105 @@ impl InterestingPool {
             .count()
     }
 
+    /// Attempt diversity-based eviction for a capped behavior class.
+    ///
+    /// When `sig` already has [`MAX_REPRESENTATIVES_PER_BEHAVIOR`] witnesses,
+    /// this method checks whether `new_value` is more distinct from the
+    /// existing witness set than the least-distinct current witness. If so,
+    /// it returns the `(bucket_key, victim_value)` of the witness to evict.
+    ///
+    /// **Coverage protection**: a witness that is the sole witness for any
+    /// *other* behavior class is never selected as an eviction victim,
+    /// preventing diversity eviction from destroying unique coverage.
+    fn try_diversity_eviction(
+        &self,
+        sig: &BehaviorSig,
+        new_value: &serde_json::Value,
+    ) -> Option<(String, serde_json::Value)> {
+        // Collect (bucket_key, value) for all witnesses of this sig.
+        let witnesses: Vec<(String, serde_json::Value)> = self
+            .buckets
+            .iter()
+            .flat_map(|(key, bucket)| {
+                bucket
+                    .iter()
+                    .filter(|e| e.behaviors.iter().any(|o| BehaviorSig::from(o) == *sig))
+                    .map(move |e| (key.clone(), e.value.clone()))
+            })
+            .collect();
+
+        if witnesses.is_empty() {
+            return None;
+        }
+
+        let witness_values: Vec<&serde_json::Value> = witnesses.iter().map(|(_, v)| v).collect();
+
+        // Diversity of the new value relative to the existing set.
+        let new_diversity = min_distance(new_value, &witness_values);
+
+        // Find the least diverse existing witness (most redundant).
+        let mut worst_idx: Option<usize> = None;
+        let mut worst_diversity = f64::INFINITY;
+        for (i, (bkey, val)) in witnesses.iter().enumerate() {
+            // Coverage protection: skip witnesses that are sole witness for
+            // any other behavior class.
+            if self.is_sole_witness_for_other_sig(bkey, val, sig) {
+                continue;
+            }
+            let others: Vec<&serde_json::Value> = witnesses
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (_, v))| v)
+                .collect();
+            let div = if others.is_empty() {
+                f64::INFINITY
+            } else {
+                min_distance(val, &others)
+            };
+            if div < worst_diversity {
+                worst_diversity = div;
+                worst_idx = Some(i);
+            }
+        }
+
+        let worst_idx = worst_idx?;
+
+        // Only evict if the new value is strictly more diverse.
+        if new_diversity > worst_diversity {
+            let (bkey, victim_value) = witnesses[worst_idx].clone();
+            Some((bkey, victim_value))
+        } else {
+            None
+        }
+    }
+
+    /// Check whether the entry identified by `(bucket_key, value)` is the
+    /// sole witness for any behavior class other than `exclude_sig`.
+    fn is_sole_witness_for_other_sig(
+        &self,
+        bucket_key: &str,
+        value: &serde_json::Value,
+        exclude_sig: &BehaviorSig,
+    ) -> bool {
+        let Some(bucket) = self.buckets.get(bucket_key) else {
+            return false;
+        };
+        let Some(entry) = bucket.iter().find(|e| e.value == *value) else {
+            return false;
+        };
+        for obs in &entry.behaviors {
+            let obs_sig = BehaviorSig::from(obs);
+            if obs_sig == *exclude_sig {
+                continue;
+            }
+            if self.witness_count(&obs_sig) == 1 {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Insert an entry into the pool, evicting if the bucket is at capacity.
     ///
     /// Returns `true` if the entry was inserted (or merged), `false` if
@@ -303,6 +496,36 @@ impl InterestingPool {
             .map(|existing| existing.behaviors.iter().map(BehaviorSig::from).collect())
             .unwrap_or_default();
 
+        // Diversity-based eviction: for each observation whose behavior class
+        // is at the per-behavior cap, check whether the new value is more
+        // distinct than the least-distinct existing witness. If so, plan to
+        // evict the redundant witness. We collect decisions first (&self),
+        // then apply mutations (&mut self) to satisfy the borrow checker.
+        let mut evictions: Vec<(String, serde_json::Value, BehaviorSig)> = Vec::new();
+        for obs in &entry.behaviors {
+            let sig = BehaviorSig::from(obs);
+            if existing_sigs_for_value.contains(&sig) {
+                continue;
+            }
+            if self.witness_count(&sig) < MAX_REPRESENTATIVES_PER_BEHAVIOR {
+                continue;
+            }
+            if let Some((bkey, victim_value)) = self.try_diversity_eviction(&sig, &entry.value) {
+                evictions.push((bkey, victim_value, sig));
+            }
+        }
+        for (bkey, victim_value, sig) in &evictions {
+            if let Some(bucket) = self.buckets.get_mut(bkey) {
+                if let Some(victim) = bucket.iter_mut().find(|e| e.value == *victim_value) {
+                    victim.behaviors.retain(|o| BehaviorSig::from(o) != *sig);
+                }
+                bucket.retain(|e| !e.behaviors.is_empty());
+            }
+        }
+
+        // Standard per-behavior cap filter. After diversity evictions above,
+        // witness_count for evicted sigs is now MAX-1, so the observation
+        // passes through.
         entry.behaviors.retain(|obs| {
             let sig = BehaviorSig::from(obs);
             if existing_sigs_for_value.contains(&sig) {
@@ -575,6 +798,7 @@ pub fn harvest_from_exploration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn severity_ordering() {
@@ -1067,46 +1291,43 @@ mod tests {
     #[test]
     fn insert_caps_representatives_per_behavior() {
         let mut pool = uncapped_pool();
-        // Attempt to insert MAX + 5 distinct values all witnessing the same class.
-        let attempts = MAX_REPRESENTATIVES_PER_BEHAVIOR + 5;
-        for i in 0..attempts {
-            let inserted =
-                pool.insert(behavior_entry(i as i64, "foo", 1, Severity::UnhandledError));
-            if i < MAX_REPRESENTATIVES_PER_BEHAVIOR {
-                assert!(inserted, "entry {i} under cap should insert");
-            } else {
-                assert!(!inserted, "entry {i} over cap should be rejected");
-            }
-        }
         let sig = BehaviorSig {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::UnhandledError,
         };
+        // Fill to cap with sequential integers 0..MAX.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            let inserted =
+                pool.insert(behavior_entry(i as i64, "foo", 1, Severity::UnhandledError));
+            assert!(inserted, "entry {i} under cap should insert");
+        }
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+
+        // A near-duplicate (integer 10) should be rejected — its diversity
+        // (1/10 = 0.1) is below the worst existing witness's diversity
+        // (≈ 1/9 ≈ 0.111 for values 8 and 9).
+        assert!(
+            !pool.insert(behavior_entry(10, "foo", 1, Severity::UnhandledError)),
+            "near-duplicate should be rejected"
+        );
         assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
     }
 
     #[test]
-    fn insert_first_representatives_preserved_after_cap_hits() {
+    fn insert_near_duplicates_rejected_after_cap_hits() {
         let mut pool = uncapped_pool();
-        // Insert the first batch of representatives and record their values.
-        let mut pioneers = Vec::new();
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::RarePath,
+        };
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
             pool.insert(behavior_entry(i as i64, "foo", 1, Severity::RarePath));
-            pioneers.push(serde_json::json!(i as i64));
         }
-        // Keep trying to push more — these must all be rejected.
-        for i in 100..120 {
-            assert!(!pool.insert(behavior_entry(i, "foo", 1, Severity::RarePath)));
-        }
-        // Every pioneer value is still present.
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
-        for pioneer in &pioneers {
-            assert!(
-                bucket.iter().any(|e| &e.value == pioneer),
-                "pioneer {pioneer:?} should still be present",
-            );
-        }
+        // Value 10 is a near-duplicate (diversity 1/10 = 0.1 < worst ≈ 0.111).
+        assert!(!pool.insert(behavior_entry(10, "foo", 1, Severity::RarePath)));
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
     }
 
     #[test]
@@ -1143,13 +1364,14 @@ mod tests {
     }
 
     #[test]
-    fn insert_rejects_when_all_observations_capped() {
+    fn insert_rejects_near_duplicate_when_all_observations_capped() {
         let mut pool = uncapped_pool();
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
             pool.insert(behavior_entry(i as i64, "foo", 9, Severity::Crash));
         }
-        // Entry with only a capped observation and a novel value — dropped.
-        let e = behavior_entry(999, "foo", 9, Severity::Crash);
+        // A near-duplicate (10) with only a capped observation — rejected
+        // because its diversity (0.1) doesn't exceed the worst (≈0.111).
+        let e = behavior_entry(10, "foo", 9, Severity::Crash);
         assert!(!pool.insert(e));
         let sig = BehaviorSig {
             function_id: "foo".into(),
@@ -1208,6 +1430,255 @@ mod tests {
         assert_eq!(loaded.epoch, 7);
     }
 
+    // -- json_distance tests --
+
+    #[test]
+    fn json_distance_same_value_is_zero() {
+        assert_eq!(json_distance(&json!(42), &json!(42)), 0.0);
+        assert_eq!(json_distance(&json!("abc"), &json!("abc")), 0.0);
+        assert_eq!(json_distance(&json!(null), &json!(null)), 0.0);
+        assert_eq!(json_distance(&json!(true), &json!(true)), 0.0);
+        assert_eq!(json_distance(&json!([1, 2]), &json!([1, 2])), 0.0);
+        assert_eq!(json_distance(&json!({"a": 1}), &json!({"a": 1})), 0.0);
+    }
+
+    #[test]
+    fn json_distance_different_types_is_one() {
+        assert_eq!(json_distance(&json!(42), &json!("hello")), 1.0);
+        assert_eq!(json_distance(&json!(true), &json!(42)), 1.0);
+        assert_eq!(json_distance(&json!(null), &json!(false)), 1.0);
+        assert_eq!(json_distance(&json!([1]), &json!({"a": 1})), 1.0);
+    }
+
+    #[test]
+    fn json_distance_numbers_relative() {
+        // distance(0, 1) = |0-1| / max(0, 1, 1) = 1.0
+        assert_eq!(json_distance(&json!(0), &json!(1)), 1.0);
+        // distance(4, 5) = |4-5| / max(4, 5, 1) = 1/5 = 0.2
+        assert!((json_distance(&json!(4), &json!(5)) - 0.2).abs() < 1e-10);
+        // distance(9, 10) = |9-10| / max(9, 10, 1) = 1/10 = 0.1
+        assert!((json_distance(&json!(9), &json!(10)) - 0.1).abs() < 1e-10);
+        // distance(100, 200) = 100 / 200 = 0.5
+        assert!((json_distance(&json!(100), &json!(200)) - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn json_distance_strings() {
+        assert_eq!(json_distance(&json!("hello"), &json!("hello")), 0.0);
+        assert_eq!(json_distance(&json!("hello"), &json!("world")), 1.0);
+    }
+
+    #[test]
+    fn json_distance_arrays() {
+        // Same length, one differing element
+        // [1, 2, 3] vs [1, 2, 4]: element 2 differs by 1/4 = 0.25, avg = 0.25/3
+        let d = json_distance(&json!([1, 2, 3]), &json!([1, 2, 4]));
+        assert!((d - 0.25 / 3.0).abs() < 1e-10);
+        // Different lengths: [1] vs [1, 2] → element 0: 0.0, element 1: 1.0, avg = 0.5
+        assert!((json_distance(&json!([1]), &json!([1, 2])) - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn json_distance_objects() {
+        // Shared key, same value
+        assert_eq!(json_distance(&json!({"a": 1}), &json!({"a": 1})), 0.0);
+        // Disjoint keys: {a:1} vs {b:2} → 2 keys, both missing = 1.0 each, avg = 1.0
+        assert_eq!(json_distance(&json!({"a": 1}), &json!({"b": 2})), 1.0);
+        // Shared key, different value + one extra key:
+        // {a:1, b:2} vs {a:1, c:3} → keys {a, b, c}, a:0, b:1.0, c:1.0, avg = 2/3
+        let d = json_distance(&json!({"a": 1, "b": 2}), &json!({"a": 1, "c": 3}));
+        assert!((d - 2.0 / 3.0).abs() < 1e-10);
+    }
+
+    // -- Diversity eviction tests --
+
+    /// Helper to create a PoolEntry with an arbitrary JSON value.
+    fn json_behavior_entry(
+        value: serde_json::Value,
+        function: &str,
+        branch_id: u32,
+        severity: Severity,
+    ) -> PoolEntry {
+        PoolEntry {
+            value,
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: function.into(),
+                branch_id,
+                severity,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn distinct_value_evicts_near_duplicate() {
+        let mut pool = uncapped_pool();
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        // Fill cap with integers 0..MAX.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+
+        // Insert a string value — maximally distinct (distance 1.0 to any integer).
+        let inserted =
+            pool.insert(json_behavior_entry(json!("hello"), "foo", 1, Severity::Crash));
+        assert!(inserted, "distinct value should evict a near-duplicate");
+        assert_eq!(
+            pool.witness_count(&sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR,
+            "cap should still hold after eviction"
+        );
+
+        // Verify the string is now in the pool.
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        assert!(
+            bucket.iter().any(|e| e.value == json!("hello")),
+            "distinct value should be present after eviction"
+        );
+    }
+
+    #[test]
+    fn near_duplicate_rejected_at_cap() {
+        let mut pool = uncapped_pool();
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        // Fill with integers 0..MAX.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        // A near-duplicate (10) should be rejected.
+        assert!(!pool.insert(behavior_entry(10, "foo", 1, Severity::Crash)));
+        assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn diversity_eviction_preserves_cap() {
+        let mut pool = uncapped_pool();
+        let sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        // Insert several distinct values in succession.
+        for s in &["alpha", "beta", "gamma"] {
+            pool.insert(json_behavior_entry(json!(s), "foo", 1, Severity::Crash));
+        }
+        assert_eq!(
+            pool.witness_count(&sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR,
+            "cap must hold after multiple diversity evictions"
+        );
+    }
+
+    #[test]
+    fn diversity_eviction_protects_sole_witness() {
+        let mut pool = uncapped_pool();
+        let sig_a = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        let sig_b = BehaviorSig {
+            function_id: "bar".into(),
+            branch_id: 2,
+            severity: Severity::RarePath,
+        };
+        // Fill sig_a to cap with integers 0..MAX.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        // Make value 8 the sole witness for sig_b by adding a second behavior.
+        let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int)).unwrap();
+        let entry_8 = bucket.iter_mut().find(|e| e.value == json!(8)).unwrap();
+        entry_8.behaviors.push(BehaviorObservation {
+            function: "bar".into(),
+            branch_id: 2,
+            severity: Severity::RarePath,
+        });
+        assert_eq!(pool.witness_count(&sig_b), 1);
+
+        // Insert a distinct value that would normally evict 8 or 9.
+        pool.insert(json_behavior_entry(json!("distinct"), "foo", 1, Severity::Crash));
+
+        // Value 8 must still be present (sole witness for sig_b is protected).
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        assert!(
+            bucket.iter().any(|e| e.value == json!(8)),
+            "sole witness for sig_b should be protected from diversity eviction"
+        );
+        assert_eq!(pool.witness_count(&sig_b), 1);
+        assert_eq!(pool.witness_count(&sig_a), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn diversity_eviction_removes_only_targeted_observation() {
+        let mut pool = uncapped_pool();
+        let sig_a = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+        };
+        let sig_c = BehaviorSig {
+            function_id: "baz".into(),
+            branch_id: 3,
+            severity: Severity::HandledError,
+        };
+        // Fill sig_a to cap.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
+        }
+        // Give value 9 a second behavior for sig_c (with another witness so
+        // it's not sole witness and not protected).
+        {
+            let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int)).unwrap();
+            let entry_9 = bucket.iter_mut().find(|e| e.value == json!(9)).unwrap();
+            entry_9.behaviors.push(BehaviorObservation {
+                function: "baz".into(),
+                branch_id: 3,
+                severity: Severity::HandledError,
+            });
+        }
+        // Add another witness for sig_c so value 9 isn't the sole witness.
+        pool.insert(json_behavior_entry(json!(42), "baz", 3, Severity::HandledError));
+        assert_eq!(pool.witness_count(&sig_c), 2);
+
+        // Insert a distinct value to trigger diversity eviction of sig_a.
+        pool.insert(json_behavior_entry(json!("evict"), "foo", 1, Severity::Crash));
+
+        // sig_a cap holds.
+        assert_eq!(pool.witness_count(&sig_a), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        // If value 9 was evicted from sig_a, it should still witness sig_c.
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let evicted_9 = !bucket
+            .iter()
+            .any(|e| e.value == json!(9) && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_a));
+        if evicted_9 {
+            // Value 9 lost its sig_a observation, but if it still has sig_c
+            // it should still exist.
+            let still_has_sig_c = bucket.iter().any(|e| {
+                e.value == json!(9)
+                    && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_c)
+            });
+            assert!(
+                still_has_sig_c,
+                "evicting sig_a from value 9 should preserve its sig_c observation"
+            );
+        }
+    }
+
     // -- Property-based tests for the per-behavior cap --
 
     use proptest::prelude::*;
@@ -1262,48 +1733,58 @@ mod tests {
             }
         }
 
-        /// Pioneer invariant: the first entry whose insertion is reported
-        /// successful for a given class stays in the pool, even if later
-        /// attempts for that class are rejected.
+        /// Cap invariant with mixed-type values that exercise diversity
+        /// eviction. Uses integers and strings in the same bucket so
+        /// diversity-based eviction actually fires.
         #[test]
-        fn prop_first_representative_preserved(
-            ops in proptest::collection::vec(arb_insert_op(), 0..40usize),
+        fn prop_cap_holds_with_diverse_values(
+            ops in proptest::collection::vec(
+                (
+                    prop_oneof![
+                        (0i64..30).prop_map(|v| serde_json::json!(v)),
+                        proptest::string::string_regex("[a-e]{1,3}")
+                            .unwrap()
+                            .prop_map(|s| serde_json::json!(s)),
+                        Just(serde_json::json!(true)),
+                        Just(serde_json::json!(null)),
+                    ],
+                    prop_oneof![Just("f0".to_string()), Just("f1".to_string())],
+                    0u32..2,
+                    prop_oneof![Just(Severity::RarePath), Just(Severity::UnhandledError)],
+                ),
+                0..60usize,
+            ),
         ) {
             let mut pool = InterestingPool {
                 bucket_cap: 10_000,
                 ..Default::default()
             };
-            // Track the first (value, class) pair that was actually inserted
-            // for each class.
-            let mut pioneers: HashMap<BehaviorSig, serde_json::Value> = HashMap::new();
             for (value, func, branch, severity) in &ops {
-                let sig = BehaviorSig {
-                    function_id: func.clone(),
-                    branch_id: *branch,
-                    severity: *severity,
+                let entry = PoolEntry {
+                    value: value.clone(),
+                    ty: TypeInfo::Int, // all in same bucket
+                    behaviors: vec![BehaviorObservation {
+                        function: func.clone(),
+                        branch_id: *branch,
+                        severity: *severity,
+                    }],
+                    discovered_epoch: 0,
+                    last_hit_epoch: 0,
                 };
-                let before = pool.witness_count(&sig);
-                let inserted = pool.insert(behavior_entry(*value, func, *branch, *severity));
-                let after = pool.witness_count(&sig);
-                // Only record a pioneer when this call actually added a new
-                // witness for the class. Value-dedup merges don't count.
-                if inserted && after > before && !pioneers.contains_key(&sig) {
-                    pioneers.insert(sig, serde_json::json!(*value));
+                let _ = pool.insert(entry);
+            }
+            let mut sigs = std::collections::HashSet::new();
+            for bucket in pool.buckets.values() {
+                for entry in bucket {
+                    for obs in &entry.behaviors {
+                        sigs.insert(BehaviorSig::from(obs));
+                    }
                 }
             }
-            for (sig, pioneer_value) in &pioneers {
-                let present = pool
-                    .buckets
-                    .values()
-                    .flat_map(|b| b.iter())
-                    .any(|e| {
-                        e.value == *pioneer_value
-                            && e.behaviors.iter().any(|o| BehaviorSig::from(o) == *sig)
-                    });
+            for sig in &sigs {
                 prop_assert!(
-                    present,
-                    "pioneer {:?} for class {:?} was lost",
-                    pioneer_value,
+                    pool.witness_count(sig) <= MAX_REPRESENTATIVES_PER_BEHAVIOR,
+                    "class {:?} exceeded cap with diverse values",
                     sig,
                 );
             }
