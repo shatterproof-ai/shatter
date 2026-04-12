@@ -35,6 +35,14 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` a
 
 Go implements `prepare` to pre-build the instrumented harness binary so subsequent execute calls skip `go build`. Handler: `handlePrepare()` in `protocol/handler.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]*instrument.PreparedHarness`. Idempotent. `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses.
 
+## Invocation Model Parity Contract
+
+Go has the adapter substrate (registry, dispatch, invocation hooks) but no concrete adapters or recognizers. The substrate mirrors TS: `ChooseInvocationStrategy` dispatches to direct/adapter/unsupported; `ResolveRuntimeHooks` resolves an `ExecutionProfile` against registered `RuntimeHookFactory` instances; `ExecuteAdapterOwned` invokes an `InvocationHook` and returns an `instrument.ExecuteResult` with empty instrumentation fields.
+
+All functions in `FunctionAnalysis` currently report `invocation_model: nil` (direct). Concrete Go adapters (e.g., net/http handler, Gin route) and recognizers are follow-up work. The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
+
+Key files: `protocol/adapter.go` (types, pure functions), `protocol/handler.go` (integration).
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
