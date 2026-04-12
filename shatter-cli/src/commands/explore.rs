@@ -2525,6 +2525,55 @@ pub(crate) async fn run_explore(
                     line.push_str(&format!(" [cooldown: {cd}]"));
                 }
 
+                // Append active/queued function status (str-b2my.4).
+                if work_items.len() > 1 {
+                    let active_indices: Vec<usize> =
+                        batch_scheduler.in_flight_indices().collect();
+                    let queued_indices: Vec<usize> =
+                        batch_scheduler.queued_indices().collect();
+
+                    let format_names = |indices: &[usize], limit: usize| -> String {
+                        if indices.is_empty() {
+                            return String::new();
+                        }
+                        let names: Vec<&str> = indices
+                            .iter()
+                            .take(limit)
+                            .map(|&i| work_items[i].func.name.as_str())
+                            .collect();
+                        let mut s = names.join(", ");
+                        if indices.len() > limit {
+                            s.push_str(&format!(
+                                " +{} more",
+                                indices.len() - limit
+                            ));
+                        }
+                        s
+                    };
+
+                    let active_names = format_names(&active_indices, 3);
+                    let queued_names = format_names(&queued_indices, 3);
+
+                    let mut parts = Vec::new();
+                    if !active_indices.is_empty() {
+                        parts.push(format!(
+                            "active: {} ({})",
+                            active_indices.len(),
+                            active_names
+                        ));
+                    }
+                    if !queued_indices.is_empty() {
+                        parts.push(format!(
+                            "queued: {} ({})",
+                            queued_indices.len(),
+                            queued_names
+                        ));
+                    }
+                    if !parts.is_empty() {
+                        line.push_str(&format!(" | {}", parts.join(", ")));
+                    }
+                }
+
                 eprintln!("{line}");
             }
 
