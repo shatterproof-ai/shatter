@@ -2132,6 +2132,51 @@ mod tests {
     }
 
     #[test]
+    fn compat_rejects_type_alias_rename() {
+        // Headline false-positive regression: stored inputs were recorded
+        // under `fn(u: User)` where `User` is a nominal alias for `Int`.
+        // A type rename to `fn(c: Customer)` — same structural shape, new
+        // nominal `type_name` — MUST be classified Incompatible, return
+        // `None` from `load_compatible`, and unlink the on-disk entry so
+        // the next explore run doesn't silently replay `User` inputs
+        // against a `Customer` parameter.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
+
+        let stored_sig = crate::fingerprint::FunctionSignature {
+            params: vec![crate::fingerprint::ParamSignature {
+                typ: crate::types::TypeInfo::Int,
+                type_name: Some("User".into()),
+            }],
+        };
+        let current_sig = crate::fingerprint::FunctionSignature {
+            params: vec![crate::fingerprint::ParamSignature {
+                typ: crate::types::TypeInfo::Int,
+                type_name: Some("Customer".into()),
+            }],
+        };
+
+        cache
+            .store("src/accounts.ts:charge", &stored_sig, &[vec![json!(42)]])
+            .unwrap();
+
+        let path = cache.path_for("src/accounts.ts:charge");
+        assert!(path.exists(), "entry should exist on disk after store");
+
+        // load_compatible MUST drop the entry on an Incompatible classification,
+        // mirroring the rejection contract verified by
+        // `stored_inputs_cache_drops_incompatible_entry` for structural mismatches.
+        let loaded = cache
+            .load_compatible("src/accounts.ts:charge", &current_sig)
+            .unwrap();
+        assert_eq!(loaded, None);
+        assert!(
+            !path.exists(),
+            "type-alias rename should unlink the on-disk entry to prevent poisoning"
+        );
+    }
+
+    #[test]
     fn stored_inputs_cache_sidecars_behavior_map_path() {
         // Confirm the sidecar layout: the inputs file sits next to the
         // behavior map file under the same hierarchical directory, so an
