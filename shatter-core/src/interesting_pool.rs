@@ -30,6 +30,21 @@ pub enum Severity {
     Crash = 4,
 }
 
+/// Which coverage mode produced a behavior observation.
+///
+/// Quota accounting is per-mode: branch-mode saturation of a behavior class
+/// does not block MC/DC-specific representatives (and vice versa).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageMode {
+    Branch,
+    Mcdc,
+}
+
+fn default_coverage_mode() -> CoverageMode {
+    CoverageMode::Branch
+}
+
 /// A single behavior observed when running a particular input against a function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BehaviorObservation {
@@ -39,6 +54,9 @@ pub struct BehaviorObservation {
     pub branch_id: u32,
     /// Severity of the observed behavior.
     pub severity: Severity,
+    /// Coverage mode that produced this observation.
+    #[serde(default = "default_coverage_mode")]
+    pub mode: CoverageMode,
 }
 
 /// Grouping key for deduplication and eviction decisions.
@@ -53,6 +71,9 @@ pub struct BehaviorSig {
     pub branch_id: u32,
     /// Severity of the observed behavior.
     pub severity: Severity,
+    /// Coverage mode — quotas are tracked independently per mode.
+    #[serde(default = "default_coverage_mode")]
+    pub mode: CoverageMode,
 }
 
 impl From<&BehaviorObservation> for BehaviorSig {
@@ -61,6 +82,7 @@ impl From<&BehaviorObservation> for BehaviorSig {
             function_id: obs.function.clone(),
             branch_id: obs.branch_id,
             severity: obs.severity,
+            mode: obs.mode,
         }
     }
 }
@@ -690,6 +712,7 @@ pub fn harvest_from_exploration(
     raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
     params: &[ParamInfo],
     function_name: &str,
+    mode: CoverageMode,
 ) -> usize {
     if raw_results.is_empty() || params.is_empty() {
         return 0;
@@ -742,6 +765,7 @@ pub fn harvest_from_exploration(
             function: function_name.to_string(),
             branch_id,
             severity,
+            mode,
         };
 
         // Decompose input vector into individual (value, type) entries.
@@ -813,11 +837,13 @@ mod tests {
             function: "myModule.foo".into(),
             branch_id: 3,
             severity: Severity::UnhandledError,
+            mode: CoverageMode::Branch,
         };
         let sig = BehaviorSig::from(&obs);
         assert_eq!(sig.function_id, "myModule.foo");
         assert_eq!(sig.branch_id, 3);
         assert_eq!(sig.severity, Severity::UnhandledError);
+        assert_eq!(sig.mode, CoverageMode::Branch);
     }
 
     #[test]
@@ -829,6 +855,7 @@ mod tests {
                 function: "mod.bar".into(),
                 branch_id: 1,
                 severity: Severity::Crash,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 1,
@@ -845,6 +872,7 @@ mod tests {
             function_id: "f".into(),
             branch_id: 1,
             severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
         };
         let sig2 = sig1.clone();
         let mut set = HashSet::new();
@@ -919,6 +947,7 @@ mod tests {
                 function: function.into(),
                 branch_id: 1,
                 severity,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -939,6 +968,7 @@ mod tests {
                 function: "bar".into(),
                 branch_id: 2,
                 severity: Severity::UnhandledError,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 1,
@@ -1125,7 +1155,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let count = harvest_from_exploration(&mut pool, &[], &make_params(&[TypeInfo::Int]), "f");
+        let count = harvest_from_exploration(&mut pool, &[], &make_params(&[TypeInfo::Int]), "f", CoverageMode::Branch);
         assert_eq!(count, 0);
         assert!(pool.buckets.is_empty());
     }
@@ -1143,7 +1173,7 @@ mod tests {
             vec![],
             make_exec_result_error("TypeError", 5),
         )];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "myFunc");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "myFunc", CoverageMode::Branch);
         assert_eq!(count, 1);
         let key = type_key(&TypeInfo::Int);
         let bucket = &pool.buckets[&key];
@@ -1167,7 +1197,7 @@ mod tests {
             vec![],
             make_exec_result_ok(3),
         )];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         assert_eq!(count, 1);
     }
 
@@ -1185,7 +1215,7 @@ mod tests {
             (vec![serde_json::json!(200)], vec![], exec.clone()),
             (vec![serde_json::json!(300)], vec![], exec),
         ];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         assert_eq!(count, 0);
     }
 
@@ -1209,7 +1239,7 @@ mod tests {
                 make_exec_result_error("TypeError", 2),
             ),
         ];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         assert_eq!(count, 0);
     }
 
@@ -1225,7 +1255,7 @@ mod tests {
             vec![],
             make_exec_result_error("RangeError", 1),
         )];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         // 42 is not a boundary Int, "hello" is not a boundary Str → both inserted
         assert_eq!(count, 2);
         let int_key = type_key(&TypeInfo::Int);
@@ -1254,7 +1284,7 @@ mod tests {
                 make_exec_result_error("RangeError", 2),
             ),
         ];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "f");
+        let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         // Both insert calls succeed (second merges), so count = 2
         assert_eq!(count, 2);
         let key = type_key(&TypeInfo::Int);
@@ -1275,6 +1305,16 @@ mod tests {
     }
 
     fn behavior_entry(value: i64, function: &str, branch_id: u32, severity: Severity) -> PoolEntry {
+        behavior_entry_with_mode(value, function, branch_id, severity, CoverageMode::Branch)
+    }
+
+    fn behavior_entry_with_mode(
+        value: i64,
+        function: &str,
+        branch_id: u32,
+        severity: Severity,
+        mode: CoverageMode,
+    ) -> PoolEntry {
         PoolEntry {
             value: serde_json::json!(value),
             ty: TypeInfo::Int,
@@ -1282,6 +1322,7 @@ mod tests {
                 function: function.into(),
                 branch_id,
                 severity,
+                mode,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -1295,6 +1336,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::UnhandledError,
+            mode: CoverageMode::Branch,
         };
         // Fill to cap with sequential integers 0..MAX.
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
@@ -1321,6 +1363,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
         };
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
             pool.insert(behavior_entry(i as i64, "foo", 1, Severity::RarePath));
@@ -1341,6 +1384,7 @@ mod tests {
             function_id: "bar".into(),
             branch_id: 2,
             severity: Severity::HandledError,
+            mode: CoverageMode::Branch,
         };
         assert_eq!(pool.witness_count(&sig), under_cap);
     }
@@ -1359,6 +1403,7 @@ mod tests {
             function_id: "B".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         assert_eq!(pool.witness_count(&sig_b), 1);
     }
@@ -1377,6 +1422,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 9,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
     }
@@ -1399,6 +1445,7 @@ mod tests {
             function: "bar".into(),
             branch_id: 7,
             severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
         });
         assert!(pool.insert(merged));
         let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
@@ -1425,6 +1472,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::UnhandledError,
+            mode: CoverageMode::Branch,
         };
         assert_eq!(loaded.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
         assert_eq!(loaded.epoch, 7);
@@ -1506,6 +1554,7 @@ mod tests {
                 function: function.into(),
                 branch_id,
                 severity,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -1519,6 +1568,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         // Fill cap with integers 0..MAX.
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
@@ -1551,6 +1601,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         // Fill with integers 0..MAX.
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
@@ -1568,6 +1619,7 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
             pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
@@ -1590,11 +1642,13 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         let sig_b = BehaviorSig {
             function_id: "bar".into(),
             branch_id: 2,
             severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
         };
         // Fill sig_a to cap with integers 0..MAX.
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
@@ -1607,6 +1661,7 @@ mod tests {
             function: "bar".into(),
             branch_id: 2,
             severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
         });
         assert_eq!(pool.witness_count(&sig_b), 1);
 
@@ -1630,11 +1685,13 @@ mod tests {
             function_id: "foo".into(),
             branch_id: 1,
             severity: Severity::Crash,
+            mode: CoverageMode::Branch,
         };
         let sig_c = BehaviorSig {
             function_id: "baz".into(),
             branch_id: 3,
             severity: Severity::HandledError,
+            mode: CoverageMode::Branch,
         };
         // Fill sig_a to cap.
         for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
@@ -1649,6 +1706,7 @@ mod tests {
                 function: "baz".into(),
                 branch_id: 3,
                 severity: Severity::HandledError,
+                mode: CoverageMode::Branch,
             });
         }
         // Add another witness for sig_c so value 9 isn't the sole witness.
@@ -1679,6 +1737,118 @@ mod tests {
         }
     }
 
+    // -- Mode-split quota tests --
+
+    #[test]
+    fn mcdc_mode_has_independent_quota_from_branch() {
+        let mut pool = uncapped_pool();
+        // Saturate the Branch-mode quota for (foo, 1, RarePath).
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry_with_mode(
+                i as i64,
+                "foo",
+                1,
+                Severity::RarePath,
+                CoverageMode::Branch,
+            ));
+        }
+        let branch_sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::RarePath,
+            mode: CoverageMode::Branch,
+        };
+        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+
+        // MC/DC-mode observation should still be admitted.
+        let mcdc_entry = PoolEntry {
+            value: serde_json::json!(100),
+            ty: TypeInfo::Int,
+            behaviors: vec![BehaviorObservation {
+                function: "foo".into(),
+                branch_id: 1,
+                severity: Severity::RarePath,
+                mode: CoverageMode::Mcdc,
+            }],
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        };
+        assert!(
+            pool.insert(mcdc_entry),
+            "MC/DC representative should be admitted despite Branch saturation"
+        );
+        let mcdc_sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::RarePath,
+            mode: CoverageMode::Mcdc,
+        };
+        assert_eq!(pool.witness_count(&mcdc_sig), 1);
+        // Branch quota unchanged.
+        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn both_modes_can_independently_saturate() {
+        let mut pool = uncapped_pool();
+        // Saturate Branch quota.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry_with_mode(
+                i as i64,
+                "foo",
+                1,
+                Severity::Crash,
+                CoverageMode::Branch,
+            ));
+        }
+        // Saturate MC/DC quota with different values.
+        for i in 0..MAX_REPRESENTATIVES_PER_BEHAVIOR {
+            pool.insert(behavior_entry_with_mode(
+                (i + 100) as i64,
+                "foo",
+                1,
+                Severity::Crash,
+                CoverageMode::Mcdc,
+            ));
+        }
+        let branch_sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+            mode: CoverageMode::Branch,
+        };
+        let mcdc_sig = BehaviorSig {
+            function_id: "foo".into(),
+            branch_id: 1,
+            severity: Severity::Crash,
+            mode: CoverageMode::Mcdc,
+        };
+        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert_eq!(pool.witness_count(&mcdc_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+
+        // Further insertions in either mode are rejected (or enter via eviction).
+        let overflow_branch = behavior_entry_with_mode(999, "foo", 1, Severity::Crash, CoverageMode::Branch);
+        let overflow_mcdc = behavior_entry_with_mode(998, "foo", 1, Severity::Crash, CoverageMode::Mcdc);
+        // Whether they're admitted depends on diversity eviction, but cap must hold.
+        let _ = pool.insert(overflow_branch);
+        let _ = pool.insert(overflow_mcdc);
+        assert!(pool.witness_count(&branch_sig) <= MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert!(pool.witness_count(&mcdc_sig) <= MAX_REPRESENTATIVES_PER_BEHAVIOR);
+    }
+
+    #[test]
+    fn legacy_observation_deserializes_with_branch_default() {
+        // Simulate a BehaviorObservation serialized before the mode field existed.
+        let legacy_json = r#"{"function":"f","branch_id":1,"severity":"rare_path"}"#;
+        let obs: BehaviorObservation = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(obs.mode, CoverageMode::Branch);
+
+        // Simulate a BehaviorSig without mode.
+        let legacy_sig = r#"{"function_id":"f","branch_id":1,"severity":"rare_path"}"#;
+        let sig: BehaviorSig = serde_json::from_str(legacy_sig).unwrap();
+        assert_eq!(sig.mode, CoverageMode::Branch);
+    }
+
     // -- Property-based tests for the per-behavior cap --
 
     use proptest::prelude::*;
@@ -1686,7 +1856,7 @@ mod tests {
     /// Small value space (0..20) and small behavior-sig space (3 funcs × 3
     /// branches × 2 severities = 18 classes). With 40 attempts many classes
     /// will hit the cap.
-    fn arb_insert_op() -> impl Strategy<Value = (i64, String, u32, Severity)> {
+    fn arb_insert_op() -> impl Strategy<Value = (i64, String, u32, Severity, CoverageMode)> {
         (
             0i64..20,
             prop_oneof![
@@ -1696,6 +1866,7 @@ mod tests {
             ],
             0u32..3,
             prop_oneof![Just(Severity::RarePath), Just(Severity::UnhandledError)],
+            prop_oneof![Just(CoverageMode::Branch), Just(CoverageMode::Mcdc)],
         )
     }
 
@@ -1712,8 +1883,8 @@ mod tests {
                 bucket_cap: 10_000,
                 ..Default::default()
             };
-            for (value, func, branch, severity) in &ops {
-                let _ = pool.insert(behavior_entry(*value, func, *branch, *severity));
+            for (value, func, branch, severity, mode) in &ops {
+                let _ = pool.insert(behavior_entry_with_mode(*value, func, *branch, *severity, *mode));
             }
             // Collect every unique BehaviorSig that appears in the pool.
             let mut sigs = std::collections::HashSet::new();
@@ -1751,6 +1922,7 @@ mod tests {
                     prop_oneof![Just("f0".to_string()), Just("f1".to_string())],
                     0u32..2,
                     prop_oneof![Just(Severity::RarePath), Just(Severity::UnhandledError)],
+                    prop_oneof![Just(CoverageMode::Branch), Just(CoverageMode::Mcdc)],
                 ),
                 0..60usize,
             ),
@@ -1759,7 +1931,7 @@ mod tests {
                 bucket_cap: 10_000,
                 ..Default::default()
             };
-            for (value, func, branch, severity) in &ops {
+            for (value, func, branch, severity, mode) in &ops {
                 let entry = PoolEntry {
                     value: value.clone(),
                     ty: TypeInfo::Int, // all in same bucket
@@ -1767,6 +1939,7 @@ mod tests {
                         function: func.clone(),
                         branch_id: *branch,
                         severity: *severity,
+                        mode: *mode,
                     }],
                     discovered_epoch: 0,
                     last_hit_epoch: 0,
@@ -1803,16 +1976,17 @@ mod tests {
             };
             // Group unique values attempted per class.
             let mut attempts_per_class: HashMap<BehaviorSig, HashSet<i64>> = HashMap::new();
-            for (value, func, branch, severity) in &ops {
+            for (value, func, branch, severity, mode) in &ops {
                 let sig = BehaviorSig {
                     function_id: func.clone(),
                     branch_id: *branch,
                     severity: *severity,
+                    mode: *mode,
                 };
                 attempts_per_class.entry(sig).or_default().insert(*value);
             }
-            for (value, func, branch, severity) in &ops {
-                let _ = pool.insert(behavior_entry(*value, func, *branch, *severity));
+            for (value, func, branch, severity, mode) in &ops {
+                let _ = pool.insert(behavior_entry_with_mode(*value, func, *branch, *severity, *mode));
             }
             for (sig, values) in &attempts_per_class {
                 if values.len() < MAX_REPRESENTATIVES_PER_BEHAVIOR {

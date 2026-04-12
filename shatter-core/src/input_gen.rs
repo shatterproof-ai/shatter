@@ -4567,7 +4567,7 @@ mod tests {
 
     #[test]
     fn pool_to_candidate_inputs_produces_candidates() {
-        use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
+        use crate::interesting_pool::{BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity};
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(42),
@@ -4576,6 +4576,7 @@ mod tests {
                 function: "foo".into(),
                 branch_id: 1,
                 severity: Severity::RarePath,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -4611,7 +4612,7 @@ mod tests {
 
     #[test]
     fn pool_to_candidate_inputs_deduplicates() {
-        use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
+        use crate::interesting_pool::{BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity};
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(7),
@@ -4620,6 +4621,7 @@ mod tests {
                 function: "a".into(),
                 branch_id: 1,
                 severity: Severity::RarePath,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -4631,6 +4633,7 @@ mod tests {
                 function: "b".into(),
                 branch_id: 2,
                 severity: Severity::Crash,
+                mode: CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -4663,6 +4666,7 @@ mod tests {
                 function: function.into(),
                 branch_id: 1,
                 severity,
+                mode: crate::interesting_pool::CoverageMode::Branch,
             }],
             discovered_epoch: 0,
             last_hit_epoch: 0,
@@ -4762,7 +4766,7 @@ mod tests {
 
     #[test]
     fn callgraph_pool_deduplicates() {
-        use crate::interesting_pool::{BehaviorObservation, Severity};
+        use crate::interesting_pool::{BehaviorObservation, CoverageMode, Severity};
         let mut pool = crate::interesting_pool::InterestingPool::default();
         // Same value (7) observed in both a callee and a non-callee function.
         // InterestingPool merges by (ty, value), so behaviors accumulate.
@@ -4774,11 +4778,13 @@ mod tests {
                     function: "callee_b".into(),
                     branch_id: 1,
                     severity: Severity::RarePath,
+                    mode: CoverageMode::Branch,
                 },
                 BehaviorObservation {
                     function: "unrelated".into(),
                     branch_id: 2,
                     severity: Severity::Crash,
+                    mode: CoverageMode::Branch,
                 },
             ],
             discovered_epoch: 0,
@@ -5152,7 +5158,7 @@ mod tests {
                 params in prop::collection::vec(arb_param_info(), 1..=4),
                 seed in 0u64..100,
             ) {
-                use crate::interesting_pool::{BehaviorObservation, InterestingPool, PoolEntry, Severity};
+                use crate::interesting_pool::{BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity};
 
                 let mut pool = InterestingPool::default();
                 let mut rng = StdRng::seed_from_u64(seed);
@@ -5169,6 +5175,7 @@ mod tests {
                             function: func.into(),
                             branch_id: 1,
                             severity: Severity::RarePath,
+                            mode: CoverageMode::Branch,
                         }],
                         discovered_epoch: 0,
                         last_hit_epoch: 0,
