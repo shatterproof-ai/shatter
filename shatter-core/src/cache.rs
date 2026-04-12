@@ -835,6 +835,12 @@ impl StoredInputsCache {
         match entry.signature.compatibility_with(current) {
             SignatureCompat::Exact => Ok(Some(entry.inputs)),
             SignatureCompat::Additive { added } => {
+                // Pad with JSON `null` so adapted rows still match
+                // `current.arity()`. Consumers (str-bo4z.4 and later) MUST
+                // treat these trailing nulls as "no stored value" and
+                // materialize a real value at the explorer boundary —
+                // passing a raw null to a parameter whose type doesn't
+                // include null is a type error at the frontend.
                 let adapted = entry
                     .inputs
                     .into_iter()
@@ -1889,7 +1895,13 @@ mod tests {
 
     fn sig(types: &[crate::types::TypeInfo]) -> crate::fingerprint::FunctionSignature {
         crate::fingerprint::FunctionSignature {
-            param_types: types.to_vec(),
+            params: types
+                .iter()
+                .map(|t| crate::fingerprint::ParamSignature {
+                    typ: t.clone(),
+                    type_name: None,
+                })
+                .collect(),
         }
     }
 
@@ -2039,7 +2051,7 @@ mod tests {
             "protocol_version": "NOT-THE-REAL-VERSION",
             "schema_version": STORED_INPUTS_SCHEMA_VERSION,
             "function_id": "f",
-            "signature": { "param_types": ["int"] },
+            "signature": { "params": [{ "typ": { "kind": "int" } }] },
             "inputs": [[1]]
         });
         fs::write(&path, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
@@ -2062,7 +2074,7 @@ mod tests {
             "protocol_version": PROTOCOL_VERSION,
             "schema_version": STORED_INPUTS_SCHEMA_VERSION + 1,
             "function_id": "f",
-            "signature": { "param_types": ["int"] },
+            "signature": { "params": [{ "typ": { "kind": "int" } }] },
             "inputs": [[1]]
         });
         fs::write(&path, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
@@ -2609,16 +2621,28 @@ mod proptests {
 
     // --- StoredInputsCache proptests (str-bo4z.3) ---
 
-    use crate::fingerprint::{FunctionSignature, SignatureCompat};
+    use crate::fingerprint::{FunctionSignature, ParamSignature, SignatureCompat};
     use crate::test_arbitraries::arb_type_info;
 
     /// Depth-bounded strategy for a function signature.
     ///
     /// Keeps `arb_type_info` depth at 2 and caps arity at 4 per
     /// `formal-methods-policy`: bounded recursion, bounded explosion.
+    /// Parameters are anonymous (`type_name == None`) because every nominal
+    /// string would trivially differ across signatures and starve the
+    /// Exact/Additive/Subtractive branches of compatibility_with; the
+    /// dedicated `function_signature_respects_type_name_alias` unit test
+    /// covers the nominal-identity contract directly.
     fn arb_function_signature() -> impl Strategy<Value = FunctionSignature> {
-        prop::collection::vec(arb_type_info(2), 0..=4)
-            .prop_map(|param_types| FunctionSignature { param_types })
+        prop::collection::vec(arb_type_info(2), 0..=4).prop_map(|types| FunctionSignature {
+            params: types
+                .into_iter()
+                .map(|typ| ParamSignature {
+                    typ,
+                    type_name: None,
+                })
+                .collect(),
+        })
     }
 
     /// JSON values that survive serde roundtrip under PartialEq. Floats are
@@ -2718,13 +2742,16 @@ mod proptests {
             // stored with a trailing tail removed (subtractive). This
             // guarantees the prefix constraint and exercises both branches.
             let current = if add_or_remove {
-                let mut pt = stored.param_types.clone();
-                pt.extend(tail.clone());
-                FunctionSignature { param_types: pt }
+                let mut ps = stored.params.clone();
+                ps.extend(tail.iter().cloned().map(|typ| ParamSignature {
+                    typ,
+                    type_name: None,
+                }));
+                FunctionSignature { params: ps }
             } else {
                 let keep = stored.arity().saturating_sub(tail.len());
                 FunctionSignature {
-                    param_types: stored.param_types[..keep].to_vec(),
+                    params: stored.params[..keep].to_vec(),
                 }
             };
 

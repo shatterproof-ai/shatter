@@ -627,9 +627,7 @@ pub(crate) async fn run_scan(
     } else {
         let dir = match cache_dir {
             Some(d) => d.to_path_buf(),
-            None => shatter_core::cache::StoredInputsCache::default_dir(
-                &std::env::current_dir()?,
-            ),
+            None => shatter_core::cache::StoredInputsCache::default_dir(&std::env::current_dir()?),
         };
         shatter_core::cache::StoredInputsCache::new(dir)
             .map_err(|e| {

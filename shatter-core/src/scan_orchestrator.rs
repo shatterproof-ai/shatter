@@ -26,8 +26,8 @@ use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
 use crate::cache::{BehaviorMapCache, StoredInputsCache};
 use crate::execution_record::ExecutionRecord;
-use crate::fingerprint::FunctionSignature;
 use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
+use crate::fingerprint::FunctionSignature;
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
@@ -3189,8 +3189,7 @@ pub async fn parallel_scan_with_progress(
                 if config.stored_inputs_cache.is_some() {
                     for outcome in &outcomes {
                         if let FunctionOutcome::Success(result) = outcome
-                            && let Some(analysis) =
-                                analysis_map.get(result.function_name.as_str())
+                            && let Some(analysis) = analysis_map.get(result.function_name.as_str())
                         {
                             persist_stored_inputs(
                                 config.stored_inputs_cache.as_deref(),
