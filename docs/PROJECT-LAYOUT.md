@@ -15,8 +15,9 @@ Use this as the reference for:
 
 | Path | Purpose | Edit by hand? | Typical lifecycle |
 |------|---------|---------------|-------------------|
+| `shatter.config.json` | Scan-global defaults (discovery, output, cache, resource limits) | Yes | Durable |
 | `.shatter/` | Project-local Shatter configuration and some shared state | Yes, selectively | Kept in the project |
-| `.shatter/config.yaml` | Main Shatter config | Yes | Durable |
+| `.shatter/config.yaml` | Hierarchical per-function config (iterations, timeouts, mocks, generators) | Yes | Durable |
 | `shatter.scope.yaml` | Scope/include/exclude and mocking controls | Yes | Durable |
 | `.shatter/setup.<ext>` | Session-level setup file | Yes | Durable |
 | `shatter.setup.<ext>` | Preferred root-level session setup file | Yes | Durable |
@@ -49,13 +50,26 @@ Primary role:
 - some project-local generated state
 - some project-local caches used by the harness and test-impact features
 
+## `shatter.config.json`
+
+Optional project-root file for **scan-global** defaults: file discovery,
+output format, caching, and resource limits. These settings apply uniformly to
+an entire scan run and do not vary per-function.
+
+Fields: `include`, `exclude`, `language`, `max_depth`, `timeout_total`,
+`exec_timeout`, `parallelism`, `output`, `cache_dir`, `no_cache`, `seeds_dir`,
+`capture_side_effects`. See the README for the full schema reference.
+
+Per-function settings (iterations, timeouts, mocks, genetic algorithm,
+generators, setup) do **not** belong here — use `.shatter/config.yaml` instead.
+
 ## `.shatter/config.yaml`
 
-This is the main configuration file for Shatter.
+Hierarchical per-function configuration file for Shatter.
 
 What it is used for:
 
-- default exploration settings
+- default exploration settings (iterations, timeouts)
 - per-function overrides
 - candidate input files
 - setup configuration
@@ -63,6 +77,7 @@ What it is used for:
 - mock fixture overrides
 - nondeterminism review decisions
 - generator configuration for custom frontends
+- genetic algorithm settings
 
 Important behavior:
 
