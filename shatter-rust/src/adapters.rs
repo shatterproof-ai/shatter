@@ -154,6 +154,7 @@ pub fn derive_invocation_model(hints: &[AdapterHint]) -> InvocationModel {
 /// Currently a stub — no concrete adapters are supported yet. Concrete
 /// implementations will be added in follow-up issues (e.g. str-t4uo.6.3
 /// for Tokio runtime adapter).
+#[allow(clippy::too_many_arguments)]
 pub fn execute_adapter_owned(
     adapter_id: &str,
     _file_path: &str,
