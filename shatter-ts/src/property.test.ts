@@ -67,6 +67,7 @@ import {
 } from "./runtime-hints.js";
 import { resolveRuntimeHooks, chooseInvocationStrategy } from "./runtime-hooks.js";
 import type { InvocationHook } from "./runtime-hooks.js";
+import { isRerenderScenario, HookExecutionContext } from "./react-hook-invocation.js";
 import { buildSymExpr, buildSymExprWithFlow, flattenConditions } from "./instrumentor.js";
 import type { FlattenedConditions } from "./instrumentor.js";
 import type { ConditionOutcome } from "./protocol.js";
@@ -2127,6 +2128,60 @@ describe("property: InvocationModel", () => {
           expect(strategy.adapterId).toBe(modelId);
         }
       }),
+    );
+  });
+
+  it("isRerenderScenario: accepts valid rerender schemas and rejects others", () => {
+    const arbRerenderScenario = fc.record({
+      kind: fc.constant("hook_rerender" as const),
+      max_rerenders: fc.option(fc.nat({ max: 10 }), { nil: undefined }),
+      callable_path: fc.option(fc.array(fc.string({ minLength: 1 }), { maxLength: 3 }), { nil: undefined }),
+    });
+    fc.assert(
+      fc.property(arbRerenderScenario, (schema) => {
+        expect(isRerenderScenario(schema)).toBe(true);
+      }),
+    );
+    // Non-rerender values should be rejected
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.constant(null),
+          fc.constant(undefined),
+          fc.string(),
+          fc.nat(),
+          fc.record({ kind: fc.constant("hook_callable_return" as const) }),
+          fc.record({ kind: fc.string().filter((s) => s !== "hook_rerender") }),
+        ),
+        (schema) => {
+          expect(isRerenderScenario(schema)).toBe(false);
+        },
+      ),
+    );
+  });
+
+  it("HookExecutionContext: state converges after N updates", () => {
+    fc.assert(
+      fc.property(
+        fc.nat({ max: 100 }),
+        fc.array(fc.nat({ max: 1000 }), { minLength: 1, maxLength: 10 }),
+        (initial, updates) => {
+          const ctx = new HookExecutionContext();
+          ctx.beginRender();
+          const [v0, setter] = ctx.useState(initial);
+          expect(v0).toBe(initial);
+
+          let expected = initial;
+          for (const upd of updates) {
+            setter(upd);
+            expected = upd;
+            ctx.applyPendingUpdates();
+            ctx.beginRender();
+            const [v] = ctx.useState(0); // initializer ignored after first render
+            expect(v).toBe(expected);
+          }
+        },
+      ),
     );
   });
 

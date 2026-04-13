@@ -16,6 +16,10 @@
  *   - delay > 0 → debounced update path
  *   - delay <= 0 → immediate update path
  *
+ * useCounter: calls useState → needs react-hook adapter.
+ *   - Increments/decrements count via setter
+ *   - Good for verifying multi-step state transitions
+ *
  * plainHelper: no hooks → should NOT trigger react-hook adapter.
  */
 
@@ -50,6 +54,15 @@ export function useDebounced(value: number, delay: number) {
     return undefined;
   }, [value, delay]);
   return debounced;
+}
+
+export function useCounter(initial: number) {
+  const [count, setCount] = useState(initial);
+  return {
+    count,
+    increment: () => setCount(count + 1),
+    decrement: () => setCount(count - 1),
+  };
 }
 
 export function plainHelper(x: number): number {
