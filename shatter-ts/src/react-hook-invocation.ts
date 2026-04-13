@@ -125,26 +125,93 @@ export function findCallable(
 }
 
 // ---------------------------------------------------------------------------
-// Hook execution context — stateful useState tracking across renders
+// Hook execution context — stateful hook tracking across renders
+// ---------------------------------------------------------------------------
+//
+// Deterministic effect scheduling model
+// ======================================
+//
+// Real React runs effects in two phases after each commit:
+//   1. Layout effects (useLayoutEffect) — synchronous, before browser paint
+//   2. Passive effects (useEffect) — asynchronous, after browser paint
+//
+// This hook runner mirrors that ordering deterministically, without a real
+// DOM or event loop. After each render pass:
+//
+//   1. Cleanup functions from *stale* layout effects run (in registration order)
+//   2. New/changed layout effect callbacks run (in registration order)
+//   3. Cleanup functions from *stale* passive effects run (in registration order)
+//   4. New/changed passive effect callbacks run (in registration order)
+//
+// "Stale" means the effect's deps changed since the last render (or the
+// effect has no deps array, meaning it runs every render).
+//
+// Dep comparison uses Object.is per-element, matching React's semantics.
+// An empty deps array `[]` means mount-only — the effect fires on the first
+// render and never again.
+//
+// Unsupported semantics that fail explicitly:
+//   - Async effect callbacks (returning a Promise/thenable) throw
+//     UnsupportedEffectError. React itself warns against this pattern.
+//
+// Intentional fidelity limits (documented, not failures):
+//   - No real DOM exists, so useLayoutEffect callbacks that read layout
+//     measurements will see undefined values. The ordering guarantee
+//     (layout before passive) is preserved.
+//   - Effects run synchronously in the same microtask as the render.
+//     There is no simulated event loop or requestAnimationFrame.
 // ---------------------------------------------------------------------------
 
 const MAX_RERENDERS = 10;
 const DEFAULT_RERENDERS = 1;
 
+type EffectPhase = "layout" | "passive";
+
+interface EffectSlot {
+  phase: EffectPhase;
+  callback: (() => void | (() => void)) | null;
+  deps: unknown[] | undefined;
+  prevDeps: unknown[] | undefined;
+  cleanup: (() => void) | null;
+  /** Whether this slot has ever been flushed (for mount-only detection). */
+  flushed: boolean;
+}
+
 /**
- * Tracks useState state slots across simulated renders. Each useState call
- * in the hook is assigned a slot by call order (same rule as real React).
- * Setters queue updates; `applyPendingUpdates` flushes them for the next
- * render pass.
+ * Thrown when an effect callback returns a Promise/thenable. React warns
+ * against async effects; the hook runner fails hard so the issue surfaces
+ * immediately rather than causing silent mis-execution.
+ */
+export class UnsupportedEffectError extends Error {
+  constructor(phase: EffectPhase, slotIndex: number) {
+    super(
+      `Unsupported: ${phase} effect at slot ${slotIndex} returned a Promise. ` +
+      `Effect callbacks must be synchronous. Use a synchronous wrapper that ` +
+      `calls the async function if the hook needs to trigger async work.`,
+    );
+    this.name = "UnsupportedEffectError";
+  }
+}
+
+/**
+ * Tracks useState state slots and useEffect/useLayoutEffect registrations
+ * across simulated renders. Each hook call is assigned a slot by call order
+ * (same rule as real React). State setters queue updates;
+ * `applyPendingUpdates` flushes them for the next render pass.
+ * `flushEffects` runs effect callbacks in deterministic phase order.
  */
 export class HookExecutionContext {
   private stateSlots: unknown[] = [];
   private pendingUpdates = new Map<number, unknown>();
   private callIndex = 0;
 
-  /** Reset the hook call counter before each render pass. */
+  private effectSlots: EffectSlot[] = [];
+  private effectCallIndex = 0;
+
+  /** Reset hook call counters before each render pass. */
   beginRender(): void {
     this.callIndex = 0;
+    this.effectCallIndex = 0;
   }
 
   /** Stateful useState implementation. Slot index determined by call order. */
@@ -164,6 +231,114 @@ export class HookExecutionContext {
       this.pendingUpdates.set(slotIndex, next);
     };
     return [currentValue, setter];
+  }
+
+  /**
+   * Register a passive effect (useEffect). The callback is stored and
+   * executed during the next `flushEffects()` call if deps changed.
+   */
+  useEffect(callback: () => void | (() => void), deps?: unknown[]): void {
+    this.registerEffect("passive", callback, deps);
+  }
+
+  /**
+   * Register a layout effect (useLayoutEffect). Same semantics as useEffect
+   * but flushes in the layout phase (before passive effects).
+   */
+  useLayoutEffect(callback: () => void | (() => void), deps?: unknown[]): void {
+    this.registerEffect("layout", callback, deps);
+  }
+
+  private registerEffect(
+    phase: EffectPhase,
+    callback: () => void | (() => void),
+    deps: unknown[] | undefined,
+  ): void {
+    const slotIndex = this.effectCallIndex++;
+    if (this.effectSlots.length <= slotIndex) {
+      // First render — create slot
+      this.effectSlots.push({
+        phase,
+        callback,
+        deps,
+        prevDeps: undefined,
+        cleanup: null,
+        flushed: false,
+      });
+    } else {
+      // Re-render — update callback and deps, preserve cleanup from previous flush
+      const slot = this.effectSlots[slotIndex]!;
+      slot.prevDeps = slot.deps;
+      slot.callback = callback;
+      slot.deps = deps;
+    }
+  }
+
+  /**
+   * Flush registered effects in deterministic phase order:
+   * layout cleanup → layout callbacks → passive cleanup → passive callbacks.
+   *
+   * Only effects whose deps changed (or that have no deps array) are flushed.
+   * Mount-only effects (`deps: []`) fire on the first flush and are skipped
+   * thereafter.
+   *
+   * @throws {UnsupportedEffectError} if any callback returns a thenable.
+   */
+  flushEffects(): void {
+    // Partition by phase, preserving registration order within each phase
+    const layout: number[] = [];
+    const passive: number[] = [];
+    for (let i = 0; i < this.effectSlots.length; i++) {
+      const slot = this.effectSlots[i]!;
+      if (!this.shouldFireEffect(slot)) continue;
+      if (slot.phase === "layout") layout.push(i);
+      else passive.push(i);
+    }
+
+    // Layout phase
+    for (const i of layout) this.runCleanup(i);
+    for (const i of layout) this.runCallback(i);
+
+    // Passive phase
+    for (const i of passive) this.runCleanup(i);
+    for (const i of passive) this.runCallback(i);
+  }
+
+  private shouldFireEffect(slot: EffectSlot): boolean {
+    if (slot.callback === null) return false;
+    // First flush — always fire
+    if (!slot.flushed) return true;
+    // No deps array — fire every render
+    if (slot.deps === undefined) return true;
+    // Empty deps — mount-only, already flushed
+    if (slot.deps.length === 0) return false;
+    // Compare deps
+    if (slot.prevDeps === undefined) return true;
+    if (slot.deps.length !== slot.prevDeps.length) return true;
+    for (let i = 0; i < slot.deps.length; i++) {
+      if (!Object.is(slot.deps[i], slot.prevDeps[i])) return true;
+    }
+    return false;
+  }
+
+  private runCleanup(slotIndex: number): void {
+    const slot = this.effectSlots[slotIndex]!;
+    if (slot.cleanup) {
+      slot.cleanup();
+      slot.cleanup = null;
+    }
+  }
+
+  private runCallback(slotIndex: number): void {
+    const slot = this.effectSlots[slotIndex]!;
+    if (!slot.callback) return;
+    const result = slot.callback();
+    // Check for async effect (unsupported)
+    if (result != null && typeof (result as { then?: unknown }).then === "function") {
+      throw new UnsupportedEffectError(slot.phase, slotIndex);
+    }
+    slot.cleanup = (result as (() => void) | undefined) ?? null;
+    slot.flushed = true;
   }
 
   /** Flush queued state updates into slots. Returns true if any were applied. */
@@ -188,17 +363,18 @@ export class HookExecutionContext {
 
 /**
  * Build a ResolverAdapter that intercepts React module imports and provides
- * a stateful useState backed by the given HookExecutionContext. All other
- * hooks behave identically to the default noop shim.
+ * stateful useState, useEffect, and useLayoutEffect backed by the given
+ * HookExecutionContext. All other hooks behave identically to the default
+ * noop shim.
  */
 export function createStatefulReactShimAdapter(
   ctx: HookExecutionContext,
 ): ResolverAdapter {
-  const noop = (): void => {};
-
   const statefulReactModule: Record<string, unknown> = {
     ...getReactShim("react")!,
     useState: <T>(initialState: T | (() => T)) => ctx.useState(initialState),
+    useEffect: (cb: () => void | (() => void), deps?: unknown[]) => ctx.useEffect(cb, deps),
+    useLayoutEffect: (cb: () => void | (() => void), deps?: unknown[]) => ctx.useLayoutEffect(cb, deps),
     default: undefined as unknown,
   };
   statefulReactModule["default"] = statefulReactModule;
@@ -307,6 +483,13 @@ function executeRerenderScenario(
   }
   renders.push({ render_index: 0, value: stripFunctions(lastResult) });
 
+  // Flush effects registered during the initial render
+  try {
+    hookCtx.flushEffects();
+  } catch (e: unknown) {
+    return { thrownError: buildErrorInfo(e) };
+  }
+
   // Action-rerender loop
   for (let i = 0; i < maxRerenders; i++) {
     const found = findCallable(lastResult, scenario.callable_path);
@@ -328,6 +511,13 @@ function executeRerenderScenario(
       return { thrownError: buildErrorInfo(e) };
     }
     renders.push({ render_index: i + 1, value: stripFunctions(lastResult) });
+
+    // Flush effects registered during this rerender
+    try {
+      hookCtx.flushEffects();
+    } catch (e: unknown) {
+      return { thrownError: buildErrorInfo(e) };
+    }
   }
 
   const outcome: RerenderOutcome = {
