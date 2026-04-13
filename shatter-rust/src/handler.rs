@@ -301,7 +301,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
-            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
         }
     }
@@ -327,7 +327,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
-            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
         }
     }
@@ -349,7 +349,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
-            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
         }
     }
@@ -494,22 +494,22 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
         let analysis = if let Some(timing) = timing.as_mut() {
             timing.record("analyze.total", |timing| {
-                crate::analyzer::analyze_file_with_timing(
+                crate::analyzer::analyze_file_with_context_and_timing(
                     path,
                     req.function.as_deref(),
                     Some(timing),
                 )
             })
         } else {
-            crate::analyzer::analyze_file(path, req.function.as_deref())
+            crate::analyzer::analyze_file_with_context(path, req.function.as_deref())
         };
 
         match analysis {
-            Ok(mut functions) => {
+            Ok((mut functions, file_ctx)) => {
                 // Run adapter recognizers and derive invocation models.
                 let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
                 for func in &mut functions {
-                    let hints = self.adapter_registry.recognize_all(func);
+                    let hints = self.adapter_registry.recognize_all(func, &file_ctx);
                     func.invocation_model = crate::adapters::derive_invocation_model(&hints);
                     func.adapter_hints = hints;
                     let key = format!("{}:{}", resolved.display(), func.name);

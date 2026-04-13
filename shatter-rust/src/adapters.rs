@@ -15,6 +15,9 @@ use crate::protocol::{
 // Adapter ID constants
 // ---------------------------------------------------------------------------
 
+/// Generic adapter for async functions that need some runtime to `.await`.
+pub const ADAPTER_ID_ASYNC_RUNTIME: &str = "rust/async-runtime";
+
 /// Adapter for async functions that require a Tokio runtime to `.await`.
 pub const ADAPTER_ID_ASYNC_TOKIO: &str = "rust/async-tokio";
 
@@ -26,23 +29,118 @@ pub const ADAPTER_ID_AXUM_HANDLER: &str = "rust/framework/axum-handler";
 const SUPPORTED_ADAPTERS: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
+// File-level context
+// ---------------------------------------------------------------------------
+
+/// File-level context extracted from `use` declarations and attributes.
+/// Passed alongside per-function analysis to recognizers.
+#[derive(Debug, Clone, Default)]
+pub struct FileContext {
+    /// Flattened `use` paths, e.g. `["tokio::spawn", "axum::extract::Json"]`.
+    pub use_paths: Vec<String>,
+    /// Whether any function in the file has `#[tokio::main]` or `#[tokio::test]`.
+    pub has_tokio_macro: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Recognizer trait and implementations
 // ---------------------------------------------------------------------------
 
-/// A recognizer inspects a function analysis and returns an adapter hint
-/// if it detects a pattern requiring adapter-owned invocation.
+/// A recognizer inspects a function analysis (plus file-level context) and
+/// returns an adapter hint if it detects a pattern requiring adapter-owned
+/// invocation.
 pub trait AdapterRecognizer {
-    fn recognize(&self, analysis: &FunctionAnalysis) -> Option<AdapterHint>;
+    fn recognize(&self, analysis: &FunctionAnalysis, ctx: &FileContext) -> Option<AdapterHint>;
 }
 
-/// Detects `async fn` signatures that require a Tokio runtime.
-pub struct AsyncFunctionRecognizer;
+// ── AsyncRuntimeRecognizer ──────────────────────────────────────────────────
 
-impl AdapterRecognizer for AsyncFunctionRecognizer {
-    fn recognize(&self, analysis: &FunctionAnalysis) -> Option<AdapterHint> {
+/// Emits a generic `rust/async-runtime` hint at Medium confidence for any
+/// `async fn`. More specific recognizers (Tokio, Axum) override this when
+/// framework evidence is present.
+pub struct AsyncRuntimeRecognizer;
+
+impl AdapterRecognizer for AsyncRuntimeRecognizer {
+    fn recognize(&self, analysis: &FunctionAnalysis, _ctx: &FileContext) -> Option<AdapterHint> {
         if !analysis.is_async {
             return None;
         }
+        Some(AdapterHint {
+            adapter: ExecutionAdapter {
+                id: ADAPTER_ID_ASYNC_RUNTIME.to_string(),
+                apply: Some(ExecutionAdapterApply::Auto),
+                options: None,
+            },
+            confidence: Confidence::Medium,
+            reasons: vec!["function is async".to_string()],
+            requirements: vec![],
+            conflicts: vec![],
+        })
+    }
+}
+
+// ── TokioRecognizer ─────────────────────────────────────────────────────────
+
+/// Well-known Tokio types that appear as function parameter type names.
+const TOKIO_PARAM_TYPES: &[&str] = &[
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+    "JoinHandle",
+    "JoinSet",
+    "Mutex",
+    "RwLock",
+    "Semaphore",
+    "Notify",
+    "Barrier",
+    "Receiver",
+    "Sender",
+    "UnboundedReceiver",
+    "UnboundedSender",
+];
+
+/// Emits `rust/async-tokio` at High confidence when the function is async AND
+/// there is strong Tokio evidence: a `tokio::` import, a `#[tokio::main]` /
+/// `#[tokio::test]` macro, or Tokio types in function parameters.
+pub struct TokioRecognizer;
+
+impl AdapterRecognizer for TokioRecognizer {
+    fn recognize(&self, analysis: &FunctionAnalysis, ctx: &FileContext) -> Option<AdapterHint> {
+        if !analysis.is_async {
+            return None;
+        }
+
+        let mut reasons = Vec::new();
+
+        if ctx
+            .use_paths
+            .iter()
+            .any(|p| p.starts_with("tokio::") || p == "tokio")
+        {
+            reasons.push("file imports tokio".to_string());
+        }
+
+        if ctx.has_tokio_macro {
+            reasons.push("file uses #[tokio::main] or #[tokio::test]".to_string());
+        }
+
+        let tokio_params: Vec<&str> = analysis
+            .params
+            .iter()
+            .filter_map(|p| p.type_name.as_deref())
+            .filter(|tn| TOKIO_PARAM_TYPES.contains(tn))
+            .collect();
+        if !tokio_params.is_empty() {
+            reasons.push(format!(
+                "params use tokio types: {}",
+                tokio_params.join(", ")
+            ));
+        }
+
+        if reasons.is_empty() {
+            return None;
+        }
+
         Some(AdapterHint {
             adapter: ExecutionAdapter {
                 id: ADAPTER_ID_ASYNC_TOKIO.to_string(),
@@ -50,7 +148,78 @@ impl AdapterRecognizer for AsyncFunctionRecognizer {
                 options: None,
             },
             confidence: Confidence::High,
-            reasons: vec!["function is async".to_string()],
+            reasons,
+            requirements: vec![],
+            conflicts: vec![],
+        })
+    }
+}
+
+// ── AxumHandlerRecognizer ───────────────────────────────────────────────────
+
+/// Axum extractor types that appear as function parameter type names.
+const AXUM_EXTRACTOR_TYPES: &[&str] = &[
+    "Json",
+    "Path",
+    "Query",
+    "State",
+    "Extension",
+    "Form",
+    "TypedHeader",
+    "ConnectInfo",
+    "MatchedPath",
+    "OriginalUri",
+    "RawBody",
+    "RawQuery",
+    "Host",
+    "NestedPath",
+    "Multipart",
+];
+
+/// Emits `rust/framework/axum-handler` at High confidence when the function
+/// is async, the file imports `axum::`, AND the function has axum extractor
+/// types in its parameters. Requires both signals — no framework guesses from
+/// naming alone.
+pub struct AxumHandlerRecognizer;
+
+impl AdapterRecognizer for AxumHandlerRecognizer {
+    fn recognize(&self, analysis: &FunctionAnalysis, ctx: &FileContext) -> Option<AdapterHint> {
+        if !analysis.is_async {
+            return None;
+        }
+
+        let has_axum_import = ctx
+            .use_paths
+            .iter()
+            .any(|p| p.starts_with("axum::") || p == "axum");
+        if !has_axum_import {
+            return None;
+        }
+
+        let extractor_params: Vec<&str> = analysis
+            .params
+            .iter()
+            .filter_map(|p| p.type_name.as_deref())
+            .filter(|tn| AXUM_EXTRACTOR_TYPES.contains(tn))
+            .collect();
+        if extractor_params.is_empty() {
+            return None;
+        }
+
+        Some(AdapterHint {
+            adapter: ExecutionAdapter {
+                id: ADAPTER_ID_AXUM_HANDLER.to_string(),
+                apply: Some(ExecutionAdapterApply::Auto),
+                options: None,
+            },
+            confidence: Confidence::High,
+            reasons: vec![
+                "file imports axum".to_string(),
+                format!(
+                    "params use axum extractors: {}",
+                    extractor_params.join(", ")
+                ),
+            ],
             requirements: vec![],
             conflicts: vec![],
         })
@@ -68,12 +237,21 @@ pub struct AdapterRegistry {
 }
 
 impl AdapterRegistry {
-    /// Create an empty registry. Concrete recognizers are registered via
-    /// `register()` in follow-up issues (e.g. str-t4uo.6.2).
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             recognizers: vec![],
         }
+    }
+
+    /// Create a registry pre-populated with the built-in Rust recognizers.
+    /// Registration order matters: Axum (last) wins ties via `max_by_key`.
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(AsyncRuntimeRecognizer));
+        registry.register(Box::new(TokioRecognizer));
+        registry.register(Box::new(AxumHandlerRecognizer));
+        registry
     }
 
     /// Add a recognizer to the registry.
@@ -82,17 +260,21 @@ impl AdapterRegistry {
     }
 
     /// Run all recognizers against a function analysis, collecting hints.
-    pub fn recognize_all(&self, analysis: &FunctionAnalysis) -> Vec<AdapterHint> {
+    pub fn recognize_all(
+        &self,
+        analysis: &FunctionAnalysis,
+        ctx: &FileContext,
+    ) -> Vec<AdapterHint> {
         self.recognizers
             .iter()
-            .filter_map(|r| r.recognize(analysis))
+            .filter_map(|r| r.recognize(analysis, ctx))
             .collect()
     }
 }
 
 impl Default for AdapterRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::with_builtins()
     }
 }
 
@@ -174,7 +356,7 @@ pub fn execute_adapter_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{InvocationModel, TypeInfo};
+    use crate::protocol::{InvocationModel, ParamInfo, TypeInfo};
 
     fn stub_analysis() -> FunctionAnalysis {
         FunctionAnalysis {
@@ -196,6 +378,14 @@ mod tests {
         }
     }
 
+    fn param_with_type_name(name: &str, type_name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.to_string(),
+            typ: TypeInfo::Unknown,
+            type_name: Some(type_name.to_string()),
+        }
+    }
+
     /// Mock recognizer that always matches with the given adapter ID and confidence.
     struct MockRecognizer {
         adapter_id: String,
@@ -203,7 +393,7 @@ mod tests {
     }
 
     impl AdapterRecognizer for MockRecognizer {
-        fn recognize(&self, _analysis: &FunctionAnalysis) -> Option<AdapterHint> {
+        fn recognize(&self, _analysis: &FunctionAnalysis, _ctx: &FileContext) -> Option<AdapterHint> {
             Some(AdapterHint {
                 adapter: ExecutionAdapter {
                     id: self.adapter_id.clone(),
@@ -222,7 +412,7 @@ mod tests {
     struct NeverMatchRecognizer;
 
     impl AdapterRecognizer for NeverMatchRecognizer {
-        fn recognize(&self, _analysis: &FunctionAnalysis) -> Option<AdapterHint> {
+        fn recognize(&self, _analysis: &FunctionAnalysis, _ctx: &FileContext) -> Option<AdapterHint> {
             None
         }
     }
@@ -230,10 +420,10 @@ mod tests {
     // ── Registry tests ──
 
     #[test]
-    fn default_registry_is_empty() {
+    fn empty_registry_produces_no_hints() {
         let registry = AdapterRegistry::new();
         let analysis = stub_analysis();
-        let hints = registry.recognize_all(&analysis);
+        let hints = registry.recognize_all(&analysis, &FileContext::default());
         assert!(hints.is_empty());
     }
 
@@ -245,7 +435,7 @@ mod tests {
             confidence: Confidence::High,
         }));
         let analysis = stub_analysis();
-        let hints = registry.recognize_all(&analysis);
+        let hints = registry.recognize_all(&analysis, &FileContext::default());
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].adapter.id, "test/mock");
     }
@@ -262,29 +452,198 @@ mod tests {
             adapter_id: "test/b".into(),
             confidence: Confidence::High,
         }));
-        let hints = registry.recognize_all(&stub_analysis());
+        let hints = registry.recognize_all(&stub_analysis(), &FileContext::default());
         assert_eq!(hints.len(), 2);
     }
 
-    // ── Recognizer trait tests (AsyncFunctionRecognizer is kept but not in default registry) ──
+    // ── AsyncRuntimeRecognizer tests ──
 
     #[test]
-    fn async_recognizer_detects_async_fn() {
+    fn async_runtime_recognizer_emits_medium_for_async_fn() {
         let mut analysis = stub_analysis();
         analysis.is_async = true;
-        let recognizer = AsyncFunctionRecognizer;
-        let hint = recognizer.recognize(&analysis);
-        assert!(hint.is_some());
-        let hint = hint.unwrap();
-        assert_eq!(hint.adapter.id, ADAPTER_ID_ASYNC_TOKIO);
-        assert_eq!(hint.confidence, Confidence::High);
+        let recognizer = AsyncRuntimeRecognizer;
+        let hint = recognizer
+            .recognize(&analysis, &FileContext::default())
+            .expect("should match async fn");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_ASYNC_RUNTIME);
+        assert_eq!(hint.confidence, Confidence::Medium);
+        assert!(hint.reasons.iter().any(|r| r.contains("async")));
     }
 
     #[test]
-    fn async_recognizer_ignores_sync_fn() {
+    fn async_runtime_recognizer_ignores_sync_fn() {
         let analysis = stub_analysis();
-        let recognizer = AsyncFunctionRecognizer;
-        assert!(recognizer.recognize(&analysis).is_none());
+        let recognizer = AsyncRuntimeRecognizer;
+        assert!(recognizer
+            .recognize(&analysis, &FileContext::default())
+            .is_none());
+    }
+
+    // ── TokioRecognizer tests ──
+
+    #[test]
+    fn tokio_recognizer_high_with_import() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        let ctx = FileContext {
+            use_paths: vec!["tokio::spawn".into()],
+            has_tokio_macro: false,
+        };
+        let hint = TokioRecognizer
+            .recognize(&analysis, &ctx)
+            .expect("should match with tokio import");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_ASYNC_TOKIO);
+        assert_eq!(hint.confidence, Confidence::High);
+        assert!(hint.reasons.iter().any(|r| r.contains("imports tokio")));
+    }
+
+    #[test]
+    fn tokio_recognizer_high_with_macro() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        let ctx = FileContext {
+            use_paths: vec![],
+            has_tokio_macro: true,
+        };
+        let hint = TokioRecognizer
+            .recognize(&analysis, &ctx)
+            .expect("should match with tokio macro");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_ASYNC_TOKIO);
+        assert_eq!(hint.confidence, Confidence::High);
+        assert!(hint.reasons.iter().any(|r| r.contains("tokio::main")));
+    }
+
+    #[test]
+    fn tokio_recognizer_high_with_param_types() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("stream", "TcpStream")];
+        let hint = TokioRecognizer
+            .recognize(&analysis, &FileContext::default())
+            .expect("should match with tokio param type");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_ASYNC_TOKIO);
+        assert_eq!(hint.confidence, Confidence::High);
+        assert!(hint.reasons.iter().any(|r| r.contains("TcpStream")));
+    }
+
+    #[test]
+    fn tokio_recognizer_none_without_evidence() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        assert!(TokioRecognizer
+            .recognize(&analysis, &FileContext::default())
+            .is_none());
+    }
+
+    #[test]
+    fn tokio_recognizer_none_for_sync_fn() {
+        let ctx = FileContext {
+            use_paths: vec!["tokio::spawn".into()],
+            has_tokio_macro: true,
+        };
+        assert!(TokioRecognizer
+            .recognize(&stub_analysis(), &ctx)
+            .is_none());
+    }
+
+    // ── AxumHandlerRecognizer tests ──
+
+    #[test]
+    fn axum_recognizer_high_with_both_signals() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("body", "Json")];
+        let ctx = FileContext {
+            use_paths: vec!["axum::extract::Json".into()],
+            has_tokio_macro: false,
+        };
+        let hint = AxumHandlerRecognizer
+            .recognize(&analysis, &ctx)
+            .expect("should match with axum import + extractor param");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_AXUM_HANDLER);
+        assert_eq!(hint.confidence, Confidence::High);
+        assert!(hint.reasons.iter().any(|r| r.contains("imports axum")));
+        assert!(hint.reasons.iter().any(|r| r.contains("Json")));
+    }
+
+    #[test]
+    fn axum_recognizer_none_without_import() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("body", "Json")];
+        assert!(AxumHandlerRecognizer
+            .recognize(&analysis, &FileContext::default())
+            .is_none());
+    }
+
+    #[test]
+    fn axum_recognizer_none_without_extractor_params() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        let ctx = FileContext {
+            use_paths: vec!["axum::Router".into()],
+            has_tokio_macro: false,
+        };
+        assert!(AxumHandlerRecognizer
+            .recognize(&analysis, &ctx)
+            .is_none());
+    }
+
+    #[test]
+    fn axum_recognizer_none_for_sync_fn() {
+        let analysis = stub_analysis();
+        let ctx = FileContext {
+            use_paths: vec!["axum::extract::Json".into()],
+            has_tokio_macro: false,
+        };
+        assert!(AxumHandlerRecognizer
+            .recognize(&analysis, &ctx)
+            .is_none());
+    }
+
+    // ── with_builtins integration ──
+
+    #[test]
+    fn builtins_registry_all_three_fire_for_axum_handler() {
+        let registry = AdapterRegistry::with_builtins();
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("body", "Json")];
+        let ctx = FileContext {
+            use_paths: vec![
+                "tokio::net::TcpListener".into(),
+                "axum::extract::Json".into(),
+            ],
+            has_tokio_macro: false,
+        };
+        let hints = registry.recognize_all(&analysis, &ctx);
+        // All three recognizers should fire: async-runtime, async-tokio, axum-handler.
+        assert_eq!(hints.len(), 3);
+        let ids: Vec<&str> = hints.iter().map(|h| h.adapter.id.as_str()).collect();
+        assert!(ids.contains(&ADAPTER_ID_ASYNC_RUNTIME));
+        assert!(ids.contains(&ADAPTER_ID_ASYNC_TOKIO));
+        assert!(ids.contains(&ADAPTER_ID_AXUM_HANDLER));
+
+        // derive_invocation_model picks axum (last High-confidence hint).
+        let model = derive_invocation_model(&hints);
+        match model {
+            InvocationModel::Adapter { adapter_id, .. } => {
+                assert_eq!(adapter_id, ADAPTER_ID_AXUM_HANDLER);
+            }
+            InvocationModel::Direct => panic!("expected Adapter"),
+        }
+    }
+
+    #[test]
+    fn builtins_registry_only_generic_for_plain_async() {
+        let registry = AdapterRegistry::with_builtins();
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        let hints = registry.recognize_all(&analysis, &FileContext::default());
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].adapter.id, ADAPTER_ID_ASYNC_RUNTIME);
+        assert_eq!(hints[0].confidence, Confidence::Medium);
     }
 
     // ── Strategy tests ──
