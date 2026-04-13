@@ -21,6 +21,7 @@ use std::path::Path;
 use quote::ToTokens;
 use syn::spanned::Spanned;
 
+use crate::adapters::FileContext;
 use crate::protocol::{
     BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind, ExternalDependency,
     FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
@@ -147,6 +148,196 @@ pub fn analyze_source_with_timing(
     }
 
     Ok(results)
+}
+
+// ─── Context-returning variants ─────────────────────────────────────────────
+
+/// Analyze a Rust file and return both function analyses and file-level context.
+pub fn analyze_file_with_context(
+    file_path: &Path,
+    function_name: Option<&str>,
+) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
+    analyze_file_with_context_and_timing(file_path, function_name, None)
+}
+
+/// Analyze a Rust file with timing, returning both function analyses and
+/// file-level context.
+pub fn analyze_file_with_context_and_timing(
+    file_path: &Path,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
+    if !file_path.exists() {
+        return Err(AnalyzeError::FileNotFound(file_path.display().to_string()));
+    }
+
+    let source = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("analyze.read", |_| {
+            std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))
+        })?
+    } else {
+        std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))?
+    };
+
+    analyze_source_with_context_and_timing(&source, function_name, timing)
+}
+
+/// Analyze Rust source code from a string, returning both function analyses
+/// and file-level context.
+pub fn analyze_source_with_context(
+    source: &str,
+    function_name: Option<&str>,
+) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
+    analyze_source_with_context_and_timing(source, function_name, None)
+}
+
+fn analyze_source_with_context_and_timing(
+    source: &str,
+    function_name: Option<&str>,
+    mut timing: Option<&mut TimingCollector>,
+) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
+    let file = if let Some(timing) = timing.as_deref_mut() {
+        timing.record("analyze.parse", |_| {
+            syn::parse_file(source).map_err(|e| AnalyzeError::ParseError(e.to_string()))
+        })?
+    } else {
+        syn::parse_file(source).map_err(|e| AnalyzeError::ParseError(e.to_string()))?
+    };
+
+    let file_ctx = collect_file_context(&file);
+
+    let results = if let Some(timing) = timing.as_mut() {
+        timing.record("analyze.walk", |_| {
+            let structs = collect_struct_defs(&file);
+            let enums = collect_enum_defs(&file);
+            let mut results = Vec::new();
+
+            for item in &file.items {
+                if let syn::Item::Fn(item_fn) = item {
+                    let name = item_fn.sig.ident.to_string();
+                    if let Some(target) = function_name
+                        && name != target
+                    {
+                        continue;
+                    }
+                    results.push(analyze_function(item_fn, &structs, &enums));
+                }
+            }
+
+            results
+        })
+    } else {
+        let structs = collect_struct_defs(&file);
+        let enums = collect_enum_defs(&file);
+        let mut results = Vec::new();
+
+        for item in &file.items {
+            if let syn::Item::Fn(item_fn) = item {
+                let name = item_fn.sig.ident.to_string();
+                if let Some(target) = function_name
+                    && name != target
+                {
+                    continue;
+                }
+                results.push(analyze_function(item_fn, &structs, &enums));
+            }
+        }
+
+        results
+    };
+
+    if function_name.is_some() && results.is_empty() {
+        return Err(AnalyzeError::FunctionNotFound(
+            function_name.unwrap_or_default().to_string(),
+        ));
+    }
+
+    Ok((results, file_ctx))
+}
+
+// ─── File Context Extraction ────────────────────────────────────────────────
+
+/// Extract file-level context (use paths, tokio macros) from a parsed
+/// `syn::File` for use by adapter recognizers.
+pub fn collect_file_context(file: &syn::File) -> FileContext {
+    let mut use_paths = Vec::new();
+    let mut has_tokio_macro = false;
+
+    for item in &file.items {
+        match item {
+            syn::Item::Use(item_use) => {
+                collect_use_paths(&item_use.tree, String::new(), &mut use_paths);
+            }
+            syn::Item::Fn(item_fn) => {
+                if !has_tokio_macro {
+                    for attr in &item_fn.attrs {
+                        if is_tokio_macro_attr(attr) {
+                            has_tokio_macro = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    FileContext {
+        use_paths,
+        has_tokio_macro,
+    }
+}
+
+fn collect_use_paths(tree: &syn::UseTree, prefix: String, out: &mut Vec<String>) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            let new_prefix = if prefix.is_empty() {
+                p.ident.to_string()
+            } else {
+                format!("{}::{}", prefix, p.ident)
+            };
+            collect_use_paths(&p.tree, new_prefix, out);
+        }
+        syn::UseTree::Name(n) => {
+            let full = if prefix.is_empty() {
+                n.ident.to_string()
+            } else {
+                format!("{}::{}", prefix, n.ident)
+            };
+            out.push(full);
+        }
+        syn::UseTree::Glob(_) => {
+            let full = if prefix.is_empty() {
+                "*".to_string()
+            } else {
+                format!("{}::*", prefix)
+            };
+            out.push(full);
+        }
+        syn::UseTree::Group(g) => {
+            for item in &g.items {
+                collect_use_paths(item, prefix.clone(), out);
+            }
+        }
+        syn::UseTree::Rename(r) => {
+            let full = if prefix.is_empty() {
+                r.ident.to_string()
+            } else {
+                format!("{}::{}", prefix, r.ident)
+            };
+            out.push(full);
+        }
+    }
+}
+
+fn is_tokio_macro_attr(attr: &syn::Attribute) -> bool {
+    let path = match &attr.meta {
+        syn::Meta::Path(p) => p,
+        syn::Meta::List(list) => &list.path,
+        syn::Meta::NameValue(_) => return false,
+    };
+    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    segments == ["tokio", "main"] || segments == ["tokio", "test"]
 }
 
 /// Collected struct definitions from the same file.
@@ -2835,5 +3026,74 @@ mod tests {
                 label: "dyn Handler".to_string()
             }
         );
+    }
+
+    // ── File context extraction tests ──
+
+    fn parse_context(code: &str) -> FileContext {
+        let file = syn::parse_file(code).expect("should parse");
+        collect_file_context(&file)
+    }
+
+    #[test]
+    fn file_context_extracts_simple_use_paths() {
+        let ctx = parse_context("use tokio::spawn;\nuse axum::Json;\n");
+        assert!(ctx.use_paths.contains(&"tokio::spawn".to_string()));
+        assert!(ctx.use_paths.contains(&"axum::Json".to_string()));
+    }
+
+    #[test]
+    fn file_context_extracts_grouped_use() {
+        let ctx = parse_context("use tokio::{spawn, sync::Mutex};\n");
+        assert!(ctx.use_paths.contains(&"tokio::spawn".to_string()));
+        assert!(ctx.use_paths.contains(&"tokio::sync::Mutex".to_string()));
+    }
+
+    #[test]
+    fn file_context_extracts_glob_use() {
+        let ctx = parse_context("use tokio::*;\n");
+        assert!(ctx.use_paths.contains(&"tokio::*".to_string()));
+    }
+
+    #[test]
+    fn file_context_extracts_rename_use() {
+        let ctx = parse_context("use axum::extract::Json as AxumJson;\n");
+        assert!(ctx.use_paths.contains(&"axum::extract::Json".to_string()));
+    }
+
+    #[test]
+    fn file_context_detects_tokio_main() {
+        let ctx = parse_context("#[tokio::main]\nasync fn main() {}\n");
+        assert!(ctx.has_tokio_macro);
+    }
+
+    #[test]
+    fn file_context_detects_tokio_test() {
+        let ctx = parse_context("#[tokio::test]\nasync fn test_it() {}\n");
+        assert!(ctx.has_tokio_macro);
+    }
+
+    #[test]
+    fn file_context_detects_tokio_main_with_args() {
+        let ctx = parse_context(
+            "#[tokio::main(flavor = \"multi_thread\")]\nasync fn main() {}\n",
+        );
+        assert!(ctx.has_tokio_macro);
+    }
+
+    #[test]
+    fn file_context_no_tokio_macro_for_other_attrs() {
+        let ctx = parse_context("#[test]\nfn test_it() {}\n");
+        assert!(!ctx.has_tokio_macro);
+    }
+
+    #[test]
+    fn analyze_source_with_context_returns_both() {
+        let code = "use tokio::spawn;\npub async fn foo(x: i32) -> i32 { x }\n";
+        let (fns, ctx) = analyze_source_with_context(code, None)
+            .expect("should succeed");
+        assert_eq!(fns.len(), 1);
+        assert!(fns[0].is_async);
+        assert!(ctx.use_paths.contains(&"tokio::spawn".to_string()));
     }
 }
