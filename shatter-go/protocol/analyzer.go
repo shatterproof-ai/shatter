@@ -209,6 +209,35 @@ func AnalyzeFileWithTiming(filePath string, functionName string, timing *fronten
 	}
 	finishWalk()
 
+	// Post-processing: attach adapter hints from recognizers.
+	if len(results) > 0 {
+		httpHints := RecognizeNetHTTPHandlers(fset, file, info, results)
+		ginHints := RecognizeGinHandlers(fset, file, info, results)
+		for i := range results {
+			if httpHints[i] != nil {
+				results[i].AdapterHints = append(results[i].AdapterHints, *httpHints[i])
+			}
+			if ginHints[i] != nil {
+				results[i].AdapterHints = append(results[i].AdapterHints, *ginHints[i])
+			}
+		}
+		// Promote high-confidence hints to invocation model when not already set.
+		for i := range results {
+			if results[i].InvocationModel != nil {
+				continue
+			}
+			for _, hint := range results[i].AdapterHints {
+				if hint.Confidence == "high" {
+					results[i].InvocationModel = &InvocationModel{
+						Kind:      "adapter",
+						AdapterID: hint.Adapter.ID,
+					}
+					break
+				}
+			}
+		}
+	}
+
 	if functionName != "" && len(results) == 0 {
 		return nil, fmt.Errorf("function not found: %s", functionName)
 	}

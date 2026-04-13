@@ -133,6 +133,34 @@ func genLoopInfo() *rapid.Generator[LoopInfo] {
 	})
 }
 
+func genAdapterRelation() *rapid.Generator[AdapterRelation] {
+	return rapid.Custom[AdapterRelation](func(t *rapid.T) AdapterRelation {
+		return AdapterRelation{
+			AdapterID: genIdent().Draw(t, "adapterID"),
+			Reason:    rapid.StringMatching(`.{0,30}`).Draw(t, "reason"),
+		}
+	})
+}
+
+func genAdapterHint() *rapid.Generator[AdapterHint] {
+	return rapid.Custom[AdapterHint](func(t *rapid.T) AdapterHint {
+		hint := AdapterHint{
+			Adapter: ExecutionAdapter{
+				ID: rapid.SampledFrom([]string{HTTPHandlerAdapterID, GinAdapterID, "test/adapter"}).Draw(t, "adapterID"),
+			},
+			Confidence: rapid.SampledFrom([]string{"low", "medium", "high"}).Draw(t, "confidence"),
+			Reasons:    rapid.SliceOfN(rapid.StringMatching(`.{1,40}`), 1, 4).Draw(t, "reasons"),
+		}
+		if rapid.Bool().Draw(t, "hasRequirements") {
+			hint.Requirements = rapid.SliceOfN(genAdapterRelation(), 0, 2).Draw(t, "requirements")
+		}
+		if rapid.Bool().Draw(t, "hasConflicts") {
+			hint.Conflicts = rapid.SliceOfN(genAdapterRelation(), 0, 2).Draw(t, "conflicts")
+		}
+		return hint
+	})
+}
+
 func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 	return rapid.Custom[FunctionAnalysis](func(t *rapid.T) FunctionAnalysis {
 		startLine := rapid.IntRange(1, 500).Draw(t, "start")
@@ -145,6 +173,10 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 		if rapid.Bool().Draw(t, "hasSourceFile") {
 			sourceFile = "/src/" + genIdent().Draw(t, "sourceFile") + ".ts"
 		}
+		var adapterHints []AdapterHint
+		if rapid.Bool().Draw(t, "hasAdapterHints") {
+			adapterHints = rapid.SliceOfN(genAdapterHint(), 1, 3).Draw(t, "adapterHints")
+		}
 		return FunctionAnalysis{
 			Name:         genIdent().Draw(t, "name"),
 			Exported:     rapid.Bool().Draw(t, "exported"),
@@ -156,6 +188,7 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 			EndLine:      endLine,
 			Loops:        loops,
 			SourceFile:   sourceFile,
+			AdapterHints: adapterHints,
 		}
 	})
 }
@@ -1360,4 +1393,64 @@ func TestProperty_ChooseInvocationStrategy_Deterministic(t *testing.T) {
 			t.Fatalf("non-deterministic: %s vs %s", s1.Kind, s2.Kind)
 		}
 	})
+}
+
+// --- AdapterHint property tests ---
+
+func TestProperty_AdapterHintRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		original := genAdapterHint().Draw(t, "hint")
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded AdapterHint
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		data2, _ := json.Marshal(decoded)
+		if string(data) != string(data2) {
+			t.Fatalf("roundtrip mismatch:\n  original: %s\n  decoded:  %s", data, data2)
+		}
+	})
+}
+
+func TestProperty_RecognizerOutputLength(t *testing.T) {
+	fset, file, info := parseTestFile(t, "http_handler.go")
+	functions := analyzeTestFile(t, "http_handler.go")
+
+	httpHints := RecognizeNetHTTPHandlers(fset, file, info, functions)
+	if len(httpHints) != len(functions) {
+		t.Fatalf("net/http hints length %d != functions length %d", len(httpHints), len(functions))
+	}
+
+	fsetGin, fileGin, infoGin := parseTestFile(t, "gin_handler.go")
+	functionsGin := analyzeTestFile(t, "gin_handler.go")
+
+	ginHints := RecognizeGinHandlers(fsetGin, fileGin, infoGin, functionsGin)
+	if len(ginHints) != len(functionsGin) {
+		t.Fatalf("gin hints length %d != functions length %d", len(ginHints), len(functionsGin))
+	}
+}
+
+func TestProperty_RecognizerConfidenceValues(t *testing.T) {
+	validConfidence := map[string]bool{"low": true, "medium": true, "high": true}
+
+	fset, file, info := parseTestFile(t, "http_handler.go")
+	functions := analyzeTestFile(t, "http_handler.go")
+
+	for _, hint := range RecognizeNetHTTPHandlers(fset, file, info, functions) {
+		if hint != nil && !validConfidence[hint.Confidence] {
+			t.Errorf("invalid confidence %q", hint.Confidence)
+		}
+	}
+
+	fsetGin, fileGin, infoGin := parseTestFile(t, "gin_handler.go")
+	functionsGin := analyzeTestFile(t, "gin_handler.go")
+
+	for _, hint := range RecognizeGinHandlers(fsetGin, fileGin, infoGin, functionsGin) {
+		if hint != nil && !validConfidence[hint.Confidence] {
+			t.Errorf("invalid confidence %q", hint.Confidence)
+		}
+	}
 }

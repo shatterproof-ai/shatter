@@ -45,7 +45,16 @@ Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (
 
 Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `instrument/http_harness.go` (harness generation/execution).
 
-The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown. Future Go adapters (e.g., Gin route) follow the same pattern.
+### Adapter hint recognizers
+
+`protocol/recognizer.go` adds hint-based recognizers that run as post-processing in `AnalyzeFileWithTiming` and emit `AdapterHint` values on `FunctionAnalysis.AdapterHints`. These complement the per-function `recognizeHTTPHandler` (which sets `InvocationModel` directly for exact matches) by also detecting partial matches and Gin handlers:
+
+- **net/http**: Detects `ResponseWriter`+`*Request` params (high confidence) and partial matches like `ResponseWriter`-only or `ServeHTTP` methods (medium/high). Uses `go/http-handler` adapter ID.
+- **Gin**: Detects `*gin.Context` params (high confidence) and characteristic API calls (`c.JSON`, `c.Param`, etc.) via AST fallback since the type checker cannot resolve third-party imports. Uses `go/gin` adapter ID.
+
+High-confidence hints auto-promote to `InvocationModel` when not already set by the per-function recognizer. No concrete Gin `InvocationHook` or `RuntimeHookFactory` exists yet.
+
+The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
 
 Key files: `protocol/adapter.go` (types, pure functions), `protocol/handler.go` (integration).
 
