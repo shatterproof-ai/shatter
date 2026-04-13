@@ -170,12 +170,10 @@ pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
 
 /// Project-level configuration loaded from `shatter.config.json`.
 ///
-/// Provides persistent scan defaults so users don't need to repeat CLI flags.
-/// All fields are optional — missing fields fall back to CLI defaults.
-/// CLI flags always override values from this config.
-///
-/// Note: `max_iterations` and per-function timeout are configured in
-/// `.shatter/config.yaml` (hierarchical), not here. See `DefaultsConfig`.
+/// Contains **scan-global** settings only: file discovery, output, caching,
+/// resource limits, and parallelism. Per-function settings (iterations,
+/// timeouts, mocks, genetic, generators, setup) belong in
+/// `.shatter/config.yaml` — see [`DefaultsConfig`] and [`FunctionConfig`].
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectConfig {
@@ -199,10 +197,6 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_total: Option<u64>,
 
-    /// Per-function exploration wall-clock timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_explore: Option<f64>,
-
     /// Function execution timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_timeout: Option<u64>,
@@ -214,10 +208,6 @@ pub struct ProjectConfig {
     /// Output preferences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputConfig>,
-
-    /// Per-symbol mock overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mocks: Option<HashMap<String, crate::auto_mock::MockOverride>>,
 
     /// Behavior map cache directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,10 +224,6 @@ pub struct ProjectConfig {
     /// Enable rich side-effect capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_side_effects: Option<bool>,
-
-    /// Genetic algorithm settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub genetic: Option<GeneticConfig>,
 }
 
 /// Output preferences for scan reports.
@@ -2762,7 +2748,6 @@ defaults:
                 "language": "typescript",
                 "max_depth": 5,
                 "timeout_total": 600,
-                "timeout_explore": 30.0,
                 "exec_timeout": 15,
                 "parallelism": 4,
                 "output": {
@@ -2781,7 +2766,6 @@ defaults:
             assert_eq!(config.language.as_deref(), Some("typescript"));
             assert_eq!(config.max_depth, Some(5));
             assert_eq!(config.timeout_total, Some(600));
-            assert_eq!(config.timeout_explore, Some(30.0));
             assert_eq!(config.exec_timeout, Some(15));
             assert_eq!(config.parallelism, Some(4));
             assert_eq!(config.capture_side_effects, Some(true));
@@ -2803,7 +2787,6 @@ defaults:
             assert!(config.language.is_none());
             assert!(config.timeout_total.is_none());
             assert!(config.output.is_none());
-            assert!(config.mocks.is_none());
         }
 
         #[test]
@@ -2845,7 +2828,6 @@ defaults:
                 exclude: vec!["**/test/**".to_string()],
                 language: Some("typescript".to_string()),
                 timeout_total: Some(600),
-                timeout_explore: Some(30.0),
                 exec_timeout: Some(15),
                 parallelism: Some(4),
                 output: Some(OutputConfig {
@@ -2854,44 +2836,14 @@ defaults:
                     stdout: Some(true),
                 }),
                 max_depth: None,
-                mocks: None,
                 cache_dir: None,
                 no_cache: None,
                 seeds_dir: None,
                 capture_side_effects: Some(true),
-                genetic: None,
             };
             let json = serde_json::to_string(&config).unwrap();
             let restored: ProjectConfig = serde_json::from_str(&json).unwrap();
             assert_eq!(config, restored);
-        }
-
-        #[test]
-        fn project_config_with_mocks() {
-            let json = r#"{
-                "mocks": {
-                    "db.query": {
-                        "return_values": [42]
-                    }
-                }
-            }"#;
-            let config: ProjectConfig = serde_json::from_str(json).unwrap();
-            assert!(config.mocks.is_some());
-            assert!(config.mocks.unwrap().contains_key("db.query"));
-        }
-
-        #[test]
-        fn project_config_with_genetic() {
-            let json = r#"{
-                "genetic": {
-                    "enabled": true,
-                    "population_size": 100
-                }
-            }"#;
-            let config: ProjectConfig = serde_json::from_str(json).unwrap();
-            let genetic = config.genetic.unwrap();
-            assert!(genetic.enabled);
-            assert_eq!(genetic.population_size, 100);
         }
 
         proptest! {

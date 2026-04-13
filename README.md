@@ -77,9 +77,17 @@ results, custom generators, or other repeatable Shatter state in the repo.
 
 ## Project Configuration
 
-Place a `shatter.config.json` in your project root to set persistent scan
-defaults. All fields are optional — missing fields use built-in defaults. CLI
-flags always override config file values.
+Shatter uses two configuration files with distinct responsibilities:
+
+| File | Scope | Controls |
+|------|-------|----------|
+| `shatter.config.json` | Project root | Scan-global: file discovery, output, caching, resource limits |
+| `.shatter/config.yaml` | Hierarchical (any directory level) | Per-function: iterations, timeouts, mocks, genetic, generators, setup |
+
+### `shatter.config.json` — scan-global defaults
+
+Place this in your project root. All fields are optional — missing fields use
+built-in defaults. CLI flags always override config file values.
 
 ```json
 {
@@ -87,10 +95,7 @@ flags always override config file values.
   "exclude": ["**/*.test.ts", "node_modules/**"],
   "language": "typescript",
   "max_depth": 5,
-  "max_iterations": 200,
   "timeout_total": 600,
-  "timeout_per_fn": 60,
-  "timeout_explore": 30.0,
   "exec_timeout": 15,
   "parallelism": 4,
   "output": {
@@ -98,21 +103,12 @@ flags always override config file values.
     "paths": ["reports/scan.html", "reports/scan.json"],
     "stdout": true
   },
-  "mocks": {
-    "db.query": { "return_values": ["{\"id\": 1}"] }
-  },
   "cache_dir": ".shatter-cache",
   "no_cache": false,
   "seeds_dir": ".shatter/seeds",
-  "capture_side_effects": true,
-  "genetic": {
-    "enabled": true,
-    "population_size": 100
-  }
+  "capture_side_effects": true
 }
 ```
-
-### Schema Reference
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -120,25 +116,34 @@ flags always override config file values.
 | `exclude` | `string[]` | Glob patterns for files to exclude |
 | `language` | `string` | Language filter: `typescript`, `go`, or `rust` |
 | `max_depth` | `number` | Maximum directory traversal depth |
-| `max_iterations` | `number` | Max iterations per function (default: 100) |
 | `timeout_total` | `number` | Total scan timeout in seconds (default: 300) |
-| `timeout_per_fn` | `number` | Per-function timeout in seconds (default: 30) |
-| `timeout_explore` | `number` | Per-function exploration wall-clock timeout |
 | `exec_timeout` | `number` | Function execution timeout in seconds (default: 10) |
 | `parallelism` | `number` | Parallel frontend processes (0 = auto) |
 | `output.format` | `string` | Stdout format: `markdown`, `json`, `html`, `text` |
 | `output.paths` | `string[]` | Report file paths (format inferred from extension) |
 | `output.stdout` | `boolean` | Write to stdout alongside output files |
-| `mocks` | `object` | Per-symbol mock overrides (`{ "symbol": { "return_values": [...] } }`) |
 | `cache_dir` | `string` | Behavior map cache directory |
 | `no_cache` | `boolean` | Disable caching entirely |
 | `seeds_dir` | `string` | Cross-function seed pool directory |
 | `capture_side_effects` | `boolean` | Enable rich side-effect capture |
-| `genetic` | `object` | Genetic algorithm settings (`enabled`, `population_size`, etc.) |
+
+### `.shatter/config.yaml` — hierarchical per-function settings
+
+Created by `shatter init`. Can be placed at multiple levels in the project tree;
+the nearest config to each target file wins on conflicts. Per-function settings
+like iteration limits, timeouts, mocks, genetic algorithm config, generators, and
+setup files belong here. See [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md) for
+the full schema.
 
 ### Override Precedence
 
-CLI flags > `shatter.config.json` > `.shatter/config.yaml` > built-in defaults
+```
+CLI flags > --set overrides > .shatter/config.yaml (nearest first) > shatter.config.json > built-in defaults
+```
+
+The two files do not overlap: `shatter.config.json` owns discovery/output/cache
+settings, while `.shatter/config.yaml` owns per-function analysis behavior.
+CLI flags override both.
 
 For list fields (`include`, `exclude`, output `paths`): CLI-provided values
 replace the config entirely (they are not appended). For boolean flags
