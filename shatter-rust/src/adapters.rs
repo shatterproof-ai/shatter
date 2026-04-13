@@ -6,7 +6,6 @@
 //!
 //! Ordinary synchronous Rust exports use the existing direct-call path.
 
-use crate::executor::ExecuteResult;
 use crate::protocol::{
     AdapterHint, Confidence, ExecutionAdapter, ExecutionAdapterApply, FunctionAnalysis,
     InvocationModel,
@@ -23,7 +22,8 @@ pub const ADAPTER_ID_ASYNC_TOKIO: &str = "rust/async-tokio";
 pub const ADAPTER_ID_AXUM_HANDLER: &str = "rust/framework/axum-handler";
 
 /// Adapter IDs that this frontend can execute via the adapter-owned path.
-const SUPPORTED_ADAPTERS: &[&str] = &[ADAPTER_ID_ASYNC_TOKIO];
+/// Concrete adapters are registered in follow-up issues (e.g. str-t4uo.6.3).
+const SUPPORTED_ADAPTERS: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
 // Recognizer trait and implementations
@@ -68,10 +68,17 @@ pub struct AdapterRegistry {
 }
 
 impl AdapterRegistry {
+    /// Create an empty registry. Concrete recognizers are registered via
+    /// `register()` in follow-up issues (e.g. str-t4uo.6.2).
     pub fn new() -> Self {
         Self {
-            recognizers: vec![Box::new(AsyncFunctionRecognizer)],
+            recognizers: vec![],
         }
+    }
+
+    /// Add a recognizer to the registry.
+    pub fn register(&mut self, recognizer: Box<dyn AdapterRecognizer>) {
+        self.recognizers.push(recognizer);
     }
 
     /// Run all recognizers against a function analysis, collecting hints.
@@ -144,39 +151,23 @@ pub fn derive_invocation_model(hints: &[AdapterHint]) -> InvocationModel {
 
 /// Execute a function through the adapter-owned path.
 ///
-/// Adapter-owned calls return empty coverage data (branch_path, lines_executed,
-/// path_constraints, calls_to_external) — matching the TS adapter contract.
+/// Currently a stub — no concrete adapters are supported yet. Concrete
+/// implementations will be added in follow-up issues (e.g. str-t4uo.6.3
+/// for Tokio runtime adapter).
 pub fn execute_adapter_owned(
     adapter_id: &str,
-    file_path: &str,
-    function_name: &str,
-    inputs: &[serde_json::Value],
-    mocks: &[serde_json::Value],
-    timeout_ms: u64,
-    harness_cache: &crate::executor::HarnessCache,
-    crate_cache: &crate::executor::CrateHarnessCache,
-    bridge_cache: &crate::executor::CrateBridgeHarnessCache,
-) -> Result<ExecuteResult, crate::executor::ExecuteError> {
-    match adapter_id {
-        ADAPTER_ID_ASYNC_TOKIO => {
-            // Use the standard executor with async_tokio harness mode.
-            // The executor's harness generator wraps the call in a Tokio runtime.
-            crate::executor::execute_function(
-                file_path,
-                function_name,
-                inputs,
-                mocks,
-                timeout_ms,
-                Some("async_tokio"),
-                harness_cache,
-                crate_cache,
-                bridge_cache,
-            )
-        }
-        _ => Err(crate::executor::ExecuteError::NonExecutable(format!(
-            "adapter not supported: {adapter_id}"
-        ))),
-    }
+    _file_path: &str,
+    _function_name: &str,
+    _inputs: &[serde_json::Value],
+    _mocks: &[serde_json::Value],
+    _timeout_ms: u64,
+    _harness_cache: &crate::executor::HarnessCache,
+    _crate_cache: &crate::executor::CrateHarnessCache,
+    _bridge_cache: &crate::executor::CrateBridgeHarnessCache,
+) -> Result<crate::executor::ExecuteResult, crate::executor::ExecuteError> {
+    Err(crate::executor::ExecuteError::NonExecutable(format!(
+        "adapter not supported: {adapter_id}"
+    )))
 }
 
 #[cfg(test)]
@@ -184,7 +175,7 @@ mod tests {
     use super::*;
     use crate::protocol::{InvocationModel, TypeInfo};
 
-    fn stub_analysis(is_async: bool) -> FunctionAnalysis {
+    fn stub_analysis() -> FunctionAnalysis {
         FunctionAnalysis {
             name: "test_fn".into(),
             exported: true,
@@ -198,17 +189,88 @@ mod tests {
             crypto_boundaries: vec![],
             loops: vec![],
             source_file: None,
-            is_async,
+            is_async: false,
             adapter_hints: vec![],
             invocation_model: InvocationModel::default(),
         }
     }
 
-    // ── Recognizer tests ──
+    /// Mock recognizer that always matches with the given adapter ID and confidence.
+    struct MockRecognizer {
+        adapter_id: String,
+        confidence: Confidence,
+    }
+
+    impl AdapterRecognizer for MockRecognizer {
+        fn recognize(&self, _analysis: &FunctionAnalysis) -> Option<AdapterHint> {
+            Some(AdapterHint {
+                adapter: ExecutionAdapter {
+                    id: self.adapter_id.clone(),
+                    apply: Some(ExecutionAdapterApply::Auto),
+                    options: None,
+                },
+                confidence: self.confidence,
+                reasons: vec!["mock match".to_string()],
+                requirements: vec![],
+                conflicts: vec![],
+            })
+        }
+    }
+
+    /// Mock recognizer that never matches.
+    struct NeverMatchRecognizer;
+
+    impl AdapterRecognizer for NeverMatchRecognizer {
+        fn recognize(&self, _analysis: &FunctionAnalysis) -> Option<AdapterHint> {
+            None
+        }
+    }
+
+    // ── Registry tests ──
+
+    #[test]
+    fn default_registry_is_empty() {
+        let registry = AdapterRegistry::new();
+        let analysis = stub_analysis();
+        let hints = registry.recognize_all(&analysis);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn registry_register_adds_recognizer() {
+        let mut registry = AdapterRegistry::new();
+        registry.register(Box::new(MockRecognizer {
+            adapter_id: "test/mock".into(),
+            confidence: Confidence::High,
+        }));
+        let analysis = stub_analysis();
+        let hints = registry.recognize_all(&analysis);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].adapter.id, "test/mock");
+    }
+
+    #[test]
+    fn registry_collects_multiple_recognizers() {
+        let mut registry = AdapterRegistry::new();
+        registry.register(Box::new(MockRecognizer {
+            adapter_id: "test/a".into(),
+            confidence: Confidence::Low,
+        }));
+        registry.register(Box::new(NeverMatchRecognizer));
+        registry.register(Box::new(MockRecognizer {
+            adapter_id: "test/b".into(),
+            confidence: Confidence::High,
+        }));
+        let hints = registry.recognize_all(&stub_analysis());
+        assert_eq!(hints.len(), 2);
+    }
+
+    // ── Recognizer trait tests (AsyncFunctionRecognizer is kept but not in default registry) ──
 
     #[test]
     fn async_recognizer_detects_async_fn() {
-        let analysis = stub_analysis(true);
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
         let recognizer = AsyncFunctionRecognizer;
         let hint = recognizer.recognize(&analysis);
         assert!(hint.is_some());
@@ -219,28 +281,9 @@ mod tests {
 
     #[test]
     fn async_recognizer_ignores_sync_fn() {
-        let analysis = stub_analysis(false);
+        let analysis = stub_analysis();
         let recognizer = AsyncFunctionRecognizer;
         assert!(recognizer.recognize(&analysis).is_none());
-    }
-
-    // ── Registry tests ──
-
-    #[test]
-    fn registry_recognizes_async_fn() {
-        let registry = AdapterRegistry::new();
-        let analysis = stub_analysis(true);
-        let hints = registry.recognize_all(&analysis);
-        assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].adapter.id, ADAPTER_ID_ASYNC_TOKIO);
-    }
-
-    #[test]
-    fn registry_returns_empty_for_sync_fn() {
-        let registry = AdapterRegistry::new();
-        let analysis = stub_analysis(false);
-        let hints = registry.recognize_all(&analysis);
-        assert!(hints.is_empty());
     }
 
     // ── Strategy tests ──
@@ -255,7 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn supported_adapter_yields_adapter_owned() {
+    fn all_adapters_yield_unsupported_in_substrate() {
+        // No concrete adapters are in SUPPORTED_ADAPTERS yet.
         let model = InvocationModel::Adapter {
             adapter_id: ADAPTER_ID_ASYNC_TOKIO.to_string(),
             synthetic_params: vec![],
@@ -263,7 +307,7 @@ mod tests {
         };
         assert!(matches!(
             choose_invocation_strategy(&model),
-            InvocationStrategy::AdapterOwned { .. }
+            InvocationStrategy::Unsupported { .. }
         ));
     }
 
@@ -298,7 +342,7 @@ mod tests {
             },
             AdapterHint {
                 adapter: ExecutionAdapter {
-                    id: ADAPTER_ID_ASYNC_TOKIO.into(),
+                    id: "high-adapter".into(),
                     apply: Some(ExecutionAdapterApply::Auto),
                     options: None,
                 },
@@ -311,7 +355,7 @@ mod tests {
         let model = derive_invocation_model(&hints);
         match model {
             InvocationModel::Adapter { adapter_id, .. } => {
-                assert_eq!(adapter_id, ADAPTER_ID_ASYNC_TOKIO);
+                assert_eq!(adapter_id, "high-adapter");
             }
             InvocationModel::Direct => panic!("expected Adapter"),
         }
@@ -321,7 +365,7 @@ mod tests {
     fn derive_skips_disabled_hints() {
         let hints = vec![AdapterHint {
             adapter: ExecutionAdapter {
-                id: ADAPTER_ID_ASYNC_TOKIO.into(),
+                id: "disabled-adapter".into(),
                 apply: Some(ExecutionAdapterApply::Disabled),
                 options: None,
             },
@@ -342,5 +386,33 @@ mod tests {
             derive_invocation_model(&[]),
             InvocationModel::Direct
         ));
+    }
+
+    // ── execute_adapter_owned stub tests ──
+
+    #[test]
+    fn execute_adapter_owned_returns_unsupported() {
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let result = execute_adapter_owned(
+            ADAPTER_ID_ASYNC_TOKIO,
+            "/tmp/test.rs",
+            "test_fn",
+            &[],
+            &[],
+            5000,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::NonExecutable(msg) => {
+                assert!(msg.contains("not supported"));
+            }
+            other => panic!("expected NonExecutable, got: {other:?}"),
+        }
     }
 }

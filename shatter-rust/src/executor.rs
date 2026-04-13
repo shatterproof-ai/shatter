@@ -1065,13 +1065,8 @@ fn check_bin_only_compatibility(
 }
 
 /// Generate a Cargo.toml for the temp project.
-fn generate_cargo_toml(runtime_path: &Path, is_async: bool) -> String {
+fn generate_cargo_toml(runtime_path: &Path) -> String {
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
-    let tokio_dep = if is_async {
-        "\ntokio = { version = \"1\", features = [\"rt\", \"macros\"] }"
-    } else {
-        ""
-    };
     format!(
         r#"[package]
 name = "shatter-exec-temp"
@@ -1084,7 +1079,7 @@ edition = "2021"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
-shatter-rust-runtime = {{ path = "{runtime_path_str}" }}{tokio_dep}
+shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
 "#
     )
 }
@@ -1162,7 +1157,6 @@ fn generate_harness(
     return_type: Option<&str>,
     mocks_json: &str,
     static_mut_names: &[String],
-    #[allow(unused_variables)] is_async: bool,
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(4096);
@@ -1243,15 +1237,9 @@ fn generate_harness(
 
     // Call the function with panic recovery and timing via the runtime helper.
     h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-    if is_async {
-        h.push_str(&format!(
-            "            tokio::runtime::Runtime::new().unwrap().block_on(user_code::{function_name}({args}))\n"
-        ));
-    } else {
-        h.push_str(&format!(
-            "            user_code::{function_name}({args})\n"
-        ));
-    }
+    h.push_str(&format!(
+        "            user_code::{function_name}({args})\n"
+    ));
     h.push_str("        }));\n\n");
 
     // Restore original stdout/stderr before writing JSON response.
@@ -1524,12 +1512,11 @@ fn build_and_spawn_harness(
     harness_dir: &Path,
     runtime_path: &Path,
     mut timing: Option<&mut TimingCollector>,
-    is_async: bool,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml = generate_cargo_toml(runtime_path, is_async);
+    let cargo_toml = generate_cargo_toml(runtime_path);
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -2769,8 +2756,6 @@ pub fn execute_function_with_timing(
         ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
     })?;
 
-    let is_async = harness_mode == Some("async_tokio");
-
     let harness_source = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.generate_harness", |_| {
             generate_harness(
@@ -2781,7 +2766,6 @@ pub fn execute_function_with_timing(
                 sig.return_type.as_deref(),
                 &mocks_json,
                 &static_mut_names,
-                is_async,
             )
         })?
     } else {
@@ -2793,7 +2777,6 @@ pub fn execute_function_with_timing(
             sig.return_type.as_deref(),
             &mocks_json,
             &static_mut_names,
-            is_async,
         )?
     };
 
@@ -2802,10 +2785,10 @@ pub fn execute_function_with_timing(
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
-            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, Some(timing), is_async)
+            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, Some(timing))
         })?
     } else {
-        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, None, is_async)?
+        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, None)?
     };
 
     // Execute the first call
@@ -2899,7 +2882,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
-        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false);
+        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"));
         assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
@@ -2915,7 +2898,6 @@ mod tests {
             Some("& 'static str"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
         assert!(harness.contains("mod user_code"));
@@ -2927,7 +2909,7 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[], false).unwrap();
+        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[]).unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
         assert!(harness.contains("run_harness_loop"));
@@ -2948,7 +2930,6 @@ mod tests {
             Some("Result < f64 , String >"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
         assert!(
@@ -3027,7 +3008,6 @@ fn main() {
             Some("& 'static str"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3084,7 +3064,6 @@ fn main() {
             Some("String"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3382,7 +3361,6 @@ fn main() {
             Some("String"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3479,7 +3457,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &["COUNTER".to_string()],
-            false,
         )
         .unwrap();
 
@@ -3515,7 +3492,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3546,7 +3522,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3579,7 +3554,6 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
-            false,
         )
         .unwrap();
 
@@ -3593,84 +3567,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn generate_harness_includes_libc_dependency() {
         let runtime_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
-        let toml = generate_cargo_toml(&runtime_path, false);
+        let toml = generate_cargo_toml(&runtime_path);
         assert!(
             toml.contains("libc"),
             "generated Cargo.toml must include libc dependency\n\ntoml:\n{toml}"
-        );
-    }
-
-    // ── Async harness tests ──
-
-    #[test]
-    fn generate_cargo_toml_async_includes_tokio() {
-        let runtime_path = std::path::Path::new("/tmp/runtime");
-        let toml = generate_cargo_toml(runtime_path, true);
-        assert!(
-            toml.contains("tokio"),
-            "async Cargo.toml must include tokio dependency\n\ntoml:\n{toml}"
-        );
-        assert!(
-            toml.contains("rt"),
-            "async Cargo.toml must include rt feature\n\ntoml:\n{toml}"
-        );
-        assert!(
-            toml.contains("macros"),
-            "async Cargo.toml must include macros feature\n\ntoml:\n{toml}"
-        );
-    }
-
-    #[test]
-    fn generate_cargo_toml_sync_excludes_tokio() {
-        let runtime_path = std::path::Path::new("/tmp/runtime");
-        let toml = generate_cargo_toml(runtime_path, false);
-        assert!(
-            !toml.contains("tokio"),
-            "sync Cargo.toml must not include tokio dependency\n\ntoml:\n{toml}"
-        );
-    }
-
-    #[test]
-    fn generate_harness_async_wraps_in_tokio_block_on() {
-        let source = "async fn fetch() -> i32 { 42 }";
-        let harness = generate_harness(
-            source,
-            "fetch",
-            &[],
-            &[],
-            Some("i32"),
-            "[]",
-            &[],
-            true,
-        )
-        .unwrap();
-        assert!(
-            harness.contains("block_on"),
-            "async harness must wrap call in block_on\n\nharness:\n{harness}"
-        );
-        assert!(
-            harness.contains("tokio::runtime::Runtime"),
-            "async harness must create Tokio runtime\n\nharness:\n{harness}"
-        );
-    }
-
-    #[test]
-    fn generate_harness_sync_does_not_include_tokio() {
-        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
-        let harness = generate_harness(
-            source,
-            "add",
-            &["a".to_string(), "b".to_string()],
-            &["i32".to_string(), "i32".to_string()],
-            Some("i32"),
-            "[]",
-            &[],
-            false,
-        )
-        .unwrap();
-        assert!(
-            !harness.contains("block_on"),
-            "sync harness must not use block_on\n\nharness:\n{harness}"
         );
     }
 

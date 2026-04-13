@@ -30,14 +30,14 @@ Rust implements `prepare` to pre-build the harness binary so subsequent execute 
 
 ## Adapter Parity Contract
 
-Rust implements the adapter substrate (str-t4uo.6.1) with recognizer, registry, and invocation strategy dispatch:
+Rust implements the adapter substrate (str-t4uo.6.1) — registry, recognizer trait, invocation strategy dispatch, and handler wiring. No concrete adapters are registered or executable yet; all dispatch falls through to `Direct`.
 
-- **Supported adapters**: `rust/async-tokio` — wraps async function calls in `tokio::runtime::Runtime::new().unwrap().block_on(...)`. Recognized automatically when `is_async: true` on `FunctionAnalysis`.
-- **Stub adapters**: `rust/framework/axum-handler` — constant defined, no recognizer or invocation handler yet.
-- **Invocation model**: `InvocationModel::Direct` (default) or `InvocationModel::Adapter { adapter_id, synthetic_params, scenario_schema }`.
-- **Adapter-owned execution**: delegates to the standard executor with `harness_mode = "async_tokio"`, which generates a Tokio-wrapped harness.
+- **Substrate infrastructure**: `AdapterRecognizer` trait, `AdapterRegistry` (empty by default, extensible via `register()`), `InvocationStrategy` enum, `choose_invocation_strategy()`, `derive_invocation_model()`.
+- **Adapter constants**: `rust/async-tokio` and `rust/framework/axum-handler` IDs defined. Neither is in `SUPPORTED_ADAPTERS` yet.
+- **Invocation model**: `InvocationModel::Direct` (default) or `InvocationModel::Adapter { adapter_id, synthetic_params, scenario_schema }`. Serializes to `{"kind":"direct"}` / `{"kind":"adapter",...}`.
+- **execute_adapter_owned()**: Stub that returns `NonExecutable` for any adapter. Concrete implementations in follow-up issues (str-t4uo.6.2 for recognizers, str-t4uo.6.3 for Tokio runtime).
 - **Wire compatibility**: adapter types (`ExecutionProfile`, `AdapterHint`, `InvocationModel`, etc.) serialize to JSON matching shatter-core equivalents.
-- **Cached analyses**: `Handler.cached_analyses` maps `"file:function"` → `FunctionAnalysis` for execute-time invocation model lookup. Cleared on function-level teardown and shutdown.
+- **Handler wiring**: `adapter_registry` + `cached_analyses` fields on Handler. Recognize runs in `handle_analyze`, strategy dispatch in `handle_execute`. Cache cleared on function-level teardown and shutdown. Currently inert since registry is empty.
 
 Authoritative matrix: `protocol/parity-matrix.yaml`.
 
