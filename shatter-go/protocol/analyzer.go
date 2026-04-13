@@ -248,7 +248,7 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
 
-	return FunctionAnalysis{
+	analysis := FunctionAnalysis{
 		Name:         fn.Name.Name,
 		Exported:     ast.IsExported(fn.Name.Name),
 		Params:       params,
@@ -260,6 +260,15 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 		Literals:     literals,
 		Loops:        loops,
 	}
+
+	// Adapter recognition: check if this function is a known handler pattern
+	// and populate InvocationModel so the execute path dispatches through
+	// an adapter hook instead of fabricating plain arguments.
+	if model := recognizeHTTPHandler(fn, info); model != nil {
+		analysis.InvocationModel = model
+	}
+
+	return analysis
 }
 
 func paramNameSet(params []ParamInfo) map[string]bool {

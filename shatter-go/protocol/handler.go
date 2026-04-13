@@ -43,7 +43,7 @@ type Handler struct {
 func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
-	return &Handler{
+	h := &Handler{
 		reader:            scanner,
 		writer:            w,
 		log:               slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
@@ -53,6 +53,9 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 		preparedTargets:   make(map[string]string),
 		cachedAnalyses:    make(map[string]*FunctionAnalysis),
 	}
+	// Register built-in adapter factories.
+	h.RegisterHookFactory(createHTTPHandlerFactory())
+	return h
 }
 
 // NewHandlerWithLogLevel creates a handler with an explicit log level (for testing).
