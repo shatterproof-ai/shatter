@@ -20,6 +20,12 @@
  *   - Increments/decrements count via setter
  *   - Good for verifying multi-step state transitions
  *
+ * useDocTitle: calls useState + useEffect → needs react-hook adapter.
+ *   - title is truthy → effect sets title
+ *   - title is falsy → effect sets default
+ *
+ * useAsyncEffect: calls useEffect with async callback → must throw.
+ *
  * plainHelper: no hooks → should NOT trigger react-hook adapter.
  */
 
@@ -63,6 +69,36 @@ export function useCounter(initial: number) {
     increment: () => setCount(count + 1),
     decrement: () => setCount(count - 1),
   };
+}
+
+/**
+ * useDocTitle: calls useEffect to conditionally set a document title.
+ *   - title is truthy → effect sets title
+ *   - title is falsy → effect sets default title
+ * Exercises effect callback branches.
+ */
+export function useDocTitle(title: string) {
+  const [current, setCurrent] = useState(title || "Untitled");
+  useEffect(() => {
+    if (title) {
+      setCurrent(title);
+    } else {
+      setCurrent("Untitled");
+    }
+  }, [title]);
+  return current;
+}
+
+/**
+ * useAsyncEffect: calls useEffect with an async callback.
+ * This is intentionally unsupported and should throw UnsupportedEffectError.
+ */
+export function useAsyncEffect() {
+  const [value] = useState(0);
+  useEffect(() => {
+    return Promise.resolve() as unknown as void;
+  }, []);
+  return value;
 }
 
 export function plainHelper(x: number): number {

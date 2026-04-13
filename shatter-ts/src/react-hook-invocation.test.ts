@@ -13,6 +13,7 @@ import {
   createReactHookFactory,
   isRerenderScenario,
   HookExecutionContext,
+  UnsupportedEffectError,
   type RerenderOutcome,
 } from "./react-hook-invocation.js";
 import { REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
@@ -517,6 +518,242 @@ describe("hook_rerender scenario", () => {
     const firstRender = outcome.renders[0]!.value as Record<string, unknown>;
     // toggle should be stripped to "[Function]"
     expect(firstRender["toggle"]).toBe("[Function]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HookExecutionContext — effect tracking
+// ---------------------------------------------------------------------------
+
+describe("HookExecutionContext effects", () => {
+  it("useEffect registers and flushEffects runs callbacks", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("effect-1"); });
+    ctx.useEffect(() => { log.push("effect-2"); });
+    expect(log).toEqual([]);
+    ctx.flushEffects();
+    expect(log).toEqual(["effect-1", "effect-2"]);
+  });
+
+  it("useLayoutEffect runs before passive effects", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("passive"); });
+    ctx.useLayoutEffect(() => { log.push("layout"); });
+    ctx.flushEffects();
+    expect(log).toEqual(["layout", "passive"]);
+  });
+
+  it("cleanup runs on re-render before new callback", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    // First render
+    ctx.beginRender();
+    ctx.useEffect(() => {
+      log.push("effect-1");
+      return () => { log.push("cleanup-1"); };
+    });
+    ctx.flushEffects();
+    expect(log).toEqual(["effect-1"]);
+
+    // Second render — no deps means fire every render
+    ctx.beginRender();
+    ctx.useEffect(() => {
+      log.push("effect-2");
+      return () => { log.push("cleanup-2"); };
+    });
+    ctx.flushEffects();
+    expect(log).toEqual(["effect-1", "cleanup-1", "effect-2"]);
+  });
+
+  it("unchanged deps skip re-run", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+    const dep = "stable";
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("run"); }, [dep]);
+    ctx.flushEffects();
+    expect(log).toEqual(["run"]);
+
+    // Second render — same deps
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("run-again"); }, [dep]);
+    ctx.flushEffects();
+    expect(log).toEqual(["run"]); // not re-run
+  });
+
+  it("changed deps trigger re-run", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("run-1"); }, ["a"]);
+    ctx.flushEffects();
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("run-2"); }, ["b"]);
+    ctx.flushEffects();
+    expect(log).toEqual(["run-1", "run-2"]);
+  });
+
+  it("empty deps [] only runs on mount", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("mount"); }, []);
+    ctx.flushEffects();
+    expect(log).toEqual(["mount"]);
+
+    // Second render — should not re-run
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("should-not-run"); }, []);
+    ctx.flushEffects();
+    expect(log).toEqual(["mount"]);
+  });
+
+  it("no deps array runs every render", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("r1"); });
+    ctx.flushEffects();
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("r2"); });
+    ctx.flushEffects();
+
+    ctx.beginRender();
+    ctx.useEffect(() => { log.push("r3"); });
+    ctx.flushEffects();
+    expect(log).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("async callback throws UnsupportedEffectError", () => {
+    const ctx = new HookExecutionContext();
+    ctx.beginRender();
+    ctx.useEffect(() => {
+      return Promise.resolve() as unknown as void;
+    }, []);
+    expect(() => ctx.flushEffects()).toThrow(UnsupportedEffectError);
+  });
+
+  it("layout cleanup runs before layout callbacks, passive cleanup before passive callbacks", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    // First render
+    ctx.beginRender();
+    ctx.useLayoutEffect(() => { log.push("layout-cb-1"); return () => { log.push("layout-cleanup-1"); }; });
+    ctx.useEffect(() => { log.push("passive-cb-1"); return () => { log.push("passive-cleanup-1"); }; });
+    ctx.flushEffects();
+    expect(log).toEqual(["layout-cb-1", "passive-cb-1"]);
+
+    // Second render — no deps = re-fire
+    log.length = 0;
+    ctx.beginRender();
+    ctx.useLayoutEffect(() => { log.push("layout-cb-2"); });
+    ctx.useEffect(() => { log.push("passive-cb-2"); });
+    ctx.flushEffects();
+    expect(log).toEqual([
+      "layout-cleanup-1", "layout-cb-2",
+      "passive-cleanup-1", "passive-cb-2",
+    ]);
+  });
+
+  it("mixed useState and useEffect in same context", () => {
+    const ctx = new HookExecutionContext();
+    const log: string[] = [];
+
+    ctx.beginRender();
+    const [val, setVal] = ctx.useState(10);
+    ctx.useEffect(() => { log.push(`effect-val-${val}`); }, [val]);
+    ctx.flushEffects();
+    expect(log).toEqual(["effect-val-10"]);
+
+    setVal(20);
+    ctx.applyPendingUpdates();
+
+    ctx.beginRender();
+    const [val2] = ctx.useState(0);
+    ctx.useEffect(() => { log.push(`effect-val-${val2}`); }, [val2]);
+    ctx.flushEffects();
+    expect(log).toEqual(["effect-val-10", "effect-val-20"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook_rerender scenario with effects
+// ---------------------------------------------------------------------------
+
+describe("hook_rerender scenario with effects", () => {
+  const factory = createReactHookFactory();
+
+  function getHook() {
+    const hooks = factory.createRuntimeHooks!(
+      { id: REACT_HOOK_ADAPTER_ID },
+      { phase: "execute" },
+    );
+    return hooks!.invocation_hooks![0]!;
+  }
+
+  function rerenderModel(
+    overrides?: Partial<{ max_rerenders: number; callable_path: string[] }>,
+  ): AdapterInvocationModel {
+    return {
+      kind: "adapter",
+      adapter_id: REACT_HOOK_ADAPTER_ID,
+      scenario_schema: { kind: "hook_rerender", ...overrides },
+    };
+  }
+
+  it("useDocTitle effect callback executes during rerender scenario", async () => {
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: rerenderModel({ max_rerenders: 0 }),
+      fileForExec: HOOK_FIXTURE,
+      functionName: "useDocTitle",
+      inputs: ["My Page"],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    const outcome = result.return_value as RerenderOutcome;
+    expect(outcome.renders).toHaveLength(1);
+    expect(outcome.renders[0]!.value).toBe("My Page");
+  });
+
+  it("useAsyncEffect throws UnsupportedEffectError in rerender scenario", async () => {
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: rerenderModel({ max_rerenders: 0 }),
+      fileForExec: HOOK_FIXTURE,
+      functionName: "useAsyncEffect",
+      inputs: [],
+    });
+
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.error_type).toBe("UnsupportedEffectError");
+    expect(result.thrown_error!.message).toContain("returned a Promise");
+  });
+
+  it("useDebounced effect runs without error in rerender scenario", async () => {
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: rerenderModel({ max_rerenders: 0 }),
+      fileForExec: HOOK_FIXTURE,
+      functionName: "useDebounced",
+      inputs: [42, 100],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    const outcome = result.return_value as RerenderOutcome;
+    expect(outcome.renders).toHaveLength(1);
   });
 });
 
