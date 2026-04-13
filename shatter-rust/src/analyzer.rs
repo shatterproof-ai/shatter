@@ -23,7 +23,7 @@ use syn::spanned::Spanned;
 
 use crate::protocol::{
     BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind, ExternalDependency,
-    FunctionAnalysis, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+    FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
 };
 use crate::timing::TimingCollector;
 
@@ -273,6 +273,8 @@ fn analyze_function(
     let dependencies = extract_dependencies(&item_fn.block, &param_names);
     let literals = extract_literals(&item_fn.block);
 
+    let is_async = item_fn.sig.asyncness.is_some();
+
     FunctionAnalysis {
         name,
         exported,
@@ -286,6 +288,9 @@ fn analyze_function(
         crypto_boundaries: vec![],
         loops: vec![],
         source_file: None,
+        is_async,
+        adapter_hints: vec![],
+        invocation_model: InvocationModel::default(),
     }
 }
 
@@ -1778,6 +1783,20 @@ mod tests {
             .into_iter()
             .next()
             .expect("function should be found")
+    }
+
+    // ── Async detection tests ──
+
+    #[test]
+    fn sync_fn_not_async() {
+        let f = analyze_fn("fn f() {}", "f");
+        assert!(!f.is_async);
+    }
+
+    #[test]
+    fn async_fn_detected() {
+        let f = analyze_fn("async fn f() {}", "f");
+        assert!(f.is_async);
     }
 
     // ── Type mapping tests ──

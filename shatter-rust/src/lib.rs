@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod analyzer;
 pub mod executor;
 pub mod generators;

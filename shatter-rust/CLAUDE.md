@@ -28,6 +28,19 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-s
 
 Rust implements `prepare` to pre-build the harness binary so subsequent execute calls skip compilation. Handler: `handle_prepare()` in `src/handler.rs`. Advertised in capabilities list. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`). Storage: `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>`. Idempotent. Source file must exist and function must be analyzable. `prepared_harnesses.clear()` on function-level teardown + shutdown.
 
+## Adapter Parity Contract
+
+Rust implements the adapter substrate (str-t4uo.6.1) — registry, recognizer trait, invocation strategy dispatch, and handler wiring. No concrete adapters are registered or executable yet; all dispatch falls through to `Direct`.
+
+- **Substrate infrastructure**: `AdapterRecognizer` trait, `AdapterRegistry` (empty by default, extensible via `register()`), `InvocationStrategy` enum, `choose_invocation_strategy()`, `derive_invocation_model()`.
+- **Adapter constants**: `rust/async-tokio` and `rust/framework/axum-handler` IDs defined. Neither is in `SUPPORTED_ADAPTERS` yet.
+- **Invocation model**: `InvocationModel::Direct` (default) or `InvocationModel::Adapter { adapter_id, synthetic_params, scenario_schema }`. Serializes to `{"kind":"direct"}` / `{"kind":"adapter",...}`.
+- **execute_adapter_owned()**: Stub that returns `NonExecutable` for any adapter. Concrete implementations in follow-up issues (str-t4uo.6.2 for recognizers, str-t4uo.6.3 for Tokio runtime).
+- **Wire compatibility**: adapter types (`ExecutionProfile`, `AdapterHint`, `InvocationModel`, etc.) serialize to JSON matching shatter-core equivalents.
+- **Handler wiring**: `adapter_registry` + `cached_analyses` fields on Handler. Recognize runs in `handle_analyze`, strategy dispatch in `handle_execute`. Cache cleared on function-level teardown and shutdown. Currently inert since registry is empty.
+
+Authoritative matrix: `protocol/parity-matrix.yaml`.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

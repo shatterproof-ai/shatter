@@ -271,6 +271,10 @@ pub struct Handler<R, W, L> {
     timing_enabled: bool,
     /// Maps prepare_id → (file_path, function_name, mocks, harness_mode).
     prepared_harnesses: HashMap<String, PreparedHarnessInfo>,
+    /// Adapter registry for recognizing targets requiring adapter-owned invocation.
+    adapter_registry: crate::adapters::AdapterRegistry,
+    /// Cached FunctionAnalysis records keyed by "file:function_name".
+    cached_analyses: HashMap<String, crate::protocol::FunctionAnalysis>,
 }
 
 /// Stored info about a prepared harness, keyed by prepare_id.
@@ -297,6 +301,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            cached_analyses: HashMap::new(),
         }
     }
 
@@ -321,6 +327,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            cached_analyses: HashMap::new(),
         }
     }
 
@@ -341,6 +349,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             last_file: None,
             timing_enabled: false,
             prepared_harnesses: HashMap::new(),
+            adapter_registry: crate::adapters::AdapterRegistry::new(),
+            cached_analyses: HashMap::new(),
         }
     }
 
@@ -495,7 +505,16 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         };
 
         match analysis {
-            Ok(functions) => {
+            Ok(mut functions) => {
+                // Run adapter recognizers and derive invocation models.
+                let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                for func in &mut functions {
+                    let hints = self.adapter_registry.recognize_all(func);
+                    func.invocation_model = crate::adapters::derive_invocation_model(&hints);
+                    func.adapter_hints = hints;
+                    let key = format!("{}:{}", resolved.display(), func.name);
+                    self.cached_analyses.insert(key, func.clone());
+                }
                 resp.status = "analyze".to_string();
                 resp.functions = Some(functions);
                 self.finalize_response(resp, timing.as_mut())
@@ -746,34 +765,70 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             );
         }
 
+        // Check cached analysis for adapter-owned invocation model.
+        let resolved = std::path::Path::new(file_path.as_str())
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(file_path.as_str()));
+        let cache_key = format!("{}:{}", resolved.display(), function_name);
+        let invocation_model = self
+            .cached_analyses
+            .get(&cache_key)
+            .map(|a| &a.invocation_model)
+            .cloned()
+            .unwrap_or_default();
+
+        let strategy = crate::adapters::choose_invocation_strategy(&invocation_model);
+
         let harness_mode = eff_harness_mode.as_deref();
-        let execution = if let Some(timing) = timing.as_mut() {
-            timing.record("execute.total", |timing| {
-                crate::executor::execute_function_with_timing(
+        let execution = match strategy {
+            crate::adapters::InvocationStrategy::AdapterOwned { ref adapter_id } => {
+                crate::adapters::execute_adapter_owned(
+                    adapter_id,
                     file_path,
                     function_name,
                     &req.inputs,
                     &eff_mocks,
                     self.exec_timeout_ms,
-                    harness_mode,
-                    Some(timing),
                     &self.harness_manager.cache,
                     &self.harness_manager.crate_cache,
                     &self.harness_manager.bridge_cache,
                 )
-            })
-        } else {
-            crate::executor::execute_function(
-                file_path,
-                function_name,
-                &req.inputs,
-                &eff_mocks,
-                self.exec_timeout_ms,
-                harness_mode,
-                &self.harness_manager.cache,
-                &self.harness_manager.crate_cache,
-                &self.harness_manager.bridge_cache,
-            )
+            }
+            crate::adapters::InvocationStrategy::Unsupported { ref adapter_id } => {
+                Err(crate::executor::ExecuteError::NonExecutable(format!(
+                    "adapter not supported by this frontend: {adapter_id}"
+                )))
+            }
+            crate::adapters::InvocationStrategy::Direct => {
+                if let Some(timing) = timing.as_mut() {
+                    timing.record("execute.total", |timing| {
+                        crate::executor::execute_function_with_timing(
+                            file_path,
+                            function_name,
+                            &req.inputs,
+                            &eff_mocks,
+                            self.exec_timeout_ms,
+                            harness_mode,
+                            Some(timing),
+                            &self.harness_manager.cache,
+                            &self.harness_manager.crate_cache,
+                            &self.harness_manager.bridge_cache,
+                        )
+                    })
+                } else {
+                    crate::executor::execute_function(
+                        file_path,
+                        function_name,
+                        &req.inputs,
+                        &eff_mocks,
+                        self.exec_timeout_ms,
+                        harness_mode,
+                        &self.harness_manager.cache,
+                        &self.harness_manager.crate_cache,
+                        &self.harness_manager.bridge_cache,
+                    )
+                }
+            }
         };
 
         match execution {
@@ -914,6 +969,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         // Prune orphaned harness entries at function-level teardown.
         if level == crate::protocol::SetupLevel::Function {
             self.prepared_harnesses.clear();
+            self.cached_analyses.clear();
             self.harness_manager.prune_orphans();
             self.harness_manager.prune_missing_artifacts();
         }
@@ -1034,6 +1090,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
     fn handle_shutdown(&mut self, mut resp: Response) -> Response {
         self.prepared_harnesses.clear();
+        self.cached_analyses.clear();
         self.harness_manager.prune_orphans();
         self.harness_manager.prune_missing_artifacts();
         self.harness_manager.close_all();
