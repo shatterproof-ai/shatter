@@ -330,7 +330,10 @@ pub(crate) struct ResolvedBudgets {
 /// When `mcdc` is true and a parameter is `None` (not user-provided), the MC/DC
 /// default is used (5× for iterations, 5× for timeout, 10 s for solver timeout).
 /// When a parameter is `Some`, the user-provided value is used unchanged.
-/// When `mcdc` is false and `max_iterations` is `None`, returns `None` (unbounded).
+/// When `mcdc` is false and `max_iterations` is `None`, returns
+/// `Some(DEFAULT_MAX_ITERATIONS)` (bounded by default).
+///
+/// Pass `--max-iterations 0` to opt into unbounded exploration.
 pub(crate) fn resolve_mcdc_budgets(
     max_iterations: Option<u32>,
     timeout: Option<u64>,
@@ -339,9 +342,10 @@ pub(crate) fn resolve_mcdc_budgets(
 ) -> ResolvedBudgets {
     ResolvedBudgets {
         max_iterations: match max_iterations {
+            Some(0) => None, // explicit opt-in to unbounded
             Some(n) => Some(n),
             None if mcdc => Some(DEFAULT_MAX_ITERATIONS * 5),
-            None => None,
+            None => Some(DEFAULT_MAX_ITERATIONS),
         },
         timeout: timeout.unwrap_or(if mcdc {
             DEFAULT_TIMEOUT * 5
@@ -377,14 +381,24 @@ mod mcdc_budget_tests {
     }
 
     #[test]
-    fn non_mcdc_default_budgets_are_unbounded() {
+    fn non_mcdc_default_budgets_are_bounded() {
         let b = resolve_mcdc_budgets(None, None, None, false);
         assert_eq!(
-            b.max_iterations, None,
-            "no --max-iterations means unbounded"
+            b.max_iterations,
+            Some(DEFAULT_MAX_ITERATIONS),
+            "no --max-iterations defaults to DEFAULT_MAX_ITERATIONS"
         );
         assert_eq!(b.timeout, DEFAULT_TIMEOUT);
         assert_eq!(b.solver_timeout, None);
+    }
+
+    #[test]
+    fn zero_max_iterations_means_unbounded() {
+        let b = resolve_mcdc_budgets(Some(0), None, None, false);
+        assert_eq!(
+            b.max_iterations, None,
+            "--max-iterations 0 means unbounded"
+        );
     }
 
     #[test]

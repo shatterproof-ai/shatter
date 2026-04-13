@@ -247,7 +247,8 @@ pub(crate) enum CliCommand {
         #[arg(required = true)]
         targets: Vec<String>,
 
-        /// Maximum number of iterations for the concolic loop.
+        /// Maximum number of iterations per function [default: 100].
+        /// Pass 0 for unbounded exploration (run until timeout or interrupt).
         #[arg(long)]
         max_iterations: Option<u32>,
 
@@ -751,7 +752,8 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         stratum: Option<String>,
 
-        /// Maximum number of iterations per function. Default: 100.
+        /// Maximum number of iterations per function [default: 100].
+        /// Pass 0 for unbounded exploration (run until timeout or interrupt).
         /// Overridden by .shatter/config.yaml `defaults.max_iterations` when not explicitly set.
         #[arg(long)]
         max_iterations: Option<u32>,
