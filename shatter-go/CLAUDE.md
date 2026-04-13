@@ -37,9 +37,15 @@ Go implements `prepare` to pre-build the instrumented harness binary so subseque
 
 ## Invocation Model Parity Contract
 
-Go has the adapter substrate (registry, dispatch, invocation hooks) but no concrete adapters or recognizers. The substrate mirrors TS: `ChooseInvocationStrategy` dispatches to direct/adapter/unsupported; `ResolveRuntimeHooks` resolves an `ExecutionProfile` against registered `RuntimeHookFactory` instances; `ExecuteAdapterOwned` invokes an `InvocationHook` and returns an `instrument.ExecuteResult` with empty instrumentation fields.
+Go has the adapter substrate (registry, dispatch, invocation hooks) and one concrete adapter: `go/http-handler` for net/http handler functions. The substrate mirrors TS: `ChooseInvocationStrategy` dispatches to direct/adapter/unsupported; `ResolveRuntimeHooks` resolves an `ExecutionProfile` against registered `RuntimeHookFactory` instances; `ExecuteAdapterOwned` invokes an `InvocationHook` and returns an `instrument.ExecuteResult` with empty instrumentation fields.
 
-All functions in `FunctionAnalysis` currently report `invocation_model: nil` (direct). Concrete Go adapters (e.g., net/http handler, Gin route) and recognizers are follow-up work. The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
+### go/http-handler adapter
+
+Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter compiles a harness that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
+
+Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `instrument/http_harness.go` (harness generation/execution).
+
+The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown. Future Go adapters (e.g., Gin route) follow the same pattern.
 
 Key files: `protocol/adapter.go` (types, pure functions), `protocol/handler.go` (integration).
 
