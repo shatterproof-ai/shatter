@@ -289,6 +289,7 @@ type FunctionAnalysis struct {
 	CryptoBoundaries []CryptoBoundary     `json:"crypto_boundaries,omitempty"`
 	Loops            []LoopInfo           `json:"loops,omitempty"`
 	SourceFile       string               `json:"source_file,omitempty"`
+	AdapterHints     []AdapterHint        `json:"adapter_hints,omitempty"`
 	InvocationModel  *InvocationModel     `json:"invocation_model,omitempty"`
 }
 
@@ -298,6 +299,21 @@ type InvocationModel struct {
 	AdapterID       string            `json:"adapter_id,omitempty"`
 	SyntheticParams []ParamInfo       `json:"synthetic_params,omitempty"`
 	ScenarioSchema  *json.RawMessage  `json:"scenario_schema,omitempty"`
+}
+
+// AdapterRelation links an adapter hint to another adapter.
+type AdapterRelation struct {
+	AdapterID string `json:"adapter_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// AdapterHint is a recognizer-generated signal that a function is a handler target.
+type AdapterHint struct {
+	Adapter      ExecutionAdapter  `json:"adapter"`
+	Confidence   string            `json:"confidence,omitempty"`
+	Reasons      []string          `json:"reasons,omitempty"`
+	Requirements []AdapterRelation `json:"requirements,omitempty"`
+	Conflicts    []AdapterRelation `json:"conflicts,omitempty"`
 }
 
 // BranchInfo describes a branch point in the source code.
