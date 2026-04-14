@@ -57,7 +57,7 @@ pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
         TypeInfo::Float => float_boundaries(),
         TypeInfo::Str => string_boundaries(),
         TypeInfo::Bool => bool_boundaries(),
-        TypeInfo::Array { .. } => array_boundaries(),
+        TypeInfo::Array { element } => array_boundaries(element),
         TypeInfo::Object { .. } => object_boundaries(),
         TypeInfo::Nullable { inner } => {
             let mut entries = vec![BoundaryEntry::new(
@@ -321,20 +321,32 @@ fn bool_boundaries() -> Vec<BoundaryEntry> {
     ]
 }
 
-fn array_boundaries() -> Vec<BoundaryEntry> {
-    vec![
-        BoundaryEntry::new(json!([]), BoundaryCategory::Empty, "empty array"),
-        BoundaryEntry::new(
-            json!([null]),
+fn array_boundaries(element: &TypeInfo) -> Vec<BoundaryEntry> {
+    let mut entries = vec![BoundaryEntry::new(
+        json!([]),
+        BoundaryCategory::Empty,
+        "empty array",
+    )];
+
+    // Use the first boundary value of the element type for non-empty array boundaries.
+    // Falls back gracefully: element types with no boundaries (Complex, Opaque, Unknown)
+    // only get the empty-array boundary.
+    let inner = get_boundary_values(element);
+    if let Some(first) = inner.first() {
+        let v = &first.value;
+        entries.push(BoundaryEntry::new(
+            json!([v]),
             BoundaryCategory::Boundary,
             "single-element array",
-        ),
-        BoundaryEntry::new(
-            json!([1, 1]),
+        ));
+        entries.push(BoundaryEntry::new(
+            json!([v, v]),
             BoundaryCategory::Boundary,
             "duplicate-element array",
-        ),
-    ]
+        ));
+    }
+
+    entries
 }
 
 fn object_boundaries() -> Vec<BoundaryEntry> {
@@ -641,6 +653,60 @@ mod tests {
         let json_str = serde_json::to_string(&entry).expect("serialize");
         let deserialized: BoundaryEntry = serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(entry, deserialized);
+    }
+
+    #[test]
+    fn array_boundary_elements_match_element_type_str() {
+        let entries = get_boundary_values(&TypeInfo::Array {
+            element: Box::new(TypeInfo::Str),
+        });
+        for entry in &entries {
+            if let Some(arr) = entry.value.as_array() {
+                for elem in arr {
+                    assert!(
+                        elem.is_string() || elem.is_null(),
+                        "array boundary for []string contains non-string element: {elem} in {:?}",
+                        entry.description
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn array_boundary_elements_match_element_type_int() {
+        let entries = get_boundary_values(&TypeInfo::Array {
+            element: Box::new(TypeInfo::Int),
+        });
+        for entry in &entries {
+            if let Some(arr) = entry.value.as_array() {
+                for elem in arr {
+                    assert!(
+                        elem.is_i64() || elem.is_u64() || elem.is_null(),
+                        "array boundary for []int contains non-int element: {elem} in {:?}",
+                        entry.description
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn array_boundary_elements_match_element_type_bool() {
+        let entries = get_boundary_values(&TypeInfo::Array {
+            element: Box::new(TypeInfo::Bool),
+        });
+        for entry in &entries {
+            if let Some(arr) = entry.value.as_array() {
+                for elem in arr {
+                    assert!(
+                        elem.is_boolean() || elem.is_null(),
+                        "array boundary for []bool contains non-bool element: {elem} in {:?}",
+                        entry.description
+                    );
+                }
+            }
+        }
     }
 
     #[test]
