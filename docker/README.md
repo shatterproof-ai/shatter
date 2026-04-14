@@ -50,11 +50,43 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" shatter scan /work/sr
 > file ownership automatically. The flag is harmless there, so the examples
 > above work on both platforms.
 
+## Split-mount mode (read-only source)
+
+For defense in depth — especially when running Shatter against untrusted
+code — mount the source tree read-only and only the output paths read-write:
+
+```sh
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD:/work:ro" \
+  -v "$PWD/.shatter:/work/.shatter" \
+  -v "$PWD/.shatter-cache:/work/.shatter-cache" \
+  -v "$PWD/shatter-artifacts:/work/shatter-artifacts" \
+  shatter explore /work/path/to/file.ts
+```
+
+The three writable mount targets are:
+
+| Path | Purpose |
+|---|---|
+| `.shatter/` | Project config and scratch data |
+| `.shatter-cache/` | Custom-built frontend binaries |
+| `shatter-artifacts/` | Generated tests, recorded mocks, and reports |
+
+The entrypoint pre-creates these directories if they do not exist, so you
+do not need to `mkdir` them on the host before the first run.
+
+If the source is mounted read-only and Shatter attempts to write outside
+the writable subtrees, the write fails with a "Read-only file system"
+error rather than silently corrupting data.
+
+> **When to use split mounts vs. the simple mode:** The simple single-mount
+> mode (`-v "$PWD:/work"`) is fine for trusted projects and local development.
+> Use split mounts when analyzing third-party or adversarial code, or when
+> you want to guarantee that Shatter cannot modify your source files.
+
 ## Notes and follow-ups
 
-- The container currently uses a single read-write bind mount. Splitting
-  into a read-only source mount plus a writable artifact mount is tracked
-  as future work (str-n4zz).
 - microVM execution (Firecracker / Cloud Hypervisor), multi-arch builds,
   signing, and registry publishing are out of scope for this slice.
 - The image entrypoint defaults to `shatter`, so any flag supported by the
