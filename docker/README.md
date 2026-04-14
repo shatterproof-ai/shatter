@@ -21,9 +21,9 @@ runtime stage copies just the binaries onto `node:22-slim`.
 ## Run against a project
 
 Bind-mount the directory you want to analyze at `/work` (the image's working
-directory) and pass any normal `shatter` subcommand. On Linux, pass
-`--user "$(id -u):$(id -g)"` so output files are owned by your host user
-instead of root:
+directory) and pass any normal `shatter` subcommand. Always pass `--user` so
+output files are owned by your host user (see [File ownership](#file-ownership)
+below):
 
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" shatter explore /work/path/to/file.ts
@@ -40,15 +40,31 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" shatter --version
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" shatter scan /work/src
 ```
 
-> **Why `--user`?** Without it the container runs as root (UID 0). Files
-> written into the bind-mounted volume (`.shatter/` caches,
-> `shatter-artifacts/` outputs) end up owned by `root:root` on the host,
-> requiring `sudo` to delete or edit. Passing `--user` maps the container
-> process to your host UID/GID so artifacts have normal ownership.
->
-> On macOS with Docker Desktop this is not needed — the VM translates
-> file ownership automatically. The flag is harmless there, so the examples
-> above work on both platforms.
+## File ownership
+
+The image does not bake in a non-root `USER`. Without `--user`, the
+container process runs as UID 0 and any files it writes into the bind
+mount (`.shatter/` caches, `shatter-artifacts/` outputs) end up owned by
+`root:root` on the host — requiring `sudo` to delete or edit.
+
+Pass your host UID/GID at runtime to avoid this:
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" shatter <args>
+```
+
+On Linux, `$(id -u):$(id -g)` expands to your numeric UID and GID. On
+macOS with Docker Desktop, file ownership is handled transparently by the
+Linux VM, so `--user` is optional but harmless.
+
+If the `.shatter/` directory does not already exist, the entrypoint
+attempts to create it. When running as a non-root user this may fail if
+the mount root is not writable by that UID. In that case, pre-create the
+directory on the host before running the container:
+
+```sh
+mkdir -p .shatter
+```
 
 ## Split-mount mode (read-only source)
 
