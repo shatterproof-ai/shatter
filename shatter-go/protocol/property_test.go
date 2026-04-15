@@ -1454,3 +1454,58 @@ func TestProperty_RecognizerConfidenceValues(t *testing.T) {
 		}
 	}
 }
+
+// TestProperty_GinHandlerSyntheticParams verifies that ginHandlerSyntheticParams
+// always returns well-formed params with non-empty names and valid TypeInfo.
+func TestProperty_GinHandlerSyntheticParams(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		params := ginHandlerSyntheticParams()
+		if len(params) != 5 {
+			t.Fatalf("expected 5 params, got %d", len(params))
+		}
+		seen := make(map[string]bool, len(params))
+		for _, p := range params {
+			if p.Name == "" {
+				t.Fatal("param name must be non-empty")
+			}
+			if seen[p.Name] {
+				t.Fatalf("duplicate param name: %s", p.Name)
+			}
+			seen[p.Name] = true
+			if p.Type.Kind == "" {
+				t.Fatalf("param %s has empty type kind", p.Name)
+			}
+		}
+	})
+}
+
+// TestProperty_SyntheticParamsForAdapter verifies that syntheticParamsForAdapter
+// returns non-nil for known adapter IDs and nil for unknown ones.
+func TestProperty_SyntheticParamsForAdapter(t *testing.T) {
+	knownIDs := []string{HTTPHandlerAdapterID, GinAdapterID}
+	for _, id := range knownIDs {
+		params := syntheticParamsForAdapter(id)
+		if params == nil {
+			t.Fatalf("expected non-nil params for known adapter %s", id)
+		}
+		for _, p := range params {
+			if p.Name == "" {
+				t.Fatalf("param name must be non-empty for adapter %s", id)
+			}
+		}
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-z]+/[a-z]+-[a-z]+`).Draw(t, "adapterID")
+		// Skip known IDs
+		for _, known := range knownIDs {
+			if id == known {
+				return
+			}
+		}
+		params := syntheticParamsForAdapter(id)
+		if params != nil {
+			t.Fatalf("expected nil params for unknown adapter %s, got %v", id, params)
+		}
+	})
+}

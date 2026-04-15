@@ -37,7 +37,7 @@ Go implements `prepare` to pre-build the instrumented harness binary so subseque
 
 ## Invocation Model Parity Contract
 
-Go has the adapter substrate (registry, dispatch, invocation hooks) and one concrete adapter: `go/http-handler` for net/http handler functions. The substrate mirrors TS: `ChooseInvocationStrategy` dispatches to direct/adapter/unsupported; `ResolveRuntimeHooks` resolves an `ExecutionProfile` against registered `RuntimeHookFactory` instances; `ExecuteAdapterOwned` invokes an `InvocationHook` and returns an `instrument.ExecuteResult` with empty instrumentation fields.
+Go has the adapter substrate (registry, dispatch, invocation hooks) and two concrete adapters: `go/http-handler` for net/http handler functions and `go/gin` for Gin handler functions. The substrate mirrors TS: `ChooseInvocationStrategy` dispatches to direct/adapter/unsupported; `ResolveRuntimeHooks` resolves an `ExecutionProfile` against registered `RuntimeHookFactory` instances; `ExecuteAdapterOwned` invokes an `InvocationHook` and returns an `instrument.ExecuteResult` with empty instrumentation fields.
 
 ### go/http-handler adapter
 
@@ -52,7 +52,13 @@ Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapt
 - **net/http**: Detects `ResponseWriter`+`*Request` params (high confidence) and partial matches like `ResponseWriter`-only or `ServeHTTP` methods (medium/high). Uses `go/http-handler` adapter ID.
 - **Gin**: Detects `*gin.Context` params (high confidence) and characteristic API calls (`c.JSON`, `c.Param`, etc.) via AST fallback since the type checker cannot resolve third-party imports. Uses `go/gin` adapter ID.
 
-High-confidence hints auto-promote to `InvocationModel` when not already set by the per-function recognizer. No concrete Gin `InvocationHook` or `RuntimeHookFactory` exists yet.
+High-confidence hints auto-promote to `InvocationModel` (with `SyntheticParams` resolved via `syntheticParamsForAdapter()` in `analyzer.go`) when not already set by the per-function recognizer.
+
+### go/gin adapter
+
+Recognizes functions with `*gin.Context` parameter via hint-based AST detection (type checker cannot resolve third-party imports). When recognized with high confidence, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/gin"}` with 5 synthetic params (method, path, headers, body, route_params). At execute time, the adapter compiles a harness that runs the handler against `gin.CreateTestContext(httptest.NewRecorder())` with `gin.SetMode(gin.TestMode)`, sets `c.Request` and `c.Params` from inputs, and returns the HTTP response (status, headers, body) as `return_value`. Route parameters are injected directly via `c.Params` (bypassing Gin's router). Instrumentation fields are empty for adapter-owned calls.
+
+Key files: `protocol/recognizer.go` (detection), `protocol/gin_adapter.go` (factory/hook), `instrument/gin_harness.go` (harness generation/execution).
 
 The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
 

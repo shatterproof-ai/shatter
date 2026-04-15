@@ -229,8 +229,9 @@ func AnalyzeFileWithTiming(filePath string, functionName string, timing *fronten
 			for _, hint := range results[i].AdapterHints {
 				if hint.Confidence == "high" {
 					results[i].InvocationModel = &InvocationModel{
-						Kind:      "adapter",
-						AdapterID: hint.Adapter.ID,
+						Kind:            "adapter",
+						AdapterID:       hint.Adapter.ID,
+						SyntheticParams: syntheticParamsForAdapter(hint.Adapter.ID),
 					}
 					break
 				}
@@ -242,6 +243,20 @@ func AnalyzeFileWithTiming(filePath string, functionName string, timing *fronten
 		return nil, fmt.Errorf("function not found: %s", functionName)
 	}
 	return results, nil
+}
+
+// syntheticParamsForAdapter returns the synthetic parameter definitions for a
+// known adapter ID, or nil for unknown adapters. Used during hint-to-model
+// promotion so that auto-promoted InvocationModels carry their SyntheticParams.
+func syntheticParamsForAdapter(adapterID string) []ParamInfo {
+	switch adapterID {
+	case HTTPHandlerAdapterID:
+		return httpHandlerSyntheticParams()
+	case GinAdapterID:
+		return ginHandlerSyntheticParams()
+	default:
+		return nil
+	}
 }
 
 // typeCheck runs the Go type checker and returns the resulting Info.

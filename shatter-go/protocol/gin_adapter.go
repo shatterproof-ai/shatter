@@ -1,0 +1,67 @@
+package protocol
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
+)
+
+// ginHandlerHook implements InvocationHook for Gin handler functions.
+// It compiles and runs a specialized harness that invokes the handler with
+// a synthetic gin.Context, capturing the HTTP response as the return value.
+type ginHandlerHook struct{}
+
+func (h *ginHandlerHook) ID() string { return GinAdapterID }
+
+func (h *ginHandlerHook) Invoke(ctx InvocationContext) (*InvocationOutcome, error) {
+	result, err := instrument.ExecuteGinHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
+	if err != nil {
+		return nil, fmt.Errorf("gin handler execution: %w", err)
+	}
+
+	return &InvocationOutcome{
+		ReturnValue: result.ReturnValue,
+		ThrownError: result.ThrownError,
+		SideEffects: result.SideEffects,
+	}, nil
+}
+
+// ginHandlerFactory implements RuntimeHookFactory for the go/gin adapter.
+type ginHandlerFactory struct{}
+
+func (f *ginHandlerFactory) ID() string { return GinAdapterID }
+
+func (f *ginHandlerFactory) CreateRuntimeHooks(_ ExecutionAdapter, _ RuntimeHookContext) *RuntimeHooks {
+	return &RuntimeHooks{
+		InvocationHooks: []InvocationHook{&ginHandlerHook{}},
+	}
+}
+
+// createGinHandlerFactory returns a RuntimeHookFactory that creates an
+// InvocationHook for Gin handler functions.
+func createGinHandlerFactory() RuntimeHookFactory {
+	return &ginHandlerFactory{}
+}
+
+// ginHandlerSyntheticParams returns the synthetic parameter definitions for
+// the Gin handler adapter. These replace the handler's real param
+// (*gin.Context) with HTTP request attributes that the explorer can generate.
+func ginHandlerSyntheticParams() []ParamInfo {
+	return []ParamInfo{
+		{Name: "method", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+		{Name: "path", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+		{Name: "headers", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
+		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+		{Name: "route_params", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
+	}
+}
+
+// marshalGinInputs converts protocol-level JSON inputs (5 synthetic params)
+// into the format expected by the Gin harness.
+func marshalGinInputs(inputs []json.RawMessage) ([]json.RawMessage, error) {
+	if len(inputs) != 5 {
+		return nil, fmt.Errorf("gin handler expects 5 inputs, got %d", len(inputs))
+	}
+	return inputs, nil
+}
