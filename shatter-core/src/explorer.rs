@@ -285,10 +285,6 @@ pub struct ObservationOutput {
     pub stubbed_modules: Vec<String>,
 }
 
-/// Transitional alias: existing code that references `ExplorationResult`
-/// continues to compile while consumers migrate to `ObservationOutput`.
-pub type ExplorationResult = ObservationOutput;
-
 /// Type alias for pipeline composability. `ObserveResult` is the output of
 /// the Observe stage (random exploration).
 pub type ObserveResult = ObservationOutput;
