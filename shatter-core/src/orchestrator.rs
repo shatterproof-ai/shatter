@@ -348,6 +348,42 @@ pub struct ExploreState {
     pub discovery_inputs: Vec<Vec<serde_json::Value>>,
 }
 
+/// Tracks fuzz attempt state for a single branch.
+#[derive(Debug, Clone)]
+pub struct FuzzAttemptState {
+    pub count: u32,
+    pub coverage_at_last_attempt: usize,
+}
+
+/// Check whether a branch is eligible for a fuzz attempt.
+///
+/// A branch is eligible if:
+/// - It has never been fuzzed before, OR
+/// - Coverage has grown since the last attempt (new paths may unlock the branch), OR
+/// - `max_attempts` is `Some(n)` and fewer than `n` attempts have been made.
+///
+/// When `max_attempts` is `None` (indefinite mode), the branch is only re-eligible
+/// when coverage grows — preventing unbounded retries on truly opaque branches.
+fn is_fuzz_eligible(
+    branch_id: u32,
+    attempts: &HashMap<u32, FuzzAttemptState>,
+    max_attempts: Option<u32>,
+    current_coverage: usize,
+) -> bool {
+    match attempts.get(&branch_id) {
+        None => true,
+        Some(state) => {
+            if current_coverage > state.coverage_at_last_attempt {
+                return true;
+            }
+            match max_attempts {
+                Some(max) => state.count < max,
+                None => false,
+            }
+        }
+    }
+}
+
 /// Errors that can occur during concolic exploration.
 #[derive(Debug, thiserror::Error)]
 pub enum ExploreError {
@@ -1418,6 +1454,8 @@ pub async fn explore(
     let mut total_executions: usize = 0;
     let mut z3_generated: usize = 0;
     let mut fuzz_generated: usize = 0;
+    let mut fuzz_attempts: HashMap<u32, FuzzAttemptState> = HashMap::new();
+    let mut fuzz_corpus: Option<crate::fuzzer::Corpus> = None;
     let mut boundary_generated: usize = 0;
     let mut drill_generated: usize = 0;
     let mut abandoned_frontiers: Vec<(u32, u32)> = Vec::new();
@@ -1688,6 +1726,181 @@ pub async fn explore(
                 continue;
             }
             ObserveOneResult::Terminated(reason) => {
+                if reason == TerminationReason::CoveragePlateau {
+                    // Check for fuzz-eligible opaque branches.
+                    let fuzz_targets: Vec<u32> = frontier_set
+                        .iter()
+                        .filter(|f| {
+                            f.blocking_params.is_empty() // Unknown constraint (opaque)
+                                && is_fuzz_eligible(
+                                    f.branch_id,
+                                    &fuzz_attempts,
+                                    config.fuzz.max_attempts,
+                                    covered_paths.len(),
+                                )
+                        })
+                        .map(|f| f.branch_id)
+                        .collect();
+
+                    if !fuzz_targets.is_empty() {
+                        log::info!(
+                            "Coverage plateau — entering fuzz phase targeting {} opaque branch(es)",
+                            fuzz_targets.len(),
+                        );
+
+                        // Build/reuse corpus.
+                        let mut corpus = fuzz_corpus.take().unwrap_or_default();
+                        // Seed from execution history: inputs that reached near target branches.
+                        if corpus.is_empty() {
+                            for (inputs, _, result) in &raw_results {
+                                for decision in &result.branch_path {
+                                    if fuzz_targets.contains(&decision.branch_id) {
+                                        let path_hash =
+                                            hash_branch_path(&result.branch_path);
+                                        corpus.add(crate::fuzzer::CorpusEntry {
+                                            inputs: inputs.clone(),
+                                            coverage_hash: path_hash,
+                                            branch_ids: result
+                                                .branch_path
+                                                .iter()
+                                                .map(|d| d.branch_id)
+                                                .collect(),
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if corpus.is_empty() {
+                            // No seeds available — skip fuzz phase.
+                            termination_reason = reason;
+                            break;
+                        }
+
+                        // Run fuzz phase inline — FuzzSession::run requires
+                        // an FnMut closure, but `frontend` is `&mut Frontend`
+                        // (non-Copy) and can't be moved into a closure that's
+                        // called multiple times. Instead, replicate the
+                        // mutation-execution loop directly here.
+                        let fuzz_plateau_threshold = config
+                            .fuzz
+                            .plateau_threshold
+                            .unwrap_or(crate::config::DEFAULT_FUZZ_PLATEAU_THRESHOLD);
+                        let fuzz_max_executions = config
+                            .fuzz
+                            .max_executions
+                            .unwrap_or(crate::config::DEFAULT_FUZZ_MAX_EXECUTIONS);
+                        let fuzz_timeout = std::time::Duration::from_secs(
+                            config
+                                .fuzz
+                                .timeout_seconds
+                                .unwrap_or(crate::config::DEFAULT_FUZZ_TIMEOUT_SECS)
+                                as u64,
+                        );
+
+                        let fuzz_start = std::time::Instant::now();
+                        let mut fuzz_executions: u32 = 0;
+                        let mut fuzz_plateau: u32 = 0;
+                        let mut fuzz_new_paths: u32 = 0;
+                        let mut fuzz_rng = rand::rng();
+
+                        let fuzz_termination = loop {
+                            if fuzz_plateau >= fuzz_plateau_threshold {
+                                break crate::fuzzer::FuzzTermination::Plateau;
+                            }
+                            if fuzz_executions >= fuzz_max_executions {
+                                break crate::fuzzer::FuzzTermination::ExecutionCap;
+                            }
+                            if fuzz_start.elapsed() >= fuzz_timeout {
+                                break crate::fuzzer::FuzzTermination::Timeout;
+                            }
+
+                            let parent_inputs = match corpus.pick(&mut fuzz_rng) {
+                                Some(entry) => entry.inputs.clone(),
+                                None => break crate::fuzzer::FuzzTermination::Plateau,
+                            };
+
+                            let mutated = crate::input_gen::havoc_mutate_inputs(
+                                &parent_inputs,
+                                param_infos,
+                                1.0,
+                                &[],
+                                &mut fuzz_rng,
+                            );
+
+                            let response = frontend
+                                .send(Command::Execute {
+                                    function: function_name.to_string(),
+                                    inputs: mutated.clone(),
+                                    mocks: config.mocks.clone(),
+                                    setup_context: setup_context.clone(),
+                                    capture: true,
+                                    prepare_id: prepare_id.clone(),
+                                    execution_profile: config.execution_profile.clone(),
+                                })
+                                .await?;
+
+                            fuzz_executions += 1;
+
+                            if let ResponseResult::Execute(result) = response.result {
+                                let path_hash = hash_branch_path(&result.branch_path);
+                                if covered_paths.insert(path_hash) {
+                                    fuzz_plateau = 0;
+                                    fuzz_new_paths += 1;
+                                    for decision in &result.branch_path {
+                                        if seen_branch_ids.insert(decision.branch_id) {
+                                            discoveries.push((
+                                                decision.branch_id,
+                                                DiscoveryMethod::Fuzzed,
+                                            ));
+                                        }
+                                    }
+                                    let branch_ids: Vec<u32> = result
+                                        .branch_path
+                                        .iter()
+                                        .map(|d| d.branch_id)
+                                        .collect();
+                                    corpus.add(crate::fuzzer::CorpusEntry {
+                                        inputs: mutated,
+                                        coverage_hash: path_hash,
+                                        branch_ids,
+                                    });
+                                } else {
+                                    fuzz_plateau += 1;
+                                }
+                            } else {
+                                fuzz_plateau += 1;
+                            }
+                        };
+
+                        // Update attempt tracking.
+                        for branch_id in &fuzz_targets {
+                            let state =
+                                fuzz_attempts.entry(*branch_id).or_insert(FuzzAttemptState {
+                                    count: 0,
+                                    coverage_at_last_attempt: 0,
+                                });
+                            state.count += 1;
+                            state.coverage_at_last_attempt = covered_paths.len();
+                        }
+
+                        fuzz_corpus = Some(corpus);
+                        total_executions += fuzz_executions as usize;
+                        fuzz_generated += fuzz_new_paths as usize;
+
+                        log::info!(
+                            "Fuzz phase complete: {} new path(s) from {} executions ({:?})",
+                            fuzz_new_paths,
+                            fuzz_executions,
+                            fuzz_termination,
+                        );
+
+                        // Reset plateau and continue.
+                        plateau_counter = 0;
+                        continue;
+                    }
+                }
                 termination_reason = reason;
                 break;
             }
@@ -4991,5 +5204,83 @@ mod kani_proofs {
         let result = overlay_solved_values(&base_inputs, &solved, &param_names);
         assert_eq!(result.len(), 1, "overlay must preserve input vector length");
         assert_eq!(result[0], serde_json::json!(42));
+    }
+}
+
+#[cfg(test)]
+mod fuzz_trigger_tests {
+    use super::*;
+
+    #[test]
+    fn branch_eligible_for_fuzzing_when_fresh() {
+        let attempts: HashMap<u32, FuzzAttemptState> = HashMap::new();
+        assert!(
+            is_fuzz_eligible(1, &attempts, Some(3), 10),
+            "a branch with no prior attempts should be eligible"
+        );
+    }
+
+    #[test]
+    fn branch_ineligible_after_max_attempts_no_coverage_growth() {
+        let mut attempts = HashMap::new();
+        attempts.insert(
+            1,
+            FuzzAttemptState {
+                count: 3,
+                coverage_at_last_attempt: 10,
+            },
+        );
+        assert!(
+            !is_fuzz_eligible(1, &attempts, Some(3), 10),
+            "branch at max attempts with no coverage growth should be ineligible"
+        );
+    }
+
+    #[test]
+    fn branch_eligible_after_max_attempts_with_coverage_growth() {
+        let mut attempts = HashMap::new();
+        attempts.insert(
+            1,
+            FuzzAttemptState {
+                count: 3,
+                coverage_at_last_attempt: 10,
+            },
+        );
+        assert!(
+            is_fuzz_eligible(1, &attempts, Some(3), 15),
+            "branch at max attempts should become eligible when coverage grows"
+        );
+    }
+
+    #[test]
+    fn branch_ineligible_in_indefinite_mode_no_growth() {
+        let mut attempts = HashMap::new();
+        attempts.insert(
+            1,
+            FuzzAttemptState {
+                count: 5,
+                coverage_at_last_attempt: 10,
+            },
+        );
+        assert!(
+            !is_fuzz_eligible(1, &attempts, None, 10),
+            "indefinite mode with no coverage growth should be ineligible"
+        );
+    }
+
+    #[test]
+    fn branch_eligible_in_indefinite_mode_with_growth() {
+        let mut attempts = HashMap::new();
+        attempts.insert(
+            1,
+            FuzzAttemptState {
+                count: 5,
+                coverage_at_last_attempt: 10,
+            },
+        );
+        assert!(
+            is_fuzz_eligible(1, &attempts, None, 15),
+            "indefinite mode should become eligible when coverage grows"
+        );
     }
 }
