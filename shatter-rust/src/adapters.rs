@@ -25,8 +25,7 @@ pub const ADAPTER_ID_ASYNC_TOKIO: &str = "rust/async-tokio";
 pub const ADAPTER_ID_AXUM_HANDLER: &str = "rust/framework/axum-handler";
 
 /// Adapter IDs that this frontend can execute via the adapter-owned path.
-/// Concrete adapters are registered in follow-up issues (e.g. str-t4uo.6.3).
-const SUPPORTED_ADAPTERS: &[&str] = &[];
+const SUPPORTED_ADAPTERS: &[&str] = &[ADAPTER_ID_ASYNC_TOKIO, ADAPTER_ID_ASYNC_RUNTIME];
 
 // ---------------------------------------------------------------------------
 // File-level context
@@ -333,24 +332,40 @@ pub fn derive_invocation_model(hints: &[AdapterHint]) -> InvocationModel {
 
 /// Execute a function through the adapter-owned path.
 ///
-/// Currently a stub — no concrete adapters are supported yet. Concrete
-/// implementations will be added in follow-up issues (e.g. str-t4uo.6.3
-/// for Tokio runtime adapter).
+/// For `rust/async-tokio` and `rust/async-runtime` adapters, delegates to
+/// the standard `execute_function` path. The harness generators auto-detect
+/// async functions and wrap them in a Tokio runtime, so no special handling
+/// is needed here beyond routing to the existing execution pipeline.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_adapter_owned(
     adapter_id: &str,
-    _file_path: &str,
-    _function_name: &str,
-    _inputs: &[serde_json::Value],
-    _mocks: &[serde_json::Value],
-    _timeout_ms: u64,
-    _harness_cache: &crate::executor::HarnessCache,
-    _crate_cache: &crate::executor::CrateHarnessCache,
-    _bridge_cache: &crate::executor::CrateBridgeHarnessCache,
+    file_path: &str,
+    function_name: &str,
+    inputs: &[serde_json::Value],
+    mocks: &[serde_json::Value],
+    timeout_ms: u64,
+    harness_cache: &crate::executor::HarnessCache,
+    crate_cache: &crate::executor::CrateHarnessCache,
+    bridge_cache: &crate::executor::CrateBridgeHarnessCache,
 ) -> Result<crate::executor::ExecuteResult, crate::executor::ExecuteError> {
-    Err(crate::executor::ExecuteError::NonExecutable(format!(
-        "adapter not supported: {adapter_id}"
-    )))
+    match adapter_id {
+        ADAPTER_ID_ASYNC_TOKIO | ADAPTER_ID_ASYNC_RUNTIME => {
+            crate::executor::execute_function(
+                file_path,
+                function_name,
+                inputs,
+                mocks,
+                timeout_ms,
+                None,
+                harness_cache,
+                crate_cache,
+                bridge_cache,
+            )
+        }
+        _ => Err(crate::executor::ExecuteError::NonExecutable(format!(
+            "adapter not supported: {adapter_id}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -658,8 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn all_adapters_yield_unsupported_in_substrate() {
-        // No concrete adapters are in SUPPORTED_ADAPTERS yet.
+    fn async_tokio_adapter_yields_adapter_owned() {
         let model = InvocationModel::Adapter {
             adapter_id: ADAPTER_ID_ASYNC_TOKIO.to_string(),
             synthetic_params: vec![],
@@ -667,7 +681,20 @@ mod tests {
         };
         assert!(matches!(
             choose_invocation_strategy(&model),
-            InvocationStrategy::Unsupported { .. }
+            InvocationStrategy::AdapterOwned { .. }
+        ));
+    }
+
+    #[test]
+    fn async_runtime_adapter_yields_adapter_owned() {
+        let model = InvocationModel::Adapter {
+            adapter_id: ADAPTER_ID_ASYNC_RUNTIME.to_string(),
+            synthetic_params: vec![],
+            scenario_schema: None,
+        };
+        assert!(matches!(
+            choose_invocation_strategy(&model),
+            InvocationStrategy::AdapterOwned { .. }
         ));
     }
 
@@ -748,16 +775,16 @@ mod tests {
         ));
     }
 
-    // ── execute_adapter_owned stub tests ──
+    // ── execute_adapter_owned tests ──
 
     #[test]
-    fn execute_adapter_owned_returns_unsupported() {
+    fn execute_adapter_owned_unknown_returns_unsupported() {
         use std::collections::HashMap;
         let cache = crate::executor::HarnessCache::new(HashMap::new());
         let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
         let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
         let result = execute_adapter_owned(
-            ADAPTER_ID_ASYNC_TOKIO,
+            "rust/unknown-adapter",
             "/tmp/test.rs",
             "test_fn",
             &[],
@@ -773,6 +800,34 @@ mod tests {
                 assert!(msg.contains("not supported"));
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_adapter_owned_tokio_delegates_to_execute() {
+        // Tokio adapter delegates to execute_function which tries to read the file.
+        // A missing file yields FileError, proving the adapter didn't short-circuit.
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let result = execute_adapter_owned(
+            ADAPTER_ID_ASYNC_TOKIO,
+            "/nonexistent/file.rs",
+            "test_fn",
+            &[],
+            &[],
+            5000,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::FileError(msg) => {
+                assert!(msg.contains("not found"), "expected file-not-found error, got: {msg}");
+            }
+            other => panic!("expected FileError (proving delegation to execute_function), got: {other:?}"),
         }
     }
 }
