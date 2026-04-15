@@ -770,9 +770,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from(file_path.as_str()));
         let cache_key = format!("{}:{}", resolved.display(), function_name);
-        let invocation_model = self
-            .cached_analyses
-            .get(&cache_key)
+        let cached_analysis = self.cached_analyses.get(&cache_key);
+        let invocation_model = cached_analysis
             .map(|a| &a.invocation_model)
             .cloned()
             .unwrap_or_default();
@@ -789,6 +788,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     &req.inputs,
                     &eff_mocks,
                     self.exec_timeout_ms,
+                    cached_analysis,
                     &self.harness_manager.cache,
                     &self.harness_manager.crate_cache,
                     &self.harness_manager.bridge_cache,
