@@ -496,8 +496,15 @@ fn extract_dependencies_section(cargo_toml: &str) -> String {
 /// Generate a Cargo.toml that includes `shatter-rust-runtime` + serde + serde_json
 /// PLUS all deps from the user's crate, so the instrumented source can reference
 /// external types (e.g. `regex::Regex`) that are available in the user's crate.
-fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path, needs_tokio: bool) -> String {
+fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path, needs_tokio: bool, needs_axum: bool) -> String {
     let forwarded = extract_dependencies_section(user_cargo_toml);
+    // Axum handlers are always async, so tokio is implied by axum.
+    let needs_tokio = needs_tokio || needs_axum;
+    let axum_keys: &[&str] = if needs_axum {
+        &["axum", "tower", "http", "http-body-util"]
+    } else {
+        &[]
+    };
     // Filter out deps the harness template already injects to avoid duplicate TOML keys.
     let filtered: String = forwarded
         .lines()
@@ -506,12 +513,23 @@ fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path
             let key = line.split(['=', ' ', '.']).next().unwrap_or("").trim();
             key != "serde" && key != "serde_json" && key != "libc" && key != "shatter-rust-runtime"
                 && (!needs_tokio || key != "tokio")
+                && !axum_keys.contains(&key)
         })
         .map(|line| format!("{line}\n"))
         .collect();
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
     let tokio_dep = if needs_tokio {
         "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else {
+        ""
+    };
+    let axum_deps = if needs_axum {
+        concat!(
+            "axum = { version = \"0.7\", features = [\"json\"] }\n",
+            "tower = { version = \"0.5\", features = [\"util\"] }\n",
+            "http = \"1\"\n",
+            "http-body-util = \"0.1\"\n",
+        )
     } else {
         ""
     };
@@ -528,7 +546,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{tokio_dep}{filtered}
+{tokio_dep}{axum_deps}{filtered}
 "#
     )
 }
@@ -1081,10 +1099,22 @@ fn check_bin_only_compatibility(
 }
 
 /// Generate a Cargo.toml for the temp project.
-fn generate_cargo_toml(runtime_path: &Path, needs_tokio: bool) -> String {
+fn generate_cargo_toml(runtime_path: &Path, needs_tokio: bool, needs_axum: bool) -> String {
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
+    // Axum handlers are always async, so tokio is implied by axum.
+    let needs_tokio = needs_tokio || needs_axum;
     let tokio_dep = if needs_tokio {
         "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else {
+        ""
+    };
+    let axum_deps = if needs_axum {
+        concat!(
+            "axum = { version = \"0.7\", features = [\"json\"] }\n",
+            "tower = { version = \"0.5\", features = [\"util\"] }\n",
+            "http = \"1\"\n",
+            "http-body-util = \"0.1\"\n",
+        )
     } else {
         ""
     };
@@ -1101,7 +1131,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{tokio_dep}"#
+{tokio_dep}{axum_deps}"#
     )
 }
 
@@ -1552,12 +1582,13 @@ fn build_and_spawn_harness(
     harness_dir: &Path,
     runtime_path: &Path,
     needs_tokio: bool,
+    needs_axum: bool,
     mut timing: Option<&mut TimingCollector>,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio);
+    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio, needs_axum);
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -2562,7 +2593,7 @@ fn execute_function_crate_backed(
         .unwrap_or_default();
 
     let runtime_path = find_runtime_crate_path()?;
-    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio);
+    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio, false);
 
     let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
@@ -2844,10 +2875,10 @@ pub fn execute_function_with_timing(
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
-            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, Some(timing))
+            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, false, Some(timing))
         })?
     } else {
-        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, None)?
+        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, false, None)?
     };
 
     // Execute the first call
@@ -2861,6 +2892,267 @@ pub fn execute_function_with_timing(
         cache.lock().unwrap().insert(key, harness);
     } else {
         // Harness was killed by timeout; clean up its directory.
+        let _ = std::fs::remove_dir_all(&harness_dir);
+    }
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Axum handler execution
+// ---------------------------------------------------------------------------
+
+/// Generate the main.rs harness for an Axum handler.
+///
+/// Instead of calling the handler directly with deserialized params, the
+/// harness builds a synthetic `http::Request`, mounts the handler on a
+/// minimal `axum::Router`, and calls it via `tower::ServiceExt::oneshot`.
+/// The HTTP response (status, headers, body) is normalized into the
+/// standard `ExecuteResult` JSON format.
+///
+/// Input format: `inputs[0]` is a JSON object with keys:
+///   `method`, `path`, `query`, `body`, `headers`, `state`
+fn generate_axum_harness(
+    instrumented_source: &str,
+    function_name: &str,
+    mappings: &[crate::adapters::AxumExtractorMapping],
+    mocks_json: &str,
+) -> Result<String, ExecuteError> {
+    let module_block = wrap_in_module(instrumented_source)?;
+    let mut h = String::with_capacity(8192);
+
+    h.push_str("#![allow(unused_imports)]\n");
+    h.push_str("use serde_json::Value;\n");
+    h.push_str("use axum::{Router, routing};\n");
+    h.push_str("use tower::ServiceExt;\n");
+    h.push_str("use http_body_util::BodyExt;\n\n");
+    h.push_str(&module_block);
+    h.push_str("\n\nfn main() {\n");
+    h.push_str(&format!(
+        "    shatter_rust_runtime::run_harness_loop(r#\"{}\"#, |inputs| {{\n",
+        mocks_json
+    ));
+
+    // Parse the input object from inputs[0].
+    h.push_str("        let input_obj = inputs.first().and_then(|v| v.as_object()).cloned().unwrap_or_default();\n\n");
+
+    // Extract HTTP method (default based on whether a body extractor is present).
+    let has_body_extractor = mappings.iter().any(|m| {
+        matches!(
+            m.kind,
+            crate::adapters::AxumExtractorKind::JsonBody | crate::adapters::AxumExtractorKind::FormBody
+        )
+    });
+    let default_method = if has_body_extractor { "POST" } else { "GET" };
+    h.push_str(&format!(
+        "        let method_str = input_obj.get(\"method\").and_then(|v| v.as_str()).unwrap_or(\"{default_method}\");\n"
+    ));
+
+    // Extract path.
+    let has_path_extractor = mappings
+        .iter()
+        .any(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams);
+    let default_path = if has_path_extractor { "/test/:p0" } else { "/test" };
+    h.push_str(&format!(
+        "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).unwrap_or(\"{default_path}\");\n"
+    ));
+
+    // Extract query string.
+    h.push_str("        let query_str = input_obj.get(\"query\").map(|v| {\n");
+    h.push_str("            if let Some(s) = v.as_str() { s.to_string() }\n");
+    h.push_str("            else if let Some(obj) = v.as_object() {\n");
+    h.push_str("                obj.iter().map(|(k, v)| format!(\"{}={}\", k, v.as_str().unwrap_or(&v.to_string()))).collect::<Vec<_>>().join(\"&\")\n");
+    h.push_str("            } else { String::new() }\n");
+    h.push_str("        }).unwrap_or_default();\n\n");
+
+    // Build the URI.
+    h.push_str("        let uri = if query_str.is_empty() {\n");
+    h.push_str("            path_value.to_string()\n");
+    h.push_str("        } else {\n");
+    h.push_str("            format!(\"{}?{}\", path_value, query_str)\n");
+    h.push_str("        };\n\n");
+
+    // Build the request.
+    h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
+    h.push_str("        let body_bytes = if body_json.is_null() {\n");
+    h.push_str("            axum::body::Body::empty()\n");
+    h.push_str("        } else {\n");
+    h.push_str("            axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default())\n");
+    h.push_str("        };\n\n");
+
+    h.push_str("        let request = http::Request::builder()\n");
+    h.push_str("            .method(method_str)\n");
+    h.push_str("            .uri(&uri)\n");
+    h.push_str("            .header(\"content-type\", \"application/json\")\n");
+
+    // Add custom headers.
+    h.push_str("            ;\n");
+    h.push_str("        let request = if let Some(hdrs) = input_obj.get(\"headers\").and_then(|v| v.as_object()) {\n");
+    h.push_str("            let mut req = request;\n");
+    h.push_str("            for (k, v) in hdrs {\n");
+    h.push_str("                if let Some(val) = v.as_str() {\n");
+    h.push_str("                    req = req.header(k.as_str(), val);\n");
+    h.push_str("                }\n");
+    h.push_str("            }\n");
+    h.push_str("            req\n");
+    h.push_str("        } else { request };\n");
+    h.push_str("        let request = request.body(body_bytes).unwrap();\n\n");
+
+    // Build the router with the handler.
+    // Determine the route method based on the HTTP method.
+    let has_state = mappings
+        .iter()
+        .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
+
+    // Build route pattern from path extractor presence.
+    let route_pattern = if has_path_extractor {
+        default_path
+    } else {
+        "/test"
+    };
+
+    h.push_str(&format!(
+        "        let app = Router::new().route(\"{route_pattern}\", routing::any(user_code::{function_name}));\n"
+    ));
+
+    // If State<T> is needed, deserialize state and attach via .with_state().
+    if has_state {
+        h.push_str("        let state_value = input_obj.get(\"state\").cloned().unwrap_or(Value::Object(serde_json::Map::new()));\n");
+        h.push_str("        let app = app.with_state(serde_json::from_value(state_value).unwrap_or_default());\n");
+    }
+
+    // Execute via oneshot inside a Tokio runtime.
+    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+    h.push_str("            __tokio_rt.block_on(async {\n");
+    h.push_str("                let response = app.oneshot(request).await.unwrap();\n");
+    h.push_str("                let status = response.status().as_u16();\n");
+    h.push_str("                let headers: serde_json::Map<String, Value> = response.headers().iter()\n");
+    h.push_str("                    .map(|(k, v)| (k.to_string(), Value::String(v.to_str().unwrap_or(\"\").to_string())))\n");
+    h.push_str("                    .collect();\n");
+    h.push_str("                let body_bytes = response.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();\n");
+    h.push_str("                let body_str = String::from_utf8_lossy(&body_bytes).to_string();\n");
+    h.push_str("                let body_value = serde_json::from_str::<Value>(&body_str).unwrap_or(Value::String(body_str));\n");
+    h.push_str("                serde_json::json!({\n");
+    h.push_str("                    \"status\": status,\n");
+    h.push_str("                    \"headers\": headers,\n");
+    h.push_str("                    \"body\": body_value\n");
+    h.push_str("                })\n");
+    h.push_str("            })\n");
+    h.push_str("        }));\n\n");
+
+    // Build result JSON (simplified — no console capture or static snapshot for now).
+    h.push_str("        let return_value = match &result {\n");
+    h.push_str("            Ok(v) => Some(v.clone()),\n");
+    h.push_str("            Err(_) => None,\n");
+    h.push_str("        };\n");
+    h.push_str("        let thrown_error = match &result {\n");
+    h.push_str("            Ok(_) => None,\n");
+    h.push_str("            Err(e) => {\n");
+    h.push_str("                let msg = if let Some(s) = e.downcast_ref::<String>() { s.clone() }\n");
+    h.push_str("                    else if let Some(s) = e.downcast_ref::<&str>() { s.to_string() }\n");
+    h.push_str("                    else { \"unknown panic\".to_string() };\n");
+    h.push_str("                Some(serde_json::json!({ \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null }))\n");
+    h.push_str("            }\n");
+    h.push_str("        };\n\n");
+
+    h.push_str("        shatter_rust_runtime::build_result_json(\n");
+    h.push_str("            return_value,\n");
+    h.push_str("            thrown_error,\n");
+    h.push_str("            vec![],\n");
+    h.push_str("            vec![],\n");
+    h.push_str("            vec![],\n");
+    h.push_str("            vec![],\n");
+    h.push_str("            vec![],\n");
+    h.push_str("            wall_time_ms,\n");
+    h.push_str("        )\n");
+    h.push_str("    });\n");
+    h.push_str("}\n");
+
+    Ok(h)
+}
+
+/// Execute an Axum handler function via adapter-owned path.
+///
+/// Generates an Axum-specific harness that builds a minimal `Router`,
+/// sends a synthetic `http::Request` via `tower::ServiceExt::oneshot`,
+/// and normalizes the HTTP response.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_axum_handler(
+    file_path: &str,
+    function_name: &str,
+    inputs: &[Value],
+    mocks: &[Value],
+    timeout_ms: u64,
+    mappings: &[crate::adapters::AxumExtractorMapping],
+    cache: &HarnessCache,
+    _crate_cache: &CrateHarnessCache,
+    _bridge_cache: &CrateBridgeHarnessCache,
+) -> Result<ExecuteResult, ExecuteError> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+    }
+
+    // Compute cache key.
+    let key = HarnessKey {
+        file_path: file_path.to_string(),
+        function_name: function_name.to_string(),
+        mocks_hash: mocks_hash(mocks),
+    };
+
+    // Fast path: harness already compiled and running.
+    {
+        let mut map = cache.lock().unwrap();
+        if let Some(harness) = map.get_mut(&key) {
+            let result = harness.execute(inputs, timeout_ms)?;
+            if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+                map.remove(&key);
+            }
+            return Ok(result);
+        }
+    }
+
+    // Slow path: compile and spawn.
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+
+    let instr_result = instrument::instrument_source(&source, Some(function_name))
+        .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
+
+    let runtime_path = find_runtime_crate_path()?;
+
+    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+    })?;
+
+    let harness_source = generate_axum_harness(
+        &instr_result.source,
+        function_name,
+        mappings,
+        &mocks_json,
+    )?;
+
+    let harness_dir = make_harness_dir();
+    std::fs::create_dir_all(&harness_dir)?;
+
+    let mut harness = build_and_spawn_harness(
+        &harness_source,
+        &harness_dir,
+        &runtime_path,
+        true,  // needs_tokio (always for axum)
+        true,  // needs_axum
+        None,
+    )?;
+
+    let result = harness.execute(inputs, timeout_ms)?;
+
+    let timed_out = result.thrown_error.as_ref()
+        .and_then(|e| e.get("error_type"))
+        .and_then(|v| v.as_str()) == Some("timeout");
+    if !timed_out {
+        cache.lock().unwrap().insert(key, harness);
+    } else {
         let _ = std::fs::remove_dir_all(&harness_dir);
     }
 
@@ -2941,7 +3233,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
-        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false);
+        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false, false);
         assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
@@ -3023,7 +3315,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_with_tokio() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false);
         assert!(
             toml.contains("tokio"),
             "needs_tokio=true must include tokio dep\n\ntoml:\n{toml}"
@@ -3032,10 +3324,167 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_without_tokio() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, false);
         assert!(
             !toml.contains("tokio"),
             "needs_tokio=false must not include tokio dep\n\ntoml:\n{toml}"
+        );
+    }
+
+    // ── Axum Cargo.toml generation ──
+
+    #[test]
+    fn generate_cargo_toml_with_axum() {
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, true);
+        assert!(
+            toml.contains("axum"),
+            "needs_axum=true must include axum dep\n\ntoml:\n{toml}"
+        );
+        assert!(
+            toml.contains("tower"),
+            "needs_axum=true must include tower dep\n\ntoml:\n{toml}"
+        );
+        assert!(
+            toml.contains("http-body-util"),
+            "needs_axum=true must include http-body-util dep\n\ntoml:\n{toml}"
+        );
+        // Axum implies tokio
+        assert!(
+            toml.contains("tokio"),
+            "needs_axum=true must imply tokio dep\n\ntoml:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn generate_cargo_toml_without_axum() {
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false);
+        assert!(
+            !toml.contains("axum"),
+            "needs_axum=false must not include axum dep\n\ntoml:\n{toml}"
+        );
+        assert!(
+            !toml.contains("tower"),
+            "needs_axum=false must not include tower dep\n\ntoml:\n{toml}"
+        );
+    }
+
+    // ── Axum harness generation ──
+
+    #[test]
+    fn generate_axum_harness_contains_router() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Json;\nasync fn create_user(Json(body): Json<String>) -> String { body }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "create_user", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("Router::new()"),
+            "axum harness must create Router\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("routing::any(user_code::create_user)"),
+            "axum harness must mount handler\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("oneshot"),
+            "axum harness must use oneshot\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_with_path_extractor_uses_path_route() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Path;\nasync fn get_user(Path(id): Path<u64>) -> String { id.to_string() }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "get_user", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("/:p0"),
+            "axum harness with Path extractor must use path template\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_json_body_defaults_to_post() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("\"POST\""),
+            "harness with Json body must default to POST\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_no_body_defaults_to_get() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Query;\nasync fn handler(Query(q): Query<String>) -> String { q }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::QueryParams,
+            type_name: "Query".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("\"GET\""),
+            "harness without body extractor must default to GET\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_with_state_uses_with_state() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::State;\nasync fn handler(State(s): State<String>) -> String { s }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::AppState,
+            type_name: "State".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("with_state"),
+            "harness with State extractor must call with_state\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_captures_http_response() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        assert!(
+            harness.contains("status"),
+            "harness must capture HTTP status\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("headers"),
+            "harness must capture HTTP headers\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("body"),
+            "harness must capture HTTP body\n\nharness:\n{harness}"
         );
     }
 
@@ -3725,7 +4174,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn generate_harness_includes_libc_dependency() {
         let runtime_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
-        let toml = generate_cargo_toml(&runtime_path, false);
+        let toml = generate_cargo_toml(&runtime_path, false, false);
         assert!(
             toml.contains("libc"),
             "generated Cargo.toml must include libc dependency\n\ntoml:\n{toml}"
@@ -3946,7 +4395,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     fn generate_cargo_toml_includes_user_deps() {
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false);
         assert!(result.contains("[workspace]"), "must opt generated harness out of parent workspaces");
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
@@ -3958,7 +4407,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // User crate already declares serde_json and serde — must not produce duplicate keys.
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\nserde = { version = \"1\", features = [\"derive\"] }\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false);
         assert!(result.contains("regex"), "must include forwarded user dep");
         let serde_json_count = result.matches("serde_json").count();
         assert_eq!(serde_json_count, 1, "serde_json must appear exactly once, got:\n{result}");

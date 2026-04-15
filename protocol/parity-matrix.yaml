@@ -539,6 +539,24 @@ adapter_capabilities:
       go: not_supported
       rust: implemented
 
+  axum_handler:
+    status: optional
+    language_affinity: [rust]
+    notes: >
+      Adapter for Axum HTTP handler functions. Constructs synthetic HTTP
+      requests, routes through Axum's extraction pipeline via
+      tower::ServiceExt::oneshot, and normalizes the HTTP response (status,
+      headers, body) into ExecuteResult.
+      Supported extractors: Json, Path, Query, State, Form, Extension,
+      RawBody, RawQuery, Host, OriginalUri.
+      Adapter ID: rust/framework/axum-handler.
+      Composes with async runtime handling (Tokio runtime is created
+      automatically since Axum handlers are async).
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: implemented
+
 allowed_divergences:
   - id: ts-missing-teardown
     description: >

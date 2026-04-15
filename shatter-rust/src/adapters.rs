@@ -21,11 +21,15 @@ pub const ADAPTER_ID_ASYNC_RUNTIME: &str = "rust/async-runtime";
 /// Adapter for async functions that require a Tokio runtime to `.await`.
 pub const ADAPTER_ID_ASYNC_TOKIO: &str = "rust/async-tokio";
 
-/// Placeholder adapter for Axum framework handlers.
+/// Adapter for Axum framework handlers (extractor-based async HTTP handlers).
 pub const ADAPTER_ID_AXUM_HANDLER: &str = "rust/framework/axum-handler";
 
 /// Adapter IDs that this frontend can execute via the adapter-owned path.
-const SUPPORTED_ADAPTERS: &[&str] = &[ADAPTER_ID_ASYNC_TOKIO, ADAPTER_ID_ASYNC_RUNTIME];
+const SUPPORTED_ADAPTERS: &[&str] = &[
+    ADAPTER_ID_ASYNC_TOKIO,
+    ADAPTER_ID_ASYNC_RUNTIME,
+    ADAPTER_ID_AXUM_HANDLER,
+];
 
 // ---------------------------------------------------------------------------
 // File-level context
@@ -327,6 +331,81 @@ pub fn derive_invocation_model(hints: &[AdapterHint]) -> InvocationModel {
 }
 
 // ---------------------------------------------------------------------------
+// Axum extractor classification
+// ---------------------------------------------------------------------------
+
+/// Classification of an Axum extractor parameter for input mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxumExtractorKind {
+    /// `Json<T>` — request body as JSON (Content-Type: application/json).
+    JsonBody,
+    /// `Path<T>` — URL path segments extracted by the router.
+    PathParams,
+    /// `Query<T>` — URL query string parameters.
+    QueryParams,
+    /// `State<T>` — shared application state via `.with_state()`.
+    AppState,
+    /// `Form<T>` — request body as form-urlencoded.
+    FormBody,
+    /// `Extension<T>` — request extension layer.
+    Extension,
+    /// `RawBody` — raw request body bytes.
+    RawBody,
+    /// `RawQuery` — raw query string (unparsed).
+    RawQuery,
+    /// `Host` — Host header value.
+    Host,
+    /// `OriginalUri` — full original request URI.
+    OriginalUri,
+    /// Extractor type recognized but not yet supported for synthesis.
+    Unsupported,
+}
+
+/// Mapping from a handler parameter to its Axum extractor classification.
+#[derive(Debug, Clone)]
+pub struct AxumExtractorMapping {
+    /// Index of this parameter in the function signature.
+    pub param_index: usize,
+    /// Classification of the extractor.
+    pub kind: AxumExtractorKind,
+    /// The type_name from analysis (e.g. "Json", "Path", "State").
+    pub type_name: String,
+}
+
+/// Classify handler parameters into Axum extractor kinds.
+///
+/// Reads `type_name` from each `ParamInfo` and maps recognized extractor
+/// names to their corresponding `AxumExtractorKind`. Parameters without a
+/// `type_name` or with unrecognized types are mapped to `Unsupported`.
+pub fn classify_axum_extractors(params: &[crate::protocol::ParamInfo]) -> Vec<AxumExtractorMapping> {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let type_name = p.type_name.as_deref().unwrap_or("");
+            let kind = match type_name {
+                "Json" => AxumExtractorKind::JsonBody,
+                "Path" => AxumExtractorKind::PathParams,
+                "Query" => AxumExtractorKind::QueryParams,
+                "State" => AxumExtractorKind::AppState,
+                "Form" => AxumExtractorKind::FormBody,
+                "Extension" => AxumExtractorKind::Extension,
+                "RawBody" => AxumExtractorKind::RawBody,
+                "RawQuery" => AxumExtractorKind::RawQuery,
+                "Host" => AxumExtractorKind::Host,
+                "OriginalUri" => AxumExtractorKind::OriginalUri,
+                _ => AxumExtractorKind::Unsupported,
+            };
+            AxumExtractorMapping {
+                param_index: i,
+                kind,
+                type_name: type_name.to_string(),
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Adapter-owned execution
 // ---------------------------------------------------------------------------
 
@@ -336,6 +415,10 @@ pub fn derive_invocation_model(hints: &[AdapterHint]) -> InvocationModel {
 /// the standard `execute_function` path. The harness generators auto-detect
 /// async functions and wrap them in a Tokio runtime, so no special handling
 /// is needed here beyond routing to the existing execution pipeline.
+///
+/// For `rust/framework/axum-handler`, uses the function analysis to classify
+/// extractor parameters and generates an Axum-specific harness that routes
+/// a synthetic HTTP request through the real extraction pipeline.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_adapter_owned(
     adapter_id: &str,
@@ -344,6 +427,7 @@ pub fn execute_adapter_owned(
     inputs: &[serde_json::Value],
     mocks: &[serde_json::Value],
     timeout_ms: u64,
+    analysis: Option<&FunctionAnalysis>,
     harness_cache: &crate::executor::HarnessCache,
     crate_cache: &crate::executor::CrateHarnessCache,
     bridge_cache: &crate::executor::CrateBridgeHarnessCache,
@@ -357,6 +441,36 @@ pub fn execute_adapter_owned(
                 mocks,
                 timeout_ms,
                 None,
+                harness_cache,
+                crate_cache,
+                bridge_cache,
+            )
+        }
+        ADAPTER_ID_AXUM_HANDLER => {
+            let analysis = analysis.ok_or_else(|| {
+                crate::executor::ExecuteError::NonExecutable(
+                    "axum handler adapter requires cached function analysis".to_string(),
+                )
+            })?;
+            let mappings = classify_axum_extractors(&analysis.params);
+            let unsupported: Vec<&str> = mappings
+                .iter()
+                .filter(|m| m.kind == AxumExtractorKind::Unsupported && !m.type_name.is_empty())
+                .map(|m| m.type_name.as_str())
+                .collect();
+            if !unsupported.is_empty() {
+                return Err(crate::executor::ExecuteError::NonExecutable(format!(
+                    "axum handler has unsupported extractor types: {}",
+                    unsupported.join(", ")
+                )));
+            }
+            crate::executor::execute_axum_handler(
+                file_path,
+                function_name,
+                inputs,
+                mocks,
+                timeout_ms,
+                &mappings,
                 harness_cache,
                 crate_cache,
                 bridge_cache,
@@ -790,6 +904,7 @@ mod tests {
             &[],
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
             &bridge_cache,
@@ -818,6 +933,7 @@ mod tests {
             &[],
             &[],
             5000,
+            None,
             &cache,
             &crate_cache,
             &bridge_cache,
@@ -828,6 +944,244 @@ mod tests {
                 assert!(msg.contains("not found"), "expected file-not-found error, got: {msg}");
             }
             other => panic!("expected FileError (proving delegation to execute_function), got: {other:?}"),
+        }
+    }
+
+    // ── Axum extractor classification tests ──
+
+    #[test]
+    fn classify_json_extractor() {
+        let params = vec![param_with_type_name("body", "Json")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::JsonBody);
+        assert_eq!(mappings[0].param_index, 0);
+    }
+
+    #[test]
+    fn classify_path_extractor() {
+        let params = vec![param_with_type_name("id", "Path")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::PathParams);
+    }
+
+    #[test]
+    fn classify_query_extractor() {
+        let params = vec![param_with_type_name("params", "Query")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::QueryParams);
+    }
+
+    #[test]
+    fn classify_state_extractor() {
+        let params = vec![param_with_type_name("db", "State")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::AppState);
+    }
+
+    #[test]
+    fn classify_form_extractor() {
+        let params = vec![param_with_type_name("form", "Form")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::FormBody);
+    }
+
+    #[test]
+    fn classify_multiple_extractors() {
+        let params = vec![
+            param_with_type_name("db", "State"),
+            param_with_type_name("id", "Path"),
+            param_with_type_name("body", "Json"),
+        ];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 3);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::AppState);
+        assert_eq!(mappings[0].param_index, 0);
+        assert_eq!(mappings[1].kind, AxumExtractorKind::PathParams);
+        assert_eq!(mappings[1].param_index, 1);
+        assert_eq!(mappings[2].kind, AxumExtractorKind::JsonBody);
+        assert_eq!(mappings[2].param_index, 2);
+    }
+
+    #[test]
+    fn classify_unknown_type_is_unsupported() {
+        let params = vec![param_with_type_name("ctx", "CustomExtractor")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::Unsupported);
+    }
+
+    #[test]
+    fn classify_missing_type_name_is_unsupported() {
+        let params = vec![ParamInfo {
+            name: "x".to_string(),
+            typ: TypeInfo::Unknown,
+            type_name: None,
+        }];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::Unsupported);
+    }
+
+    #[test]
+    fn classify_empty_params_returns_empty() {
+        let mappings = classify_axum_extractors(&[]);
+        assert!(mappings.is_empty());
+    }
+
+    #[test]
+    fn classify_all_supported_extractors() {
+        let params = vec![
+            param_with_type_name("a", "Json"),
+            param_with_type_name("b", "Path"),
+            param_with_type_name("c", "Query"),
+            param_with_type_name("d", "State"),
+            param_with_type_name("e", "Form"),
+            param_with_type_name("f", "Extension"),
+            param_with_type_name("g", "RawBody"),
+            param_with_type_name("h", "RawQuery"),
+            param_with_type_name("i", "Host"),
+            param_with_type_name("j", "OriginalUri"),
+        ];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 10);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::JsonBody);
+        assert_eq!(mappings[1].kind, AxumExtractorKind::PathParams);
+        assert_eq!(mappings[2].kind, AxumExtractorKind::QueryParams);
+        assert_eq!(mappings[3].kind, AxumExtractorKind::AppState);
+        assert_eq!(mappings[4].kind, AxumExtractorKind::FormBody);
+        assert_eq!(mappings[5].kind, AxumExtractorKind::Extension);
+        assert_eq!(mappings[6].kind, AxumExtractorKind::RawBody);
+        assert_eq!(mappings[7].kind, AxumExtractorKind::RawQuery);
+        assert_eq!(mappings[8].kind, AxumExtractorKind::Host);
+        assert_eq!(mappings[9].kind, AxumExtractorKind::OriginalUri);
+    }
+
+    // ── Axum adapter strategy tests ──
+
+    #[test]
+    fn axum_handler_adapter_yields_adapter_owned() {
+        let model = InvocationModel::Adapter {
+            adapter_id: ADAPTER_ID_AXUM_HANDLER.to_string(),
+            synthetic_params: vec![],
+            scenario_schema: None,
+        };
+        assert!(matches!(
+            choose_invocation_strategy(&model),
+            InvocationStrategy::AdapterOwned { .. }
+        ));
+    }
+
+    #[test]
+    fn execute_adapter_owned_axum_without_analysis_returns_error() {
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let result = execute_adapter_owned(
+            ADAPTER_ID_AXUM_HANDLER,
+            "/tmp/test.rs",
+            "test_fn",
+            &[],
+            &[],
+            5000,
+            None, // no analysis
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::NonExecutable(msg) => {
+                assert!(msg.contains("requires cached function analysis"), "got: {msg}");
+            }
+            other => panic!("expected NonExecutable, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_adapter_owned_axum_with_unsupported_extractor_returns_error() {
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let mut analysis = stub_analysis();
+        analysis.params = vec![param_with_type_name("ctx", "Multipart")];
+        let result = execute_adapter_owned(
+            ADAPTER_ID_AXUM_HANDLER,
+            "/tmp/test.rs",
+            "test_fn",
+            &[],
+            &[],
+            5000,
+            Some(&analysis),
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::NonExecutable(msg) => {
+                assert!(msg.contains("unsupported extractor types"), "got: {msg}");
+                assert!(msg.contains("Multipart"), "got: {msg}");
+            }
+            other => panic!("expected NonExecutable, got: {other:?}"),
+        }
+    }
+
+    // ── Property tests ──
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_param_info() -> impl Strategy<Value = ParamInfo> {
+            (
+                "[a-z_]{1,10}",
+                proptest::option::of("[A-Z][a-zA-Z]{0,15}"),
+            )
+                .prop_map(|(name, type_name)| ParamInfo {
+                    name,
+                    typ: TypeInfo::Unknown,
+                    type_name,
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn classify_never_panics(params in proptest::collection::vec(arb_param_info(), 0..20)) {
+                let mappings = classify_axum_extractors(&params);
+                prop_assert_eq!(mappings.len(), params.len());
+                for (i, m) in mappings.iter().enumerate() {
+                    prop_assert_eq!(m.param_index, i);
+                }
+            }
+
+            #[test]
+            fn classify_known_extractors_roundtrip(
+                kind_idx in 0..10usize,
+            ) {
+                let names = ["Json", "Path", "Query", "State", "Form", "Extension", "RawBody", "RawQuery", "Host", "OriginalUri"];
+                let expected_kinds = [
+                    AxumExtractorKind::JsonBody,
+                    AxumExtractorKind::PathParams,
+                    AxumExtractorKind::QueryParams,
+                    AxumExtractorKind::AppState,
+                    AxumExtractorKind::FormBody,
+                    AxumExtractorKind::Extension,
+                    AxumExtractorKind::RawBody,
+                    AxumExtractorKind::RawQuery,
+                    AxumExtractorKind::Host,
+                    AxumExtractorKind::OriginalUri,
+                ];
+                let params = vec![param_with_type_name("x", names[kind_idx])];
+                let mappings = classify_axum_extractors(&params);
+                prop_assert_eq!(mappings[0].kind, expected_kinds[kind_idx]);
+            }
         }
     }
 }
