@@ -31,6 +31,7 @@ use crate::fingerprint::FunctionSignature;
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
+use crate::pipeline::{self, AnalyzeOutput};
 use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
 use crate::types::TypeInfo;
@@ -318,6 +319,16 @@ pub struct FunctionResult {
     pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
     /// Refactoring recommendations for hard-to-mock dependencies.
     pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
+}
+
+fn analyze_exploration(
+    exploration: &ObservationOutput,
+    analysis: &FunctionAnalysis,
+    fingerprint: Option<String>,
+) -> AnalyzeOutput {
+    let mut analyze_out = pipeline::analyze(exploration, analysis);
+    analyze_out.behavior_map.fingerprint = fingerprint;
+    analyze_out
 }
 
 /// Result of a full scan across multiple functions.
@@ -1303,8 +1314,7 @@ pub async fn scan(
         }
 
         // Run the Analyze stage to produce behavior map and coverage metrics.
-        let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
-        analyze_out.behavior_map.fingerprint = current_deep_fp.clone();
+        let mut analyze_out = analyze_exploration(&exploration, analysis, current_deep_fp.clone());
 
         // Merge GA discoveries into the behavior map before caching.
         if !ga_discoveries.is_empty() {
@@ -2557,9 +2567,10 @@ fn merge_replica_results(
         }
     }
 
-    // Build a merged ObservationOutput and re-analyze it. pipeline::analyze
-    // handles input-hash deduplication inside BehaviorMap::from_records and
-    // uses analysis.branches.len() for accurate CoverageMetrics.total_branches.
+    // Build a merged ObservationOutput and re-analyze it once.
+    // pipeline::analyze handles input-hash deduplication inside
+    // BehaviorMap::from_records and uses analysis.branches.len() for
+    // accurate CoverageMetrics.total_branches.
     let merged_stubbed = crate::explorer::collect_stubbed_modules(&merged_raw);
     let merged_exploration = ObservationOutput {
         function_name: func_name.clone(),
@@ -2583,8 +2594,7 @@ fn merge_replica_results(
         stubbed_modules: merged_stubbed,
     };
 
-    let mut analyze_out = crate::pipeline::analyze(&merged_exploration, analysis);
-    analyze_out.behavior_map.fingerprint = fingerprint;
+    let analyze_out = analyze_exploration(&merged_exploration, analysis, fingerprint);
 
     FunctionResult {
         function_name: func_name,
@@ -3741,8 +3751,7 @@ async fn explore_single_function(
     }
 
     // Run the Analyze stage to produce behavior map and coverage metrics.
-    let mut analyze_out = crate::pipeline::analyze(&exploration, analysis);
-    analyze_out.behavior_map.fingerprint = fingerprint;
+    let mut analyze_out = analyze_exploration(&exploration, analysis, fingerprint);
 
     // Merge GA discoveries into the behavior map.
     if !ga_discoveries.is_empty() {
@@ -7844,8 +7853,7 @@ mod tests {
             stubbed_modules: vec![],
         };
         let analysis = make_analysis(func_name, vec![]);
-        let mut analyze_out = crate::pipeline::analyze(&exploration, &analysis);
-        analyze_out.behavior_map.fingerprint = None;
+        let analyze_out = analyze_exploration(&exploration, &analysis, None);
         FunctionResult {
             function_name: func_name.to_string(),
             exploration,
