@@ -1750,7 +1750,8 @@ pub async fn explore(
             InputSource::UserProvided => DiscoveryMethod::UserProvided,
             InputSource::Drilled => DiscoveryMethod::Drilled,
             InputSource::BoundarySearch => DiscoveryMethod::BoundarySearch,
-            InputSource::Seed | InputSource::Fuzzed => DiscoveryMethod::Random,
+            InputSource::Seed => DiscoveryMethod::Random,
+            InputSource::Fuzzed => DiscoveryMethod::Fuzzed,
         };
         for decision in &obs.result.branch_path {
             if seen_branch_ids.insert(decision.branch_id) {

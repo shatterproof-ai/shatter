@@ -224,6 +224,7 @@ mod tests {
                 z3_solved: z3,
                 random_found: 0,
                 user_provided: 0,
+                fuzz_found: 0,
                 uncovered: branches.saturating_sub(z3),
                 symexpr_count: branches,
                 unknown_count: 0,

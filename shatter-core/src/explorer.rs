@@ -2937,6 +2937,7 @@ mod tests {
             z3_solved: 2,
             random_found: 1,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 3,
             unknown_count: 1,

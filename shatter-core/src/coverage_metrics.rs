@@ -30,6 +30,8 @@ pub enum DiscoveryMethod {
     BoundarySearch,
     /// Found by MC/DC-targeted Z3 query (condition-independence constraint).
     McdcTarget,
+    /// Found by coverage-guided fuzzing on an opaque-constraint frontier.
+    Fuzzed,
 }
 
 /// Percentage breakdown of discovery methods.
@@ -41,6 +43,8 @@ pub struct MethodPercentages {
     pub random_pct: f64,
     /// Percentage of branches found by user-provided inputs.
     pub user_provided_pct: f64,
+    /// Percentage of branches found by coverage-guided fuzzing.
+    pub fuzz_pct: f64,
     /// Percentage of branches still uncovered.
     pub uncovered_pct: f64,
 }
@@ -75,6 +79,8 @@ pub struct CoverageMetrics {
     pub random_found: usize,
     /// Branches discovered via user-provided inputs.
     pub user_provided: usize,
+    /// Branches discovered by coverage-guided fuzzing.
+    pub fuzz_found: usize,
     /// Branches that remain uncovered.
     pub uncovered: usize,
     /// Number of branch constraints expressed as SymExpr (solvable by Z3).
@@ -96,6 +102,7 @@ impl CoverageMetrics {
                 z3_pct: 0.0,
                 random_pct: 0.0,
                 user_provided_pct: 0.0,
+                fuzz_pct: 0.0,
                 uncovered_pct: 0.0,
             };
         }
@@ -105,6 +112,7 @@ impl CoverageMetrics {
             z3_pct: self.z3_solved as f64 / total * 100.0,
             random_pct: self.random_found as f64 / total * 100.0,
             user_provided_pct: self.user_provided as f64 / total * 100.0,
+            fuzz_pct: self.fuzz_found as f64 / total * 100.0,
             uncovered_pct: self.uncovered as f64 / total * 100.0,
         }
     }
@@ -134,6 +142,7 @@ impl CoverageMetrics {
         let mut z3_solved = 0usize;
         let mut random_found = 0usize;
         let mut user_provided = 0usize;
+        let mut fuzz_found = 0usize;
 
         for (_, method) in discoveries {
             match method {
@@ -142,10 +151,11 @@ impl CoverageMetrics {
                 | DiscoveryMethod::Drilled
                 | DiscoveryMethod::BoundarySearch => random_found += 1,
                 DiscoveryMethod::UserProvided => user_provided += 1,
+                DiscoveryMethod::Fuzzed => fuzz_found += 1,
             }
         }
 
-        let covered = z3_solved + random_found + user_provided;
+        let covered = z3_solved + random_found + user_provided + fuzz_found;
         let uncovered = total_branches.saturating_sub(covered);
 
         let mut symexpr_count = 0usize;
@@ -163,6 +173,7 @@ impl CoverageMetrics {
             z3_solved,
             random_found,
             user_provided,
+            fuzz_found,
             uncovered,
             symexpr_count,
             unknown_count,
@@ -181,6 +192,7 @@ impl CoverageMetrics {
         self.z3_solved += other.z3_solved;
         self.random_found += other.random_found;
         self.user_provided += other.user_provided;
+        self.fuzz_found += other.fuzz_found;
         self.uncovered += other.uncovered;
         self.symexpr_count += other.symexpr_count;
         self.unknown_count += other.unknown_count;
@@ -278,6 +290,12 @@ pub fn format_coverage_metrics(
         details.push(format!(
             "user: {} ({:.0}%)",
             metrics.user_provided, pct.user_provided_pct
+        ));
+    }
+    if metrics.fuzz_found > 0 {
+        details.push(format!(
+            "fuzz: {} ({:.0}%)",
+            metrics.fuzz_found, pct.fuzz_pct
         ));
     }
     if metrics.uncovered > 0 {
@@ -702,6 +720,10 @@ mod tests {
             DiscoveryMethod::Z3,
             DiscoveryMethod::Random,
             DiscoveryMethod::UserProvided,
+            DiscoveryMethod::Drilled,
+            DiscoveryMethod::BoundarySearch,
+            DiscoveryMethod::McdcTarget,
+            DiscoveryMethod::Fuzzed,
         ];
         for method in methods {
             let json = serde_json::to_string(&method).expect("serialize");
@@ -717,6 +739,7 @@ mod tests {
             z3_solved: 3,
             random_found: 4,
             user_provided: 1,
+            fuzz_found: 0,
             uncovered: 2,
             symexpr_count: 7,
             unknown_count: 3,
@@ -749,6 +772,7 @@ mod tests {
             z3_solved: 2,
             random_found: 1,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 2,
             symexpr_count: 3,
             unknown_count: 2,
@@ -773,6 +797,7 @@ mod tests {
             z3_solved: 1,
             random_found: 0,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 1,
             unknown_count: 1,
@@ -1047,6 +1072,7 @@ mod tests {
             z3_solved: 3,
             random_found: 2,
             user_provided: 1,
+            fuzz_found: 0,
             uncovered: 4,
             symexpr_count: 6,
             unknown_count: 4,
@@ -1057,6 +1083,7 @@ mod tests {
             z3_solved: 2,
             random_found: 3,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 3,
             symexpr_count: 5,
             unknown_count: 3,
@@ -1079,6 +1106,7 @@ mod tests {
             z3_solved: 2,
             random_found: 1,
             user_provided: 1,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 3,
             unknown_count: 2,
@@ -1096,6 +1124,7 @@ mod tests {
             z3_solved: 1,
             random_found: 1,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 2,
             symexpr_count: 2,
             unknown_count: 2,
@@ -1106,6 +1135,7 @@ mod tests {
             z3_solved: 2,
             random_found: 2,
             user_provided: 1,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 4,
             unknown_count: 2,
@@ -1179,6 +1209,7 @@ mod tests {
             z3_solved: 3,
             random_found: 0,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 2,
             unknown_count: 1,
@@ -1205,6 +1236,7 @@ mod tests {
             z3_solved: 3,
             random_found: 0,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 2,
             unknown_count: 1,
@@ -1225,6 +1257,7 @@ mod tests {
             z3_solved: 1,
             random_found: 0,
             user_provided: 0,
+            fuzz_found: 0,
             uncovered: 1,
             symexpr_count: 1,
             unknown_count: 1,
@@ -1253,6 +1286,35 @@ mod tests {
             "Z3 and McdcTarget both count toward z3_solved"
         );
         assert_eq!(metrics.random_found, 1);
+        assert_eq!(metrics.uncovered, 0);
+    }
+
+    // --- DiscoveryMethod::Fuzzed counts toward fuzz_found ---
+
+    #[test]
+    fn fuzzed_discovery_counts_toward_fuzz_found() {
+        let discoveries = vec![
+            (0, DiscoveryMethod::Z3),
+            (1, DiscoveryMethod::Fuzzed),
+            (2, DiscoveryMethod::Random),
+            (3, DiscoveryMethod::Fuzzed),
+            (4, DiscoveryMethod::UserProvided),
+        ];
+        let metrics = CoverageMetrics::from_exploration(5, &discoveries, &[]);
+        assert_eq!(
+            metrics.fuzz_found, 2,
+            "Fuzzed discoveries count toward fuzz_found"
+        );
+        let pct = metrics.percentages();
+        assert!(
+            (pct.fuzz_pct - 40.0).abs() < f64::EPSILON,
+            "fuzz_pct should be 40.0, got {}",
+            pct.fuzz_pct
+        );
+        // Other counters are correct too
+        assert_eq!(metrics.z3_solved, 1);
+        assert_eq!(metrics.random_found, 1);
+        assert_eq!(metrics.user_provided, 1);
         assert_eq!(metrics.uncovered, 0);
     }
 
