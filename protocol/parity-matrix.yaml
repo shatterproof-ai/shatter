@@ -518,6 +518,27 @@ side_effect_capabilities:
       go: not_supported
       rust: supported
 
+# --- Adapter capabilities ---
+#
+# Adapters wrap function invocation for targets that cannot be called directly
+# (async functions, framework handlers, etc.). Each adapter is language-specific.
+
+adapter_capabilities:
+  async_runtime:
+    status: optional
+    language_affinity: [rust]
+    notes: >
+      Generic adapter for async Rust functions. Wraps the function call in a
+      Tokio runtime (tokio::runtime::Runtime::new().block_on()). Supports
+      runtime-owned behavior: timers, spawned tasks, channels.
+      Adapter IDs: rust/async-tokio (high confidence with Tokio evidence),
+      rust/async-runtime (medium confidence for any async fn).
+      Sync functions are unaffected when the adapter is not selected.
+    frontends:
+      typescript: not_supported
+      go: not_supported
+      rust: implemented
+
 allowed_divergences:
   - id: ts-missing-teardown
     description: >

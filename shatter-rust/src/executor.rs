@@ -173,6 +173,8 @@ struct CompatFn {
     param_names: Vec<String>,
     param_types: Vec<String>,
     return_type: Option<String>,
+    /// True if the function is declared `async fn`.
+    is_async: bool,
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
@@ -494,7 +496,7 @@ fn extract_dependencies_section(cargo_toml: &str) -> String {
 /// Generate a Cargo.toml that includes `shatter-rust-runtime` + serde + serde_json
 /// PLUS all deps from the user's crate, so the instrumented source can reference
 /// external types (e.g. `regex::Regex`) that are available in the user's crate.
-fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path) -> String {
+fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path, needs_tokio: bool) -> String {
     let forwarded = extract_dependencies_section(user_cargo_toml);
     // Filter out deps the harness template already injects to avoid duplicate TOML keys.
     let filtered: String = forwarded
@@ -503,10 +505,16 @@ fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path
             // Extract the dep name: everything before the first '=', ' ', or '.'
             let key = line.split(['=', ' ', '.']).next().unwrap_or("").trim();
             key != "serde" && key != "serde_json" && key != "libc" && key != "shatter-rust-runtime"
+                && (!needs_tokio || key != "tokio")
         })
         .map(|line| format!("{line}\n"))
         .collect();
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
+    let tokio_dep = if needs_tokio {
+        "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else {
+        ""
+    };
     format!(
         r#"[package]
 name = "shatter-exec-temp"
@@ -520,7 +528,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{filtered}
+{tokio_dep}{filtered}
 "#
     )
 }
@@ -741,6 +749,8 @@ struct FnSignature {
     has_generics: bool,
     /// Names of type parameters for error messages (e.g. `["T", "U"]`).
     generic_names: Vec<String>,
+    /// True if the function is declared `async fn`.
+    is_async: bool,
 }
 
 /// File-level context needed for bin_only compatibility analysis.
@@ -802,6 +812,8 @@ fn extract_fn_context(source: &str, function_name: &str) -> Result<FnContext, Ex
                 .collect();
             let has_generics = !generic_names.is_empty();
 
+            let is_async = item_fn.sig.asyncness.is_some();
+
             return Ok(FnContext {
                 sig: FnSignature {
                     param_names,
@@ -809,6 +821,7 @@ fn extract_fn_context(source: &str, function_name: &str) -> Result<FnContext, Ex
                     return_type,
                     has_generics,
                     generic_names,
+                    is_async,
                 },
                 local_type_names,
                 has_module_path_uses,
@@ -870,6 +883,8 @@ fn extract_all_fn_contexts(source: &str) -> Vec<(String, FnContext)> {
                 .collect();
             let has_generics = !generic_names.is_empty();
 
+            let is_async = item_fn.sig.asyncness.is_some();
+
             Some((
                 function_name,
                 FnContext {
@@ -879,6 +894,7 @@ fn extract_all_fn_contexts(source: &str) -> Vec<(String, FnContext)> {
                         return_type,
                         has_generics,
                         generic_names,
+                        is_async,
                     },
                     local_type_names: local_type_names.clone(),
                     has_module_path_uses,
@@ -1065,8 +1081,13 @@ fn check_bin_only_compatibility(
 }
 
 /// Generate a Cargo.toml for the temp project.
-fn generate_cargo_toml(runtime_path: &Path) -> String {
+fn generate_cargo_toml(runtime_path: &Path, needs_tokio: bool) -> String {
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
+    let tokio_dep = if needs_tokio {
+        "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else {
+        ""
+    };
     format!(
         r#"[package]
 name = "shatter-exec-temp"
@@ -1080,7 +1101,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-"#
+{tokio_dep}"#
     )
 }
 
@@ -1157,6 +1178,7 @@ fn generate_harness(
     return_type: Option<&str>,
     mocks_json: &str,
     static_mut_names: &[String],
+    is_async: bool,
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(4096);
@@ -1236,11 +1258,20 @@ fn generate_harness(
     h.push_str("        }\n\n");
 
     // Call the function with panic recovery and timing via the runtime helper.
-    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str(&format!(
-        "            user_code::{function_name}({args})\n"
-    ));
-    h.push_str("        }));\n\n");
+    if is_async {
+        h.push_str("        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+        h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+        h.push_str(&format!(
+            "            __tokio_rt.block_on(user_code::{function_name}({args}))\n"
+        ));
+        h.push_str("        }));\n\n");
+    } else {
+        h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+        h.push_str(&format!(
+            "            user_code::{function_name}({args})\n"
+        ));
+        h.push_str("        }));\n\n");
+    }
 
     // Restore original stdout/stderr before writing JSON response.
     h.push_str("        unsafe { libc::dup2(__orig_stdout, 1); libc::close(__orig_stdout); }\n");
@@ -1414,11 +1445,20 @@ fn generate_dispatch_harness(
             .collect();
         let args = arg_list.join(", ");
         // Call with timing + panic recovery via runtime helper.
-        h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-        h.push_str(&format!(
-            "                    user_code::{fn_name}({args})\n"
-        ));
-        h.push_str("                }));\n");
+        if fn_info.is_async {
+            h.push_str("                let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+            h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+            h.push_str(&format!(
+                "                    __tokio_rt.block_on(user_code::{fn_name}({args}))\n"
+            ));
+            h.push_str("                }));\n");
+        } else {
+            h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+            h.push_str(&format!(
+                "                    user_code::{fn_name}({args})\n"
+            ));
+            h.push_str("                }));\n");
+        }
         // Map result.
         h.push_str("                match result {\n");
         if return_type.is_some() {
@@ -1511,12 +1551,13 @@ fn build_and_spawn_harness(
     harness_source: &str,
     harness_dir: &Path,
     runtime_path: &Path,
+    needs_tokio: bool,
     mut timing: Option<&mut TimingCollector>,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml = generate_cargo_toml(runtime_path);
+    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio);
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -1948,9 +1989,16 @@ fn generate_crate_bridge_wrapper(
 
         w.push_str("    shatter_rust_runtime::reset();\n");
         w.push_str("    let start = std::time::Instant::now();\n");
-        w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-        w.push_str(&format!("        super::{fn_name}({args})\n"));
-        w.push_str("    }));\n");
+        if fn_info.is_async {
+            w.push_str("    let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+            w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+            w.push_str(&format!("        __tokio_rt.block_on(super::{fn_name}({args}))\n"));
+            w.push_str("    }));\n");
+        } else {
+            w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+            w.push_str(&format!("        super::{fn_name}({args})\n"));
+            w.push_str("    }));\n");
+        }
         w.push_str("    let wall_time_ms = start.elapsed().as_secs_f64() * 1000.0;\n");
         w.push_str("    let runtime_json = shatter_rust_runtime::flush_results();\n");
         w.push_str("    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
@@ -2065,8 +2113,13 @@ fn generate_crate_bridge_bin(crate_name: &str) -> String {
 ///
 /// The driver depends on the user's crate (by path) with the
 /// `shatter-crate-bridge` feature enabled, so it compiles `__shatter.rs`.
-fn generate_crate_bridge_cargo_toml(crate_name: &str, crate_root: &Path) -> String {
+fn generate_crate_bridge_cargo_toml(crate_name: &str, crate_root: &Path, needs_tokio: bool) -> String {
     let crate_path = crate_root.display().to_string().replace('\\', "/");
+    let tokio_dep = if needs_tokio {
+        "tokio = { version = \"1\", features = [\"full\"] }\n"
+    } else {
+        ""
+    };
     format!(
         r#"[package]
 name = "shatter-crate-bridge-exec"
@@ -2077,7 +2130,7 @@ edition = "2021"
 
 [dependencies]
 {crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
-"#
+{tokio_dep}"#
     )
 }
 
@@ -2254,6 +2307,7 @@ fn execute_function_crate_bridge(
                     param_names: ctx.sig.param_names.clone(),
                     param_types: ctx.sig.param_types.clone(),
                     return_type: ctx.sig.return_type.clone(),
+                    is_async: ctx.sig.is_async,
                 })
             }
         })
@@ -2359,8 +2413,9 @@ fn execute_function_crate_bridge(
     // Inject feature + optional serde_json + shatter-rust-runtime into user Cargo.toml (idempotent).
     inject_crate_bridge_feature(&user_cargo_toml_path, &runtime_path)?;
 
+    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
     let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
-    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root);
+    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root, needs_tokio);
 
     let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
@@ -2451,6 +2506,7 @@ fn execute_function_crate_backed(
                     param_names: ctx.sig.param_names.clone(),
                     param_types: ctx.sig.param_types.clone(),
                     return_type: ctx.sig.return_type.clone(),
+                    is_async: ctx.sig.is_async,
                 })
             } else {
                 None
@@ -2493,6 +2549,7 @@ fn execute_function_crate_backed(
         ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
     })?;
 
+    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
     let harness_source = generate_dispatch_harness(
         &instr_result.source,
         &compatible_fns,
@@ -2505,7 +2562,7 @@ fn execute_function_crate_backed(
         .unwrap_or_default();
 
     let runtime_path = find_runtime_crate_path()?;
-    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path);
+    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio);
 
     let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
@@ -2766,6 +2823,7 @@ pub fn execute_function_with_timing(
                 sig.return_type.as_deref(),
                 &mocks_json,
                 &static_mut_names,
+                sig.is_async,
             )
         })?
     } else {
@@ -2777,6 +2835,7 @@ pub fn execute_function_with_timing(
             sig.return_type.as_deref(),
             &mocks_json,
             &static_mut_names,
+            sig.is_async,
         )?
     };
 
@@ -2785,10 +2844,10 @@ pub fn execute_function_with_timing(
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
-            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, Some(timing))
+            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, Some(timing))
         })?
     } else {
-        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, None)?
+        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, None)?
     };
 
     // Execute the first call
@@ -2882,7 +2941,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
-        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"));
+        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false);
         assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
@@ -2898,6 +2957,7 @@ mod tests {
             Some("& 'static str"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
         assert!(harness.contains("mod user_code"));
@@ -2909,10 +2969,98 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[]).unwrap();
+        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[], false).unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
         assert!(harness.contains("run_harness_loop"));
+    }
+
+    // ── Async harness generation tests ──
+
+    #[test]
+    fn generate_harness_async_wraps_in_tokio_runtime() {
+        let source = "async fn fetch(url: String) -> String { url }";
+        let harness = generate_harness(
+            source,
+            "fetch",
+            &["url".to_string()],
+            &["String".to_string()],
+            Some("String"),
+            "[]",
+            &[],
+            true,
+        )
+        .unwrap();
+        assert!(
+            harness.contains("tokio::runtime::Runtime::new()"),
+            "async harness must create Tokio runtime\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("block_on(user_code::fetch(url))"),
+            "async harness must block_on the async call\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_harness_sync_no_tokio() {
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let harness = generate_harness(
+            source,
+            "add",
+            &["a".to_string(), "b".to_string()],
+            &["i32".to_string(), "i32".to_string()],
+            Some("i32"),
+            "[]",
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(
+            !harness.contains("tokio"),
+            "sync harness must not reference tokio\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_cargo_toml_with_tokio() {
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true);
+        assert!(
+            toml.contains("tokio"),
+            "needs_tokio=true must include tokio dep\n\ntoml:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn generate_cargo_toml_without_tokio() {
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false);
+        assert!(
+            !toml.contains("tokio"),
+            "needs_tokio=false must not include tokio dep\n\ntoml:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn extract_fn_context_detects_async() {
+        let source = "async fn fetch() -> String { String::new() }";
+        let ctx = extract_fn_context(source, "fetch").unwrap();
+        assert!(ctx.sig.is_async, "async fn must set is_async=true");
+    }
+
+    #[test]
+    fn extract_fn_context_sync_not_async() {
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let ctx = extract_fn_context(source, "add").unwrap();
+        assert!(!ctx.sig.is_async, "sync fn must set is_async=false");
+    }
+
+    #[test]
+    fn extract_all_fn_contexts_detects_mixed_async() {
+        let source = "fn sync_fn() {} async fn async_fn() -> i32 { 42 }";
+        let ctxs = extract_all_fn_contexts(source);
+        let sync_ctx = ctxs.iter().find(|(n, _)| n == "sync_fn").unwrap();
+        let async_ctx = ctxs.iter().find(|(n, _)| n == "async_fn").unwrap();
+        assert!(!sync_ctx.1.sig.is_async);
+        assert!(async_ctx.1.sig.is_async);
     }
 
     /// Regression test for str-dcln: Result-returning functions must use
@@ -2930,6 +3078,7 @@ mod tests {
             Some("Result < f64 , String >"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
         assert!(
@@ -2954,6 +3103,7 @@ mod tests {
             param_names: vec!["a".to_string(), "b".to_string()],
             param_types: vec!["f64".to_string(), "f64".to_string()],
             return_type: Some("Result < f64 , String >".to_string()),
+            is_async: false,
         }];
         let harness = generate_dispatch_harness(source, &fns, "[]", &[]).unwrap();
         assert!(
@@ -2975,6 +3125,7 @@ mod tests {
             param_names: vec!["a".to_string(), "b".to_string()],
             param_types: vec!["f64".to_string(), "f64".to_string()],
             return_type: Some("Result < f64 , String >".to_string()),
+            is_async: false,
         }];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
         assert!(
@@ -3008,6 +3159,7 @@ fn main() {
             Some("& 'static str"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3064,6 +3216,7 @@ fn main() {
             Some("String"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3361,6 +3514,7 @@ fn main() {
             Some("String"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3457,6 +3611,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &["COUNTER".to_string()],
+            false,
         )
         .unwrap();
 
@@ -3492,6 +3647,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3522,6 +3678,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3554,6 +3711,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
+            false,
         )
         .unwrap();
 
@@ -3567,7 +3725,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn generate_harness_includes_libc_dependency() {
         let runtime_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
-        let toml = generate_cargo_toml(&runtime_path);
+        let toml = generate_cargo_toml(&runtime_path, false);
         assert!(
             toml.contains("libc"),
             "generated Cargo.toml must include libc dependency\n\ntoml:\n{toml}"
@@ -3788,7 +3946,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     fn generate_cargo_toml_includes_user_deps() {
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false);
         assert!(result.contains("[workspace]"), "must opt generated harness out of parent workspaces");
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
@@ -3800,7 +3958,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // User crate already declares serde_json and serde — must not produce duplicate keys.
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\nserde = { version = \"1\", features = [\"derive\"] }\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false);
         assert!(result.contains("regex"), "must include forwarded user dep");
         let serde_json_count = result.matches("serde_json").count();
         assert_eq!(serde_json_count, 1, "serde_json must appear exactly once, got:\n{result}");
@@ -4092,8 +4250,8 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn crate_bridge_wrapper_contains_all_functions() {
         let fns = vec![
-            CompatFn { name: "foo".to_string(), param_names: vec!["x".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()) },
-            CompatFn { name: "bar".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+            CompatFn { name: "foo".to_string(), param_names: vec!["x".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
+            CompatFn { name: "bar".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
         assert!(wrapper.contains("shatter_wrap_foo"), "wrapper must contain shatter_wrap_foo");
@@ -4103,7 +4261,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn crate_bridge_wrapper_uses_super_prefix() {
         let fns = vec![
-            CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()) },
+            CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
         assert!(wrapper.contains("super::my_fn"), "wrapper must call super::my_fn, not bare my_fn");
@@ -4112,7 +4270,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn crate_bridge_wrapper_has_run_harness_entry_point() {
         let fns = vec![
-            CompatFn { name: "calc".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+            CompatFn { name: "calc".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
         assert!(wrapper.contains("pub fn shatter_run_harness()"), "wrapper must export shatter_run_harness");
@@ -4122,8 +4280,8 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn crate_bridge_wrapper_dispatch_includes_function_names() {
         let fns = vec![
-            CompatFn { name: "alpha".to_string(), param_names: vec![], param_types: vec![], return_type: None },
-            CompatFn { name: "beta".to_string(), param_names: vec![], param_types: vec![], return_type: None },
+            CompatFn { name: "alpha".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
+            CompatFn { name: "beta".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
         assert!(wrapper.contains("\"alpha\""), "dispatch must match on \"alpha\"");
@@ -4141,7 +4299,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
     #[test]
     fn crate_bridge_cargo_toml_has_feature_dep() {
-        let toml = generate_crate_bridge_cargo_toml("my-crate", std::path::Path::new("/some/path"));
+        let toml = generate_crate_bridge_cargo_toml("my-crate", std::path::Path::new("/some/path"), false);
         assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
         assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
     }
