@@ -55,6 +55,7 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 	}
 	// Register built-in adapter factories.
 	h.RegisterHookFactory(createHTTPHandlerFactory())
+	h.RegisterHookFactory(createGinHandlerFactory())
 	return h
 }
 
