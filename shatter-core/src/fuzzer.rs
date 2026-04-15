@@ -246,7 +246,7 @@ impl FuzzSession {
                 executions,
                 new_paths_found: new_paths.len() as u32,
                 corpus_size: self.corpus.len(),
-                termination_reason: termination_reason,
+                termination_reason,
                 target_branch_ids: self.target_branch_ids.clone(),
             },
             new_paths,
