@@ -35,6 +35,7 @@ pub mod fingerprint;
 pub mod float_probe;
 pub mod frontend;
 pub mod frontier;
+pub mod fuzzer;
 pub mod genetic;
 pub mod genetic_explorer;
 pub mod genetic_fitness;

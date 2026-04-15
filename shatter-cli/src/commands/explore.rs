@@ -1997,6 +1997,7 @@ pub(crate) async fn run_explore(
                     },
                     shrink_budget,
                     mcdc,
+                    fuzz: resolved.fuzz.clone(),
                 };
                 (Some(cc), seeds, users)
             } else {

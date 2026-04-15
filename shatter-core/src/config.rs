@@ -36,6 +36,15 @@ pub const DEFAULT_EXPLORATION_COLD_START: u64 = 20;
 /// Default minimum allocation fraction per strategy (2%).
 pub const DEFAULT_EXPLORATION_STRATEGY_FLOOR: f64 = 0.02;
 
+/// Consecutive no-new-path executions before ending a fuzz phase.
+pub const DEFAULT_FUZZ_PLATEAU_THRESHOLD: u32 = 50;
+/// Maximum total executions per fuzz phase.
+pub const DEFAULT_FUZZ_MAX_EXECUTIONS: u32 = 1000;
+/// Wall-clock timeout in seconds per fuzz phase.
+pub const DEFAULT_FUZZ_TIMEOUT_SECS: u32 = 30;
+/// Maximum fuzz attempts per branch before giving up (bounded mode).
+pub const DEFAULT_FUZZ_MAX_ATTEMPTS: u32 = 3;
+
 /// Session-level setup configuration: a setup file run once before any file
 /// in the test session.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -324,6 +333,53 @@ impl Default for GeneticConfig {
     }
 }
 
+/// Configuration for the hybrid coverage-guided fuzzing phase.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct FuzzConfig {
+    /// Consecutive no-new-path executions before ending a fuzz phase.
+    #[serde(default = "FuzzConfig::default_plateau_threshold")]
+    pub plateau_threshold: Option<u32>,
+
+    /// Maximum total executions per fuzz phase.
+    #[serde(default = "FuzzConfig::default_max_executions")]
+    pub max_executions: Option<u32>,
+
+    /// Wall-clock timeout in seconds per fuzz phase.
+    #[serde(default = "FuzzConfig::default_timeout_seconds")]
+    pub timeout_seconds: Option<u32>,
+
+    /// Maximum fuzz attempts per branch before giving up (bounded mode).
+    /// `None` means unlimited (indefinite mode).
+    #[serde(default = "FuzzConfig::default_max_attempts")]
+    pub max_attempts: Option<u32>,
+}
+
+impl FuzzConfig {
+    fn default_plateau_threshold() -> Option<u32> {
+        Some(DEFAULT_FUZZ_PLATEAU_THRESHOLD)
+    }
+    fn default_max_executions() -> Option<u32> {
+        Some(DEFAULT_FUZZ_MAX_EXECUTIONS)
+    }
+    fn default_timeout_seconds() -> Option<u32> {
+        Some(DEFAULT_FUZZ_TIMEOUT_SECS)
+    }
+    fn default_max_attempts() -> Option<u32> {
+        Some(DEFAULT_FUZZ_MAX_ATTEMPTS)
+    }
+}
+
+impl Default for FuzzConfig {
+    fn default() -> Self {
+        Self {
+            plateau_threshold: Self::default_plateau_threshold(),
+            max_executions: Self::default_max_executions(),
+            timeout_seconds: Self::default_timeout_seconds(),
+            max_attempts: Self::default_max_attempts(),
+        }
+    }
+}
+
 /// Strategy meta-configuration for adaptive exploration.
 ///
 /// Controls how the [`MetaStrategy`](crate::strategy::MetaStrategy) selects
@@ -481,6 +537,10 @@ pub struct DefaultsConfig {
     #[serde(default)]
     pub exploration: Option<ExplorationConfig>,
 
+    /// Hybrid coverage-guided fuzzing phase settings.
+    #[serde(default)]
+    pub fuzz: Option<FuzzConfig>,
+
     /// Ordered opaque execution adapter descriptors for this target family.
     #[serde(default)]
     pub execution_profile: Option<ExecutionProfile>,
@@ -536,6 +596,10 @@ pub struct FunctionConfig {
     /// Strategy meta-configuration, overriding defaults.
     #[serde(default)]
     pub exploration: Option<ExplorationConfig>,
+
+    /// Hybrid coverage-guided fuzzing phase settings, overriding defaults.
+    #[serde(default)]
+    pub fuzz: Option<FuzzConfig>,
 
     /// Ordered opaque execution adapter descriptors, overriding defaults.
     #[serde(default)]
@@ -620,6 +684,9 @@ pub struct ResolvedFunctionConfig {
 
     /// Resolved genetic algorithm configuration.
     pub genetic: GeneticConfig,
+
+    /// Resolved hybrid fuzzing configuration.
+    pub fuzz: FuzzConfig,
 
     /// Opaque execution profile to pass through to the frontend, if any.
     pub execution_profile: Option<ExecutionProfile>,
@@ -861,6 +928,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     let mut execution_profile = None;
     let mut exploration = None;
     let mut genetic = None;
+    let mut fuzz = None;
 
     // Merge generators and file_setup maps: start from farthest, overlay nearer.
     // This lets a near config override specific keys while inheriting the rest.
@@ -919,6 +987,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         }
         if genetic.is_none() {
             genetic = config.defaults.genetic.clone();
+        }
+        if fuzz.is_none() {
+            fuzz = config.defaults.fuzz.clone();
         }
     }
 
@@ -997,6 +1068,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
             mocks,
             genetic,
             exploration,
+            fuzz,
             execution_profile,
         },
         functions,
@@ -1086,6 +1158,12 @@ fn resolve_from_merged(
         .or_else(|| config.defaults.genetic.clone())
         .unwrap_or_default();
 
+    // Resolve fuzz config: function > defaults > built-in defaults.
+    let fuzz = func_config
+        .and_then(|fc| fc.fuzz.clone())
+        .or_else(|| config.defaults.fuzz.clone())
+        .unwrap_or_default();
+
     let execution_profile = func_config
         .and_then(|fc| fc.execution_profile.clone())
         .or_else(|| config.defaults.execution_profile.clone());
@@ -1107,6 +1185,7 @@ fn resolve_from_merged(
         mock_overrides,
         exploration,
         genetic,
+        fuzz,
         execution_profile,
     })
 }
@@ -1529,6 +1608,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                fuzz: None,
                 execution_profile: None,
             },
         );
@@ -1549,6 +1629,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                fuzz: None,
                 execution_profile: None,
             },
         );
@@ -1646,6 +1727,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                fuzz: None,
                 execution_profile: None,
             },
         );
@@ -1685,6 +1767,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                fuzz: None,
                 execution_profile: Some(ExecutionProfile {
                     adapters: vec![ExecutionAdapter {
                         id: "ts/react-hooks".to_string(),
@@ -1765,6 +1848,7 @@ functions:
                 mocks: None,
                 genetic: None,
                 exploration: None,
+                fuzz: None,
                 execution_profile: None,
             },
         );
@@ -2732,6 +2816,7 @@ defaults:
                             mocks: None,
                             genetic: None,
                             exploration: None,
+                            fuzz: None,
                             execution_profile: None,
                         }
                     },
@@ -2844,6 +2929,49 @@ defaults:
             let json = serde_json::to_string(&config).unwrap();
             let restored: ProjectConfig = serde_json::from_str(&json).unwrap();
             assert_eq!(config, restored);
+        }
+
+        #[test]
+        fn fuzz_config_yaml_roundtrip() {
+            let yaml = r#"
+plateau_threshold: 100
+max_executions: 2000
+timeout_seconds: 60
+max_attempts: 5
+"#;
+            let config: FuzzConfig = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(config.plateau_threshold, Some(100));
+            assert_eq!(config.max_executions, Some(2000));
+            assert_eq!(config.timeout_seconds, Some(60));
+            assert_eq!(config.max_attempts, Some(5));
+
+            // Roundtrip
+            let serialized = serde_yaml::to_string(&config).unwrap();
+            let restored: FuzzConfig = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(config, restored);
+        }
+
+        #[test]
+        fn fuzz_config_defaults_when_absent() {
+            let yaml = r#"
+defaults:
+  max_iterations: 50
+functions:
+  "src/math.ts:add":
+    max_iterations: 100
+"#;
+            let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+            // No fuzz section — defaults should be None at parse level.
+            assert!(config.defaults.fuzz.is_none());
+
+            // Resolution should produce built-in defaults.
+            let resolved = resolve_function_config("src/math.ts:add", &[config], None, 30);
+            let resolved = resolved.unwrap();
+            let fuzz = &resolved.fuzz;
+            assert_eq!(fuzz.plateau_threshold, Some(DEFAULT_FUZZ_PLATEAU_THRESHOLD));
+            assert_eq!(fuzz.max_executions, Some(DEFAULT_FUZZ_MAX_EXECUTIONS));
+            assert_eq!(fuzz.timeout_seconds, Some(DEFAULT_FUZZ_TIMEOUT_SECS));
+            assert_eq!(fuzz.max_attempts, Some(DEFAULT_FUZZ_MAX_ATTEMPTS));
         }
 
         proptest! {
