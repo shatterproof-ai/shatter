@@ -1803,7 +1803,7 @@ pub async fn explore(
                         let mut fuzz_executions: u32 = 0;
                         let mut fuzz_plateau: u32 = 0;
                         let mut fuzz_new_paths: u32 = 0;
-                        let mut fuzz_rng = rand::rng();
+                        let mut fuzz_rng = StdRng::from_os_rng();
 
                         let fuzz_termination = loop {
                             if fuzz_plateau >= fuzz_plateau_threshold {
