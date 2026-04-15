@@ -138,6 +138,8 @@ pub struct ExploreConfig {
     /// per-condition independence and generates targeted Z3 queries for
     /// missing MC/DC pairs.
     pub mcdc: bool,
+    /// Configuration for the hybrid fuzzing phase.
+    pub fuzz: crate::config::FuzzConfig,
 }
 
 /// Default shrink budget per behavior witness.
@@ -171,6 +173,7 @@ impl Default for ExploreConfig {
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
             mcdc: false,
+            fuzz: crate::config::FuzzConfig::default(),
         }
     }
 }

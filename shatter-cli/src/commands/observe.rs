@@ -118,6 +118,7 @@ pub(crate) async fn run_observe(
             refine_budget: None,
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             mcdc: false,
+            fuzz: shatter_core::config::FuzzConfig::default(),
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend
