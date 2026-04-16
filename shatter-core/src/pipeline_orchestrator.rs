@@ -170,7 +170,7 @@ pub struct ObserveInput<'a> {
 /// `run_pipeline` uses only `extra_seeds`; the live explore CLI batch path
 /// supplies the richer fields so it can route through the staged runner
 /// without dropping mocks, progress reporting, or concolic resume state.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ObserveStageOptions<'a> {
     /// Additional seeds to append for this observe invocation.
     pub extra_seeds: &'a [Vec<serde_json::Value>],
@@ -186,19 +186,6 @@ pub struct ObserveStageOptions<'a> {
     pub progress_hints: Option<crate::explorer::ProgressHints<'a>>,
     /// Resumable concolic state from a prior batch.
     pub resume_state: Option<orchestrator::ExploreState>,
-}
-
-impl<'a> Default for ObserveStageOptions<'a> {
-    fn default() -> Self {
-        Self {
-            extra_seeds: &[],
-            instrument_mocks: &[],
-            concolic_seed_inputs: &[],
-            concolic_user_inputs: &[],
-            progress_hints: None,
-            resume_state: None,
-        }
-    }
 }
 
 /// Outputs from a single Observe-stage execution.
