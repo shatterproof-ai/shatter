@@ -21,7 +21,7 @@ syn = { version = "2", features = ["full", "parsing", "visit-mut"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 sha2 = "0.10"
+tempfile = "3"
 
 [dev-dependencies]
 proptest = "1"
-tempfile = "3"

@@ -121,6 +121,14 @@ impl NativeRegistry {
         Ok((sentinel, result.id, result.recipe))
     }
 
+    /// Register all built-in native generators (currently: FileHandle).
+    pub fn register_builtins(&mut self) {
+        self.register(
+            "FileHandle",
+            Box::new(crate::file_handle_generator::generate),
+        );
+    }
+
     pub fn has_native(&self, name: &str) -> bool {
         self.generators.contains_key(name)
     }
