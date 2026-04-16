@@ -25,6 +25,9 @@ known_drifts:
   - pattern: "condition.*ite"
     reason: "Only TS produces ite SymExpr from conditional reassignment; Go/Rust lack data flow tracking (str-4kop)"
 
+  - pattern: "loop_body_states"
+    reason: "Only TS currently emits loop_body_states for supported counted loops; Go/Rust only round-trip the field today (str-z0kp.2)"
+
 frontends:
   noop:
     command: ["bash", "protocol/noop-frontend.sh"]

@@ -146,6 +146,7 @@ type Response struct {
 	PathConstraints        []SymConstraint        `json:"path_constraints,omitempty"`
 	SideEffects            []SideEffect           `json:"side_effects,omitempty"`
 	ScopeEvents            []json.RawMessage      `json:"scope_events,omitempty"`
+	LoopBodyStates         []LoopBodyState        `json:"loop_body_states,omitempty"`
 	CaptureTruncation      *TruncationInfo        `json:"capture_truncation,omitempty"`
 	Performance            *PerfMetrics           `json:"performance,omitempty"`
 
@@ -360,6 +361,12 @@ type BranchDecision struct {
 	// Conditions holds per-condition outcomes for MC/DC analysis.
 	// Present only when MC/DC mode is enabled and the decision is compound.
 	Conditions []ConditionOutcome `json:"conditions,omitempty"`
+}
+
+type LoopBodyState struct {
+	LoopID    int                `json:"loop_id"`
+	Iteration int                `json:"iteration"`
+	Locals    map[string]SymExpr `json:"locals,omitempty"`
 }
 
 // SymExpr is a symbolic expression representing a constraint on inputs.

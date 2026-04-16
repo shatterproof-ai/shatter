@@ -32,6 +32,8 @@ import type {
   ConnectionFailureKind,
   ConditionOutcome,
   RuntimeCryptoBoundary,
+  LoopBodyState,
+  LoopInfo,
 } from "./protocol.js";
 import { detectRuntimeHints } from "./runtime-hints.js";
 import type {
@@ -40,7 +42,7 @@ import type {
   InvocationContext,
   AdapterInvocationModel,
 } from "./runtime-hooks.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES } from "./instrumentor.js";
+import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES, buildSymExprWithFlow } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 import logger from "./logger.js";
@@ -737,10 +739,402 @@ interface RawExecuteResult {
   side_effects: SideEffect[];
   calls_to_external: ExternalCall[];
   scope_events: TraceEvent[];
+  loop_body_states: LoopBodyState[];
   discovered_dependencies: DiscoveredDependency[];
   connection_failures: ConnectionFailure[];
   runtime_crypto_boundaries: RuntimeCryptoBoundary[];
   adapter_hints: AdapterHint[];
+}
+
+function extractLoopBodyStates(
+  source: string,
+  functionName: string,
+  fileName: string,
+  loops: LoopInfo[],
+  scopeEvents: TraceEvent[],
+): LoopBodyState[] {
+  if (loops.length === 0) {
+    return [];
+  }
+
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const targetFunction = findFunctionNode(sourceFile, functionName);
+  const body = extractFunctionBodyNode(targetFunction);
+  if (!body) {
+    return [];
+  }
+
+  const loopIterations = countObservedLoopIterations(scopeEvents);
+  if (loopIterations.size === 0) {
+    return [];
+  }
+
+  const loopInfoByLine = new Map<number, LoopInfo>();
+  for (const loop of loops) {
+    loopInfoByLine.set(loop.line, loop);
+  }
+
+  const paramNames = extractFunctionParamNames(targetFunction);
+  const flowMap = new Map<string, SymExpr>();
+  const snapshots: LoopBodyState[] = [];
+  const resolveName = (name: string): SymExpr | undefined => {
+    if (paramNames.has(name)) {
+      return { kind: "param", name, path: [] };
+    }
+    return flowMap.get(name);
+  };
+
+  visitStatementsForLoopSnapshots(body.statements, sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+  return snapshots;
+}
+
+function findFunctionNode(
+  sourceFile: ts.SourceFile,
+  functionName: string,
+): ts.FunctionDeclaration | ts.VariableStatement | undefined {
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === functionName) {
+      return statement;
+    }
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === functionName &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+      ) {
+        return statement;
+      }
+    }
+  }
+  return undefined;
+}
+
+function extractFunctionBodyNode(
+  node: ts.FunctionDeclaration | ts.VariableStatement | undefined,
+): ts.Block | undefined {
+  if (!node) {
+    return undefined;
+  }
+  if (ts.isFunctionDeclaration(node)) {
+    return node.body;
+  }
+  for (const declaration of node.declarationList.declarations) {
+    if (!declaration.initializer) {
+      continue;
+    }
+    if (ts.isArrowFunction(declaration.initializer) && ts.isBlock(declaration.initializer.body)) {
+      return declaration.initializer.body;
+    }
+    if (ts.isFunctionExpression(declaration.initializer)) {
+      return declaration.initializer.body;
+    }
+  }
+  return undefined;
+}
+
+function extractFunctionParamNames(
+  node: ts.FunctionDeclaration | ts.VariableStatement | undefined,
+): Set<string> {
+  const names = new Set<string>();
+  if (!node) {
+    return names;
+  }
+
+  const parameters = ts.isFunctionDeclaration(node)
+    ? node.parameters
+    : node.declarationList.declarations.flatMap((declaration) => {
+      const initializer = declaration.initializer;
+      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+        return initializer.parameters;
+      }
+      return [];
+    });
+
+  for (const param of parameters) {
+    if (ts.isIdentifier(param.name)) {
+      names.add(param.name.text);
+    }
+  }
+  return names;
+}
+
+function countObservedLoopIterations(scopeEvents: TraceEvent[]): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const event of scopeEvents) {
+    if (event.type === "scope" && event.event.kind === "loop_enter") {
+      counts.set(event.event.loop_id, (counts.get(event.event.loop_id) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function visitStatementsForLoopSnapshots(
+  statements: ts.NodeArray<ts.Statement> | ReadonlyArray<ts.Statement>,
+  sourceFile: ts.SourceFile,
+  loopInfoByLine: Map<number, LoopInfo>,
+  loopIterations: Map<number, number>,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+  snapshots: LoopBodyState[],
+): void {
+  for (const statement of statements) {
+    if (ts.isVariableStatement(statement)) {
+      visitVariableDeclarationListForLoopSnapshots(statement.declarationList, resolveName, flowMap);
+      continue;
+    }
+
+    if (ts.isExpressionStatement(statement)) {
+      visitExpressionForLoopSnapshots(statement.expression, resolveName, flowMap);
+      continue;
+    }
+
+    if (ts.isIfStatement(statement)) {
+      const condition = buildSymExprWithFlow(statement.expression, resolveName);
+      const snapshot = new Map(flowMap);
+      visitStatementsForLoopSnapshots(statementsFromBranch(statement.thenStatement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+      const thenMap = new Map(flowMap);
+      flowMap.clear();
+      for (const [name, expr] of snapshot) {
+        flowMap.set(name, expr);
+      }
+      if (statement.elseStatement) {
+        visitStatementsForLoopSnapshots(statementsFromBranch(statement.elseStatement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+      }
+      const elseMap = new Map(flowMap);
+      mergeLoopSnapshotFlowMaps(condition, snapshot, thenMap, elseMap, flowMap);
+      continue;
+    }
+
+    if (ts.isForStatement(statement)) {
+      const line = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
+      const loopInfo = loopInfoByLine.get(line);
+      visitForStatementForLoopSnapshots(statement, loopInfo, loopIterations, sourceFile, loopInfoByLine, resolveName, flowMap, snapshots);
+      continue;
+    }
+
+    if (ts.isBlock(statement)) {
+      visitStatementsForLoopSnapshots(statement.statements, sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+    }
+  }
+}
+
+function visitForStatementForLoopSnapshots(
+  statement: ts.ForStatement,
+  loopInfo: LoopInfo | undefined,
+  loopIterations: Map<number, number>,
+  sourceFile: ts.SourceFile,
+  loopInfoByLine: Map<number, LoopInfo>,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+  snapshots: LoopBodyState[],
+): void {
+  visitForInitializerForLoopSnapshots(statement.initializer, resolveName, flowMap);
+
+  const iterationCount = loopInfo ? (loopIterations.get(loopInfo.loop_id) ?? 0) : 0;
+  const trackedLocals = loopInfo ? collectTrackedLoopLocalNames(statement.statement, loopInfo.induction_var.name) : [];
+
+  for (let iteration = 0; iteration < iterationCount; iteration++) {
+    if (loopInfo && trackedLocals.length > 0) {
+      const locals: Record<string, SymExpr> = {};
+      for (const name of trackedLocals) {
+        const expr = flowMap.get(name);
+        if (expr && expr.kind !== "unknown") {
+          locals[name] = expr;
+        }
+      }
+      if (Object.keys(locals).length > 0) {
+        snapshots.push({
+          loop_id: loopInfo.loop_id,
+          iteration,
+          locals,
+        });
+      }
+    }
+
+    visitStatementsForLoopSnapshots(statementsFromBranch(statement.statement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+    if (statement.incrementor) {
+      visitExpressionForLoopSnapshots(statement.incrementor, resolveName, flowMap);
+    }
+  }
+}
+
+function visitForInitializerForLoopSnapshots(
+  initializer: ts.ForInitializer | undefined,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (!initializer) {
+    return;
+  }
+  if (ts.isVariableDeclarationList(initializer)) {
+    visitVariableDeclarationListForLoopSnapshots(initializer, resolveName, flowMap);
+    return;
+  }
+  visitExpressionForLoopSnapshots(initializer, resolveName, flowMap);
+}
+
+function visitVariableDeclarationListForLoopSnapshots(
+  declarationList: ts.VariableDeclarationList,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  for (const declaration of declarationList.declarations) {
+    if (ts.isIdentifier(declaration.name) && declaration.initializer) {
+      const expr = buildSymExprWithFlow(declaration.initializer, resolveName);
+      if (expr.kind !== "unknown") {
+        flowMap.set(declaration.name.text, expr);
+      }
+    }
+  }
+}
+
+function visitExpressionForLoopSnapshots(
+  expression: ts.Expression,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (ts.isBinaryExpression(expression) && ts.isIdentifier(expression.left)) {
+    const nextExpr = buildLoopSnapshotMutatedExpr(expression.left.text, expression.operatorToken.kind, expression.right, resolveName);
+    if (nextExpr.kind !== "unknown") {
+      flowMap.set(expression.left.text, nextExpr);
+    }
+    return;
+  }
+
+  if ((ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) && ts.isIdentifier(expression.operand)) {
+    const operator = expression.operator === ts.SyntaxKind.PlusPlusToken ? "add" : expression.operator === ts.SyntaxKind.MinusMinusToken ? "sub" : null;
+    const current = resolveName(expression.operand.text);
+    if (operator && current && current.kind !== "unknown") {
+      flowMap.set(expression.operand.text, {
+        kind: "bin_op",
+        op: operator,
+        left: current,
+        right: { kind: "const", type: "int", value: 1 },
+      });
+    }
+  }
+}
+
+function buildLoopSnapshotMutatedExpr(
+  name: string,
+  operatorKind: ts.SyntaxKind,
+  right: ts.Expression,
+  resolveName: (name: string) => SymExpr | undefined,
+): SymExpr {
+  if (operatorKind === ts.SyntaxKind.EqualsToken) {
+    return buildSymExprWithFlow(right, resolveName);
+  }
+
+  const current = resolveName(name);
+  const rightExpr = buildSymExprWithFlow(right, resolveName);
+  if (!current || current.kind === "unknown" || rightExpr.kind === "unknown") {
+    return { kind: "unknown" };
+  }
+
+  const op = operatorKind === ts.SyntaxKind.PlusEqualsToken
+    ? "add"
+    : operatorKind === ts.SyntaxKind.MinusEqualsToken
+      ? "sub"
+      : null;
+
+  if (!op) {
+    return { kind: "unknown" };
+  }
+
+  return {
+    kind: "bin_op",
+    op,
+    left: current,
+    right: rightExpr,
+  };
+}
+
+function statementsFromBranch(statement: ts.Statement): ReadonlyArray<ts.Statement> {
+  return ts.isBlock(statement) ? statement.statements : [statement];
+}
+
+function mergeLoopSnapshotFlowMaps(
+  condition: SymExpr,
+  snapshot: Map<string, SymExpr>,
+  thenMap: Map<string, SymExpr>,
+  elseMap: Map<string, SymExpr>,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (condition.kind === "unknown") {
+    flowMap.clear();
+    for (const [name, expr] of elseMap) {
+      flowMap.set(name, expr);
+    }
+    for (const [name, expr] of thenMap) {
+      if (!flowMap.has(name)) {
+        flowMap.set(name, expr);
+      }
+    }
+    return;
+  }
+
+  const allNames = new Set([...thenMap.keys(), ...elseMap.keys()]);
+  flowMap.clear();
+
+  for (const name of allNames) {
+    const thenExpr = thenMap.get(name);
+    const elseExpr = elseMap.get(name);
+    const previousExpr = snapshot.get(name);
+
+    if (thenExpr === elseExpr) {
+      if (thenExpr) {
+        flowMap.set(name, thenExpr);
+      }
+      continue;
+    }
+
+    if (thenExpr && elseExpr && JSON.stringify(thenExpr) === JSON.stringify(elseExpr)) {
+      flowMap.set(name, thenExpr);
+      continue;
+    }
+
+    const mergedThenExpr = thenExpr ?? previousExpr;
+    const mergedElseExpr = elseExpr ?? previousExpr;
+    if (mergedThenExpr && mergedElseExpr) {
+      flowMap.set(name, {
+        kind: "ite",
+        condition,
+        then_expr: mergedThenExpr,
+        else_expr: mergedElseExpr,
+      });
+    } else if (mergedThenExpr) {
+      flowMap.set(name, mergedThenExpr);
+    } else if (mergedElseExpr) {
+      flowMap.set(name, mergedElseExpr);
+    }
+  }
+}
+
+function collectTrackedLoopLocalNames(statement: ts.Statement, inductionVarName: string): string[] {
+  const tracked = new Set<string>([inductionVarName]);
+
+  function walk(node: ts.Node): void {
+    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+      return;
+    }
+
+    if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left)) {
+      tracked.add(node.left.text);
+    }
+
+    if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && ts.isIdentifier(node.operand)) {
+      tracked.add(node.operand.text);
+    }
+
+    ts.forEachChild(node, walk);
+  }
+
+  walk(statement);
+  return [...tracked];
 }
 
 /**
@@ -1051,6 +1445,7 @@ export async function executeFunction(
       performance: metrics.performance,
       calls_to_external: [],
       scope_events: [],
+      loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
@@ -1076,6 +1471,7 @@ export async function executeFunction(
       performance: metrics.performance,
       calls_to_external: [],
       scope_events: [],
+      loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
@@ -1202,6 +1598,7 @@ export async function executeAdapterOwned(args: {
     performance,
     calls_to_external: [],
     scope_events: [],
+    loop_body_states: [],
     discovered_dependencies: [],
     connection_failures: [],
     runtime_crypto_boundaries: [],
@@ -1227,6 +1624,7 @@ export async function executeInstrumented(
   cacheKey?: string,
   resolverAdapters?: ResolverAdapter[],
   sandboxProviders?: SandboxProvider[],
+  loops: LoopInfo[] = [],
 ): Promise<RawExecuteResult> {
   // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
   // The instrumented source for a given function is fixed after instrumentation,
@@ -1264,6 +1662,7 @@ export async function executeInstrumented(
   const connectionFailures: ConnectionFailure[] = [];
   const cryptoBoundaries: RuntimeCryptoBoundary[] = [];
   const scopeEvents: TraceEvent[] = [];
+  const loopBodyStates: LoopBodyState[] = [];
   const discoveredDeps: DiscoveredDependency[] = [];
   const seenDiscoveredModules = new Set<string>();
 
@@ -1666,6 +2065,11 @@ export async function executeInstrumented(
   // Build path_constraints: the conjunction of constraints along the taken path
   const pathConstraints = branchDecisions.map((bd) => bd.constraint);
 
+  if (sourceFilePath && loops.length > 0) {
+    const sourceText = fs.readFileSync(sourceFilePath, "utf-8");
+    loopBodyStates.push(...extractLoopBodyStates(sourceText, functionName, sourceFilePath, loops, scopeEvents));
+  }
+
   return {
     return_value: metrics.returnValue ?? null,
     thrown_error: metrics.thrownError,
@@ -1676,6 +2080,7 @@ export async function executeInstrumented(
     performance: metrics.performance,
     calls_to_external: externalCalls,
     scope_events: scopeEvents,
+    loop_body_states: loopBodyStates,
     discovered_dependencies: discoveredDeps,
     connection_failures: connectionFailures,
     runtime_crypto_boundaries: cryptoBoundaries,
@@ -1714,6 +2119,10 @@ export function buildExecuteResponse(
     performance: rawResult.performance,
     scope_events: rawResult.scope_events,
   };
+
+  if (rawResult.loop_body_states.length > 0) {
+    response.loop_body_states = rawResult.loop_body_states;
+  }
 
   if (truncation) {
     response.capture_truncation = truncation;

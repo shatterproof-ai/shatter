@@ -21,6 +21,10 @@ When adding a protocol message type or parsing function, add both. Seed corpus f
 
 Go can deserialize `ite` SymExpr nodes but does not produce them — Go lacks data flow tracking; `exprToSymExpr` only resolves function parameters. Adding SSA phi-node merging is a separate effort. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
+## Loop Snapshot Parity Contract
+
+Go includes `loop_body_states` in protocol structs for execute-response round-tripping, but does not emit the field yet. TypeScript is currently the only frontend that produces loop snapshots for supported counted loops. This drift is tracked in `protocol/parity-matrix.yaml` as `loop-body-states-typescript-only`.
+
 ## Side Effect Parity Contract
 
 Go captures 2 of 7 canonical kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7; only capture logic is missing.

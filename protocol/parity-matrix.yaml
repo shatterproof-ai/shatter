@@ -681,3 +681,18 @@ allowed_divergences:
     resolution: >
       Add data flow tracking to Go frontend (separate issue). Rust frontend
       deferred until full analyze implementation lands.
+
+  - id: loop-body-states-typescript-only
+    description: >
+      TypeScript emits `loop_body_states` in execute responses for supported
+      canonical counted loops, combining cached `LoopInfo` metadata with
+      observed runtime iteration counts to produce ordered per-iteration
+      symbolic local snapshots. Go and Rust include the field in protocol
+      structs for wire compatibility but do not populate it yet.
+    affected_frontends: [go, rust]
+    affected_commands: [execute]
+    status: tracked
+    resolution: >
+      Add loop snapshot emission to Go and Rust execute paths with the same
+      `loop_id` and zero-based `iteration` contract as TypeScript, or move the
+      reconstruction logic into a shared core-side postprocessor.

@@ -2465,6 +2465,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             capture_truncation: None,
             discovered_dependencies: vec![],
             connection_failures: vec![],
@@ -4143,6 +4144,7 @@ mod tests {
             result: ExecuteResult {
                 branch_path: vec![branch.clone()],
                 scope_events,
+                loop_body_states: vec![],
                 return_value: None,
                 thrown_error: None,
                 lines_executed: vec![],
@@ -4444,6 +4446,7 @@ mod tests {
             result: ExecuteResult {
                 branch_path: bp.clone(),
                 scope_events: scope_evts.clone(),
+                loop_body_states: vec![],
                 return_value: None,
                 thrown_error: None,
                 lines_executed: vec![],
@@ -4647,6 +4650,7 @@ mod tests {
                 result: ExecuteResult {
                     branch_path: vec![loop_branch.clone()],
                     scope_events: scope_events_with_loop.clone(),
+                    loop_body_states: vec![],
                     return_value: None,
                     thrown_error: None,
                     lines_executed: vec![],

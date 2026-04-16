@@ -632,3 +632,53 @@ func TestFunctionAnalysisCryptoBoundariesRoundTrip(t *testing.T) {
 		t.Errorf("symbol = %q, want createDecipheriv", decoded.CryptoBoundaries[0].Symbol)
 	}
 }
+
+func TestExecuteResponseLoopBodyStatesRoundTrip(t *testing.T) {
+	resp := Response{
+		ProtocolVersion: "0.1.0",
+		ID:              7,
+		Status:          "execute",
+		ReturnValue:     json.RawMessage(`42`),
+		BranchPath:      []BranchDecision{},
+		LinesExecuted:   []int{1, 2},
+		CallsToExternal: []ExternalCall{},
+		PathConstraints: []SymConstraint{},
+		SideEffects:     []SideEffect{},
+		ScopeEvents:     []json.RawMessage{},
+		LoopBodyStates: []LoopBodyState{{
+			LoopID:    0,
+			Iteration: 1,
+			Locals: map[string]SymExpr{
+				"i": {
+					Kind:  "const",
+					Type:  "int",
+					Value: float64(1),
+				},
+			},
+		}},
+		Performance: &PerfMetrics{WallTimeMs: 1},
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded Response
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(decoded.LoopBodyStates) != 1 {
+		t.Fatalf("loop_body_states len = %d, want 1", len(decoded.LoopBodyStates))
+	}
+	if decoded.LoopBodyStates[0].LoopID != 0 {
+		t.Errorf("loop_id = %d, want 0", decoded.LoopBodyStates[0].LoopID)
+	}
+	if decoded.LoopBodyStates[0].Iteration != 1 {
+		t.Errorf("iteration = %d, want 1", decoded.LoopBodyStates[0].Iteration)
+	}
+	if decoded.LoopBodyStates[0].Locals["i"].Kind != "const" {
+		t.Errorf("locals[i].kind = %q, want const", decoded.LoopBodyStates[0].Locals["i"].Kind)
+	}
+}

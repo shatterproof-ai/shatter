@@ -37,6 +37,14 @@ TS serializes `bigint` values as `{"__complex_type": "big_int", "value": "<decim
 
 TS is the only frontend that produces `ite` SymExpr nodes — SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust deserialize `ite` but do not produce it. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
+## Loop Snapshot Parity Contract
+
+TS emits `loop_body_states` in execute responses for supported canonical counted loops (str-z0kp.2). The executor combines cached `FunctionAnalysis.loops` metadata with observed `scope_events` iteration counts and emits zero-based per-iteration symbolic local snapshots. Current support is intentionally narrow: counted `for` loops plus simple accumulator locals already tracked by the instrumentor's flow map.
+
+Wire shape: `loop_body_states: [{ loop_id, iteration, locals }]` where `locals` is a map of identifier-local names to `SymExpr`.
+
+Go and Rust include the field in their protocol structs for round-trip compatibility but do not yet emit it. See `protocol/parity-matrix.yaml` `loop-body-states-typescript-only`.
+
 ## Side Effect Parity Contract
 
 TS is the reference implementation. All 7 canonical kinds are defined in `src/protocol.ts`; `arbSideEffect` in `src/property.test.ts` generates all of them.

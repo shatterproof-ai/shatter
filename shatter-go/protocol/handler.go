@@ -596,6 +596,7 @@ func mapExecuteResult(resp Response, result *instrument.ExecuteResult, timing *f
 	resp.DiscoveredDependencies = convertDiscoveredDeps(result.DiscoveredDependencies)
 	resp.SideEffects = convertSideEffects(result.SideEffects)
 	resp.ScopeEvents = result.ScopeEvents
+	resp.LoopBodyStates = convertLoopBodyStates(result.LoopBodyStates)
 	resp.Performance = &PerfMetrics{
 		WallTimeMs:         result.Performance.WallTimeMs,
 		CPUTimeUs:          result.Performance.CPUTimeUs,
@@ -603,6 +604,29 @@ func mapExecuteResult(resp Response, result *instrument.ExecuteResult, timing *f
 		HeapAllocatedBytes: result.Performance.HeapAllocatedBytes,
 	}
 	return finalizeResponse(resp, timing)
+}
+
+func convertLoopBodyStates(states []instrument.LoopBodyState) []LoopBodyState {
+	if len(states) == 0 {
+		return nil
+	}
+
+	result := make([]LoopBodyState, 0, len(states))
+	for _, state := range states {
+		locals := make(map[string]SymExpr, len(state.Locals))
+		for name, rawExpr := range state.Locals {
+			var expr SymExpr
+			if err := json.Unmarshal(rawExpr, &expr); err == nil {
+				locals[name] = expr
+			}
+		}
+		result = append(result, LoopBodyState{
+			LoopID:    state.LoopID,
+			Iteration: state.Iteration,
+			Locals:    locals,
+		})
+	}
+	return result
 }
 
 func convertErrorInfo(e *instrument.ErrorInfo) *ErrorInfo {

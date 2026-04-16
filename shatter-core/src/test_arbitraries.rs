@@ -26,7 +26,7 @@ use crate::protocol::{
     AdapterHint, AdapterRelation, BoundOp, BranchInfo, BranchType, Command, ConnectionFailure,
     CryptoBoundary, DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode,
     ExecuteResult, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile, ExternalDependency,
-    FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel, LiteralValue, LoopInfo,
+    FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel, LiteralValue, LoopBodyState, LoopInfo,
     MockBehavior, MockConfig, PROTOCOL_VERSION, PerformanceMetrics, Request, Response,
     ResponseResult, RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary,
     TimingSummary,
@@ -653,6 +653,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
         prop::collection::vec(arb_external_call(), 0..=3),
         prop::collection::vec(arb_sym_constraint(), 0..=3),
         prop::collection::vec(arb_trace_event(), 0..=8),
+        prop::collection::vec(arb_loop_body_state(), 0..=5),
         prop::collection::vec(arb_side_effect(), 0..=3),
         arb_performance_metrics(),
         (
@@ -671,6 +672,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                 calls_to_external,
                 path_constraints,
                 scope_events,
+                loop_body_states,
                 side_effects,
                 performance,
                 (
@@ -688,6 +690,7 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     calls_to_external,
                     path_constraints,
                     scope_events,
+                    loop_body_states,
                     side_effects,
                     performance,
                     capture_truncation,
@@ -697,6 +700,19 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                 }
             },
         )
+}
+
+pub fn arb_loop_body_state() -> impl Strategy<Value = LoopBodyState> {
+    (
+        0..20u32,
+        0..20u32,
+        prop::collection::btree_map(arb_ident(), arb_sym_expr(2), 0..=4),
+    )
+        .prop_map(|(loop_id, iteration, locals)| LoopBodyState {
+            loop_id,
+            iteration,
+            locals,
+        })
 }
 
 // ---------------------------------------------------------------------------

@@ -362,7 +362,14 @@ type ExecuteResult struct {
 	DiscoveredDependencies []DiscoveredDependency `json:"discovered_dependencies,omitempty"`
 	SideEffects            []SideEffect           `json:"side_effects"`
 	ScopeEvents            []json.RawMessage      `json:"scope_events"`
+	LoopBodyStates         []LoopBodyState        `json:"loop_body_states,omitempty"`
 	Performance            PerfMetrics            `json:"performance"`
+}
+
+type LoopBodyState struct {
+	LoopID    int                           `json:"loop_id"`
+	Iteration int                           `json:"iteration"`
+	Locals    map[string]json.RawMessage    `json:"locals,omitempty"`
 }
 
 // ExternalCall records one call to a mocked external dependency.

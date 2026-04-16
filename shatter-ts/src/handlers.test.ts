@@ -1481,6 +1481,15 @@ describe("protocol round-trip", () => {
         { type: "scope", event: { kind: "call_enter", call_site_id: 1 } },
         { type: "scope", event: { kind: "call_exit", call_site_id: 1 } },
       ],
+      loop_body_states: [
+        {
+          loop_id: 0,
+          iteration: 0,
+          locals: {
+            i: { kind: "const", type: "int", value: 0 },
+          },
+        },
+      ],
     };
     const json = JSON.stringify(response);
     const parsed = JSON.parse(json) as Response;
@@ -1493,6 +1502,15 @@ describe("protocol round-trip", () => {
         decision: { branch_id: 0, line: 3, taken: true, constraint: { kind: "unknown", hint: "test" } },
       });
       expect(parsed.scope_events![3]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 1 } });
+      expect(parsed.loop_body_states).toEqual([
+        {
+          loop_id: 0,
+          iteration: 0,
+          locals: {
+            i: { kind: "const", type: "int", value: 0 },
+          },
+        },
+      ]);
     }
   });
 

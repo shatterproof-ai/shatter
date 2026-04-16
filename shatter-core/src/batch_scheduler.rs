@@ -2393,7 +2393,7 @@ mod proptests {
                 }
                 for i in 0..task_count {
                     let cd = scheduler.cooldown_score(i);
-                    prop_assert!(cd >= 0 && cd <= COOLDOWN_PENALTY);
+                    prop_assert!((0..=COOLDOWN_PENALTY).contains(&cd));
                 }
             }
             for ti in in_flight {
