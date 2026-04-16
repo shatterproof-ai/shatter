@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod analyzer;
 pub mod executor;
+pub mod file_handle_generator;
 pub mod generators;
 pub mod handler;
 pub mod instrument;
