@@ -24,6 +24,10 @@ Captured: `console_output` (fd redirection via libc dup/dup2 in standalone/dispa
 
 Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` (status: resolved).
 
+## Loop Snapshot Parity Contract
+
+Rust includes `loop_body_states` in protocol structs for execute-response wire compatibility, but does not emit loop snapshots yet. TypeScript currently owns snapshot production for supported counted loops; tracked drift lives in `protocol/parity-matrix.yaml` as `loop-body-states-typescript-only`.
+
 ## Prepare Parity Contract
 
 Rust implements `prepare` to pre-build the harness binary so subsequent execute calls skip compilation. Handler: `handle_prepare()` in `src/handler.rs`. Advertised in capabilities list. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`). Storage: `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>`. Idempotent. Source file must exist and function must be analyzable. `prepared_harnesses.clear()` on function-level teardown + shutdown.

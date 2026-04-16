@@ -636,6 +636,18 @@ pub struct LoopInfo {
     pub induction_var: InductionVar,
 }
 
+/// A per-iteration symbolic state snapshot for a supported loop body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopBodyState {
+    /// Matches the loop_id in ScopeEvent::LoopEnter/LoopExit and LoopInfo.
+    pub loop_id: u32,
+    /// Zero-based iteration index in execution order.
+    pub iteration: u32,
+    /// Symbolic expressions for tracked identifier locals at this iteration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub locals: BTreeMap<String, SymExpr>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -759,6 +771,9 @@ pub struct ExecuteResult {
     /// When non-empty, enables scope-aware path collapsing in `path_hash`.
     #[serde(default)]
     pub scope_events: Vec<TraceEvent>,
+    /// Per-iteration symbolic snapshots for supported loop bodies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_body_states: Vec<LoopBodyState>,
     /// Side effects observed during execution.
     #[serde(default)]
     pub side_effects: Vec<SideEffect>,
@@ -1289,6 +1304,7 @@ mod tests {
                     },
                 }],
                 scope_events: vec![],
+            loop_body_states: vec![],
                 side_effects: vec![SideEffect::ConsoleOutput {
                     level: "info".into(),
                     message: "Processing express order".into(),
@@ -1325,6 +1341,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
+            loop_body_states: vec![],
                 performance: PerformanceMetrics {
                     wall_time_ms: 0.1,
                     cpu_time_us: 80,
@@ -1357,6 +1374,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
+            loop_body_states: vec![],
                 performance: PerformanceMetrics::default(),
                 capture_truncation: None,
                 discovered_dependencies: vec![],
@@ -1430,6 +1448,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
             discovered_dependencies: vec![],
@@ -1454,6 +1473,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
             discovered_dependencies: vec![],
@@ -1464,6 +1484,31 @@ mod tests {
         assert!(
             !json.contains("connection_failures"),
             "empty connection_failures should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn execute_result_without_loop_body_states_omits_field() {
+        let result = ExecuteResult {
+            return_value: Some(serde_json::json!(42)),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            performance: PerformanceMetrics::default(),
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            !json.contains("loop_body_states"),
+            "empty loop_body_states should be omitted from JSON"
         );
     }
 
@@ -2771,6 +2816,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
             discovered_dependencies: vec![],
@@ -2801,6 +2847,7 @@ mod tests {
             }],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,
             discovered_dependencies: vec![],

@@ -565,11 +565,12 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
                 request.mocks ?? [],
                 fileForExec,
                 timing,
-                capture,
-                instrumentKey,
-                resolverAdapters,
-                sandboxProviders,
-              ))
+              capture,
+              instrumentKey,
+              resolverAdapters,
+              sandboxProviders,
+              cachedAnalysis?.loops ?? [],
+            ))
             : await executor.executeInstrumented(
               instrumentedSource,
               funcName,
@@ -581,6 +582,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               instrumentKey,
               resolverAdapters,
               sandboxProviders,
+              cachedAnalysis?.loops ?? [],
             );
         } else {
           rawResult = timing

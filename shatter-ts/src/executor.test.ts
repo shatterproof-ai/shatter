@@ -33,6 +33,7 @@ import type {
   AdapterInvocationModel,
 } from "./runtime-hooks.js";
 import { instrumentFunction } from "./instrumentor.js";
+import { analyzeFile } from "./analyzer.js";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect, TraceEvent } from "./protocol.js";
@@ -874,6 +875,7 @@ describe("scope events in execution", () => {
         { type: "scope" as const, event: { kind: "call_enter" as const, call_site_id: 0 } },
         { type: "scope" as const, event: { kind: "call_exit" as const, call_site_id: 0 } },
       ],
+      loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
@@ -882,6 +884,54 @@ describe("scope events in execution", () => {
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
     expect(response.scope_events![0]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 0 } });
+  });
+
+  it("emits loop_body_states for supported counted loops", async () => {
+    const source = `export function sumTo(n: number): number {
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    total += i;
+  }
+  return total;
+}`;
+    const fixturePath = path.join(os.tmpdir(), `sum-to-${Date.now()}.ts`);
+    fs.writeFileSync(fixturePath, source);
+    const analysis = analyzeFile(fixturePath, "sumTo");
+    const instrumentResult = instrumentFunction(source, "sumTo", fixturePath);
+    if ("error" in instrumentResult) throw new Error(instrumentResult.error);
+
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "sumTo",
+      [3],
+      [],
+      fixturePath,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      analysis[0]?.loops ?? [],
+    );
+
+    expect(result.loop_body_states).toHaveLength(3);
+    expect(result.loop_body_states[0]).toEqual({
+      loop_id: 0,
+      iteration: 0,
+      locals: {
+        i: { kind: "const", type: "int", value: 0 },
+        total: { kind: "const", type: "int", value: 0 },
+      },
+    });
+    expect(result.loop_body_states[1]?.loop_id).toBe(0);
+    expect(result.loop_body_states[1]?.iteration).toBe(1);
+    expect(result.loop_body_states[1]?.locals["total"]).toEqual({
+      kind: "bin_op",
+      op: "add",
+      left: { kind: "const", type: "int", value: 0 },
+      right: { kind: "const", type: "int", value: 0 },
+    });
+    expect(result.loop_body_states[2]?.iteration).toBe(2);
   });
 });
 
@@ -1324,6 +1374,7 @@ describe("buildExecuteResponse includes connection_failures", () => {
       side_effects: [],
       calls_to_external: [],
       scope_events: [],
+      loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
@@ -1344,6 +1395,7 @@ describe("buildExecuteResponse includes connection_failures", () => {
       side_effects: [],
       calls_to_external: [],
       scope_events: [],
+      loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [
         { symbol: "pg:query", error_kind: "connection_refused" as const, message: "ECONNREFUSED" },

@@ -320,6 +320,7 @@ mod tests {
             thrown_error: None,
             branch_path: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             lines_executed: vec![],
             calls_to_external: vec![],
             side_effects: vec![],

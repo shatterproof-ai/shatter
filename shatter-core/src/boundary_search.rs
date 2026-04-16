@@ -440,6 +440,7 @@ mod tests {
             calls_to_external: vec![],
             path_constraints: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             side_effects: vec![],
             performance: PerformanceMetrics::default(),
             capture_truncation: None,

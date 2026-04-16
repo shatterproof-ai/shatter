@@ -3852,7 +3852,7 @@ mod tests {
 
         const CAP: u32 = 500;
         let mut scheduler = BatchScheduler::new(2, None, CAP);
-        let mut accs = vec![
+        let mut accs = [
             ExploreResultAccumulator::new("funcA".to_string()),
             ExploreResultAccumulator::new("funcB".to_string()),
         ];

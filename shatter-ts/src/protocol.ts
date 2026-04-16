@@ -237,6 +237,7 @@ export interface ExecuteResponse extends BaseResponse {
   performance: PerformanceMetrics;
   capture_truncation?: TruncationInfo;
   scope_events?: TraceEvent[];
+  loop_body_states?: LoopBodyState[];
   discovered_dependencies?: DiscoveredDependency[];
   connection_failures?: ConnectionFailure[];
   /** Cryptographic boundaries intercepted at runtime.
@@ -353,6 +354,12 @@ export interface LoopInfo {
   loop_id: number;
   line: number;
   induction_var: InductionVar;
+}
+
+export interface LoopBodyState {
+  loop_id: number;
+  iteration: number;
+  locals: Record<string, SymExpr>;
 }
 
 export interface FunctionAnalysis {

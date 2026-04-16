@@ -861,6 +861,7 @@ mod tests {
             path_constraints: vec![],
             side_effects: vec![],
             scope_events: vec![],
+            loop_body_states: vec![],
             capture_truncation: None,
             discovered_dependencies: vec![],
             connection_failures: vec![],
