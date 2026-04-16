@@ -20,7 +20,7 @@ use crate::pipeline::{
     self, AnalyzeOutput, ObserveStageOutput, SolveOutcome, SpecifyStageOutput, StageIoError,
     StageSolveOutput,
 };
-use crate::protocol::{Command as ProtoCommand, FunctionAnalysis};
+use crate::protocol::{Command as ProtoCommand, FunctionAnalysis, MockConfig, ResponseResult};
 
 /// Errors that can occur during pipeline orchestration.
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +165,37 @@ pub struct ObserveInput<'a> {
     pub extra_seeds: Vec<Vec<serde_json::Value>>,
 }
 
+/// Per-invocation overrides for the Observe stage.
+///
+/// `run_pipeline` uses only `extra_seeds`; the live explore CLI batch path
+/// supplies the richer fields so it can route through the staged runner
+/// without dropping mocks, progress reporting, or concolic resume state.
+#[derive(Clone, Default)]
+pub struct ObserveStageOptions<'a> {
+    /// Additional seeds to append for this observe invocation.
+    pub extra_seeds: &'a [Vec<serde_json::Value>],
+    /// Mocks to pass through the upfront Instrument / Prepare commands.
+    pub instrument_mocks: &'a [MockConfig],
+    /// Explicit concolic seed inputs. When empty, the observe stage falls
+    /// back to boundary-generated seeds from the function signature.
+    pub concolic_seed_inputs: &'a [Vec<serde_json::Value>],
+    /// Explicit user-priority inputs for the concolic orchestrator.
+    pub concolic_user_inputs: &'a [Vec<serde_json::Value>],
+    /// Progress callback metadata to pass into the random explorer or
+    /// concolic orchestrator.
+    pub progress_hints: Option<crate::explorer::ProgressHints<'a>>,
+    /// Resumable concolic state from a prior batch.
+    pub resume_state: Option<orchestrator::ExploreState>,
+}
+
+/// Outputs from a single Observe-stage execution.
+pub struct ObserveStageResult {
+    /// Canonical observe-stage output for downstream pipeline stages.
+    pub observe: ObserveStageOutput,
+    /// Updated concolic resume state for a later batch, if applicable.
+    pub resume_state: Option<orchestrator::ExploreState>,
+}
+
 /// Collected outputs from a pipeline run.
 ///
 /// Each field is `Option` because partial pipelines skip later stages.
@@ -271,7 +302,15 @@ pub async fn run_pipeline(
 
     for round in 1..=rounds {
         // --- Stage 1: Observe ---
-        let obs = run_observe_stage(input, &extra_seeds).await?;
+        let obs_result = run_observe_stage(
+            input,
+            ObserveStageOptions {
+                extra_seeds: &extra_seeds,
+                ..ObserveStageOptions::default()
+            },
+        )
+        .await?;
+        let obs = obs_result.observe;
 
         if let Some(ref dir) = config.persist_dir {
             let path = dir.join(format!("observe-round-{round}.json"));
@@ -368,10 +407,10 @@ pub async fn run_pipeline(
 }
 
 /// Run the Observe stage: execute the function and collect traces.
-async fn run_observe_stage(
+pub async fn run_observe_stage(
     input: &mut ObserveInput<'_>,
-    extra_seeds: &[Vec<serde_json::Value>],
-) -> Result<ObserveStageOutput, PipelineError> {
+    options: ObserveStageOptions<'_>,
+) -> Result<ObserveStageResult, PipelineError> {
     // Instrument the function.
     let project_root = input.project_root.clone();
     let instrument_resp = input
@@ -379,7 +418,7 @@ async fn run_observe_stage(
         .send(ProtoCommand::Instrument {
             file: input.file.clone(),
             function: input.function_name.clone(),
-            mocks: vec![],
+            mocks: options.instrument_mocks.to_vec(),
             project_root: project_root.clone(),
             execution_profile: None,
         })
@@ -389,45 +428,59 @@ async fn run_observe_stage(
         log::debug!("instrument failed: {e}");
     }
 
-    let observation = if input.use_concolic {
-        run_concolic_observe(input, extra_seeds).await?
+    let (observation, resume_state) = if input.use_concolic {
+        run_concolic_observe(input, &options).await?
     } else {
-        run_random_observe(input, extra_seeds).await?
+        (run_random_observe(input, &options).await?, None)
     };
 
-    Ok(ObserveStageOutput {
-        observation,
-        analysis: input.analysis.clone(),
-        file: input.file.clone(),
+    Ok(ObserveStageResult {
+        observe: ObserveStageOutput {
+            observation,
+            analysis: input.analysis.clone(),
+            file: input.file.clone(),
+        },
+        resume_state,
     })
 }
 
 /// Run concolic exploration (orchestrator path).
 async fn run_concolic_observe(
     input: &mut ObserveInput<'_>,
-    extra_seeds: &[Vec<serde_json::Value>],
-) -> Result<explorer::ObservationOutput, PipelineError> {
-    let concolic_config = input.concolic_config.as_ref().ok_or_else(|| {
+    options: &ObserveStageOptions<'_>,
+) -> Result<
+    (
+        explorer::ObservationOutput,
+        Option<orchestrator::ExploreState>,
+    ),
+    PipelineError,
+> {
+    let concolic_config = input.concolic_config.clone().ok_or_else(|| {
         PipelineError::UnexpectedResponse(
             "concolic mode requested but no concolic_config provided".into(),
         )
     })?;
 
-    let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&input.analysis.params);
-    seed_inputs.extend(extra_seeds.iter().cloned());
+    let seed_inputs = concolic_seed_inputs(
+        &input.analysis,
+        options.concolic_seed_inputs,
+        options.extra_seeds,
+    );
+    let user_inputs = options.concolic_user_inputs.to_vec();
+    let prepare_id = resolve_prepare_id(input, options.instrument_mocks).await;
 
-    let (result, _resume_state) = orchestrator::explore(
+    let (result, resume_state) = orchestrator::explore(
         input.frontend,
         &input.function_name,
         seed_inputs,
-        vec![],
+        user_inputs,
         &input.analysis.params,
-        concolic_config,
+        &concolic_config,
         None,
-        input.prepare_id.clone(),
+        prepare_id,
         input.analysis.loops.clone(),
-    None,
-    None,
+        options.progress_hints,
+        options.resume_state.clone(),
     )
     .await?;
 
@@ -437,21 +490,84 @@ async fn run_concolic_observe(
         .end_line
         .saturating_sub(input.analysis.start_line)
         + 1;
-    Ok(obs)
+    Ok((obs, Some(resume_state)))
 }
 
 /// Run random exploration (explorer path).
 async fn run_random_observe(
     input: &mut ObserveInput<'_>,
-    extra_seeds: &[Vec<serde_json::Value>],
+    options: &ObserveStageOptions<'_>,
 ) -> Result<explorer::ObservationOutput, PipelineError> {
     let mut config = input.explore_config.clone();
-    config.user_seeds.extend(extra_seeds.iter().cloned());
+    config
+        .user_seeds
+        .extend(options.extra_seeds.iter().cloned());
 
-    let obs =
-        explorer::explore_function(input.frontend, &input.analysis, &config, None, None).await?;
+    let obs = explorer::explore_function(
+        input.frontend,
+        &input.analysis,
+        &config,
+        None,
+        options.progress_hints,
+    )
+    .await?;
 
     Ok(obs)
+}
+
+fn concolic_seed_inputs(
+    analysis: &FunctionAnalysis,
+    configured_seed_inputs: &[Vec<serde_json::Value>],
+    extra_seeds: &[Vec<serde_json::Value>],
+) -> Vec<Vec<serde_json::Value>> {
+    let mut seed_inputs = if configured_seed_inputs.is_empty() {
+        crate::boundary_dict::generate_boundary_inputs(&analysis.params)
+    } else {
+        configured_seed_inputs.to_vec()
+    };
+    seed_inputs.extend(extra_seeds.iter().cloned());
+    seed_inputs
+}
+
+async fn resolve_prepare_id(
+    input: &mut ObserveInput<'_>,
+    instrument_mocks: &[MockConfig],
+) -> Option<String> {
+    if input.prepare_id.is_some() {
+        return input.prepare_id.clone();
+    }
+
+    let caps = orchestrator::FrontendCapabilities::from_raw(input.frontend.capabilities());
+    if !caps.commands.contains("prepare") {
+        return None;
+    }
+
+    match input
+        .frontend
+        .send(ProtoCommand::Prepare {
+            file: input.file.clone(),
+            function: input.function_name.clone(),
+            mocks: instrument_mocks.to_vec(),
+            project_root: input.project_root.clone(),
+            execution_profile: None,
+        })
+        .await
+    {
+        Ok(resp) => match resp.result {
+            ResponseResult::Prepare { prepare_id } => {
+                log::debug!("concolic prepare succeeded: {prepare_id}");
+                Some(prepare_id)
+            }
+            other => {
+                log::debug!("concolic prepare unexpected response: {other:?}");
+                None
+            }
+        },
+        Err(e) => {
+            log::debug!("concolic prepare failed, falling back: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +811,39 @@ mod tests {
 
         let seeds = extract_sat_seeds(&solve);
         assert!(seeds.is_empty());
+    }
+
+    #[test]
+    fn concolic_seed_inputs_use_explicit_batch_seeds() {
+        let analysis = stub_analysis("batch_seeded", 1);
+        let configured_seed_inputs = vec![vec![json!(7)], vec![json!(11)]];
+        let extra_seeds = vec![vec![json!(99)]];
+
+        let seeds = super::concolic_seed_inputs(&analysis, &configured_seed_inputs, &extra_seeds);
+
+        assert_eq!(
+            seeds,
+            vec![vec![json!(7)], vec![json!(11)], vec![json!(99)]],
+            "explicit batch seeds must be preserved without adding fallback boundary seeds",
+        );
+    }
+
+    #[test]
+    fn concolic_seed_inputs_fall_back_to_boundary_and_extra_seeds() {
+        let analysis = stub_analysis("boundary_seeded", 1);
+        let extra_seeds = vec![vec![json!(123)]];
+
+        let seeds = super::concolic_seed_inputs(&analysis, &[], &extra_seeds);
+
+        assert!(
+            !seeds.is_empty(),
+            "fallback boundary generation must seed concolic observation when no explicit seeds exist",
+        );
+        assert_eq!(
+            seeds.last(),
+            Some(&vec![json!(123)]),
+            "extra seeds must append after fallback boundary inputs",
+        );
     }
 
     #[test]

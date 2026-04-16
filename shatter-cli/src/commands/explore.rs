@@ -11,11 +11,11 @@ use shatter_core::adapter_selection;
 use shatter_core::behavior::BehaviorMap;
 use shatter_core::cache::{BehaviorMapCache, StoredInputsCache};
 use shatter_core::config::{self as shatter_config, GeneticConfig, ShatterConfig};
-use shatter_core::fingerprint::FunctionSignature;
 use shatter_core::executability;
 use shatter_core::explorer::{
     self, ExploreConfig, ExploreProgressSnapshot, GeneticStats, ProgressCallback, ReportOptions,
 };
+use shatter_core::fingerprint::FunctionSignature;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
@@ -587,8 +587,10 @@ fn resume_state_path(
 ) -> PathBuf {
     let file_component = sanitize_artifact_component(file);
     let fn_component = sanitize_artifact_component(&func.name);
-    root.join(file_component)
-        .join(format!("{:05}_{}.resume-state.json", func.start_line, fn_component))
+    root.join(file_component).join(format!(
+        "{:05}_{}.resume-state.json",
+        func.start_line, fn_component
+    ))
 }
 
 /// Persist the orchestrator's resume state for a partially-explored function.
@@ -618,11 +620,7 @@ fn read_resume_state(
 }
 
 /// Remove the resume-state sidecar after a function fully completes.
-fn cleanup_resume_state(
-    root: &Path,
-    file: &str,
-    func: &shatter_core::protocol::FunctionAnalysis,
-) {
+fn cleanup_resume_state(root: &Path, file: &str, func: &shatter_core::protocol::FunctionAnalysis) {
     let path = resume_state_path(root, file, func);
     let _ = std::fs::remove_file(&path);
 }
@@ -723,11 +721,7 @@ fn format_progress_snapshot(snapshot: &ExploreProgressSnapshot) -> String {
 
     let mut line = format!(
         "[{secs}s] {}: {} iters, {} paths, {}, {:.1} iter/s",
-        snapshot.function_name,
-        snapshot.iterations,
-        snapshot.paths_found,
-        branches_segment,
-        rate,
+        snapshot.function_name, snapshot.iterations, snapshot.paths_found, branches_segment, rate,
     );
 
     if let Some((total, independent, _opaque)) = snapshot.mcdc_summary {
@@ -1411,10 +1405,11 @@ pub(crate) async fn run_explore(
     let mut func_wall_time: Vec<Duration> = Vec::new();
     let mut func_first_error: Vec<Option<String>> = Vec::new();
 
-    let mut batch_scheduler = shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
-        &[],
-        EXPLORE_BATCH_ITERATIONS,
-    );
+    let mut batch_scheduler =
+        shatter_core::batch_scheduler::BatchScheduler::with_individual_budgets(
+            &[],
+            EXPLORE_BATCH_ITERATIONS,
+        );
     let mut batches_launched: u32 = 0;
     let mut batches_completed: u32 = 0;
 
@@ -1873,11 +1868,7 @@ pub(crate) async fn run_explore(
                 let sig = FunctionSignature::from_analysis(func);
                 match sic.load_compatible(&function_id, &sig) {
                     Ok(Some(stored)) if !stored.is_empty() => {
-                        log::debug!(
-                            "Loaded {} stored input(s) for {}",
-                            stored.len(),
-                            func.name,
-                        );
+                        log::debug!("Loaded {} stored input(s) for {}", stored.len(), func.name,);
                         candidate_inputs.extend(stored);
                     }
                     _ => {}
@@ -2016,8 +2007,7 @@ pub(crate) async fn run_explore(
 
             let _ = &shatter_configs; // suppress unused warning
 
-            let known_targets =
-                shatter_core::coverage_metrics::discover_known_targets(func);
+            let known_targets = shatter_core::coverage_metrics::discover_known_targets(func);
             work_items.push(FuncWorkItem {
                 func: func.clone(),
                 explore_config,
@@ -2097,10 +2087,7 @@ pub(crate) async fn run_explore(
             // Functions with no branches have nothing to explore — skip them
             // rather than scheduling speculative work.
             if item.known_targets.is_empty() {
-                log::debug!(
-                    "Skipping {} — no branch targets to explore",
-                    item.func.name,
-                );
+                log::debug!("Skipping {} — no branch targets to explore", item.func.name,);
                 continue;
             }
 
@@ -2174,477 +2161,421 @@ pub(crate) async fn run_explore(
         format == crate::args::StdoutFormat::Json || log_level >= LogLevel::Debug;
 
     loop {
-            // Launch sub-loop: fill in-flight slots up to --workers.
-            while join_set.len() < effective_workers && !stop_early {
-                if let Some(limit) = time_limit_dur
-                    && run_start.elapsed() >= limit
-                {
-                    stop_early = true;
-                    stop_reason = Some(format!("time limit ({:.1}s)", limit.as_secs_f64()));
-                    break;
-                }
-                let batch_config = match batch_scheduler.next_batch() {
-                    Some(b) => b,
-                    None => break,
-                };
-                let work_index = batch_config.task_index;
-                let batch_iters = batch_config.batch_size;
-                let mut item = work_items[work_index].clone();
-                // Clamp per-batch iteration caps so orchestrator::explore /
-                // explore_function stop at the scheduler's assigned slice
-                // rather than running to the function's full configured cap.
-                item.explore_config.max_iterations = Some(batch_iters);
-                if let Some(ref mut cc) = item.concolic_config {
-                    cc.max_iterations = Some(batch_iters as usize);
-                    cc.max_executions = Some((batch_iters as usize) * 5);
-                }
-
-                batches_launched += 1;
-
-                // Extract resume state for this function (if a prior batch completed).
-                let resume_state = explore_states.remove(&work_index);
-
-                let sem = Arc::clone(&semaphore);
-                let completed_functions = Arc::clone(&completed_functions);
-                let fe_config = fe_configs
-                    .get(&item.language)
-                    .expect("fe_config must exist for target language")
-                    .clone();
-                let file_str_owned = item.file_str.clone();
-                let project_root_owned = item.project_root_str.clone();
-                let progress_index = work_index + 1;
-                let progress_total = work_items.len();
-                let periodic_progress_clone = periodic_progress.clone();
-
-                join_set.spawn(async move {
-                    let _permit = sem.acquire().await.expect("semaphore is never closed");
-                    let func_start = Instant::now();
-                    emit_explore_progress(
-                        &item.func.name,
-                        progress_index,
-                        progress_total,
-                        Duration::ZERO,
-                        "started",
-                        emit_progress_json,
-                    );
-
-                    let mut task_frontend = match Frontend::spawn(&fe_config).await {
-                        Ok(fe) => fe,
-                        Err(e) => {
-                            let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
-                            emit_explore_progress(
-                                &item.func.name,
-                                completed,
-                                progress_total,
-                                func_start.elapsed(),
-                                "failed",
-                                emit_progress_json,
-                            );
-                            return BatchExploreOutcome {
-                                work_index,
-                                result: Err(format!("failed to spawn frontend: {e}")),
-                                wall_time: func_start.elapsed(),
-                                batch_iteration_cap: batch_iters,
-                                resume_state: None,
-                            };
-                        }
-                    };
-
-                    // Build progress hints shared across both explorer paths so
-                    // concolic and random runs surface identical stat lines.
-                    let cb_ref: Option<&ProgressCallback> = periodic_progress_clone
-                        .as_ref()
-                        .map(|arc| arc.as_ref().as_ref());
-                    let progress_hints =
-                        cb_ref.map(|cb| shatter_core::explorer::ProgressHints {
-                            callback: cb,
-                            total_branches: Some(item.func.branches.len()),
-                        });
-
-                    let explore_result_pair = if let Some(ref concolic_config) = item.concolic_config {
-                        if let Err(e) = task_frontend
-                            .send(ProtoCommand::Instrument {
-                                file: file_str_owned.clone(),
-                                function: item.func.name.clone(),
-                                mocks: concolic_config.mocks.clone(),
-                                project_root: project_root_owned.clone(),
-                                execution_profile: None,
-                            })
-                            .await
-                        {
-                            log::debug!("instrument failed for concolic path: {e}");
-                        }
-
-                        let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(
-                            task_frontend.capabilities(),
-                        );
-                        let prepare_id: Option<String> = if caps.commands.contains("prepare") {
-                            match task_frontend
-                                .send(ProtoCommand::Prepare {
-                                    file: file_str_owned.clone(),
-                                    function: item.func.name.clone(),
-                                    mocks: concolic_config.mocks.clone(),
-                                    project_root: project_root_owned.clone(),
-                                    execution_profile: None,
-                                })
-                                .await
-                            {
-                                Ok(resp) => match resp.result {
-                                    ResponseResult::Prepare { prepare_id } => {
-                                        log::debug!("concolic prepare succeeded: {prepare_id}");
-                                        Some(prepare_id)
-                                    }
-                                    other => {
-                                        log::debug!(
-                                            "concolic prepare unexpected response: {other:?}"
-                                        );
-                                        None
-                                    }
-                                },
-                                Err(e) => {
-                                    log::debug!("concolic prepare failed, falling back: {e}");
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        };
-
-                        match shatter_core::orchestrator::explore(
-                            &mut task_frontend,
-                            &item.func.name,
-                            item.seed_inputs,
-                            item.user_inputs,
-                            &item.func.params,
-                            concolic_config,
-                            None,
-                            prepare_id,
-                            item.func.loops.clone(),
-                            progress_hints,
-                            resume_state,
-                        )
-                        .await
-                        {
-                            Ok((mut concolic_result, new_state)) => {
-                                concolic_result.total_lines =
-                                    item.func.end_line.saturating_sub(item.func.start_line) + 1;
-                                let obs: shatter_core::explorer::ObservationOutput =
-                                    concolic_result.into();
-                                (Ok(obs), Some(new_state))
-                            }
-                            Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
-                                (Err(shatter_core::explorer::ExploreError::Frontend(fe)), None)
-                            }
-                        }
-                    } else {
-                        let result = explorer::explore_function(
-                            &mut task_frontend,
-                            &item.func,
-                            &item.explore_config,
-                            None,
-                            progress_hints,
-                        )
-                        .instrument(tracing::info_span!("explore.function"))
-                        .await;
-                        (result, None)
-                    };
-
-                    let (explore_result, batch_resume_state) = explore_result_pair;
-                    let result = explore_result.map_err(|e| e.to_string());
-                    let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
-                    emit_explore_progress(
-                        &item.func.name,
-                        completed,
-                        progress_total,
-                        func_start.elapsed(),
-                        if result.is_ok() {
-                            "completed"
-                        } else {
-                            "failed"
-                        },
-                        emit_progress_json,
-                    );
-
-                    let _ = task_frontend.shutdown().await;
-
-                    BatchExploreOutcome {
-                        work_index,
-                        result,
-                        wall_time: func_start.elapsed(),
-                        batch_iteration_cap: batch_iters,
-                        resume_state: batch_resume_state,
-                    }
-                });
-            }
-
-            if join_set.is_empty() {
-                break;
-            }
-
-            let batch_outcome = match join_set.join_next().await {
-                Some(Ok(o)) => o,
-                Some(Err(e)) => {
-                    log::error!("Task join error: {e}");
-                    continue;
-                }
-                None => break,
-            };
-
-            let work_index = batch_outcome.work_index;
-
-            // Store resume state for the next batch of this function (str-b2my.16).
-            // Also persist to disk so a subsequent run can skip path rediscovery
-            // for partially-explored functions (str-b2my.15).
-            if let Some(state) = batch_outcome.resume_state {
-                let target_idx = work_items[work_index].target_idx;
-                if let Some(pt) = prepared_targets.get(target_idx)
-                    && let Err(e) = write_resume_state(
-                        &pt.artifact_root,
-                        &pt.file_str,
-                        &work_items[work_index].func,
-                        &state,
-                    )
-                {
-                    log::warn!("Failed to write resume state for {}: {e}", work_items[work_index].func.name);
-                }
-                explore_states.insert(work_index, state);
-            }
-
-            let iters_used = batch_outcome
-                .result
-                .as_ref()
-                .map(|obs| obs.iterations)
-                .unwrap_or(0);
-            let exhausted =
-                batch_is_exhausted(&batch_outcome.result, batch_outcome.batch_iteration_cap);
-
-            // Score this batch by the number of branch discoveries it added
-            // that the accumulator had never seen before. This is the rerank
-            // signal for str-b2my.7: a function still uncovering new paths
-            // each batch ranks higher than one whose last batch produced
-            // nothing new, so the scheduler keeps running the productive
-            // function back-to-back until its yield drops.
-            let batch_rank = new_discoveries_in_batch(
-                batch_outcome.result.as_ref().ok(),
-                &accumulators[work_index].discoveries,
-            ) as i64;
-
-            batch_scheduler.record_outcome(shatter_core::batch_scheduler::BatchOutcome {
-                task_index: work_index,
-                iterations_used: iters_used,
-                exhausted,
-                rank: batch_rank,
-                summary: None,
-            });
-            batches_completed += 1;
-
-            total_executions_count += iters_used as u64;
-            if let Ok(ref obs) = batch_outcome.result {
-                total_branches_seen += obs.total_lines as usize;
-                total_branches_covered += obs.unique_paths;
-            }
-
-            // Snapshot the accumulator's prior state before merge so we can
-            // distinguish "first batch for this function" (no prior state yet)
-            // from a re-enqueue that added zero new discoveries (the idle
-            // signal required by str-cii2).
-            let prior_batches_merged = accumulators[work_index].batches_merged;
-
-            if log_level >= LogLevel::Info {
-                let paths = batch_outcome
-                    .result
-                    .as_ref()
-                    .map(|obs| obs.unique_paths)
-                    .unwrap_or(0);
-                let status = if batch_outcome.result.is_ok() {
-                    "ok"
-                } else {
-                    "err"
-                };
-                // Cumulative per-function stats include the freshly completed
-                // batch merged in: covered = prior ∪ this batch's branch IDs,
-                // MC/DC = component-wise max across all batches so far.
-                let prior_covered = accumulators[work_index].discoveries.len();
-                let new_branches_this_batch = batch_rank as usize;
-                let cumulative_covered = prior_covered + new_branches_this_batch;
-                let total_branches_for_func = work_items[work_index].func.branches.len();
-                let cumulative_mcdc = match (
-                    accumulators[work_index].mcdc_summary,
-                    batch_outcome
-                        .result
-                        .as_ref()
-                        .ok()
-                        .and_then(|obs| obs.mcdc_summary),
-                ) {
-                    (Some(cur), Some(new)) => {
-                        Some((cur.0.max(new.0), cur.1.max(new.1), cur.2.max(new.2)))
-                    }
-                    (None, new) => new,
-                    (cur, None) => cur,
-                };
-
-                let mut line = format!(
-                    "[batch {}/{}] {}: {} iters, {} paths, {}/{} branches",
-                    batches_completed,
-                    batches_launched,
-                    accumulators[work_index].function_name,
-                    iters_used,
-                    paths,
-                    cumulative_covered,
-                    total_branches_for_func,
-                );
-                if let Some((total, independent, _)) = cumulative_mcdc {
-                    line.push_str(&format!(", mcdc {independent}/{total}"));
-                }
-                line.push_str(&format!(
-                    ", {:.1}s ({})",
-                    batch_outcome.wall_time.as_secs_f64(),
-                    status,
-                ));
-
-                // Show attempt penalty when a function has consecutive
-                // no-progress batches (str-b2my.9).
-                let attempt_pen = batch_scheduler.attempt_penalty(work_index);
-                if attempt_pen > 0 {
-                    line.push_str(&format!(", penalty -{attempt_pen}"));
-                }
-
-                // Re-enqueue idle signal: prior batches exist, this one added
-                // no new branch discoveries, and the function will keep being
-                // scheduled because it did not exhaust its iteration cap.
-                if prior_batches_merged > 0 && new_branches_this_batch == 0 && !exhausted {
-                    if batch_scheduler.is_frontier_exhausted() {
-                        line.push_str(" (revisiting)");
-                    } else {
-                        line.push_str(" (continuing without new discoveries)");
-                    }
-                }
-
-                // Show cooldown score when non-zero (str-b2my.8).
-                let cd = batch_scheduler.cooldown_score(work_index);
-                if cd > 0 {
-                    line.push_str(&format!(" [cooldown: {cd}]"));
-                }
-
-                // Append active/queued function status (str-b2my.4).
-                if work_items.len() > 1 {
-                    let active_indices: Vec<usize> =
-                        batch_scheduler.in_flight_indices().collect();
-                    let queued_indices: Vec<usize> =
-                        batch_scheduler.queued_indices().collect();
-
-                    let format_names = |indices: &[usize], limit: usize| -> String {
-                        if indices.is_empty() {
-                            return String::new();
-                        }
-                        let names: Vec<&str> = indices
-                            .iter()
-                            .take(limit)
-                            .map(|&i| work_items[i].func.name.as_str())
-                            .collect();
-                        let mut s = names.join(", ");
-                        if indices.len() > limit {
-                            s.push_str(&format!(
-                                " +{} more",
-                                indices.len() - limit
-                            ));
-                        }
-                        s
-                    };
-
-                    let active_names = format_names(&active_indices, 3);
-                    let queued_names = format_names(&queued_indices, 3);
-
-                    let mut parts = Vec::new();
-                    if !active_indices.is_empty() {
-                        parts.push(format!(
-                            "active: {} ({})",
-                            active_indices.len(),
-                            active_names
-                        ));
-                    }
-                    if !queued_indices.is_empty() {
-                        parts.push(format!(
-                            "queued: {} ({})",
-                            queued_indices.len(),
-                            queued_names
-                        ));
-                    }
-                    if !parts.is_empty() {
-                        line.push_str(&format!(" | {}", parts.join(", ")));
-                    }
-                }
-
-                eprintln!("{line}");
-            }
-
-            // Cross-function fallback detection (str-b2my.5).
-            if batch_scheduler.is_frontier_exhausted() {
-                if !frontier_exhausted_announced {
-                    frontier_exhausted_announced = true;
-                    if log_level >= LogLevel::Info {
-                        eprintln!(
-                            "  frontier work exhausted across all functions; \
-                             continuing with corpus mutations"
-                        );
-                    }
-                }
-            } else {
-                // New frontier work appeared (e.g., dynamically enqueued
-                // function); allow re-announcement if fallback is re-entered.
-                frontier_exhausted_announced = false;
-            }
-
-            func_wall_time[work_index] += batch_outcome.wall_time;
-            if let Err(ref e) = batch_outcome.result
-                && func_first_error[work_index].is_none()
-            {
-                func_first_error[work_index] = Some(e.clone());
-            }
-            accumulators[work_index].merge(batch_outcome.result);
-
+        // Launch sub-loop: fill in-flight slots up to --workers.
+        while join_set.len() < effective_workers && !stop_early {
             if let Some(limit) = time_limit_dur
                 && run_start.elapsed() >= limit
             {
                 stop_early = true;
                 stop_reason = Some(format!("time limit ({:.1}s)", limit.as_secs_f64()));
+                break;
             }
-            if let Some(max_exec) = max_executions
-                && total_executions_count >= max_exec
-            {
-                stop_early = true;
-                stop_reason = Some(format!(
-                    "max executions ({max_exec}, {total_executions_count} total)"
-                ));
+            let batch_config = match batch_scheduler.next_batch() {
+                Some(b) => b,
+                None => break,
+            };
+            let work_index = batch_config.task_index;
+            let batch_iters = batch_config.batch_size;
+            let mut item = work_items[work_index].clone();
+            // Clamp per-batch iteration caps so orchestrator::explore /
+            // explore_function stop at the scheduler's assigned slice
+            // rather than running to the function's full configured cap.
+            item.explore_config.max_iterations = Some(batch_iters);
+            if let Some(ref mut cc) = item.concolic_config {
+                cc.max_iterations = Some(batch_iters as usize);
+                cc.max_executions = Some((batch_iters as usize) * 5);
             }
-            if let Some(threshold) = coverage_threshold
-                && total_branches_seen > 0
-            {
-                let coverage_pct =
-                    total_branches_covered as f64 / total_branches_seen as f64 * 100.0;
-                if coverage_pct >= threshold {
-                    stop_early = true;
-                    stop_reason = Some(format!(
-                        "coverage threshold ({threshold:.1}%, {coverage_pct:.1}% actual)"
-                    ));
+
+            batches_launched += 1;
+
+            // Extract resume state for this function (if a prior batch completed).
+            let resume_state = explore_states.remove(&work_index);
+
+            let sem = Arc::clone(&semaphore);
+            let completed_functions = Arc::clone(&completed_functions);
+            let fe_config = fe_configs
+                .get(&item.language)
+                .expect("fe_config must exist for target language")
+                .clone();
+            let file_str_owned = item.file_str.clone();
+            let project_root_owned = item.project_root_str.clone();
+            let progress_index = work_index + 1;
+            let progress_total = work_items.len();
+            let periodic_progress_clone = periodic_progress.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore is never closed");
+                let func_start = Instant::now();
+                emit_explore_progress(
+                    &item.func.name,
+                    progress_index,
+                    progress_total,
+                    Duration::ZERO,
+                    "started",
+                    emit_progress_json,
+                );
+
+                let mut task_frontend = match Frontend::spawn(&fe_config).await {
+                    Ok(fe) => fe,
+                    Err(e) => {
+                        let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                        emit_explore_progress(
+                            &item.func.name,
+                            completed,
+                            progress_total,
+                            func_start.elapsed(),
+                            "failed",
+                            emit_progress_json,
+                        );
+                        return BatchExploreOutcome {
+                            work_index,
+                            result: Err(format!("failed to spawn frontend: {e}")),
+                            wall_time: func_start.elapsed(),
+                            batch_iteration_cap: batch_iters,
+                            resume_state: None,
+                        };
+                    }
+                };
+
+                // Build progress hints shared across both explorer paths so
+                // concolic and random runs surface identical stat lines.
+                let cb_ref: Option<&ProgressCallback> = periodic_progress_clone
+                    .as_ref()
+                    .map(|arc| arc.as_ref().as_ref());
+                let progress_hints = cb_ref.map(|cb| shatter_core::explorer::ProgressHints {
+                    callback: cb,
+                    total_branches: Some(item.func.branches.len()),
+                });
+
+                let instrument_mocks = item
+                    .concolic_config
+                    .as_ref()
+                    .map(|config| config.mocks.as_slice())
+                    .unwrap_or_else(|| item.explore_config.mocks.as_slice());
+                let mut observe_input = shatter_core::pipeline_orchestrator::ObserveInput {
+                    frontend: &mut task_frontend,
+                    file: file_str_owned.clone(),
+                    function_name: item.func.name.clone(),
+                    analysis: item.func.clone(),
+                    explore_config: item.explore_config.clone(),
+                    use_concolic: item.concolic_config.is_some(),
+                    concolic_config: item.concolic_config.clone(),
+                    prepare_id: None,
+                    project_root: project_root_owned.clone(),
+                    extra_seeds: vec![],
+                };
+                let observe_result = shatter_core::pipeline_orchestrator::run_observe_stage(
+                    &mut observe_input,
+                    shatter_core::pipeline_orchestrator::ObserveStageOptions {
+                        instrument_mocks,
+                        concolic_seed_inputs: &item.seed_inputs,
+                        concolic_user_inputs: &item.user_inputs,
+                        progress_hints,
+                        resume_state,
+                        ..shatter_core::pipeline_orchestrator::ObserveStageOptions::default()
+                    },
+                )
+                .instrument(tracing::info_span!("pipeline.observe"))
+                .await;
+
+                let (result, batch_resume_state) = match observe_result {
+                    Ok(stage_result) => (
+                        Ok(stage_result.observe.observation),
+                        stage_result.resume_state,
+                    ),
+                    Err(err) => (Err(err.to_string()), None),
+                };
+                let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                emit_explore_progress(
+                    &item.func.name,
+                    completed,
+                    progress_total,
+                    func_start.elapsed(),
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                    emit_progress_json,
+                );
+
+                let _ = task_frontend.shutdown().await;
+
+                BatchExploreOutcome {
+                    work_index,
+                    result,
+                    wall_time: func_start.elapsed(),
+                    batch_iteration_cap: batch_iters,
+                    resume_state: batch_resume_state,
                 }
-            }
+            });
         }
 
-        if let Some(reason) = &stop_reason {
-            log::info!("Stop flag reached: {reason}; draining in-flight batches");
+        if join_set.is_empty() {
+            break;
         }
-        // Drain remaining in-flight tasks so spawned frontends are cleaned up.
-        if stop_early {
-            join_set.abort_all();
+
+        let batch_outcome = match join_set.join_next().await {
+            Some(Ok(o)) => o,
+            Some(Err(e)) => {
+                log::error!("Task join error: {e}");
+                continue;
+            }
+            None => break,
+        };
+
+        let work_index = batch_outcome.work_index;
+
+        // Store resume state for the next batch of this function (str-b2my.16).
+        // Also persist to disk so a subsequent run can skip path rediscovery
+        // for partially-explored functions (str-b2my.15).
+        if let Some(state) = batch_outcome.resume_state {
+            let target_idx = work_items[work_index].target_idx;
+            if let Some(pt) = prepared_targets.get(target_idx)
+                && let Err(e) = write_resume_state(
+                    &pt.artifact_root,
+                    &pt.file_str,
+                    &work_items[work_index].func,
+                    &state,
+                )
+            {
+                log::warn!(
+                    "Failed to write resume state for {}: {e}",
+                    work_items[work_index].func.name
+                );
+            }
+            explore_states.insert(work_index, state);
         }
-        while let Some(joined) = join_set.join_next().await {
-            if let Ok(batch_outcome) = joined {
-                let work_index = batch_outcome.work_index;
-                func_wall_time[work_index] += batch_outcome.wall_time;
-                accumulators[work_index].merge(batch_outcome.result);
+
+        let iters_used = batch_outcome
+            .result
+            .as_ref()
+            .map(|obs| obs.iterations)
+            .unwrap_or(0);
+        let exhausted =
+            batch_is_exhausted(&batch_outcome.result, batch_outcome.batch_iteration_cap);
+
+        // Score this batch by the number of branch discoveries it added
+        // that the accumulator had never seen before. This is the rerank
+        // signal for str-b2my.7: a function still uncovering new paths
+        // each batch ranks higher than one whose last batch produced
+        // nothing new, so the scheduler keeps running the productive
+        // function back-to-back until its yield drops.
+        let batch_rank = new_discoveries_in_batch(
+            batch_outcome.result.as_ref().ok(),
+            &accumulators[work_index].discoveries,
+        ) as i64;
+
+        batch_scheduler.record_outcome(shatter_core::batch_scheduler::BatchOutcome {
+            task_index: work_index,
+            iterations_used: iters_used,
+            exhausted,
+            rank: batch_rank,
+            summary: None,
+        });
+        batches_completed += 1;
+
+        total_executions_count += iters_used as u64;
+        if let Ok(ref obs) = batch_outcome.result {
+            total_branches_seen += obs.total_lines as usize;
+            total_branches_covered += obs.unique_paths;
+        }
+
+        // Snapshot the accumulator's prior state before merge so we can
+        // distinguish "first batch for this function" (no prior state yet)
+        // from a re-enqueue that added zero new discoveries (the idle
+        // signal required by str-cii2).
+        let prior_batches_merged = accumulators[work_index].batches_merged;
+
+        if log_level >= LogLevel::Info {
+            let paths = batch_outcome
+                .result
+                .as_ref()
+                .map(|obs| obs.unique_paths)
+                .unwrap_or(0);
+            let status = if batch_outcome.result.is_ok() {
+                "ok"
+            } else {
+                "err"
+            };
+            // Cumulative per-function stats include the freshly completed
+            // batch merged in: covered = prior ∪ this batch's branch IDs,
+            // MC/DC = component-wise max across all batches so far.
+            let prior_covered = accumulators[work_index].discoveries.len();
+            let new_branches_this_batch = batch_rank as usize;
+            let cumulative_covered = prior_covered + new_branches_this_batch;
+            let total_branches_for_func = work_items[work_index].func.branches.len();
+            let cumulative_mcdc = match (
+                accumulators[work_index].mcdc_summary,
+                batch_outcome
+                    .result
+                    .as_ref()
+                    .ok()
+                    .and_then(|obs| obs.mcdc_summary),
+            ) {
+                (Some(cur), Some(new)) => {
+                    Some((cur.0.max(new.0), cur.1.max(new.1), cur.2.max(new.2)))
+                }
+                (None, new) => new,
+                (cur, None) => cur,
+            };
+
+            let mut line = format!(
+                "[batch {}/{}] {}: {} iters, {} paths, {}/{} branches",
+                batches_completed,
+                batches_launched,
+                accumulators[work_index].function_name,
+                iters_used,
+                paths,
+                cumulative_covered,
+                total_branches_for_func,
+            );
+            if let Some((total, independent, _)) = cumulative_mcdc {
+                line.push_str(&format!(", mcdc {independent}/{total}"));
+            }
+            line.push_str(&format!(
+                ", {:.1}s ({})",
+                batch_outcome.wall_time.as_secs_f64(),
+                status,
+            ));
+
+            // Show attempt penalty when a function has consecutive
+            // no-progress batches (str-b2my.9).
+            let attempt_pen = batch_scheduler.attempt_penalty(work_index);
+            if attempt_pen > 0 {
+                line.push_str(&format!(", penalty -{attempt_pen}"));
+            }
+
+            // Re-enqueue idle signal: prior batches exist, this one added
+            // no new branch discoveries, and the function will keep being
+            // scheduled because it did not exhaust its iteration cap.
+            if prior_batches_merged > 0 && new_branches_this_batch == 0 && !exhausted {
+                if batch_scheduler.is_frontier_exhausted() {
+                    line.push_str(" (revisiting)");
+                } else {
+                    line.push_str(" (continuing without new discoveries)");
+                }
+            }
+
+            // Show cooldown score when non-zero (str-b2my.8).
+            let cd = batch_scheduler.cooldown_score(work_index);
+            if cd > 0 {
+                line.push_str(&format!(" [cooldown: {cd}]"));
+            }
+
+            // Append active/queued function status (str-b2my.4).
+            if work_items.len() > 1 {
+                let active_indices: Vec<usize> = batch_scheduler.in_flight_indices().collect();
+                let queued_indices: Vec<usize> = batch_scheduler.queued_indices().collect();
+
+                let format_names = |indices: &[usize], limit: usize| -> String {
+                    if indices.is_empty() {
+                        return String::new();
+                    }
+                    let names: Vec<&str> = indices
+                        .iter()
+                        .take(limit)
+                        .map(|&i| work_items[i].func.name.as_str())
+                        .collect();
+                    let mut s = names.join(", ");
+                    if indices.len() > limit {
+                        s.push_str(&format!(" +{} more", indices.len() - limit));
+                    }
+                    s
+                };
+
+                let active_names = format_names(&active_indices, 3);
+                let queued_names = format_names(&queued_indices, 3);
+
+                let mut parts = Vec::new();
+                if !active_indices.is_empty() {
+                    parts.push(format!(
+                        "active: {} ({})",
+                        active_indices.len(),
+                        active_names
+                    ));
+                }
+                if !queued_indices.is_empty() {
+                    parts.push(format!(
+                        "queued: {} ({})",
+                        queued_indices.len(),
+                        queued_names
+                    ));
+                }
+                if !parts.is_empty() {
+                    line.push_str(&format!(" | {}", parts.join(", ")));
+                }
+            }
+
+            eprintln!("{line}");
+        }
+
+        // Cross-function fallback detection (str-b2my.5).
+        if batch_scheduler.is_frontier_exhausted() {
+            if !frontier_exhausted_announced {
+                frontier_exhausted_announced = true;
+                if log_level >= LogLevel::Info {
+                    eprintln!(
+                        "  frontier work exhausted across all functions; \
+                             continuing with corpus mutations"
+                    );
+                }
+            }
+        } else {
+            // New frontier work appeared (e.g., dynamically enqueued
+            // function); allow re-announcement if fallback is re-entered.
+            frontier_exhausted_announced = false;
+        }
+
+        func_wall_time[work_index] += batch_outcome.wall_time;
+        if let Err(ref e) = batch_outcome.result
+            && func_first_error[work_index].is_none()
+        {
+            func_first_error[work_index] = Some(e.clone());
+        }
+        accumulators[work_index].merge(batch_outcome.result);
+
+        if let Some(limit) = time_limit_dur
+            && run_start.elapsed() >= limit
+        {
+            stop_early = true;
+            stop_reason = Some(format!("time limit ({:.1}s)", limit.as_secs_f64()));
+        }
+        if let Some(max_exec) = max_executions
+            && total_executions_count >= max_exec
+        {
+            stop_early = true;
+            stop_reason = Some(format!(
+                "max executions ({max_exec}, {total_executions_count} total)"
+            ));
+        }
+        if let Some(threshold) = coverage_threshold
+            && total_branches_seen > 0
+        {
+            let coverage_pct = total_branches_covered as f64 / total_branches_seen as f64 * 100.0;
+            if coverage_pct >= threshold {
+                stop_early = true;
+                stop_reason = Some(format!(
+                    "coverage threshold ({threshold:.1}%, {coverage_pct:.1}% actual)"
+                ));
             }
         }
+    }
+
+    if let Some(reason) = &stop_reason {
+        log::info!("Stop flag reached: {reason}; draining in-flight batches");
+    }
+    // Drain remaining in-flight tasks so spawned frontends are cleaned up.
+    if stop_early {
+        join_set.abort_all();
+    }
+    while let Some(joined) = join_set.join_next().await {
+        if let Ok(batch_outcome) = joined {
+            let work_index = batch_outcome.work_index;
+            func_wall_time[work_index] += batch_outcome.wall_time;
+            accumulators[work_index].merge(batch_outcome.result);
+        }
+    }
 
     if resumed_total > 0 {
         log::info!("Resumed {resumed_total} function(s) from prior explore artifacts");
@@ -2672,7 +2603,10 @@ pub(crate) async fn run_explore(
             wall_time: func_wall_time[work_index],
             genetic_config: work_items[work_index].genetic_config.clone(),
         };
-        outcomes_by_target.entry(target_idx).or_default().push(outcome);
+        outcomes_by_target
+            .entry(target_idx)
+            .or_default()
+            .push(outcome);
     }
 
     // --- Phase 3b: Per-target post-processing ---
@@ -2702,26 +2636,26 @@ pub(crate) async fn run_explore(
         let mut file_specs: Vec<shatter_core::spec::FunctionSpec> = Vec::new();
 
         for outcome in &target_outcomes {
-            let artifact_relpath =
-                match write_explore_artifact(&artifact_root, &file_str, outcome) {
-                    Ok(path) => {
-                        log::info!(
-                            "Wrote explore artifact for {} -> {}",
-                            outcome.func.name,
-                            path.display()
-                        );
-                        path.strip_prefix(&artifact_root)
-                            .ok()
-                            .map(|p| p.to_string_lossy().to_string())
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to write explore artifact for {}: {e}",
-                            outcome.func.name
-                        );
-                        None
-                    }
-                };
+            let artifact_relpath = match write_explore_artifact(&artifact_root, &file_str, outcome)
+            {
+                Ok(path) => {
+                    log::info!(
+                        "Wrote explore artifact for {} -> {}",
+                        outcome.func.name,
+                        path.display()
+                    );
+                    path.strip_prefix(&artifact_root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to write explore artifact for {}: {e}",
+                        outcome.func.name
+                    );
+                    None
+                }
+            };
 
             let summary_status = if outcome.result.is_ok() {
                 explore_summary.completed += 1;
@@ -2763,21 +2697,19 @@ pub(crate) async fn run_explore(
                                 None
                             })
                             .unwrap_or_default();
-                        let harvested =
-                            shatter_core::interesting_pool::harvest_from_exploration(
-                                &mut pool,
-                                &result.raw_results,
-                                &func.params,
-                                &func.name,
-                                if mcdc {
-                                    shatter_core::interesting_pool::CoverageMode::Mcdc
-                                } else {
-                                    shatter_core::interesting_pool::CoverageMode::Branch
-                                },
-                            );
+                        let harvested = shatter_core::interesting_pool::harvest_from_exploration(
+                            &mut pool,
+                            &result.raw_results,
+                            &func.params,
+                            &func.name,
+                            if mcdc {
+                                shatter_core::interesting_pool::CoverageMode::Mcdc
+                            } else {
+                                shatter_core::interesting_pool::CoverageMode::Branch
+                            },
+                        );
                         if harvested > 0
-                            && let Err(e) =
-                                shatter_core::interesting_pool::save_pool(&pool, pp)
+                            && let Err(e) = shatter_core::interesting_pool::save_pool(&pool, pp)
                         {
                             log::warn!("failed to save interesting pool: {e}");
                         }
@@ -2790,10 +2722,9 @@ pub(crate) async fn run_explore(
                             &func.dependencies,
                         );
                         if !behaviors.is_empty() {
-                            let mock_file =
-                                shatter_core::recorded_mocks::build_recorded_mock_file(
-                                    &func.name, &file_str, behaviors,
-                                );
+                            let mock_file = shatter_core::recorded_mocks::build_recorded_mock_file(
+                                &func.name, &file_str, behaviors,
+                            );
                             let artifacts_dir = std::path::Path::new("shatter-artifacts");
                             match shatter_core::recorded_mocks::save_recorded_mocks(
                                 &mock_file,
@@ -2835,10 +2766,7 @@ pub(crate) async fn run_explore(
                                         func.name
                                     );
                                 } else {
-                                    log::info!(
-                                        "Wrote observe output: {}",
-                                        obs_path.display()
-                                    );
+                                    log::info!("Wrote observe output: {}", obs_path.display());
                                 }
                             }
                             Err(e) => log::error!(
@@ -2921,14 +2849,11 @@ pub(crate) async fn run_explore(
                                                     ga_result.discoveries.len(),
                                                     func.name,
                                                 );
-                                                let mut bmap =
-                                                    BehaviorMap::from_exploration_result(
-                                                        &func.name,
-                                                        &result,
-                                                    );
-                                                let added = bmap.merge_ga_discoveries(
-                                                    &ga_result.discoveries,
+                                                let mut bmap = BehaviorMap::from_exploration_result(
+                                                    &func.name, &result,
                                                 );
+                                                let added = bmap
+                                                    .merge_ga_discoveries(&ga_result.discoveries);
                                                 if added > 0
                                                     && let Some(ref cache) = cache
                                                 {
@@ -3018,10 +2943,7 @@ pub(crate) async fn run_explore(
                                 )
                             };
                             if let Err(e) = cache_result {
-                                log::warn!(
-                                    "failed to cache behavior map for {}: {e}",
-                                    func.name
-                                );
+                                log::warn!("failed to cache behavior map for {}: {e}", func.name);
                             }
                         }
 
@@ -3034,11 +2956,9 @@ pub(crate) async fn run_explore(
                                 .iter()
                                 .map(|b| b.input_args.clone())
                                 .collect();
-                            if let Err(e) = sic.store(
-                                &format!("{}:{}", file_str, func.name),
-                                &sig,
-                                &inputs,
-                            ) {
+                            if let Err(e) =
+                                sic.store(&format!("{}:{}", file_str, func.name), &sig, &inputs)
+                            {
                                 log::warn!(
                                     "failed to persist stored inputs for {}: {e}",
                                     func.name
@@ -3251,8 +3171,8 @@ mod tests {
         format_progress_snapshot, load_explore_artifacts, read_explore_artifact,
         sanitize_artifact_component, write_explore_artifact, write_explore_summary,
     };
-    use shatter_core::explorer::ExploreProgressSnapshot;
     use shatter_core::config::GeneticConfig;
+    use shatter_core::explorer::ExploreProgressSnapshot;
     use shatter_core::protocol::{FunctionAnalysis, InvocationModel};
     use shatter_core::report::ProgressEvent;
     use shatter_core::types::TypeInfo;
@@ -3292,7 +3212,9 @@ mod tests {
         // JSON format => emit regardless of log level
         assert!(StdoutFormat::Json == StdoutFormat::Json || LogLevel::Info >= LogLevel::Debug);
         // Markdown + default Info => suppress
-        assert!(!(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Info >= LogLevel::Debug));
+        assert!(
+            !(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Info >= LogLevel::Debug)
+        );
         // Markdown + Debug => emit
         assert!(StdoutFormat::Markdown == StdoutFormat::Json || LogLevel::Debug >= LogLevel::Debug);
         // Markdown + Trace => emit
@@ -3776,8 +3698,13 @@ mod tests {
         for _ in 0..2 {
             let cfg = scheduler.next_batch().expect("t0 queue non-empty");
             order.push(cfg.task_index);
-            let obs =
-                obs_with(CAP, 1, 5, vec![(cfg.task_index as u32, DiscoveryMethod::Z3)], vec![]);
+            let obs = obs_with(
+                CAP,
+                1,
+                5,
+                vec![(cfg.task_index as u32, DiscoveryMethod::Z3)],
+                vec![],
+            );
             accs[cfg.task_index].merge(Ok(obs));
             scheduler.record_outcome(BatchOutcome {
                 task_index: cfg.task_index,
@@ -3823,7 +3750,10 @@ mod tests {
         );
         assert_eq!(accs.len(), 4);
         for acc in accs {
-            assert!(acc.batches_merged >= 1, "every accumulator must receive at least one batch");
+            assert!(
+                acc.batches_merged >= 1,
+                "every accumulator must receive at least one batch"
+            );
         }
     }
 
@@ -3845,12 +3775,15 @@ mod tests {
         for _ in 0..2 {
             let cfg = scheduler.next_batch().unwrap();
             let obs = obs_with(
-                CAP, 1, 5,
+                CAP,
+                1,
+                5,
                 vec![(cfg.task_index as u32, DiscoveryMethod::Random)],
                 vec![],
             );
             let rank =
-                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
+                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries)
+                    as i64;
             assert!(rank > 0, "first batch should find new branches");
             accs[cfg.task_index].merge(Ok(obs));
             scheduler.record_outcome(BatchOutcome {
@@ -3861,18 +3794,24 @@ mod tests {
                 summary: None,
             });
         }
-        assert!(!scheduler.is_frontier_exhausted(), "both functions had discoveries");
+        assert!(
+            !scheduler.is_frontier_exhausted(),
+            "both functions had discoveries"
+        );
 
         // Round 2: both functions find nothing new — fallback.
         for _ in 0..2 {
             let cfg = scheduler.next_batch().unwrap();
             let obs = obs_with(
-                CAP, 1, 5,
+                CAP,
+                1,
+                5,
                 vec![(cfg.task_index as u32, DiscoveryMethod::Random)],
                 vec![],
             );
             let rank =
-                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
+                super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries)
+                    as i64;
             assert_eq!(rank, 0, "rediscovery should yield rank 0");
             accs[cfg.task_index].merge(Ok(obs));
             scheduler.record_outcome(BatchOutcome {
@@ -3883,15 +3822,14 @@ mod tests {
                 summary: None,
             });
         }
-        assert!(scheduler.is_frontier_exhausted(), "all functions explored with no new discoveries");
+        assert!(
+            scheduler.is_frontier_exhausted(),
+            "all functions explored with no new discoveries"
+        );
 
         // Round 3: funcA finds something new — exits fallback.
         let cfg = scheduler.next_batch().unwrap();
-        let obs = obs_with(
-            CAP, 1, 5,
-            vec![(99, DiscoveryMethod::Z3)],
-            vec![],
-        );
+        let obs = obs_with(CAP, 1, 5, vec![(99, DiscoveryMethod::Z3)], vec![]);
         let rank =
             super::new_discoveries_in_batch(Some(&obs), &accs[cfg.task_index].discoveries) as i64;
         assert!(rank > 0, "new branch should yield positive rank");
@@ -3903,7 +3841,10 @@ mod tests {
             rank,
             summary: None,
         });
-        assert!(!scheduler.is_frontier_exhausted(), "funcA has positive rank — no longer in fallback");
+        assert!(
+            !scheduler.is_frontier_exhausted(),
+            "funcA has positive rank — no longer in fallback"
+        );
     }
 
     #[test]
@@ -4239,8 +4180,7 @@ mod tests {
         assert_eq!(persisted.covered_paths, vec![7, 42, 99]);
 
         let json = serde_json::to_string(&persisted).expect("serialize");
-        let deserialized: PersistedExploreState =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: PersistedExploreState = serde_json::from_str(&json).expect("deserialize");
         let restored = deserialized.into_explore_state();
 
         assert_eq!(restored.covered_paths, original.covered_paths);
@@ -4394,7 +4334,10 @@ mod tests {
         deep_fps.insert(func.name.clone(), "fp-new".to_string());
 
         let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
-        assert!(result.is_none(), "should not resume with mismatched fingerprint");
+        assert!(
+            result.is_none(),
+            "should not resume with mismatched fingerprint"
+        );
     }
 
     #[test]
@@ -4423,7 +4366,10 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
-        assert!(result.is_none(), "should not resume without stored fingerprint");
+        assert!(
+            result.is_none(),
+            "should not resume without stored fingerprint"
+        );
     }
 
     #[test]
@@ -4481,7 +4427,10 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
-        assert!(result.is_none(), "should not resume when artifact file missing");
+        assert!(
+            result.is_none(),
+            "should not resume when artifact file missing"
+        );
     }
 
     #[test]
@@ -4579,7 +4528,10 @@ mod tests {
         assert_eq!(acc.successful_batches, 1);
 
         let result = acc.into_result();
-        assert!(result.is_ok(), "resumed accumulator should produce Ok result");
+        assert!(
+            result.is_ok(),
+            "resumed accumulator should produce Ok result"
+        );
         let output = result.unwrap();
         assert_eq!(output.function_name, "load/user");
         assert_eq!(output.iterations, 1);
