@@ -772,12 +772,14 @@ struct AssemblyOpts<'a> {
     spec_as_json: bool,
     detect_invariants: bool,
     use_concolic: bool,
+    solver_timeout_ms: Option<u64>,
     show_perf: bool,
     use_color: bool,
     output_format: crate::args::OutputFormat,
     report_style: shatter_core::report_style::ReportStyle,
     project_root: Option<&'a str>,
     deep_fingerprints: &'a HashMap<String, String>,
+    persist_stages: Option<&'a Path>,
     output_path_set: bool,
     stdout: bool,
     report_outputs_empty: bool,
@@ -840,6 +842,21 @@ fn assemble_function_result(
         let _pipeline_analyze_span = tracing::info_span!("pipeline.analyze").entered();
         shatter_core::pipeline::analyze(result, func)
     };
+    let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
+
+    if let Some(persist_root) = opts.persist_stages
+        && let Err(err) = persist_stage_outputs(
+            persist_root,
+            file_str,
+            func,
+            result,
+            &analyze_output,
+            opts.solver_timeout_ms,
+            opts.detect_invariants,
+        )
+    {
+        log::error!("failed to persist stage outputs for {}: {err}", func.name);
+    }
 
     // Print report to stdout.
     if log::log_enabled!(log::Level::Info) {
@@ -852,7 +869,6 @@ fn assemble_function_result(
                 print!("{report}");
             }
         } else if opts.output_format == crate::args::OutputFormat::Md {
-            let location = format!("{file_str}:{}-{}", func.start_line, func.end_line);
             let view = crate::render::explore_fn_view(
                 result,
                 crate::render::ExploreRenderOpts {
@@ -871,7 +887,7 @@ fn assemble_function_result(
             }
         } else {
             let report_opts = ReportOptions {
-                location: Some(format!("{file_str}:{}-{}", func.start_line, func.end_line)),
+                location: Some(location.clone()),
                 show_perf: opts.show_perf,
                 wall_time: Some(wall_time),
                 coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
@@ -901,7 +917,7 @@ fn assemble_function_result(
     // Spec output: use eq classes from analyze stage.
     if opts.show_spec || opts.detect_invariants {
         let eq_classes = &analyze_output.eq_classes;
-        let location = Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
+        let location = Some(location);
         let fingerprint = opts.deep_fingerprints.get(&func.name).cloned();
 
         let spec = {
@@ -931,6 +947,69 @@ fn assemble_function_result(
             );
         }
     }
+}
+
+fn persist_stage_outputs(
+    persist_root: &Path,
+    file_str: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+    observation: &shatter_core::explorer::ObservationOutput,
+    analyze_output: &shatter_core::pipeline::AnalyzeOutput,
+    solver_timeout_ms: Option<u64>,
+    detect_invariants: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stage_dir = stage_persistence_dir(persist_root, file_str, func);
+    let observe_stage = shatter_core::pipeline::ObserveStageOutput {
+        observation: serde_json::from_value(serde_json::to_value(observation)?)?,
+        analysis: func.clone(),
+        file: file_str.to_string(),
+    };
+    shatter_core::pipeline::write_observe_stage(&observe_stage, &stage_dir.join("observe.json"))?;
+
+    let analyze_stage = shatter_core::pipeline::AnalyzeStageOutput {
+        analyze: shatter_core::pipeline::AnalyzeOutput {
+            eq_classes: analyze_output.eq_classes.clone(),
+            behavior_map: analyze_output.behavior_map.clone(),
+            coverage_metrics: analyze_output.coverage_metrics.clone(),
+        },
+        spec: None,
+        function_name: func.name.clone(),
+        file: file_str.to_string(),
+    };
+    shatter_core::pipeline::write_analyze_stage(&analyze_stage, &stage_dir.join("analyze.json"))?;
+
+    let solve_output = shatter_core::pipeline::solve(&observe_stage, solver_timeout_ms);
+    let solve_stage = shatter_core::pipeline::SolveStageOutput {
+        solve: shatter_core::pipeline::StageSolveOutput {
+            solved_branches: solve_output.solved_branches.clone(),
+            metrics: solve_output.metrics.clone(),
+        },
+        function_name: func.name.clone(),
+        file: file_str.to_string(),
+    };
+    shatter_core::pipeline::write_solve_stage(&solve_stage, &stage_dir.join("solve.json"))?;
+
+    let specify_stage = shatter_core::pipeline::specify(
+        &observe_stage,
+        analyze_output,
+        &solve_output,
+        detect_invariants,
+    );
+    shatter_core::pipeline::write_specify_stage(&specify_stage, &stage_dir.join("specify.json"))?;
+
+    Ok(())
+}
+
+fn stage_persistence_dir(
+    persist_root: &Path,
+    file_str: &str,
+    func: &shatter_core::protocol::FunctionAnalysis,
+) -> std::path::PathBuf {
+    let file_component = sanitize_artifact_component(file_str);
+    let function_component = sanitize_artifact_component(&func.name);
+    persist_root
+        .join(file_component)
+        .join(format!("{:05}_{function_component}", func.start_line))
 }
 
 /// Finalize an explore run from saved artifacts on disk. Reads per-function
@@ -973,12 +1052,14 @@ fn finalize_explore(
         spec_as_json: spec_as_json || output_path.is_some(),
         detect_invariants,
         use_concolic,
+        solver_timeout_ms: None,
         show_perf,
         use_color,
         output_format,
         report_style: report_style.clone(),
         project_root: None,
         deep_fingerprints: &empty_fingerprints,
+        persist_stages: None,
         output_path_set: output_path.is_some(),
         stdout,
         report_outputs_empty: report_outputs.is_empty(),
@@ -1225,6 +1306,7 @@ pub(crate) async fn run_explore(
     set_overrides: &[String],
     meta_config: &shatter_core::strategy::MetaConfig,
     observe_output: Option<&Path>,
+    persist_stages: Option<&Path>,
     replay_recorded: bool,
     no_replay: bool,
     refine_budget: usize,
@@ -1325,6 +1407,7 @@ pub(crate) async fn run_explore(
     } else {
         shatter_core::report_style::ReportStyle::default()
     };
+    let solver_timeout_ms = solver_timeout.map(|seconds| seconds * 1000);
 
     // Count total functions across all targets for header/footer.
     let mut total_function_count: usize = 0;
@@ -2901,12 +2984,14 @@ pub(crate) async fn run_explore(
                         spec_as_json,
                         detect_invariants,
                         use_concolic,
+                        solver_timeout_ms,
                         show_perf,
                         use_color,
                         output_format,
                         report_style: report_style.clone(),
                         project_root: project_root_str.as_deref(),
                         deep_fingerprints: &deep_fingerprints,
+                        persist_stages,
                         output_path_set: output_path.is_some(),
                         stdout,
                         report_outputs_empty: report_outputs.is_empty(),
@@ -3168,8 +3253,9 @@ mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        format_progress_snapshot, load_explore_artifacts, read_explore_artifact,
-        sanitize_artifact_component, write_explore_artifact, write_explore_summary,
+        format_progress_snapshot, load_explore_artifacts, persist_stage_outputs,
+        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
+        write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -4071,6 +4157,65 @@ mod tests {
         let json = std::fs::read_to_string(&path).expect("read");
         let parsed: ExploreSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.status, "running");
+    }
+
+    #[test]
+    fn persist_stage_outputs_writes_all_stage_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let observation = sample_observation();
+        let analyze_output = shatter_core::pipeline::analyze(&observation, &func);
+
+        persist_stage_outputs(
+            dir.path(),
+            "src/user.ts",
+            &func,
+            &observation,
+            &analyze_output,
+            Some(5_000),
+            false,
+        )
+        .expect("persist stage outputs");
+
+        let stage_dir = stage_persistence_dir(dir.path(), "src/user.ts", &func);
+        let observe_stage = shatter_core::pipeline::read_observe_stage(&stage_dir.join("observe.json"))
+            .expect("read observe");
+        let analyze_stage = shatter_core::pipeline::read_analyze_stage(&stage_dir.join("analyze.json"))
+            .expect("read analyze");
+        let solve_stage = shatter_core::pipeline::read_solve_stage(&stage_dir.join("solve.json"))
+            .expect("read solve");
+        let specify_stage =
+            shatter_core::pipeline::read_specify_stage(&stage_dir.join("specify.json"))
+                .expect("read specify");
+
+        assert_eq!(observe_stage.file, "src/user.ts");
+        assert_eq!(observe_stage.observation.function_name, func.name);
+        assert_eq!(analyze_stage.function_name, func.name);
+        assert_eq!(solve_stage.function_name, func.name);
+        assert_eq!(specify_stage.function_name, func.name);
+    }
+
+    #[test]
+    fn persist_stage_outputs_returns_error_when_root_is_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_file = dir.path().join("stage-root-file");
+        std::fs::write(&root_file, "not a directory").expect("write root file");
+
+        let func = sample_func_analysis();
+        let observation = sample_observation();
+        let analyze_output = shatter_core::pipeline::analyze(&observation, &func);
+
+        let result = persist_stage_outputs(
+            &root_file,
+            "src/user.ts",
+            &func,
+            &observation,
+            &analyze_output,
+            None,
+            false,
+        );
+
+        assert!(result.is_err(), "file-backed root must fail");
     }
 
     #[test]

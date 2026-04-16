@@ -439,6 +439,12 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         observe_output: Option<PathBuf>,
 
+        /// Persist canonical stage JSON artifacts for each explored function.
+        /// Writes `observe.json`, `analyze.json`, `solve.json`, and `specify.json`
+        /// under a per-function directory so later CLI runs can reuse them.
+        #[arg(long, value_name = "DIR")]
+        persist_stages: Option<PathBuf>,
+
         /// Replay previously recorded mock fixtures from shatter-artifacts/recorded-mocks/.
         /// When set, auto-detects recorded mocks for each file+function pair and
         /// uses observed return values as seed mock configs.
@@ -2487,6 +2493,34 @@ mod tests {
         match cli.command {
             CliCommand::Explore { spec_out, .. } => {
                 assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_persist_stages_flag() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--persist-stages",
+            "stage-cache",
+            "src/app.ts:foo",
+        ]);
+        match cli.command {
+            CliCommand::Explore { persist_stages, .. } => {
+                assert_eq!(persist_stages, Some(PathBuf::from("stage-cache")));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_persist_stages_defaults_to_none() {
+        let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
+        match cli.command {
+            CliCommand::Explore { persist_stages, .. } => {
+                assert!(persist_stages.is_none());
             }
             _ => panic!("expected Explore command"),
         }
