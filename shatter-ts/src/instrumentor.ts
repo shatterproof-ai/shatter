@@ -340,15 +340,7 @@ function visitStatementsForDataFlow(
     }
     // Track reassignment expressions: x = expr
     if (ts.isExpressionStatement(stmt)) {
-      const expr = stmt.expression;
-      if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        if (ts.isIdentifier(expr.left)) {
-          const symExpr = buildSymExprWithFlow(expr.right, resolveName);
-          if (symExpr.kind !== "unknown") {
-            flowMap.set(expr.left.text, symExpr);
-          }
-        }
-      }
+      visitExpressionForDataFlow(stmt.expression, resolveName, flowMap);
     }
     // SSA-style merge for if/else: snapshot flowMap, visit each branch,
     // then merge divergent entries as ite(condition, then_value, else_value).
@@ -384,6 +376,16 @@ function visitStatementsForDataFlow(
       // Merge: produce ite for variables that diverge between branches
       mergeFlowMaps(condSym, snapshot, thenMap, elseMap, flowMap);
     }
+    if (ts.isForStatement(stmt)) {
+      visitForInitializerForDataFlow(stmt.initializer, resolveName, flowMap);
+      visitStatementsForDataFlow(statementsFromBranch(stmt.statement), resolveName, flowMap);
+      if (stmt.incrementor) {
+        visitExpressionForDataFlow(stmt.incrementor, resolveName, flowMap);
+      }
+    }
+    if (ts.isWhileStatement(stmt) || ts.isDoStatement(stmt) || ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)) {
+      visitStatementsForDataFlow(statementsFromBranch(stmt.statement), resolveName, flowMap);
+    }
     if (ts.isBlock(stmt)) {
       visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
     }
@@ -402,6 +404,118 @@ function visitStatementsForDataFlow(
       }
     }
   }
+}
+
+const SUPPORTED_MUTATION_DELTA = 1;
+
+function visitForInitializerForDataFlow(
+  initializer: ts.ForInitializer | undefined,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (!initializer) {
+    return;
+  }
+
+  if (ts.isVariableDeclarationList(initializer)) {
+    visitVariableDeclarationListForDataFlow(initializer, resolveName, flowMap);
+    return;
+  }
+
+  visitExpressionForDataFlow(initializer, resolveName, flowMap);
+}
+
+function visitVariableDeclarationListForDataFlow(
+  declarationList: ts.VariableDeclarationList,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  for (const decl of declarationList.declarations) {
+    if (ts.isIdentifier(decl.name) && decl.initializer) {
+      const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+      if (symExpr.kind !== "unknown") {
+        flowMap.set(decl.name.text, symExpr);
+      }
+    } else if ((ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) && decl.initializer) {
+      const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
+      if (symExpr.kind !== "unknown") {
+        registerDestructuredBindings(decl.name, symExpr, flowMap);
+      }
+    }
+  }
+}
+
+function visitExpressionForDataFlow(
+  expr: ts.Expression,
+  resolveName: (name: string) => SymExpr | undefined,
+  flowMap: Map<string, SymExpr>,
+): void {
+  if (ts.isBinaryExpression(expr) && ts.isIdentifier(expr.left)) {
+    const nextExpr = buildMutatedIdentifierExpr(expr.left.text, expr.operatorToken.kind, expr.right, resolveName);
+    if (nextExpr.kind !== "unknown") {
+      flowMap.set(expr.left.text, nextExpr);
+    }
+    return;
+  }
+
+  if ((ts.isPrefixUnaryExpression(expr) || ts.isPostfixUnaryExpression(expr)) && ts.isIdentifier(expr.operand)) {
+    const nextExpr = buildUpdatedSymExpr(
+      expr.operand.text,
+      expr.operator,
+      resolveName,
+    );
+    if (nextExpr.kind !== "unknown") {
+      flowMap.set(expr.operand.text, nextExpr);
+    }
+  }
+}
+
+function buildMutatedIdentifierExpr(
+  name: string,
+  operatorKind: ts.SyntaxKind,
+  right: ts.Expression,
+  resolveName: (name: string) => SymExpr | undefined,
+): SymExpr {
+  if (operatorKind === ts.SyntaxKind.EqualsToken) {
+    return buildSymExprWithFlow(right, resolveName);
+  }
+
+  const compoundOperator = compoundAssignmentTokenToOp(operatorKind);
+  if (compoundOperator === null) {
+    return { kind: "unknown" };
+  }
+
+  const baseExpr = resolveName(name);
+  const rightExpr = buildSymExprWithFlow(right, resolveName);
+  if (!baseExpr || baseExpr.kind === "unknown" || rightExpr.kind === "unknown") {
+    return { kind: "unknown" };
+  }
+
+  return {
+    kind: "bin_op",
+    op: compoundOperator,
+    left: baseExpr,
+    right: rightExpr,
+  };
+}
+
+function buildUpdatedSymExpr(
+  name: string,
+  operatorKind: ts.SyntaxKind,
+  resolveName: (name: string) => SymExpr | undefined,
+): SymExpr {
+  const baseExpr = resolveName(name);
+  const updateOperator = updateTokenToOp(operatorKind);
+  if (!baseExpr || baseExpr.kind === "unknown" || updateOperator === null) {
+    return { kind: "unknown" };
+  }
+
+  return {
+    kind: "bin_op",
+    op: updateOperator,
+    left: baseExpr,
+    right: { kind: "const", type: "int", value: SUPPORTED_MUTATION_DELTA },
+  };
 }
 
 /**
@@ -1823,6 +1937,28 @@ function binaryTokenToOp(kind: ts.SyntaxKind): BinOpKind | null {
       return "in";
     case ts.SyntaxKind.InstanceOfKeyword:
       return "instance_of";
+    default:
+      return null;
+  }
+}
+
+function compoundAssignmentTokenToOp(kind: ts.SyntaxKind): BinOpKind | null {
+  switch (kind) {
+    case ts.SyntaxKind.PlusEqualsToken:
+      return "add";
+    case ts.SyntaxKind.MinusEqualsToken:
+      return "sub";
+    default:
+      return null;
+  }
+}
+
+function updateTokenToOp(kind: ts.SyntaxKind): BinOpKind | null {
+  switch (kind) {
+    case ts.SyntaxKind.PlusPlusToken:
+      return "add";
+    case ts.SyntaxKind.MinusMinusToken:
+      return "sub";
     default:
       return null;
   }

@@ -1545,6 +1545,131 @@ describe("closure over mutable state", () => {
   });
 });
 
+describe("flow tracking for mutated locals", () => {
+  it("updates symbolic flow after postfix increment", () => {
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  y++;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "x", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("updates symbolic flow after compound assignment", () => {
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  y -= 2;
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "sub",
+          left: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "x", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+          right: { kind: "const", type: "int", value: 2 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("tracks canonical for-loop incrementors for later branches", () => {
+    const source = `function check(n: number): boolean {
+  let i = 0;
+  for (; i < n; i++) {
+  }
+  if (i > 0) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [3]);
+    const finalBranch = branches[branches.length - 1]!;
+    expect(finalBranch.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "const", type: "int", value: 0 },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
+
+  it("keeps loop-body accumulator updates symbolic for later branches", () => {
+    const source = `function check(n: number): boolean {
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    total += i;
+  }
+  if (total > 0) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [3]);
+    const finalBranch = branches[branches.length - 1]!;
+    expect(finalBranch.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: { kind: "const", type: "int", value: 0 },
+          right: { kind: "const", type: "int", value: 0 },
+        },
+        right: { kind: "const", type: "int", value: 0 },
+      },
+    });
+  });
+});
+
 describe("mock injection via import rewriting", () => {
   it("rewrites import with mocked symbol to use mock registry", () => {
     const source = `import { foo } from 'bar';
