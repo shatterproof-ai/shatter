@@ -191,6 +191,8 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

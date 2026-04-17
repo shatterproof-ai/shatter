@@ -155,6 +155,16 @@ const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
 
 /// Default number of consecutive no-new-coverage observations before marking a loop converged.
 const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
+/// Stall count threshold before bounded symbolic unrolling is eligible.
+const BOUNDED_UNROLL_STALL_THRESHOLD: u32 = drilling::DRILL_STALL_THRESHOLD + 1;
+/// Maximum stalled loop frontiers to target with bounded unroll per round.
+const MAX_BOUNDED_UNROLL_FRONTIERS_PER_ROUND: usize = 2;
+/// Default bounded-unroll depth when no solver timeout budget is configured.
+const DEFAULT_BOUNDED_UNROLL_DEPTH: u32 = 64;
+/// Minimum bounded-unroll depth when deriving a budget from solver timeout.
+const MIN_BOUNDED_UNROLL_DEPTH: u32 = 8;
+/// Convert solver timeout budget into a capped unroll-depth budget.
+const SOLVER_TIMEOUT_MS_PER_UNROLL_STEP: u64 = 100;
 
 impl Default for ExploreConfig {
     fn default() -> Self {
@@ -469,6 +479,236 @@ pub(crate) fn extract_sym_constraints(result: &ExecuteResult) -> Vec<Option<SymE
             SymConstraint::Unknown { .. } => None,
         })
         .collect()
+}
+
+fn bounded_unroll_depth(solver_timeout_ms: Option<u64>) -> u32 {
+    match solver_timeout_ms {
+        Some(timeout_ms) => {
+            let derived_depth = timeout_ms / SOLVER_TIMEOUT_MS_PER_UNROLL_STEP;
+            derived_depth
+                .max(u64::from(MIN_BOUNDED_UNROLL_DEPTH))
+                .min(u64::from(u32::MAX)) as u32
+        }
+        None => DEFAULT_BOUNDED_UNROLL_DEPTH,
+    }
+}
+
+fn opposite_branch_constraint(expr: SymExpr, was_taken: bool) -> SymExpr {
+    if was_taken {
+        SymExpr::UnOp {
+            op: crate::sym_expr::UnOpKind::Not,
+            operand: Box::new(expr),
+        }
+    } else {
+        expr
+    }
+}
+
+fn substitute_loop_locals(
+    expr: &SymExpr,
+    locals: &std::collections::BTreeMap<String, SymExpr>,
+) -> SymExpr {
+    match expr {
+        SymExpr::Param { name, .. } => locals.get(name).cloned().unwrap_or_else(|| expr.clone()),
+        SymExpr::Const(_) | SymExpr::Unknown => expr.clone(),
+        SymExpr::BinOp { op, left, right } => SymExpr::BinOp {
+            op: *op,
+            left: Box::new(substitute_loop_locals(left, locals)),
+            right: Box::new(substitute_loop_locals(right, locals)),
+        },
+        SymExpr::UnOp { op, operand } => SymExpr::UnOp {
+            op: *op,
+            operand: Box::new(substitute_loop_locals(operand, locals)),
+        },
+        SymExpr::Call {
+            name,
+            receiver,
+            args,
+        } => SymExpr::Call {
+            name: name.clone(),
+            receiver: receiver
+                .as_ref()
+                .map(|expr| Box::new(substitute_loop_locals(expr, locals))),
+            args: args
+                .iter()
+                .map(|arg| substitute_loop_locals(arg, locals))
+                .collect(),
+        },
+        SymExpr::Ite {
+            condition,
+            then_expr,
+            else_expr,
+        } => SymExpr::Ite {
+            condition: Box::new(substitute_loop_locals(condition, locals)),
+            then_expr: Box::new(substitute_loop_locals(then_expr, locals)),
+            else_expr: Box::new(substitute_loop_locals(else_expr, locals)),
+        },
+    }
+}
+
+fn loop_bound_constraint(
+    loop_info: &crate::protocol::LoopInfo,
+    loop_state: &std::collections::BTreeMap<String, SymExpr>,
+) -> Option<SymExpr> {
+    let induction_expr = loop_state.get(&loop_info.induction_var.name)?.clone();
+    let op = match loop_info.induction_var.bound_op {
+        crate::protocol::BoundOp::Lt => crate::sym_expr::BinOpKind::Lt,
+        crate::protocol::BoundOp::Le => crate::sym_expr::BinOpKind::Le,
+        crate::protocol::BoundOp::Gt => crate::sym_expr::BinOpKind::Gt,
+        crate::protocol::BoundOp::Ge => crate::sym_expr::BinOpKind::Ge,
+    };
+    Some(SymExpr::BinOp {
+        op,
+        left: Box::new(induction_expr),
+        right: Box::new(loop_info.induction_var.bound_expr.clone()),
+    })
+}
+
+fn loop_prefix_constraints(
+    result: &ExecuteResult,
+    target_branch_id: u32,
+    target_loop_id: u32,
+) -> Vec<SymExpr> {
+    let loop_context = extract_loop_context(&result.scope_events);
+    let sym_constraints = extract_sym_constraints(result);
+    let target_index = result
+        .branch_path
+        .iter()
+        .position(|decision| decision.branch_id == target_branch_id)
+        .unwrap_or(result.branch_path.len());
+
+    result
+        .branch_path
+        .iter()
+        .zip(sym_constraints)
+        .enumerate()
+        .filter_map(|(index, (decision, constraint_opt))| {
+            if index >= target_index {
+                return None;
+            }
+            let enclosing_loops = loop_context.get(&decision.branch_id);
+            if enclosing_loops.is_some_and(|loop_ids| loop_ids.contains(&target_loop_id)) {
+                return None;
+            }
+            constraint_opt
+        })
+        .collect()
+}
+
+fn adjust_loop_bound_candidate(
+    candidate_inputs: &mut [serde_json::Value],
+    template: &crate::symbolic_unroll::IterationTemplate,
+    loop_info: &crate::protocol::LoopInfo,
+    param_names: &[String],
+    solved_values: &HashMap<String, ConcreteValue>,
+) {
+    let iteration_value = match solved_values.get(&template.iteration_var) {
+        Some(ConcreteValue::Int(value)) if *value >= 0 => *value as u32,
+        _ => return,
+    };
+    let loop_state =
+        match crate::symbolic_unroll::materialize_iteration_state(template, iteration_value) {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+    let induction_value = match loop_state.get(&loop_info.induction_var.name) {
+        Some(SymExpr::Const(crate::sym_expr::ConstValue::Int(value))) => *value,
+        _ => return,
+    };
+    let bound_name = match &loop_info.induction_var.bound_expr {
+        SymExpr::Param { name, path } if path.is_empty() => name,
+        _ => return,
+    };
+    let Some(bound_index) = param_names.iter().position(|name| name == bound_name) else {
+        return;
+    };
+
+    let adjusted_bound = match loop_info.induction_var.bound_op {
+        crate::protocol::BoundOp::Lt => induction_value + 1,
+        crate::protocol::BoundOp::Le => induction_value,
+        crate::protocol::BoundOp::Gt => induction_value - 1,
+        crate::protocol::BoundOp::Ge => induction_value,
+    };
+    candidate_inputs[bound_index] = serde_json::json!(adjusted_bound);
+}
+
+fn stalled_loop_candidate_inputs(
+    frontier: &Frontier,
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
+    loops: &[crate::protocol::LoopInfo],
+    param_infos: &[ParamInfo],
+    param_names: &[String],
+    solver_timeout_ms: Option<u64>,
+) -> Option<Vec<serde_json::Value>> {
+    let (_, _, witness_result) = raw_results.iter().rev().find(|(inputs, _, result)| {
+        inputs == &frontier.best_prefix
+            && result
+                .branch_path
+                .iter()
+                .any(|decision| decision.branch_id == frontier.branch_id)
+    })?;
+
+    let loop_context = extract_loop_context(&witness_result.scope_events);
+    let target_loop_id = *loop_context.get(&frontier.branch_id)?.iter().next()?;
+    let loop_info = loops.iter().find(|info| info.loop_id == target_loop_id)?;
+
+    let loop_snapshots: Vec<crate::protocol::LoopBodyState> = witness_result
+        .loop_body_states
+        .iter()
+        .filter(|snapshot| snapshot.loop_id == target_loop_id)
+        .cloned()
+        .collect();
+    if loop_snapshots.len() < crate::symbolic_unroll::MIN_TEMPLATE_ITERATIONS {
+        return None;
+    }
+
+    let template =
+        crate::symbolic_unroll::extract_iteration_template(loop_info, &loop_snapshots).ok()?;
+    let target_depth = bounded_unroll_depth(solver_timeout_ms).max(template.iteration_count + 1);
+    let bounded_template = crate::symbolic_unroll::IterationTemplate {
+        iteration_count: target_depth,
+        ..template
+    };
+    let unrolled_formula =
+        crate::symbolic_unroll::build_unrolled_formula(&bounded_template).ok()?;
+
+    let target_decision = witness_result
+        .branch_path
+        .iter()
+        .find(|decision| decision.branch_id == frontier.branch_id)?;
+
+    let target_expr = match &target_decision.constraint {
+        crate::execution_record::SymConstraint::Expr { expr } => opposite_branch_constraint(
+            substitute_loop_locals(expr, &unrolled_formula.locals),
+            target_decision.taken,
+        ),
+        crate::execution_record::SymConstraint::Unknown { .. } => return None,
+    };
+
+    let mut constraints =
+        loop_prefix_constraints(witness_result, frontier.branch_id, target_loop_id)
+            .into_iter()
+            .map(|expr| substitute_loop_locals(&expr, &unrolled_formula.locals))
+            .collect::<Vec<_>>();
+    constraints.push(unrolled_formula.iteration_bound.clone());
+    constraints.push(loop_bound_constraint(loop_info, &unrolled_formula.locals)?);
+    constraints.push(target_expr);
+
+    match solver::solve_constraints(&constraints, solver_timeout_ms, param_infos).ok()? {
+        SolveResult::Sat(values) => {
+            let mut candidate_inputs =
+                overlay_solved_values(&frontier.best_prefix, &values, param_names);
+            adjust_loop_bound_candidate(
+                &mut candidate_inputs,
+                &bounded_template,
+                loop_info,
+                param_names,
+                &values,
+            );
+            Some(candidate_inputs)
+        }
+        SolveResult::Unsat => None,
+    }
 }
 
 /// Convert Z3 `ConcreteValue`s back into JSON values suitable for the Execute protocol.
@@ -889,8 +1129,6 @@ impl LoopInvariantDetector {
 }
 
 /// Map each branch in scope_events to its enclosing loop ID(s).
-/// Retained for unit tests.
-#[cfg(test)]
 pub(crate) fn extract_loop_context(scope_events: &[TraceEvent]) -> HashMap<u32, HashSet<u32>> {
     let mut loop_stack: Vec<u32> = Vec::new();
     let mut context: HashMap<u32, HashSet<u32>> = HashMap::new();
@@ -1143,10 +1381,11 @@ fn solve_and_generate(
     observations: &[Observation],
     frontier_set: &mut FrontierSet,
     param_infos: &[ParamInfo],
-    _param_names: &[String],
+    param_names: &[String],
     raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
     seen_branch_sides: &std::collections::HashSet<(u32, bool)>,
-    _config: &ExploreConfig,
+    config: &ExploreConfig,
+    loops: &[crate::protocol::LoopInfo],
     rng: &mut StdRng,
     target_branches: &HashSet<u32>,
     fitness_context: &mut FitnessContext,
@@ -1231,6 +1470,39 @@ fn solve_and_generate(
                 output.drill_count += 1;
             }
             frontier_set.increment_stall(frontier.branch_id);
+        }
+    }
+
+    {
+        let mut stalled_loop_frontiers: Vec<Frontier> = frontier_set
+            .iter()
+            .filter(|frontier| frontier.stall_count >= BOUNDED_UNROLL_STALL_THRESHOLD)
+            .cloned()
+            .collect();
+        stalled_loop_frontiers.sort_by(|a, b| {
+            frontier_score(b)
+                .partial_cmp(&frontier_score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        stalled_loop_frontiers.truncate(MAX_BOUNDED_UNROLL_FRONTIERS_PER_ROUND);
+
+        for frontier in &stalled_loop_frontiers {
+            if let Some(inputs) = stalled_loop_candidate_inputs(
+                frontier,
+                raw_results,
+                loops,
+                param_infos,
+                param_names,
+                config.solver_timeout_ms,
+            ) {
+                output.candidates.push(WorklistEntry {
+                    inputs,
+                    source: InputSource::Z3Solved,
+                    fitness: None,
+                    mock_values: vec![],
+                });
+                output.z3_count += 1;
+            }
         }
     }
 
@@ -1496,6 +1768,7 @@ pub async fn explore(
     // Drilling, boundary search, and MC/DC candidates go into a supplementary
     // BinaryHeap (checked before MetaStrategy) to preserve their InputSource
     // attribution and fitness-based priority ordering.
+    let fallback_loops = loops.clone();
     let combined_seed: Vec<Vec<serde_json::Value>> = {
         let mut v = user_inputs;
         v.extend(seed_inputs);
@@ -1641,13 +1914,10 @@ pub async fn explore(
         }
         if let Some(hints) = progress_hints.as_ref() {
             let since_last = last_summary_time.elapsed();
-            if since_last
-                >= Duration::from_secs(crate::explorer::PROGRESS_SUMMARY_INTERVAL_SECS)
-            {
+            if since_last >= Duration::from_secs(crate::explorer::PROGRESS_SUMMARY_INTERVAL_SECS) {
                 let mcdc_snapshot = mcdc_table.as_ref().map(|t| t.summary());
-                let iters_since_new = (total_executions as u64)
-                    .saturating_sub(last_discovery_iteration)
-                    as u32;
+                let iters_since_new =
+                    (total_executions as u64).saturating_sub(last_discovery_iteration) as u32;
                 (hints.callback)(&crate::explorer::ExploreProgressSnapshot {
                     function_name: function_name.to_string(),
                     elapsed: explore_start.elapsed(),
@@ -1755,8 +2025,7 @@ pub async fn explore(
                             for (inputs, _, result) in &raw_results {
                                 for decision in &result.branch_path {
                                     if fuzz_targets.contains(&decision.branch_id) {
-                                        let path_hash =
-                                            hash_branch_path(&result.branch_path);
+                                        let path_hash = hash_branch_path(&result.branch_path);
                                         corpus.add(crate::fuzzer::CorpusEntry {
                                             inputs: inputs.clone(),
                                             coverage_hash: path_hash,
@@ -1856,11 +2125,8 @@ pub async fn explore(
                                             ));
                                         }
                                     }
-                                    let branch_ids: Vec<u32> = result
-                                        .branch_path
-                                        .iter()
-                                        .map(|d| d.branch_id)
-                                        .collect();
+                                    let branch_ids: Vec<u32> =
+                                        result.branch_path.iter().map(|d| d.branch_id).collect();
                                     corpus.add(crate::fuzzer::CorpusEntry {
                                         inputs: mutated,
                                         coverage_hash: path_hash,
@@ -2149,6 +2415,7 @@ pub async fn explore(
             &raw_results,
             &seen_branch_sides,
             config,
+            &fallback_loops,
             &mut rng,
             &target_branches,
             &mut fitness_context,
@@ -2439,12 +2706,13 @@ pub async fn explore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_record::{BranchDecision, SymConstraint};
-    use crate::protocol::PerformanceMetrics;
+    use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
+    use crate::protocol::{BoundOp, InductionVar, LoopBodyState, LoopInfo, PerformanceMetrics};
     use crate::solver::ConcreteValue;
     use crate::strategy::RandomStrategy;
     use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
-    use std::collections::HashMap;
+    use crate::types::TypeInfo;
+    use std::collections::{BTreeMap, HashMap};
 
     fn empty_perf() -> PerformanceMetrics {
         PerformanceMetrics {
@@ -2471,6 +2739,42 @@ mod tests {
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
             performance: empty_perf(),
+        }
+    }
+
+    fn make_int_param(name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }
+    }
+
+    fn make_counted_loop_info() -> LoopInfo {
+        LoopInfo {
+            loop_id: 7,
+            line: 40,
+            induction_var: InductionVar {
+                name: "i".into(),
+                init_expr: SymExpr::Const(ConstValue::Int(0)),
+                step_expr: SymExpr::Const(ConstValue::Int(1)),
+                bound_expr: SymExpr::Param {
+                    name: "n".into(),
+                    path: vec![],
+                },
+                bound_op: BoundOp::Lt,
+            },
+        }
+    }
+
+    fn make_loop_snapshot(iteration: u32, induction_value: i64) -> LoopBodyState {
+        LoopBodyState {
+            loop_id: 7,
+            iteration,
+            locals: BTreeMap::from([(
+                "i".into(),
+                SymExpr::Const(ConstValue::Int(induction_value)),
+            )]),
         }
     }
 
@@ -3002,6 +3306,7 @@ mod tests {
             &[],
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
+            &[],
             &mut rng,
             &HashSet::new(),
             &mut FitnessContext::new(),
@@ -3055,6 +3360,7 @@ mod tests {
             &[],
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
+            &[],
             &mut rng,
             &HashSet::new(),
             &mut FitnessContext::new(),
@@ -3120,6 +3426,7 @@ mod tests {
             &[],
             &std::collections::HashSet::new(),
             &ExploreConfig::default(),
+            &[],
             &mut rng,
             &HashSet::new(),
             &mut FitnessContext::new(),
@@ -3138,6 +3445,146 @@ mod tests {
                 .candidates
                 .iter()
                 .any(|e| e.source == InputSource::Z3Solved)
+        );
+    }
+
+    #[test]
+    fn bounded_unroll_fallback_solves_stalled_loop_frontier() {
+        let param_infos = vec![make_int_param("n")];
+        let param_names = vec!["n".to_string()];
+        let loop_info = make_counted_loop_info();
+        let loop_snapshots = vec![make_loop_snapshot(0, 0), make_loop_snapshot(1, 1)];
+
+        let target_decision = BranchDecision {
+            branch_id: 11,
+            line: 44,
+            taken: false,
+            constraint: SymConstraint::Expr {
+                expr: SymExpr::BinOp {
+                    op: BinOpKind::Gt,
+                    left: Box::new(SymExpr::Param {
+                        name: "i".into(),
+                        path: vec![],
+                    }),
+                    right: Box::new(SymExpr::Const(ConstValue::Int(50))),
+                },
+            },
+            conditions: None,
+        };
+
+        let witness_result = ExecuteResult {
+            scope_events: vec![
+                TraceEvent::Branch {
+                    decision: BranchDecision {
+                        branch_id: 1,
+                        line: 1,
+                        taken: true,
+                        constraint: SymConstraint::Expr {
+                            expr: SymExpr::BinOp {
+                                op: BinOpKind::Gt,
+                                left: Box::new(SymExpr::Param {
+                                    name: "n".into(),
+                                    path: vec![],
+                                }),
+                                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                            },
+                        },
+                        conditions: None,
+                    },
+                },
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopEnter { loop_id: 7 },
+                },
+                TraceEvent::Branch {
+                    decision: target_decision.clone(),
+                },
+                TraceEvent::Scope {
+                    event: ScopeEvent::LoopExit { loop_id: 7 },
+                },
+            ],
+            loop_body_states: loop_snapshots.clone(),
+            ..make_exec_result(vec![
+                BranchDecision {
+                    branch_id: 1,
+                    line: 1,
+                    taken: true,
+                    constraint: SymConstraint::Expr {
+                        expr: SymExpr::BinOp {
+                            op: BinOpKind::Gt,
+                            left: Box::new(SymExpr::Param {
+                                name: "n".into(),
+                                path: vec![],
+                            }),
+                            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+                        },
+                    },
+                    conditions: None,
+                },
+                target_decision.clone(),
+            ])
+        };
+
+        let template =
+            crate::symbolic_unroll::extract_iteration_template(&loop_info, &loop_snapshots)
+                .expect("template extraction should succeed");
+        let observed_formula =
+            crate::symbolic_unroll::build_unrolled_formula(&template).expect("formula builds");
+        let observed_constraints = vec![
+            SymExpr::BinOp {
+                op: BinOpKind::Gt,
+                left: Box::new(SymExpr::Param {
+                    name: "n".into(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+            },
+            observed_formula.iteration_bound.clone(),
+            loop_bound_constraint(&loop_info, &observed_formula.locals)
+                .expect("loop bound should exist"),
+            opposite_branch_constraint(
+                substitute_loop_locals(
+                    match &target_decision.constraint {
+                        SymConstraint::Expr { expr } => expr,
+                        SymConstraint::Unknown { .. } => unreachable!(),
+                    },
+                    &observed_formula.locals,
+                ),
+                target_decision.taken,
+            ),
+        ];
+        let observed_result = solver::solve_constraints(&observed_constraints, None, &param_infos)
+            .expect("observed-depth solve should run");
+        assert!(
+            matches!(observed_result, SolveResult::Unsat),
+            "observed snapshots alone should be insufficient to reach i > 50"
+        );
+
+        let frontier = Frontier {
+            branch_id: target_decision.branch_id,
+            depth: 1,
+            blocking_params: vec![0],
+            best_prefix: vec![serde_json::json!(1)],
+            stall_count: BOUNDED_UNROLL_STALL_THRESHOLD,
+            rarity_boost: 0.0,
+        };
+        let raw_results = vec![(frontier.best_prefix.clone(), vec![], witness_result)];
+
+        let candidate = stalled_loop_candidate_inputs(
+            &frontier,
+            &raw_results,
+            &[loop_info],
+            &param_infos,
+            &param_names,
+            None,
+        )
+        .expect("bounded-unroll fallback should produce a candidate");
+
+        let solved_n = candidate[0]
+            .as_i64()
+            .expect("candidate should contain an integer n");
+        assert!(
+            solved_n >= 52,
+            "bounded-unroll fallback should solve for a loop count beyond the stall, got {solved_n}"
         );
     }
 
@@ -3443,8 +3890,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3493,8 +3940,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3548,8 +3995,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3596,8 +4043,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3644,8 +4091,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3684,8 +4131,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3778,8 +4225,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -3829,8 +4276,8 @@ mod tests {
             None,
             None,
             vec![],
-        None,
-        None,
+            None,
+            None,
         )
         .await
         .expect("explore failed");
@@ -4173,6 +4620,7 @@ mod tests {
                 &[],
                 &std::collections::HashSet::new(),
                 &ExploreConfig::default(),
+                &[],
                 &mut StdRng::seed_from_u64(42),
                 &HashSet::new(),
                 &mut FitnessContext::new(),
@@ -5062,7 +5510,11 @@ mod tests {
         let mut state = ExploreState::default();
         state.covered_paths.insert(42);
         state.covered_paths.insert(42);
-        assert_eq!(state.covered_paths.len(), 1, "duplicate path hash should be deduplicated");
+        assert_eq!(
+            state.covered_paths.len(),
+            1,
+            "duplicate path hash should be deduplicated"
+        );
     }
 }
 
