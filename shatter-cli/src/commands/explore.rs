@@ -528,17 +528,21 @@ fn write_explore_summary(root: &Path, file: &str, summary: &ExploreSummary) -> R
     write_artifact_json(&path, summary)
 }
 
-/// Load a prior explore summary from the artifact directory. Returns `None`
-/// when the file is missing, corrupt, or has a version older than the current
-/// artifact format (in which case re-exploration is the right call).
-fn read_explore_summary(root: &Path, file: &str) -> Option<ExploreSummary> {
-    let path = explore_summary_path(root, file);
-    let json = std::fs::read_to_string(&path).ok()?;
+fn parse_explore_summary(path: &Path) -> Option<ExploreSummary> {
+    let json = std::fs::read_to_string(path).ok()?;
     let summary: ExploreSummary = serde_json::from_str(&json).ok()?;
     if summary.version < EXPLORE_ARTIFACT_VERSION {
         return None;
     }
     Some(summary)
+}
+
+/// Load a prior explore summary from the artifact directory. Returns `None`
+/// when the file is missing, corrupt, or has a version older than the current
+/// artifact format (in which case re-exploration is the right call).
+fn read_explore_summary(root: &Path, file: &str) -> Option<ExploreSummary> {
+    let path = explore_summary_path(root, file);
+    parse_explore_summary(&path)
 }
 
 /// Try to resume a completed function from a prior explore run.
@@ -690,6 +694,84 @@ fn load_explore_artifacts(dir: &Path) -> Result<Vec<ExploreFunctionArtifact>, St
     });
 
     Ok(artifacts)
+}
+
+fn load_explore_summaries(dir: &Path) -> Result<Vec<ExploreSummary>, String> {
+    if !dir.is_dir() {
+        return Err(format!(
+            "artifact directory does not exist: {}",
+            dir.display()
+        ));
+    }
+
+    let mut summaries = Vec::new();
+    let mut dirs_to_visit = vec![dir.to_path_buf()];
+    while let Some(current_dir) = dirs_to_visit.pop() {
+        let entries = std::fs::read_dir(&current_dir)
+            .map_err(|e| format!("failed to read directory {}: {e}", current_dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                dirs_to_visit.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|name| name.to_str()) != Some("summary.json") {
+                continue;
+            }
+            match parse_explore_summary(&path) {
+                Some(summary) => summaries.push(summary),
+                None => log::warn!("Skipping invalid explore summary {}", path.display()),
+            }
+        }
+    }
+
+    summaries.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(summaries)
+}
+
+fn format_explore_non_completed_sections(summaries: &[ExploreSummary]) -> String {
+    let mut failed_lines = Vec::new();
+    let mut skipped_lines = Vec::new();
+
+    for entry in summaries.iter().flat_map(|summary| summary.functions.iter()) {
+        let reason = match entry.reason.as_deref() {
+            Some("timeout") => "timed out".to_string(),
+            Some(reason) => reason.to_string(),
+            None => "unknown reason".to_string(),
+        };
+        let line = format!("- `{}`: {reason}", entry.function_name);
+        match entry.status.as_str() {
+            "failed" => failed_lines.push(line),
+            "skipped" => skipped_lines.push(line),
+            _ => {}
+        }
+    }
+
+    let mut sections = Vec::new();
+    if !failed_lines.is_empty() {
+        sections.push(format!(
+            "## Failed functions\n\n{}",
+            failed_lines.join("\n")
+        ));
+    }
+    if !skipped_lines.is_empty() {
+        sections.push(format!(
+            "## Skipped functions\n\n{}",
+            skipped_lines.join("\n")
+        ));
+    }
+
+    sections.join("\n\n")
+}
+
+fn combine_explore_markdown(md_fragments: &[String], summaries: &[ExploreSummary]) -> String {
+    let mut sections = md_fragments.to_vec();
+    let non_completed = format_explore_non_completed_sections(summaries);
+    if !non_completed.is_empty() {
+        sections.push(non_completed);
+    }
+    sections.join("\n\n---\n\n")
 }
 
 /// Minimum iterations-without-discovery before the periodic progress line
@@ -858,60 +940,61 @@ fn assemble_function_result(
         log::error!("failed to persist stage outputs for {}: {err}", func.name);
     }
 
-    // Print report to stdout.
-    if log::log_enabled!(log::Level::Info) {
-        if log::log_enabled!(log::Level::Trace) {
-            let report = {
-                let _report_span = tracing::info_span!("report.render").entered();
-                explorer::format_exploration_report_verbose(result)
-            };
-            if opts.report_outputs_empty || opts.stdout {
-                print!("{report}");
+    // Render report fragments for file output regardless of log level.
+    let should_print_report =
+        log::log_enabled!(log::Level::Info) && (opts.report_outputs_empty || opts.stdout);
+    if log::log_enabled!(log::Level::Trace) {
+        let report = {
+            let _report_span = tracing::info_span!("report.render").entered();
+            explorer::format_exploration_report_verbose(result)
+        };
+        acc.md_fragments.push(report.clone());
+        if should_print_report {
+            print!("{report}");
+        }
+    } else if opts.output_format == crate::args::OutputFormat::Md {
+        let view = crate::render::explore_fn_view(
+            result,
+            crate::render::ExploreRenderOpts {
+                location: Some(&location),
+                mocks_used: mock_symbols,
+                is_concolic: opts.use_concolic,
+            },
+        );
+        let md = {
+            let _report_span = tracing::info_span!("report.render").entered();
+            crate::render::render_explore_fn(&view)
+        };
+        acc.md_fragments.push(md.clone());
+        if should_print_report {
+            print_markdown(&md, opts.use_color);
+        }
+    } else {
+        let report_opts = ReportOptions {
+            location: Some(location.clone()),
+            show_perf: opts.show_perf,
+            wall_time: Some(wall_time),
+            coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
+            style: opts.report_style.clone(),
+            genetic_stats: ga_stats,
+        };
+        let report = {
+            let _report_span = tracing::info_span!("report.render").entered();
+            explorer::format_exploration_report(result, &report_opts)
+        };
+        acc.md_fragments.push(report.clone());
+        if should_print_report {
+            print!("{report}");
+            if !mock_symbols.is_empty() {
+                println!("  Mocks used: {}", mock_symbols.join(", "));
             }
-        } else if opts.output_format == crate::args::OutputFormat::Md {
-            let view = crate::render::explore_fn_view(
-                result,
-                crate::render::ExploreRenderOpts {
-                    location: Some(&location),
-                    mocks_used: mock_symbols,
-                    is_concolic: opts.use_concolic,
-                },
-            );
-            let md = {
-                let _report_span = tracing::info_span!("report.render").entered();
-                crate::render::render_explore_fn(&view)
-            };
-            acc.md_fragments.push(md.clone());
-            if opts.report_outputs_empty || opts.stdout {
-                print_markdown(&md, opts.use_color);
-            }
-        } else {
-            let report_opts = ReportOptions {
-                location: Some(location.clone()),
-                show_perf: opts.show_perf,
-                wall_time: Some(wall_time),
-                coverage_metrics: Some(analyze_output.coverage_metrics.clone()),
-                style: opts.report_style.clone(),
-                genetic_stats: ga_stats,
-            };
-            let report = {
-                let _report_span = tracing::info_span!("report.render").entered();
-                explorer::format_exploration_report(result, &report_opts)
-            };
-            acc.md_fragments.push(report.clone());
-            if opts.report_outputs_empty || opts.stdout {
-                print!("{report}");
-                if !mock_symbols.is_empty() {
-                    println!("  Mocks used: {}", mock_symbols.join(", "));
-                }
-                if opts.use_concolic {
-                    println!("  Explorer: concolic (Z3-backed)");
-                }
+            if opts.use_concolic {
+                println!("  Explorer: concolic (Z3-backed)");
             }
         }
-        if opts.report_outputs_empty || opts.stdout {
-            println!();
-        }
+    }
+    if should_print_report {
+        println!();
     }
 
     // Spec output: use eq classes from analyze stage.
@@ -1030,7 +1113,8 @@ fn finalize_explore(
     use_concolic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let artifacts = load_explore_artifacts(artifact_dir)?;
-    if artifacts.is_empty() {
+    let summaries = load_explore_summaries(artifact_dir)?;
+    if artifacts.is_empty() && summaries.is_empty() {
         return Err("no explore artifacts found in the specified directory".into());
     }
 
@@ -1066,7 +1150,11 @@ fn finalize_explore(
     };
 
     let mut acc = AssemblyAccumulator::new();
-    let mut total_function_count: usize = 0;
+    let mut total_function_count: usize = if summaries.is_empty() {
+        0
+    } else {
+        summaries.iter().map(|summary| summary.total_functions).sum()
+    };
 
     // Print header.
     if log::log_enabled!(log::Level::Info) {
@@ -1085,7 +1173,9 @@ fn finalize_explore(
     }
 
     for artifact in &artifacts {
-        total_function_count += 1;
+        if summaries.is_empty() {
+            total_function_count += 1;
+        }
 
         if artifact.status != "completed" {
             let reason = artifact.error.as_deref().unwrap_or("unknown");
@@ -1121,6 +1211,15 @@ fn finalize_explore(
             &opts,
             &mut acc,
         );
+    }
+
+    let non_completed_sections = format_explore_non_completed_sections(&summaries);
+    if !non_completed_sections.is_empty()
+        && log::log_enabled!(log::Level::Info)
+        && (report_outputs.is_empty() || stdout)
+        && output_format == crate::args::OutputFormat::Md
+    {
+        print_markdown(&format!("\n---\n\n{non_completed_sections}\n"), use_color);
     }
 
     // Print summary footer.
@@ -1182,7 +1281,7 @@ fn finalize_explore(
                 log::info!("Wrote HTML report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Markdown) => {
-                let md = acc.md_fragments.join("\n\n---\n\n");
+                let md = combine_explore_markdown(&acc.md_fragments, &summaries);
                 if let Some(parent) = path.parent()
                     && !parent.as_os_str().is_empty()
                 {
@@ -1198,7 +1297,7 @@ fn finalize_explore(
                 log::info!("Wrote markdown report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Text) => {
-                let md = acc.md_fragments.join("\n\n---\n\n");
+                let md = combine_explore_markdown(&acc.md_fragments, &summaries);
                 let text = shatter_core::report::strip_markdown_text(&md);
                 if let Some(parent) = path.parent()
                     && !parent.as_os_str().is_empty()
@@ -1234,7 +1333,7 @@ fn finalize_explore(
 
     // Replay to stdout if report files were also written.
     if !report_outputs.is_empty() && stdout {
-        let combined = acc.md_fragments.join("\n\n---\n\n");
+        let combined = combine_explore_markdown(&acc.md_fragments, &summaries);
         match format {
             crate::args::StdoutFormat::Text => {
                 print!("{}", shatter_core::report::strip_markdown_text(&combined));
@@ -1401,6 +1500,7 @@ pub(crate) async fn run_explore(
     let req_timeout = Duration::from_secs(request_timeout);
 
     let mut file_spec_bundles: Vec<FileSpecBundle> = Vec::new();
+    let mut report_summaries: Vec<ExploreSummary> = Vec::new();
 
     let report_style = if use_color {
         shatter_core::report_style::ReportStyle::ansi()
@@ -3079,6 +3179,7 @@ pub(crate) async fn run_explore(
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to finalize explore summary: {e}");
         }
+        report_summaries.push(explore_summary.clone());
 
         if output_path.is_some() {
             let current_function_names: HashSet<String> =
@@ -3108,6 +3209,16 @@ pub(crate) async fn run_explore(
         if let Err(e) = frontend.shutdown().await {
             log::warn!("frontend shutdown error: {e}");
         }
+    }
+
+    let non_completed_sections = format_explore_non_completed_sections(&report_summaries);
+    if !non_completed_sections.is_empty()
+        && header_printed
+        && log::log_enabled!(log::Level::Info)
+        && (report_outputs.is_empty() || stdout)
+        && output_format == crate::args::OutputFormat::Md
+    {
+        print_markdown(&format!("\n---\n\n{non_completed_sections}\n"), use_color);
     }
 
     // Print summary footer (only when streaming to stdout).
@@ -3168,7 +3279,7 @@ pub(crate) async fn run_explore(
                 log::info!("Wrote HTML report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Markdown) => {
-                let md = md_fragments.join("\n\n---\n\n");
+                let md = combine_explore_markdown(&md_fragments, &report_summaries);
                 if let Some(parent) = path.parent()
                     && !parent.as_os_str().is_empty()
                 {
@@ -3184,7 +3295,7 @@ pub(crate) async fn run_explore(
                 log::info!("Wrote markdown report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Text) => {
-                let md = md_fragments.join("\n\n---\n\n");
+                let md = combine_explore_markdown(&md_fragments, &report_summaries);
                 let text = shatter_core::report::strip_markdown_text(&md);
                 if let Some(parent) = path.parent()
                     && !parent.as_os_str().is_empty()
@@ -3217,7 +3328,7 @@ pub(crate) async fn run_explore(
 
     // If files were written and --stdout was also requested, replay to stdout.
     if !report_outputs.is_empty() && stdout {
-        let combined = md_fragments.join("\n\n---\n\n");
+        let combined = combine_explore_markdown(&md_fragments, &report_summaries);
         match format {
             crate::args::StdoutFormat::Text => {
                 print!("{}", shatter_core::report::strip_markdown_text(&combined));
@@ -3253,9 +3364,9 @@ mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        format_progress_snapshot, load_explore_artifacts, persist_stage_outputs,
-        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
-        write_explore_artifact, write_explore_summary,
+        finalize_explore, format_progress_snapshot, load_explore_artifacts,
+        persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
+        stage_persistence_dir, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -4157,6 +4268,135 @@ mod tests {
         let json = std::fs::read_to_string(&path).expect("read");
         let parsed: ExploreSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.status, "running");
+    }
+
+    #[test]
+    fn finalize_explore_markdown_includes_failed_and_skipped_functions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let report_path = dir.path().join("report.md");
+        let func = sample_func_analysis();
+        let outcome = sample_outcome();
+
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("write artifact");
+        let artifact_relpath = super::explore_artifact_path(dir.path(), "src/user.ts", &func)
+            .strip_prefix(dir.path())
+            .expect("relative path")
+            .to_string_lossy()
+            .to_string();
+
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "failed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 3,
+            completed: 1,
+            failed: 1,
+            skipped: 1,
+            elapsed_secs: 1.0,
+            functions: vec![
+                ExploreSummaryEntry {
+                    function_name: func.name.clone(),
+                    status: "completed".to_string(),
+                    artifact: Some(artifact_relpath),
+                    reason: None,
+                    deep_fingerprint: None,
+                },
+                ExploreSummaryEntry {
+                    function_name: "save/user".to_string(),
+                    status: "failed".to_string(),
+                    artifact: None,
+                    reason: Some("timeout".to_string()),
+                    deep_fingerprint: None,
+                },
+                ExploreSummaryEntry {
+                    function_name: "skip/user".to_string(),
+                    status: "skipped".to_string(),
+                    artifact: None,
+                    reason: Some("unexecutable parameter types".to_string()),
+                    deep_fingerprint: None,
+                },
+            ],
+        };
+        write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
+
+        finalize_explore(
+            dir.path(),
+            None,
+            std::slice::from_ref(&report_path),
+            false,
+            false,
+            false,
+            false,
+            crate::args::OutputFormat::Md,
+            crate::args::StdoutFormat::Markdown,
+            false,
+            false,
+            false,
+        )
+        .expect("finalize explore");
+
+        let markdown = std::fs::read_to_string(&report_path).expect("read markdown");
+        assert!(markdown.contains("load/user"), "completed function should remain");
+        assert!(
+            markdown.contains("## Failed functions"),
+            "failed section should be rendered"
+        );
+        assert!(
+            markdown.contains("- `save/user`: timed out"),
+            "timeout reason should be rendered as timed out"
+        );
+        assert!(
+            markdown.contains("## Skipped functions"),
+            "skipped section should be rendered"
+        );
+        assert!(
+            markdown.contains("- `skip/user`: unexecutable parameter types"),
+            "skipped reason should be rendered"
+        );
+    }
+
+    #[test]
+    fn finalize_explore_markdown_supports_skipped_only_summary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let report_path = dir.path().join("report.md");
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 0,
+            failed: 0,
+            skipped: 1,
+            elapsed_secs: 0.5,
+            functions: vec![ExploreSummaryEntry {
+                function_name: "skip/user".to_string(),
+                status: "skipped".to_string(),
+                artifact: None,
+                reason: Some("unexecutable parameter types".to_string()),
+                deep_fingerprint: None,
+            }],
+        };
+        write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
+
+        finalize_explore(
+            dir.path(),
+            None,
+            std::slice::from_ref(&report_path),
+            false,
+            false,
+            false,
+            false,
+            crate::args::OutputFormat::Md,
+            crate::args::StdoutFormat::Markdown,
+            false,
+            false,
+            false,
+        )
+        .expect("finalize skipped-only explore");
+
+        let markdown = std::fs::read_to_string(&report_path).expect("read markdown");
+        assert!(markdown.contains("## Skipped functions"));
+        assert!(markdown.contains("- `skip/user`: unexecutable parameter types"));
     }
 
     #[test]
