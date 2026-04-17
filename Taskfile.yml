@@ -249,6 +249,7 @@ tasks:
 
   e2e:
     desc: Run E2E concolic pipeline tests
+    deps: [ts:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
       - shatter-core/src/**/*.rs
@@ -261,6 +262,7 @@ tasks:
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function."
+    deps: [ts:build]
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"

@@ -79,10 +79,11 @@ Run the appropriate language-specific gates based on what changed, plus E2E test
 
 6. **E2E concolic tests** — always run regardless of what changed:
    ```bash
-   cargo test --test e2e_concolic
+   npx task e2e
    ```
    These are the only tests that validate the full pipeline end-to-end. A module
    can pass all its own tests while being silently disconnected from the pipeline.
+   Use the task wrapper so fresh worktrees bootstrap the TypeScript frontend first.
 
 ### Conditional:
 
