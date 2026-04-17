@@ -39,8 +39,7 @@ use crate::mock_value_space::LiveFirstState;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::strategy::{
-    BoundarySeeds, FuzzerStrategy, InputStrategy, MetaStrategy, StrategyContext,
-    UserProvidedStrategy, Z3SolverStrategy,
+    SpecialCandidatePath, StrategyContext, build_concolic_meta_strategy,
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
@@ -1672,16 +1671,6 @@ pub struct McdcGoal {
     pub observed_values: Vec<Option<bool>>,
 }
 
-/// Map a MetaStrategy strategy name to the corresponding `InputSource` for attribution.
-fn input_source_from_strategy_name(name: &str) -> InputSource {
-    match name {
-        "user_provided" => InputSource::UserProvided,
-        "boundary" => InputSource::BoundarySearch,
-        "z3_solver" => InputSource::Z3Solved,
-        _ => InputSource::Fuzzed,
-    }
-}
-
 /// Run the concolic exploration loop on a function via a frontend subprocess.
 ///
 /// The loop alternates between two phases per round:
@@ -1769,23 +1758,15 @@ pub async fn explore(
     // BinaryHeap (checked before MetaStrategy) to preserve their InputSource
     // attribution and fitness-based priority ordering.
     let fallback_loops = loops.clone();
-    let combined_seed: Vec<Vec<serde_json::Value>> = {
-        let mut v = user_inputs;
-        v.extend(seed_inputs);
-        v.extend(prior_discovery_inputs.clone());
-        v
-    };
-    let strategies: Vec<Box<dyn InputStrategy>> = vec![
-        Box::new(UserProvidedStrategy::new(combined_seed)),
-        Box::new(BoundarySeeds::new(param_infos)),
-        Box::new(Z3SolverStrategy::new(
-            config.solver_timeout_ms,
-            param_infos.to_vec(),
-            loops,
-        )),
-        Box::new(FuzzerStrategy::new(None)),
-    ];
-    let mut meta_strategy = MetaStrategy::new(strategies, config.meta_config.clone());
+    let mut meta_strategy = build_concolic_meta_strategy(
+        user_inputs,
+        seed_inputs,
+        prior_discovery_inputs.clone(),
+        param_infos,
+        loops,
+        config.solver_timeout_ms,
+        config.meta_config.clone(),
+    );
     let strategy_ctx = StrategyContext {
         params: param_infos.to_vec(),
         literals: vec![],
@@ -1934,9 +1915,10 @@ pub async fn explore(
 
         // Priority: supplementary (drilling/boundary/MC-DC) > MetaStrategy.
         let (mut entry, strategy_idx) = if let Some(e) = supplementary.pop() {
+            let _special_case = SpecialCandidatePath::OrchestratorSupplementaryQueue;
             (e, None)
         } else if let Some((inputs, idx)) = meta_strategy.next(&strategy_ctx, &mut rng) {
-            let source = input_source_from_strategy_name(meta_strategy.strategy_name(idx));
+            let source = meta_strategy.strategy_kind(idx).orchestrator_input_source();
             // Track generation counters for MetaStrategy-sourced inputs.
             match source {
                 InputSource::Z3Solved => z3_generated += 1,
@@ -2709,7 +2691,7 @@ mod tests {
     use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
     use crate::protocol::{BoundOp, InductionVar, LoopBodyState, LoopInfo, PerformanceMetrics};
     use crate::solver::ConcreteValue;
-    use crate::strategy::RandomStrategy;
+    use crate::strategy::MetaStrategy;
     use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
     use crate::types::TypeInfo;
     use std::collections::{BTreeMap, HashMap};
@@ -3762,10 +3744,19 @@ mod tests {
             typ: crate::types::TypeInfo::Int,
             type_name: None,
         }];
-        let strategies: Vec<Box<dyn InputStrategy>> = vec![
-            Box::new(BoundarySeeds::new(&params)),
-            Box::new(RandomStrategy::new(Some(42))),
-            Box::new(FuzzerStrategy::new(Some(42))),
+        let strategies = vec![
+            crate::strategy::RegisteredStrategy::new(
+                crate::strategy::RegisteredStrategyKind::BoundarySeeds,
+                Box::new(crate::strategy::BoundarySeeds::new(&params)),
+            ),
+            crate::strategy::RegisteredStrategy::new(
+                crate::strategy::RegisteredStrategyKind::Random,
+                Box::new(crate::strategy::RandomStrategy::new(Some(42))),
+            ),
+            crate::strategy::RegisteredStrategy::new(
+                crate::strategy::RegisteredStrategyKind::Fuzzer,
+                Box::new(crate::strategy::FuzzerStrategy::new(Some(42))),
+            ),
         ];
         let mut meta = MetaStrategy::new(strategies, Default::default());
         let ctx = StrategyContext {
@@ -3782,17 +3773,23 @@ mod tests {
 
     #[test]
     fn meta_strategy_exhaustible_strategies_exhaust() {
-        use crate::strategy::UserProvidedStrategy;
-
         let params = vec![ParamInfo {
             name: "x".into(),
             typ: crate::types::TypeInfo::Int,
             type_name: None,
         }];
         // Only exhaustible strategies.
-        let strategies: Vec<Box<dyn InputStrategy>> = vec![
-            Box::new(UserProvidedStrategy::new(vec![vec![serde_json::json!(1)]])),
-            Box::new(BoundarySeeds::new(&params)),
+        let strategies = vec![
+            crate::strategy::RegisteredStrategy::new(
+                crate::strategy::RegisteredStrategyKind::UserProvided,
+                Box::new(crate::strategy::UserProvidedStrategy::new(vec![vec![
+                    serde_json::json!(1),
+                ]])),
+            ),
+            crate::strategy::RegisteredStrategy::new(
+                crate::strategy::RegisteredStrategyKind::BoundarySeeds,
+                Box::new(crate::strategy::BoundarySeeds::new(&params)),
+            ),
         ];
         let mut meta = MetaStrategy::new(strategies, Default::default());
         let ctx = StrategyContext {
@@ -3815,7 +3812,10 @@ mod tests {
 
     #[test]
     fn meta_strategy_feedback_reaches_fuzzer() {
-        let strategies: Vec<Box<dyn InputStrategy>> = vec![Box::new(FuzzerStrategy::new(Some(42)))];
+        let strategies = vec![crate::strategy::RegisteredStrategy::new(
+            crate::strategy::RegisteredStrategyKind::Fuzzer,
+            Box::new(crate::strategy::FuzzerStrategy::new(Some(42))),
+        )];
         let mut meta = MetaStrategy::new(strategies, Default::default());
 
         let ctx = StrategyContext {

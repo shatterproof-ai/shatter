@@ -30,8 +30,7 @@ use crate::protocol::{
 };
 use crate::setup_manager::SetupManager;
 use crate::strategy::{
-    BoundarySeeds, InputStrategy, LiteralsStrategy, MetaStrategy, PoolSeedsStrategy,
-    RandomStrategy, StrategyContext, UserProvidedStrategy,
+    SpecialCandidatePath, StrategyContext, build_random_explorer_meta_strategy,
 };
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
@@ -725,19 +724,6 @@ pub(crate) async fn send_setup(
     }
 }
 
-/// Map a strategy name to a discovery attribution method.
-///
-/// Strategies that know they produced inputs from a specific semantic source
-/// (user-provided, boundary values) get precise attribution. All other strategies
-/// (literals, pool seeds, random, fuzzer) are attributed as `Random`.
-fn explorer_discovery_method(strategy_name: &str) -> DiscoveryMethod {
-    match strategy_name {
-        "user_provided" => DiscoveryMethod::UserProvided,
-        "boundary" => DiscoveryMethod::BoundarySearch,
-        _ => DiscoveryMethod::Random,
-    }
-}
-
 /// Send a Teardown command to the frontend.
 pub(crate) async fn send_teardown(
     frontend: &mut Frontend,
@@ -1043,24 +1029,15 @@ pub async fn explore_function(
     // they share the same semantics (pre-specified inputs executed with highest priority).
     // When custom generators are enabled, RandomStrategy is excluded so that MetaStrategy
     // exhausts after finite seeds; the custom generator then serves as the infinite fallback.
-    let combined_user: Vec<Vec<serde_json::Value>> = {
-        let mut v: Vec<Vec<serde_json::Value>> = config.user_seeds.clone();
-        v.extend(config.candidate_inputs.iter().cloned());
-        v
-    };
-    let mut strategy_vec: Vec<Box<dyn InputStrategy>> = vec![
-        Box::new(UserProvidedStrategy::new(combined_user)),
-        Box::new(LiteralsStrategy::new(&analysis.params, &analysis.literals)),
-        Box::new(PoolSeedsStrategy::new(config.pool_seeds.clone())),
-        Box::new(BoundarySeeds::new(&analysis.params)),
-    ];
-    if !use_generators {
-        // When no custom generators, RandomStrategy is the infinite fallback within MetaStrategy.
-        // When custom generators are active, they serve as the infinite fallback instead
-        // (they require an async frontend round-trip and cannot be a standard strategy).
-        strategy_vec.push(Box::new(RandomStrategy::new(None)));
-    }
-    let mut meta_strategy = MetaStrategy::new(strategy_vec, config.meta_config.clone());
+    let mut meta_strategy = build_random_explorer_meta_strategy(
+        &analysis.params,
+        &analysis.literals,
+        config.user_seeds.clone(),
+        config.candidate_inputs.clone(),
+        config.pool_seeds.clone(),
+        use_generators,
+        config.meta_config.clone(),
+    );
     let strategy_ctx = StrategyContext {
         params: analysis.params.clone(),
         literals: analysis.literals.clone(),
@@ -1289,8 +1266,10 @@ pub async fn explore_function(
 
         // Attribute discovery to the strategy that produced the inputs.
         let discovery_method = strategy_idx
-            .map(|idx| explorer_discovery_method(meta_strategy.strategy_name(idx)))
-            .unwrap_or(DiscoveryMethod::Random);
+            .map(|idx| meta_strategy.strategy_kind(idx).explorer_discovery_method())
+            .unwrap_or(
+                SpecialCandidatePath::ExplorerCustomGeneratorFallback.explorer_discovery_method(),
+            );
         for branch_id in &obs.new_branch_ids {
             discoveries.push((*branch_id, discovery_method));
         }

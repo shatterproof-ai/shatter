@@ -30,13 +30,14 @@ use serde_json::Value;
 pub use crate::value_strategy::{TypeAwareMutator, ValueStrategy, ValueToVectorAdapter};
 
 use crate::boundary_dict::generate_boundary_inputs;
+use crate::coverage_metrics::DiscoveryMethod;
 use crate::execution_record::SymConstraint;
 use crate::input_gen::{
     crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs,
     mutate_inputs,
 };
 use crate::orchestrator::FrontendCapabilities;
-use crate::protocol::{ExecuteResult, LiteralValue};
+use crate::protocol::{ExecuteResult, LiteralValue, LoopInfo};
 use crate::solver::{self, SolveResult};
 use crate::sym_expr::SymExpr;
 use crate::types::{ParamInfo, TypeInfo};
@@ -87,6 +88,190 @@ pub enum StrategyTier {
     /// Operates at both vector and value levels.
     /// Example: fuzzer with crossover (vector) + mutation (value).
     Hybrid,
+}
+
+/// Strategy sources that participate as first-class registrations inside [`MetaStrategy`].
+///
+/// Adding a built-in generator should extend this enum and the shared builder
+/// functions below rather than hardcoding a new strategy list at each caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisteredStrategyKind {
+    UserProvided,
+    Literals,
+    PoolSeeds,
+    BoundarySeeds,
+    Random,
+    Z3Solver,
+    Fuzzer,
+}
+
+impl RegisteredStrategyKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::UserProvided => USER_PROVIDED_STRATEGY_NAME,
+            Self::Literals => LITERALS_STRATEGY_NAME,
+            Self::PoolSeeds => POOL_SEEDS_STRATEGY_NAME,
+            Self::BoundarySeeds => BOUNDARY_STRATEGY_NAME,
+            Self::Random => RANDOM_STRATEGY_NAME,
+            Self::Z3Solver => Z3_SOLVER_STRATEGY_NAME,
+            Self::Fuzzer => FUZZER_STRATEGY_NAME,
+        }
+    }
+
+    /// Discovery attribution used by the random explorer.
+    pub fn explorer_discovery_method(self) -> DiscoveryMethod {
+        match self {
+            Self::UserProvided => DiscoveryMethod::UserProvided,
+            Self::BoundarySeeds => DiscoveryMethod::BoundarySearch,
+            Self::Literals
+            | Self::PoolSeeds
+            | Self::Random
+            | Self::Z3Solver
+            | Self::Fuzzer => DiscoveryMethod::Random,
+        }
+    }
+
+    /// Input-source attribution used by the concolic orchestrator.
+    pub fn orchestrator_input_source(self) -> crate::orchestrator::InputSource {
+        match self {
+            Self::UserProvided => crate::orchestrator::InputSource::UserProvided,
+            Self::BoundarySeeds => crate::orchestrator::InputSource::BoundarySearch,
+            Self::Z3Solver => crate::orchestrator::InputSource::Z3Solved,
+            Self::Literals | Self::PoolSeeds | Self::Random | Self::Fuzzer => {
+                crate::orchestrator::InputSource::Fuzzed
+            }
+        }
+    }
+}
+
+/// Candidate paths intentionally kept outside [`MetaStrategy`].
+///
+/// These are not first-class registered generators because they need custom
+/// scheduling semantics that the shared strategy substrate does not express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialCandidatePath {
+    /// The random explorer's async frontend `Generate` round-trip. This remains
+    /// outside `MetaStrategy` because it requires an async protocol call.
+    ExplorerCustomGeneratorFallback,
+    /// The concolic orchestrator's priority queue for drilling, boundary-search,
+    /// and MC/DC candidates. This remains outside `MetaStrategy` because it
+    /// needs priority ordering and source-specific attribution.
+    OrchestratorSupplementaryQueue,
+}
+
+impl SpecialCandidatePath {
+    pub fn explorer_discovery_method(self) -> DiscoveryMethod {
+        match self {
+            Self::ExplorerCustomGeneratorFallback => DiscoveryMethod::Random,
+            Self::OrchestratorSupplementaryQueue => DiscoveryMethod::Random,
+        }
+    }
+}
+
+pub struct RegisteredStrategy {
+    kind: RegisteredStrategyKind,
+    strategy: Box<dyn InputStrategy>,
+}
+
+impl RegisteredStrategy {
+    pub fn new(kind: RegisteredStrategyKind, strategy: Box<dyn InputStrategy>) -> Self {
+        Self { kind, strategy }
+    }
+}
+
+/// Build the random explorer's shared registered strategy set.
+///
+/// Registration order is the scheduling seam:
+/// `[UserProvided, Literals, PoolSeeds, BoundarySeeds, Random?]`
+///
+/// Custom generators are an intentional special case handled by
+/// [`SpecialCandidatePath::ExplorerCustomGeneratorFallback`], so enabling that
+/// fallback suppresses the built-in random strategy here.
+pub fn build_random_explorer_meta_strategy(
+    params: &[ParamInfo],
+    literals: &[LiteralValue],
+    user_seeds: Vec<Vec<Value>>,
+    candidate_inputs: Vec<Vec<Value>>,
+    pool_seeds: Vec<Vec<Value>>,
+    use_custom_generator_fallback: bool,
+    meta_config: MetaConfig,
+) -> MetaStrategy {
+    let mut combined_user = user_seeds;
+    combined_user.extend(candidate_inputs);
+
+    let mut strategies = vec![
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::UserProvided,
+            Box::new(UserProvidedStrategy::new(combined_user)),
+        ),
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::Literals,
+            Box::new(LiteralsStrategy::new(params, literals)),
+        ),
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::PoolSeeds,
+            Box::new(PoolSeedsStrategy::new(pool_seeds)),
+        ),
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::BoundarySeeds,
+            Box::new(BoundarySeeds::new(params)),
+        ),
+    ];
+    if !use_custom_generator_fallback {
+        strategies.push(RegisteredStrategy::new(
+            RegisteredStrategyKind::Random,
+            Box::new(RandomStrategy::new(None)),
+        ));
+    }
+    MetaStrategy::new(strategies, meta_config)
+}
+
+/// Build the concolic orchestrator's shared registered strategy set.
+///
+/// Registration order is the scheduling seam:
+/// `[UserProvided, BoundarySeeds, Z3Solver, Fuzzer]`
+///
+/// Drilling, boundary-search interpolation, and MC/DC targets are intentional
+/// special cases handled by
+/// [`SpecialCandidatePath::OrchestratorSupplementaryQueue`].
+pub fn build_concolic_meta_strategy(
+    user_inputs: Vec<Vec<Value>>,
+    seed_inputs: Vec<Vec<Value>>,
+    prior_discovery_inputs: Vec<Vec<Value>>,
+    param_infos: &[ParamInfo],
+    loops: Vec<LoopInfo>,
+    solver_timeout_ms: Option<u64>,
+    meta_config: MetaConfig,
+) -> MetaStrategy {
+    let mut combined_seed = user_inputs;
+    combined_seed.extend(seed_inputs);
+    combined_seed.extend(prior_discovery_inputs);
+
+    MetaStrategy::new(
+        vec![
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::UserProvided,
+                Box::new(UserProvidedStrategy::new(combined_seed)),
+            ),
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::BoundarySeeds,
+                Box::new(BoundarySeeds::new(param_infos)),
+            ),
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::Z3Solver,
+                Box::new(Z3SolverStrategy::new(
+                    solver_timeout_ms,
+                    param_infos.to_vec(),
+                    loops,
+                )),
+            ),
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::Fuzzer,
+                Box::new(FuzzerStrategy::new(None)),
+            ),
+        ],
+        meta_config,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +350,8 @@ pub struct UserProvidedStrategy {
     index: usize,
 }
 
+const USER_PROVIDED_STRATEGY_NAME: &str = "user_provided";
+
 impl UserProvidedStrategy {
     pub fn new(inputs: Vec<Vec<Value>>) -> Self {
         Self { inputs, index: 0 }
@@ -183,7 +370,7 @@ impl InputStrategy for UserProvidedStrategy {
     }
 
     fn name(&self) -> &str {
-        "user_provided"
+        USER_PROVIDED_STRATEGY_NAME
     }
 
     fn estimated_size(&self) -> Option<u64> {
@@ -207,6 +394,8 @@ pub struct LiteralsStrategy {
     cursor: usize,
 }
 
+const LITERALS_STRATEGY_NAME: &str = "literals";
+
 impl LiteralsStrategy {
     pub fn new(params: &[ParamInfo], literals: &[LiteralValue]) -> Self {
         Self {
@@ -228,7 +417,7 @@ impl InputStrategy for LiteralsStrategy {
     }
 
     fn name(&self) -> &str {
-        "literals"
+        LITERALS_STRATEGY_NAME
     }
 
     fn estimated_size(&self) -> Option<u64> {
@@ -249,6 +438,8 @@ impl InputStrategy for LiteralsStrategy {
 pub struct RandomStrategy {
     rng: StdRng,
 }
+
+const RANDOM_STRATEGY_NAME: &str = "random";
 
 impl RandomStrategy {
     /// Create a new random strategy. If `seed` is `Some`, the RNG is
@@ -273,7 +464,7 @@ impl InputStrategy for RandomStrategy {
     }
 
     fn name(&self) -> &str {
-        "random"
+        RANDOM_STRATEGY_NAME
     }
 }
 
@@ -293,6 +484,8 @@ pub struct BoundarySeeds {
     candidates: Vec<Vec<Value>>,
     cursor: usize,
 }
+
+const BOUNDARY_STRATEGY_NAME: &str = "boundary";
 
 impl BoundarySeeds {
     pub fn new(params: &[ParamInfo]) -> Self {
@@ -315,7 +508,7 @@ impl InputStrategy for BoundarySeeds {
     }
 
     fn name(&self) -> &str {
-        "boundary"
+        BOUNDARY_STRATEGY_NAME
     }
 
     fn estimated_size(&self) -> Option<u64> {
@@ -369,6 +562,8 @@ use std::collections::VecDeque;
 
 /// Per-strategy scoring state.
 struct StrategyState {
+    /// Shared registration metadata for this strategy slot.
+    kind: RegisteredStrategyKind,
     /// The strategy implementation.
     strategy: Box<dyn InputStrategy>,
     /// Sliding window of recent outcomes (true = new path discovered).
@@ -398,11 +593,12 @@ pub struct MetaStrategy {
 }
 
 impl MetaStrategy {
-    pub fn new(strategies: Vec<Box<dyn InputStrategy>>, config: MetaConfig) -> Self {
+    pub fn new(strategies: Vec<RegisteredStrategy>, config: MetaConfig) -> Self {
         let states = strategies
             .into_iter()
-            .map(|s| StrategyState {
-                strategy: s,
+            .map(|registration| StrategyState {
+                kind: registration.kind,
+                strategy: registration.strategy,
                 window: VecDeque::with_capacity(config.window_size),
                 total_supplied: 0,
                 exhausted: false,
@@ -468,9 +664,19 @@ impl MetaStrategy {
         self.states[idx].strategy.name()
     }
 
+    /// The registered strategy kind at the given index.
+    pub fn strategy_kind(&self, idx: usize) -> RegisteredStrategyKind {
+        self.states[idx].kind
+    }
+
     /// The operational tier of the strategy at the given index.
     pub fn strategy_tier(&self, idx: usize) -> StrategyTier {
         self.states[idx].strategy.tier()
+    }
+
+    /// Ordered registered kinds in this meta-strategy.
+    pub fn registered_kinds(&self) -> Vec<RegisteredStrategyKind> {
+        self.states.iter().map(|state| state.kind).collect()
     }
 
     /// Number of registered strategies.
@@ -685,6 +891,8 @@ pub struct PoolSeedsStrategy {
     index: usize,
 }
 
+const POOL_SEEDS_STRATEGY_NAME: &str = "pool";
+
 impl PoolSeedsStrategy {
     pub fn new(seeds: Vec<Vec<Value>>) -> Self {
         Self { seeds, index: 0 }
@@ -703,7 +911,7 @@ impl InputStrategy for PoolSeedsStrategy {
     }
 
     fn name(&self) -> &str {
-        "pool"
+        POOL_SEEDS_STRATEGY_NAME
     }
 
     fn estimated_size(&self) -> Option<u64> {
@@ -744,6 +952,8 @@ pub struct FuzzerStrategy {
     /// Pending mutations generated from a feedback round, drained by `next()`.
     pending: VecDeque<Vec<Value>>,
 }
+
+const FUZZER_STRATEGY_NAME: &str = "fuzzer";
 
 impl FuzzerStrategy {
     pub fn new(seed: Option<u64>) -> Self {
@@ -831,7 +1041,7 @@ impl InputStrategy for FuzzerStrategy {
     }
 
     fn name(&self) -> &str {
-        "fuzzer"
+        FUZZER_STRATEGY_NAME
     }
 
     fn is_finite(&self) -> bool {
@@ -1041,7 +1251,13 @@ mod tests {
             static_weights: None,
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(vec![Box::new(a), Box::new(b)], config);
+        let mut meta = MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(RegisteredStrategyKind::UserProvided, Box::new(a)),
+                RegisteredStrategy::new(RegisteredStrategyKind::BoundarySeeds, Box::new(b)),
+            ],
+            config,
+        );
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1068,7 +1284,13 @@ mod tests {
             static_weights: None,
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(vec![Box::new(short), Box::new(long)], config);
+        let mut meta = MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(RegisteredStrategyKind::UserProvided, Box::new(short)),
+                RegisteredStrategy::new(RegisteredStrategyKind::BoundarySeeds, Box::new(long)),
+            ],
+            config,
+        );
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1088,7 +1310,13 @@ mod tests {
             static_weights: None,
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(vec![Box::new(s)], config);
+        let mut meta = MetaStrategy::new(
+            vec![RegisteredStrategy::new(
+                RegisteredStrategyKind::UserProvided,
+                Box::new(s),
+            )],
+            config,
+        );
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1106,7 +1334,13 @@ mod tests {
             value: vec![Value::from(1)],
         };
         let config = MetaConfig::default();
-        let mut meta = MetaStrategy::new(vec![Box::new(infinite), Box::new(fresh)], config);
+        let mut meta = MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(RegisteredStrategyKind::Random, Box::new(infinite)),
+                RegisteredStrategy::new(RegisteredStrategyKind::Fuzzer, Box::new(fresh)),
+            ],
+            config,
+        );
 
         // Simulate graduated state for strategy 0.
         for i in 0..20 {
@@ -1130,7 +1364,13 @@ mod tests {
         let a = InfiniteStrategy {
             value: vec![Value::from(0)],
         };
-        let mut meta = MetaStrategy::new(vec![Box::new(a)], config);
+        let mut meta = MetaStrategy::new(
+            vec![RegisteredStrategy::new(
+                RegisteredStrategyKind::Random,
+                Box::new(a),
+            )],
+            config,
+        );
 
         // Graduate with 0% hit rate.
         for _ in 0..25 {
@@ -1150,7 +1390,13 @@ mod tests {
             cold_start_threshold: 20,
             ..MetaConfig::default()
         };
-        let meta = MetaStrategy::new(vec![Box::new(small)], config);
+        let meta = MetaStrategy::new(
+            vec![RegisteredStrategy::new(
+                RegisteredStrategyKind::UserProvided,
+                Box::new(small),
+            )],
+            config,
+        );
         // estimated_size = 2, threshold = 20, effective = min(20, 2) = 2.
         assert_eq!(meta.effective_cold_start(0), 2);
     }
@@ -1189,7 +1435,13 @@ mod tests {
         let s1 = CountingStrategy { count: c1.clone() };
         let s2 = CountingStrategy { count: c2.clone() };
 
-        let mut meta = MetaStrategy::new(vec![Box::new(s1), Box::new(s2)], MetaConfig::default());
+        let mut meta = MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(RegisteredStrategyKind::Random, Box::new(s1)),
+                RegisteredStrategy::new(RegisteredStrategyKind::Fuzzer, Box::new(s2)),
+            ],
+            MetaConfig::default(),
+        );
 
         let result = make_exec_result();
         meta.feedback(&[Value::from(0)], &result, true);
@@ -1226,7 +1478,13 @@ mod tests {
             static_weights: Some(vec![("a".into(), 1.0), ("b".into(), 1.0)]),
             ..MetaConfig::default()
         };
-        let mut meta = MetaStrategy::new(vec![Box::new(a), Box::new(b)], config);
+        let mut meta = MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(RegisteredStrategyKind::UserProvided, Box::new(a)),
+                RegisteredStrategy::new(RegisteredStrategyKind::BoundarySeeds, Box::new(b)),
+            ],
+            config,
+        );
         let ctx = empty_ctx();
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1243,6 +1501,96 @@ mod tests {
         assert!(a_count > 0, "strategy a should have been selected");
         assert!(b_count > 0, "strategy b should have been selected");
         assert_eq!(a_count + b_count, 12);
+    }
+
+    #[test]
+    fn random_explorer_registry_includes_random_when_no_custom_fallback() {
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
+        let meta = build_random_explorer_meta_strategy(
+            &params,
+            &[],
+            vec![],
+            vec![],
+            vec![],
+            false,
+            MetaConfig::default(),
+        );
+        assert_eq!(
+            meta.registered_kinds(),
+            vec![
+                RegisteredStrategyKind::UserProvided,
+                RegisteredStrategyKind::Literals,
+                RegisteredStrategyKind::PoolSeeds,
+                RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Random,
+            ]
+        );
+    }
+
+    #[test]
+    fn random_explorer_registry_omits_random_when_custom_fallback_is_enabled() {
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
+        let meta = build_random_explorer_meta_strategy(
+            &params,
+            &[],
+            vec![],
+            vec![],
+            vec![],
+            true,
+            MetaConfig::default(),
+        );
+        assert_eq!(
+            meta.registered_kinds(),
+            vec![
+                RegisteredStrategyKind::UserProvided,
+                RegisteredStrategyKind::Literals,
+                RegisteredStrategyKind::PoolSeeds,
+                RegisteredStrategyKind::BoundarySeeds,
+            ]
+        );
+        assert_eq!(
+            SpecialCandidatePath::ExplorerCustomGeneratorFallback.explorer_discovery_method(),
+            DiscoveryMethod::Random
+        );
+    }
+
+    #[test]
+    fn concolic_registry_registers_expected_order() {
+        let params = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
+        let meta = build_concolic_meta_strategy(
+            vec![],
+            vec![],
+            vec![],
+            &params,
+            vec![],
+            None,
+            MetaConfig::default(),
+        );
+        assert_eq!(
+            meta.registered_kinds(),
+            vec![
+                RegisteredStrategyKind::UserProvided,
+                RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Z3Solver,
+                RegisteredStrategyKind::Fuzzer,
+            ]
+        );
+        assert_eq!(
+            RegisteredStrategyKind::Z3Solver.orchestrator_input_source(),
+            crate::orchestrator::InputSource::Z3Solved
+        );
     }
 
     #[test]
@@ -2023,7 +2371,10 @@ mod tests {
             let user = UserProvidedStrategy::new(vec![vec![Value::from(1)]]);
             let fuzzer = FuzzerStrategy::new(Some(42));
             let meta = MetaStrategy::new(
-                vec![Box::new(user), Box::new(fuzzer)],
+                vec![
+                    RegisteredStrategy::new(RegisteredStrategyKind::UserProvided, Box::new(user)),
+                    RegisteredStrategy::new(RegisteredStrategyKind::Fuzzer, Box::new(fuzzer)),
+                ],
                 MetaConfig::default(),
             );
             assert_eq!(meta.strategy_tier(0), StrategyTier::Vector);
