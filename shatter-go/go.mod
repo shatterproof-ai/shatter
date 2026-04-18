@@ -1,9 +1,10 @@
 module github.com/shatter-dev/shatter/shatter-go
 
-go 1.23
+go 1.23.0
 
 require (
 	github.com/extism/go-sdk v1.7.1
+	golang.org/x/tools v0.34.0
 	pgregory.net/rapid v1.2.0
 )
 
@@ -14,5 +15,7 @@ require (
 	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834 // indirect
 	github.com/tetratelabs/wazero v1.9.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
+	golang.org/x/mod v0.26.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
