@@ -18,6 +18,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/setup"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
 
 const frontendVersion = "0.1.0"
@@ -25,28 +26,39 @@ const frontendLanguage = "go"
 
 // Handler processes protocol requests and writes responses.
 type Handler struct {
-	reader             *bufio.Scanner
-	writer             io.Writer
-	log                *slog.Logger
-	lastAnalyzedFile   string // remembered from the most recent analyze command
-	registry           *generators.Registry
-	setupLoader        *setup.Loader
-	timingEnabled      bool
-	preparedHarnesses  map[string]*instrument.PreparedHarness
-	preparedTargets    map[string]string // "file\x00function" → current prepare_id for stale detection
-	hookFactories      []RuntimeHookFactory
-	cachedAnalyses     map[string]*FunctionAnalysis // "file\x00function" → cached analysis
+	reader            *bufio.Scanner
+	writer            io.Writer
+	log               *slog.Logger
+	lastAnalyzedFile  string // remembered from the most recent analyze command
+	registry          *generators.Registry
+	setupLoader       *setup.Loader
+	timingEnabled     bool
+	workspace         *workspace.Workspace
+	preparedHarnesses map[string]*instrument.PreparedHarness
+	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
+	hookFactories     []RuntimeHookFactory
+	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
 // and logging to logw at the level set by SHATTER_LOG_LEVEL.
 func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
+	return newHandler(r, w, logw, slogLevelFromEnv(), nil)
+}
+
+// NewHandlerWithWorkspace creates a handler with an initialized workspace.
+func NewHandlerWithWorkspace(r io.Reader, w io.Writer, logw io.Writer, workspace *workspace.Workspace) *Handler {
+	return newHandler(r, w, logw, slogLevelFromEnv(), workspace)
+}
+
+func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, workspace *workspace.Workspace) *Handler {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	h := &Handler{
 		reader:            scanner,
 		writer:            w,
-		log:               slog.New(newPrefixHandler(logw, slogLevelFromEnv())),
+		log:               slog.New(newPrefixHandler(logw, level)),
+		workspace:         workspace,
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
 		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
@@ -61,18 +73,7 @@ func NewHandler(r io.Reader, w io.Writer, logw io.Writer) *Handler {
 
 // NewHandlerWithLogLevel creates a handler with an explicit log level (for testing).
 func NewHandlerWithLogLevel(r io.Reader, w io.Writer, logw io.Writer, level string) *Handler {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-	return &Handler{
-		reader:            scanner,
-		writer:            w,
-		log:               slog.New(newPrefixHandler(logw, slogLevelFromString(level))),
-		registry:          generators.NewRegistry(),
-		setupLoader:       setup.NewLoader(),
-		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
-		preparedTargets:   make(map[string]string),
-		cachedAnalyses:    make(map[string]*FunctionAnalysis),
-	}
+	return newHandler(r, w, logw, slogLevelFromString(level), nil)
 }
 
 // Run processes requests until shutdown or EOF. Returns nil on clean shutdown.
