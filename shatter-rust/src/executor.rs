@@ -1200,6 +1200,7 @@ fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
 /// `global_state_change` side effects for any whose serialized value differs.
 /// Variables that fail `serde_json::to_value` (e.g. non-Serialize types) are
 /// silently skipped — execution is never blocked by unserializable statics.
+#[allow(clippy::too_many_arguments)]
 fn generate_harness(
     instrumented_source: &str,
     function_name: &str,
