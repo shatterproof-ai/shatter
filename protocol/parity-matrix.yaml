@@ -15,6 +15,27 @@
 
 version: "0.1.0"
 
+shared_wire_types:
+  outcome_status:
+    notes: >
+      Reusable enum for invocation results. The canonical values are
+      completed, completed_with_findings, unsupported, build_failed,
+      runtime_failed, timed_out, and skipped_by_policy.
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+  invocation_outcome:
+    notes: >
+      Reusable object with fields status, return_value, thrown_error, and
+      side_effects. TypeScript and Go also use this shape for adapter-owned
+      invocation helpers; Rust mirrors the wire contract for parity even though
+      execute responses remain flattened.
+    frontends:
+      typescript: implemented
+      go: implemented
+      rust: implemented
+
 # --- Commands ---
 #
 # status: required         All frontends must implement

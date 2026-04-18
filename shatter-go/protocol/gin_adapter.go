@@ -14,13 +14,14 @@ type ginHandlerHook struct{}
 
 func (h *ginHandlerHook) ID() string { return GinAdapterID }
 
-func (h *ginHandlerHook) Invoke(ctx InvocationContext) (*InvocationOutcome, error) {
+func (h *ginHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error) {
 	result, err := instrument.ExecuteGinHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
 	if err != nil {
 		return nil, fmt.Errorf("gin handler execution: %w", err)
 	}
 
-	return &InvocationOutcome{
+	return &AdapterInvocationOutcome{
+		Status:      OutcomeStatusCompleted,
 		ReturnValue: result.ReturnValue,
 		ThrownError: result.ThrownError,
 		SideEffects: result.SideEffects,

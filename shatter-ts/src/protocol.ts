@@ -26,7 +26,11 @@ export interface SetupContextStack {
   contexts: SetupContextEntry[];
 }
 
-export type ExecutionAdapterApply = "required" | "auto" | "suggest" | "disabled";
+export type ExecutionAdapterApply =
+  | "required"
+  | "auto"
+  | "suggest"
+  | "disabled";
 
 export interface ExecutionAdapter {
   id: string;
@@ -68,7 +72,11 @@ export interface MockConfig {
   symbol: string;
   return_values: unknown[];
   should_track_calls: boolean;
-  default_behavior: "return_generated" | "repeat_last" | "throw_error" | "passthrough";
+  default_behavior:
+    | "return_generated"
+    | "repeat_last"
+    | "throw_error"
+    | "passthrough";
 }
 
 interface BaseRequest {
@@ -303,9 +311,18 @@ export interface CryptoBoundary {
   symbol: string;
   source_module: string;
   direction: "encrypt" | "decrypt" | "both";
-  output?: "ciphertext" | "plaintext" | "key" | "hash" | "signature" | "verified";
+  output?:
+    | "ciphertext"
+    | "plaintext"
+    | "key"
+    | "hash"
+    | "signature"
+    | "verified";
   confidence?: "low" | "medium" | "high";
-  param_roles: Record<string, "key" | "data" | "iv" | "nonce" | "tag" | "aad" | "algorithm">;
+  param_roles: Record<
+    string,
+    "key" | "data" | "iv" | "nonce" | "tag" | "aad" | "algorithm"
+  >;
   call_sites: number[];
   input_entropy?: number;
   output_entropy?: number;
@@ -396,17 +413,38 @@ export interface ParamInfo {
 
 /** Well-known complex types beyond primitives and structural types. */
 export type ComplexKind =
-  | "date" | "date_time" | "time" | "duration"
-  | "reg_exp" | "char" | "symbol"
-  | "big_int" | "big_decimal" | "complex" | "rational" | "range"
-  | "buffer" | "bit_set"
-  | "error" | "option" | "result"
-  | "closure" | "iterator"
-  | "url" | "ip_address"
+  | "date"
+  | "date_time"
+  | "time"
+  | "duration"
+  | "reg_exp"
+  | "char"
+  | "symbol"
+  | "big_int"
+  | "big_decimal"
+  | "complex"
+  | "rational"
+  | "range"
+  | "buffer"
+  | "bit_set"
+  | "error"
+  | "option"
+  | "result"
+  | "closure"
+  | "iterator"
+  | "url"
+  | "ip_address"
   | "uuid"
   | "path"
-  | "money" | "sem_ver" | "email" | "mime_type" | "color" | "geo_point" | "locale"
-  | "rune" | "go_byte";
+  | "money"
+  | "sem_ver"
+  | "email"
+  | "mime_type"
+  | "color"
+  | "geo_point"
+  | "locale"
+  | "rune"
+  | "go_byte";
 
 /** Reason a type was detected as opaque via static analysis. */
 export type StaticOpacityReason =
@@ -431,8 +469,18 @@ export type TypeInfo =
   | { kind: "object"; fields: [string, TypeInfo][] }
   | { kind: "union"; variants: TypeInfo[] }
   | { kind: "nullable"; inner: TypeInfo }
-  | { kind: "complex"; complex_kind: ComplexKind; metadata?: Record<string, unknown>; inner?: TypeInfo }
-  | { kind: "opaque"; label: string; static_opacity?: StaticOpacityReason; medium_opacity?: MediumOpacityReason };
+  | {
+      kind: "complex";
+      complex_kind: ComplexKind;
+      metadata?: Record<string, unknown>;
+      inner?: TypeInfo;
+    }
+  | {
+      kind: "opaque";
+      label: string;
+      static_opacity?: StaticOpacityReason;
+      medium_opacity?: MediumOpacityReason;
+    };
 
 export interface BranchInfo {
   id: number;
@@ -469,14 +517,31 @@ export type SymExprConst =
   | { kind: "const"; type: "bool"; value: boolean }
   | { kind: "const"; type: "null" }
   | { kind: "const"; type: "undefined" }
-  | { kind: "const"; type: "complex"; value: { kind: ComplexKind; repr: SymExprConst } };
+  | {
+      kind: "const";
+      type: "complex";
+      value: { kind: ComplexKind; repr: SymExprConst };
+    };
 
 export type BinOpKind =
-  | "eq" | "ne" | "lt" | "le" | "gt" | "ge"
-  | "add" | "sub" | "mul" | "div" | "mod"
-  | "and" | "or"
-  | "bitwise_and" | "bitwise_or" | "bitwise_xor"
-  | "in" | "instance_of";
+  | "eq"
+  | "ne"
+  | "lt"
+  | "le"
+  | "gt"
+  | "ge"
+  | "add"
+  | "sub"
+  | "mul"
+  | "div"
+  | "mod"
+  | "and"
+  | "or"
+  | "bitwise_and"
+  | "bitwise_or"
+  | "bitwise_xor"
+  | "in"
+  | "instance_of";
 
 export type UnOpKind = "not" | "neg" | "bitwise_not" | "typeof";
 
@@ -529,7 +594,10 @@ export interface ConnectionFailure {
   message: string;
 }
 
-export type DepDetectionKind = "unmocked_import" | "subprocess_spawn" | "stubbed_import";
+export type DepDetectionKind =
+  | "unmocked_import"
+  | "subprocess_spawn"
+  | "stubbed_import";
 
 export interface DiscoveredDependency {
   symbol: string;
@@ -559,16 +627,47 @@ export type SideEffect =
   | { kind: "network_request"; method: string; url: string; body: unknown }
   | { kind: "environment_read"; variable: string; value: string | null }
   | { kind: "global_mutation"; name: string }
-  | { kind: "thrown_error"; error_type: string; message: string; stack: string | null }
-  | { kind: "global_state_change"; variable: string; before: unknown; after: unknown };
+  | {
+      kind: "thrown_error";
+      error_type: string;
+      message: string;
+      stack: string | null;
+    }
+  | {
+      kind: "global_state_change";
+      variable: string;
+      before: unknown;
+      after: unknown;
+    };
 
-export type ErrorCategory = "validation" | "runtime" | "infrastructure" | "unknown";
+export type ErrorCategory =
+  | "validation"
+  | "runtime"
+  | "infrastructure"
+  | "unknown";
 
 export interface ErrorInfo {
   error_type: string;
   message: string;
   stack: string | null;
   error_category?: ErrorCategory;
+}
+
+export type OutcomeStatus =
+  | "completed"
+  | "completed_with_findings"
+  | "unsupported"
+  | "build_failed"
+  | "runtime_failed"
+  | "timed_out"
+  | "skipped_by_policy";
+
+/** Reusable protocol contract for one invocation result. */
+export interface InvocationOutcome {
+  status: OutcomeStatus;
+  return_value?: unknown;
+  thrown_error?: ErrorInfo;
+  side_effects?: SideEffect[];
 }
 
 export interface TruncationInfo {

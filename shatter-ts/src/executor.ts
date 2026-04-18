@@ -42,7 +42,18 @@ import type {
   InvocationContext,
   AdapterInvocationModel,
 } from "./runtime-hooks.js";
-import { RECORD_FUNCTION, BRANCH_FUNCTION, SCOPE_EVENT_FUNCTION, MOCK_REGISTRY, MOCK_CALL_FUNCTION, MCDC_RECORD_FUNCTION, MCDC_BRANCH_FUNCTION, CRYPTO_BOUNDARY_FUNCTION, KNOWN_CRYPTO_PARAM_ROLES, buildSymExprWithFlow } from "./instrumentor.js";
+import {
+  RECORD_FUNCTION,
+  BRANCH_FUNCTION,
+  SCOPE_EVENT_FUNCTION,
+  MOCK_REGISTRY,
+  MOCK_CALL_FUNCTION,
+  MCDC_RECORD_FUNCTION,
+  MCDC_BRANCH_FUNCTION,
+  CRYPTO_BOUNDARY_FUNCTION,
+  KNOWN_CRYPTO_PARAM_ROLES,
+  buildSymExprWithFlow,
+} from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 import logger from "./logger.js";
@@ -101,14 +112,17 @@ export function getHarnessScratchDir(): string | undefined {
 }
 
 /** Module names that spawn subprocesses — require() calls to these are flagged. */
-const SUBPROCESS_MODULES = new Set([
-  "child_process", "node:child_process",
-]);
+const SUBPROCESS_MODULES = new Set(["child_process", "node:child_process"]);
 
 /** Symbols within child_process that spawn subprocesses. */
 const SUBPROCESS_SYMBOLS = new Set([
-  "exec", "execSync", "execFile", "execFileSync",
-  "spawn", "spawnSync", "fork",
+  "exec",
+  "execSync",
+  "execFile",
+  "execFileSync",
+  "spawn",
+  "spawnSync",
+  "fork",
 ]);
 
 /**
@@ -144,7 +158,8 @@ function isModuleNotFoundError(err: unknown, requestedModule: string): boolean {
   if (typeof err !== "object" || err === null) return false;
   const errObj = err as Record<string, unknown>;
   const code = typeof errObj["code"] === "string" ? errObj["code"] : undefined;
-  const message = typeof errObj["message"] === "string" ? errObj["message"] : String(err);
+  const message =
+    typeof errObj["message"] === "string" ? errObj["message"] : String(err);
   const hasCode = code === "MODULE_NOT_FOUND";
   const hasMessage = message.startsWith("Cannot find module");
   if (!hasCode && !hasMessage) return false;
@@ -165,10 +180,13 @@ function isModuleNotFoundError(err: unknown, requestedModule: string): boolean {
  * - `.then` returns undefined to prevent thenable coercion
  * - `.__esModule` returns true for ESM interop
  */
-export function createUnresolvableModuleStub(_moduleName: string): Record<string, unknown> {
+export function createUnresolvableModuleStub(
+  _moduleName: string,
+): Record<string, unknown> {
   const handler: ProxyHandler<CallableTarget> = {
     get(_target: CallableTarget, prop: string | symbol): unknown {
-      if (prop === Symbol.toPrimitive) return (hint: string) => hint === "number" ? 0 : "";
+      if (prop === Symbol.toPrimitive)
+        return (hint: string) => (hint === "number" ? 0 : "");
       if (prop === Symbol.iterator) return function* () {};
       if (prop === Symbol.hasInstance) return () => true;
       if (prop === "then") return undefined;
@@ -191,7 +209,10 @@ export function createUnresolvableModuleStub(_moduleName: string): Record<string
       // Object.keys() / spread return empty results.
       return Object.getOwnPropertyNames(target);
     },
-    getOwnPropertyDescriptor(target: CallableTarget, prop: string | symbol): PropertyDescriptor | undefined {
+    getOwnPropertyDescriptor(
+      target: CallableTarget,
+      prop: string | symbol,
+    ): PropertyDescriptor | undefined {
       // For keys inherited from the function target (name, length, prototype),
       // return the real descriptor so Proxy invariants are satisfied.
       const real = Object.getOwnPropertyDescriptor(target, prop);
@@ -207,15 +228,25 @@ export function createUnresolvableModuleStub(_moduleName: string): Record<string
   };
 
   function createProxy(): Record<string, unknown> {
-    const target = Object.assign(function callableTarget() {}, {}) as CallableTarget;
+    const target = Object.assign(
+      function callableTarget() {},
+      {},
+    ) as CallableTarget;
     return new Proxy(target, handler) as unknown as Record<string, unknown>;
   }
 
   return createProxy();
 }
 
-const VALIDATION_ERROR_PATTERNS = /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
-const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError"]);
+const VALIDATION_ERROR_PATTERNS =
+  /Validation|Invalid|BadRequest|Forbidden|Unauthorized|NotFound/i;
+const RUNTIME_ERROR_TYPES = new Set([
+  "TypeError",
+  "ReferenceError",
+  "SyntaxError",
+  "RangeError",
+  "URIError",
+]);
 
 /**
  * Classify an error into a structured category using language-level signals.
@@ -223,11 +254,20 @@ const RUNTIME_ERROR_TYPES = new Set(["TypeError", "ReferenceError", "SyntaxError
  * - runtime: JS built-in error types indicating accidental failures
  * - infrastructure: timeouts and system-level failures
  */
-export function classifyError(errorType: string, message: string): ErrorCategory {
-  if (/timed?\s*out/i.test(message) || errorType === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+export function classifyError(
+  errorType: string,
+  message: string,
+): ErrorCategory {
+  if (
+    /timed?\s*out/i.test(message) ||
+    errorType === "ERR_SCRIPT_EXECUTION_TIMEOUT"
+  ) {
     return "infrastructure";
   }
-  if (VALIDATION_ERROR_PATTERNS.test(errorType) || VALIDATION_ERROR_PATTERNS.test(message)) {
+  if (
+    VALIDATION_ERROR_PATTERNS.test(errorType) ||
+    VALIDATION_ERROR_PATTERNS.test(message)
+  ) {
     return "validation";
   }
   if (RUNTIME_ERROR_TYPES.has(errorType)) {
@@ -241,29 +281,49 @@ export function classifyError(errorType: string, message: string): ErrorCategory
 // ---------------------------------------------------------------------------
 
 /** Patterns indicating a refused TCP connection. */
-export const CONN_REFUSED_PATTERNS = ["ECONNREFUSED", "connection refused", "Connection refused"];
+export const CONN_REFUSED_PATTERNS = [
+  "ECONNREFUSED",
+  "connection refused",
+  "Connection refused",
+];
 
 /** Patterns indicating a DNS resolution failure. */
 export const DNS_FAILURE_PATTERNS = [
-  "ENOTFOUND", "EAI_AGAIN", "dns resolution", "DNS resolution", "getaddrinfo", "no such host",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "dns resolution",
+  "DNS resolution",
+  "getaddrinfo",
+  "no such host",
 ];
 
 /** Patterns indicating an authentication/authorization failure. */
 export const AUTH_ERROR_PATTERNS = [
-  "EAUTH", "authentication failed", "unauthorized", "403 Forbidden", "401 Unauthorized",
+  "EAUTH",
+  "authentication failed",
+  "unauthorized",
+  "403 Forbidden",
+  "401 Unauthorized",
   "invalid credentials",
 ];
 
 /** Patterns indicating a timeout. */
 export const TIMEOUT_PATTERNS = [
-  "ETIMEDOUT", "ESOCKETTIMEDOUT", "ETIME", "timed out", "timeout", "deadline exceeded",
+  "ETIMEDOUT",
+  "ESOCKETTIMEDOUT",
+  "ETIME",
+  "timed out",
+  "timeout",
+  "deadline exceeded",
 ];
 
 /**
  * Classify an error message as a connection failure kind, if it matches
  * any known infrastructure failure pattern. Returns null for application errors.
  */
-export function classifyConnectionFailure(message: string): ConnectionFailureKind | null {
+export function classifyConnectionFailure(
+  message: string,
+): ConnectionFailureKind | null {
   for (const pattern of CONN_REFUSED_PATTERNS) {
     if (message.includes(pattern)) return "connection_refused";
   }
@@ -321,7 +381,11 @@ export function createShatterImport(
   return (spec: string): Promise<Record<string, unknown>> =>
     Promise.resolve().then(() => {
       const m = requireFn(spec);
-      if (m != null && typeof m === "object" && (m as Record<string, unknown>).__esModule) {
+      if (
+        m != null &&
+        typeof m === "object" &&
+        (m as Record<string, unknown>).__esModule
+      ) {
         return m as Record<string, unknown>;
       }
       const ns: Record<string, unknown> = { __esModule: true, default: m };
@@ -340,7 +404,10 @@ function isEsmLoadingError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const msg = (err as Record<string, unknown>)["message"];
   if (typeof msg !== "string") return false;
-  return msg.includes("not yet fully loaded") || msg.includes("Cannot require() ES Module");
+  return (
+    msg.includes("not yet fully loaded") ||
+    msg.includes("Cannot require() ES Module")
+  );
 }
 
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
@@ -368,7 +435,10 @@ export function deleteCompiledScriptEntry(key: string): void {
  * Pre-warm the compiled script cache for the given instrumented source.
  * If the key is already cached, this is a no-op. Called by the prepare handler.
  */
-export function warmCompiledScriptCache(instrumentedSource: string, cacheKey: string): void {
+export function warmCompiledScriptCache(
+  instrumentedSource: string,
+  cacheKey: string,
+): void {
   if (compiledScriptCache.has(cacheKey)) return;
   const jsResult = ts.transpileModule(instrumentedSource, {
     compilerOptions: {
@@ -380,7 +450,9 @@ export function warmCompiledScriptCache(instrumentedSource: string, cacheKey: st
     },
     fileName: cacheKey,
   });
-  const compiled = new vm.Script(transformDynamicImports(jsResult.outputText), { filename: cacheKey });
+  const compiled = new vm.Script(transformDynamicImports(jsResult.outputText), {
+    filename: cacheKey,
+  });
   compiledScriptCache.set(cacheKey, compiled);
 }
 
@@ -426,24 +498,30 @@ export function setProjectRoot(projectRoot: string | null | undefined): void {
     const nodeModules = path.join(projectRoot, "node_modules");
     const existing = process.env["NODE_PATH"] ?? "";
     if (!existing.split(path.delimiter).includes(nodeModules)) {
-      process.env["NODE_PATH"] = existing ? `${nodeModules}${path.delimiter}${existing}` : nodeModules;
+      process.env["NODE_PATH"] = existing
+        ? `${nodeModules}${path.delimiter}${existing}`
+        : nodeModules;
       // Force Node to re-read NODE_PATH for future require calls
       require("module").Module._initPaths();
     }
   }
 }
 
-function getDefaultResolverAdapters(filePath: string | undefined): ResolverAdapter[] {
+function getDefaultResolverAdapters(
+  filePath: string | undefined,
+): ResolverAdapter[] {
   if (!filePath || !filePath.endsWith(".tsx")) return [];
-  return [{
-    id: "ts/react-shim",
-    resolveModule({ module_id }) {
-      if (REACT_MODULE_NAMES.has(module_id)) {
-        return { kind: "resolved", value: getReactShim(module_id) };
-      }
-      return { kind: "continue" };
+  return [
+    {
+      id: "ts/react-shim",
+      resolveModule({ module_id }) {
+        if (REACT_MODULE_NAMES.has(module_id)) {
+          return { kind: "resolved", value: getReactShim(module_id) };
+        }
+        return { kind: "continue" };
+      },
     },
-  }];
+  ];
 }
 
 function resolveModuleWithAdapters(
@@ -467,7 +545,11 @@ function resolveModuleWithAdapters(
       continue;
     }
     if (decision.kind === "resolved") {
-      return { moduleId: currentModuleId, value: decision.value, stubbed: false };
+      return {
+        moduleId: currentModuleId,
+        value: decision.value,
+        stubbed: false,
+      };
     }
     const stubModuleId = decision.module_id ?? currentModuleId;
     return {
@@ -499,13 +581,19 @@ export function createAdapterAwareRequire(
         resolverAdapters,
       );
       if (resolved.stubbed) {
-        logger.warn("module %s could not be resolved; returning stub", resolved.moduleId);
+        logger.warn(
+          "module %s could not be resolved; returning stub",
+          resolved.moduleId,
+        );
       }
       onModuleResolved?.(resolved.moduleId, resolved.stubbed);
       return resolved.value;
     } catch (err: unknown) {
       if (isModuleNotFoundError(err, modulePath)) {
-        logger.warn("module %s could not be resolved; returning stub", modulePath);
+        logger.warn(
+          "module %s could not be resolved; returning stub",
+          modulePath,
+        );
         onModuleResolved?.(modulePath, true);
         return createUnresolvableModuleStub(modulePath);
       }
@@ -531,10 +619,16 @@ export function createAdapterAwareRequire(
  *
  * Results are cached by absolute file path.
  */
-function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[], sandboxProviders?: SandboxProvider[]): Record<string, unknown> {
+function loadModule(
+  filePath: string,
+  resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
+): Record<string, unknown> {
   const absolutePath = path.resolve(filePath);
-  const activeResolverAdapters = resolverAdapters ?? getDefaultResolverAdapters(absolutePath);
-  const useCache = resolverAdapters === undefined && sandboxProviders === undefined;
+  const activeResolverAdapters =
+    resolverAdapters ?? getDefaultResolverAdapters(absolutePath);
+  const useCache =
+    resolverAdapters === undefined && sandboxProviders === undefined;
   const cached = useCache ? compiledModuleCache.get(absolutePath) : undefined;
   if (cached) return cached;
 
@@ -583,10 +677,15 @@ function loadModule(filePath: string, resolverAdapters?: ResolverAdapter[], sand
     }
   }
 
-  vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath, timeout: getExecTimeoutMs() });
+  vm.runInContext(transformDynamicImports(result.outputText), sandbox, {
+    filename: absolutePath,
+    timeout: getExecTimeoutMs(),
+  });
 
   // After CommonJS execution, module.exports may have been reassigned
-  const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
+  const finalExports = (sandbox as Record<string, unknown>)["module"] as {
+    exports: Record<string, unknown>;
+  };
   const resolvedExports = finalExports.exports;
 
   if (useCache) {
@@ -630,13 +729,17 @@ function resolveFunction(
     ? functionRef.split(":").pop()!
     : functionRef;
 
-  const moduleExports = loadModule(filePath, resolverAdapters, sandboxProviders);
+  const moduleExports = loadModule(
+    filePath,
+    resolverAdapters,
+    sandboxProviders,
+  );
   const fn = moduleExports[funcName];
 
   if (typeof fn !== "function") {
     throw new Error(
       `Function "${funcName}" not found in exports of ${filePath}. ` +
-      `Available exports: ${Object.keys(moduleExports).join(", ")}`,
+        `Available exports: ${Object.keys(moduleExports).join(", ")}`,
     );
   }
 
@@ -667,7 +770,10 @@ interface MeasuredExecution {
  * and heap delta via process.memoryUsage(). Optionally runs GC before measurement
  * if --expose-gc is enabled.
  */
-async function measureExecution(fn: () => unknown, timing?: TimingCollector): Promise<MeasuredExecution> {
+async function measureExecution(
+  fn: () => unknown,
+  timing?: TimingCollector,
+): Promise<MeasuredExecution> {
   tryGc();
 
   const startMem = process.memoryUsage();
@@ -682,14 +788,21 @@ async function measureExecution(fn: () => unknown, timing?: TimingCollector): Pr
       ? timing.sync("execute.invoke_function", fn)
       : fn();
     // If the function returned a Promise (async function), await it with timeout
-    if (syncResult != null && typeof (syncResult as PromiseLike<unknown>).then === 'function') {
+    if (
+      syncResult != null &&
+      typeof (syncResult as PromiseLike<unknown>).then === "function"
+    ) {
       const timeoutMs = getExecTimeoutMs();
-      const awaitResult = () => Promise.race([
-        syncResult as Promise<unknown>,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("async execution timed out")), timeoutMs)
-        ),
-      ]);
+      const awaitResult = () =>
+        Promise.race([
+          syncResult as Promise<unknown>,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("async execution timed out")),
+              timeoutMs,
+            ),
+          ),
+        ]);
       returnValue = timing
         ? await timing.async("execute.await_result", awaitResult)
         : await awaitResult();
@@ -697,7 +810,11 @@ async function measureExecution(fn: () => unknown, timing?: TimingCollector): Pr
       returnValue = syncResult;
     }
   } catch (e: unknown) {
-    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    const err = e as {
+      constructor?: { name?: string };
+      message?: string;
+      stack?: string;
+    };
     const errorType = err.constructor?.name ?? "Error";
     const errorMessage = String(err.message ?? e);
     thrownError = {
@@ -757,7 +874,12 @@ function extractLoopBodyStates(
     return [];
   }
 
-  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
   const targetFunction = findFunctionNode(sourceFile, functionName);
   const body = extractFunctionBodyNode(targetFunction);
   if (!body) {
@@ -784,7 +906,15 @@ function extractLoopBodyStates(
     return flowMap.get(name);
   };
 
-  visitStatementsForLoopSnapshots(body.statements, sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+  visitStatementsForLoopSnapshots(
+    body.statements,
+    sourceFile,
+    loopInfoByLine,
+    loopIterations,
+    resolveName,
+    flowMap,
+    snapshots,
+  );
   return snapshots;
 }
 
@@ -793,7 +923,10 @@ function findFunctionNode(
   functionName: string,
 ): ts.FunctionDeclaration | ts.VariableStatement | undefined {
   for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name?.text === functionName) {
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === functionName
+    ) {
       return statement;
     }
     if (!ts.isVariableStatement(statement)) {
@@ -804,7 +937,8 @@ function findFunctionNode(
         ts.isIdentifier(declaration.name) &&
         declaration.name.text === functionName &&
         declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+        (ts.isArrowFunction(declaration.initializer) ||
+          ts.isFunctionExpression(declaration.initializer))
       ) {
         return statement;
       }
@@ -826,7 +960,10 @@ function extractFunctionBodyNode(
     if (!declaration.initializer) {
       continue;
     }
-    if (ts.isArrowFunction(declaration.initializer) && ts.isBlock(declaration.initializer.body)) {
+    if (
+      ts.isArrowFunction(declaration.initializer) &&
+      ts.isBlock(declaration.initializer.body)
+    ) {
       return declaration.initializer.body;
     }
     if (ts.isFunctionExpression(declaration.initializer)) {
@@ -847,12 +984,16 @@ function extractFunctionParamNames(
   const parameters = ts.isFunctionDeclaration(node)
     ? node.parameters
     : node.declarationList.declarations.flatMap((declaration) => {
-      const initializer = declaration.initializer;
-      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
-        return initializer.parameters;
-      }
-      return [];
-    });
+        const initializer = declaration.initializer;
+        if (
+          initializer &&
+          (ts.isArrowFunction(initializer) ||
+            ts.isFunctionExpression(initializer))
+        ) {
+          return initializer.parameters;
+        }
+        return [];
+      });
 
   for (const param of parameters) {
     if (ts.isIdentifier(param.name)) {
@@ -862,11 +1003,16 @@ function extractFunctionParamNames(
   return names;
 }
 
-function countObservedLoopIterations(scopeEvents: TraceEvent[]): Map<number, number> {
+function countObservedLoopIterations(
+  scopeEvents: TraceEvent[],
+): Map<number, number> {
   const counts = new Map<number, number>();
   for (const event of scopeEvents) {
     if (event.type === "scope" && event.event.kind === "loop_enter") {
-      counts.set(event.event.loop_id, (counts.get(event.event.loop_id) ?? 0) + 1);
+      counts.set(
+        event.event.loop_id,
+        (counts.get(event.event.loop_id) ?? 0) + 1,
+      );
     }
   }
   return counts;
@@ -883,26 +1029,50 @@ function visitStatementsForLoopSnapshots(
 ): void {
   for (const statement of statements) {
     if (ts.isVariableStatement(statement)) {
-      visitVariableDeclarationListForLoopSnapshots(statement.declarationList, resolveName, flowMap);
+      visitVariableDeclarationListForLoopSnapshots(
+        statement.declarationList,
+        resolveName,
+        flowMap,
+      );
       continue;
     }
 
     if (ts.isExpressionStatement(statement)) {
-      visitExpressionForLoopSnapshots(statement.expression, resolveName, flowMap);
+      visitExpressionForLoopSnapshots(
+        statement.expression,
+        resolveName,
+        flowMap,
+      );
       continue;
     }
 
     if (ts.isIfStatement(statement)) {
       const condition = buildSymExprWithFlow(statement.expression, resolveName);
       const snapshot = new Map(flowMap);
-      visitStatementsForLoopSnapshots(statementsFromBranch(statement.thenStatement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+      visitStatementsForLoopSnapshots(
+        statementsFromBranch(statement.thenStatement),
+        sourceFile,
+        loopInfoByLine,
+        loopIterations,
+        resolveName,
+        flowMap,
+        snapshots,
+      );
       const thenMap = new Map(flowMap);
       flowMap.clear();
       for (const [name, expr] of snapshot) {
         flowMap.set(name, expr);
       }
       if (statement.elseStatement) {
-        visitStatementsForLoopSnapshots(statementsFromBranch(statement.elseStatement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+        visitStatementsForLoopSnapshots(
+          statementsFromBranch(statement.elseStatement),
+          sourceFile,
+          loopInfoByLine,
+          loopIterations,
+          resolveName,
+          flowMap,
+          snapshots,
+        );
       }
       const elseMap = new Map(flowMap);
       mergeLoopSnapshotFlowMaps(condition, snapshot, thenMap, elseMap, flowMap);
@@ -910,14 +1080,33 @@ function visitStatementsForLoopSnapshots(
     }
 
     if (ts.isForStatement(statement)) {
-      const line = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
+      const line =
+        sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile))
+          .line + 1;
       const loopInfo = loopInfoByLine.get(line);
-      visitForStatementForLoopSnapshots(statement, loopInfo, loopIterations, sourceFile, loopInfoByLine, resolveName, flowMap, snapshots);
+      visitForStatementForLoopSnapshots(
+        statement,
+        loopInfo,
+        loopIterations,
+        sourceFile,
+        loopInfoByLine,
+        resolveName,
+        flowMap,
+        snapshots,
+      );
       continue;
     }
 
     if (ts.isBlock(statement)) {
-      visitStatementsForLoopSnapshots(statement.statements, sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+      visitStatementsForLoopSnapshots(
+        statement.statements,
+        sourceFile,
+        loopInfoByLine,
+        loopIterations,
+        resolveName,
+        flowMap,
+        snapshots,
+      );
     }
   }
 }
@@ -932,10 +1121,21 @@ function visitForStatementForLoopSnapshots(
   flowMap: Map<string, SymExpr>,
   snapshots: LoopBodyState[],
 ): void {
-  visitForInitializerForLoopSnapshots(statement.initializer, resolveName, flowMap);
+  visitForInitializerForLoopSnapshots(
+    statement.initializer,
+    resolveName,
+    flowMap,
+  );
 
-  const iterationCount = loopInfo ? (loopIterations.get(loopInfo.loop_id) ?? 0) : 0;
-  const trackedLocals = loopInfo ? collectTrackedLoopLocalNames(statement.statement, loopInfo.induction_var.name) : [];
+  const iterationCount = loopInfo
+    ? (loopIterations.get(loopInfo.loop_id) ?? 0)
+    : 0;
+  const trackedLocals = loopInfo
+    ? collectTrackedLoopLocalNames(
+        statement.statement,
+        loopInfo.induction_var.name,
+      )
+    : [];
 
   for (let iteration = 0; iteration < iterationCount; iteration++) {
     if (loopInfo && trackedLocals.length > 0) {
@@ -955,9 +1155,21 @@ function visitForStatementForLoopSnapshots(
       }
     }
 
-    visitStatementsForLoopSnapshots(statementsFromBranch(statement.statement), sourceFile, loopInfoByLine, loopIterations, resolveName, flowMap, snapshots);
+    visitStatementsForLoopSnapshots(
+      statementsFromBranch(statement.statement),
+      sourceFile,
+      loopInfoByLine,
+      loopIterations,
+      resolveName,
+      flowMap,
+      snapshots,
+    );
     if (statement.incrementor) {
-      visitExpressionForLoopSnapshots(statement.incrementor, resolveName, flowMap);
+      visitExpressionForLoopSnapshots(
+        statement.incrementor,
+        resolveName,
+        flowMap,
+      );
     }
   }
 }
@@ -971,7 +1183,11 @@ function visitForInitializerForLoopSnapshots(
     return;
   }
   if (ts.isVariableDeclarationList(initializer)) {
-    visitVariableDeclarationListForLoopSnapshots(initializer, resolveName, flowMap);
+    visitVariableDeclarationListForLoopSnapshots(
+      initializer,
+      resolveName,
+      flowMap,
+    );
     return;
   }
   visitExpressionForLoopSnapshots(initializer, resolveName, flowMap);
@@ -998,15 +1214,29 @@ function visitExpressionForLoopSnapshots(
   flowMap: Map<string, SymExpr>,
 ): void {
   if (ts.isBinaryExpression(expression) && ts.isIdentifier(expression.left)) {
-    const nextExpr = buildLoopSnapshotMutatedExpr(expression.left.text, expression.operatorToken.kind, expression.right, resolveName);
+    const nextExpr = buildLoopSnapshotMutatedExpr(
+      expression.left.text,
+      expression.operatorToken.kind,
+      expression.right,
+      resolveName,
+    );
     if (nextExpr.kind !== "unknown") {
       flowMap.set(expression.left.text, nextExpr);
     }
     return;
   }
 
-  if ((ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) && ts.isIdentifier(expression.operand)) {
-    const operator = expression.operator === ts.SyntaxKind.PlusPlusToken ? "add" : expression.operator === ts.SyntaxKind.MinusMinusToken ? "sub" : null;
+  if (
+    (ts.isPrefixUnaryExpression(expression) ||
+      ts.isPostfixUnaryExpression(expression)) &&
+    ts.isIdentifier(expression.operand)
+  ) {
+    const operator =
+      expression.operator === ts.SyntaxKind.PlusPlusToken
+        ? "add"
+        : expression.operator === ts.SyntaxKind.MinusMinusToken
+          ? "sub"
+          : null;
     const current = resolveName(expression.operand.text);
     if (operator && current && current.kind !== "unknown") {
       flowMap.set(expression.operand.text, {
@@ -1035,11 +1265,12 @@ function buildLoopSnapshotMutatedExpr(
     return { kind: "unknown" };
   }
 
-  const op = operatorKind === ts.SyntaxKind.PlusEqualsToken
-    ? "add"
-    : operatorKind === ts.SyntaxKind.MinusEqualsToken
-      ? "sub"
-      : null;
+  const op =
+    operatorKind === ts.SyntaxKind.PlusEqualsToken
+      ? "add"
+      : operatorKind === ts.SyntaxKind.MinusEqualsToken
+        ? "sub"
+        : null;
 
   if (!op) {
     return { kind: "unknown" };
@@ -1053,7 +1284,9 @@ function buildLoopSnapshotMutatedExpr(
   };
 }
 
-function statementsFromBranch(statement: ts.Statement): ReadonlyArray<ts.Statement> {
+function statementsFromBranch(
+  statement: ts.Statement,
+): ReadonlyArray<ts.Statement> {
   return ts.isBlock(statement) ? statement.statements : [statement];
 }
 
@@ -1092,7 +1325,11 @@ function mergeLoopSnapshotFlowMaps(
       continue;
     }
 
-    if (thenExpr && elseExpr && JSON.stringify(thenExpr) === JSON.stringify(elseExpr)) {
+    if (
+      thenExpr &&
+      elseExpr &&
+      JSON.stringify(thenExpr) === JSON.stringify(elseExpr)
+    ) {
       flowMap.set(name, thenExpr);
       continue;
     }
@@ -1114,11 +1351,18 @@ function mergeLoopSnapshotFlowMaps(
   }
 }
 
-function collectTrackedLoopLocalNames(statement: ts.Statement, inductionVarName: string): string[] {
+function collectTrackedLoopLocalNames(
+  statement: ts.Statement,
+  inductionVarName: string,
+): string[] {
   const tracked = new Set<string>([inductionVarName]);
 
   function walk(node: ts.Node): void {
-    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node)
+    ) {
       return;
     }
 
@@ -1126,7 +1370,10 @@ function collectTrackedLoopLocalNames(statement: ts.Statement, inductionVarName:
       tracked.add(node.left.text);
     }
 
-    if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && ts.isIdentifier(node.operand)) {
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      ts.isIdentifier(node.operand)
+    ) {
       tracked.add(node.operand.text);
     }
 
@@ -1141,7 +1388,10 @@ function collectTrackedLoopLocalNames(statement: ts.Statement, inductionVarName:
  * Truncate a message string to fit within maxBytes.
  * If truncated, appends a suffix indicating the message was cut.
  */
-export function truncateMessage(msg: string, maxBytes: number = MESSAGE_MAX_BYTES): string {
+export function truncateMessage(
+  msg: string,
+  maxBytes: number = MESSAGE_MAX_BYTES,
+): string {
   const bytes = Buffer.byteLength(msg, "utf-8");
   if (bytes <= maxBytes) return msg;
   const suffix = "…[truncated]";
@@ -1210,7 +1460,9 @@ export function buildRuntimeCryptoBoundary(
     kind,
     function_name: functionName,
     ...(algorithm !== undefined && { algorithm }),
-    ...(ciphertextParamIndex !== undefined && { ciphertext_param_index: ciphertextParamIndex }),
+    ...(ciphertextParamIndex !== undefined && {
+      ciphertext_param_index: ciphertextParamIndex,
+    }),
     ...(keyValue !== undefined && { key_value: keyValue }),
     ...(ivValue !== undefined && { iv_value: ivValue }),
   };
@@ -1299,12 +1551,20 @@ export function truncateSideEffects(
  * profile, timeStamp) delegate to the real console.
  */
 function createCapturingConsole(sideEffects: SideEffect[]): Console {
-  const makeLogger = (level: string) => (...args: unknown[]): void => {
-    const message = truncateMessage(args.map((a) =>
-      typeof a === "string" ? a : JSON.stringify(a, serializeReplacer) ?? String(a)
-    ).join(" "));
-    sideEffects.push({ kind: "console_output", level, message });
-  };
+  const makeLogger =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      const message = truncateMessage(
+        args
+          .map((a) =>
+            typeof a === "string"
+              ? a
+              : (JSON.stringify(a, serializeReplacer) ?? String(a)),
+          )
+          .join(" "),
+      );
+      sideEffects.push({ kind: "console_output", level, message });
+    };
 
   const logFn = makeLogger("log");
   const debugFn = makeLogger("debug");
@@ -1374,7 +1634,10 @@ function createCapturingProcess(sideEffects: SideEffect[]): typeof process {
       get(target, prop) {
         if (prop === "write") {
           return (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-            const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+            const text =
+              typeof chunk === "string"
+                ? chunk
+                : new TextDecoder().decode(chunk);
             const trimmed = text.replace(/\n$/, "");
             if (trimmed.length > 0) {
               const message = truncateMessage(trimmed);
@@ -1412,8 +1675,20 @@ export async function executeFunction(
   sandboxProviders?: SandboxProvider[],
 ): Promise<RawExecuteResult> {
   const fn = timing
-    ? timing.sync("execute.module_load", () => resolveFunction(filePath, functionRef, resolverAdapters, sandboxProviders))
-    : resolveFunction(filePath, functionRef, resolverAdapters, sandboxProviders);
+    ? timing.sync("execute.module_load", () =>
+        resolveFunction(
+          filePath,
+          functionRef,
+          resolverAdapters,
+          sandboxProviders,
+        ),
+      )
+    : resolveFunction(
+        filePath,
+        functionRef,
+        resolverAdapters,
+        sandboxProviders,
+      );
 
   const previousTarget = consoleTarget;
   let metrics: MeasuredExecution;
@@ -1423,7 +1698,10 @@ export async function executeFunction(
     consoleTarget = createCapturingConsole(sideEffects);
     try {
       const reconstructedInputs = inputs.map(reconstructValue);
-      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+      metrics = await measureExecution(
+        () => fn(...reconstructedInputs),
+        timing,
+      );
     } finally {
       consoleTarget = previousTarget;
     }
@@ -1449,7 +1727,9 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
+      adapter_hints: metrics.thrownError
+        ? detectRuntimeHints(metrics.thrownError)
+        : [],
     };
   } else {
     // No-capture fast path: skip all capture infrastructure.
@@ -1457,7 +1737,10 @@ export async function executeFunction(
     consoleTarget = NOOP_CONSOLE;
     try {
       const reconstructedInputs = inputs.map(reconstructValue);
-      metrics = await measureExecution(() => fn(...reconstructedInputs), timing);
+      metrics = await measureExecution(
+        () => fn(...reconstructedInputs),
+        timing,
+      );
     } finally {
       consoleTarget = previousTarget;
     }
@@ -1475,7 +1758,9 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
+      adapter_hints: metrics.thrownError
+        ? detectRuntimeHints(metrics.thrownError)
+        : [],
     };
   }
 }
@@ -1533,22 +1818,30 @@ export async function executeAdapterOwned(args: {
       ? await args.timing.async("execute.invoke_hook", invokeFn)
       : await invokeFn();
 
-    if (outcome.thrownError) {
+    if (outcome.thrown_error) {
       thrownError = {
-        error_type: outcome.thrownError.error_type,
-        message: outcome.thrownError.message,
-        stack: outcome.thrownError.stack,
-        error_category: outcome.thrownError.error_category
-          ?? classifyError(outcome.thrownError.error_type, outcome.thrownError.message),
+        error_type: outcome.thrown_error.error_type,
+        message: outcome.thrown_error.message,
+        stack: outcome.thrown_error.stack,
+        error_category:
+          outcome.thrown_error.error_category ??
+          classifyError(
+            outcome.thrown_error.error_type,
+            outcome.thrown_error.message,
+          ),
       };
     } else {
-      returnValue = outcome.returnValue ?? null;
+      returnValue = outcome.return_value ?? null;
     }
-    outcomeSideEffects = outcome.sideEffects ? [...outcome.sideEffects] : [];
+    outcomeSideEffects = outcome.side_effects ? [...outcome.side_effects] : [];
   } catch (e: unknown) {
     // The hook itself threw (as opposed to returning a structured thrownError).
     // Build an ErrorInfo the same way measureExecution does.
-    const err = e as { constructor?: { name?: string }; message?: string; stack?: string };
+    const err = e as {
+      constructor?: { name?: string };
+      message?: string;
+      stack?: string;
+    };
     const errorType = err.constructor?.name ?? "Error";
     const errorMessage = String(err.message ?? e);
     thrownError = {
@@ -1636,20 +1929,24 @@ export async function executeInstrumented(
     compiledScript = cachedScript;
     // execute.transpile is intentionally absent from timing on cache hits
   } else {
-    const transpile = () => ts.transpileModule(instrumentedSource, {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.CommonJS,
-        esModuleInterop: true,
-        strict: true,
-        jsx: ts.JsxEmit.ReactJSX,
-      },
-      ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
-    });
+    const transpile = () =>
+      ts.transpileModule(instrumentedSource, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.CommonJS,
+          esModuleInterop: true,
+          strict: true,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+        ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
+      });
     const jsResult = timing
       ? timing.sync("execute.transpile", transpile)
       : transpile();
-    compiledScript = new vm.Script(transformDynamicImports(jsResult.outputText), { filename: sourceFilePath ?? "instrumented.js" });
+    compiledScript = new vm.Script(
+      transformDynamicImports(jsResult.outputText),
+      { filename: sourceFilePath ?? "instrumented.js" },
+    );
     if (cacheKey) {
       compiledScriptCache.set(cacheKey, compiledScript);
     }
@@ -1677,9 +1974,10 @@ export async function executeInstrumented(
     conditionResult: boolean,
     symExpr: SymExpr,
   ): boolean => {
-    const constraint: SymConstraint = symExpr.kind !== "unknown"
-      ? { kind: "expr", expr: symExpr }
-      : { kind: "unknown", hint: "unsupported expression" };
+    const constraint: SymConstraint =
+      symExpr.kind !== "unknown"
+        ? { kind: "expr", expr: symExpr }
+        : { kind: "unknown", hint: "unsupported expression" };
 
     const decision: BranchDecision = {
       branch_id: branchId,
@@ -1731,7 +2029,10 @@ export async function executeInstrumented(
           condition_index: i,
           value: val,
           masked: false,
-          constraint: sym.kind !== "unknown" ? { kind: "expr", expr: sym } : { kind: "unknown", hint: "unsupported expression" },
+          constraint:
+            sym.kind !== "unknown"
+              ? { kind: "expr", expr: sym }
+              : { kind: "unknown", hint: "unsupported expression" },
         });
         if (!val) {
           stopAfter = i;
@@ -1756,7 +2057,10 @@ export async function executeInstrumented(
           condition_index: i,
           value: val,
           masked: false,
-          constraint: sym.kind !== "unknown" ? { kind: "expr", expr: sym } : { kind: "unknown", hint: "unsupported expression" },
+          constraint:
+            sym.kind !== "unknown"
+              ? { kind: "expr", expr: sym }
+              : { kind: "unknown", hint: "unsupported expression" },
         });
         if (val) {
           stopAfter = i;
@@ -1779,9 +2083,10 @@ export async function executeInstrumented(
     symExpr: SymExpr,
     conditions: ConditionOutcome[],
   ): boolean => {
-    const constraint: SymConstraint = symExpr.kind !== "unknown"
-      ? { kind: "expr", expr: symExpr }
-      : { kind: "unknown", hint: "unsupported expression" };
+    const constraint: SymConstraint =
+      symExpr.kind !== "unknown"
+        ? { kind: "expr", expr: symExpr }
+        : { kind: "unknown", hint: "unsupported expression" };
 
     const bd: BranchDecision = {
       branch_id: branchId,
@@ -1817,7 +2122,12 @@ export async function executeInstrumented(
     functionName: string,
     ...args: unknown[]
   ): void => {
-    const boundary = buildRuntimeCryptoBoundary(boundaryId, kind, functionName, args);
+    const boundary = buildRuntimeCryptoBoundary(
+      boundaryId,
+      kind,
+      functionName,
+      args,
+    );
     cryptoBoundaries.push(boundary);
   };
 
@@ -1836,9 +2146,12 @@ export async function executeInstrumented(
           const idx = Math.min(callIndex, returnValues.length - 1);
           callIndex++;
           const errData = returnValues[idx];
-          const message = typeof errData === "object" && errData !== null && "message" in errData
-            ? String((errData as Record<string, unknown>)["message"])
-            : `Mock error: ${mock.symbol}`;
+          const message =
+            typeof errData === "object" &&
+            errData !== null &&
+            "message" in errData
+              ? String((errData as Record<string, unknown>)["message"])
+              : `Mock error: ${mock.symbol}`;
           throw new Error(message);
         }
         throw new Error(`Mock error: ${mock.symbol}`);
@@ -1849,9 +2162,10 @@ export async function executeInstrumented(
     const returnValues = mock.return_values;
     mockRegistry[mock.symbol] = (...args: unknown[]): unknown => {
       if (returnValues.length > 0) {
-        const idx = mock.default_behavior === "repeat_last"
-          ? Math.min(callIndex, returnValues.length - 1)
-          : callIndex % returnValues.length;
+        const idx =
+          mock.default_behavior === "repeat_last"
+            ? Math.min(callIndex, returnValues.length - 1)
+            : callIndex % returnValues.length;
         callIndex++;
         return returnValues[idx];
       }
@@ -1875,9 +2189,10 @@ export async function executeInstrumented(
     });
 
     if (thrownError !== undefined) {
-      const errMsg = thrownError instanceof Error
-        ? thrownError.message
-        : String(thrownError);
+      const errMsg =
+        thrownError instanceof Error
+          ? thrownError.message
+          : String(thrownError);
       const kind = classifyConnectionFailure(errMsg);
       if (kind !== null) {
         connectionFailures.push({ symbol, error_kind: kind, message: errMsg });
@@ -1887,10 +2202,17 @@ export async function executeInstrumented(
 
   // Build the execution context: use capturing console/process when capture is enabled,
   // otherwise use no-op stubs to prevent stdout pollution without the capture overhead.
-  const sandboxConsole = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
-  const sandboxProc = capture ? createCapturingProcess(sideEffects) : NOOP_PROCESS;
-  const rawRequire = sourceFilePath ? createRequire(path.resolve(sourceFilePath)) : require;
-  const activeResolverAdapters = resolverAdapters ?? getDefaultResolverAdapters(sourceFilePath);
+  const sandboxConsole = capture
+    ? createCapturingConsole(sideEffects)
+    : NOOP_CONSOLE;
+  const sandboxProc = capture
+    ? createCapturingProcess(sideEffects)
+    : NOOP_PROCESS;
+  const rawRequire = sourceFilePath
+    ? createRequire(path.resolve(sourceFilePath))
+    : require;
+  const activeResolverAdapters =
+    resolverAdapters ?? getDefaultResolverAdapters(sourceFilePath);
 
   // Collect mocked module prefixes for gap detection
   const mockedModulePrefixes = new Set<string>();
@@ -1908,7 +2230,11 @@ export async function executeInstrumented(
     sourceFilePath,
     activeResolverAdapters,
     (moduleId, stubbed) => {
-      if (moduleId.startsWith(".") || moduleId.startsWith("/") || seenDiscoveredModules.has(moduleId)) {
+      if (
+        moduleId.startsWith(".") ||
+        moduleId.startsWith("/") ||
+        seenDiscoveredModules.has(moduleId)
+      ) {
         return;
       }
       seenDiscoveredModules.add(moduleId);
@@ -1959,7 +2285,9 @@ export async function executeInstrumented(
     clearInterval,
     AbortController,
     AbortSignal,
-    ...(sourceFilePath ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) } : {}),
+    ...(sourceFilePath
+      ? { __filename: sourceFilePath, __dirname: path.dirname(sourceFilePath) }
+      : {}),
     [RECORD_FUNCTION]: recordFn,
     [BRANCH_FUNCTION]: branchFn,
     [MCDC_RECORD_FUNCTION]: mcdcRecordFn,
@@ -1988,7 +2316,9 @@ export async function executeInstrumented(
   }
 
   // Resolve the function from the module exports
-  const finalExports = (sandbox as Record<string, unknown>)["module"] as { exports: Record<string, unknown> };
+  const finalExports = (sandbox as Record<string, unknown>)["module"] as {
+    exports: Record<string, unknown>;
+  };
 
   // Snapshot module-level variables before execution (JSON strings, not deep clones)
   const exportKeys = Object.keys(finalExports.exports).filter(
@@ -1997,7 +2327,10 @@ export async function executeInstrumented(
   const beforeSnapshot = new Map<string, string | undefined>();
   for (const key of exportKeys) {
     try {
-      beforeSnapshot.set(key, JSON.stringify(finalExports.exports[key], serializeReplacer));
+      beforeSnapshot.set(
+        key,
+        JSON.stringify(finalExports.exports[key], serializeReplacer),
+      );
     } catch {
       // Non-serializable (circular refs, etc.) — skip comparison for this export
       beforeSnapshot.set(key, undefined);
@@ -2009,7 +2342,7 @@ export async function executeInstrumented(
   if (typeof fn !== "function") {
     throw new Error(
       `Function "${functionName}" not found in instrumented module exports. ` +
-      `Available: ${Object.keys(finalExports.exports).join(", ")}`,
+        `Available: ${Object.keys(finalExports.exports).join(", ")}`,
     );
   }
 
@@ -2047,7 +2380,10 @@ export async function executeInstrumented(
       if (beforeJson === undefined) continue; // non-serializable — skip
       let afterJson: string | undefined;
       try {
-        afterJson = JSON.stringify(finalExports.exports[key], serializeReplacer);
+        afterJson = JSON.stringify(
+          finalExports.exports[key],
+          serializeReplacer,
+        );
       } catch {
         continue; // became non-serializable
       }
@@ -2067,7 +2403,15 @@ export async function executeInstrumented(
 
   if (sourceFilePath && loops.length > 0) {
     const sourceText = fs.readFileSync(sourceFilePath, "utf-8");
-    loopBodyStates.push(...extractLoopBodyStates(sourceText, functionName, sourceFilePath, loops, scopeEvents));
+    loopBodyStates.push(
+      ...extractLoopBodyStates(
+        sourceText,
+        functionName,
+        sourceFilePath,
+        loops,
+        scopeEvents,
+      ),
+    );
   }
 
   return {
@@ -2084,7 +2428,9 @@ export async function executeInstrumented(
     discovered_dependencies: discoveredDeps,
     connection_failures: connectionFailures,
     runtime_crypto_boundaries: cryptoBoundaries,
-    adapter_hints: metrics.thrownError ? detectRuntimeHints(metrics.thrownError) : [],
+    adapter_hints: metrics.thrownError
+      ? detectRuntimeHints(metrics.thrownError)
+      : [],
   };
 }
 
@@ -2099,11 +2445,14 @@ export function buildExecuteResponse(
   timing?: TimingCollector,
 ): ExecuteResponse {
   // Skip truncation when there are no side effects (e.g. capture-disabled runs).
-  const { effects, truncation } = rawResult.side_effects.length === 0
-    ? { effects: [] as SideEffect[], truncation: undefined }
-    : timing
-      ? timing.sync("execute.trace_capture", () => truncateSideEffects(rawResult.side_effects))
-      : truncateSideEffects(rawResult.side_effects);
+  const { effects, truncation } =
+    rawResult.side_effects.length === 0
+      ? { effects: [] as SideEffect[], truncation: undefined }
+      : timing
+        ? timing.sync("execute.trace_capture", () =>
+            truncateSideEffects(rawResult.side_effects),
+          )
+        : truncateSideEffects(rawResult.side_effects);
 
   const response: ExecuteResponse = {
     protocol_version: protocolVersion,

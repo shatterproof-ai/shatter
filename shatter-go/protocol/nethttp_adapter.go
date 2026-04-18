@@ -14,13 +14,14 @@ type httpHandlerHook struct{}
 
 func (h *httpHandlerHook) ID() string { return HTTPHandlerAdapterID }
 
-func (h *httpHandlerHook) Invoke(ctx InvocationContext) (*InvocationOutcome, error) {
+func (h *httpHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error) {
 	result, err := instrument.ExecuteHTTPHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
 	if err != nil {
 		return nil, fmt.Errorf("http handler execution: %w", err)
 	}
 
-	return &InvocationOutcome{
+	return &AdapterInvocationOutcome{
+		Status:      OutcomeStatusCompleted,
 		ReturnValue: result.ReturnValue,
 		ThrownError: result.ThrownError,
 		SideEffects: result.SideEffects,

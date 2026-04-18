@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/invocation-outcome.schema.json",
+  "title": "InvocationOutcome",
+  "description": "Reusable protocol contract for one invocation result.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "$ref": "outcome-status.schema.json"
+    },
+    "return_value": {
+      "description": "Return value from the invocation, if it completed normally."
+    },
+    "thrown_error": {
+      "oneOf": [{ "$ref": "error-info.schema.json" }, { "type": "null" }],
+      "description": "Structured error information, if the invocation failed."
+    },
+    "side_effects": {
+      "type": "array",
+      "items": { "$ref": "side-effect.schema.json" },
+      "description": "Side effects observed during the invocation."
+    }
+  },
+  "required": ["status"]
+}

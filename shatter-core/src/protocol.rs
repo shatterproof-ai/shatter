@@ -748,6 +748,38 @@ pub struct RuntimeCryptoBoundary {
     pub iv_value: Option<String>,
 }
 
+/// Status describing the outcome of one invocation attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeStatus {
+    Completed,
+    CompletedWithFindings,
+    Unsupported,
+    BuildFailed,
+    RuntimeFailed,
+    TimedOut,
+    SkippedByPolicy,
+}
+
+/// Structured outcome produced by one invocation attempt.
+///
+/// This type is a reusable protocol contract. Individual commands may choose
+/// to flatten these fields into their existing response shapes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvocationOutcome {
+    /// Machine-readable classification of the overall invocation result.
+    pub status: OutcomeStatus,
+    /// Return value from the invocation, if it completed normally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<serde_json::Value>,
+    /// Error thrown or returned by the invocation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thrown_error: Option<ErrorInfo>,
+    /// Side effects observed while running the invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub side_effects: Vec<SideEffect>,
+}
+
 /// Result of executing an instrumented function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteResult {
@@ -1304,7 +1336,7 @@ mod tests {
                     },
                 }],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 side_effects: vec![SideEffect::ConsoleOutput {
                     level: "info".into(),
                     message: "Processing express order".into(),
@@ -1341,7 +1373,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 performance: PerformanceMetrics {
                     wall_time_ms: 0.1,
                     cpu_time_us: 80,
@@ -1374,7 +1406,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 performance: PerformanceMetrics::default(),
                 capture_truncation: None,
                 discovered_dependencies: vec![],
@@ -2775,34 +2807,34 @@ mod tests {
         use proptest::prelude::*;
 
         proptest! {
-            #[test]
-            fn request_round_trips(req in arb_request()) {
-                let json = serde_json::to_string(&req).unwrap();
-                let decoded: Request = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(req, decoded);
-            }
+                #[test]
+                fn request_round_trips(req in arb_request()) {
+                    let json = serde_json::to_string(&req).unwrap();
+                    let decoded: Request = serde_json::from_str(&json).unwrap();
+                    prop_assert_eq!(req, decoded);
+                }
 
-            #[test]
-            fn response_round_trips(resp in arb_response()) {
-                let json = serde_json::to_string(&resp).unwrap();
-                let decoded: Response = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(resp, decoded);
-            }
+                #[test]
+                fn response_round_trips(resp in arb_response()) {
+                    let json = serde_json::to_string(&resp).unwrap();
+                    let decoded: Response = serde_json::from_str(&json).unwrap();
+                    prop_assert_eq!(resp, decoded);
+                }
 
-            #[test]
-            fn execute_result_round_trips(er in arb_execute_result()) {
-                let json = serde_json::to_string(&er).unwrap();
-                let decoded: ExecuteResult = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(er, decoded);
-            }
-
-            #[test]
-            fn function_analysis_round_trips(fa in arb_function_analysis()) {
-                let json = serde_json::to_string(&fa).unwrap();
-                let decoded: FunctionAnalysis = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(fa, decoded);
-            }
+                #[test]
+        fn execute_result_round_trips(er in arb_execute_result()) {
+            let json = serde_json::to_string(&er).unwrap();
+            let decoded: ExecuteResult = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(er, decoded);
         }
+
+                #[test]
+        fn function_analysis_round_trips(fa in arb_function_analysis()) {
+            let json = serde_json::to_string(&fa).unwrap();
+            let decoded: FunctionAnalysis = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(fa, decoded);
+        }
+            }
     }
 
     #[test]
@@ -2966,5 +2998,43 @@ mod tests {
         } else {
             panic!("expected Execute response");
         }
+    }
+
+    #[test]
+    fn outcome_status_round_trips() {
+        for status in [
+            OutcomeStatus::Completed,
+            OutcomeStatus::CompletedWithFindings,
+            OutcomeStatus::Unsupported,
+            OutcomeStatus::BuildFailed,
+            OutcomeStatus::RuntimeFailed,
+            OutcomeStatus::TimedOut,
+            OutcomeStatus::SkippedByPolicy,
+        ] {
+            let json = serde_json::to_string(&status).expect("serialize");
+            let decoded: OutcomeStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, status);
+        }
+    }
+
+    #[test]
+    fn invocation_outcome_round_trips() {
+        let outcome = InvocationOutcome {
+            status: OutcomeStatus::CompletedWithFindings,
+            return_value: Some(serde_json::json!({"status": 200})),
+            thrown_error: Some(ErrorInfo {
+                error_type: "warning".into(),
+                message: "partial support".into(),
+                stack: None,
+                error_category: None,
+            }),
+            side_effects: vec![SideEffect::ConsoleOutput {
+                level: "warn".into(),
+                message: "degraded execution".into(),
+            }],
+        };
+        let json = serde_json::to_string(&outcome).expect("serialize");
+        let decoded: InvocationOutcome = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, outcome);
     }
 }

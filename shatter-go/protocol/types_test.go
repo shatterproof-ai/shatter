@@ -449,6 +449,65 @@ func TestSideEffectVariants(t *testing.T) {
 	}
 }
 
+func TestOutcomeStatusRoundTrip(t *testing.T) {
+	statuses := []OutcomeStatus{
+		OutcomeStatusCompleted,
+		OutcomeStatusCompletedWithFindings,
+		OutcomeStatusUnsupported,
+		OutcomeStatusBuildFailed,
+		OutcomeStatusRuntimeFailed,
+		OutcomeStatusTimedOut,
+		OutcomeStatusSkippedByPolicy,
+	}
+	for _, status := range statuses {
+		data, err := json.Marshal(status)
+		if err != nil {
+			t.Fatalf("marshal %q: %v", status, err)
+		}
+		var decoded OutcomeStatus
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal %q: %v", status, err)
+		}
+		if decoded != status {
+			t.Fatalf("decoded = %q, want %q", decoded, status)
+		}
+	}
+}
+
+func TestInvocationOutcomeRoundTrip(t *testing.T) {
+	outcome := InvocationOutcome{
+		Status:      OutcomeStatusCompletedWithFindings,
+		ReturnValue: json.RawMessage(`{"ok":true}`),
+		ThrownError: &ErrorInfo{
+			ErrorType: "warning",
+			Message:   "partial support",
+		},
+		SideEffects: []SideEffect{
+			{Kind: "console_output", Level: "warn", Message: "degraded"},
+		},
+	}
+	data, err := json.Marshal(outcome)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded InvocationOutcome
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Status != outcome.Status {
+		t.Fatalf("status = %q, want %q", decoded.Status, outcome.Status)
+	}
+	if string(decoded.ReturnValue) != string(outcome.ReturnValue) {
+		t.Fatalf("return_value = %s, want %s", decoded.ReturnValue, outcome.ReturnValue)
+	}
+	if decoded.ThrownError == nil || decoded.ThrownError.Message != outcome.ThrownError.Message {
+		t.Fatalf("thrown_error = %#v, want %#v", decoded.ThrownError, outcome.ThrownError)
+	}
+	if len(decoded.SideEffects) != 1 || decoded.SideEffects[0].Kind != "console_output" {
+		t.Fatalf("side_effects = %#v", decoded.SideEffects)
+	}
+}
+
 // --- LiteralValue tests ---
 
 func TestLiteralValue_RoundTrip(t *testing.T) {

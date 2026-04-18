@@ -16,11 +16,11 @@ type InvocationContext struct {
 	Capture         bool
 }
 
-// InvocationOutcome is the structured result from adapter-owned invocation.
-// Fields ride back through existing ExecuteResponse fields — no new wire types.
-// SideEffects uses instrument.SideEffect to avoid a redundant conversion step;
-// the handler's convertSideEffects maps instrument→protocol on the response path.
-type InvocationOutcome struct {
+// AdapterInvocationOutcome is the adapter-local mirror of the protocol
+// InvocationOutcome. SideEffects uses instrument.SideEffect to avoid a
+// redundant conversion step on the response path.
+type AdapterInvocationOutcome struct {
+	Status      OutcomeStatus
 	ReturnValue json.RawMessage
 	ThrownError *instrument.ErrorInfo
 	SideEffects []instrument.SideEffect
@@ -30,7 +30,7 @@ type InvocationOutcome struct {
 // Resolved by ID, which must equal InvocationModel.AdapterID.
 type InvocationHook interface {
 	ID() string
-	Invoke(ctx InvocationContext) (*InvocationOutcome, error)
+	Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error)
 }
 
 // RuntimeHookContext carries request-scoped metadata for factory resolution.

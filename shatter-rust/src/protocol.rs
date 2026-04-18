@@ -449,6 +449,31 @@ pub const FRONTEND_VERSION: &str = "0.1.0";
 /// Language identifier for this frontend.
 pub const FRONTEND_LANGUAGE: &str = "rust";
 
+/// Status describing the result of a single invocation attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeStatus {
+    Completed,
+    CompletedWithFindings,
+    Unsupported,
+    BuildFailed,
+    RuntimeFailed,
+    TimedOut,
+    SkippedByPolicy,
+}
+
+/// Reusable protocol contract for one invocation result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvocationOutcome {
+    pub status: OutcomeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thrown_error: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub side_effects: Vec<serde_json::Value>,
+}
+
 // Error codes matching protocol/registry.yaml (11 codes).
 pub const ERR_FILE_NOT_FOUND: &str = "file_not_found";
 pub const ERR_FUNCTION_NOT_FOUND: &str = "function_not_found";
@@ -1551,5 +1576,34 @@ mod tests {
         let json = r#"{"protocol_version":"0.1.0","id":100,"command":"execute","function":"f","inputs":[],"mocks":[]}"#;
         let req: Request = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.execution_profile, None);
+    }
+
+    #[test]
+    fn outcome_status_round_trips() {
+        round_trip(&OutcomeStatus::Completed);
+        round_trip(&OutcomeStatus::CompletedWithFindings);
+        round_trip(&OutcomeStatus::Unsupported);
+        round_trip(&OutcomeStatus::BuildFailed);
+        round_trip(&OutcomeStatus::RuntimeFailed);
+        round_trip(&OutcomeStatus::TimedOut);
+        round_trip(&OutcomeStatus::SkippedByPolicy);
+    }
+
+    #[test]
+    fn invocation_outcome_round_trips() {
+        round_trip(&InvocationOutcome {
+            status: OutcomeStatus::CompletedWithFindings,
+            return_value: Some(serde_json::json!({"ok": true})),
+            thrown_error: Some(serde_json::json!({
+                "error_type": "warning",
+                "message": "partial support",
+                "stack": null
+            })),
+            side_effects: vec![serde_json::json!({
+                "kind": "console_output",
+                "level": "warn",
+                "message": "degraded"
+            })],
+        });
     }
 }

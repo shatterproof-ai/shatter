@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shatter.dev/protocol/outcome-status.schema.json",
+  "title": "OutcomeStatus",
+  "description": "Machine-readable classification of a single invocation attempt.",
+  "type": "string",
+  "enum": [
+    "completed",
+    "completed_with_findings",
+    "unsupported",
+    "build_failed",
+    "runtime_failed",
+    "timed_out",
+    "skipped_by_policy"
+  ]
+}

@@ -186,8 +186,8 @@ export class UnsupportedEffectError extends Error {
   constructor(phase: EffectPhase, slotIndex: number) {
     super(
       `Unsupported: ${phase} effect at slot ${slotIndex} returned a Promise. ` +
-      `Effect callbacks must be synchronous. Use a synchronous wrapper that ` +
-      `calls the async function if the hook needs to trigger async work.`,
+        `Effect callbacks must be synchronous. Use a synchronous wrapper that ` +
+        `calls the async function if the hook needs to trigger async work.`,
     );
     this.name = "UnsupportedEffectError";
   }
@@ -215,19 +215,23 @@ export class HookExecutionContext {
   }
 
   /** Stateful useState implementation. Slot index determined by call order. */
-  useState<T>(initialState: T | (() => T)): [T, (v: T | ((prev: T) => T)) => void] {
+  useState<T>(
+    initialState: T | (() => T),
+  ): [T, (v: T | ((prev: T) => T)) => void] {
     const slotIndex = this.callIndex++;
     if (this.stateSlots.length <= slotIndex) {
-      const value = typeof initialState === "function"
-        ? (initialState as () => T)()
-        : initialState;
+      const value =
+        typeof initialState === "function"
+          ? (initialState as () => T)()
+          : initialState;
       this.stateSlots.push(value);
     }
     const currentValue = this.stateSlots[slotIndex] as T;
     const setter = (v: T | ((prev: T) => T)): void => {
-      const next = typeof v === "function"
-        ? (v as (prev: T) => T)(this.stateSlots[slotIndex] as T)
-        : v;
+      const next =
+        typeof v === "function"
+          ? (v as (prev: T) => T)(this.stateSlots[slotIndex] as T)
+          : v;
       this.pendingUpdates.set(slotIndex, next);
     };
     return [currentValue, setter];
@@ -334,7 +338,10 @@ export class HookExecutionContext {
     if (!slot.callback) return;
     const result = slot.callback();
     // Check for async effect (unsupported)
-    if (result != null && typeof (result as { then?: unknown }).then === "function") {
+    if (
+      result != null &&
+      typeof (result as { then?: unknown }).then === "function"
+    ) {
       throw new UnsupportedEffectError(slot.phase, slotIndex);
     }
     slot.cleanup = (result as (() => void) | undefined) ?? null;
@@ -373,14 +380,16 @@ export function createStatefulReactShimAdapter(
   const statefulReactModule: Record<string, unknown> = {
     ...getReactShim("react")!,
     useState: <T>(initialState: T | (() => T)) => ctx.useState(initialState),
-    useEffect: (cb: () => void | (() => void), deps?: unknown[]) => ctx.useEffect(cb, deps),
-    useLayoutEffect: (cb: () => void | (() => void), deps?: unknown[]) => ctx.useLayoutEffect(cb, deps),
+    useEffect: (cb: () => void | (() => void), deps?: unknown[]) =>
+      ctx.useEffect(cb, deps),
+    useLayoutEffect: (cb: () => void | (() => void), deps?: unknown[]) =>
+      ctx.useLayoutEffect(cb, deps),
     default: undefined as unknown,
   };
   statefulReactModule["default"] = statefulReactModule;
 
   const shimRegistry: Record<string, Record<string, unknown>> = {
-    "react": statefulReactModule,
+    react: statefulReactModule,
     "react/jsx-runtime": getReactShim("react/jsx-runtime")!,
     "react/jsx-dev-runtime": getReactShim("react/jsx-dev-runtime")!,
   };
@@ -452,15 +461,17 @@ function executeRerenderScenario(
   try {
     moduleExports = loadModuleExports(ctx.fileForExec, [shimAdapter]);
   } catch (e: unknown) {
-    return { thrownError: buildErrorInfo(e) };
+    return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
 
   const hookFn = moduleExports[ctx.functionName];
   if (typeof hookFn !== "function") {
     return {
-      thrownError: {
+      status: "unsupported",
+      thrown_error: {
         error_type: "Error",
-        message: `Hook "${ctx.functionName}" not found in exports of ${ctx.fileForExec}. ` +
+        message:
+          `Hook "${ctx.functionName}" not found in exports of ${ctx.fileForExec}. ` +
           `Available exports: ${Object.keys(moduleExports).join(", ")}`,
         stack: null,
       },
@@ -479,7 +490,7 @@ function executeRerenderScenario(
   try {
     lastResult = hookFn(...ctx.inputs);
   } catch (e: unknown) {
-    return { thrownError: buildErrorInfo(e) };
+    return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
   renders.push({ render_index: 0, value: stripFunctions(lastResult) });
 
@@ -487,7 +498,7 @@ function executeRerenderScenario(
   try {
     hookCtx.flushEffects();
   } catch (e: unknown) {
-    return { thrownError: buildErrorInfo(e) };
+    return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
 
   // Action-rerender loop
@@ -508,7 +519,7 @@ function executeRerenderScenario(
     try {
       lastResult = hookFn(...ctx.inputs);
     } catch (e: unknown) {
-      return { thrownError: buildErrorInfo(e) };
+      return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
     }
     renders.push({ render_index: i + 1, value: stripFunctions(lastResult) });
 
@@ -516,7 +527,7 @@ function executeRerenderScenario(
     try {
       hookCtx.flushEffects();
     } catch (e: unknown) {
-      return { thrownError: buildErrorInfo(e) };
+      return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
     }
   }
 
@@ -524,7 +535,7 @@ function executeRerenderScenario(
     renders,
     rerender_count: renders.length - 1,
   };
-  return { returnValue: outcome };
+  return { status: "completed", return_value: outcome };
 }
 
 function createReactHookInvocationHook(): InvocationHook {
@@ -545,16 +556,18 @@ function createReactHookInvocationHook(): InvocationHook {
       try {
         moduleExports = loadModuleExports(ctx.fileForExec);
       } catch (e: unknown) {
-        return { thrownError: buildErrorInfo(e) };
+        return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
       }
 
       // 2. Resolve hook function
       const hookFn = moduleExports[ctx.functionName];
       if (typeof hookFn !== "function") {
         return {
-          thrownError: {
+          status: "unsupported",
+          thrown_error: {
             error_type: "Error",
-            message: `Hook "${ctx.functionName}" not found in exports of ${ctx.fileForExec}. ` +
+            message:
+              `Hook "${ctx.functionName}" not found in exports of ${ctx.fileForExec}. ` +
               `Available exports: ${Object.keys(moduleExports).join(", ")}`,
             stack: null,
           },
@@ -566,7 +579,7 @@ function createReactHookInvocationHook(): InvocationHook {
       try {
         mountResult = hookFn(...ctx.inputs);
       } catch (e: unknown) {
-        return { thrownError: buildErrorInfo(e) };
+        return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
       }
 
       // 4. If scenario is hook_callable_return, find and invoke callable
@@ -582,11 +595,11 @@ function createReactHookInvocationHook(): InvocationHook {
           }
         }
         // Return the mount result regardless — it describes hook behavior.
-        return { returnValue: mountResult };
+        return { status: "completed", return_value: mountResult };
       }
 
       // No recognized scenario — return mount result directly
-      return { returnValue: mountResult };
+      return { status: "completed", return_value: mountResult };
     },
   };
 }
