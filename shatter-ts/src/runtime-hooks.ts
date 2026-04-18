@@ -5,9 +5,8 @@ import * as ts from "typescript";
 import type {
   ExecutionAdapter,
   ExecutionProfile,
-  ErrorInfo,
   InvocationModel,
-  SideEffect,
+  InvocationOutcome,
 } from "./protocol.js";
 import type { ResolverAdapter } from "./executor.js";
 import { ADAPTER_ID_IMPORT_META_ENV } from "./runtime-hints.js";
@@ -31,7 +30,10 @@ export interface SandboxProvider {
 /** The non-direct InvocationModel variant. The direct variant short-circuits
  *  to the existing executeFunction/executeInstrumented paths and never reaches
  *  an InvocationHook. */
-export type AdapterInvocationModel = Extract<InvocationModel, { kind: "adapter" }>;
+export type AdapterInvocationModel = Extract<
+  InvocationModel,
+  { kind: "adapter" }
+>;
 
 /** Context handed to an InvocationHook describing the call to dispatch. */
 export interface InvocationContext {
@@ -41,21 +43,16 @@ export interface InvocationContext {
   readonly inputs: readonly unknown[];
   readonly capture: boolean;
 }
-
-/** Structured outcome an adapter-owned invocation produces. The fields ride
- *  back through existing ExecuteResponse fields — no new wire fields. */
-export interface InvocationOutcome {
-  readonly returnValue?: unknown;
-  readonly thrownError?: ErrorInfo;
-  readonly sideEffects?: ReadonlyArray<SideEffect>;
-}
+export type { InvocationOutcome } from "./protocol.js";
 
 /** Adapter-owned invocation hook. Mounts, scenario-drives, or otherwise
  *  invokes a target instead of calling the exported symbol directly.
  *  Resolved by `id`, which must equal `InvocationModel.adapter_id`. */
 export interface InvocationHook {
   readonly id: string;
-  invoke(context: InvocationContext): Promise<InvocationOutcome> | InvocationOutcome;
+  invoke(
+    context: InvocationContext,
+  ): Promise<InvocationOutcome> | InvocationOutcome;
 }
 
 export interface RuntimeHooks {
@@ -77,9 +74,12 @@ function mergeRuntimeHooks(
   next: Partial<RuntimeHooks> | null | undefined,
 ): void {
   if (!next) return;
-  if (next.resolver_adapters) target.resolver_adapters.push(...next.resolver_adapters);
-  if (next.sandbox_providers) target.sandbox_providers.push(...next.sandbox_providers);
-  if (next.invocation_hooks) target.invocation_hooks.push(...next.invocation_hooks);
+  if (next.resolver_adapters)
+    target.resolver_adapters.push(...next.resolver_adapters);
+  if (next.sandbox_providers)
+    target.sandbox_providers.push(...next.sandbox_providers);
+  if (next.invocation_hooks)
+    target.invocation_hooks.push(...next.invocation_hooks);
 }
 
 /** Pure dispatcher selection used both by the execute handler and by
@@ -124,10 +124,14 @@ function findTsconfigPath(context: RuntimeHookContext): string | null {
     return null;
   }
 
-  return ts.findConfigFile(searchDir, ts.sys.fileExists, "tsconfig.json") ?? null;
+  return (
+    ts.findConfigFile(searchDir, ts.sys.fileExists, "tsconfig.json") ?? null
+  );
 }
 
-function getTsconfigResolutionState(tsconfigPath: string): TsconfigResolutionState {
+function getTsconfigResolutionState(
+  tsconfigPath: string,
+): TsconfigResolutionState {
   const cached = tsconfigStateCache.get(tsconfigPath);
   if (cached) {
     return cached;
@@ -149,7 +153,9 @@ function getTsconfigResolutionState(tsconfigPath: string): TsconfigResolutionSta
     throw new Error(`tsconfig-paths adapter could not parse ${tsconfigPath}`);
   }
   if (!parsed.options.paths || Object.keys(parsed.options.paths).length === 0) {
-    throw new Error(`tsconfig-paths adapter requires compilerOptions.paths in ${tsconfigPath}`);
+    throw new Error(
+      `tsconfig-paths adapter requires compilerOptions.paths in ${tsconfigPath}`,
+    );
   }
 
   const state = { compilerOptions: parsed.options };
@@ -187,7 +193,10 @@ function createTsconfigPathsFactory(): RuntimeHookFactory {
               }
 
               const resolvedFile = resolved.resolvedFileName;
-              if (!path.isAbsolute(resolvedFile) || resolvedFile.endsWith(".d.ts")) {
+              if (
+                !path.isAbsolute(resolvedFile) ||
+                resolvedFile.endsWith(".d.ts")
+              ) {
                 return { kind: "continue" };
               }
               if (resolvedFile.includes(`${path.sep}node_modules${path.sep}`)) {
@@ -222,8 +231,12 @@ function createImportMetaEnvFactory(): RuntimeHookFactory {
   return {
     id: ADAPTER_ID_IMPORT_META_ENV,
     createRuntimeHooks(adapter) {
-      const userEnv = (adapter.options as ImportMetaEnvOptions | undefined)?.env ?? {};
-      const mergedEnv: Record<string, string | boolean> = { ...VITE_ENV_DEFAULTS, ...userEnv };
+      const userEnv =
+        (adapter.options as ImportMetaEnvOptions | undefined)?.env ?? {};
+      const mergedEnv: Record<string, string | boolean> = {
+        ...VITE_ENV_DEFAULTS,
+        ...userEnv,
+      };
 
       return {
         resolver_adapters: [],
@@ -258,12 +271,18 @@ export function resolveRuntimeHooks(
   context: RuntimeHookContext,
   factories: readonly RuntimeHookFactory[] = DEFAULT_RUNTIME_HOOK_FACTORIES,
 ): RuntimeHooks {
-  const hooks: RuntimeHooks = { resolver_adapters: [], sandbox_providers: [], invocation_hooks: [] };
+  const hooks: RuntimeHooks = {
+    resolver_adapters: [],
+    sandbox_providers: [],
+    invocation_hooks: [],
+  };
   if (!executionProfile) {
     return hooks;
   }
 
-  const factoryById = new Map(factories.map((factory) => [factory.id, factory]));
+  const factoryById = new Map(
+    factories.map((factory) => [factory.id, factory]),
+  );
   for (const adapter of executionProfile.adapters) {
     if (adapter.apply === "disabled") {
       continue;
@@ -271,7 +290,9 @@ export function resolveRuntimeHooks(
 
     const factory = factoryById.get(adapter.id);
     if (!factory) {
-      throw new Error(`execution adapter not supported by TypeScript frontend: ${adapter.id}`);
+      throw new Error(
+        `execution adapter not supported by TypeScript frontend: ${adapter.id}`,
+      );
     }
 
     mergeRuntimeHooks(hooks, factory.createRuntimeHooks?.(adapter, context));

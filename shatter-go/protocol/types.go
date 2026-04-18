@@ -66,9 +66,9 @@ const (
 
 // ExecutionAdapter is an opaque adapter descriptor passed through to frontends.
 type ExecutionAdapter struct {
-	ID      string                `json:"id"`
+	ID      string                 `json:"id"`
 	Apply   *ExecutionAdapterApply `json:"apply,omitempty"`
-	Options *json.RawMessage      `json:"options,omitempty"`
+	Options *json.RawMessage       `json:"options,omitempty"`
 }
 
 // ExecutionProfile is an ordered list of opaque execution adapter descriptors.
@@ -86,9 +86,9 @@ type Request struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 
 	// Analyze fields
-	File        string  `json:"file,omitempty"`
-	Function    *string `json:"function,omitempty"`
-	ProjectRoot *string `json:"project_root,omitempty"`
+	File             string            `json:"file,omitempty"`
+	Function         *string           `json:"function,omitempty"`
+	ProjectRoot      *string           `json:"project_root,omitempty"`
 	ExecutionProfile *ExecutionProfile `json:"execution_profile,omitempty"`
 
 	// Instrument/Execute fields
@@ -195,10 +195,10 @@ func (f *ObjectField) UnmarshalJSON(data []byte) error {
 // TypeInfo represents a type in the Shatter type system.
 type TypeInfo struct {
 	Kind          string                 `json:"kind"`
-	Label         string                 `json:"label,omitempty"`           // opaque
-	StaticOpacity string                 `json:"static_opacity,omitempty"`  // static analysis opacity reason
-	MediumOpacity string                 `json:"medium_opacity,omitempty"`  // medium-confidence opacity signal
-	Element       *TypeInfo              `json:"element,omitempty"`         // array
+	Label         string                 `json:"label,omitempty"`          // opaque
+	StaticOpacity string                 `json:"static_opacity,omitempty"` // static analysis opacity reason
+	MediumOpacity string                 `json:"medium_opacity,omitempty"` // medium-confidence opacity signal
+	Element       *TypeInfo              `json:"element,omitempty"`        // array
 	Fields        []ObjectField          `json:"fields,omitempty"`         // object
 	Variants      []TypeInfo             `json:"variants,omitempty"`       // union
 	Inner         *TypeInfo              `json:"inner,omitempty"`          // nullable, complex wrapper
@@ -296,10 +296,10 @@ type FunctionAnalysis struct {
 
 // InvocationModel describes how a discovered target should be invoked.
 type InvocationModel struct {
-	Kind            string            `json:"kind"`
-	AdapterID       string            `json:"adapter_id,omitempty"`
-	SyntheticParams []ParamInfo       `json:"synthetic_params,omitempty"`
-	ScenarioSchema  *json.RawMessage  `json:"scenario_schema,omitempty"`
+	Kind            string           `json:"kind"`
+	AdapterID       string           `json:"adapter_id,omitempty"`
+	SyntheticParams []ParamInfo      `json:"synthetic_params,omitempty"`
+	ScenarioSchema  *json.RawMessage `json:"scenario_schema,omitempty"`
 }
 
 // AdapterRelation links an adapter hint to another adapter.
@@ -354,10 +354,10 @@ type ConditionOutcome struct {
 
 // BranchDecision records which way a branch was taken during execution.
 type BranchDecision struct {
-	BranchID   int                `json:"branch_id"`
-	Line       int                `json:"line"`
-	Taken      bool               `json:"taken"`
-	Constraint *SymConstraint     `json:"constraint"`
+	BranchID   int            `json:"branch_id"`
+	Line       int            `json:"line"`
+	Taken      bool           `json:"taken"`
+	Constraint *SymConstraint `json:"constraint"`
 	// Conditions holds per-condition outcomes for MC/DC analysis.
 	// Present only when MC/DC mode is enabled and the decision is compound.
 	Conditions []ConditionOutcome `json:"conditions,omitempty"`
@@ -371,15 +371,15 @@ type LoopBodyState struct {
 
 // SymExpr is a symbolic expression representing a constraint on inputs.
 type SymExpr struct {
-	Kind     string    `json:"kind"`
-	Name     string    `json:"name,omitempty"`
-	Path     []string  `json:"path"`
-	Type     string    `json:"type,omitempty"`
-	Value    any       `json:"value,omitempty"`
-	Op       string    `json:"op,omitempty"`
-	Left     *SymExpr  `json:"left,omitempty"`
-	Right    *SymExpr  `json:"right,omitempty"`
-	Operand  *SymExpr  `json:"operand,omitempty"`
+	Kind      string    `json:"kind"`
+	Name      string    `json:"name,omitempty"`
+	Path      []string  `json:"path"`
+	Type      string    `json:"type,omitempty"`
+	Value     any       `json:"value,omitempty"`
+	Op        string    `json:"op,omitempty"`
+	Left      *SymExpr  `json:"left,omitempty"`
+	Right     *SymExpr  `json:"right,omitempty"`
+	Operand   *SymExpr  `json:"operand,omitempty"`
 	Receiver  *SymExpr  `json:"receiver,omitempty"`
 	Args      []SymExpr `json:"args"`
 	Condition *SymExpr  `json:"condition,omitempty"`
@@ -434,6 +434,27 @@ type ErrorInfo struct {
 	Message       string  `json:"message"`
 	Stack         *string `json:"stack"`
 	ErrorCategory *string `json:"error_category,omitempty"`
+}
+
+// OutcomeStatus classifies the result of a single invocation attempt.
+type OutcomeStatus string
+
+const (
+	OutcomeStatusCompleted             OutcomeStatus = "completed"
+	OutcomeStatusCompletedWithFindings OutcomeStatus = "completed_with_findings"
+	OutcomeStatusUnsupported           OutcomeStatus = "unsupported"
+	OutcomeStatusBuildFailed           OutcomeStatus = "build_failed"
+	OutcomeStatusRuntimeFailed         OutcomeStatus = "runtime_failed"
+	OutcomeStatusTimedOut              OutcomeStatus = "timed_out"
+	OutcomeStatusSkippedByPolicy       OutcomeStatus = "skipped_by_policy"
+)
+
+// InvocationOutcome is the reusable protocol contract for one invocation result.
+type InvocationOutcome struct {
+	Status      OutcomeStatus   `json:"status"`
+	ReturnValue json.RawMessage `json:"return_value,omitempty"`
+	ThrownError *ErrorInfo      `json:"thrown_error,omitempty"`
+	SideEffects []SideEffect    `json:"side_effects,omitempty"`
 }
 
 // TruncationInfo contains metadata about truncation applied to captured side effects.

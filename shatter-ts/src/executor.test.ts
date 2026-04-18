@@ -48,9 +48,14 @@ function asCallable(v: unknown): (...args: unknown[]) => unknown {
 }
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
-const EXAMPLES_ROOT = process.env.SHATTER_EXAMPLES_DIR ?? path.join(os.tmpdir(), "shatter-examples-main");
+const EXAMPLES_ROOT =
+  process.env.SHATTER_EXAMPLES_DIR ??
+  path.join(os.tmpdir(), "shatter-examples-main");
 const EXAMPLES_DIR = path.join(EXAMPLES_ROOT, "standalone", "ts");
-const RESOLVER_CHAIN_FIXTURE = path.join(FIXTURES_DIR, "resolver-adapter-chain.ts");
+const RESOLVER_CHAIN_FIXTURE = path.join(
+  FIXTURES_DIR,
+  "resolver-adapter-chain.ts",
+);
 
 beforeEach(() => {
   clearModuleCache();
@@ -100,7 +105,11 @@ describe("executeFunction with memory-allocating function", () => {
   });
 
   it("shows measurable heap delta for memory-allocating function", async () => {
-    const result = await executeFunction(allocatorFixture, "allocateArrays", []);
+    const result = await executeFunction(
+      allocatorFixture,
+      "allocateArrays",
+      [],
+    );
     expect(result.return_value).toBe(1000);
     // The function allocates ~8MB (1000 arrays * 1000 numbers * 8 bytes).
     // heap_used_bytes may be 0 if GC reclaims during execution, but
@@ -115,7 +124,11 @@ describe("executeInstrumented performance metrics", () => {
   it("reports plausible metrics for instrumented execution", async () => {
     const exampleFile = path.join(EXAMPLES_DIR, "01-arithmetic.ts");
     const source = fs.readFileSync(exampleFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "classifyNumber",
+      exampleFile,
+    );
 
     if ("error" in instrumentResult) {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
@@ -154,14 +167,17 @@ describe("buildExecuteResponse", () => {
     expect(response.performance.heap_used_bytes).toBeGreaterThanOrEqual(0);
     expect(response.performance.heap_allocated_bytes).toBeGreaterThanOrEqual(0);
   });
-
 });
 
 const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
 
 describe("executeFunction side effect capture", () => {
   it("captures console.log and console.warn output", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42]);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "logsAndReturns",
+      [42],
+    );
 
     expect(result.return_value).toBe("done: 42");
     expect(result.thrown_error).toBeNull();
@@ -183,7 +199,9 @@ describe("executeFunction side effect capture", () => {
   });
 
   it("captures thrown error as both thrown_error and side effect", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["boom"]);
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", [
+      "boom",
+    ]);
 
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.error_type).toBe("Error");
@@ -212,7 +230,11 @@ describe("executeFunction side effect capture", () => {
   });
 
   it("captures all console levels", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsMultipleLevels", []);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "logsMultipleLevels",
+      [],
+    );
 
     const consoleSideEffects = result.side_effects.filter(
       (se: SideEffect) => se.kind === "console_output",
@@ -227,7 +249,11 @@ describe("executeFunction side effect capture", () => {
   });
 
   it("captures custom error types", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsCustomError", []);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "throwsCustomError",
+      [],
+    );
 
     expect(result.thrown_error!.error_type).toBe("TypeError");
     expect(result.thrown_error!.message).toBe("custom type error");
@@ -244,7 +270,11 @@ describe("executeFunction side effect capture", () => {
   });
 
   it("returns empty side_effects for pure functions", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "noSideEffects", [1, 2]);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "noSideEffects",
+      [1, 2],
+    );
 
     expect(result.return_value).toBe(3);
     expect(result.thrown_error).toBeNull();
@@ -276,7 +306,11 @@ describe("executeInstrumented side effect capture", () => {
 
   it("captures console output in instrumented execution", async () => {
     const instrumentedSource = getInstrumentedSource("logsAndReturns");
-    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99]);
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "logsAndReturns",
+      [99],
+    );
 
     expect(result.return_value).toBe("done: 99");
 
@@ -297,7 +331,11 @@ describe("executeInstrumented side effect capture", () => {
 
   it("captures thrown error and console output in instrumented execution", async () => {
     const instrumentedSource = getInstrumentedSource("throwsError");
-    const result = await executeInstrumented(instrumentedSource, "throwsError", ["instrumented boom"]);
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "throwsError",
+      ["instrumented boom"],
+    );
 
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.message).toBe("instrumented boom");
@@ -315,7 +353,11 @@ describe("executeInstrumented side effect capture", () => {
 
   it("detects module-level variable changes", async () => {
     const instrumentedSource = getInstrumentedSource("incrementCounter");
-    const result = await executeInstrumented(instrumentedSource, "incrementCounter", []);
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "incrementCounter",
+      [],
+    );
 
     expect(result.return_value).toBe(1);
 
@@ -343,7 +385,11 @@ describe("intra-package module resolution", () => {
   it("executeInstrumented resolves relative imports from the source file", async () => {
     const depsFixture = path.join(FIXTURES_DIR, "dependencies.ts");
     const source = fs.readFileSync(depsFixture, "utf-8");
-    const instrumentResult = instrumentFunction(source, "usesExternal", depsFixture);
+    const instrumentResult = instrumentFunction(
+      source,
+      "usesExternal",
+      depsFixture,
+    );
 
     if ("error" in instrumentResult) {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
@@ -417,7 +463,11 @@ export function readVirtualValue(): number {
 
 describe("buildExecuteResponse side effects", () => {
   it("passes side_effects through to the response", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [7]);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "logsAndReturns",
+      [7],
+    );
     const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     expect(response.side_effects.length).toBeGreaterThan(0);
@@ -425,7 +475,9 @@ describe("buildExecuteResponse side effects", () => {
   });
 
   it("acceptance: function with console.log and thrown error has both recorded", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["fail"]);
+    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", [
+      "fail",
+    ]);
     const response = buildExecuteResponse(1, PROTOCOL_VERSION, result);
 
     const hasConsoleOutput = response.side_effects.some(
@@ -569,7 +621,11 @@ describe("sandbox globals", () => {
   const abortSignalFixture = path.join(FIXTURES_DIR, "abort-signal.ts");
 
   it("AbortController and AbortSignal are available in sandbox (str-ed25)", async () => {
-    const result = await executeFunction(abortSignalFixture, "useAbortSignal", []);
+    const result = await executeFunction(
+      abortSignalFixture,
+      "useAbortSignal",
+      [],
+    );
     expect(result.return_value).toBe("not-aborted");
   });
 });
@@ -606,16 +662,32 @@ describe("truncation", () => {
     const { effects: result, truncation } = truncateSideEffects(effects, 5, 3);
     // 5 head + 1 marker + 3 tail = 9
     expect(result).toHaveLength(9);
-    expect(result[0]).toEqual({ kind: "console_output", level: "log", message: "line 0" });
-    expect(result[4]).toEqual({ kind: "console_output", level: "log", message: "line 4" });
+    expect(result[0]).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "line 0",
+    });
+    expect(result[4]).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "line 4",
+    });
     const marker = result[5];
     expect(marker).toBeDefined();
     expect(marker!.kind).toBe("console_output");
     if (marker !== undefined && marker.kind === "console_output") {
       expect(marker.message).toMatch(/truncated 92 lines/);
     }
-    expect(result[6]).toEqual({ kind: "console_output", level: "log", message: "line 97" });
-    expect(result[8]).toEqual({ kind: "console_output", level: "log", message: "line 99" });
+    expect(result[6]).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "line 97",
+    });
+    expect(result[8]).toEqual({
+      kind: "console_output",
+      level: "log",
+      message: "line 99",
+    });
     expect(truncation?.was_truncated).toBe(true);
     expect(truncation?.original_lines).toBe(100);
   });
@@ -631,7 +703,7 @@ describe("truncation", () => {
       })),
     ];
     const { effects: result } = truncateSideEffects(effects, 5, 3);
-    expect(result.some(e => e.kind === "global_mutation")).toBe(true);
+    expect(result.some((e) => e.kind === "global_mutation")).toBe(true);
   });
 });
 
@@ -657,7 +729,11 @@ describe("TSX support", () => {
   it("instruments and executes TSX source with branches", async () => {
     const tsxFile = path.join(FIXTURES_DIR, "component.tsx");
     const source = fs.readFileSync(tsxFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "greetingLabel", tsxFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "greetingLabel",
+      tsxFile,
+    );
 
     if ("error" in instrumentResult) {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
@@ -781,7 +857,11 @@ describe("React component execution", () => {
 
   it("instruments and tracks branches in a React component", async () => {
     const source = fs.readFileSync(REACT_FIXTURE, "utf-8");
-    const instrumentResult = instrumentFunction(source, "StatusCard", REACT_FIXTURE);
+    const instrumentResult = instrumentFunction(
+      source,
+      "StatusCard",
+      REACT_FIXTURE,
+    );
 
     if ("error" in instrumentResult) {
       throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
@@ -823,7 +903,11 @@ describe("scope events in execution", () => {
     const instrumentResult = instrumentFunction(source, "countdown");
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
-    const result = await executeInstrumented(instrumentResult.instrumentedSource, "countdown", [3]);
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "countdown",
+      [3],
+    );
     expect(result.return_value).toBe(6);
     expect(result.scope_events).toBeDefined();
     expect(result.scope_events.length).toBeGreaterThan(0);
@@ -850,7 +934,11 @@ describe("scope events in execution", () => {
     const instrumentResult = instrumentFunction(source, "doublePositive");
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
-    const result = await executeInstrumented(instrumentResult.instrumentedSource, "doublePositive", [[1, -2, 3]]);
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "doublePositive",
+      [[1, -2, 3]],
+    );
     expect(result.return_value).toEqual([2, 0, 6]);
     expect(result.scope_events).toBeDefined();
 
@@ -865,15 +953,26 @@ describe("scope events in execution", () => {
     const raw = {
       return_value: 42,
       thrown_error: null,
-      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      performance: {
+        wall_time_ms: 1,
+        cpu_time_us: 1000,
+        heap_used_bytes: 0,
+        heap_allocated_bytes: 0,
+      },
       branch_path: [],
       path_constraints: [],
       lines_executed: [],
       side_effects: [],
       calls_to_external: [],
       scope_events: [
-        { type: "scope" as const, event: { kind: "call_enter" as const, call_site_id: 0 } },
-        { type: "scope" as const, event: { kind: "call_exit" as const, call_site_id: 0 } },
+        {
+          type: "scope" as const,
+          event: { kind: "call_enter" as const, call_site_id: 0 },
+        },
+        {
+          type: "scope" as const,
+          event: { kind: "call_exit" as const, call_site_id: 0 },
+        },
       ],
       loop_body_states: [],
       discovered_dependencies: [],
@@ -883,7 +982,10 @@ describe("scope events in execution", () => {
     };
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
-    expect(response.scope_events![0]).toEqual({ type: "scope", event: { kind: "call_enter", call_site_id: 0 } });
+    expect(response.scope_events![0]).toEqual({
+      type: "scope",
+      event: { kind: "call_enter", call_site_id: 0 },
+    });
   });
 
   it("emits loop_body_states for supported counted loops", async () => {
@@ -947,12 +1049,16 @@ describe("throw_error mock behavior", () => {
         return "no mock";
       }
     `;
-    const mocks = [{
-      symbol: "mymod:myFunc",
-      return_values: [{ code: "ENOENT", message: "No such file or directory" }],
-      should_track_calls: false,
-      default_behavior: "throw_error" as const,
-    }];
+    const mocks = [
+      {
+        symbol: "mymod:myFunc",
+        return_values: [
+          { code: "ENOENT", message: "No such file or directory" },
+        ],
+        should_track_calls: false,
+        default_behavior: "throw_error" as const,
+      },
+    ];
 
     const result = await executeInstrumented(source, "callMock", [], mocks);
     expect(result.return_value).toBe("No such file or directory");
@@ -968,12 +1074,14 @@ describe("throw_error mock behavior", () => {
         return "no mock";
       }
     `;
-    const mocks = [{
-      symbol: "lib:doStuff",
-      return_values: [] as unknown[],
-      should_track_calls: false,
-      default_behavior: "throw_error" as const,
-    }];
+    const mocks = [
+      {
+        symbol: "lib:doStuff",
+        return_values: [] as unknown[],
+        should_track_calls: false,
+        default_behavior: "throw_error" as const,
+      },
+    ];
 
     const result = await executeInstrumented(source, "callMock", [], mocks);
     expect(result.return_value).toBe("Mock error: lib:doStuff");
@@ -986,12 +1094,14 @@ describe("throw_error mock behavior", () => {
         return typeof fn === "function";
       }
     `;
-    const mocks = [{
-      symbol: "net:fetch",
-      return_values: [{ status: 500, error: "Internal Server Error" }],
-      should_track_calls: true,
-      default_behavior: "throw_error" as const,
-    }];
+    const mocks = [
+      {
+        symbol: "net:fetch",
+        return_values: [{ status: 500, error: "Internal Server Error" }],
+        should_track_calls: true,
+        default_behavior: "throw_error" as const,
+      },
+    ];
 
     const result = await executeInstrumented(source, "callMock", [], mocks);
     expect(result.return_value).toBe(true);
@@ -1006,9 +1116,16 @@ describe("execution-time dep gap detection", () => {
         return path.join(a, b);
       }
     `;
-    const result = await executeInstrumented(source, "joinPaths", ["foo", "bar"], []);
+    const result = await executeInstrumented(
+      source,
+      "joinPaths",
+      ["foo", "bar"],
+      [],
+    );
     expect(result.discovered_dependencies.length).toBeGreaterThanOrEqual(1);
-    const pathDep = result.discovered_dependencies.find(d => d.source_module === "path");
+    const pathDep = result.discovered_dependencies.find(
+      (d) => d.source_module === "path",
+    );
     expect(pathDep).toBeDefined();
     expect(pathDep!.kind).toBe("unmocked_import");
     expect(pathDep!.is_subprocess_spawn).toBe(false);
@@ -1022,7 +1139,9 @@ describe("execution-time dep gap detection", () => {
       }
     `;
     const result = await executeInstrumented(source, "getVersion", [], []);
-    const cpDep = result.discovered_dependencies.find(d => d.source_module === "child_process");
+    const cpDep = result.discovered_dependencies.find(
+      (d) => d.source_module === "child_process",
+    );
     expect(cpDep).toBeDefined();
     expect(cpDep!.kind).toBe("subprocess_spawn");
     expect(cpDep!.is_subprocess_spawn).toBe(true);
@@ -1035,14 +1154,18 @@ describe("execution-time dep gap detection", () => {
         return typeof fs.readFileSync;
       }
     `;
-    const mocks = [{
-      symbol: "fs:readFileSync",
-      return_values: ["fake"],
-      should_track_calls: false,
-      default_behavior: "repeat_last" as const,
-    }];
+    const mocks = [
+      {
+        symbol: "fs:readFileSync",
+        return_values: ["fake"],
+        should_track_calls: false,
+        default_behavior: "repeat_last" as const,
+      },
+    ];
     const result = await executeInstrumented(source, "readIt", [], mocks);
-    const fsDep = result.discovered_dependencies.find(d => d.source_module === "fs");
+    const fsDep = result.discovered_dependencies.find(
+      (d) => d.source_module === "fs",
+    );
     expect(fsDep).toBeUndefined();
   });
 
@@ -1069,7 +1192,7 @@ describe("stubbed_import fallback for unresolvable modules", () => {
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("function");
     const dep = result.discovered_dependencies.find(
-      d => d.source_module === "nonexistent-module-xyz-stub-test",
+      (d) => d.source_module === "nonexistent-module-xyz-stub-test",
     );
     expect(dep).toBeDefined();
     expect(dep!.kind).toBe("stubbed_import");
@@ -1110,7 +1233,9 @@ describe("stubbed_import fallback for unresolvable modules", () => {
     `;
     const result = await executeInstrumented(source, "joinIt", [], []);
     expect(result.thrown_error).toBeNull();
-    const stubbedDep = result.discovered_dependencies.find(d => d.kind === "stubbed_import");
+    const stubbedDep = result.discovered_dependencies.find(
+      (d) => d.kind === "stubbed_import",
+    );
     expect(stubbedDep).toBeUndefined();
   });
 
@@ -1122,7 +1247,7 @@ describe("stubbed_import fallback for unresolvable modules", () => {
     `;
     const result = await executeInstrumented(source, "run", [], []);
     const deps = result.discovered_dependencies.filter(
-      d => d.source_module === "nonexistent-dedup-xyz-stub-test",
+      (d) => d.source_module === "nonexistent-dedup-xyz-stub-test",
     );
     expect(deps).toHaveLength(1);
   });
@@ -1134,15 +1259,17 @@ describe("stubbed_import fallback for unresolvable modules", () => {
         return typeof fake.anything;
       }
     `;
-    const resolverAdapters: ResolverAdapter[] = [{
-      id: "test.stub",
-      resolveModule({ module_id }) {
-        if (module_id === "adapter-controlled-stub") {
-          return { kind: "stub" };
-        }
-        return { kind: "continue" };
+    const resolverAdapters: ResolverAdapter[] = [
+      {
+        id: "test.stub",
+        resolveModule({ module_id }) {
+          if (module_id === "adapter-controlled-stub") {
+            return { kind: "stub" };
+          }
+          return { kind: "continue" };
+        },
       },
-    }];
+    ];
 
     const result = await executeInstrumented(
       source,
@@ -1216,7 +1343,9 @@ describe("stubbed_import fallback for unresolvable modules", () => {
 
   it("stub supports instanceof without throwing", () => {
     const stub = createUnresolvableModuleStub("test-module");
-    expect(() => ({} instanceof (stub as unknown as { new(): unknown }))).not.toThrow();
+    expect(
+      () => ({}) instanceof (stub as unknown as { new (): unknown }),
+    ).not.toThrow();
   });
 
   it("stub 'in' operator returns true for any property", () => {
@@ -1228,12 +1357,16 @@ describe("stubbed_import fallback for unresolvable modules", () => {
 
   it("stub property assignment does not throw", () => {
     const stub = createUnresolvableModuleStub("test-module");
-    expect(() => { (stub as Record<string, unknown>).options = { timeout: 5000 }; }).not.toThrow();
+    expect(() => {
+      (stub as Record<string, unknown>).options = { timeout: 5000 };
+    }).not.toThrow();
   });
 
   it("stub property deletion does not throw", () => {
     const stub = createUnresolvableModuleStub("test-module");
-    expect(() => { delete (stub as Record<string, unknown>).foo; }).not.toThrow();
+    expect(() => {
+      delete (stub as Record<string, unknown>).foo;
+    }).not.toThrow();
   });
 
   it("stub Object.keys returns empty array", () => {
@@ -1270,19 +1403,27 @@ describe("stubbed_import fallback for unresolvable modules", () => {
 
 describe("classifyConnectionFailure", () => {
   it("classifies ECONNREFUSED as connection_refused", () => {
-    expect(classifyConnectionFailure("connect ECONNREFUSED 127.0.0.1:5432")).toBe("connection_refused");
+    expect(
+      classifyConnectionFailure("connect ECONNREFUSED 127.0.0.1:5432"),
+    ).toBe("connection_refused");
   });
 
   it("classifies 'connection refused' as connection_refused", () => {
-    expect(classifyConnectionFailure("Error: connection refused")).toBe("connection_refused");
+    expect(classifyConnectionFailure("Error: connection refused")).toBe(
+      "connection_refused",
+    );
   });
 
   it("classifies ENOTFOUND as dns_failure", () => {
-    expect(classifyConnectionFailure("getaddrinfo ENOTFOUND api.example.com")).toBe("dns_failure");
+    expect(
+      classifyConnectionFailure("getaddrinfo ENOTFOUND api.example.com"),
+    ).toBe("dns_failure");
   });
 
   it("classifies EAI_AGAIN as dns_failure", () => {
-    expect(classifyConnectionFailure("EAI_AGAIN dns lookup failed")).toBe("dns_failure");
+    expect(classifyConnectionFailure("EAI_AGAIN dns lookup failed")).toBe(
+      "dns_failure",
+    );
   });
 
   it("classifies getaddrinfo as dns_failure", () => {
@@ -1290,11 +1431,15 @@ describe("classifyConnectionFailure", () => {
   });
 
   it("classifies EAUTH as auth_error", () => {
-    expect(classifyConnectionFailure("EAUTH: authentication required")).toBe("auth_error");
+    expect(classifyConnectionFailure("EAUTH: authentication required")).toBe(
+      "auth_error",
+    );
   });
 
   it("classifies 401 Unauthorized as auth_error", () => {
-    expect(classifyConnectionFailure("HTTP 401 Unauthorized")).toBe("auth_error");
+    expect(classifyConnectionFailure("HTTP 401 Unauthorized")).toBe(
+      "auth_error",
+    );
   });
 
   it("classifies 403 Forbidden as auth_error", () => {
@@ -1306,7 +1451,9 @@ describe("classifyConnectionFailure", () => {
   });
 
   it("classifies ESOCKETTIMEDOUT as timeout", () => {
-    expect(classifyConnectionFailure("ESOCKETTIMEDOUT on request")).toBe("timeout");
+    expect(classifyConnectionFailure("ESOCKETTIMEDOUT on request")).toBe(
+      "timeout",
+    );
   });
 
   it("classifies 'timed out' as timeout", () => {
@@ -1314,7 +1461,9 @@ describe("classifyConnectionFailure", () => {
   });
 
   it("returns null for application errors", () => {
-    expect(classifyConnectionFailure("ValidationError: invalid input")).toBeNull();
+    expect(
+      classifyConnectionFailure("ValidationError: invalid input"),
+    ).toBeNull();
   });
 
   it("returns null for generic errors", () => {
@@ -1327,13 +1476,17 @@ describe("classifyConnectionFailure", () => {
 
   it("covers all CONN_REFUSED_PATTERNS", () => {
     for (const pattern of CONN_REFUSED_PATTERNS) {
-      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("connection_refused");
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe(
+        "connection_refused",
+      );
     }
   });
 
   it("covers all DNS_FAILURE_PATTERNS", () => {
     for (const pattern of DNS_FAILURE_PATTERNS) {
-      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe("dns_failure");
+      expect(classifyConnectionFailure(`error: ${pattern}`)).toBe(
+        "dns_failure",
+      );
     }
   });
 
@@ -1367,7 +1520,12 @@ describe("buildExecuteResponse includes connection_failures", () => {
     const rawResult = {
       return_value: 42,
       thrown_error: null,
-      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      performance: {
+        wall_time_ms: 1,
+        cpu_time_us: 1000,
+        heap_used_bytes: 0,
+        heap_allocated_bytes: 0,
+      },
       branch_path: [],
       path_constraints: [],
       lines_executed: [],
@@ -1388,7 +1546,12 @@ describe("buildExecuteResponse includes connection_failures", () => {
     const rawResult = {
       return_value: null,
       thrown_error: null,
-      performance: { wall_time_ms: 1, cpu_time_us: 1000, heap_used_bytes: 0, heap_allocated_bytes: 0 },
+      performance: {
+        wall_time_ms: 1,
+        cpu_time_us: 1000,
+        heap_used_bytes: 0,
+        heap_allocated_bytes: 0,
+      },
       branch_path: [],
       path_constraints: [],
       lines_executed: [],
@@ -1398,14 +1561,22 @@ describe("buildExecuteResponse includes connection_failures", () => {
       loop_body_states: [],
       discovered_dependencies: [],
       connection_failures: [
-        { symbol: "pg:query", error_kind: "connection_refused" as const, message: "ECONNREFUSED" },
+        {
+          symbol: "pg:query",
+          error_kind: "connection_refused" as const,
+          message: "ECONNREFUSED",
+        },
       ],
       runtime_crypto_boundaries: [],
       adapter_hints: [],
     };
     const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
     expect(resp.connection_failures).toEqual([
-      { symbol: "pg:query", error_kind: "connection_refused", message: "ECONNREFUSED" },
+      {
+        symbol: "pg:query",
+        error_kind: "connection_refused",
+        message: "ECONNREFUSED",
+      },
     ]);
   });
 });
@@ -1418,11 +1589,12 @@ describe("buildRuntimeCryptoBoundary", () => {
   it("extracts algorithm, key, and iv from createDecipheriv arguments", () => {
     const key = Buffer.from("0123456789abcdef0123456789abcdef", "utf-8");
     const iv = Buffer.from("0123456789abcdef", "utf-8");
-    const result = buildRuntimeCryptoBoundary("cb-0", "decrypt", "createDecipheriv", [
-      "aes-256-cbc",
-      key,
-      iv,
-    ]);
+    const result = buildRuntimeCryptoBoundary(
+      "cb-0",
+      "decrypt",
+      "createDecipheriv",
+      ["aes-256-cbc", key, iv],
+    );
     expect(result.boundary_id).toBe("cb-0");
     expect(result.kind).toBe("decrypt");
     expect(result.function_name).toBe("createDecipheriv");
@@ -1434,10 +1606,12 @@ describe("buildRuntimeCryptoBoundary", () => {
 
   it("extracts ciphertext_param_index for privateDecrypt", () => {
     const ciphertext = Buffer.from("encrypted-data");
-    const result = buildRuntimeCryptoBoundary("cb-1", "decrypt", "privateDecrypt", [
-      { key: "pem-key" },
-      ciphertext,
-    ]);
+    const result = buildRuntimeCryptoBoundary(
+      "cb-1",
+      "decrypt",
+      "privateDecrypt",
+      [{ key: "pem-key" }, ciphertext],
+    );
     expect(result.kind).toBe("decrypt");
     expect(result.function_name).toBe("privateDecrypt");
     expect(result.ciphertext_param_index).toBe(1);
@@ -1445,7 +1619,12 @@ describe("buildRuntimeCryptoBoundary", () => {
   });
 
   it("returns boundary with only required fields when no param roles match", () => {
-    const result = buildRuntimeCryptoBoundary("cb-2", "encrypt", "unknownCrypto", []);
+    const result = buildRuntimeCryptoBoundary(
+      "cb-2",
+      "encrypt",
+      "unknownCrypto",
+      [],
+    );
     expect(result.boundary_id).toBe("cb-2");
     expect(result.kind).toBe("encrypt");
     expect(result.function_name).toBe("unknownCrypto");
@@ -1456,11 +1635,12 @@ describe("buildRuntimeCryptoBoundary", () => {
   });
 
   it("handles string key/iv by base64-encoding as binary", () => {
-    const result = buildRuntimeCryptoBoundary("cb-3", "decrypt", "createDecipheriv", [
-      "aes-128-gcm",
-      "rawkeystring",
-      "rawivstring",
-    ]);
+    const result = buildRuntimeCryptoBoundary(
+      "cb-3",
+      "decrypt",
+      "createDecipheriv",
+      ["aes-128-gcm", "rawkeystring", "rawivstring"],
+    );
     expect(result.key_value).toBeDefined();
     expect(result.iv_value).toBeDefined();
   });
@@ -1671,17 +1851,35 @@ describe("executeInstrumented MC/DC mode", () => {
 
 describe("executeFunction no-capture fast path", () => {
   it("returns empty side_effects when capture=false", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42], undefined, false);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "logsAndReturns",
+      [42],
+      undefined,
+      false,
+    );
     expect(result.side_effects).toEqual([]);
   });
 
   it("returns correct return_value when capture=false", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [42], undefined, false);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "logsAndReturns",
+      [42],
+      undefined,
+      false,
+    );
     expect(result.return_value).toBe("done: 42");
   });
 
   it("returns correct thrown_error when capture=false", async () => {
-    const result = await executeFunction(SIDE_EFFECTS_FIXTURE, "throwsError", ["bang"], undefined, false);
+    const result = await executeFunction(
+      SIDE_EFFECTS_FIXTURE,
+      "throwsError",
+      ["bang"],
+      undefined,
+      false,
+    );
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.message).toBe("bang");
     // No side_effects even though there's a thrown error
@@ -1693,14 +1891,26 @@ describe("executeFunction no-capture fast path", () => {
     const t0 = Date.now();
     for (let i = 0; i < N; i++) {
       clearModuleCache();
-      await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [i], undefined, true);
+      await executeFunction(
+        SIDE_EFFECTS_FIXTURE,
+        "logsAndReturns",
+        [i],
+        undefined,
+        true,
+      );
     }
     const captureMs = Date.now() - t0;
 
     const t1 = Date.now();
     for (let i = 0; i < N; i++) {
       clearModuleCache();
-      await executeFunction(SIDE_EFFECTS_FIXTURE, "logsAndReturns", [i], undefined, false);
+      await executeFunction(
+        SIDE_EFFECTS_FIXTURE,
+        "logsAndReturns",
+        [i],
+        undefined,
+        false,
+      );
     }
     const noCaptureMs = Date.now() - t1;
 
@@ -1719,46 +1929,98 @@ describe("executeInstrumented no-capture fast path", () => {
   }
 
   it("returns empty side_effects when capture=false", async () => {
-    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
-    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99], [], undefined, undefined, false);
+    const instrumentedSource =
+      getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "logsAndReturns",
+      [99],
+      [],
+      undefined,
+      undefined,
+      false,
+    );
     expect(result.side_effects).toEqual([]);
   });
 
   it("still populates branch_path when capture=false", async () => {
-    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
-    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [99], [], undefined, undefined, false);
+    const instrumentedSource =
+      getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "logsAndReturns",
+      [99],
+      [],
+      undefined,
+      undefined,
+      false,
+    );
     // branch_path should still be populated (capture only affects side_effects)
     expect(result.branch_path).toBeDefined();
     expect(result.lines_executed).toBeDefined();
   });
 
   it("returns correct return_value when capture=false", async () => {
-    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
-    const result = await executeInstrumented(instrumentedSource, "logsAndReturns", [55], [], undefined, undefined, false);
+    const instrumentedSource =
+      getInstrumentedSourceForNoCapture("logsAndReturns");
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "logsAndReturns",
+      [55],
+      [],
+      undefined,
+      undefined,
+      false,
+    );
     expect(result.return_value).toBe("done: 55");
   });
 
   it("returns correct thrown_error when capture=false", async () => {
     const instrumentedSource = getInstrumentedSourceForNoCapture("throwsError");
-    const result = await executeInstrumented(instrumentedSource, "throwsError", ["oops"], [], undefined, undefined, false);
+    const result = await executeInstrumented(
+      instrumentedSource,
+      "throwsError",
+      ["oops"],
+      [],
+      undefined,
+      undefined,
+      false,
+    );
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error!.message).toBe("oops");
     expect(result.side_effects).toEqual([]);
   });
 
   it("is faster than capture=true over many iterations", async () => {
-    const instrumentedSource = getInstrumentedSourceForNoCapture("logsAndReturns");
+    const instrumentedSource =
+      getInstrumentedSourceForNoCapture("logsAndReturns");
     const N = 100;
 
     const t0 = Date.now();
     for (let i = 0; i < N; i++) {
-      await executeInstrumented(instrumentedSource, "logsAndReturns", [i], [], undefined, undefined, true);
+      await executeInstrumented(
+        instrumentedSource,
+        "logsAndReturns",
+        [i],
+        [],
+        undefined,
+        undefined,
+        true,
+      );
     }
     const captureMs = Date.now() - t0;
 
     const t1 = Date.now();
     for (let i = 0; i < N; i++) {
-      await executeInstrumented(instrumentedSource, "logsAndReturns", [i], [], undefined, undefined, false);
+      await executeInstrumented(
+        instrumentedSource,
+        "logsAndReturns",
+        [i],
+        [],
+        undefined,
+        undefined,
+        false,
+      );
     }
     const noCaptureMs = Date.now() - t1;
 
@@ -1768,10 +2030,7 @@ describe("executeInstrumented no-capture fast path", () => {
 });
 
 describe("executeInstrumented script caching", () => {
-  const exampleFile = path.join(
-    EXAMPLES_DIR,
-    "01-arithmetic.ts",
-  );
+  const exampleFile = path.join(EXAMPLES_DIR, "01-arithmetic.ts");
 
   beforeEach(() => {
     clearCompiledScriptCache();
@@ -1780,42 +2039,72 @@ describe("executeInstrumented script caching", () => {
 
   it("produces identical results with and without a cache key", async () => {
     const source = fs.readFileSync(exampleFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "classifyNumber",
+      exampleFile,
+    );
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
     const uncached = await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
     );
     const cached = await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
-      [], exampleFile, undefined, true, "test-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
+      [],
+      exampleFile,
+      undefined,
+      true,
+      "test-key",
     );
 
     expect(cached.return_value).toBe(uncached.return_value);
-    expect(cached.branch_path.map(b => b.taken)).toEqual(uncached.branch_path.map(b => b.taken));
+    expect(cached.branch_path.map((b) => b.taken)).toEqual(
+      uncached.branch_path.map((b) => b.taken),
+    );
   });
 
   it("amortizes transpilation: second call with same key omits execute.transpile from timing", async () => {
     const source = fs.readFileSync(exampleFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "classifyNumber",
+      exampleFile,
+    );
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
     // First call — cache miss, execute.transpile should appear in timing
     const timing1 = new TimingCollector();
     await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
-      [], exampleFile, timing1, true, "amort-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
+      [],
+      exampleFile,
+      timing1,
+      true,
+      "amort-key",
     );
-    const phases1 = timing1.toSummary()?.phases.map(p => p.phase_path) ?? [];
+    const phases1 = timing1.toSummary()?.phases.map((p) => p.phase_path) ?? [];
     expect(phases1).toContain("execute.transpile");
 
     // Second call — cache hit, execute.transpile should NOT appear in timing
     const timing2 = new TimingCollector();
     await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [-1],
-      [], exampleFile, timing2, true, "amort-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [-1],
+      [],
+      exampleFile,
+      timing2,
+      true,
+      "amort-key",
     );
-    const phases2 = timing2.toSummary()?.phases.map(p => p.phase_path) ?? [];
+    const phases2 = timing2.toSummary()?.phases.map((p) => p.phase_path) ?? [];
     expect(phases2).not.toContain("execute.transpile");
     // execute.module_load (the actual execution) still runs on every call
     expect(phases2).toContain("execute.module_load");
@@ -1823,44 +2112,86 @@ describe("executeInstrumented script caching", () => {
 
   it("deleteCompiledScriptEntry forces recompilation on next call", async () => {
     const source = fs.readFileSync(exampleFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "classifyNumber",
+      exampleFile,
+    );
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
     // Warm the cache
     const timing1 = new TimingCollector();
     await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
-      [], exampleFile, timing1, true, "evict-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
+      [],
+      exampleFile,
+      timing1,
+      true,
+      "evict-key",
     );
-    expect(timing1.toSummary()?.phases.map(p => p.phase_path)).toContain("execute.transpile");
+    expect(timing1.toSummary()?.phases.map((p) => p.phase_path)).toContain(
+      "execute.transpile",
+    );
 
     // Evict and verify next call recompiles
     deleteCompiledScriptEntry("evict-key");
 
     const timing2 = new TimingCollector();
     await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
-      [], exampleFile, timing2, true, "evict-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
+      [],
+      exampleFile,
+      timing2,
+      true,
+      "evict-key",
     );
-    expect(timing2.toSummary()?.phases.map(p => p.phase_path)).toContain("execute.transpile");
+    expect(timing2.toSummary()?.phases.map((p) => p.phase_path)).toContain(
+      "execute.transpile",
+    );
   });
 
   it("different inputs with same cache key return correct results for each input", async () => {
     const source = fs.readFileSync(exampleFile, "utf-8");
-    const instrumentResult = instrumentFunction(source, "classifyNumber", exampleFile);
+    const instrumentResult = instrumentFunction(
+      source,
+      "classifyNumber",
+      exampleFile,
+    );
     if ("error" in instrumentResult) throw new Error(instrumentResult.error);
 
     const r1 = await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [42],
-      [], exampleFile, undefined, true, "multi-input-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [42],
+      [],
+      exampleFile,
+      undefined,
+      true,
+      "multi-input-key",
     );
     const r2 = await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [-1],
-      [], exampleFile, undefined, true, "multi-input-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [-1],
+      [],
+      exampleFile,
+      undefined,
+      true,
+      "multi-input-key",
     );
     const r3 = await executeInstrumented(
-      instrumentResult.instrumentedSource, "classifyNumber", [0],
-      [], exampleFile, undefined, true, "multi-input-key",
+      instrumentResult.instrumentedSource,
+      "classifyNumber",
+      [0],
+      [],
+      exampleFile,
+      undefined,
+      true,
+      "multi-input-key",
     );
 
     expect(r1.return_value).toBe("positive-even");
@@ -1875,16 +2206,21 @@ describe("executeInstrumented script caching", () => {
 
 describe("transformDynamicImports", () => {
   it("replaces import() with __shatter_import()", () => {
-    expect(transformDynamicImports('import("foo")')).toBe('__shatter_import("foo")');
+    expect(transformDynamicImports('import("foo")')).toBe(
+      '__shatter_import("foo")',
+    );
   });
 
   it("handles whitespace between import and parenthesis", () => {
-    expect(transformDynamicImports("import ('foo')")).toBe("__shatter_import('foo')");
+    expect(transformDynamicImports("import ('foo')")).toBe(
+      "__shatter_import('foo')",
+    );
   });
 
   it("transforms multiple import() calls", () => {
     const input = 'const a = import("a"); const b = import("b");';
-    const expected = 'const a = __shatter_import("a"); const b = __shatter_import("b");';
+    const expected =
+      'const a = __shatter_import("a"); const b = __shatter_import("b");';
     expect(transformDynamicImports(input)).toBe(expected);
   });
 
@@ -2028,7 +2364,9 @@ describe("executeAdapterOwned", () => {
   };
 
   function makeHook(
-    fn: (ctx: InvocationContext) => InvocationOutcome | Promise<InvocationOutcome>,
+    fn: (
+      ctx: InvocationContext,
+    ) => InvocationOutcome | Promise<InvocationOutcome>,
   ): InvocationHook {
     return { id: "test/adapter", invoke: fn };
   }
@@ -2037,7 +2375,7 @@ describe("executeAdapterOwned", () => {
     const calls: InvocationContext[] = [];
     const hook = makeHook((ctx) => {
       calls.push(ctx);
-      return { returnValue: { ok: true, n: 42 } };
+      return { status: "completed", return_value: { ok: true, n: 42 } };
     });
 
     const result = await executeAdapterOwned({
@@ -2062,7 +2400,8 @@ describe("executeAdapterOwned", () => {
 
   it("captures structured thrownError and emits a thrown_error side effect", async () => {
     const hook = makeHook(() => ({
-      thrownError: {
+      status: "runtime_failed",
+      thrown_error: {
         error_type: "ValidationError",
         message: "bad input",
         stack: "stack-trace",
@@ -2081,9 +2420,13 @@ describe("executeAdapterOwned", () => {
     expect(result.thrown_error).not.toBeNull();
     expect(result.thrown_error?.error_type).toBe("ValidationError");
     expect(result.thrown_error?.message).toBe("bad input");
-    const thrownSE = result.side_effects.find((se) => se.kind === "thrown_error");
+    const thrownSE = result.side_effects.find(
+      (se) => se.kind === "thrown_error",
+    );
     expect(thrownSE).toBeDefined();
-    expect((thrownSE as { error_type: string }).error_type).toBe("ValidationError");
+    expect((thrownSE as { error_type: string }).error_type).toBe(
+      "ValidationError",
+    );
   });
 
   it("captures hook-thrown exceptions (non-structured) into thrown_error", async () => {
@@ -2106,8 +2449,9 @@ describe("executeAdapterOwned", () => {
 
   it("surfaces hook-supplied side effects in the result", async () => {
     const hook = makeHook(() => ({
-      returnValue: null,
-      sideEffects: [
+      status: "completed_with_findings",
+      return_value: null,
+      side_effects: [
         {
           kind: "global_state_change",
           variable: "counter",
@@ -2140,7 +2484,7 @@ describe("executeAdapterOwned", () => {
       // eslint-disable-next-line no-console
       console.log("should not be captured");
       void ctx;
-      return { returnValue: 1 };
+      return { status: "completed", return_value: 1 };
     });
 
     const result = await executeAdapterOwned({
@@ -2152,11 +2496,13 @@ describe("executeAdapterOwned", () => {
       capture: false,
     });
 
-    expect(result.side_effects.find((se) => se.kind === "console_output")).toBeUndefined();
+    expect(
+      result.side_effects.find((se) => se.kind === "console_output"),
+    ).toBeUndefined();
   });
 
   it("populates performance metrics", async () => {
-    const hook = makeHook(() => ({ returnValue: "ok" }));
+    const hook = makeHook(() => ({ status: "completed", return_value: "ok" }));
     const result = await executeAdapterOwned({
       hook,
       invocationModel: adapterModel,

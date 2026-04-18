@@ -15,6 +15,7 @@ Any modification to:
 - Commands (adding, removing, renaming)
 - Response statuses
 - Error codes or error categories
+- Shared protocol type definitions such as `OutcomeStatus` and `InvocationOutcome`
 - Capabilities (command or complex-type)
 - Request or response payload fields
 - TypeInfo or SymExpr schema structure
@@ -34,6 +35,10 @@ Edit `protocol/registry.yaml` with the new command, status, error code, capabili
 ### 2. Update JSON schemas
 
 Add or modify schemas in `protocol/schemas/`. Each schema follows JSON Schema Draft 2020-12. If adding a new message type, create a new `*.schema.json` file.
+
+Reusable shared types should get their own schema file and be re-exported from
+the relevant top-level schema `$defs` block so downstream tooling can discover
+them without guessing filenames.
 
 ### 3. Update fixtures
 
@@ -57,13 +62,16 @@ Add round-trip serialization tests in the same module.
 
 Update all three frontends to handle the new/changed protocol element:
 
-| Frontend | File(s) |
-|---|---|
-| TypeScript | `shatter-ts/src/protocol.ts` |
-| Go | `shatter-go/protocol/constants.go`, `shatter-go/protocol/handler.go` |
-| Rust | `shatter-rust/src/protocol.rs` |
+| Frontend   | File(s)                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| TypeScript | `shatter-ts/src/protocol.ts`                                         |
+| Go         | `shatter-go/protocol/constants.go`, `shatter-go/protocol/handler.go` |
+| Rust       | `shatter-rust/src/protocol.rs`                                       |
 
 Add round-trip serialization tests in each frontend.
+
+For reusable protocol types that are mirrored outside the main request/response
+structs, keep the same field names and enum spellings in every manual mirror.
 
 ### 6. Update conformance cases
 

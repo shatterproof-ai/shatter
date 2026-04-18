@@ -56,6 +56,8 @@ import {
   BranchInfo,
   ErrorInfo,
   InvocationModel,
+  InvocationOutcome,
+  OutcomeStatus,
 } from "./protocol.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import {
@@ -65,10 +67,20 @@ import {
   ADAPTER_ID_BROWSER_GLOBALS,
   ADAPTER_ID_IMPORT_META_ENV,
 } from "./runtime-hints.js";
-import { resolveRuntimeHooks, chooseInvocationStrategy } from "./runtime-hooks.js";
+import {
+  resolveRuntimeHooks,
+  chooseInvocationStrategy,
+} from "./runtime-hooks.js";
 import type { InvocationHook } from "./runtime-hooks.js";
-import { isRerenderScenario, HookExecutionContext } from "./react-hook-invocation.js";
-import { buildSymExpr, buildSymExprWithFlow, flattenConditions } from "./instrumentor.js";
+import {
+  isRerenderScenario,
+  HookExecutionContext,
+} from "./react-hook-invocation.js";
+import {
+  buildSymExpr,
+  buildSymExprWithFlow,
+  flattenConditions,
+} from "./instrumentor.js";
 import type { FlattenedConditions } from "./instrumentor.js";
 import type { ConditionOutcome } from "./protocol.js";
 
@@ -80,37 +92,91 @@ const arbIdent = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]{0,12}$/);
 const arbShortString = fc.string({ maxLength: 30 });
 
 const arbBinOpKind: fc.Arbitrary<BinOpKind> = fc.constantFrom(
-  "eq", "ne", "lt", "le", "gt", "ge",
-  "add", "sub", "mul", "div", "mod",
-  "and", "or",
-  "bitwise_and", "bitwise_or", "bitwise_xor",
-  "in", "instance_of",
+  "eq",
+  "ne",
+  "lt",
+  "le",
+  "gt",
+  "ge",
+  "add",
+  "sub",
+  "mul",
+  "div",
+  "mod",
+  "and",
+  "or",
+  "bitwise_and",
+  "bitwise_or",
+  "bitwise_xor",
+  "in",
+  "instance_of",
 );
 
 const arbUnOpKind: fc.Arbitrary<UnOpKind> = fc.constantFrom(
-  "not", "neg", "bitwise_not", "typeof",
+  "not",
+  "neg",
+  "bitwise_not",
+  "typeof",
 );
 
 const arbComplexKind: fc.Arbitrary<ComplexKind> = fc.constantFrom(
-  "date", "date_time", "time", "duration",
-  "reg_exp", "char", "symbol",
-  "big_int", "big_decimal", "complex", "rational", "range",
-  "buffer", "bit_set",
-  "error", "option", "result",
-  "closure", "iterator",
-  "url", "ip_address",
-  "uuid", "path",
-  "money", "sem_ver", "email", "mime_type", "color", "geo_point", "locale",
-  "rune", "go_byte",
+  "date",
+  "date_time",
+  "time",
+  "duration",
+  "reg_exp",
+  "char",
+  "symbol",
+  "big_int",
+  "big_decimal",
+  "complex",
+  "rational",
+  "range",
+  "buffer",
+  "bit_set",
+  "error",
+  "option",
+  "result",
+  "closure",
+  "iterator",
+  "url",
+  "ip_address",
+  "uuid",
+  "path",
+  "money",
+  "sem_ver",
+  "email",
+  "mime_type",
+  "color",
+  "geo_point",
+  "locale",
+  "rune",
+  "go_byte",
 );
 
 const arbBranchType: fc.Arbitrary<BranchType> = fc.constantFrom(
-  "if", "else_if", "switch", "ternary",
-  "logical_and", "logical_or", "while", "for",
+  "if",
+  "else_if",
+  "switch",
+  "ternary",
+  "logical_and",
+  "logical_or",
+  "while",
+  "for",
 );
 
 const arbErrorCode: fc.Arbitrary<ErrorCode> = fc.constantFrom(
   ...ALL_ERROR_CODES,
+);
+
+const arbOutcomeStatus: fc.Arbitrary<OutcomeStatus> = fc.constantFrom(
+  "completed",
+  "completed_with_findings",
+  "unsupported",
+  "build_failed",
+  "runtime_failed",
+  "timed_out",
+  "skipped_by_policy",
 );
 
 // ---------------------------------------------------------------------------
@@ -118,43 +184,67 @@ const arbErrorCode: fc.Arbitrary<ErrorCode> = fc.constantFrom(
 // ---------------------------------------------------------------------------
 
 const arbSymExprConst: fc.Arbitrary<SymExprConst> = fc.oneof(
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("int" as const), value: fc.integer({ min: -10000, max: 10000 }) }),
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("float" as const), value: fc.integer({ min: -1000, max: 1000 }) }),
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("str" as const), value: arbShortString }),
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("bool" as const), value: fc.boolean() }),
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("null" as const) }),
-  fc.record({ kind: fc.constant("const" as const), type: fc.constant("undefined" as const) }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("int" as const),
+    value: fc.integer({ min: -10000, max: 10000 }),
+  }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("float" as const),
+    value: fc.integer({ min: -1000, max: 1000 }),
+  }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("str" as const),
+    value: arbShortString,
+  }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("bool" as const),
+    value: fc.boolean(),
+  }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("null" as const),
+  }),
+  fc.record({
+    kind: fc.constant("const" as const),
+    type: fc.constant("undefined" as const),
+  }),
 );
 
-const arbSymExpr: fc.Arbitrary<SymExpr> = fc.letrec<{ expr: SymExpr }>(tie => ({
-  expr: fc.oneof(
-    { depthIdentifier: "symexpr", maxDepth: 3 },
-    fc.record({
-      kind: fc.constant("param" as const),
-      name: arbIdent,
-      path: fc.array(arbIdent, { maxLength: 3 }),
-    }),
-    arbSymExprConst,
-    fc.record({ kind: fc.constant("unknown" as const) }),
-    fc.record({
-      kind: fc.constant("bin_op" as const),
-      op: arbBinOpKind,
-      left: tie("expr"),
-      right: tie("expr"),
-    }),
-    fc.record({
-      kind: fc.constant("un_op" as const),
-      op: arbUnOpKind,
-      operand: tie("expr"),
-    }),
-    fc.record({
-      kind: fc.constant("ite" as const),
-      condition: tie("expr"),
-      then_expr: tie("expr"),
-      else_expr: tie("expr"),
-    }),
-  ),
-})).expr;
+const arbSymExpr: fc.Arbitrary<SymExpr> = fc.letrec<{ expr: SymExpr }>(
+  (tie) => ({
+    expr: fc.oneof(
+      { depthIdentifier: "symexpr", maxDepth: 3 },
+      fc.record({
+        kind: fc.constant("param" as const),
+        name: arbIdent,
+        path: fc.array(arbIdent, { maxLength: 3 }),
+      }),
+      arbSymExprConst,
+      fc.record({ kind: fc.constant("unknown" as const) }),
+      fc.record({
+        kind: fc.constant("bin_op" as const),
+        op: arbBinOpKind,
+        left: tie("expr"),
+        right: tie("expr"),
+      }),
+      fc.record({
+        kind: fc.constant("un_op" as const),
+        op: arbUnOpKind,
+        operand: tie("expr"),
+      }),
+      fc.record({
+        kind: fc.constant("ite" as const),
+        condition: tie("expr"),
+        then_expr: tie("expr"),
+        else_expr: tie("expr"),
+      }),
+    ),
+  }),
+).expr;
 
 const arbTypeInfoLeaf: fc.Arbitrary<TypeInfo> = fc.oneof(
   fc.record({ kind: fc.constant("int" as const) }),
@@ -165,21 +255,23 @@ const arbTypeInfoLeaf: fc.Arbitrary<TypeInfo> = fc.oneof(
   fc.record({ kind: fc.constant("opaque" as const), label: arbIdent }),
 );
 
-const arbTypeInfo: fc.Arbitrary<TypeInfo> = fc.letrec<{ ti: TypeInfo }>(tie => ({
-  ti: fc.oneof(
-    { depthIdentifier: "typeinfo", maxDepth: 2 },
-    arbTypeInfoLeaf,
-    fc.record({ kind: fc.constant("array" as const), element: tie("ti") }),
-    fc.record({
-      kind: fc.constant("nullable" as const),
-      inner: tie("ti"),
-    }),
-    fc.record({
-      kind: fc.constant("union" as const),
-      variants: fc.array(tie("ti"), { minLength: 2, maxLength: 4 }),
-    }),
-  ),
-})).ti;
+const arbTypeInfo: fc.Arbitrary<TypeInfo> = fc.letrec<{ ti: TypeInfo }>(
+  (tie) => ({
+    ti: fc.oneof(
+      { depthIdentifier: "typeinfo", maxDepth: 2 },
+      arbTypeInfoLeaf,
+      fc.record({ kind: fc.constant("array" as const), element: tie("ti") }),
+      fc.record({
+        kind: fc.constant("nullable" as const),
+        inner: tie("ti"),
+      }),
+      fc.record({
+        kind: fc.constant("union" as const),
+        variants: fc.array(tie("ti"), { minLength: 2, maxLength: 4 }),
+      }),
+    ),
+  }),
+).ti;
 
 // ---------------------------------------------------------------------------
 // Arbitraries — protocol records
@@ -200,12 +292,21 @@ const arbBranchDecision: fc.Arbitrary<BranchDecision> = fc.record({
 const arbScopeEvent: fc.Arbitrary<ScopeEvent> = fc.oneof(
   fc.record({ kind: fc.constant("loop_enter" as const), loop_id: fc.nat(20) }),
   fc.record({ kind: fc.constant("loop_exit" as const), loop_id: fc.nat(20) }),
-  fc.record({ kind: fc.constant("call_enter" as const), call_site_id: fc.nat(20) }),
-  fc.record({ kind: fc.constant("call_exit" as const), call_site_id: fc.nat(20) }),
+  fc.record({
+    kind: fc.constant("call_enter" as const),
+    call_site_id: fc.nat(20),
+  }),
+  fc.record({
+    kind: fc.constant("call_exit" as const),
+    call_site_id: fc.nat(20),
+  }),
 );
 
 const arbTraceEvent: fc.Arbitrary<TraceEvent> = fc.oneof(
-  fc.record({ type: fc.constant("branch" as const), decision: arbBranchDecision }),
+  fc.record({
+    type: fc.constant("branch" as const),
+    decision: arbBranchDecision,
+  }),
   fc.record({ type: fc.constant("scope" as const), event: arbScopeEvent }),
 );
 
@@ -223,7 +324,9 @@ const arbErrorInfo: fc.Arbitrary<ErrorInfo> = fc.record({
 });
 
 const arbDepDetectionKind: fc.Arbitrary<DepDetectionKind> = fc.constantFrom(
-  "unmocked_import", "subprocess_spawn", "stubbed_import",
+  "unmocked_import",
+  "subprocess_spawn",
+  "stubbed_import",
 );
 
 const arbDiscoveredDependency: fc.Arbitrary<DiscoveredDependency> = fc.record({
@@ -233,9 +336,14 @@ const arbDiscoveredDependency: fc.Arbitrary<DiscoveredDependency> = fc.record({
   is_subprocess_spawn: fc.boolean(),
 });
 
-const arbConnectionFailureKind: fc.Arbitrary<ConnectionFailureKind> = fc.constantFrom(
-  "connection_refused", "dns_failure", "auth_error", "timeout", "other",
-);
+const arbConnectionFailureKind: fc.Arbitrary<ConnectionFailureKind> =
+  fc.constantFrom(
+    "connection_refused",
+    "dns_failure",
+    "auth_error",
+    "timeout",
+    "other",
+  );
 
 const arbConnectionFailure: fc.Arbitrary<ConnectionFailure> = fc.record({
   symbol: arbIdent,
@@ -243,22 +351,34 @@ const arbConnectionFailure: fc.Arbitrary<ConnectionFailure> = fc.record({
   message: arbShortString,
 });
 
-const arbRuntimeCryptoBoundaryKind: fc.Arbitrary<"encrypt" | "decrypt"> = fc.constantFrom(
-  "encrypt", "decrypt",
-);
+const arbRuntimeCryptoBoundaryKind: fc.Arbitrary<"encrypt" | "decrypt"> =
+  fc.constantFrom("encrypt", "decrypt");
 
-export const arbRuntimeCryptoBoundary: fc.Arbitrary<RuntimeCryptoBoundary> = fc.record({
-  boundary_id: arbShortString,
-  kind: arbRuntimeCryptoBoundaryKind,
-  function_name: fc.constantFrom("createDecipheriv", "privateDecrypt", "createCipheriv"),
-  algorithm: fc.option(fc.constantFrom("aes-256-cbc", "aes-128-gcm"), { nil: undefined }),
-  ciphertext_param_index: fc.option(fc.integer({ min: -1, max: 5 }), { nil: undefined }),
-  key_value: fc.option(arbShortString, { nil: undefined }),
-  iv_value: fc.option(arbShortString, { nil: undefined }),
-});
+export const arbRuntimeCryptoBoundary: fc.Arbitrary<RuntimeCryptoBoundary> =
+  fc.record({
+    boundary_id: arbShortString,
+    kind: arbRuntimeCryptoBoundaryKind,
+    function_name: fc.constantFrom(
+      "createDecipheriv",
+      "privateDecrypt",
+      "createCipheriv",
+    ),
+    algorithm: fc.option(fc.constantFrom("aes-256-cbc", "aes-128-gcm"), {
+      nil: undefined,
+    }),
+    ciphertext_param_index: fc.option(fc.integer({ min: -1, max: 5 }), {
+      nil: undefined,
+    }),
+    key_value: fc.option(arbShortString, { nil: undefined }),
+    iv_value: fc.option(arbShortString, { nil: undefined }),
+  });
 
 const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
-  fc.record({ kind: fc.constant("console_output" as const), level: arbIdent, message: arbShortString }),
+  fc.record({
+    kind: fc.constant("console_output" as const),
+    level: arbIdent,
+    message: arbShortString,
+  }),
   fc.record({ kind: fc.constant("global_mutation" as const), name: arbIdent }),
   fc.record({
     kind: fc.constant("thrown_error" as const),
@@ -275,7 +395,9 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
     kind: fc.constant("network_request" as const),
     method: arbIdent,
     url: arbShortString,
-    body: fc.option(fc.oneof(fc.integer(), fc.string({ maxLength: 10 })), { nil: null }),
+    body: fc.option(fc.oneof(fc.integer(), fc.string({ maxLength: 10 })), {
+      nil: null,
+    }),
   }),
   fc.record({
     kind: fc.constant("environment_read" as const),
@@ -285,10 +407,27 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
   fc.record({
     kind: fc.constant("global_state_change" as const),
     variable: arbIdent,
-    before: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null)),
-    after: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null)),
+    before: fc.oneof(
+      fc.integer(),
+      fc.string({ maxLength: 10 }),
+      fc.constant(null),
+    ),
+    after: fc.oneof(
+      fc.integer(),
+      fc.string({ maxLength: 10 }),
+      fc.constant(null),
+    ),
   }),
 );
+
+const arbInvocationOutcome: fc.Arbitrary<InvocationOutcome> = fc.record({
+  status: arbOutcomeStatus,
+  return_value: fc.option(fc.jsonValue(), { nil: undefined }),
+  thrown_error: fc.option(arbErrorInfo, { nil: undefined }),
+  side_effects: fc.option(fc.array(arbSideEffect, { maxLength: 3 }), {
+    nil: undefined,
+  }),
+});
 
 const arbParamInfo: fc.Arbitrary<ParamInfo> = fc.record({
   name: arbIdent,
@@ -303,7 +442,12 @@ const arbBranchInfo: fc.Arbitrary<BranchInfo> = fc.record({
   branch_type: arbBranchType,
 });
 
-const arbBoundOp: fc.Arbitrary<BoundOp> = fc.constantFrom("lt", "le", "gt", "ge");
+const arbBoundOp: fc.Arbitrary<BoundOp> = fc.constantFrom(
+  "lt",
+  "le",
+  "gt",
+  "ge",
+);
 
 const arbInductionVar: fc.Arbitrary<InductionVar> = fc.record({
   name: arbIdent,
@@ -319,13 +463,11 @@ const arbLoopInfo: fc.Arbitrary<LoopInfo> = fc.record({
   induction_var: arbInductionVar,
 });
 
-const arbExecutionAdapterApply: fc.Arbitrary<ExecutionAdapterApply> = fc.constantFrom(
-  "required", "auto", "suggest", "disabled",
-);
+const arbExecutionAdapterApply: fc.Arbitrary<ExecutionAdapterApply> =
+  fc.constantFrom("required", "auto", "suggest", "disabled");
 
-const arbHintConfidence: fc.Arbitrary<"low" | "medium" | "high"> = fc.constantFrom(
-  "low", "medium", "high",
-);
+const arbHintConfidence: fc.Arbitrary<"low" | "medium" | "high"> =
+  fc.constantFrom("low", "medium", "high");
 
 const arbAdapterRelation = fc.record({
   adapter_id: arbIdent,
@@ -338,9 +480,15 @@ const arbAdapterHint = fc.record({
     apply: fc.option(arbExecutionAdapterApply, { nil: undefined }),
   }),
   confidence: fc.option(arbHintConfidence, { nil: undefined }),
-  reasons: fc.option(fc.array(arbShortString, { maxLength: 3 }), { nil: undefined }),
-  requirements: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), { nil: undefined }),
-  conflicts: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), { nil: undefined }),
+  reasons: fc.option(fc.array(arbShortString, { maxLength: 3 }), {
+    nil: undefined,
+  }),
+  requirements: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), {
+    nil: undefined,
+  }),
+  conflicts: fc.option(fc.array(arbAdapterRelation, { maxLength: 2 }), {
+    nil: undefined,
+  }),
 });
 
 const arbInvocationModel: fc.Arbitrary<InvocationModel> = fc.oneof(
@@ -351,10 +499,9 @@ const arbInvocationModel: fc.Arbitrary<InvocationModel> = fc.oneof(
     synthetic_params: fc.option(fc.array(arbParamInfo, { maxLength: 3 }), {
       nil: undefined,
     }),
-    scenario_schema: fc.option(
-      fc.record({ description: arbShortString }),
-      { nil: undefined },
-    ),
+    scenario_schema: fc.option(fc.record({ description: arbShortString }), {
+      nil: undefined,
+    }),
   }),
 );
 
@@ -371,7 +518,9 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
   source_file: fc.option(fc.stringMatching(/^\/[a-z][a-z\/]{0,20}\.ts$/), {
     nil: undefined,
   }),
-  adapter_hints: fc.option(fc.array(arbAdapterHint, { maxLength: 3 }), { nil: undefined }),
+  adapter_hints: fc.option(fc.array(arbAdapterHint, { maxLength: 3 }), {
+    nil: undefined,
+  }),
   invocation_model: fc.option(arbInvocationModel, { nil: undefined }),
 });
 
@@ -380,12 +529,20 @@ const arbFunctionAnalysis: fc.Arbitrary<FunctionAnalysis> = fc.record({
 // ---------------------------------------------------------------------------
 
 const arbSetupLevel: fc.Arbitrary<SetupLevel> = fc.constantFrom(
-  "session", "file", "function", "execution",
+  "session",
+  "file",
+  "function",
+  "execution",
 );
 
 const arbSetupContextEntry: fc.Arbitrary<SetupContextEntry> = fc.record({
   level: arbSetupLevel,
-  context: fc.oneof(fc.integer(), fc.string({ maxLength: 10 }), fc.constant(null), fc.record({ id: fc.nat(100) })),
+  context: fc.oneof(
+    fc.integer(),
+    fc.string({ maxLength: 10 }),
+    fc.constant(null),
+    fc.record({ id: fc.nat(100) }),
+  ),
 });
 
 const arbSetupContextStack: fc.Arbitrary<SetupContextStack> = fc.record({
@@ -422,9 +579,14 @@ const arbRequest: fc.Arbitrary<Request> = fc.oneof(
     id: fc.nat(1000),
     command: fc.constant("execute" as const),
     function: arbIdent,
-    inputs: fc.array(fc.oneof(fc.integer(), fc.constant("hello"), fc.boolean()), { maxLength: 4 }),
+    inputs: fc.array(
+      fc.oneof(fc.integer(), fc.constant("hello"), fc.boolean()),
+      { maxLength: 4 },
+    ),
     mocks: fc.constant([]),
-    prepare_id: fc.option(fc.stringMatching(/[a-f0-9]{16}/), { nil: undefined }),
+    prepare_id: fc.option(fc.stringMatching(/[a-f0-9]{16}/), {
+      nil: undefined,
+    }),
   }) as fc.Arbitrary<ExecuteRequest>,
   fc.record({
     protocol_version: fc.constant(PROTOCOL_VERSION),
@@ -670,7 +832,10 @@ describe("property: SideEffect wire format", () => {
   it("kind field is always present and non-empty in serialized output", () => {
     fc.assert(
       fc.property(arbSideEffect, (effect) => {
-        const parsed = JSON.parse(JSON.stringify(effect)) as Record<string, unknown>;
+        const parsed = JSON.parse(JSON.stringify(effect)) as Record<
+          string,
+          unknown
+        >;
         expect(typeof parsed["kind"]).toBe("string");
         expect((parsed["kind"] as string).length).toBeGreaterThan(0);
       }),
@@ -678,15 +843,26 @@ describe("property: SideEffect wire format", () => {
   });
 
   it("each kind only carries its own required fields", () => {
-    const consoleEffect: SideEffect = { kind: "console_output", level: "log", message: "hello" };
+    const consoleEffect: SideEffect = {
+      kind: "console_output",
+      level: "log",
+      message: "hello",
+    };
     expect(JSON.parse(JSON.stringify(consoleEffect))).toEqual({
       kind: "console_output",
       level: "log",
       message: "hello",
     });
 
-    const fileEffect: SideEffect = { kind: "file_write", path: "/tmp/x", content: "data" };
-    const fileParsed = JSON.parse(JSON.stringify(fileEffect)) as Record<string, unknown>;
+    const fileEffect: SideEffect = {
+      kind: "file_write",
+      path: "/tmp/x",
+      content: "data",
+    };
+    const fileParsed = JSON.parse(JSON.stringify(fileEffect)) as Record<
+      string,
+      unknown
+    >;
     expect(fileParsed["kind"]).toBe("file_write");
     expect(fileParsed["path"]).toBe("/tmp/x");
 
@@ -696,7 +872,10 @@ describe("property: SideEffect wire format", () => {
       before: 0,
       after: 1,
     };
-    const stateParsed = JSON.parse(JSON.stringify(stateEffect)) as Record<string, unknown>;
+    const stateParsed = JSON.parse(JSON.stringify(stateEffect)) as Record<
+      string,
+      unknown
+    >;
     expect(stateParsed["kind"]).toBe("global_state_change");
     expect(stateParsed["variable"]).toBe("Count");
     expect(stateParsed["before"]).toBe(0);
@@ -705,7 +884,15 @@ describe("property: SideEffect wire format", () => {
 });
 
 describe("property: SymExpr structural validity", () => {
-  const VALID_KINDS = new Set(["param", "const", "bin_op", "un_op", "call", "ite", "unknown"]);
+  const VALID_KINDS = new Set([
+    "param",
+    "const",
+    "bin_op",
+    "un_op",
+    "call",
+    "ite",
+    "unknown",
+  ]);
 
   it("every generated SymExpr has a valid kind tag", () => {
     fc.assert(
@@ -774,8 +961,17 @@ describe("property: SymExpr structural validity", () => {
 
 describe("property: TypeInfo structural validity", () => {
   const VALID_KINDS = new Set([
-    "int", "float", "str", "bool", "unknown", "opaque",
-    "array", "object", "union", "nullable", "complex",
+    "int",
+    "float",
+    "str",
+    "bool",
+    "unknown",
+    "opaque",
+    "array",
+    "object",
+    "union",
+    "nullable",
+    "complex",
   ]);
 
   it("every generated TypeInfo has a valid kind tag", () => {
@@ -831,7 +1027,12 @@ describe("property: TraceEvent round-trips", () => {
  */
 function parseExpr(exprSource: string): ts.Expression {
   const source = `const __expr = ${exprSource};`;
-  const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ESNext, true);
+  const sf = ts.createSourceFile(
+    "test.ts",
+    source,
+    ts.ScriptTarget.ESNext,
+    true,
+  );
   const stmt = sf.statements[0] as ts.VariableStatement;
   const decl = stmt.declarationList.declarations[0]!;
   return decl.initializer!;
@@ -844,7 +1045,8 @@ function parseExpr(exprSource: string): ts.Expression {
  */
 function hasNonUnknownLeaf(expr: SymExpr): boolean {
   if (expr.kind === "param" || expr.kind === "const") return true;
-  if (expr.kind === "bin_op") return hasNonUnknownLeaf(expr.left) || hasNonUnknownLeaf(expr.right);
+  if (expr.kind === "bin_op")
+    return hasNonUnknownLeaf(expr.left) || hasNonUnknownLeaf(expr.right);
   if (expr.kind === "un_op") return hasNonUnknownLeaf(expr.operand);
   if (expr.kind === "call") {
     const recOk = expr.receiver ? hasNonUnknownLeaf(expr.receiver) : false;
@@ -856,15 +1058,30 @@ function hasNonUnknownLeaf(expr: SymExpr): boolean {
 const PARAM_NAME = "x";
 const paramNames = new Set([PARAM_NAME]);
 const resolveName = (name: string): SymExpr | undefined =>
-  name === PARAM_NAME ? { kind: "param", name: PARAM_NAME, path: [] } : undefined;
+  name === PARAM_NAME
+    ? { kind: "param", name: PARAM_NAME, path: [] }
+    : undefined;
 
 /** Generator for binary operator source tokens that binaryTokenToOp handles. */
 const arbBinOp = fc.constantFrom(
-  "===", "!==", "==", "!=",
-  "<", "<=", ">", ">=",
-  "+", "-", "*", "/", "%",
-  "&&", "||",
-  "&", "|", "^",
+  "===",
+  "!==",
+  "==",
+  "!=",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "&&",
+  "||",
+  "&",
+  "|",
+  "^",
 );
 
 /** Generator for unary prefix operator source tokens. */
@@ -875,40 +1092,46 @@ const arbUnOp = fc.constantFrom("!", "-", "~");
  * Each generated expression should be parseable and involve the param
  * so at least one builder returns a non-unknown result.
  */
-const arbExprSource: fc.Arbitrary<string> = fc.letrec<{ expr: string }>(tie => ({
-  expr: fc.oneof(
-    { depthIdentifier: "exprdepth", maxDepth: 2 },
-    // Param identifier
-    fc.constant(PARAM_NAME),
-    // Numeric literals
-    fc.integer({ min: -1000, max: 1000 }).map(n => String(n < 0 ? `(${n})` : n)),
-    // String literals
-    fc.stringMatching(/^[a-z]{0,5}$/).map(s => `"${s}"`),
-    // Boolean literals
-    fc.boolean().map(b => String(b)),
-    // null
-    fc.constant("null"),
-    // Property access on param
-    fc.stringMatching(/^[a-z]{1,5}$/).map(prop => `${PARAM_NAME}.${prop}`),
-    // Binary expression with param
-    arbBinOp.chain(op =>
-      tie("expr").map(right => `(${PARAM_NAME} ${op} ${right})`),
+const arbExprSource: fc.Arbitrary<string> = fc.letrec<{ expr: string }>(
+  (tie) => ({
+    expr: fc.oneof(
+      { depthIdentifier: "exprdepth", maxDepth: 2 },
+      // Param identifier
+      fc.constant(PARAM_NAME),
+      // Numeric literals
+      fc
+        .integer({ min: -1000, max: 1000 })
+        .map((n) => String(n < 0 ? `(${n})` : n)),
+      // String literals
+      fc.stringMatching(/^[a-z]{0,5}$/).map((s) => `"${s}"`),
+      // Boolean literals
+      fc.boolean().map((b) => String(b)),
+      // null
+      fc.constant("null"),
+      // Property access on param
+      fc.stringMatching(/^[a-z]{1,5}$/).map((prop) => `${PARAM_NAME}.${prop}`),
+      // Binary expression with param
+      arbBinOp.chain((op) =>
+        tie("expr").map((right) => `(${PARAM_NAME} ${op} ${right})`),
+      ),
+      // Unary prefix
+      arbUnOp.map((op) => `(${op}${PARAM_NAME})`),
+      // typeof
+      fc.constant(`(typeof ${PARAM_NAME})`),
+      // Method call on param
+      fc.stringMatching(/^[a-z]{1,5}$/).map((m) => `${PARAM_NAME}.${m}()`),
+      // Method call with argument
+      fc
+        .tuple(
+          fc.stringMatching(/^[a-z]{1,5}$/),
+          fc.stringMatching(/^[a-z]{0,3}$/),
+        )
+        .map(([m, arg]) => `${PARAM_NAME}.${m}("${arg}")`),
+      // Free function call with param arg
+      fc.stringMatching(/^[a-z]{1,5}$/).map((fn) => `${fn}(${PARAM_NAME})`),
     ),
-    // Unary prefix
-    arbUnOp.map(op => `(${op}${PARAM_NAME})`),
-    // typeof
-    fc.constant(`(typeof ${PARAM_NAME})`),
-    // Method call on param
-    fc.stringMatching(/^[a-z]{1,5}$/).map(m => `${PARAM_NAME}.${m}()`),
-    // Method call with argument
-    fc.tuple(
-      fc.stringMatching(/^[a-z]{1,5}$/),
-      fc.stringMatching(/^[a-z]{0,3}$/),
-    ).map(([m, arg]) => `${PARAM_NAME}.${m}("${arg}")`),
-    // Free function call with param arg
-    fc.stringMatching(/^[a-z]{1,5}$/).map(fn => `${fn}(${PARAM_NAME})`),
-  ),
-})).expr;
+  }),
+).expr;
 
 describe("property: buildSymExpr / buildSymExprWithFlow parity", () => {
   it("both builders handle param-involving expressions consistently", () => {
@@ -976,10 +1199,14 @@ describe("property: buildSymExpr / buildSymExprWithFlow parity", () => {
 
       // Both must return non-unknown for param-involving expressions
       if (fromExpr.kind === "unknown") {
-        throw new Error(`buildSymExpr returned unknown for ${label}: ${source}`);
+        throw new Error(
+          `buildSymExpr returned unknown for ${label}: ${source}`,
+        );
       }
       if (fromFlow.kind === "unknown") {
-        throw new Error(`buildSymExprWithFlow returned unknown for ${label}: ${source}`);
+        throw new Error(
+          `buildSymExprWithFlow returned unknown for ${label}: ${source}`,
+        );
       }
     }
   });
@@ -995,11 +1222,11 @@ describe("property: buildSymExpr / buildSymExprWithFlow parity", () => {
 
   it("nested expressions maintain parity", () => {
     const nestedCases = [
-      'x.length > 0',
+      "x.length > 0",
       'x.indexOf("@") !== -1',
       'typeof x === "string"',
-      '!(x > 0)',
-      'x + 1 > 0',
+      "!(x > 0)",
+      "x + 1 > 0",
     ];
 
     for (const source of nestedCases) {
@@ -1029,7 +1256,11 @@ describe("property: DiscoveredDependency round-trips", () => {
   });
 
   it("DiscoveredDependency kind is always a valid variant", () => {
-    const validKinds = new Set(["unmocked_import", "subprocess_spawn", "stubbed_import"]);
+    const validKinds = new Set([
+      "unmocked_import",
+      "subprocess_spawn",
+      "stubbed_import",
+    ]);
     fc.assert(
       fc.property(arbDiscoveredDependency, (dd) => {
         expect(validKinds.has(dd.kind)).toBe(true);
@@ -1063,7 +1294,11 @@ describe("property: ConnectionFailure round-trips", () => {
 
   it("error_kind is always a valid ConnectionFailureKind variant", () => {
     const validKinds = new Set<string>([
-      "connection_refused", "dns_failure", "auth_error", "timeout", "other",
+      "connection_refused",
+      "dns_failure",
+      "auth_error",
+      "timeout",
+      "other",
     ]);
     fc.assert(
       fc.property(arbConnectionFailure, (cf) => {
@@ -1138,13 +1373,11 @@ describe("property: RuntimeCryptoBoundary round-trips", () => {
  *
  * "a && b && c" → BinaryExpression(BinaryExpression(a, &&, b), &&, c)
  */
-function buildChainExpr(
-  names: string[],
-  op: "and" | "or",
-): ts.Expression {
-  const tokenKind = op === "and"
-    ? ts.SyntaxKind.AmpersandAmpersandToken
-    : ts.SyntaxKind.BarBarToken;
+function buildChainExpr(names: string[], op: "and" | "or"): ts.Expression {
+  const tokenKind =
+    op === "and"
+      ? ts.SyntaxKind.AmpersandAmpersandToken
+      : ts.SyntaxKind.BarBarToken;
 
   const idents = names.map((n) => ts.factory.createIdentifier(n));
   let expr: ts.Expression = idents[0]!;
@@ -1174,23 +1407,49 @@ function simulateMcdc(
     decision = true;
     for (let i = 0; i < values.length; i++) {
       if (stopped) {
-        conditions.push({ condition_index: i, value: null, masked: true, constraint: { kind: "unknown", hint: "masked by short-circuit" } });
+        conditions.push({
+          condition_index: i,
+          value: null,
+          masked: true,
+          constraint: { kind: "unknown", hint: "masked by short-circuit" },
+        });
         continue;
       }
       const val = values[i]!;
-      conditions.push({ condition_index: i, value: val, masked: false, constraint: { kind: "unknown", hint: "unsupported expression" } });
-      if (!val) { stopped = true; decision = false; }
+      conditions.push({
+        condition_index: i,
+        value: val,
+        masked: false,
+        constraint: { kind: "unknown", hint: "unsupported expression" },
+      });
+      if (!val) {
+        stopped = true;
+        decision = false;
+      }
     }
   } else {
     decision = false;
     for (let i = 0; i < values.length; i++) {
       if (stopped) {
-        conditions.push({ condition_index: i, value: null, masked: true, constraint: { kind: "unknown", hint: "masked by short-circuit" } });
+        conditions.push({
+          condition_index: i,
+          value: null,
+          masked: true,
+          constraint: { kind: "unknown", hint: "masked by short-circuit" },
+        });
         continue;
       }
       const val = values[i]!;
-      conditions.push({ condition_index: i, value: val, masked: false, constraint: { kind: "unknown", hint: "unsupported expression" } });
-      if (val) { stopped = true; decision = true; }
+      conditions.push({
+        condition_index: i,
+        value: val,
+        masked: false,
+        constraint: { kind: "unknown", hint: "unsupported expression" },
+      });
+      if (val) {
+        stopped = true;
+        decision = true;
+      }
     }
   }
   return { decision, conditions };
@@ -1486,7 +1745,10 @@ describe("BigInt serialization properties", () => {
     fc.assert(
       fc.property(arbBigInt, (n) => {
         const json = JSON.stringify(n, serializeReplacer);
-        const parsed = JSON.parse(json) as { __complex_type: string; value: string };
+        const parsed = JSON.parse(json) as {
+          __complex_type: string;
+          value: string;
+        };
         expect(parsed.__complex_type).toBe("big_int");
         expect(parsed.value).toBe(n.toString());
       }),
@@ -1496,7 +1758,9 @@ describe("BigInt serialization properties", () => {
   it("BigInt survives full serialize → reconstruct roundtrip", () => {
     fc.assert(
       fc.property(arbBigInt, (n) => {
-        const serialized = JSON.parse(JSON.stringify(n, serializeReplacer)) as unknown;
+        const serialized = JSON.parse(
+          JSON.stringify(n, serializeReplacer),
+        ) as unknown;
         const reconstructed = reconstructValue(serialized);
         expect(reconstructed).toBe(n);
       }),
@@ -1515,7 +1779,10 @@ describe("BigInt serialization properties", () => {
         (obj) => {
           const json = JSON.stringify(obj, serializeReplacer);
           const parsed = JSON.parse(json) as unknown;
-          const reconstructed = reconstructValue(parsed) as Record<string, unknown>;
+          const reconstructed = reconstructValue(parsed) as Record<
+            string,
+            unknown
+          >;
           expect(reconstructed["label"]).toBe(obj.label);
           expect(reconstructed["count"]).toBe(obj.count);
           expect(reconstructed["big"]).toBe(obj.big);
@@ -1527,14 +1794,11 @@ describe("BigInt serialization properties", () => {
 
   it("non-BigInt values are unaffected by serializeReplacer", () => {
     fc.assert(
-      fc.property(
-        fc.jsonValue(),
-        (val) => {
-          const withReplacer = JSON.stringify(val, serializeReplacer);
-          const without = JSON.stringify(val);
-          expect(withReplacer).toBe(without);
-        },
-      ),
+      fc.property(fc.jsonValue(), (val) => {
+        const withReplacer = JSON.stringify(val, serializeReplacer);
+        const without = JSON.stringify(val);
+        expect(withReplacer).toBe(without);
+      }),
     );
   });
 });
@@ -1566,7 +1830,7 @@ describe("unresolvable module stub shape invariants", () => {
         if (prop === "__esModule") return; // intentionally boolean
         expect(typeof val).toBe("function");
         expect(() => (val as () => unknown)()).not.toThrow();
-        expect(() => new (val as { new(): unknown })()).not.toThrow();
+        expect(() => new (val as { new (): unknown })()).not.toThrow();
       }),
     );
   });
@@ -1577,7 +1841,7 @@ describe("unresolvable module stub shape invariants", () => {
     const called = (stub as unknown as () => unknown)();
     expect(typeof called).toBe("function");
     // constructable — result is another callable proxy (typeof "function")
-    const constructed = new (stub as unknown as { new(): unknown })();
+    const constructed = new (stub as unknown as { new (): unknown })();
     expect(typeof constructed).toBe("function");
     // iterable
     expect([...(stub as unknown as Iterable<unknown>)]).toEqual([]);
@@ -1604,26 +1868,20 @@ describe("React hook recognizer properties", () => {
 
   it("isHookName: true iff starts with 'use' + uppercase", () => {
     fc.assert(
-      fc.property(
-        fc.stringMatching(/^use[A-Z][a-zA-Z]{0,20}$/),
-        (name) => {
-          expect(isHookName(name)).toBe(true);
-        },
-      ),
+      fc.property(fc.stringMatching(/^use[A-Z][a-zA-Z]{0,20}$/), (name) => {
+        expect(isHookName(name)).toBe(true);
+      }),
     );
   });
 
   it("isHookName: false for names not matching useXxx pattern", () => {
     fc.assert(
-      fc.property(
-        fc.stringMatching(/^[a-z]{1,20}$/),
-        (name) => {
-          // Lowercase-only names that happen to start with "use" but have lowercase 4th char
-          if (name.startsWith("use") && name.length > 3) {
-            expect(isHookName(name)).toBe(false);
-          }
-        },
-      ),
+      fc.property(fc.stringMatching(/^[a-z]{1,20}$/), (name) => {
+        // Lowercase-only names that happen to start with "use" but have lowercase 4th char
+        if (name.startsWith("use") && name.length > 3) {
+          expect(isHookName(name)).toBe(false);
+        }
+      }),
     );
   });
 
@@ -1640,17 +1898,25 @@ export function ${fnName}(x: number) {
   return v;
 }
 `;
-          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
-          const fns: FunctionAnalysis[] = [{
-            name: fnName,
-            exported: true,
-            params: [{ name: "x", type: { kind: "float" } }],
-            branches: [],
-            dependencies: [],
-            return_type: { kind: "unknown" },
-            start_line: 3,
-            end_line: 6,
-          }];
+          const sf = ts.createSourceFile(
+            "test.tsx",
+            source,
+            ts.ScriptTarget.ES2022,
+            true,
+            ts.ScriptKind.TSX,
+          );
+          const fns: FunctionAnalysis[] = [
+            {
+              name: fnName,
+              exported: true,
+              params: [{ name: "x", type: { kind: "float" } }],
+              branches: [],
+              dependencies: [],
+              return_type: { kind: "unknown" },
+              start_line: 3,
+              end_line: 6,
+            },
+          ];
           const hints = recognizeReactHooks(sf, fns);
           expect(hints[0]).toBeDefined();
           expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
@@ -1663,18 +1929,23 @@ export function ${fnName}(x: number) {
 
   it("useXxx name with no hook calls never gets a hint", () => {
     fc.assert(
-      fc.property(
-        fc.stringMatching(/^use[A-Z][a-zA-Z]{1,10}$/),
-        (fnName) => {
-          // File with React import but function doesn't call any hooks
-          const source = `
+      fc.property(fc.stringMatching(/^use[A-Z][a-zA-Z]{1,10}$/), (fnName) => {
+        // File with React import but function doesn't call any hooks
+        const source = `
 import { useState } from "react";
 export function ${fnName}(x: number) {
   return x * 2;
 }
 `;
-          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
-          const fns: FunctionAnalysis[] = [{
+        const sf = ts.createSourceFile(
+          "test.tsx",
+          source,
+          ts.ScriptTarget.ES2022,
+          true,
+          ts.ScriptKind.TSX,
+        );
+        const fns: FunctionAnalysis[] = [
+          {
             name: fnName,
             exported: true,
             params: [{ name: "x", type: { kind: "float" } }],
@@ -1683,11 +1954,11 @@ export function ${fnName}(x: number) {
             return_type: { kind: "unknown" },
             start_line: 3,
             end_line: 5,
-          }];
-          const hints = recognizeReactHooks(sf, fns);
-          expect(hints[0]).toBeUndefined();
-        },
-      ),
+          },
+        ];
+        const hints = recognizeReactHooks(sf, fns);
+        expect(hints[0]).toBeUndefined();
+      }),
     );
   });
 
@@ -1703,17 +1974,25 @@ export function ${fnName}(x: number) {
   return ${hookName}(x);
 }
 `;
-          const sf = ts.createSourceFile("test.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
-          const fns: FunctionAnalysis[] = [{
-            name: fnName,
-            exported: true,
-            params: [{ name: "x", type: { kind: "float" } }],
-            branches: [],
-            dependencies: [],
-            return_type: { kind: "unknown" },
-            start_line: 3,
-            end_line: 5,
-          }];
+          const sf = ts.createSourceFile(
+            "test.tsx",
+            source,
+            ts.ScriptTarget.ES2022,
+            true,
+            ts.ScriptKind.TSX,
+          );
+          const fns: FunctionAnalysis[] = [
+            {
+              name: fnName,
+              exported: true,
+              params: [{ name: "x", type: { kind: "float" } }],
+              branches: [],
+              dependencies: [],
+              return_type: { kind: "unknown" },
+              start_line: 3,
+              end_line: 5,
+            },
+          ];
           const hints = recognizeReactHooks(sf, fns);
           if (hints[0]) {
             expect(hints[0].reasons!.length).toBeGreaterThan(0);
@@ -1734,22 +2013,38 @@ import {
 } from "./browser-globals-recognizer.js";
 
 const KNOWN_BROWSER_GLOBALS = [
-  "window", "document", "navigator", "location", "history",
-  "localStorage", "sessionStorage",
-  "ResizeObserver", "IntersectionObserver", "MutationObserver",
-  "matchMedia", "requestAnimationFrame", "cancelAnimationFrame",
-  "XMLHttpRequest", "alert", "confirm", "prompt",
+  "window",
+  "document",
+  "navigator",
+  "location",
+  "history",
+  "localStorage",
+  "sessionStorage",
+  "ResizeObserver",
+  "IntersectionObserver",
+  "MutationObserver",
+  "matchMedia",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+  "XMLHttpRequest",
+  "alert",
+  "confirm",
+  "prompt",
 ] as const;
 
 describe("Browser globals recognizer properties", () => {
   it("always emits a hint when a known browser global is referenced", () => {
     fc.assert(
-      fc.property(
-        fc.constantFrom(...KNOWN_BROWSER_GLOBALS),
-        (globalName) => {
-          const source = `export function testFn() {\n  ${globalName};\n}`;
-          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
-          const fns: FunctionAnalysis[] = [{
+      fc.property(fc.constantFrom(...KNOWN_BROWSER_GLOBALS), (globalName) => {
+        const source = `export function testFn() {\n  ${globalName};\n}`;
+        const sf = ts.createSourceFile(
+          "test.ts",
+          source,
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        const fns: FunctionAnalysis[] = [
+          {
             name: "testFn",
             exported: true,
             params: [],
@@ -1758,14 +2053,14 @@ describe("Browser globals recognizer properties", () => {
             return_type: { kind: "unknown" },
             start_line: 1,
             end_line: 3,
-          }];
-          const hints = recognizeBrowserGlobals(sf, fns);
-          expect(hints[0]).toBeDefined();
-          expect(hints[0]!.adapter.id).toBe(BROWSER_GLOBALS_ADAPTER_ID);
-          expect(hints[0]!.reasons!.length).toBeGreaterThan(0);
-          expect(hints[0]!.reasons![0]).toContain(globalName);
-        },
-      ),
+          },
+        ];
+        const hints = recognizeBrowserGlobals(sf, fns);
+        expect(hints[0]).toBeDefined();
+        expect(hints[0]!.adapter.id).toBe(BROWSER_GLOBALS_ADAPTER_ID);
+        expect(hints[0]!.reasons!.length).toBeGreaterThan(0);
+        expect(hints[0]!.reasons![0]).toContain(globalName);
+      }),
     );
   });
 
@@ -1776,22 +2071,37 @@ describe("Browser globals recognizer properties", () => {
         fc.stringMatching(/^[a-z][a-zA-Z]{2,10}$/),
         (fnName, varName) => {
           // Filter out names that happen to be browser globals
-          fc.pre(!KNOWN_BROWSER_GLOBALS.includes(varName as typeof KNOWN_BROWSER_GLOBALS[number]));
-          fc.pre(!KNOWN_BROWSER_GLOBALS.includes(fnName as typeof KNOWN_BROWSER_GLOBALS[number]));
+          fc.pre(
+            !KNOWN_BROWSER_GLOBALS.includes(
+              varName as (typeof KNOWN_BROWSER_GLOBALS)[number],
+            ),
+          );
+          fc.pre(
+            !KNOWN_BROWSER_GLOBALS.includes(
+              fnName as (typeof KNOWN_BROWSER_GLOBALS)[number],
+            ),
+          );
           fc.pre(varName !== "fetch");
 
           const source = `export function ${fnName}() {\n  const x = "${varName}";\n  return x;\n}`;
-          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
-          const fns: FunctionAnalysis[] = [{
-            name: fnName,
-            exported: true,
-            params: [],
-            branches: [],
-            dependencies: [],
-            return_type: { kind: "unknown" },
-            start_line: 1,
-            end_line: 4,
-          }];
+          const sf = ts.createSourceFile(
+            "test.ts",
+            source,
+            ts.ScriptTarget.ES2022,
+            true,
+          );
+          const fns: FunctionAnalysis[] = [
+            {
+              name: fnName,
+              exported: true,
+              params: [],
+              branches: [],
+              dependencies: [],
+              return_type: { kind: "unknown" },
+              start_line: 1,
+              end_line: 4,
+            },
+          ];
           const hints = recognizeBrowserGlobals(sf, fns);
           expect(hints[0]).toBeUndefined();
         },
@@ -1801,12 +2111,16 @@ describe("Browser globals recognizer properties", () => {
 
   it("confidence is always high for non-ambiguous globals", () => {
     fc.assert(
-      fc.property(
-        fc.constantFrom(...KNOWN_BROWSER_GLOBALS),
-        (globalName) => {
-          const source = `export function testFn() {\n  ${globalName};\n}`;
-          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
-          const fns: FunctionAnalysis[] = [{
+      fc.property(fc.constantFrom(...KNOWN_BROWSER_GLOBALS), (globalName) => {
+        const source = `export function testFn() {\n  ${globalName};\n}`;
+        const sf = ts.createSourceFile(
+          "test.ts",
+          source,
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        const fns: FunctionAnalysis[] = [
+          {
             name: "testFn",
             exported: true,
             params: [],
@@ -1815,25 +2129,31 @@ describe("Browser globals recognizer properties", () => {
             return_type: { kind: "unknown" },
             start_line: 1,
             end_line: 3,
-          }];
-          const hints = recognizeBrowserGlobals(sf, fns);
-          expect(hints[0]!.confidence).toBe("high");
-        },
-      ),
+          },
+        ];
+        const hints = recognizeBrowserGlobals(sf, fns);
+        expect(hints[0]!.confidence).toBe("high");
+      }),
     );
   });
 
   it("output array length matches input array length", () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 5 }),
-        (count) => {
-          const fnDefs = Array.from({ length: count }, (_, i) =>
-            `export function fn${i}() {\n  return ${i};\n}`,
-          );
-          const source = fnDefs.join("\n");
-          const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2022, true);
-          const fns: FunctionAnalysis[] = Array.from({ length: count }, (_, i) => ({
+      fc.property(fc.integer({ min: 1, max: 5 }), (count) => {
+        const fnDefs = Array.from(
+          { length: count },
+          (_, i) => `export function fn${i}() {\n  return ${i};\n}`,
+        );
+        const source = fnDefs.join("\n");
+        const sf = ts.createSourceFile(
+          "test.ts",
+          source,
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        const fns: FunctionAnalysis[] = Array.from(
+          { length: count },
+          (_, i) => ({
             name: `fn${i}`,
             exported: true,
             params: [],
@@ -1842,11 +2162,11 @@ describe("Browser globals recognizer properties", () => {
             return_type: { kind: "unknown" as const },
             start_line: i * 3 + 1,
             end_line: i * 3 + 3,
-          }));
-          const hints = recognizeBrowserGlobals(sf, fns);
-          expect(hints).toHaveLength(count);
-        },
-      ),
+          }),
+        );
+        const hints = recognizeBrowserGlobals(sf, fns);
+        expect(hints).toHaveLength(count);
+      }),
     );
   });
 });
@@ -1954,11 +2274,13 @@ describe("SandboxProvider composition properties", () => {
       fc.property(arbEnvRecord, (envValues) => {
         const hooks = resolveRuntimeHooks(
           {
-            adapters: [{
-              id: "ts/runtime/import-meta-env",
-              apply: "required",
-              options: { env: envValues },
-            }],
+            adapters: [
+              {
+                id: "ts/runtime/import-meta-env",
+                apply: "required",
+                options: { env: envValues },
+              },
+            ],
           },
           { phase: "execute" },
         );
@@ -1968,7 +2290,9 @@ describe("SandboxProvider composition properties", () => {
         for (const provider of hooks.sandbox_providers) {
           provider.augmentSandbox(sandbox);
         }
-        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        const meta = sandbox["__shatter_import_meta"] as {
+          env: Record<string, unknown>;
+        };
         for (const key of Object.keys(envValues)) {
           expect(meta.env[key]).toBe(envValues[key]);
         }
@@ -1981,11 +2305,13 @@ describe("SandboxProvider composition properties", () => {
       fc.property(arbEnvRecord, (envValues) => {
         const hooks = resolveRuntimeHooks(
           {
-            adapters: [{
-              id: "ts/runtime/import-meta-env",
-              apply: "required",
-              options: { env: envValues },
-            }],
+            adapters: [
+              {
+                id: "ts/runtime/import-meta-env",
+                apply: "required",
+                options: { env: envValues },
+              },
+            ],
           },
           { phase: "execute" },
         );
@@ -1995,7 +2321,9 @@ describe("SandboxProvider composition properties", () => {
         for (const provider of hooks.sandbox_providers) {
           provider.augmentSandbox(sandbox);
         }
-        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        const meta = sandbox["__shatter_import_meta"] as {
+          env: Record<string, unknown>;
+        };
         // Vite defaults should be present (possibly overridden by user values)
         expect("MODE" in meta.env).toBe(true);
         expect("DEV" in meta.env).toBe(true);
@@ -2034,7 +2362,9 @@ describe("SandboxProvider composition properties", () => {
         for (const provider of hooks.sandbox_providers) {
           provider.augmentSandbox(sandbox);
         }
-        const meta = sandbox["__shatter_import_meta"] as { env: Record<string, unknown> };
+        const meta = sandbox["__shatter_import_meta"] as {
+          env: Record<string, unknown>;
+        };
         // All keys from both env records should be present
         for (const key of Object.keys(env1)) {
           expect(key in meta.env).toBe(true);
@@ -2052,10 +2382,23 @@ describe("SandboxProvider composition properties", () => {
 // ---------------------------------------------------------------------------
 
 describe("property: InvocationModel", () => {
+  it("InvocationOutcome survives JSON round-trip", () => {
+    fc.assert(
+      fc.property(arbInvocationOutcome, (outcome) => {
+        const decoded = JSON.parse(
+          JSON.stringify(outcome),
+        ) as InvocationOutcome;
+        expect(decoded).toEqual(outcome);
+      }),
+    );
+  });
+
   it("FunctionAnalysis with invocation_model survives JSON round-trip", () => {
     fc.assert(
       fc.property(arbFunctionAnalysis, (analysis) => {
-        const decoded = JSON.parse(JSON.stringify(analysis)) as FunctionAnalysis;
+        const decoded = JSON.parse(
+          JSON.stringify(analysis),
+        ) as FunctionAnalysis;
         expect(decoded).toEqual(analysis);
       }),
     );
@@ -2068,12 +2411,19 @@ describe("property: InvocationModel", () => {
           return;
         }
         const decoded = JSON.parse(JSON.stringify(model)) as InvocationModel;
-        if (decoded.kind !== "adapter" || decoded.synthetic_params === undefined) {
+        if (
+          decoded.kind !== "adapter" ||
+          decoded.synthetic_params === undefined
+        ) {
           throw new Error("decoded model lost adapter variant");
         }
-        expect(decoded.synthetic_params.length).toBe(model.synthetic_params.length);
+        expect(decoded.synthetic_params.length).toBe(
+          model.synthetic_params.length,
+        );
         for (let i = 0; i < model.synthetic_params.length; i++) {
-          expect(decoded.synthetic_params[i]).toEqual(model.synthetic_params[i]);
+          expect(decoded.synthetic_params[i]).toEqual(
+            model.synthetic_params[i],
+          );
         }
       }),
     );
@@ -2096,23 +2446,27 @@ describe("property: InvocationModel", () => {
 
   it("chooseInvocationStrategy: adapter model with matching hook returns adapter", () => {
     fc.assert(
-      fc.property(arbIdent, fc.array(arbParamInfo, { maxLength: 3 }), (adapterId, params) => {
-        const hook: InvocationHook = {
-          id: adapterId,
-          invoke: () => ({ returnValue: null }),
-        };
-        const model: InvocationModel = {
-          kind: "adapter",
-          adapter_id: adapterId,
-          synthetic_params: params,
-        };
-        const strategy = chooseInvocationStrategy(model, [hook]);
-        expect(strategy.kind).toBe("adapter");
-        if (strategy.kind === "adapter") {
-          expect(strategy.hook.id).toBe(adapterId);
-          expect(strategy.model.synthetic_params).toEqual(params);
-        }
-      }),
+      fc.property(
+        arbIdent,
+        fc.array(arbParamInfo, { maxLength: 3 }),
+        (adapterId, params) => {
+          const hook: InvocationHook = {
+            id: adapterId,
+            invoke: () => ({ status: "completed", return_value: null }),
+          };
+          const model: InvocationModel = {
+            kind: "adapter",
+            adapter_id: adapterId,
+            synthetic_params: params,
+          };
+          const strategy = chooseInvocationStrategy(model, [hook]);
+          expect(strategy.kind).toBe("adapter");
+          if (strategy.kind === "adapter") {
+            expect(strategy.hook.id).toBe(adapterId);
+            expect(strategy.model.synthetic_params).toEqual(params);
+          }
+        },
+      ),
     );
   });
 
@@ -2120,7 +2474,10 @@ describe("property: InvocationModel", () => {
     fc.assert(
       fc.property(arbIdent, arbIdent, (modelId, hookId) => {
         fc.pre(modelId !== hookId);
-        const hook: InvocationHook = { id: hookId, invoke: () => ({ returnValue: null }) };
+        const hook: InvocationHook = {
+          id: hookId,
+          invoke: () => ({ status: "completed", return_value: null }),
+        };
         const model: InvocationModel = { kind: "adapter", adapter_id: modelId };
         const strategy = chooseInvocationStrategy(model, [hook]);
         expect(strategy.kind).toBe("unsupported");
@@ -2135,7 +2492,10 @@ describe("property: InvocationModel", () => {
     const arbRerenderScenario = fc.record({
       kind: fc.constant("hook_rerender" as const),
       max_rerenders: fc.option(fc.nat({ max: 10 }), { nil: undefined }),
-      callable_path: fc.option(fc.array(fc.string({ minLength: 1 }), { maxLength: 3 }), { nil: undefined }),
+      callable_path: fc.option(
+        fc.array(fc.string({ minLength: 1 }), { maxLength: 3 }),
+        { nil: undefined },
+      ),
     });
     fc.assert(
       fc.property(arbRerenderScenario, (schema) => {
@@ -2193,7 +2553,7 @@ describe("property: InvocationModel", () => {
         (model, hookIds) => {
           const hooks: InvocationHook[] = hookIds.map((id) => ({
             id,
-            invoke: () => ({ returnValue: null }),
+            invoke: () => ({ status: "completed", return_value: null }),
           }));
           const a = chooseInvocationStrategy(model, hooks);
           const b = chooseInvocationStrategy(model, hooks);

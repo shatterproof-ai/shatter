@@ -17,12 +17,12 @@ import (
 // stubHook is a minimal InvocationHook for testing.
 type stubHook struct {
 	id      string
-	outcome *InvocationOutcome
+	outcome *AdapterInvocationOutcome
 	err     error
 }
 
 func (h *stubHook) ID() string { return h.id }
-func (h *stubHook) Invoke(_ InvocationContext) (*InvocationOutcome, error) {
+func (h *stubHook) Invoke(_ InvocationContext) (*AdapterInvocationOutcome, error) {
 	return h.outcome, h.err
 }
 
@@ -201,7 +201,8 @@ func TestExecuteAdapterOwned_Success(t *testing.T) {
 	retVal := json.RawMessage(`42`)
 	hook := &stubHook{
 		id: "test",
-		outcome: &InvocationOutcome{
+		outcome: &AdapterInvocationOutcome{
+			Status:      OutcomeStatusCompleted,
 			ReturnValue: retVal,
 		},
 	}
@@ -233,7 +234,8 @@ func TestExecuteAdapterOwned_Success(t *testing.T) {
 func TestExecuteAdapterOwned_WithError(t *testing.T) {
 	hook := &stubHook{
 		id: "test",
-		outcome: &InvocationOutcome{
+		outcome: &AdapterInvocationOutcome{
+			Status: OutcomeStatusRuntimeFailed,
 			ThrownError: &instrument.ErrorInfo{
 				ErrorType: "panic",
 				Message:   "something went wrong",
@@ -255,7 +257,8 @@ func TestExecuteAdapterOwned_WithError(t *testing.T) {
 func TestExecuteAdapterOwned_WithSideEffects(t *testing.T) {
 	hook := &stubHook{
 		id: "test",
-		outcome: &InvocationOutcome{
+		outcome: &AdapterInvocationOutcome{
+			Status:      OutcomeStatusCompletedWithFindings,
 			ReturnValue: json.RawMessage(`null`),
 			SideEffects: []instrument.SideEffect{
 				{Kind: "console_output", Level: "log", Message: "hello"},
@@ -343,7 +346,8 @@ func TestHandleExecute_AdapterDispatch(t *testing.T) {
 	retVal := json.RawMessage(`{"status":200}`)
 	hook := &stubHook{
 		id: "go/test-adapter",
-		outcome: &InvocationOutcome{
+		outcome: &AdapterInvocationOutcome{
+			Status:      OutcomeStatusCompleted,
 			ReturnValue: retVal,
 		},
 	}

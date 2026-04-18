@@ -18,7 +18,18 @@
     },
     "status": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown_ack", "generate", "shutdown_ack", "error"],
+      "enum": [
+        "handshake",
+        "analyze",
+        "instrument",
+        "prepare",
+        "execute",
+        "setup",
+        "teardown_ack",
+        "generate",
+        "shutdown_ack",
+        "error"
+      ],
       "description": "The response type, matching the originating command."
     }
   },
@@ -106,10 +117,7 @@
           "description": "Return value from the function, if it returned normally."
         },
         "thrown_error": {
-          "oneOf": [
-            { "$ref": "error-info.schema.json" },
-            { "type": "null" }
-          ],
+          "oneOf": [{ "$ref": "error-info.schema.json" }, { "type": "null" }],
           "description": "Error thrown during execution, if any."
         },
         "branch_path": {
@@ -202,7 +210,15 @@
           }
         }
       },
-      "required": ["status", "branch_path", "lines_executed", "calls_to_external", "path_constraints", "side_effects", "performance"]
+      "required": [
+        "status",
+        "branch_path",
+        "lines_executed",
+        "calls_to_external",
+        "path_constraints",
+        "side_effects",
+        "performance"
+      ]
     },
     "setup_response": {
       "type": "object",
@@ -252,10 +268,17 @@
         "code": {
           "type": "string",
           "enum": [
-            "file_not_found", "function_not_found", "parse_error",
-            "instrumentation_failed", "execution_timeout", "execution_crash",
-            "version_mismatch", "invalid_request", "compilation_error",
-            "internal_error", "not_supported"
+            "file_not_found",
+            "function_not_found",
+            "parse_error",
+            "instrumentation_failed",
+            "execution_timeout",
+            "execution_crash",
+            "version_mismatch",
+            "invalid_request",
+            "compilation_error",
+            "internal_error",
+            "not_supported"
           ],
           "description": "Machine-readable error code."
         },
@@ -268,6 +291,12 @@
         }
       },
       "required": ["status", "code", "message"]
+    },
+    "outcome_status": {
+      "$ref": "outcome-status.schema.json"
+    },
+    "invocation_outcome": {
+      "$ref": "invocation-outcome.schema.json"
     }
   }
 }
