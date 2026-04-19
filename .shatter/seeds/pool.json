@@ -1149,6 +1149,22 @@
           "kind": "int"
         },
         "value": -61
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 2,
+            "function": "ClassifyNumber",
+            "mode": "branch",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 169
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
