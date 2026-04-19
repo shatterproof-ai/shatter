@@ -4,9 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"go/ast"
-	"go/parser"
-	"go/printer"
-	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,41 +40,17 @@ func InstrumentFileWithTiming(sourcePath string, funcName *string, projectRoot *
 // If funcName is non-nil, only that function is instrumented. When projectRoot is non-nil,
 // go.mod and go.sum are copied from that directory instead of walking up from the source file.
 func InstrumentFileToDir(sourcePath, outputDir string, funcName *string, projectRoot *string, timing *frontendtiming.Collector) error {
-	fset := token.NewFileSet()
-	finishParse := timing.Start("instrument.parse")
-	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
-	finishParse()
+	packageName, source, err := instrumentSource(sourcePath, funcName, true /*renameMain*/, timing)
 	if err != nil {
-		return fmt.Errorf("parsing %s: %w", sourcePath, err)
+		return err
 	}
 
-	packageName := file.Name.Name
-	finishTransform := timing.Start("instrument.transform")
-	transformFile(fset, file, funcName)
-	finishTransform()
-
-	// Rename func main() in package main files: the harness main.go provides
-	// the entry point, so a pre-existing func main() would cause a redeclaration
-	// error at build time. Renaming (rather than removing) preserves imports
-	// that the original main may have used.
-	if packageName == "main" {
-		renameMainFunc(file)
-	}
-
-	// Write transformed source
 	sourceName := filepath.Base(sourcePath)
 	outPath := filepath.Join(outputDir, sourceName)
 	finishWriteSource := timing.Start("instrument.write_source")
-	outFile, err := os.Create(outPath)
-	if err != nil {
+	if err := os.WriteFile(outPath, source, 0644); err != nil {
 		finishWriteSource()
 		return fmt.Errorf("creating output file: %w", err)
-	}
-	defer outFile.Close()
-
-	if err := printer.Fprint(outFile, fset, file); err != nil {
-		finishWriteSource()
-		return fmt.Errorf("printing transformed AST: %w", err)
 	}
 	finishWriteSource()
 
