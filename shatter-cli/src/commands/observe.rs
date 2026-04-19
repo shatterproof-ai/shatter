@@ -178,8 +178,8 @@ pub(crate) async fn run_observe(
             None,
             prepare_id,
             func.loops.clone(),
-        None,
-        None,
+            None,
+            None,
         )
         .await
         {

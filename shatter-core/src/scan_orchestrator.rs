@@ -1666,7 +1666,9 @@ async fn run_layer_batched(
     scan_start: Instant,
     scheduler_mode: &str,
 ) -> Vec<FunctionOutcome> {
-    use crate::batch_scheduler::{BatchOutcome, BatchScheduler, CoverageCounts, WorkerBatchSummary};
+    use crate::batch_scheduler::{
+        BatchOutcome, BatchScheduler, CoverageCounts, WorkerBatchSummary,
+    };
     use crate::cache::SchedulerState;
 
     let task_count = tasks.len();
@@ -1892,10 +1894,8 @@ async fn run_layer_batched(
                 }
 
                 // str-bo4z.6: compute uncovered branches before moving func_result.
-                let uncovered = compute_uncovered_branch_strings(
-                    &task.analysis,
-                    &func_result.exploration,
-                );
+                let uncovered =
+                    compute_uncovered_branch_strings(&task.analysis, &func_result.exploration);
                 let has_uncovered = !uncovered.is_empty();
                 if has_uncovered {
                     log::debug!(
@@ -2073,7 +2073,8 @@ async fn run_layer_batched(
     // str-bo4z.6: only uncovered targets are retained durably.
     if let Some(ssc) = scheduler_state_cache.as_ref() {
         for (idx, persisted) in persisted_flags.iter().enumerate() {
-            if !persisted && !live_states[idx].uncovered_branches.is_empty()
+            if !persisted
+                && !live_states[idx].uncovered_branches.is_empty()
                 && let Err(e) = ssc.store(&live_states[idx], scheduler_mode)
             {
                 log::warn!(
@@ -2917,8 +2918,7 @@ pub async fn parallel_scan_with_progress(
             // Compute known uncovered targets. On first exploration all
             // branches are targets; on subsequent runs subtract already-covered
             // branches recovered from the scheduler state cache.
-            let all_branch_ids: Vec<u32> =
-                analysis.branches.iter().map(|b| b.id).collect();
+            let all_branch_ids: Vec<u32> = analysis.branches.iter().map(|b| b.id).collect();
             let covered_ids: HashSet<u32> = if !all_branch_ids.is_empty() {
                 let all_ids: HashSet<u32> = all_branch_ids.iter().copied().collect();
                 if let Some(ssc) = &config.scheduler_state_cache {
@@ -2993,10 +2993,7 @@ pub async fn parallel_scan_with_progress(
             }
 
             let known_targets = KnownTargets {
-                max_nesting_depth: estimate_nesting_depth(
-                    &analysis.branches,
-                    &uncovered_ids,
-                ),
+                max_nesting_depth: estimate_nesting_depth(&analysis.branches, &uncovered_ids),
                 branch_ids: uncovered_ids,
             };
             log::debug!(
@@ -8936,7 +8933,10 @@ mod tests {
         let mut persisted = false;
 
         persist_scheduler_state_if_exhausted(
-            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+            &cache_opt,
+            &state,
+            &mut persisted,
+            CoverageMode::Branch.as_str(),
         );
         assert!(persisted, "first call on an exhausted state must persist");
 
@@ -8966,7 +8966,10 @@ mod tests {
         let mut persisted = false;
 
         persist_scheduler_state_if_exhausted(
-            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+            &cache_opt,
+            &state,
+            &mut persisted,
+            CoverageMode::Branch.as_str(),
         );
         assert!(persisted);
 
@@ -8979,7 +8982,10 @@ mod tests {
             ..SchedulerState::default()
         };
         persist_scheduler_state_if_exhausted(
-            &cache_opt, &state2, &mut persisted, CoverageMode::Branch.as_str(),
+            &cache_opt,
+            &state2,
+            &mut persisted,
+            CoverageMode::Branch.as_str(),
         );
 
         let loaded = cache
@@ -9009,7 +9015,10 @@ mod tests {
         let mut persisted = false;
 
         persist_scheduler_state_if_exhausted(
-            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+            &cache_opt,
+            &state,
+            &mut persisted,
+            CoverageMode::Branch.as_str(),
         );
         assert!(
             !persisted,
@@ -9054,18 +9063,14 @@ mod tests {
 
         // Same call shape the load loop uses when the task's current
         // deep_fp is "NEW".
-        let loaded = cache
-            .load_if_fresh("pkg:fn_changed", mode, "NEW")
-            .unwrap();
+        let loaded = cache.load_if_fresh("pkg:fn_changed", mode, "NEW").unwrap();
         assert_eq!(
             loaded, None,
             "body change must drop stale state so the function returns to the queue unexplored"
         );
 
         // Idempotency: a second pass observes a clean cache miss.
-        let loaded_again = cache
-            .load_if_fresh("pkg:fn_changed", mode, "NEW")
-            .unwrap();
+        let loaded_again = cache.load_if_fresh("pkg:fn_changed", mode, "NEW").unwrap();
         assert_eq!(loaded_again, None);
 
         // The on-disk file is gone — a plain `load` also reports a miss.
@@ -9125,9 +9130,7 @@ mod tests {
         cache.store(&stable, mode).unwrap();
 
         // Invalidate the changed function.
-        let dropped = cache
-            .load_if_fresh("pkg:fn_changed", mode, "NEW")
-            .unwrap();
+        let dropped = cache.load_if_fresh("pkg:fn_changed", mode, "NEW").unwrap();
         assert_eq!(dropped, None);
 
         // Sibling is fully recoverable under its own (matching) fingerprint.
@@ -9152,7 +9155,10 @@ mod tests {
         let mut persisted = false;
 
         persist_scheduler_state_if_exhausted(
-            &cache_opt, &state, &mut persisted, CoverageMode::Branch.as_str(),
+            &cache_opt,
+            &state,
+            &mut persisted,
+            CoverageMode::Branch.as_str(),
         );
         assert!(
             !persisted,
@@ -9301,9 +9307,7 @@ mod tests {
 
     #[test]
     fn uncovered_branches_format_is_id_colon_line() {
-        let analysis = make_analysis_with_branches(vec![
-            make_branch_info(42, 123, "foo"),
-        ]);
+        let analysis = make_analysis_with_branches(vec![make_branch_info(42, 123, "foo")]);
         let observation = make_observation_with_discoveries(vec![]);
 
         let uncovered = compute_uncovered_branch_strings(&analysis, &observation);
@@ -9352,7 +9356,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
@@ -9564,10 +9568,7 @@ mod tests_nesting_depth {
 
     #[test]
     fn known_targets_struct_construction() {
-        let branches = vec![
-            branch(0, 10, BranchType::If),
-            branch(1, 20, BranchType::If),
-        ];
+        let branches = vec![branch(0, 10, BranchType::If), branch(1, 20, BranchType::If)];
         let uncovered = vec![0, 1];
         let targets = KnownTargets {
             max_nesting_depth: estimate_nesting_depth(&branches, &uncovered),

@@ -26,8 +26,8 @@ use crate::protocol::{
     AdapterHint, AdapterRelation, BoundOp, BranchInfo, BranchType, Command, ConnectionFailure,
     CryptoBoundary, DepDetectionKind, DependencyKind, DiscoveredDependency, ErrorCode,
     ExecuteResult, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile, ExternalDependency,
-    FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel, LiteralValue, LoopBodyState, LoopInfo,
-    MockBehavior, MockConfig, PROTOCOL_VERSION, PerformanceMetrics, Request, Response,
+    FunctionAnalysis, GeneratorKind, InductionVar, InvocationModel, LiteralValue, LoopBodyState,
+    LoopInfo, MockBehavior, MockConfig, PROTOCOL_VERSION, PerformanceMetrics, Request, Response,
     ResponseResult, RuntimeCryptoBoundary, RuntimeCryptoBoundaryKind, TimingPhaseSummary,
     TimingSummary,
 };

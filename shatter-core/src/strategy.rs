@@ -123,11 +123,9 @@ impl RegisteredStrategyKind {
         match self {
             Self::UserProvided => DiscoveryMethod::UserProvided,
             Self::BoundarySeeds => DiscoveryMethod::BoundarySearch,
-            Self::Literals
-            | Self::PoolSeeds
-            | Self::Random
-            | Self::Z3Solver
-            | Self::Fuzzer => DiscoveryMethod::Random,
+            Self::Literals | Self::PoolSeeds | Self::Random | Self::Z3Solver | Self::Fuzzer => {
+                DiscoveryMethod::Random
+            }
         }
     }
 

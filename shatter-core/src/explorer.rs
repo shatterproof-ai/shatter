@@ -29,9 +29,7 @@ use crate::protocol::{
     ResponseResult, SetupContextEntry, SetupContextStack,
 };
 use crate::setup_manager::SetupManager;
-use crate::strategy::{
-    SpecialCandidatePath, StrategyContext, build_random_explorer_meta_strategy,
-};
+use crate::strategy::{SpecialCandidatePath, StrategyContext, build_random_explorer_meta_strategy};
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
 ///
@@ -3906,7 +3904,7 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],

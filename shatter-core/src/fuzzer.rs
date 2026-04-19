@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 use serde_json::Value;
 
-use crate::config::{
-    self, FuzzConfig,
-};
+use crate::config::{self, FuzzConfig};
 use crate::execution_record::{BranchDecision, SymConstraint};
 use crate::types::ParamInfo;
 
@@ -161,8 +159,11 @@ impl FuzzSession {
     where
         F: FnMut(Vec<Value>) -> Fut,
         Fut: std::future::Future<
-            Output = Result<Option<(u64, Vec<BranchDecision>, Vec<SymConstraint>, Vec<u32>)>, E>,
-        >,
+                Output = Result<
+                    Option<(u64, Vec<BranchDecision>, Vec<SymConstraint>, Vec<u32>)>,
+                    E,
+                >,
+            >,
     {
         let plateau_threshold = self
             .config
@@ -286,7 +287,7 @@ mod tests {
 
         let history = vec![
             (vec![Value::from(1)], vec![5, 10], 100),
-            (vec![Value::from(2)], vec![3, 7], 200),  // no target
+            (vec![Value::from(2)], vec![3, 7], 200), // no target
             (vec![Value::from(3)], vec![5, 20], 300),
         ];
 
@@ -302,9 +303,9 @@ mod tests {
     }
 
     mod proptests {
-        use proptest::prelude::*;
         use crate::input_gen;
         use crate::test_arbitraries::arb_param_info;
+        use proptest::prelude::*;
 
         proptest! {
             #[test]
@@ -331,10 +332,10 @@ mod tests {
 
     mod fuzz_session_tests {
         use super::*;
-        use std::collections::HashSet;
-        use std::sync::atomic::{AtomicU64, Ordering};
         use crate::config::FuzzConfig;
         use crate::types::{ParamInfo, TypeInfo};
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         fn make_config(plateau: u32, max_exec: u32, timeout: u32) -> FuzzConfig {
             FuzzConfig {

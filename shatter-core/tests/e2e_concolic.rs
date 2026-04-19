@@ -182,8 +182,8 @@ async fn concolic_classifynumber_discovers_all_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -270,8 +270,8 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -349,8 +349,8 @@ async fn concolic_safedivide_discovers_error_paths() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -435,8 +435,8 @@ async fn concolic_validateemail_discovers_string_paths() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -520,8 +520,8 @@ async fn concolic_validateemail_with_literal_seeds() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1086,8 +1086,8 @@ async fn orchestrator_explore_with_setup_context() {
         Some(setup_ctx),
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("orchestrator explore with setup context failed");
@@ -1504,8 +1504,8 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1594,8 +1594,8 @@ async fn mcdc_compound_or_discovers_all_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1715,8 +1715,8 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");

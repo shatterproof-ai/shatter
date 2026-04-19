@@ -38,9 +38,7 @@ use crate::mcdc::McdcTable;
 use crate::mock_value_space::LiveFirstState;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
-use crate::strategy::{
-    SpecialCandidatePath, StrategyContext, build_concolic_meta_strategy,
-};
+use crate::strategy::{SpecialCandidatePath, StrategyContext, build_concolic_meta_strategy};
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo};
