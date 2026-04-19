@@ -539,6 +539,71 @@ side_effect_capabilities:
       go: not_supported
       rust: supported
 
+# --- Feature capabilities ---
+#
+# Protocol-visible features introduced by the Go frontend redesign (str-hy9b).
+# Declarative section mirroring side_effect_capabilities / adapter_capabilities:
+# informational only, not enforced by scripts/validate-parity.py (which
+# validates commands and complex_types). Conformance tests (str-hy9b.H4) read
+# these entries to decide which cross-frontend assertions to run for each
+# capability.
+#
+# status: required   All frontends must support
+# status: optional   Frontends may support on their own timeline
+#
+# frontends.<name>:
+#   supported      frontend implements the feature
+#   not_supported  frontend does not implement (conformance expects a clean
+#                  "capability not supported" response, per H4)
+#   partial        advertised but incomplete — informational only
+
+feature_capabilities:
+  outcome:
+    status: optional
+    notes: >
+      Standardized invocation-outcome wire shape (see shared_wire_types.outcome_status
+      and shared_wire_types.invocation_outcome). Introduced in str-hy9b.A1 and
+      brought to cross-frontend parity in str-hy9b.A5. All three frontends emit
+      outcomes for analyze→execute flows.
+    frontends:
+      typescript: supported
+      go: supported
+      rust: supported
+
+  invocation_plan:
+    status: optional
+    notes: >
+      Planner artifact schema (str-hy9b.E1). Describes the ordered plan of
+      invocations a frontend intends to run for a discovered target. Go-only at
+      this stage; TS and Rust will reach parity in a later phase.
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+
+  adapter_http_nethttp:
+    status: optional
+    notes: >
+      net/http handler adapter (str-hy9b.G1). Recognizes
+      func(http.ResponseWriter, *http.Request) handlers and executes them via
+      httptest.NewRequest / httptest.NewRecorder. Adapter ID go/http-handler.
+      Go-specific — TS and Rust do not have a Go net/http equivalent.
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+
+  hint_config_v1:
+    status: optional
+    notes: >
+      .shatter/config.yaml hint schema (str-hy9b.G3). Declarative hints that
+      influence target discovery, adapter selection, and planner behavior for
+      Go packages. Go-only at this stage.
+    frontends:
+      typescript: not_supported
+      go: supported
+      rust: not_supported
+
 # --- Adapter capabilities ---
 #
 # Adapters wrap function invocation for targets that cannot be called directly
