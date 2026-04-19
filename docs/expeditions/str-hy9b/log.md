@@ -32,16 +32,20 @@ Stale worktrees left by the prior workflow (no commits on them, all behind main)
 These must be removed before starting those tasks under the expedition model.
 
 
+### 2026-04-19T21:07:05Z — Started task
+- Branch: `str-hy9b-01-a2-outcome-plumbing`.
+- Worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing`.
+- Base head at branch creation: `f78ec486fce9ad5cea6a1193d015f2094c3266c5`.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `ready_for_task`
+- Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `none`
-- Active task worktree: `none`
+- Active task branch: `str-hy9b-01-a2-outcome-plumbing`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing`
 - Last completed: `none`
-- Next action: Clean up stale worktrees from prior workflow, then start the
-  next ready task. Priority groups: A (outcome plumbing), C (packages-based
-  analyzer), D (build orchestrator).
+- Next action: Complete work on `str-hy9b-01-a2-outcome-plumbing` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing`.
 <!-- expedition-resume:end -->
