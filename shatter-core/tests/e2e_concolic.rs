@@ -1629,6 +1629,31 @@ async fn mcdc_compound_or_discovers_all_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Go internal-method spike fixture (str-hy9b.D7)
+// ---------------------------------------------------------------------------
+
+/// Spike: execute one method on an `internal/...` package without a visibility error.
+///
+/// Fixture: `examples/go/internal-method/internal/svc/svc.go`
+///   - module `example.com/spike`
+///   - `type Service struct{}`; `func New() *Service`
+///   - `func (s *Service) DoIt(x int) int` with a branch on `x`
+///
+/// When str-hy9b.D3–D6 (wrapper template, launcher harness, build orchestrator,
+/// concolic instrumentation overlay) and str-hy9b.E1 (planner skeleton) are
+/// complete, this test should:
+///   1. Spawn the Go frontend and analyze `internal/svc/svc.go`.
+///   2. Assert the analyzer returns a target named `(*Service).DoIt` with kind `"method"`.
+///   3. Assert the planner emits a plan with `receiver_kind: "new_service"`.
+///   4. Assert `go build` succeeds (no `internal` package visibility error from the overlay).
+///   5. Assert the launcher runs and emits an outcome with `status: "completed"`.
+#[tokio::test]
+#[ignore = "requires str-hy9b.D3-D6 (wrapper, launcher, build orchestrator, overlay) and str-hy9b.E1 (planner)"]
+async fn go_internal_method_spike() {
+    unimplemented!("str-hy9b.D3-D6 and str-hy9b.E1 not yet implemented")
+}
+
+// ---------------------------------------------------------------------------
 // Genetic algorithm integration tests
 // ---------------------------------------------------------------------------
 
