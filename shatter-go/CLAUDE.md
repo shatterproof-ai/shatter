@@ -86,3 +86,11 @@ crashing or returning malformed data.
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
+
+## Invocation Outcome Contract (str-hy9b.A2)
+
+Every execute response carries an `InvocationOutcome` under `response.outcome`. The status is one of `completed`, `build_failed`, `runtime_failed`, `timed_out`, or `unsupported` (the last for a function not present in the source). Non-completed statuses always carry a non-empty one-sentence `short_reason`; `build_failed` and `runtime_failed` also carry a `thrown_error` with compiler diagnostics or a panic trace. Classification lives in `failureOutcome()` (host-level errors) and `outcomeFromResult()` (harness-captured runtime state) in `protocol/handler.go`. Legacy `response.code` / `response.message` fields are preserved on error paths for backwards compatibility.
+
+## Workspace GOCACHE Binding (str-hy9b.B2)
+
+Every `go build` invoked from shatter-go pins `GOCACHE` to `<workspace>/cache/build` via `Workspace.GoEnv()`. Wiring lives in `instrument.applyGoBuildEnv` (for `instrument/` build sites) and `instrument.WorkspaceGoEnv()` (consumed by `setup/loader.go`). The handler installs the provider from its workspace handle in `newHandler()`; tests that construct a handler without a workspace fall back to the legacy `SHATTER_HARNESS_CACHE`-based cache hierarchy.

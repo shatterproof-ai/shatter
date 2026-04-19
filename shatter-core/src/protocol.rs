@@ -769,6 +769,10 @@ pub enum OutcomeStatus {
 pub struct InvocationOutcome {
     /// Machine-readable classification of the overall invocation result.
     pub status: OutcomeStatus,
+    /// One human-readable sentence summarizing why the invocation reached this status.
+    /// Required (non-empty) for any non-completed status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_reason: Option<String>,
     /// Return value from the invocation, if it completed normally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_value: Option<serde_json::Value>,
@@ -3021,6 +3025,7 @@ mod tests {
     fn invocation_outcome_round_trips() {
         let outcome = InvocationOutcome {
             status: OutcomeStatus::CompletedWithFindings,
+            short_reason: Some("completed with findings".into()),
             return_value: Some(serde_json::json!({"status": 200})),
             thrown_error: Some(ErrorInfo {
                 error_type: "warning".into(),

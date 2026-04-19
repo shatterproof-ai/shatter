@@ -68,6 +68,12 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 	// Register built-in adapter factories.
 	h.RegisterHookFactory(createHTTPHandlerFactory())
 	h.RegisterHookFactory(createGinHandlerFactory())
+	// Pin every `go build` invoked from this process to the workspace-backed
+	// GOCACHE so consecutive runs reuse compiled artifacts (str-hy9b.B2).
+	if workspace != nil {
+		ws := workspace
+		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
+	}
 	return h
 }
 
@@ -578,10 +584,50 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			resp.Code = ErrInternalError
 		}
 		resp.Message = err.Error()
+		resp.Outcome = failureOutcome(err)
 		return resp
 	}
 
 	return mapExecuteResult(resp, result, timing)
+}
+
+// failureOutcome classifies an executor error into an InvocationOutcome. It
+// produces the status + short_reason + thrown_error triple required by the
+// outcome-driven reporting pipeline (str-hy9b.A2). Callers are responsible
+// for retaining legacy error-code + message fields on the Response for
+// backwards compatibility with existing consumers.
+func failureOutcome(err error) *InvocationOutcome {
+	msg := err.Error()
+	trimmed := strings.TrimSpace(msg)
+	first := trimmed
+	if idx := strings.IndexByte(first, '\n'); idx >= 0 {
+		first = first[:idx]
+	}
+	reason := first
+	errInfo := &ErrorInfo{ErrorType: "executor_error", Message: msg}
+	var status OutcomeStatus
+	switch {
+	case strings.Contains(msg, "function not found"):
+		status = OutcomeStatusUnsupported
+		reason = "target function not found in source file"
+		errInfo.ErrorType = "function_not_found"
+	case strings.Contains(msg, "build failed"):
+		status = OutcomeStatusBuildFailed
+		reason = "go build failed during harness compilation"
+		errInfo.ErrorType = "build_failed"
+	case strings.Contains(msg, "timed out"):
+		status = OutcomeStatusTimedOut
+		reason = "execution exceeded the configured timeout"
+		errInfo.ErrorType = "execution_timeout"
+	default:
+		status = OutcomeStatusRuntimeFailed
+		errInfo.ErrorType = "runtime_failed"
+	}
+	return &InvocationOutcome{
+		Status:      status,
+		ShortReason: &reason,
+		ThrownError: errInfo,
+	}
 }
 
 // mapExecuteResult maps an instrument.ExecuteResult to a protocol Response.
@@ -604,7 +650,40 @@ func mapExecuteResult(resp Response, result *instrument.ExecuteResult, timing *f
 		HeapUsedBytes:      result.Performance.HeapUsedBytes,
 		HeapAllocatedBytes: result.Performance.HeapAllocatedBytes,
 	}
+	resp.Outcome = outcomeFromResult(result, resp.SideEffects, resp.ThrownError)
 	return finalizeResponse(resp, timing)
+}
+
+// outcomeFromResult synthesizes an InvocationOutcome for a successfully
+// executed invocation. A non-nil ThrownError indicates a runtime panic that
+// the harness caught and reported without killing the process; we classify
+// those as `runtime_failed`, distinguishing them from the host-level build
+// and timeout failures that never produce an ExecuteResult at all.
+func outcomeFromResult(result *instrument.ExecuteResult, sideEffects []SideEffect, thrownErr *ErrorInfo) *InvocationOutcome {
+	if thrownErr != nil {
+		kind := thrownErr.ErrorType
+		if kind == "" {
+			kind = "runtime error"
+		}
+		status := OutcomeStatusRuntimeFailed
+		reason := "invocation raised a " + kind
+		if kind == "timeout" {
+			status = OutcomeStatusTimedOut
+			reason = "execution exceeded the configured timeout"
+		}
+		return &InvocationOutcome{
+			Status:      status,
+			ShortReason: &reason,
+			ReturnValue: result.ReturnValue,
+			ThrownError: thrownErr,
+			SideEffects: sideEffects,
+		}
+	}
+	return &InvocationOutcome{
+		Status:      OutcomeStatusCompleted,
+		ReturnValue: result.ReturnValue,
+		SideEffects: sideEffects,
+	}
 }
 
 func convertLoopBodyStates(states []instrument.LoopBodyState) []LoopBodyState {

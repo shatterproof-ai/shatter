@@ -126,15 +126,7 @@ func ExecuteGinHandler(sourcePath, funcName string, inputs []json.RawMessage, ca
 
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
-	if isStandaloneGoFile(sourcePath) {
-		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	} else {
-		if gocache := moduleGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	}
+	applyGoBuildEnv(buildCmd, sourcePath)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("build failed: %w\n%s", err, buildOut)

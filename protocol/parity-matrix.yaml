@@ -27,10 +27,15 @@ shared_wire_types:
       rust: implemented
   invocation_outcome:
     notes: >
-      Reusable object with fields status, return_value, thrown_error, and
-      side_effects. TypeScript and Go also use this shape for adapter-owned
-      invocation helpers; Rust mirrors the wire contract for parity even though
-      execute responses remain flattened.
+      Reusable object with fields status, short_reason, return_value,
+      thrown_error, and side_effects. `short_reason` is a one-sentence
+      human-readable explanation required (non-empty) for every non-completed
+      status; the field itself is present on every binding. TypeScript and Go
+      also use this shape for adapter-owned invocation helpers; Rust mirrors
+      the wire contract for parity even though execute responses remain
+      flattened. The Go frontend emits InvocationOutcome on every execute
+      response (str-hy9b.A2); other frontends have the type but do not yet
+      populate it on execute responses.
     frontends:
       typescript: implemented
       go: implemented

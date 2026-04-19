@@ -422,6 +422,9 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
 
 const arbInvocationOutcome: fc.Arbitrary<InvocationOutcome> = fc.record({
   status: arbOutcomeStatus,
+  short_reason: fc.option(fc.string({ minLength: 1, maxLength: 80 }), {
+    nil: undefined,
+  }),
   return_value: fc.option(fc.jsonValue(), { nil: undefined }),
   thrown_error: fc.option(arbErrorInfo, { nil: undefined }),
   side_effects: fc.option(fc.array(arbSideEffect, { maxLength: 3 }), {
