@@ -842,6 +842,31 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 type paramInfo struct {
 	Name   string
 	GoType string
+	// Stub is non-nil when the parameter is an interface with no concrete
+	// implementation in the analyzed file and a method count of 1 or 2.
+	// The harness generator emits a stub type satisfying the interface
+	// instead of unmarshaling the parameter from JSON.
+	Stub *interfaceStubInfo
+}
+
+// interfaceStubInfo describes a synthesized implementation of a small
+// interface parameter. TypeName is the bare interface name. Methods is
+// the ordered list of methods that must be implemented; each renders into
+// the harness file with zero-value returns and a recorder call.
+type interfaceStubInfo struct {
+	TypeName string
+	Methods  []stubMethodInfo
+	// Imports lists package paths the harness must import so the rendered
+	// method signatures and zero-value declarations type-check.
+	Imports []string
+}
+
+// stubMethodInfo carries the rendered signature pieces for one method on
+// a generated stub.
+type stubMethodInfo struct {
+	Name    string
+	Params  []string // each entry is "<name> <type>"
+	Returns []string // each entry is a rendered Go type
 }
 
 // returnTypeInfo describes what the function returns.
@@ -879,7 +904,7 @@ func analyzeForExecution(sourcePath, funcName string) ([]paramInfo, returnTypeIn
 		}
 
 		pkgName := file.Name.Name
-		params := extractParamInfo(fn, info, pkgName)
+		params := extractParamInfo(fn, info, pkgName, file)
 		retInfo := extractReturnInfo(fn, info, pkgName)
 		return params, retInfo, nil
 	}
@@ -919,18 +944,258 @@ func analyzeGlobalVars(sourcePath string) ([]globalVarInfo, error) {
 	return vars, nil
 }
 
-func extractParamInfo(fn *ast.FuncDecl, info *types.Info, pkgName string) []paramInfo {
+func extractParamInfo(fn *ast.FuncDecl, info *types.Info, pkgName string, file *ast.File) []paramInfo {
 	if fn.Type.Params == nil {
 		return nil
 	}
 	var params []paramInfo
 	for _, field := range fn.Type.Params.List {
 		goType := resolveGoType(field.Type, info, pkgName)
+		stub := interfaceStubFor(field.Type, info, file, pkgName)
 		for _, name := range field.Names {
-			params = append(params, paramInfo{Name: name.Name, GoType: goType})
+			params = append(params, paramInfo{Name: name.Name, GoType: goType, Stub: stub})
 		}
 	}
 	return params
+}
+
+// interfaceStubFor returns a stub descriptor if expr is an interface type
+// with 1 or 2 methods and no struct declared in the same file implements
+// it. Otherwise it returns nil.
+func interfaceStubFor(expr ast.Expr, info *types.Info, file *ast.File, pkgName string) *interfaceStubInfo {
+	if info == nil || file == nil {
+		return nil
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return nil
+	}
+	named, _ := tv.Type.(*types.Named)
+	if named == nil {
+		return nil
+	}
+	iface, ok := named.Underlying().(*types.Interface)
+	if !ok {
+		return nil
+	}
+	n := iface.NumMethods()
+	if n < 1 || n > 2 {
+		return nil
+	}
+	if localStructImplements(file, info, iface) {
+		return nil
+	}
+	qualifier := func(p *types.Package) string {
+		if p == nil {
+			return ""
+		}
+		if p.Name() == pkgName {
+			return ""
+		}
+		return p.Name()
+	}
+	importPaths := map[string]bool{}
+	collectImportPaths := func(t types.Type) {
+		// Walk once — record every named type's package path.
+		seen := map[types.Type]bool{}
+		var walk func(types.Type)
+		walk = func(t types.Type) {
+			if t == nil || seen[t] {
+				return
+			}
+			seen[t] = true
+			switch v := t.(type) {
+			case *types.Named:
+				if obj := v.Obj(); obj != nil && obj.Pkg() != nil && obj.Pkg().Name() != pkgName {
+					importPaths[obj.Pkg().Path()] = true
+				}
+				walk(v.Underlying())
+			case *types.Pointer:
+				walk(v.Elem())
+			case *types.Slice:
+				walk(v.Elem())
+			case *types.Array:
+				walk(v.Elem())
+			case *types.Map:
+				walk(v.Key())
+				walk(v.Elem())
+			case *types.Chan:
+				walk(v.Elem())
+			case *types.Signature:
+				if p := v.Params(); p != nil {
+					for i := 0; i < p.Len(); i++ {
+						walk(p.At(i).Type())
+					}
+				}
+				if r := v.Results(); r != nil {
+					for i := 0; i < r.Len(); i++ {
+						walk(r.At(i).Type())
+					}
+				}
+			}
+		}
+		walk(t)
+	}
+	methods := make([]stubMethodInfo, 0, n)
+	for i := 0; i < n; i++ {
+		m := iface.Method(i)
+		sig, ok := m.Type().(*types.Signature)
+		if !ok {
+			return nil
+		}
+		var sm stubMethodInfo
+		sm.Name = m.Name()
+		if p := sig.Params(); p != nil {
+			for j := 0; j < p.Len(); j++ {
+				pv := p.At(j)
+				collectImportPaths(pv.Type())
+				name := pv.Name()
+				if name == "" {
+					name = fmt.Sprintf("_p%d", j)
+				}
+				sm.Params = append(sm.Params, name+" "+types.TypeString(pv.Type(), qualifier))
+			}
+		}
+		if r := sig.Results(); r != nil {
+			for j := 0; j < r.Len(); j++ {
+				rv := r.At(j)
+				collectImportPaths(rv.Type())
+				sm.Returns = append(sm.Returns, types.TypeString(rv.Type(), qualifier))
+			}
+		}
+		methods = append(methods, sm)
+	}
+	imports := make([]string, 0, len(importPaths))
+	for p := range importPaths {
+		imports = append(imports, p)
+	}
+	sort.Strings(imports)
+	return &interfaceStubInfo{
+		TypeName: named.Obj().Name(),
+		Methods:  methods,
+		Imports:  imports,
+	}
+}
+
+// collectStubParams returns the subset of params that need a generated
+// interface stub, preserving parameter order.
+func collectStubParams(params []paramInfo) []paramInfo {
+	var out []paramInfo
+	for _, p := range params {
+		if p.Stub != nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// extraStubImports returns the deduplicated sorted list of package paths
+// the harness needs to import so stub method signatures type-check.
+// Packages already imported unconditionally by the harness (encoding/json,
+// fmt, sync) are excluded.
+func extraStubImports(stubParams []paramInfo) []string {
+	baseline := map[string]bool{
+		"encoding/json": true,
+		"fmt":           true,
+		"sync":          true,
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range stubParams {
+		for _, imp := range p.Stub.Imports {
+			if baseline[imp] || seen[imp] {
+				continue
+			}
+			seen[imp] = true
+			out = append(out, imp)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// writeStubDeclarations emits the stub recorder type + mutex + helper,
+// followed by one struct + method block per stubbed param. Each method
+// records a call into shatterStubCalls and returns zero values.
+func writeStubDeclarations(b *strings.Builder, stubParams []paramInfo) {
+	b.WriteString("type shatterStubCall struct {\n")
+	b.WriteString("\tType   string\n")
+	b.WriteString("\tMethod string\n")
+	b.WriteString("}\n\n")
+	b.WriteString("var shatterStubCalls []shatterStubCall\n")
+	b.WriteString("var shatterStubCallsMu sync.Mutex\n\n")
+	b.WriteString("func shatterRecordStubCall(t, m string) {\n")
+	b.WriteString("\tshatterStubCallsMu.Lock()\n")
+	b.WriteString("\tdefer shatterStubCallsMu.Unlock()\n")
+	b.WriteString("\tshatterStubCalls = append(shatterStubCalls, shatterStubCall{Type: t, Method: m})\n")
+	b.WriteString("}\n\n")
+	// Deduplicate by TypeName in case the same interface appears twice.
+	emitted := map[string]bool{}
+	for _, p := range stubParams {
+		stub := p.Stub
+		if emitted[stub.TypeName] {
+			continue
+		}
+		emitted[stub.TypeName] = true
+		b.WriteString(fmt.Sprintf("type shatterStub_%s struct{}\n\n", stub.TypeName))
+		for _, m := range stub.Methods {
+			b.WriteString(fmt.Sprintf("func (s *shatterStub_%s) %s(%s)", stub.TypeName, m.Name, strings.Join(m.Params, ", ")))
+			switch len(m.Returns) {
+			case 0:
+				b.WriteString(" {\n")
+			case 1:
+				b.WriteString(" " + m.Returns[0] + " {\n")
+			default:
+				b.WriteString(" (" + strings.Join(m.Returns, ", ") + ") {\n")
+			}
+			b.WriteString(fmt.Sprintf("\tshatterRecordStubCall(%q, %q)\n", stub.TypeName, m.Name))
+			if len(m.Returns) == 0 {
+				b.WriteString("}\n\n")
+				continue
+			}
+			retNames := make([]string, len(m.Returns))
+			for i, r := range m.Returns {
+				retNames[i] = fmt.Sprintf("_r%d", i)
+				b.WriteString(fmt.Sprintf("\tvar _r%d %s\n", i, r))
+			}
+			b.WriteString("\treturn " + strings.Join(retNames, ", ") + "\n")
+			b.WriteString("}\n\n")
+		}
+	}
+}
+
+// localStructImplements reports whether any struct type declared in the
+// same file implements iface (checked with both value and pointer
+// receivers). Mirrors the pattern in protocol/analyzer.go.
+func localStructImplements(file *ast.File, info *types.Info, iface *types.Interface) bool {
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			obj, ok := info.Defs[ts.Name].(*types.TypeName)
+			if !ok || obj == nil {
+				continue
+			}
+			named, ok := obj.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			if _, isStruct := named.Underlying().(*types.Struct); !isStruct {
+				continue
+			}
+			if types.Implements(named, iface) ||
+				types.Implements(types.NewPointer(named), iface) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractReturnInfo(fn *ast.FuncDecl, info *types.Info, pkgName string) returnTypeInfo {
@@ -1019,21 +1284,43 @@ func astTypeString(expr ast.Expr) string {
 func generateLoopHarness(funcName string, params []paramInfo, retInfo returnTypeInfo, globalVars []globalVarInfo, hasMocks bool) (string, error) {
 	var b strings.Builder
 
+	stubParams := collectStubParams(params)
+	extraImports := extraStubImports(stubParams)
+
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	if len(params) > 0 {
 		b.WriteString("\t\"fmt\"\n")
 	}
+	if len(stubParams) > 0 {
+		b.WriteString("\t\"sync\"\n")
+	}
+	for _, p := range extraImports {
+		b.WriteString(fmt.Sprintf("\t%q\n", p))
+	}
 	b.WriteString("\n")
 	b.WriteString("\t\"shatter-harness\"\n")
 	b.WriteString(")\n\n")
 
+	// Stub type declarations + recorder (top-level, shared across RunLoop iterations).
+	if len(stubParams) > 0 {
+		writeStubDeclarations(&b, stubParams)
+	}
+
 	b.WriteString("func main() {\n")
 	b.WriteString("\tharness.RunLoop(func(_req harness.Request) harness.Response {\n")
 
-	// Deserialize typed input parameters from _req.Inputs
+	// Deserialize typed input parameters from _req.Inputs.
+	// Stubbed interface params are constructed in-process instead of
+	// unmarshaled — the orchestrator cannot produce a concrete value for
+	// an interface, and a nil interface would panic on first method call.
 	for i, p := range params {
+		if p.Stub != nil {
+			b.WriteString(fmt.Sprintf("\t\tvar %s %s = &shatterStub_%s{}\n", p.Name, p.GoType, p.Stub.TypeName))
+			b.WriteString(fmt.Sprintf("\t\t_ = %s\n", p.Name))
+			continue
+		}
 		b.WriteString(fmt.Sprintf("\t\tvar %s %s\n", p.Name, p.GoType))
 		b.WriteString(fmt.Sprintf("\t\tif %d < len(_req.Inputs) {\n", i))
 		b.WriteString(fmt.Sprintf("\t\t\tif _e := json.Unmarshal(_req.Inputs[%d], &%s); _e != nil {\n", i, p.Name))
