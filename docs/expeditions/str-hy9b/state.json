@@ -1,0 +1,15 @@
+{
+  "active_task": null,
+  "base_branch": "str-hy9b",
+  "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
+  "created_at": "2026-04-19T19:50:54Z",
+  "expedition": "str-hy9b",
+  "last_completed": null,
+  "next_action": "Create the first task branch from the expedition base branch.",
+  "next_task_number": 1,
+  "preserved_experiments": [],
+  "primary_branch": "main",
+  "schema_version": 1,
+  "status": "ready_for_task",
+  "updated_at": "2026-04-19T19:50:54Z"
+}
