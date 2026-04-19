@@ -48,6 +48,18 @@ Rust implements the adapter substrate (str-t4uo.6.1) with recognizers (str-t4uo.
 
 Authoritative matrix: `protocol/parity-matrix.yaml`.
 
+## Feature Capability Parity
+
+Rust declares support for `outcome` only in
+`protocol/parity-matrix.yaml` `feature_capabilities` — the standardized
+invocation-outcome wire shape reached cross-frontend parity in str-hy9b.A5.
+
+The planner-surface capabilities (`invocation_plan`, `adapter_http_nethttp`,
+`hint_config_v1`) are declared Go-only at this stage. Rust does not yet
+implement them; conformance tests (`npx task conformance`) expect Rust to
+return a clean "capability not supported" response rather than crashing
+or returning malformed data when these are probed.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

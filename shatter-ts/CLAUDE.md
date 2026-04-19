@@ -69,6 +69,18 @@ Synthetic parameters and structured outcomes ride through existing wire fields (
 
 Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` in `src/executor.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
 
+## Feature Capability Parity
+
+TS declares support for `outcome` only in
+`protocol/parity-matrix.yaml` `feature_capabilities` — the standardized
+invocation-outcome wire shape reached cross-frontend parity in str-hy9b.A5.
+
+The planner-surface capabilities (`invocation_plan`, `adapter_http_nethttp`,
+`hint_config_v1`) are declared Go-only at this stage. TS does not yet
+implement them; conformance tests (`npx task conformance`) expect TS to
+return a clean "capability not supported" response rather than crashing
+or returning malformed data when these are probed.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

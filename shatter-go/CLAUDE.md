@@ -68,6 +68,21 @@ The handler caches analyses from `handleAnalyze` and reads `invocation_model` in
 
 Key files: `protocol/adapter.go` (types, pure functions), `protocol/handler.go` (integration).
 
+## Feature Capability Parity
+
+Go declares support for all four redesign feature capabilities in
+`protocol/parity-matrix.yaml` `feature_capabilities`:
+
+- `outcome` — standardized invocation-outcome wire shape (str-hy9b.A1).
+- `invocation_plan` — planner artifact schema (str-hy9b.E1). Go-only at this stage.
+- `adapter_http_nethttp` — net/http handler adapter, ID `go/http-handler` (str-hy9b.G1). See the Invocation Model Parity Contract above. Go-specific.
+- `hint_config_v1` — `.shatter/config.yaml` hint schema (str-hy9b.G3). Go-only.
+
+TS and Rust currently declare `outcome` only; conformance tests
+(`npx task conformance`) enforce that the Go-only capabilities return a
+clean "capability not supported" response from TS/Rust rather than
+crashing or returning malformed data.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
