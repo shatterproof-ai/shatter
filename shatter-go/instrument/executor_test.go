@@ -2011,3 +2011,131 @@ func TestPreparedHarnessIsValidMissingDir(t *testing.T) {
 		t.Error("IsValid() should return false when artifact dir is missing")
 	}
 }
+
+// TestHarnessGeneratesInterfaceStubForClockParam validates the str-hy9b.I1
+// acceptance scenario: a function parameter typed as a 1-method interface
+// with no concrete implementation in scope causes the analyzer to attach
+// a stub descriptor, and the harness generator emits a stub type, a
+// recorder call, and zero-value returns so the function under test can
+// invoke the interface method without panicking.
+func TestHarnessGeneratesInterfaceStubForClockParam(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+import "time"
+
+type Clock interface {
+	Now() time.Time
+}
+
+func tickAt(c Clock) time.Time {
+	return c.Now()
+}
+`)
+	params, retInfo, err := analyzeForExecution(src, "tickAt")
+	if err != nil {
+		t.Fatalf("analyzeForExecution: %v", err)
+	}
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
+	}
+	p := params[0]
+	if p.Stub == nil {
+		t.Fatalf("expected Stub to be populated for Clock param, got nil")
+	}
+	if p.Stub.TypeName != "Clock" {
+		t.Errorf("expected Stub.TypeName=Clock, got %q", p.Stub.TypeName)
+	}
+	if len(p.Stub.Methods) != 1 || p.Stub.Methods[0].Name != "Now" {
+		t.Errorf("expected single Now() method, got %+v", p.Stub.Methods)
+	}
+	if len(p.Stub.Methods[0].Returns) != 1 || p.Stub.Methods[0].Returns[0] != "time.Time" {
+		t.Errorf("expected Now() to return time.Time, got %+v", p.Stub.Methods[0].Returns)
+	}
+
+	harnessSrc, err := generateLoopHarness("tickAt", params, retInfo, nil, false)
+	if err != nil {
+		t.Fatalf("generateLoopHarness: %v", err)
+	}
+
+	expectations := []string{
+		"type shatterStub_Clock struct{}",
+		"func (s *shatterStub_Clock) Now() time.Time {",
+		`shatterRecordStubCall("Clock", "Now")`,
+		"var _r0 time.Time",
+		"return _r0",
+		"var c Clock = &shatterStub_Clock{}",
+		"var shatterStubCalls []shatterStubCall",
+		`"sync"`,
+		`"time"`,
+	}
+	for _, want := range expectations {
+		if !strings.Contains(harnessSrc, want) {
+			t.Errorf("harness missing %q; full source:\n%s", want, harnessSrc)
+		}
+	}
+	if strings.Contains(harnessSrc, "json.Unmarshal(_req.Inputs[0], &c)") {
+		t.Error("stubbed parameter should not be JSON-unmarshaled")
+	}
+}
+
+// TestHarnessSkipsStubWhenConcreteImplementationInFile verifies the
+// detector suppresses stub emission when a struct in the same file
+// already satisfies the interface — the real impl should be used.
+func TestHarnessSkipsStubWhenConcreteImplementationInFile(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+import "time"
+
+type Clock interface {
+	Now() time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Time{} }
+
+func tickAt(c Clock) time.Time {
+	return c.Now()
+}
+`)
+	params, _, err := analyzeForExecution(src, "tickAt")
+	if err != nil {
+		t.Fatalf("analyzeForExecution: %v", err)
+	}
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
+	}
+	if params[0].Stub != nil {
+		t.Errorf("expected Stub=nil when local impl exists, got %+v", params[0].Stub)
+	}
+}
+
+// TestHarnessSkipsStubForLargeInterfaces confirms interfaces with 3+
+// methods are not stubbed — out of scope for I1.
+func TestHarnessSkipsStubForLargeInterfaces(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+type Big interface {
+	A() int
+	B() int
+	C() int
+}
+
+func useBig(b Big) int {
+	return b.A()
+}
+`)
+	params, _, err := analyzeForExecution(src, "useBig")
+	if err != nil {
+		t.Fatalf("analyzeForExecution: %v", err)
+	}
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
+	}
+	if params[0].Stub != nil {
+		t.Errorf("expected Stub=nil for 3-method interface, got %+v", params[0].Stub)
+	}
+}
