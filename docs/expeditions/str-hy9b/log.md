@@ -51,14 +51,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `b5dc50c50167d36cd5e534ea84d048a273723262`.
 
 
+### 2026-04-19T22:38:38Z — Closed task
+- Branch: `str-hy9b-02-a3-markdown-renderer`.
+- Outcome: `kept`.
+- Summary: Markdown renderer drives outcomes: render_explore_outcomes() replaces md_fragments join; empty-discovery guard; 3 snapshots covering build_failed/unsupported/empty; smoke passes
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-02-a3-markdown-renderer`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-02-a3-markdown-renderer`
-- Last completed: `str-hy9b-01-a2-outcome-plumbing (kept)`
-- Next action: Complete work on `str-hy9b-02-a3-markdown-renderer` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-02-a3-markdown-renderer`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-02-a3-markdown-renderer (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
