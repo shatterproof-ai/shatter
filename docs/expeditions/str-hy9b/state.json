@@ -1,23 +1,24 @@
 {
-  "active_task": {
-    "base_head": "f78ec486fce9ad5cea6a1193d015f2094c3266c5",
-    "branch": "str-hy9b-01-a2-outcome-plumbing",
-    "kind": "task",
-    "number": 1,
-    "slug": "a2-outcome-plumbing",
-    "started_at": "2026-04-19T21:07:05Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "last_completed": null,
-  "next_action": "Complete work on `str-hy9b-01-a2-outcome-plumbing` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing`.",
-  "next_task_number": 1,
+  "last_completed": {
+    "branch": "str-hy9b-01-a2-outcome-plumbing",
+    "completed_at": "2026-04-19T21:17:48Z",
+    "kind": "task",
+    "number": 1,
+    "outcome": "kept",
+    "slug": "a2-outcome-plumbing",
+    "summary": "Outcome plumbing in Go executor: failureOutcome + outcomeFromResult wired through handler; outcome_test.go covers all status paths; smoke passes",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-01-a2-outcome-plumbing"
+  },
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 2,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-19T21:07:05Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-19T21:17:48Z"
 }
