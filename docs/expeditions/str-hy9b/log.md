@@ -64,14 +64,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `a5b6d814a1d28c9e4d548da848b67c83d0804b35`.
 
 
+### 2026-04-20T02:27:02Z — Closed task
+- Branch: `str-hy9b-03-a4-empty-report-regression`.
+- Outcome: `kept`.
+- Summary: Empty-report regression test: smoke script asserts non-empty md, target name, and outcome status in {build_failed,unsupported,runtime_failed}; wired into npx task smoke
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-03-a4-empty-report-regression`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-03-a4-empty-report-regression`
-- Last completed: `str-hy9b-02-a3-markdown-renderer (kept)`
-- Next action: Complete work on `str-hy9b-03-a4-empty-report-regression` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-03-a4-empty-report-regression`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-03-a4-empty-report-regression (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

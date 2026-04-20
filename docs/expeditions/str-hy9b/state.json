@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "a5b6d814a1d28c9e4d548da848b67c83d0804b35",
-    "branch": "str-hy9b-03-a4-empty-report-regression",
-    "kind": "task",
-    "number": 3,
-    "slug": "a4-empty-report-regression",
-    "started_at": "2026-04-19T22:38:43Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-03-a4-empty-report-regression"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-02-a3-markdown-renderer",
-    "completed_at": "2026-04-19T22:38:38Z",
+    "branch": "str-hy9b-03-a4-empty-report-regression",
+    "completed_at": "2026-04-20T02:27:02Z",
     "kind": "task",
-    "number": 2,
+    "number": 3,
     "outcome": "kept",
-    "slug": "a3-markdown-renderer",
-    "summary": "Markdown renderer drives outcomes: render_explore_outcomes() replaces md_fragments join; empty-discovery guard; 3 snapshots covering build_failed/unsupported/empty; smoke passes",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-02-a3-markdown-renderer"
+    "slug": "a4-empty-report-regression",
+    "summary": "Empty-report regression test: smoke script asserts non-empty md, target name, and outcome status in {build_failed,unsupported,runtime_failed}; wired into npx task smoke",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-03-a4-empty-report-regression"
   },
-  "next_action": "Complete work on `str-hy9b-03-a4-empty-report-regression` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-03-a4-empty-report-regression`.",
-  "next_task_number": 3,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 4,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-19T22:38:43Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T02:27:02Z"
 }
