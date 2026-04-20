@@ -871,10 +871,11 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 	return result, nil
 }
 
-// maxInterfaceStubMethods caps how many methods an interface parameter may
-// declare before the harness generator declines to synthesize a stub. Keeping
-// the cap small bounds generated-code size and the surface area of zero-value
-// returns that callers see; raise with care.
+// maxInterfaceStubMethods is the default per-interface method cap for
+// synthesized stubs. Interfaces with more methods than this are not
+// stubbed — the planner leaves them as-is and the harness falls back to
+// JSON unmarshaling (which produces a nil interface and will panic on
+// first method call; broader support is tracked under str-hy9b.I3).
 const maxInterfaceStubMethods = 5
 
 // paramInfo holds a parameter's name and Go type string for harness generation.
@@ -882,8 +883,8 @@ type paramInfo struct {
 	Name   string
 	GoType string
 	// Stub is non-nil when the parameter is an interface with no concrete
-	// implementation in the analyzed file and a method count within
-	// [1, maxInterfaceStubMethods]. The harness generator emits a stub type
+	// implementation in the analyzed file and a method count at or below
+	// maxInterfaceStubMethods. The harness generator emits a stub type
 	// satisfying the interface instead of unmarshaling the parameter from JSON.
 	Stub *interfaceStubInfo
 }
@@ -999,8 +1000,8 @@ func extractParamInfo(fn *ast.FuncDecl, info *types.Info, pkgName string, file *
 }
 
 // interfaceStubFor returns a stub descriptor if expr is an interface type
-// with 1 or 2 methods and no struct declared in the same file implements
-// it. Otherwise it returns nil.
+// with 1 to maxInterfaceStubMethods methods and no struct declared in the
+// same file implements it. Otherwise it returns nil.
 func interfaceStubFor(expr ast.Expr, info *types.Info, file *ast.File, pkgName string) *interfaceStubInfo {
 	if info == nil || file == nil {
 		return nil
@@ -1076,7 +1077,7 @@ func interfaceStubFor(expr ast.Expr, info *types.Info, file *ast.File, pkgName s
 		walk(t)
 	}
 	methods := make([]stubMethodInfo, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		m := iface.Method(i)
 		sig, ok := m.Type().(*types.Signature)
 		if !ok {
@@ -1176,9 +1177,9 @@ func writeStubDeclarations(b *strings.Builder, stubParams []paramInfo) {
 			continue
 		}
 		emitted[stub.TypeName] = true
-		b.WriteString(fmt.Sprintf("type shatterStub_%s struct{}\n\n", stub.TypeName))
+		fmt.Fprintf(b, "type shatterStub_%s struct{}\n\n", stub.TypeName)
 		for _, m := range stub.Methods {
-			b.WriteString(fmt.Sprintf("func (s *shatterStub_%s) %s(%s)", stub.TypeName, m.Name, strings.Join(m.Params, ", ")))
+			fmt.Fprintf(b, "func (s *shatterStub_%s) %s(%s)", stub.TypeName, m.Name, strings.Join(m.Params, ", "))
 			switch len(m.Returns) {
 			case 0:
 				b.WriteString(" {\n")
@@ -1187,7 +1188,7 @@ func writeStubDeclarations(b *strings.Builder, stubParams []paramInfo) {
 			default:
 				b.WriteString(" (" + strings.Join(m.Returns, ", ") + ") {\n")
 			}
-			b.WriteString(fmt.Sprintf("\tshatterRecordStubCall(%q, %q)\n", stub.TypeName, m.Name))
+			fmt.Fprintf(b, "\tshatterRecordStubCall(%q, %q)\n", stub.TypeName, m.Name)
 			if len(m.Returns) == 0 {
 				b.WriteString("}\n\n")
 				continue
@@ -1195,7 +1196,7 @@ func writeStubDeclarations(b *strings.Builder, stubParams []paramInfo) {
 			retNames := make([]string, len(m.Returns))
 			for i, r := range m.Returns {
 				retNames[i] = fmt.Sprintf("_r%d", i)
-				b.WriteString(fmt.Sprintf("\tvar _r%d %s\n", i, r))
+				fmt.Fprintf(b, "\tvar _r%d %s\n", i, r)
 			}
 			b.WriteString("\treturn " + strings.Join(retNames, ", ") + "\n")
 			b.WriteString("}\n\n")
@@ -1336,7 +1337,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 		b.WriteString("\t\"sync\"\n")
 	}
 	for _, p := range extraImports {
-		b.WriteString(fmt.Sprintf("\t%q\n", p))
+		fmt.Fprintf(&b, "\t%q\n", p)
 	}
 	b.WriteString("\n")
 	b.WriteString("\t\"shatter-harness\"\n")
@@ -1356,14 +1357,14 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	// an interface, and a nil interface would panic on first method call.
 	for i, p := range params {
 		if p.Stub != nil {
-			b.WriteString(fmt.Sprintf("\t\tvar %s %s = &shatterStub_%s{}\n", p.Name, p.GoType, p.Stub.TypeName))
-			b.WriteString(fmt.Sprintf("\t\t_ = %s\n", p.Name))
+			fmt.Fprintf(&b, "\t\tvar %s %s = &shatterStub_%s{}\n", p.Name, p.GoType, p.Stub.TypeName)
+			fmt.Fprintf(&b, "\t\t_ = %s\n", p.Name)
 			continue
 		}
-		b.WriteString(fmt.Sprintf("\t\tvar %s %s\n", p.Name, p.GoType))
-		b.WriteString(fmt.Sprintf("\t\tif %d < len(_req.Inputs) {\n", i))
-		b.WriteString(fmt.Sprintf("\t\t\tif _e := json.Unmarshal(_req.Inputs[%d], &%s); _e != nil {\n", i, p.Name))
-		b.WriteString(fmt.Sprintf("\t\t\t\treturn harness.Response{Error: fmt.Sprintf(\"unmarshal %s: %%v\", _e)}\n", p.Name))
+		fmt.Fprintf(&b, "\t\tvar %s %s\n", p.Name, p.GoType)
+		fmt.Fprintf(&b, "\t\tif %d < len(_req.Inputs) {\n", i)
+		fmt.Fprintf(&b, "\t\t\tif _e := json.Unmarshal(_req.Inputs[%d], &%s); _e != nil {\n", i, p.Name)
+		fmt.Fprintf(&b, "\t\t\t\treturn harness.Response{Error: fmt.Sprintf(\"unmarshal %s: %%v\", _e)}\n", p.Name)
 		b.WriteString("\t\t\t}\n")
 		b.WriteString("\t\t}\n")
 	}
@@ -1379,8 +1380,8 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	// Snapshot exported global variables before the call.
 	if len(globalVars) > 0 {
 		for _, v := range globalVars {
-			b.WriteString(fmt.Sprintf("\t\t_bef_%s, _ok_%s := func() (json.RawMessage, bool) {\n", v.Name, v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\t_b, _e := json.Marshal(%s)\n", v.Name))
+			fmt.Fprintf(&b, "\t\t_bef_%s, _ok_%s := func() (json.RawMessage, bool) {\n", v.Name, v.Name)
+			fmt.Fprintf(&b, "\t\t\t_b, _e := json.Marshal(%s)\n", v.Name)
 			b.WriteString("\t\t\treturn _b, _e == nil\n")
 			b.WriteString("\t\t}()\n")
 		}
@@ -1394,13 +1395,13 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	// Declare result variable(s) before the closure so they're accessible afterwards.
 	switch {
 	case retInfo.Count == 1:
-		b.WriteString(fmt.Sprintf("\t\tvar _res %s\n", retInfo.Types[0]))
+		fmt.Fprintf(&b, "\t\tvar _res %s\n", retInfo.Types[0])
 	case retInfo.Count > 1:
 		for i, t := range retInfo.Types {
 			if i == retInfo.Count-1 && retInfo.HasErr {
 				b.WriteString("\t\tvar _retErr error\n")
 			} else {
-				b.WriteString(fmt.Sprintf("\t\tvar _ret%d %s\n", i, t))
+				fmt.Fprintf(&b, "\t\tvar _ret%d %s\n", i, t)
 			}
 		}
 	}
@@ -1413,11 +1414,11 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	callExpr := fmt.Sprintf("%s(%s)", funcName, strings.Join(argList, ", "))
 
 	b.WriteString("\t\t_thrownErr := harness.SafeCall(func() {\n")
-	switch {
-	case retInfo.Count == 0:
-		b.WriteString(fmt.Sprintf("\t\t\t%s\n", callExpr))
-	case retInfo.Count == 1:
-		b.WriteString(fmt.Sprintf("\t\t\t_res = %s\n", callExpr))
+	switch retInfo.Count {
+	case 0:
+		fmt.Fprintf(&b, "\t\t\t%s\n", callExpr)
+	case 1:
+		fmt.Fprintf(&b, "\t\t\t_res = %s\n", callExpr)
 	default:
 		retVars := make([]string, retInfo.Count)
 		for i := range retInfo.Count {
@@ -1427,7 +1428,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 				retVars[i] = fmt.Sprintf("_ret%d", i)
 			}
 		}
-		b.WriteString(fmt.Sprintf("\t\t\t%s = %s\n", strings.Join(retVars, ", "), callExpr))
+		fmt.Fprintf(&b, "\t\t\t%s = %s\n", strings.Join(retVars, ", "), callExpr)
 	}
 	b.WriteString("\t\t})\n\n")
 
@@ -1473,7 +1474,7 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 		} else {
 			b.WriteString("\t\t_multi := []interface{}{\n")
 			for i := 0; i < nonErrCount; i++ {
-				b.WriteString(fmt.Sprintf("\t\t\tinterface{}(_ret%d),\n", i))
+				fmt.Fprintf(&b, "\t\t\tinterface{}(_ret%d),\n", i)
 			}
 			b.WriteString("\t\t}\n")
 			b.WriteString("\t\tif _rv, _e := json.Marshal(_multi); _e == nil {\n")
@@ -1490,14 +1491,14 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	// Global state changes
 	if len(globalVars) > 0 {
 		for _, v := range globalVars {
-			b.WriteString(fmt.Sprintf("\t\tif _ok_%s {\n", v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", v.Name, v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", v.Name, v.Name))
+			fmt.Fprintf(&b, "\t\tif _ok_%s {\n", v.Name)
+			fmt.Fprintf(&b, "\t\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", v.Name, v.Name)
+			fmt.Fprintf(&b, "\t\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", v.Name, v.Name)
 			b.WriteString("\t\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, harness.SideEffect{\n")
 			b.WriteString("\t\t\t\t\t\tKind:     \"global_state_change\",\n")
-			b.WriteString(fmt.Sprintf("\t\t\t\t\t\tVariable: %q,\n", v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\t\t\t\tBefore:   _bef_%s,\n", v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\t\t\t\tAfter:    json.RawMessage(_aft_%s),\n", v.Name))
+			fmt.Fprintf(&b, "\t\t\t\t\t\tVariable: %q,\n", v.Name)
+			fmt.Fprintf(&b, "\t\t\t\t\t\tBefore:   _bef_%s,\n", v.Name)
+			fmt.Fprintf(&b, "\t\t\t\t\t\tAfter:    json.RawMessage(_aft_%s),\n", v.Name)
 			b.WriteString("\t\t\t\t\t})\n")
 			b.WriteString("\t\t\t\t}\n")
 			b.WriteString("\t\t\t}\n")
@@ -1518,166 +1519,6 @@ func generateLoopHarness(funcName string, params []paramInfo, retInfo returnType
 	b.WriteString("}\n")     // end main()
 
 	return b.String(), nil
-}
-
-// generateMockFile creates a Go source file providing a mock registry and call
-// recorder for the given mocks. The recorded calls are written to externalCallsPath
-// via shatterDumpMockCalls() at the end of a single-shot harness run.
-// For the stdin-loop harness use generateLoopMockFile instead.
-func generateMockFile(mocks []MockConfig, externalCallsPath string) string {
-	hasThrowError := false
-	for _, m := range mocks {
-		if m.DefaultBehavior == BehaviorThrowError {
-			hasThrowError = true
-			break
-		}
-	}
-
-	var b strings.Builder
-
-	b.WriteString("package main\n\n")
-	b.WriteString("import (\n")
-	b.WriteString("\t\"encoding/json\"\n")
-	if hasThrowError {
-		b.WriteString("\t\"fmt\"\n")
-	}
-	b.WriteString("\t\"os\"\n")
-	b.WriteString("\t\"sync\"\n")
-	b.WriteString(")\n\n")
-
-	b.WriteString("type shatterMockCall struct {\n")
-	b.WriteString("\tSymbol      string          `json:\"symbol\"`\n")
-	b.WriteString("\tArgs        json.RawMessage `json:\"args\"`\n")
-	b.WriteString("\tReturnValue json.RawMessage `json:\"return_value\"`\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("var (\n")
-	b.WriteString("\tshatterMockCalls   []shatterMockCall\n")
-	b.WriteString("\tshatterMockCallsMu sync.Mutex\n")
-	b.WriteString(")\n\n")
-
-	b.WriteString("func shatterRecordMockCall(symbol string, args any, retVal any) {\n")
-	b.WriteString("\targsJSON, _ := json.Marshal(args)\n")
-	b.WriteString("\tretJSON, _ := json.Marshal(retVal)\n")
-	b.WriteString("\tshatterMockCallsMu.Lock()\n")
-	b.WriteString("\tshatterMockCalls = append(shatterMockCalls, shatterMockCall{\n")
-	b.WriteString("\t\tSymbol:      symbol,\n")
-	b.WriteString("\t\tArgs:        argsJSON,\n")
-	b.WriteString("\t\tReturnValue: retJSON,\n")
-	b.WriteString("\t})\n")
-	b.WriteString("\tshatterMockCallsMu.Unlock()\n")
-	b.WriteString("}\n\n")
-
-	pathEscaped := strings.ReplaceAll(externalCallsPath, `\`, `\\`)
-	b.WriteString("func shatterDumpMockCalls() {\n")
-	b.WriteString("\tshatterMockCallsMu.Lock()\n")
-	b.WriteString("\tdefer shatterMockCallsMu.Unlock()\n")
-	b.WriteString("\tdata, _ := json.Marshal(shatterMockCalls)\n")
-	b.WriteString(fmt.Sprintf("\tos.WriteFile(%q, data, 0644)\n", pathEscaped))
-	b.WriteString("}\n\n")
-
-	for i, mock := range mocks {
-		if mock.DefaultBehavior == BehaviorPassthrough {
-			continue
-		}
-
-		safeName := sanitizeMockName(mock.Symbol)
-		retValsJSON, _ := json.Marshal(mock.ReturnValues)
-
-		b.WriteString(fmt.Sprintf("// Mock for %s\n", mock.Symbol))
-		b.WriteString(fmt.Sprintf("var shatterMock%d_retvals = func() []json.RawMessage {\n", i))
-		b.WriteString(fmt.Sprintf("\tvar vals []any\n"))
-		b.WriteString(fmt.Sprintf("\tjson.Unmarshal([]byte(`%s`), &vals)\n", string(retValsJSON)))
-		b.WriteString("\tresult := make([]json.RawMessage, len(vals))\n")
-		b.WriteString("\tfor i, v := range vals {\n")
-		b.WriteString("\t\tresult[i], _ = json.Marshal(v)\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn result\n")
-		b.WriteString("}()\n")
-		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int\n\n", i))
-
-		if mock.DefaultBehavior == BehaviorThrowError {
-			b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
-			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
-			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
-			b.WriteString("\t\tidx = len(retvals) - 1\n")
-			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
-			b.WriteString("\tif idx < len(retvals) {\n")
-			b.WriteString("\t\tvar obj map[string]any\n")
-			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
-			b.WriteString("\t\t\tif s, ok := obj[\"message\"].(string); ok && s != \"\" {\n")
-			b.WriteString("\t\t\t\tmsg = s\n")
-			b.WriteString("\t\t\t}\n")
-			b.WriteString("\t\t}\n")
-			b.WriteString("\t}\n")
-			if mock.ShouldTrackCalls {
-				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
-			}
-			b.WriteString("\tpanic(msg)\n")
-			b.WriteString("}\n\n")
-
-			b.WriteString(fmt.Sprintf("func ShatterMockErr_%s(args ...any) (any, error) {\n", safeName))
-			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
-			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
-			b.WriteString("\t\tidx = len(retvals) - 1\n")
-			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
-			b.WriteString("\tif idx < len(retvals) {\n")
-			b.WriteString("\t\tvar obj map[string]any\n")
-			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
-			b.WriteString("\t\t\tif s, ok := obj[\"message\"].(string); ok && s != \"\" {\n")
-			b.WriteString("\t\t\t\tmsg = s\n")
-			b.WriteString("\t\t\t}\n")
-			b.WriteString("\t\t}\n")
-			b.WriteString("\t}\n")
-			if mock.ShouldTrackCalls {
-				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
-			}
-			b.WriteString("\treturn nil, fmt.Errorf(\"%s\", msg)\n")
-			b.WriteString("}\n\n")
-			continue
-		}
-
-		b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
-		b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-		b.WriteString(fmt.Sprintf("\tidx := shatterMock%d_callIdx\n", i))
-
-		if mock.DefaultBehavior == BehaviorRepeatLast || mock.DefaultBehavior == "" {
-			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
-			b.WriteString("\t\tidx = len(retvals) - 1\n")
-			b.WriteString("\t}\n")
-		} else {
-			b.WriteString("\tif len(retvals) > 0 {\n")
-			b.WriteString("\t\tidx = idx % len(retvals)\n")
-			b.WriteString("\t}\n")
-		}
-
-		b.WriteString(fmt.Sprintf("\tshatterMock%d_callIdx++\n", i))
-		b.WriteString("\n")
-		b.WriteString("\tvar retVal any\n")
-		b.WriteString("\tif idx < len(retvals) {\n")
-		b.WriteString("\t\tjson.Unmarshal(retvals[idx], &retVal)\n")
-		b.WriteString("\t}\n")
-
-		if mock.ShouldTrackCalls {
-			b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, retVal)\n", mock.Symbol))
-		}
-
-		b.WriteString("\treturn retVal\n")
-		b.WriteString("}\n\n")
-	}
-
-	b.WriteString("// Ensure shatter mock infrastructure is referenced.\n")
-	b.WriteString("var _ = shatterDumpMockCalls\n")
-
-	return b.String()
 }
 
 // generateLoopMockFile is the loop-harness variant of generateMockFile. It adds
@@ -1731,7 +1572,7 @@ func generateLoopMockFile(mocks []MockConfig) string {
 	// call list so each loop iteration starts from a clean state.
 	b.WriteString("func shatterResetMockCounters() {\n")
 	for i := range mocks {
-		b.WriteString(fmt.Sprintf("\tatomic.StoreInt64(&shatterMock%d_callIdx, 0)\n", i))
+		fmt.Fprintf(&b, "\tatomic.StoreInt64(&shatterMock%d_callIdx, 0)\n", i)
 	}
 	b.WriteString("\tshatterMockCallsMu.Lock()\n")
 	b.WriteString("\tshatterMockCalls = shatterMockCalls[:0]\n")
@@ -1763,26 +1604,26 @@ func generateLoopMockFile(mocks []MockConfig) string {
 		safeName := sanitizeMockName(mock.Symbol)
 		retValsJSON, _ := json.Marshal(mock.ReturnValues)
 
-		b.WriteString(fmt.Sprintf("// Mock for %s\n", mock.Symbol))
-		b.WriteString(fmt.Sprintf("var shatterMock%d_retvals = func() []json.RawMessage {\n", i))
+		fmt.Fprintf(&b, "// Mock for %s\n", mock.Symbol)
+		fmt.Fprintf(&b, "var shatterMock%d_retvals = func() []json.RawMessage {\n", i)
 		b.WriteString("\tvar vals []any\n")
-		b.WriteString(fmt.Sprintf("\tjson.Unmarshal([]byte(`%s`), &vals)\n", string(retValsJSON)))
+		fmt.Fprintf(&b, "\tjson.Unmarshal([]byte(`%s`), &vals)\n", string(retValsJSON))
 		b.WriteString("\tresult := make([]json.RawMessage, len(vals))\n")
 		b.WriteString("\tfor i, v := range vals {\n")
 		b.WriteString("\t\tresult[i], _ = json.Marshal(v)\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn result\n")
 		b.WriteString("}()\n")
-		b.WriteString(fmt.Sprintf("var shatterMock%d_callIdx int64\n\n", i))
+		fmt.Fprintf(&b, "var shatterMock%d_callIdx int64\n\n", i)
 
 		if mock.DefaultBehavior == BehaviorThrowError {
-			b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
-			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
+			fmt.Fprintf(&b, "func ShatterMock_%s(args ...any) any {\n", safeName)
+			fmt.Fprintf(&b, "\tretvals := shatterMock%d_retvals\n", i)
+			fmt.Fprintf(&b, "\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i)
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
 			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
+			fmt.Fprintf(&b, "\tmsg := %q\n", MockErrorPrefix+mock.Symbol)
 			b.WriteString("\tif idx < len(retvals) {\n")
 			b.WriteString("\t\tvar obj map[string]any\n")
 			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
@@ -1792,18 +1633,18 @@ func generateLoopMockFile(mocks []MockConfig) string {
 			b.WriteString("\t\t}\n")
 			b.WriteString("\t}\n")
 			if mock.ShouldTrackCalls {
-				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
+				fmt.Fprintf(&b, "\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol)
 			}
 			b.WriteString("\tpanic(msg)\n")
 			b.WriteString("}\n\n")
 
-			b.WriteString(fmt.Sprintf("func ShatterMockErr_%s(args ...any) (any, error) {\n", safeName))
-			b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-			b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
+			fmt.Fprintf(&b, "func ShatterMockErr_%s(args ...any) (any, error) {\n", safeName)
+			fmt.Fprintf(&b, "\tretvals := shatterMock%d_retvals\n", i)
+			fmt.Fprintf(&b, "\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i)
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
 			b.WriteString("\t}\n")
-			b.WriteString(fmt.Sprintf("\tmsg := %q\n", MockErrorPrefix+mock.Symbol))
+			fmt.Fprintf(&b, "\tmsg := %q\n", MockErrorPrefix+mock.Symbol)
 			b.WriteString("\tif idx < len(retvals) {\n")
 			b.WriteString("\t\tvar obj map[string]any\n")
 			b.WriteString("\t\tif json.Unmarshal(retvals[idx], &obj) == nil {\n")
@@ -1813,16 +1654,16 @@ func generateLoopMockFile(mocks []MockConfig) string {
 			b.WriteString("\t\t}\n")
 			b.WriteString("\t}\n")
 			if mock.ShouldTrackCalls {
-				b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol))
+				fmt.Fprintf(&b, "\tshatterRecordMockCall(%q, args, msg)\n", mock.Symbol)
 			}
 			b.WriteString("\treturn nil, fmt.Errorf(\"%s\", msg)\n")
 			b.WriteString("}\n\n")
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("func ShatterMock_%s(args ...any) any {\n", safeName))
-		b.WriteString(fmt.Sprintf("\tretvals := shatterMock%d_retvals\n", i))
-		b.WriteString(fmt.Sprintf("\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i))
+		fmt.Fprintf(&b, "func ShatterMock_%s(args ...any) any {\n", safeName)
+		fmt.Fprintf(&b, "\tretvals := shatterMock%d_retvals\n", i)
+		fmt.Fprintf(&b, "\tidx := int(atomic.AddInt64(&shatterMock%d_callIdx, 1)) - 1\n", i)
 		if mock.DefaultBehavior == BehaviorRepeatLast || mock.DefaultBehavior == "" {
 			b.WriteString("\tif idx >= len(retvals) && len(retvals) > 0 {\n")
 			b.WriteString("\t\tidx = len(retvals) - 1\n")
@@ -1837,7 +1678,7 @@ func generateLoopMockFile(mocks []MockConfig) string {
 		b.WriteString("\t\tjson.Unmarshal(retvals[idx], &retVal)\n")
 		b.WriteString("\t}\n")
 		if mock.ShouldTrackCalls {
-			b.WriteString(fmt.Sprintf("\tshatterRecordMockCall(%q, args, retVal)\n", mock.Symbol))
+			fmt.Fprintf(&b, "\tshatterRecordMockCall(%q, args, retVal)\n", mock.Symbol)
 		}
 		b.WriteString("\treturn retVal\n")
 		b.WriteString("}\n\n")
@@ -2253,161 +2094,4 @@ func ExecuteWithPreparedHarness(h *PreparedHarness, inputs []json.RawMessage, ti
 	}
 
 	return result, nil
-}
-
-// generateHarnessTemplate creates a main.go that reads inputs from
-// shatter_inputs.json at runtime, enabling binary reuse across executions.
-// Output files use relative paths since the binary runs with Dir = ArtifactDir.
-func generateHarnessTemplate(funcName string, params []paramInfo, retInfo returnTypeInfo, globalVars []globalVarInfo, hasMocks bool) (string, error) {
-	var b strings.Builder
-
-	b.WriteString("package main\n\n")
-	b.WriteString("import (\n")
-	b.WriteString("\t\"encoding/json\"\n")
-	b.WriteString("\t\"fmt\"\n")
-	b.WriteString("\t\"os\"\n")
-	b.WriteString("\t\"runtime\"\n")
-	b.WriteString("\t\"time\"\n")
-	b.WriteString(")\n\n")
-
-	b.WriteString("func main() {\n")
-
-	if hasMocks {
-		b.WriteString("\tdefer shatterDumpMockCalls()\n\n")
-	}
-	b.WriteString("\tvar memBefore runtime.MemStats\n")
-	b.WriteString("\truntime.ReadMemStats(&memBefore)\n")
-	b.WriteString("\tcpuStart := time.Now()\n\n")
-
-	// Read inputs from shatter_inputs.json at runtime.
-	if len(params) > 0 {
-		b.WriteString("\t_shatterRaw, _shatterReadErr := os.ReadFile(\"shatter_inputs.json\")\n")
-		b.WriteString("\tif _shatterReadErr != nil {\n")
-		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to read shatter_inputs.json: %v\\n\", _shatterReadErr)\n")
-		b.WriteString("\t\tos.Exit(1)\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\tvar _shatterInputs []json.RawMessage\n")
-		b.WriteString("\tif _shatterParseErr := json.Unmarshal(_shatterRaw, &_shatterInputs); _shatterParseErr != nil {\n")
-		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to parse shatter_inputs.json: %v\\n\", _shatterParseErr)\n")
-		b.WriteString("\t\tos.Exit(1)\n")
-		b.WriteString("\t}\n\n")
-
-		for i, p := range params {
-			b.WriteString(fmt.Sprintf("\tvar %s %s\n", p.Name, p.GoType))
-			b.WriteString(fmt.Sprintf("\tif _unmarshalErr%d := json.Unmarshal(_shatterInputs[%d], &%s); _unmarshalErr%d != nil {\n", i, i, p.Name, i))
-			b.WriteString(fmt.Sprintf("\t\tfmt.Fprintf(os.Stderr, \"failed to unmarshal input %s: %%v\\n\", _unmarshalErr%d)\n", p.Name, i))
-			b.WriteString("\t\tos.Exit(1)\n")
-			b.WriteString("\t}\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Snapshot exported global variables before the function call.
-	if len(globalVars) > 0 {
-		for _, v := range globalVars {
-			b.WriteString(fmt.Sprintf("\t_shatter_before_%s, _shatter_ok_%s := func() (json.RawMessage, bool) {\n", v.Name, v.Name))
-			b.WriteString(fmt.Sprintf("\t\t_b, _err := json.Marshal(%s)\n", v.Name))
-			b.WriteString("\t\treturn _b, _err == nil\n")
-			b.WriteString("\t}()\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Call the function.
-	argList := make([]string, len(params))
-	for i, p := range params {
-		argList[i] = p.Name
-	}
-	callExpr := fmt.Sprintf("%s(%s)", funcName, strings.Join(argList, ", "))
-
-	if retInfo.Count == 0 {
-		b.WriteString(fmt.Sprintf("\t%s\n", callExpr))
-	} else if retInfo.Count == 1 {
-		b.WriteString(fmt.Sprintf("\tresult := %s\n", callExpr))
-	} else {
-		retVars := make([]string, retInfo.Count)
-		for i := range retInfo.Count {
-			if i == retInfo.Count-1 && retInfo.HasErr {
-				retVars[i] = "retErr"
-			} else {
-				retVars[i] = fmt.Sprintf("ret%d", i)
-			}
-		}
-		b.WriteString(fmt.Sprintf("\t%s := %s\n", strings.Join(retVars, ", "), callExpr))
-
-		if retInfo.HasErr {
-			b.WriteString("\tif retErr != nil {\n")
-			b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"function returned error: %v\\n\", retErr)\n")
-			b.WriteString("\t}\n")
-		}
-
-		if retInfo.Count == 1 || (retInfo.Count == 2 && retInfo.HasErr) {
-			b.WriteString(fmt.Sprintf("\tresult := ret0\n"))
-		} else {
-			nonErrVars := retVars
-			if retInfo.HasErr {
-				nonErrVars = retVars[:len(retVars)-1]
-			}
-			ifaceVars := make([]string, len(nonErrVars))
-			for i, v := range nonErrVars {
-				ifaceVars[i] = fmt.Sprintf("any(%s)", v)
-			}
-			b.WriteString(fmt.Sprintf("\tresult := []any{%s}\n", strings.Join(ifaceVars, ", ")))
-		}
-	}
-
-	b.WriteString("\n")
-
-	// Compare global variables after the call and write global_state_change entries.
-	if len(globalVars) > 0 {
-		b.WriteString("\ttype _shatterGlobalChange struct {\n")
-		b.WriteString("\t\tKind     string          `json:\"kind\"`\n")
-		b.WriteString("\t\tVariable string          `json:\"variable\"`\n")
-		b.WriteString("\t\tBefore   json.RawMessage `json:\"before\"`\n")
-		b.WriteString("\t\tAfter    json.RawMessage `json:\"after\"`\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\tvar _shatterGlobals []_shatterGlobalChange\n")
-		for _, v := range globalVars {
-			b.WriteString(fmt.Sprintf("\tif _shatter_ok_%s {\n", v.Name))
-			b.WriteString(fmt.Sprintf("\t\tif _after_%s, _err := json.Marshal(%s); _err == nil {\n", v.Name, v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\tif string(_after_%s) != string(_shatter_before_%s) {\n", v.Name, v.Name))
-			b.WriteString(fmt.Sprintf("\t\t\t\t_shatterGlobals = append(_shatterGlobals, _shatterGlobalChange{Kind: \"global_state_change\", Variable: %q, Before: _shatter_before_%s, After: _after_%s})\n", v.Name, v.Name, v.Name))
-			b.WriteString("\t\t\t}\n")
-			b.WriteString("\t\t}\n")
-			b.WriteString("\t}\n")
-		}
-		b.WriteString(fmt.Sprintf("\tif _gd, _err := json.Marshal(_shatterGlobals); _err == nil {\n"))
-		b.WriteString("\t\tos.WriteFile(\"shatter_globals.json\", _gd, 0644) //nolint:errcheck\n")
-		b.WriteString("\t}\n\n")
-	}
-
-	// Dump shatter recording results.
-	b.WriteString("\tif err := __shatter_dump_results(\"shatter_results.json\"); err != nil {\n")
-	b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to dump results: %v\\n\", err)\n")
-	b.WriteString("\t}\n")
-
-	// Write return value as JSON.
-	if retInfo.Count > 0 {
-		b.WriteString("\n\treturnData, err := json.Marshal(result)\n")
-		b.WriteString("\tif err != nil {\n")
-		b.WriteString("\t\tfmt.Fprintf(os.Stderr, \"failed to marshal return: %v\\n\", err)\n")
-		b.WriteString("\t} else {\n")
-		b.WriteString("\t\tos.WriteFile(\"shatter_return.json\", returnData, 0644) //nolint:errcheck\n")
-		b.WriteString("\t}\n")
-	}
-
-	// Write performance metrics.
-	b.WriteString("\n\tcpuElapsed := time.Since(cpuStart)\n")
-	b.WriteString("\tvar memAfter runtime.MemStats\n")
-	b.WriteString("\truntime.ReadMemStats(&memAfter)\n")
-	b.WriteString("\tperfData, _ := json.Marshal(map[string]any{\n")
-	b.WriteString("\t\t\"cpu_time_us\": cpuElapsed.Microseconds(),\n")
-	b.WriteString("\t\t\"heap_used_bytes\": memAfter.HeapInuse - memBefore.HeapInuse,\n")
-	b.WriteString("\t\t\"heap_allocated_bytes\": memAfter.TotalAlloc - memBefore.TotalAlloc,\n")
-	b.WriteString("\t})\n")
-	b.WriteString("\tos.WriteFile(\"shatter_perf.json\", perfData, 0644) //nolint:errcheck\n")
-
-	b.WriteString("}\n")
-
-	return b.String(), nil
 }

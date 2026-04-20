@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2112,13 +2113,13 @@ func tickAt(c Clock) time.Time {
 	}
 }
 
-// TestHarnessSkipsStubForLargeInterfaces confirms interfaces with more
-// than maxInterfaceStubMethods methods are not stubbed.
+// TestHarnessSkipsStubForLargeInterfaces confirms interfaces that exceed
+// maxInterfaceStubMethods (default 5) are not stubbed.
 func TestHarnessSkipsStubForLargeInterfaces(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeExecTestSource(t, srcDir, "target.go", `package main
 
-type Big interface {
+type TooBig interface {
 	A() int
 	B() int
 	C() int
@@ -2127,11 +2128,11 @@ type Big interface {
 	F() int
 }
 
-func useBig(b Big) int {
+func useTooBig(b TooBig) int {
 	return b.A()
 }
 `)
-	params, _, err := analyzeForExecution(src, "useBig")
+	params, _, err := analyzeForExecution(src, "useTooBig")
 	if err != nil {
 		t.Fatalf("analyzeForExecution: %v", err)
 	}
@@ -2139,70 +2140,83 @@ func useBig(b Big) int {
 		t.Fatalf("expected 1 param, got %d", len(params))
 	}
 	if params[0].Stub != nil {
-		t.Errorf("expected Stub=nil for over-cap interface, got %+v", params[0].Stub)
+		t.Errorf("expected Stub=nil for 6-method interface (exceeds cap of %d), got %+v",
+			maxInterfaceStubMethods, params[0].Stub)
 	}
 }
 
-// TestHarnessGeneratesInterfaceStubForThreeMethodInterface verifies the
-// stub generator handles a 3-method interface end-to-end, exercising
-// the 0-, 1-, and 2-return method shapes in one harness.
-func TestHarnessGeneratesInterfaceStubForThreeMethodInterface(t *testing.T) {
+// TestHarnessGeneratesStubForThreeMethodInterface validates the str-hy9b.I2
+// acceptance scenario: a function parameter typed as a 3-method interface
+// with no concrete implementation in scope causes the planner to emit a
+// working stub with all three methods rendered, each returning a zero value
+// and recording the call.
+func TestHarnessGeneratesStubForThreeMethodInterface(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeExecTestSource(t, srcDir, "target.go", `package main
 
-type Store interface {
-	Get(key string) (string, bool)
-	Put(key, value string)
-	Delete(key string) error
+type Repository interface {
+	Find(id int) string
+	Save(key string, val string) bool
+	Delete(id int) error
 }
 
-func lookup(s Store, k string) string {
-	v, _ := s.Get(k)
-	return v
+func processRepo(r Repository) string {
+	if !r.Save("k", "v") {
+		return ""
+	}
+	found := r.Find(1)
+	return found
 }
 `)
-	params, retInfo, err := analyzeForExecution(src, "lookup")
+	params, retInfo, err := analyzeForExecution(src, "processRepo")
 	if err != nil {
 		t.Fatalf("analyzeForExecution: %v", err)
 	}
-	if len(params) != 2 {
-		t.Fatalf("expected 2 params, got %d", len(params))
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
 	}
 	p := params[0]
 	if p.Stub == nil {
-		t.Fatalf("expected Stub to be populated for Store param, got nil")
+		t.Fatalf("expected Stub to be populated for Repository param, got nil")
 	}
-	if p.Stub.TypeName != "Store" {
-		t.Errorf("expected Stub.TypeName=Store, got %q", p.Stub.TypeName)
+	if p.Stub.TypeName != "Repository" {
+		t.Errorf("expected Stub.TypeName=Repository, got %q", p.Stub.TypeName)
 	}
 	if len(p.Stub.Methods) != 3 {
-		t.Fatalf("expected 3 stub methods, got %d: %+v", len(p.Stub.Methods), p.Stub.Methods)
+		t.Errorf("expected 3 stub methods, got %d: %+v", len(p.Stub.Methods), p.Stub.Methods)
 	}
 
-	harnessSrc, err := generateLoopHarness("lookup", params, retInfo, nil, false)
+	methodNames := make([]string, len(p.Stub.Methods))
+	for i, m := range p.Stub.Methods {
+		methodNames[i] = m.Name
+	}
+	for _, want := range []string{"Find", "Save", "Delete"} {
+		if !slices.Contains(methodNames, want) {
+			t.Errorf("expected method %q in stub, got %v", want, methodNames)
+		}
+	}
+
+	harnessSrc, err := generateLoopHarness("processRepo", params, retInfo, nil, false)
 	if err != nil {
 		t.Fatalf("generateLoopHarness: %v", err)
 	}
 
 	expectations := []string{
-		"type shatterStub_Store struct{}",
-		"func (s *shatterStub_Store) Get(key string) (string, bool) {",
-		"func (s *shatterStub_Store) Put(key string, value string) {",
-		"func (s *shatterStub_Store) Delete(key string) error {",
-		`shatterRecordStubCall("Store", "Get")`,
-		`shatterRecordStubCall("Store", "Put")`,
-		`shatterRecordStubCall("Store", "Delete")`,
-		"var _r0 string",
-		"var _r1 bool",
-		"var _r0 error",
-		"var s Store = &shatterStub_Store{}",
+		"type shatterStub_Repository struct{}",
+		"func (s *shatterStub_Repository) Find(",
+		"func (s *shatterStub_Repository) Save(",
+		"func (s *shatterStub_Repository) Delete(",
+		`shatterRecordStubCall("Repository", "Find")`,
+		`shatterRecordStubCall("Repository", "Save")`,
+		`shatterRecordStubCall("Repository", "Delete")`,
+		"var r Repository = &shatterStub_Repository{}",
 	}
 	for _, want := range expectations {
 		if !strings.Contains(harnessSrc, want) {
 			t.Errorf("harness missing %q; full source:\n%s", want, harnessSrc)
 		}
 	}
-	if strings.Contains(harnessSrc, "json.Unmarshal(_req.Inputs[0], &s)") {
+	if strings.Contains(harnessSrc, "json.Unmarshal(_req.Inputs[0], &r)") {
 		t.Error("stubbed parameter should not be JSON-unmarshaled")
 	}
 }

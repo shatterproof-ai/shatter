@@ -83,11 +83,12 @@ func collectLeaves(expr ast.Expr, op mcdcOperator, fset *token.FileSet, params m
 	}
 
 	var nodeOp mcdcOperator
-	if bin.Op == token.LAND {
+	switch bin.Op {
+	case token.LAND:
 		nodeOp = mcdcAnd
-	} else if bin.Op == token.LOR {
+	case token.LOR:
 		nodeOp = mcdcOr
-	} else {
+	default:
 		// Non-boolean binary op (e.g., +, ==) — this is a leaf.
 		c := extractConstraint(fset, expr, params)
 		return []mcdcLeaf{{expr: expr, constraint: c}}
