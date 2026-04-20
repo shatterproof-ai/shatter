@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "59007c2f170c76245ca5e32bdf96584910d21a98",
-    "branch": "str-hy9b-07-i2-multi-method-interface-stub",
-    "kind": "task",
-    "number": 7,
-    "slug": "i2-multi-method-interface-stub",
-    "started_at": "2026-04-20T15:10:01Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-07-i2-multi-method-interface-stub"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-06-h4-conformance-tests",
-    "completed_at": "2026-04-20T15:09:53Z",
+    "branch": "str-hy9b-07-i2-multi-method-interface-stub",
+    "completed_at": "2026-04-20T15:28:38Z",
     "kind": "task",
-    "number": 6,
+    "number": 7,
     "outcome": "kept",
-    "slug": "h4-conformance-tests",
-    "summary": "Conformance test additions: 8 new cases covering outcome/adapter_http_nethttp/invocation_plan/hint_config_v1 from H3; Go-only capabilities assert TS/Rust return clean errors; 39 checks pass",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-06-h4-conformance-tests"
+    "slug": "i2-multi-method-interface-stub",
+    "summary": "Multi-method interface stub: cap lifted to 5 methods; three-method acceptance criterion test added; lint sweep of executor/visitor/mcdc (unused funcs removed, switches modernized, fmt.Fprintf bulk conversion)",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-07-i2-multi-method-interface-stub"
   },
-  "next_action": "Complete work on `str-hy9b-07-i2-multi-method-interface-stub` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-07-i2-multi-method-interface-stub`.",
-  "next_task_number": 7,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 8,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-20T15:10:01Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T15:28:38Z"
 }
