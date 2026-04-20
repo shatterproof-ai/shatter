@@ -123,14 +123,20 @@ These must be removed before starting those tasks under the expedition model.
 - Base branch rebased onto the primary branch.
 
 
+### 2026-04-20T18:27:11Z — Started task
+- Branch: `str-hy9b-08-c3-discovered-target-schema`.
+- Worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema`.
+- Base head at branch creation: `0a6408859bdc394a3394e19c5a2b327581ba260d`.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `ready_for_task`
+- Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `none`
-- Active task worktree: `none`
+- Active task branch: `str-hy9b-08-c3-discovered-target-schema`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema`
 - Last completed: `str-hy9b-07-i2-multi-method-interface-stub (kept)`
-- Next action: Create the next task branch from the rebased expedition base branch.
+- Next action: Complete work on `str-hy9b-08-c3-discovered-target-schema` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema`.
 <!-- expedition-resume:end -->
