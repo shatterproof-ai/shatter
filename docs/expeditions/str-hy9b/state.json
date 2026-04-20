@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "ecb10150f98421e1a6a4f60d3e94b10dcfab9ec5",
-    "branch": "str-hy9b-10-c5-constructor-catalog",
-    "kind": "task",
-    "number": 10,
-    "slug": "c5-constructor-catalog",
-    "started_at": "2026-04-20T19:09:06Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-10-c5-constructor-catalog"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-09-c4-method-classification-gate",
-    "completed_at": "2026-04-20T19:08:50Z",
+    "branch": "str-hy9b-11-d3-cache-stable-wrapper-template",
+    "completed_at": "2026-04-20T23:00:00Z",
     "kind": "task",
-    "number": 9,
+    "number": 11,
     "outcome": "kept",
-    "slug": "c4-method-classification-gate",
-    "summary": "Method classification gate: analyzeForExecution detects method receivers and returns sentinel error; failureOutcome maps to OutcomeStatusUnsupported with method_not_supported error type; kind=function/method logged; test with *Service.Compute verifies unsupported outcome instead of build failure; smoke passes",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate"
+    "slug": "d3-cache-stable-wrapper-template",
+    "summary": "Cache-stable wrapper template: shatter-go/wrapper package generates shatter_wrapper_<hash>.go with PlanDescriptor+ShatterInvoke; switch over TargetID/ReceiverKind/params; DiscoveryHash stable across runs; WriteWrapperFile skips rebuild on hash match; go build -overlay test compiles 3-target 2-ctor fixture; 8 tests pass; smoke passes",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-11-d3-cache-stable-wrapper-template"
   },
-  "next_action": "Complete work on `str-hy9b-10-c5-constructor-catalog` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-10-c5-constructor-catalog`.",
-  "next_task_number": 10,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 12,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-20T19:09:06Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T23:00:00Z"
 }
