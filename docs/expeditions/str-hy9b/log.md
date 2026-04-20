@@ -136,14 +136,20 @@ These must be removed before starting those tasks under the expedition model.
 - Base branch rebased onto the primary branch.
 
 
+### 2026-04-20T18:49:18Z — Started task
+- Branch: `str-hy9b-09-c4-method-classification-gate`.
+- Worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`.
+- Base head at branch creation: `a60be177510e596092d655e98d5e3369c35c7853`.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `ready_for_task`
+- Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `none`
-- Active task worktree: `none`
+- Active task branch: `str-hy9b-09-c4-method-classification-gate`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`
 - Last completed: `str-hy9b-08-c3-discovered-target-schema (kept)`
-- Next action: Create the next task branch from the rebased expedition base branch.
+- Next action: Complete work on `str-hy9b-09-c4-method-classification-gate` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`.
 <!-- expedition-resume:end -->
