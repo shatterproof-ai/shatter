@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
@@ -56,13 +55,4 @@ func ginHandlerSyntheticParams() []ParamInfo {
 		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
 		{Name: "route_params", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
 	}
-}
-
-// marshalGinInputs converts protocol-level JSON inputs (5 synthetic params)
-// into the format expected by the Gin harness.
-func marshalGinInputs(inputs []json.RawMessage) ([]json.RawMessage, error) {
-	if len(inputs) != 5 {
-		return nil, fmt.Errorf("gin handler expects 5 inputs, got %d", len(inputs))
-	}
-	return inputs, nil
 }

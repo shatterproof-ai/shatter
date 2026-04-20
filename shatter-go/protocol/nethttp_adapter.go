@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
@@ -56,13 +55,4 @@ func httpHandlerSyntheticParams() []ParamInfo {
 		{Name: "headers", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
 		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
 	}
-}
-
-// marshalHTTPInputs converts protocol-level JSON inputs (4 synthetic params)
-// into the format expected by the HTTP harness.
-func marshalHTTPInputs(inputs []json.RawMessage) ([]json.RawMessage, error) {
-	if len(inputs) != 4 {
-		return nil, fmt.Errorf("http handler expects 4 inputs, got %d", len(inputs))
-	}
-	return inputs, nil
 }

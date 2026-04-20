@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,14 +65,14 @@ func genTypeInfo(depth int) *rapid.Generator[TypeInfo] {
 				return TypeInfo{Kind: "union", Variants: variants}
 			},
 		),
-		rapid.Custom[TypeInfo](func(t *rapid.T) TypeInfo {
+		rapid.Custom(func(t *rapid.T) TypeInfo {
 			return TypeInfo{Kind: "opaque", Label: genIdent().Draw(t, "label")}
 		}),
 	)
 }
 
 func genParamInfo() *rapid.Generator[ParamInfo] {
-	return rapid.Custom[ParamInfo](func(t *rapid.T) ParamInfo {
+	return rapid.Custom(func(t *rapid.T) ParamInfo {
 		return ParamInfo{
 			Name: genIdent().Draw(t, "name"),
 			Type: genTypeInfo(2).Draw(t, "type"),
@@ -80,7 +81,7 @@ func genParamInfo() *rapid.Generator[ParamInfo] {
 }
 
 func genBranchInfo() *rapid.Generator[BranchInfo] {
-	return rapid.Custom[BranchInfo](func(t *rapid.T) BranchInfo {
+	return rapid.Custom(func(t *rapid.T) BranchInfo {
 		return BranchInfo{
 			ID:            rapid.IntRange(0, 100).Draw(t, "id"),
 			Line:          rapid.IntRange(1, 500).Draw(t, "line"),
@@ -108,7 +109,7 @@ func genBoundOp() *rapid.Generator[string] {
 }
 
 func genInductionVar() *rapid.Generator[InductionVar] {
-	return rapid.Custom[InductionVar](func(t *rapid.T) InductionVar {
+	return rapid.Custom(func(t *rapid.T) InductionVar {
 		initLeaf := genSymExprLeaf().Draw(t, "init")
 		stepLeaf := genSymExprLeaf().Draw(t, "step")
 		boundLeaf := genSymExprLeaf().Draw(t, "bound")
@@ -123,7 +124,7 @@ func genInductionVar() *rapid.Generator[InductionVar] {
 }
 
 func genLoopInfo() *rapid.Generator[LoopInfo] {
-	return rapid.Custom[LoopInfo](func(t *rapid.T) LoopInfo {
+	return rapid.Custom(func(t *rapid.T) LoopInfo {
 		iv := genInductionVar().Draw(t, "iv")
 		return LoopInfo{
 			LoopID:       rapid.IntRange(0, 50).Draw(t, "loopID"),
@@ -134,7 +135,7 @@ func genLoopInfo() *rapid.Generator[LoopInfo] {
 }
 
 func genAdapterRelation() *rapid.Generator[AdapterRelation] {
-	return rapid.Custom[AdapterRelation](func(t *rapid.T) AdapterRelation {
+	return rapid.Custom(func(t *rapid.T) AdapterRelation {
 		return AdapterRelation{
 			AdapterID: genIdent().Draw(t, "adapterID"),
 			Reason:    rapid.StringMatching(`.{0,30}`).Draw(t, "reason"),
@@ -143,7 +144,7 @@ func genAdapterRelation() *rapid.Generator[AdapterRelation] {
 }
 
 func genAdapterHint() *rapid.Generator[AdapterHint] {
-	return rapid.Custom[AdapterHint](func(t *rapid.T) AdapterHint {
+	return rapid.Custom(func(t *rapid.T) AdapterHint {
 		hint := AdapterHint{
 			Adapter: ExecutionAdapter{
 				ID: rapid.SampledFrom([]string{HTTPHandlerAdapterID, GinAdapterID, "test/adapter"}).Draw(t, "adapterID"),
@@ -162,7 +163,7 @@ func genAdapterHint() *rapid.Generator[AdapterHint] {
 }
 
 func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
-	return rapid.Custom[FunctionAnalysis](func(t *rapid.T) FunctionAnalysis {
+	return rapid.Custom(func(t *rapid.T) FunctionAnalysis {
 		startLine := rapid.IntRange(1, 500).Draw(t, "start")
 		endLine := rapid.IntRange(startLine, startLine+200).Draw(t, "end")
 		var loops []LoopInfo
@@ -194,7 +195,7 @@ func genFunctionAnalysis() *rapid.Generator[FunctionAnalysis] {
 }
 
 func genTimingPhaseSummary() *rapid.Generator[TimingPhaseSummary] {
-	return rapid.Custom[TimingPhaseSummary](func(t *rapid.T) TimingPhaseSummary {
+	return rapid.Custom(func(t *rapid.T) TimingPhaseSummary {
 		totalMs := rapid.Float64Range(0, 10000).Draw(t, "totalMs")
 		selfMs := rapid.Float64Range(0, totalMs).Draw(t, "selfMs")
 		return TimingPhaseSummary{
@@ -210,7 +211,7 @@ func genTimingPhaseSummary() *rapid.Generator[TimingPhaseSummary] {
 }
 
 func genTimingSummary() *rapid.Generator[TimingSummary] {
-	return rapid.Custom[TimingSummary](func(t *rapid.T) TimingSummary {
+	return rapid.Custom(func(t *rapid.T) TimingSummary {
 		return TimingSummary{
 			Phases: rapid.SliceOfN(genTimingPhaseSummary(), 1, 5).Draw(t, "phases"),
 		}
@@ -219,7 +220,7 @@ func genTimingSummary() *rapid.Generator[TimingSummary] {
 
 func genResponse() *rapid.Generator[Response] {
 	return rapid.OneOf(
-		rapid.Custom[Response](func(t *rapid.T) Response {
+		rapid.Custom(func(t *rapid.T) Response {
 			return Response{
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
@@ -229,7 +230,7 @@ func genResponse() *rapid.Generator[Response] {
 				Capabilities:    rapid.SliceOfN(genIdent(), 0, 3).Draw(t, "caps"),
 			}
 		}),
-		rapid.Custom[Response](func(t *rapid.T) Response {
+		rapid.Custom(func(t *rapid.T) Response {
 			return Response{
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
@@ -237,7 +238,7 @@ func genResponse() *rapid.Generator[Response] {
 				Functions:       rapid.SliceOfN(genFunctionAnalysis(), 0, 3).Draw(t, "fns"),
 			}
 		}),
-		rapid.Custom[Response](func(t *rapid.T) Response {
+		rapid.Custom(func(t *rapid.T) Response {
 			return Response{
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
@@ -246,14 +247,14 @@ func genResponse() *rapid.Generator[Response] {
 				Message:         rapid.StringMatching(`.{0,30}`).Draw(t, "msg"),
 			}
 		}),
-		rapid.Custom[Response](func(t *rapid.T) Response {
+		rapid.Custom(func(t *rapid.T) Response {
 			return Response{
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
 				Status:          "shutdown_ack",
 			}
 		}),
-		rapid.Custom[Response](func(t *rapid.T) Response {
+		rapid.Custom(func(t *rapid.T) Response {
 			return Response{
 				ProtocolVersion: ProtocolVersion,
 				ID:              rapid.IntRange(0, 1000).Draw(t, "id"),
@@ -269,7 +270,7 @@ func genSetupLevel() *rapid.Generator[SetupLevel] {
 }
 
 func genSetupContextEntry() *rapid.Generator[SetupContextEntry] {
-	return rapid.Custom[SetupContextEntry](func(t *rapid.T) SetupContextEntry {
+	return rapid.Custom(func(t *rapid.T) SetupContextEntry {
 		level := genSetupLevel().Draw(t, "level")
 		ctx := fmt.Sprintf(`{"key":"%s"}`, genIdent().Draw(t, "ctxKey"))
 		raw := json.RawMessage(ctx)
@@ -278,10 +279,10 @@ func genSetupContextEntry() *rapid.Generator[SetupContextEntry] {
 }
 
 func genSetupContextStack() *rapid.Generator[SetupContextStack] {
-	return rapid.Custom[SetupContextStack](func(t *rapid.T) SetupContextStack {
+	return rapid.Custom(func(t *rapid.T) SetupContextStack {
 		n := rapid.IntRange(0, 4).Draw(t, "numContexts")
 		entries := make([]SetupContextEntry, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			entries[i] = genSetupContextEntry().Draw(t, fmt.Sprintf("entry%d", i))
 		}
 		return SetupContextStack{Contexts: entries}
@@ -481,10 +482,8 @@ func TestPropertySetupLevelInvalidString(t *testing.T) {
 		s := rapid.StringMatching(`[a-z]{1,10}`).Draw(t, "str")
 		level := SetupLevel(s)
 		// If it happens to match a valid level, skip
-		for _, valid := range ValidSetupLevels {
-			if level == valid {
-				return
-			}
+		if slices.Contains(ValidSetupLevels, level) {
+			return
 		}
 		if level.IsValid() {
 			t.Fatalf("random string %q should not be a valid level", s)
@@ -517,7 +516,7 @@ func TestPropertyHandlerResponseOrdering(t *testing.T) {
 		var lines []string
 		var expectedIDs []int
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			cmd := genNonShutdownCommand().Draw(t, fmt.Sprintf("cmd%d", i))
 			line := fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":%q}`, ProtocolVersion, i+1, cmd)
 			lines = append(lines, line)
@@ -567,7 +566,7 @@ func TestPropertyHandlerShutdownStopsProcessing(t *testing.T) {
 
 		var lines []string
 		lines = append(lines, fmt.Sprintf(`{"protocol_version":%q,"id":1,"command":"shutdown"}`, ProtocolVersion))
-		for i := 0; i < nAfter; i++ {
+		for i := range nAfter {
 			lines = append(lines, fmt.Sprintf(`{"protocol_version":%q,"id":%d,"command":"handshake"}`, ProtocolVersion, 100+i))
 		}
 
@@ -614,7 +613,7 @@ func TestPropertyAnalyzeExtractsCorrectParams(t *testing.T) {
 			goType string
 		}
 		var params []paramSpec
-		for i := 0; i < nParams; i++ {
+		for i := range nParams {
 			name := sanitizeGoIdent(
 				rapid.StringMatching(`[a-z][a-z0-9]{0,5}`).Draw(t, fmt.Sprintf("name%d", i)),
 			)
@@ -718,7 +717,7 @@ func TestPropertyCaptureNilDefaultsToTrue(t *testing.T) {
 
 // genSideEffect generates a random protocol.SideEffect covering all 7 canonical kinds.
 func genSideEffect() *rapid.Generator[SideEffect] {
-	return rapid.Custom[SideEffect](func(t *rapid.T) SideEffect {
+	return rapid.Custom(func(t *rapid.T) SideEffect {
 		kind := rapid.SampledFrom([]string{
 			"console_output", "file_write", "network_request",
 			"environment_read", "global_mutation", "thrown_error", "global_state_change",
@@ -779,7 +778,7 @@ func TestPropertySideEffectRoundTrip(t *testing.T) {
 		if decoded.Kind != effect.Kind {
 			t.Fatalf("kind mismatch: got %q, want %q", decoded.Kind, effect.Kind)
 		}
-		var raw map[string]interface{}
+		var raw map[string]any
 		if err := json.Unmarshal(data, &raw); err != nil {
 			t.Fatalf("raw unmarshal: %v", err)
 		}
@@ -796,7 +795,7 @@ func TestPropertySideEffectRoundTrip(t *testing.T) {
 // all 7 canonical kinds across a sufficient number of draws.
 func TestPropertySideEffectKindCoverage(t *testing.T) {
 	seen := make(map[string]bool)
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		rapid.Check(t, func(t *rapid.T) {
 			effect := genSideEffect().Draw(t, "effect")
 			seen[effect.Kind] = true
@@ -1204,7 +1203,7 @@ func TestPropertyObjectFieldsNeverMissing(t *testing.T) {
 		// Generate a struct with 0-3 exported fields
 		nFields := rapid.IntRange(0, 3).Draw(t, "nFields")
 		var fieldDecls []string
-		for i := 0; i < nFields; i++ {
+		for i := range nFields {
 			name := fmt.Sprintf("F%d", i)
 			goType := rapid.SampledFrom(goTypes).Draw(t, fmt.Sprintf("ft%d", i))
 			fieldDecls = append(fieldDecls, fmt.Sprintf("\t%s %s", name, goType))
@@ -1256,7 +1255,7 @@ func TestPropertySymExprArgsNeverNull(t *testing.T) {
 		nParams := rapid.IntRange(1, 3).Draw(t, "nParams")
 		var paramDecls []string
 		var paramNames []string
-		for i := 0; i < nParams; i++ {
+		for i := range nParams {
 			name := sanitizeGoIdent(
 				rapid.StringMatching(`[a-z][a-z0-9]{0,4}`).Draw(t, fmt.Sprintf("p%d", i)),
 			)
@@ -1267,26 +1266,26 @@ func TestPropertySymExprArgsNeverNull(t *testing.T) {
 
 		// Build a function body with branches referencing params
 		nBranches := rapid.IntRange(1, 3).Draw(t, "nBranches")
-		var body string
-		for i := 0; i < nBranches; i++ {
+		var sb strings.Builder
+		for i := range nBranches {
 			pIdx := rapid.IntRange(0, nParams-1).Draw(t, fmt.Sprintf("bi%d", i))
 			pName := paramNames[pIdx]
 			// Generate various branch patterns
 			pattern := rapid.IntRange(0, 3).Draw(t, fmt.Sprintf("pat%d", i))
 			switch pattern {
 			case 0:
-				body += fmt.Sprintf("\tif %s > 0 { _ = 1 }\n", pName)
+				fmt.Fprintf(&sb, "\tif %s > 0 { _ = 1 }\n", pName)
 			case 1:
-				body += fmt.Sprintf("\tif %s == 0 { _ = 1 }\n", pName)
+				fmt.Fprintf(&sb, "\tif %s == 0 { _ = 1 }\n", pName)
 			case 2:
-				body += fmt.Sprintf("\tswitch %s {\n\tcase 0:\n\t\t_ = 1\n\tdefault:\n\t\t_ = 2\n\t}\n", pName)
+				fmt.Fprintf(&sb, "\tswitch %s {\n\tcase 0:\n\t\t_ = 1\n\tdefault:\n\t\t_ = 2\n\t}\n", pName)
 			case 3:
-				body += fmt.Sprintf("\tif %s != 0 && %s > 0 { _ = 1 }\n", pName, pName)
+				fmt.Fprintf(&sb, "\tif %s != 0 && %s > 0 { _ = 1 }\n", pName, pName)
 			}
 		}
 
 		src := fmt.Sprintf("package p\n\nfunc Foo(%s) int {\n%s\treturn 0\n}\n",
-			strings.Join(paramDecls, ", "), body)
+			strings.Join(paramDecls, ", "), sb.String())
 
 		dir, err := os.MkdirTemp("", "shatter-go-prop-args-*")
 		if err != nil {
@@ -1365,7 +1364,7 @@ func TestProperty_ChooseInvocationStrategy_AdapterMatchYieldsAdapter(t *testing.
 		// Possibly add extra hooks to verify it picks the right one
 		nExtra := rapid.IntRange(0, 3).Draw(t, "nExtra")
 		hooks := []InvocationHook{hook}
-		for i := 0; i < nExtra; i++ {
+		for i := range nExtra {
 			hooks = append(hooks, &stubHook{id: fmt.Sprintf("other-%d", i)})
 		}
 		model := &InvocationModel{Kind: "adapter", AdapterID: id}
@@ -1498,10 +1497,8 @@ func TestProperty_SyntheticParamsForAdapter(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		id := rapid.StringMatching(`[a-z]+/[a-z]+-[a-z]+`).Draw(t, "adapterID")
 		// Skip known IDs
-		for _, known := range knownIDs {
-			if id == known {
-				return
-			}
+		if slices.Contains(knownIDs, id) {
+			return
 		}
 		params := syntheticParamsForAdapter(id)
 		if params != nil {
