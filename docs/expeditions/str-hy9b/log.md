@@ -142,14 +142,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `a60be177510e596092d655e98d5e3369c35c7853`.
 
 
+### 2026-04-20T19:08:50Z — Closed task
+- Branch: `str-hy9b-09-c4-method-classification-gate`.
+- Outcome: `kept`.
+- Summary: Method classification gate: analyzeForExecution detects method receivers and returns sentinel error; failureOutcome maps to OutcomeStatusUnsupported with method_not_supported error type; kind=function/method logged; test with *Service.Compute verifies unsupported outcome instead of build failure; smoke passes
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-09-c4-method-classification-gate`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`
-- Last completed: `str-hy9b-08-c3-discovered-target-schema (kept)`
-- Next action: Complete work on `str-hy9b-09-c4-method-classification-gate` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-09-c4-method-classification-gate (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

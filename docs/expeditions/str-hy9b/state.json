@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "a60be177510e596092d655e98d5e3369c35c7853",
-    "branch": "str-hy9b-09-c4-method-classification-gate",
-    "kind": "task",
-    "number": 9,
-    "slug": "c4-method-classification-gate",
-    "started_at": "2026-04-20T18:49:18Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-08-c3-discovered-target-schema",
-    "completed_at": "2026-04-20T18:48:23Z",
+    "branch": "str-hy9b-09-c4-method-classification-gate",
+    "completed_at": "2026-04-20T19:08:50Z",
     "kind": "task",
-    "number": 8,
+    "number": 9,
     "outcome": "kept",
-    "slug": "c3-discovered-target-schema",
-    "summary": "DiscoveredTarget schema: TargetKind/ReceiverShape/DiscoveredTarget types + BuildDiscoveredTarget builder; stable IDs; tests cover all 4 acceptance criteria cases + JSON roundtrip; smoke passes",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema"
+    "slug": "c4-method-classification-gate",
+    "summary": "Method classification gate: analyzeForExecution detects method receivers and returns sentinel error; failureOutcome maps to OutcomeStatusUnsupported with method_not_supported error type; kind=function/method logged; test with *Service.Compute verifies unsupported outcome instead of build failure; smoke passes",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate"
   },
-  "next_action": "Complete work on `str-hy9b-09-c4-method-classification-gate` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-09-c4-method-classification-gate`.",
-  "next_task_number": 9,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 10,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-20T18:49:18Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T19:08:50Z"
 }
