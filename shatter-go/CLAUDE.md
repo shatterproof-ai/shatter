@@ -2,6 +2,10 @@
 
 Go language frontend. Go binary subprocess implementing the JSON-over-stdio protocol.
 
+## Scope Limits
+
+See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) for what the Go frontend does and does not analyze, and which limits are deferred vs. permanent.
+
 ## Key Files
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
