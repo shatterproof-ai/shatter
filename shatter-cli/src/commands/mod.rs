@@ -17,3 +17,4 @@ pub(crate) mod specify;
 pub(crate) mod stale;
 pub(crate) mod telemetry;
 pub(crate) mod test;
+pub(crate) mod workspace;
