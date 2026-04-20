@@ -14,6 +14,40 @@ import (
 
 const ProtocolVersion = "0.1.0"
 
+// TargetKind classifies a discovered invocation target.
+type TargetKind string
+
+const (
+	TargetKindFunction TargetKind = "function"
+	TargetKindMethod   TargetKind = "method"
+	TargetKindAdapter  TargetKind = "adapter"
+)
+
+// ReceiverShape describes the receiver type of a method target.
+type ReceiverShape struct {
+	TypeName  string `json:"type_name"`
+	IsPointer bool   `json:"is_pointer"`
+}
+
+// DiscoveredTarget is a single invocation target found during package analysis.
+// IDs are stable across repeated analysis runs: each ID is derived from the
+// package path and the qualified symbol name only.
+type DiscoveredTarget struct {
+	ID            string         `json:"id"`
+	PackagePath   string         `json:"package_path"`
+	PackageName   string         `json:"package_name"`
+	FilePath      string         `json:"file_path"`
+	StartLine     int            `json:"start_line"`
+	EndLine       int            `json:"end_line"`
+	SymbolName    string         `json:"symbol_name"`
+	QualifiedName string         `json:"qualified_name"`
+	Kind          TargetKind     `json:"kind"`
+	Receiver      *ReceiverShape `json:"receiver,omitempty"`
+	Parameters    []ParamInfo    `json:"parameters"`
+	Results       []TypeInfo     `json:"results"`
+	Visibility    string         `json:"visibility"`
+}
+
 // SetupLevel defines the lifecycle granularity for setup/teardown.
 // Values match the Rust core's SetupLevel enum (snake_case serialization).
 type SetupLevel string
