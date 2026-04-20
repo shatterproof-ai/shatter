@@ -730,48 +730,89 @@ fn load_explore_summaries(dir: &Path) -> Result<Vec<ExploreSummary>, String> {
     Ok(summaries)
 }
 
-fn format_explore_non_completed_sections(summaries: &[ExploreSummary]) -> String {
-    let mut failed_lines = Vec::new();
-    let mut skipped_lines = Vec::new();
-
-    for entry in summaries.iter().flat_map(|summary| summary.functions.iter()) {
-        let reason = match entry.reason.as_deref() {
-            Some("timeout") => "timed out".to_string(),
-            Some(reason) => reason.to_string(),
-            None => "unknown reason".to_string(),
-        };
-        let line = format!("- `{}`: {reason}", entry.function_name);
-        match entry.status.as_str() {
-            "failed" => failed_lines.push(line),
-            "skipped" => skipped_lines.push(line),
-            _ => {}
+/// Map a stored `ExploreSummaryEntry` to an `OutcomeStatus`.
+///
+/// This is a temporary local bridge: the existing artifact format records
+/// status as one of `"completed" | "failed" | "skipped"` plus a free-form
+/// `reason` string. Once str-hy9b.A2 plumbs real `InvocationOutcome`s through
+/// the executor, the renderer adapter should consume that field directly and
+/// this mapping can be deleted.
+// TODO(str-hy9b.A2): replace with the real InvocationOutcome on
+// ExploreSummaryEntry once outcome plumbing lands.
+fn outcome_status_from_entry(entry: &ExploreSummaryEntry) -> shatter_core::protocol::OutcomeStatus {
+    use shatter_core::protocol::OutcomeStatus;
+    let reason = entry.reason.as_deref().unwrap_or("");
+    match entry.status.as_str() {
+        "completed" => OutcomeStatus::Completed,
+        "failed" => {
+            if reason.contains("timeout") || reason.contains("timed out") {
+                OutcomeStatus::TimedOut
+            } else {
+                OutcomeStatus::RuntimeFailed
+            }
         }
+        "skipped" => {
+            if reason.contains("unexecutable") {
+                OutcomeStatus::Unsupported
+            } else {
+                OutcomeStatus::SkippedByPolicy
+            }
+        }
+        // Defensive default: an unknown status string came from a future
+        // artifact version. Surface it as runtime_failed so the function still
+        // gets a section in the report instead of vanishing.
+        _ => OutcomeStatus::RuntimeFailed,
     }
-
-    let mut sections = Vec::new();
-    if !failed_lines.is_empty() {
-        sections.push(format!(
-            "## Failed functions\n\n{}",
-            failed_lines.join("\n")
-        ));
-    }
-    if !skipped_lines.is_empty() {
-        sections.push(format!(
-            "## Skipped functions\n\n{}",
-            skipped_lines.join("\n")
-        ));
-    }
-
-    sections.join("\n\n")
 }
 
-fn combine_explore_markdown(md_fragments: &[String], summaries: &[ExploreSummary]) -> String {
-    let mut sections = md_fragments.to_vec();
-    let non_completed = format_explore_non_completed_sections(summaries);
-    if !non_completed.is_empty() {
-        sections.push(non_completed);
+/// Default human-readable reason for an entry that lacks one.
+fn default_reason_for(entry: &ExploreSummaryEntry) -> String {
+    match entry.status.as_str() {
+        "completed" => "exploration completed".to_string(),
+        "failed" => "exploration failed".to_string(),
+        "skipped" => "skipped".to_string(),
+        other => format!("status: {other}"),
     }
-    sections.join("\n\n---\n\n")
+}
+
+fn combine_explore_markdown(
+    md_fragments: &[(String, String)],
+    summaries: &[ExploreSummary],
+) -> String {
+    let detail_by_name: HashMap<&str, &str> = md_fragments
+        .iter()
+        .map(|(name, md)| (name.as_str(), md.as_str()))
+        .collect();
+
+    let entries_owned: Vec<(String, shatter_core::protocol::OutcomeStatus, String)> = summaries
+        .iter()
+        .flat_map(|summary| summary.functions.iter())
+        .map(|entry| {
+            let status = outcome_status_from_entry(entry);
+            let reason = entry
+                .reason
+                .clone()
+                .unwrap_or_else(|| default_reason_for(entry));
+            (entry.function_name.clone(), status, reason)
+        })
+        .collect();
+
+    let entries: Vec<shatter_core::report::OutcomeRenderEntry<'_>> = entries_owned
+        .iter()
+        .map(
+            |(name, status, reason)| shatter_core::report::OutcomeRenderEntry {
+                qualified_name: name.as_str(),
+                status: *status,
+                reason: reason.as_str(),
+                detail_md: detail_by_name.get(name.as_str()).copied(),
+            },
+        )
+        .collect();
+
+    shatter_core::report::render_explore_outcomes(
+        &entries,
+        "discovery returned no functions for this run",
+    )
 }
 
 /// Minimum iterations-without-discovery before the periodic progress line
@@ -873,7 +914,10 @@ struct AssemblyAccumulator {
     total_covered: usize,
     total_lines: u32,
     html_fragments: Vec<String>,
-    md_fragments: Vec<String>,
+    /// Per-function detail markdown produced for `Completed` outcomes, keyed
+    /// by function name so the outcome-driven renderer can join detail to
+    /// outcome by name regardless of fragment ordering.
+    md_fragments: Vec<(String, String)>,
     file_specs: Vec<shatter_core::spec::FunctionSpec>,
 }
 
@@ -948,7 +992,7 @@ fn assemble_function_result(
             let _report_span = tracing::info_span!("report.render").entered();
             explorer::format_exploration_report_verbose(result)
         };
-        acc.md_fragments.push(report.clone());
+        acc.md_fragments.push((func.name.clone(), report.clone()));
         if should_print_report {
             print!("{report}");
         }
@@ -965,7 +1009,7 @@ fn assemble_function_result(
             let _report_span = tracing::info_span!("report.render").entered();
             crate::render::render_explore_fn(&view)
         };
-        acc.md_fragments.push(md.clone());
+        acc.md_fragments.push((func.name.clone(), md.clone()));
         if should_print_report {
             print_markdown(&md, opts.use_color);
         }
@@ -982,7 +1026,7 @@ fn assemble_function_result(
             let _report_span = tracing::info_span!("report.render").entered();
             explorer::format_exploration_report(result, &report_opts)
         };
-        acc.md_fragments.push(report.clone());
+        acc.md_fragments.push((func.name.clone(), report.clone()));
         if should_print_report {
             print!("{report}");
             if !mock_symbols.is_empty() {
@@ -1153,7 +1197,10 @@ fn finalize_explore(
     let mut total_function_count: usize = if summaries.is_empty() {
         0
     } else {
-        summaries.iter().map(|summary| summary.total_functions).sum()
+        summaries
+            .iter()
+            .map(|summary| summary.total_functions)
+            .sum()
     };
 
     // Print header.
@@ -1213,14 +1260,12 @@ fn finalize_explore(
         );
     }
 
-    let non_completed_sections = format_explore_non_completed_sections(&summaries);
-    if !non_completed_sections.is_empty()
-        && log::log_enabled!(log::Level::Info)
-        && (report_outputs.is_empty() || stdout)
-        && output_format == crate::args::OutputFormat::Md
-    {
-        print_markdown(&format!("\n---\n\n{non_completed_sections}\n"), use_color);
-    }
+    // The trailing "Failed/Skipped" section that used to be printed here is
+    // now subsumed by the outcome-driven renderer: every discovered function
+    // — including failed and skipped ones — gets its own section in the file
+    // report (combine_explore_markdown). When streaming to stdout, per-
+    // function progress lines already surface failed/skipped functions, so
+    // duplicating them here would only repeat the information.
 
     // Print summary footer.
     if log::log_enabled!(log::Level::Info) && (report_outputs.is_empty() || stdout) {
@@ -1572,7 +1617,7 @@ pub(crate) async fn run_explore(
 
     // Accumulate HTML and markdown fragments for -o report files.
     let mut html_fragments: Vec<String> = Vec::new();
-    let mut md_fragments: Vec<String> = Vec::new();
+    let mut md_fragments: Vec<(String, String)> = Vec::new();
 
     // --- Shared state across all targets (str-b2my.10) ---
     //
@@ -3211,15 +3256,11 @@ pub(crate) async fn run_explore(
         }
     }
 
-    let non_completed_sections = format_explore_non_completed_sections(&report_summaries);
-    if !non_completed_sections.is_empty()
-        && header_printed
-        && log::log_enabled!(log::Level::Info)
-        && (report_outputs.is_empty() || stdout)
-        && output_format == crate::args::OutputFormat::Md
-    {
-        print_markdown(&format!("\n---\n\n{non_completed_sections}\n"), use_color);
-    }
+    // The trailing "Failed/Skipped" section that used to be printed here is
+    // now subsumed by the outcome-driven renderer: every discovered function
+    // — including failed and skipped ones — gets its own section in the file
+    // report (combine_explore_markdown). Streaming to stdout already surfaces
+    // failed/skipped functions via per-function progress lines.
 
     // Print summary footer (only when streaming to stdout).
     if header_printed
@@ -3364,9 +3405,9 @@ mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        finalize_explore, format_progress_snapshot, load_explore_artifacts,
-        persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
-        stage_persistence_dir, write_explore_artifact, write_explore_summary,
+        finalize_explore, format_progress_snapshot, load_explore_artifacts, persist_stage_outputs,
+        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
+        write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -4336,22 +4377,29 @@ mod tests {
         .expect("finalize explore");
 
         let markdown = std::fs::read_to_string(&report_path).expect("read markdown");
-        assert!(markdown.contains("load/user"), "completed function should remain");
         assert!(
-            markdown.contains("## Failed functions"),
-            "failed section should be rendered"
+            markdown.contains("load/user"),
+            "completed function should remain"
         );
         assert!(
-            markdown.contains("- `save/user`: timed out"),
-            "timeout reason should be rendered as timed out"
+            markdown.contains("## save/user"),
+            "failed function should get its own heading"
         );
         assert!(
-            markdown.contains("## Skipped functions"),
-            "skipped section should be rendered"
+            markdown.contains("**Status:** `timed_out`"),
+            "timeout reason should map to the timed_out outcome status"
         );
         assert!(
-            markdown.contains("- `skip/user`: unexecutable parameter types"),
-            "skipped reason should be rendered"
+            markdown.contains("## skip/user"),
+            "skipped function should get its own heading"
+        );
+        assert!(
+            markdown.contains("**Status:** `unsupported`"),
+            "unexecutable-parameter skip should map to the unsupported outcome status"
+        );
+        assert!(
+            markdown.contains("unexecutable parameter types"),
+            "skipped reason text should be rendered"
         );
     }
 
@@ -4395,8 +4443,12 @@ mod tests {
         .expect("finalize skipped-only explore");
 
         let markdown = std::fs::read_to_string(&report_path).expect("read markdown");
-        assert!(markdown.contains("## Skipped functions"));
-        assert!(markdown.contains("- `skip/user`: unexecutable parameter types"));
+        assert!(
+            markdown.contains("## skip/user"),
+            "skipped function should get its own heading"
+        );
+        assert!(markdown.contains("**Status:** `unsupported`"));
+        assert!(markdown.contains("unexecutable parameter types"));
     }
 
     #[test]
@@ -4418,10 +4470,12 @@ mod tests {
         .expect("persist stage outputs");
 
         let stage_dir = stage_persistence_dir(dir.path(), "src/user.ts", &func);
-        let observe_stage = shatter_core::pipeline::read_observe_stage(&stage_dir.join("observe.json"))
-            .expect("read observe");
-        let analyze_stage = shatter_core::pipeline::read_analyze_stage(&stage_dir.join("analyze.json"))
-            .expect("read analyze");
+        let observe_stage =
+            shatter_core::pipeline::read_observe_stage(&stage_dir.join("observe.json"))
+                .expect("read observe");
+        let analyze_stage =
+            shatter_core::pipeline::read_analyze_stage(&stage_dir.join("analyze.json"))
+                .expect("read analyze");
         let solve_stage = shatter_core::pipeline::read_solve_stage(&stage_dir.join("solve.json"))
             .expect("read solve");
         let specify_stage =

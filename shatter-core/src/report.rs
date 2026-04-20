@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::batch_state::BatchState;
 use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
+use crate::protocol::OutcomeStatus;
 use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, ScanResult};
 
 /// Maximum number of behavior clusters displayed per function in the Markdown
@@ -2184,6 +2185,170 @@ mod tests {
         let json = serde_json::to_string(&report).expect("serialize");
         assert!(!json.contains("mock_coverage_pct"));
         assert!(!json.contains("mock_execution_count"));
+    }
+}
+
+/// One discovered target's outcome, ready for markdown rendering.
+///
+/// Drives `render_explore_outcomes` so that every discovered target produces
+/// a heading regardless of whether it completed, failed instrumentation,
+/// failed at runtime, was skipped, or timed out. The detail block is reserved
+/// for `Completed` / `CompletedWithFindings` — other statuses get only the
+/// status line and reason.
+#[derive(Debug, Clone)]
+pub struct OutcomeRenderEntry<'a> {
+    /// Fully qualified function name used as the markdown heading.
+    pub qualified_name: &'a str,
+    /// Machine-readable status from the outcome stream.
+    pub status: OutcomeStatus,
+    /// One-sentence human-readable reason. Always present, even for completed
+    /// outcomes where it summarizes the result ("explored N paths" etc.).
+    pub reason: &'a str,
+    /// Per-function detail markdown (paths, branches, etc.). Caller passes
+    /// `Some` only for `Completed` / `CompletedWithFindings`; the renderer
+    /// ignores `Some` for other statuses to keep the output coherent.
+    pub detail_md: Option<&'a str>,
+}
+
+/// Stable kebab-case label for an `OutcomeStatus` shown in markdown.
+fn outcome_status_label(status: OutcomeStatus) -> &'static str {
+    match status {
+        OutcomeStatus::Completed => "completed",
+        OutcomeStatus::CompletedWithFindings => "completed_with_findings",
+        OutcomeStatus::Unsupported => "unsupported",
+        OutcomeStatus::BuildFailed => "build_failed",
+        OutcomeStatus::RuntimeFailed => "runtime_failed",
+        OutcomeStatus::TimedOut => "timed_out",
+        OutcomeStatus::SkippedByPolicy => "skipped_by_policy",
+    }
+}
+
+/// Render the explore-mode markdown report from an outcome stream.
+///
+/// Behavior:
+/// - Empty `entries` → emits a `## No targets discovered` body. The caller
+///   passes the explanatory reason via `empty_reason` (typically the upstream
+///   discovery diagnostic).
+/// - Otherwise: one `## {qualified_name}` heading per entry, then a
+///   `**Status:** {label}` line, then the reason on its own line, then the
+///   detail block if the status warrants one. Sections are joined with a
+///   horizontal rule.
+pub fn render_explore_outcomes(entries: &[OutcomeRenderEntry<'_>], empty_reason: &str) -> String {
+    if entries.is_empty() {
+        return format!("## No targets discovered\n\n{empty_reason}\n");
+    }
+
+    let mut sections: Vec<String> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let status_label = outcome_status_label(entry.status);
+        let mut section = format!(
+            "## {name}\n\n**Status:** `{status_label}`\n\n{reason}\n",
+            name = entry.qualified_name,
+            reason = entry.reason,
+        );
+        let show_detail = matches!(
+            entry.status,
+            OutcomeStatus::Completed | OutcomeStatus::CompletedWithFindings,
+        );
+        if show_detail
+            && let Some(detail) = entry.detail_md
+            && !detail.trim().is_empty()
+        {
+            section.push('\n');
+            section.push_str(detail.trim_end());
+            section.push('\n');
+        }
+        sections.push(section);
+    }
+    sections.join("\n---\n\n")
+}
+
+#[cfg(test)]
+mod outcome_render_tests {
+    use super::*;
+
+    #[test]
+    fn empty_entries_emits_no_targets_section() {
+        let md = render_explore_outcomes(&[], "discovery returned an empty function list");
+        assert!(md.contains("## No targets discovered"));
+        assert!(md.contains("discovery returned an empty function list"));
+        assert!(!md.is_empty());
+    }
+
+    #[test]
+    fn failed_entry_gets_heading_and_status() {
+        let entries = vec![OutcomeRenderEntry {
+            qualified_name: "pkg/foo.Bar",
+            status: OutcomeStatus::BuildFailed,
+            reason: "go build returned exit code 1",
+            detail_md: None,
+        }];
+        let md = render_explore_outcomes(&entries, "");
+        assert!(md.contains("## pkg/foo.Bar"));
+        assert!(md.contains("**Status:** `build_failed`"));
+        assert!(md.contains("go build returned exit code 1"));
+    }
+
+    #[test]
+    fn completed_entry_includes_detail_block() {
+        let entries = vec![OutcomeRenderEntry {
+            qualified_name: "pkg/foo.Quux",
+            status: OutcomeStatus::Completed,
+            reason: "explored 3 paths",
+            detail_md: Some("### Paths\n- input=42 → return=true"),
+        }];
+        let md = render_explore_outcomes(&entries, "");
+        assert!(md.contains("## pkg/foo.Quux"));
+        assert!(md.contains("**Status:** `completed`"));
+        assert!(md.contains("### Paths"));
+        assert!(md.contains("input=42"));
+    }
+
+    #[test]
+    fn non_completed_entry_drops_detail_block_even_when_supplied() {
+        let entries = vec![OutcomeRenderEntry {
+            qualified_name: "pkg/foo.Stale",
+            status: OutcomeStatus::Unsupported,
+            reason: "parameter type contains an interface",
+            detail_md: Some("### Paths\n- should not appear"),
+        }];
+        let md = render_explore_outcomes(&entries, "");
+        assert!(!md.contains("should not appear"));
+        assert!(md.contains("**Status:** `unsupported`"));
+    }
+
+    #[test]
+    fn mixed_statuses_each_get_their_own_section() {
+        let entries = vec![
+            OutcomeRenderEntry {
+                qualified_name: "pkg.A",
+                status: OutcomeStatus::Completed,
+                reason: "ok",
+                detail_md: Some("detail-A"),
+            },
+            OutcomeRenderEntry {
+                qualified_name: "pkg.B",
+                status: OutcomeStatus::TimedOut,
+                reason: "exceeded 30s budget",
+                detail_md: None,
+            },
+            OutcomeRenderEntry {
+                qualified_name: "pkg.C",
+                status: OutcomeStatus::RuntimeFailed,
+                reason: "panic: nil pointer",
+                detail_md: None,
+            },
+        ];
+        let md = render_explore_outcomes(&entries, "");
+        assert!(md.contains("## pkg.A"));
+        assert!(md.contains("## pkg.B"));
+        assert!(md.contains("## pkg.C"));
+        assert!(md.contains("`completed`"));
+        assert!(md.contains("`timed_out`"));
+        assert!(md.contains("`runtime_failed`"));
+        assert!(md.contains("detail-A"));
+        // Section separator between three entries → exactly two `\n---\n\n`.
+        assert_eq!(md.matches("\n---\n\n").count(), 2);
     }
 }
 
