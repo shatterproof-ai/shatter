@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "0a6408859bdc394a3394e19c5a2b327581ba260d",
-    "branch": "str-hy9b-08-c3-discovered-target-schema",
-    "kind": "task",
-    "number": 8,
-    "slug": "c3-discovered-target-schema",
-    "started_at": "2026-04-20T18:27:11Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-07-i2-multi-method-interface-stub",
-    "completed_at": "2026-04-20T15:28:38Z",
+    "branch": "str-hy9b-08-c3-discovered-target-schema",
+    "completed_at": "2026-04-20T18:48:23Z",
     "kind": "task",
-    "number": 7,
+    "number": 8,
     "outcome": "kept",
-    "slug": "i2-multi-method-interface-stub",
-    "summary": "Multi-method interface stub: cap lifted to 5 methods; three-method acceptance criterion test added; lint sweep of executor/visitor/mcdc (unused funcs removed, switches modernized, fmt.Fprintf bulk conversion)",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-07-i2-multi-method-interface-stub"
+    "slug": "c3-discovered-target-schema",
+    "summary": "DiscoveredTarget schema: TargetKind/ReceiverShape/DiscoveredTarget types + BuildDiscoveredTarget builder; stable IDs; tests cover all 4 acceptance criteria cases + JSON roundtrip; smoke passes",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema"
   },
-  "next_action": "Complete work on `str-hy9b-08-c3-discovered-target-schema` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-08-c3-discovered-target-schema`.",
-  "next_task_number": 8,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 9,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-20T18:27:11Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T18:48:23Z"
 }
