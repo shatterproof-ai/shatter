@@ -48,6 +48,16 @@ type DiscoveredTarget struct {
 	Visibility    string         `json:"visibility"`
 }
 
+// ConstructorCandidate is a function inferred to construct a same-package type.
+// Candidates are collected by ScanConstructors and consumed by the receiver
+// planner (Phase E) to synthesize receiver values for method targets.
+type ConstructorCandidate struct {
+	FuncName     string      `json:"func_name"`
+	TargetType   string      `json:"target_type"`
+	Parameters   []ParamInfo `json:"parameters"`
+	ReturnsError bool        `json:"returns_error"`
+}
+
 // SetupLevel defines the lifecycle granularity for setup/teardown.
 // Values match the Rust core's SetupLevel enum (snake_case serialization).
 type SetupLevel string
