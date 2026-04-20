@@ -8,6 +8,10 @@
     "status": {
       "$ref": "outcome-status.schema.json"
     },
+    "short_reason": {
+      "type": "string",
+      "description": "One human-readable sentence summarizing why the invocation reached this status. Required (non-empty) for any non-completed status."
+    },
     "return_value": {
       "description": "Return value from the invocation, if it completed normally."
     },

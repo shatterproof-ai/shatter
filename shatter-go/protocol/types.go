@@ -149,6 +149,7 @@ type Response struct {
 	LoopBodyStates         []LoopBodyState        `json:"loop_body_states,omitempty"`
 	CaptureTruncation      *TruncationInfo        `json:"capture_truncation,omitempty"`
 	Performance            *PerfMetrics           `json:"performance,omitempty"`
+	Outcome                *InvocationOutcome     `json:"outcome,omitempty"`
 
 	// Prepare
 	PrepareID string `json:"prepare_id,omitempty"`
@@ -451,7 +452,10 @@ const (
 
 // InvocationOutcome is the reusable protocol contract for one invocation result.
 type InvocationOutcome struct {
-	Status      OutcomeStatus   `json:"status"`
+	Status OutcomeStatus `json:"status"`
+	// ShortReason is one human-readable sentence explaining why the invocation
+	// reached this status. Required (non-empty) for any non-completed status.
+	ShortReason *string         `json:"short_reason,omitempty"`
 	ReturnValue json.RawMessage `json:"return_value,omitempty"`
 	ThrownError *ErrorInfo      `json:"thrown_error,omitempty"`
 	SideEffects []SideEffect    `json:"side_effects,omitempty"`

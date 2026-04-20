@@ -118,6 +118,50 @@ func isStandaloneGoFile(sourcePath string) bool {
 	return true
 }
 
+// workspaceGoEnvProvider, when non-nil, returns the environment slice to use
+// for every `go build` invoked from shatter-go. Set by the protocol handler
+// during construction (see protocol/handler.go) so that GOCACHE is pinned to
+// the persistent workspace-backed build cache. When nil (e.g., in unit tests
+// that don't wire a workspace), the helpers fall back to the legacy
+// SHATTER_HARNESS_CACHE-based behavior.
+var workspaceGoEnvProvider func() []string
+
+// SetWorkspaceGoEnvProvider installs the environment provider used for `go
+// build` invocations. Passing nil disables workspace-backed GOCACHE pinning
+// and restores the legacy fallback.
+func SetWorkspaceGoEnvProvider(fn func() []string) {
+	workspaceGoEnvProvider = fn
+}
+
+// WorkspaceGoEnv returns the workspace-backed environment slice when a
+// provider has been installed, or nil otherwise. Callers outside this package
+// (notably setup.Loader) use the nil signal to decide whether to pin GOCACHE.
+func WorkspaceGoEnv() []string {
+	if workspaceGoEnvProvider == nil {
+		return nil
+	}
+	return workspaceGoEnvProvider()
+}
+
+// applyGoBuildEnv assigns cmd.Env using the workspace-backed provider when
+// set; otherwise uses the legacy per-source-kind cache directory. This is the
+// single entry point for every `go build` invoked from this package.
+func applyGoBuildEnv(cmd *exec.Cmd, sourcePath string) {
+	if workspaceGoEnvProvider != nil {
+		cmd.Env = workspaceGoEnvProvider()
+		return
+	}
+	var gocache string
+	if isStandaloneGoFile(sourcePath) {
+		gocache = standaloneGoBuildCacheDir()
+	} else {
+		gocache = moduleGoBuildCacheDir()
+	}
+	if gocache != "" {
+		cmd.Env = append(os.Environ(), "GOCACHE="+gocache)
+	}
+}
+
 // standaloneGoBuildCacheDir returns the Go build cache path for standalone
 // harness builds. Uses SHATTER_HARNESS_CACHE/go/standalone/build-cache when
 // the cache env var is set. Returns empty string when no cache is configured.
@@ -684,18 +728,7 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 	finishBuild := timing.Start("execute.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
-	// Use a project-scoped build cache so compiled objects persist across requests
-	// and survive OS temp cleanup. Standalone and module-backed files use separate
-	// cache subdirectories to avoid any cross-contamination.
-	if isStandaloneGoFile(sourcePath) {
-		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	} else {
-		if gocache := moduleGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	}
+	applyGoBuildEnv(buildCmd, sourcePath)
 	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
 		finishBuild()
 		os.RemoveAll(outputDir)
@@ -2121,15 +2154,7 @@ func PrepareHarness(sourcePath, funcName string, timing *frontendtiming.Collecto
 	finishBuild := timing.Start("prepare.build")
 	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	buildCmd.Dir = outputDir
-	if isStandaloneGoFile(sourcePath) {
-		if gocache := standaloneGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	} else {
-		if gocache := moduleGoBuildCacheDir(); gocache != "" {
-			buildCmd.Env = append(os.Environ(), "GOCACHE="+gocache)
-		}
-	}
+	applyGoBuildEnv(buildCmd, sourcePath)
 	if buildOut, err := buildCmd.CombinedOutput(); err != nil {
 		finishBuild()
 		os.RemoveAll(outputDir)

@@ -191,6 +191,29 @@ func (w *Workspace) LoaderCacheDir() string {
 	return filepath.Join(w.CacheDir(), loaderDirectoryName)
 }
 
+// GoEnv returns the process environment with GOCACHE pinned to the workspace's
+// persistent build-cache directory. Every `go build` invocation in shatter-go
+// must use this so that consecutive runs reuse compiled artifacts instead of
+// rebuilding from scratch against the default user-level cache.
+func (w *Workspace) GoEnv() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	gocache := "GOCACHE=" + w.BuildCacheDir()
+	replaced := false
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "GOCACHE=") {
+			out = append(out, gocache)
+			replaced = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !replaced {
+		out = append(out, gocache)
+	}
+	return out
+}
+
 // MetadataPath returns the metadata.json path.
 func (w *Workspace) MetadataPath() string {
 	return filepath.Join(w.root, metadataFileName)

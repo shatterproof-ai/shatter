@@ -467,6 +467,8 @@ pub enum OutcomeStatus {
 pub struct InvocationOutcome {
     pub status: OutcomeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_value: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thrown_error: Option<serde_json::Value>,
@@ -1593,6 +1595,7 @@ mod tests {
     fn invocation_outcome_round_trips() {
         round_trip(&InvocationOutcome {
             status: OutcomeStatus::CompletedWithFindings,
+            short_reason: Some("completed with findings".into()),
             return_value: Some(serde_json::json!({"ok": true})),
             thrown_error: Some(serde_json::json!({
                 "error_type": "warning",

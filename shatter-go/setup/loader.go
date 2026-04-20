@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // contextKey uniquely identifies a setup context by scope and level.
@@ -55,6 +57,9 @@ func (l *Loader) RunSetup(file, scope, level string, projectRoot *string, parent
 	binPath := filepath.Join(tmpDir, "setup")
 	buildCmd := exec.Command("go", "build", "-o", binPath, absFile)
 	buildCmd.Dir = filepath.Dir(absFile)
+	if env := instrument.WorkspaceGoEnv(); env != nil {
+		buildCmd.Env = env
+	}
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("building setup file: %s: %w", string(out), err)
 	}

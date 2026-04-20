@@ -665,6 +665,8 @@ export type OutcomeStatus =
 /** Reusable protocol contract for one invocation result. */
 export interface InvocationOutcome {
   status: OutcomeStatus;
+  /** One human-readable sentence summarizing why the invocation reached this status. Required (non-empty) for any non-completed status. */
+  short_reason?: string;
   return_value?: unknown;
   thrown_error?: ErrorInfo;
   side_effects?: SideEffect[];
