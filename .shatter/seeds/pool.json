@@ -1165,6 +1165,38 @@
           "kind": "int"
         },
         "value": 169
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "SmokeClassify",
+            "mode": "branch",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": 508
+      },
+      {
+        "behaviors": [
+          {
+            "branch_id": 0,
+            "function": "ClassifyNumber",
+            "mode": "branch",
+            "severity": "rare_path"
+          }
+        ],
+        "discovered_epoch": 0,
+        "last_hit_epoch": 0,
+        "type": {
+          "kind": "int"
+        },
+        "value": -958
       }
     ],
     "{\"kind\":\"object\",\"fields\":[[\"name\",{\"kind\":\"str\"}],[\"age\",{\"kind\":\"float\"}],[\"isVerified\",{\"kind\":\"bool\"}],[\"role\",{\"kind\":\"str\"}]]}": [
