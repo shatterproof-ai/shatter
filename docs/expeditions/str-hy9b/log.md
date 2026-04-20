@@ -103,14 +103,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `57506a8b5342d2f519623b7a2ab7217f4a19fc6a`.
 
 
+### 2026-04-20T15:09:53Z — Closed task
+- Branch: `str-hy9b-06-h4-conformance-tests`.
+- Outcome: `kept`.
+- Summary: Conformance test additions: 8 new cases covering outcome/adapter_http_nethttp/invocation_plan/hint_config_v1 from H3; Go-only capabilities assert TS/Rust return clean errors; 39 checks pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-06-h4-conformance-tests`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-06-h4-conformance-tests`
-- Last completed: `str-hy9b-05-c2-packages-analyzer (kept)`
-- Next action: Complete work on `str-hy9b-06-h4-conformance-tests` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-06-h4-conformance-tests`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-06-h4-conformance-tests (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
