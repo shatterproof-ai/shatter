@@ -90,14 +90,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `47995e028158f10d88c526ee77a7f7f7615e473a`.
 
 
+### 2026-04-20T14:55:16Z — Closed task
+- Branch: `str-hy9b-05-c2-packages-analyzer`.
+- Outcome: `kept`.
+- Summary: Packages-based analyzer: go/packages loader replaces single-file types.Check path; multi-file package and internal-import acceptance criteria verified; lint cleanup across protocol pkg
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-05-c2-packages-analyzer`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-05-c2-packages-analyzer`
-- Last completed: `str-hy9b-04-b3-workspace-gc (kept)`
-- Next action: Complete work on `str-hy9b-05-c2-packages-analyzer` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-05-c2-packages-analyzer`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-05-c2-packages-analyzer (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "47995e028158f10d88c526ee77a7f7f7615e473a",
-    "branch": "str-hy9b-05-c2-packages-analyzer",
-    "kind": "task",
-    "number": 5,
-    "slug": "c2-packages-analyzer",
-    "started_at": "2026-04-20T14:22:18Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-05-c2-packages-analyzer"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-04-b3-workspace-gc",
-    "completed_at": "2026-04-20T14:22:03Z",
+    "branch": "str-hy9b-05-c2-packages-analyzer",
+    "completed_at": "2026-04-20T14:55:16Z",
     "kind": "task",
-    "number": 4,
+    "number": 5,
     "outcome": "kept",
-    "slug": "b3-workspace-gc",
-    "summary": "Workspace gc CLI: gc.go + run.go + workspace_cli.go; --dry-run lists candidates; size/age/keep-N caps enforced; property tests; CLI wired via Rust workspace command",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-04-b3-workspace-gc"
+    "slug": "c2-packages-analyzer",
+    "summary": "Packages-based analyzer: go/packages loader replaces single-file types.Check path; multi-file package and internal-import acceptance criteria verified; lint cleanup across protocol pkg",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-05-c2-packages-analyzer"
   },
-  "next_action": "Complete work on `str-hy9b-05-c2-packages-analyzer` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-05-c2-packages-analyzer`.",
-  "next_task_number": 5,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 6,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-20T14:22:18Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-20T14:55:16Z"
 }
