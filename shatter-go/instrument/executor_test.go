@@ -2112,8 +2112,8 @@ func tickAt(c Clock) time.Time {
 	}
 }
 
-// TestHarnessSkipsStubForLargeInterfaces confirms interfaces with 3+
-// methods are not stubbed — out of scope for I1.
+// TestHarnessSkipsStubForLargeInterfaces confirms interfaces with more
+// than maxInterfaceStubMethods methods are not stubbed.
 func TestHarnessSkipsStubForLargeInterfaces(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeExecTestSource(t, srcDir, "target.go", `package main
@@ -2122,6 +2122,9 @@ type Big interface {
 	A() int
 	B() int
 	C() int
+	D() int
+	E() int
+	F() int
 }
 
 func useBig(b Big) int {
@@ -2136,6 +2139,70 @@ func useBig(b Big) int {
 		t.Fatalf("expected 1 param, got %d", len(params))
 	}
 	if params[0].Stub != nil {
-		t.Errorf("expected Stub=nil for 3-method interface, got %+v", params[0].Stub)
+		t.Errorf("expected Stub=nil for over-cap interface, got %+v", params[0].Stub)
+	}
+}
+
+// TestHarnessGeneratesInterfaceStubForThreeMethodInterface verifies the
+// stub generator handles a 3-method interface end-to-end, exercising
+// the 0-, 1-, and 2-return method shapes in one harness.
+func TestHarnessGeneratesInterfaceStubForThreeMethodInterface(t *testing.T) {
+	srcDir := t.TempDir()
+	src := writeExecTestSource(t, srcDir, "target.go", `package main
+
+type Store interface {
+	Get(key string) (string, bool)
+	Put(key, value string)
+	Delete(key string) error
+}
+
+func lookup(s Store, k string) string {
+	v, _ := s.Get(k)
+	return v
+}
+`)
+	params, retInfo, err := analyzeForExecution(src, "lookup")
+	if err != nil {
+		t.Fatalf("analyzeForExecution: %v", err)
+	}
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d", len(params))
+	}
+	p := params[0]
+	if p.Stub == nil {
+		t.Fatalf("expected Stub to be populated for Store param, got nil")
+	}
+	if p.Stub.TypeName != "Store" {
+		t.Errorf("expected Stub.TypeName=Store, got %q", p.Stub.TypeName)
+	}
+	if len(p.Stub.Methods) != 3 {
+		t.Fatalf("expected 3 stub methods, got %d: %+v", len(p.Stub.Methods), p.Stub.Methods)
+	}
+
+	harnessSrc, err := generateLoopHarness("lookup", params, retInfo, nil, false)
+	if err != nil {
+		t.Fatalf("generateLoopHarness: %v", err)
+	}
+
+	expectations := []string{
+		"type shatterStub_Store struct{}",
+		"func (s *shatterStub_Store) Get(key string) (string, bool) {",
+		"func (s *shatterStub_Store) Put(key string, value string) {",
+		"func (s *shatterStub_Store) Delete(key string) error {",
+		`shatterRecordStubCall("Store", "Get")`,
+		`shatterRecordStubCall("Store", "Put")`,
+		`shatterRecordStubCall("Store", "Delete")`,
+		"var _r0 string",
+		"var _r1 bool",
+		"var _r0 error",
+		"var s Store = &shatterStub_Store{}",
+	}
+	for _, want := range expectations {
+		if !strings.Contains(harnessSrc, want) {
+			t.Errorf("harness missing %q; full source:\n%s", want, harnessSrc)
+		}
+	}
+	if strings.Contains(harnessSrc, "json.Unmarshal(_req.Inputs[0], &s)") {
+		t.Error("stubbed parameter should not be JSON-unmarshaled")
 	}
 }
