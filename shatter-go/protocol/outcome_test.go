@@ -182,3 +182,35 @@ func present() {}
 		t.Errorf("unsupported outcome must carry non-empty short_reason, got %v", resp.Outcome.ShortReason)
 	}
 }
+
+// TestExecuteMethodTargetEmitsUnsupportedOutcome verifies C4: requesting a
+// method target produces an InvocationOutcome with status=unsupported and a
+// short_reason documenting that receiver planning is pending (Phase E), rather
+// than a build failure.
+func TestExecuteMethodTargetEmitsUnsupportedOutcome(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "service.go")
+	src := `package main
+
+type Service struct{ value int }
+
+func (s *Service) Compute(n int) int { return s.value + n }
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"Compute","inputs":[1]`, tmp))
+	resp := sendRecv(t, req)
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusUnsupported {
+		t.Errorf("outcome.Status = %q, want unsupported (response: %+v)", resp.Outcome.Status, resp)
+	}
+	if resp.Outcome.ShortReason == nil || !strings.Contains(*resp.Outcome.ShortReason, "receiver planning") {
+		t.Errorf("outcome.ShortReason = %v, want message containing 'receiver planning'", resp.Outcome.ShortReason)
+	}
+	if resp.Outcome.ThrownError == nil || resp.Outcome.ThrownError.ErrorType != "method_not_supported" {
+		t.Errorf("outcome.ThrownError.ErrorType = %v, want method_not_supported", resp.Outcome.ThrownError)
+	}
+}

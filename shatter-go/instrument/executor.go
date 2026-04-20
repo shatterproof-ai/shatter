@@ -943,6 +943,15 @@ func analyzeForExecution(sourcePath, funcName string) ([]paramInfo, returnTypeIn
 			continue
 		}
 
+		// C4: Method targets cannot be invoked without a constructed receiver. Phase E
+		// (invocation planning) will add that support. Until then, reject early so the
+		// caller receives an unsupported outcome instead of a compile-time build failure.
+		if fn.Recv != nil && len(fn.Recv.List) > 0 {
+			fmt.Fprintf(os.Stderr, "[shatter-go] classify: kind=method function=%s\n", funcName)
+			return nil, returnTypeInfo{}, fmt.Errorf("method target not supported: %s requires receiver planning (Phase E)", funcName)
+		}
+		fmt.Fprintf(os.Stderr, "[shatter-go] classify: kind=function function=%s\n", funcName)
+
 		pkgName := file.Name.Name
 		params := extractParamInfo(fn, info, pkgName, file)
 		retInfo := extractReturnInfo(fn, info, pkgName)

@@ -652,6 +652,10 @@ func failureOutcome(err error) *InvocationOutcome {
 	errInfo := &ErrorInfo{ErrorType: "executor_error", Message: msg}
 	var status OutcomeStatus
 	switch {
+	case strings.Contains(msg, "receiver planning"):
+		status = OutcomeStatusUnsupported
+		reason = "method invocation requires receiver planning (Phase E)"
+		errInfo.ErrorType = "method_not_supported"
 	case strings.Contains(msg, "function not found"):
 		status = OutcomeStatusUnsupported
 		reason = "target function not found in source file"
