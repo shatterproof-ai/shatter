@@ -871,14 +871,20 @@ func ExecuteFunctionWithTiming(sourcePath, funcName string, inputs []json.RawMes
 	return result, nil
 }
 
+// maxInterfaceStubMethods caps how many methods an interface parameter may
+// declare before the harness generator declines to synthesize a stub. Keeping
+// the cap small bounds generated-code size and the surface area of zero-value
+// returns that callers see; raise with care.
+const maxInterfaceStubMethods = 5
+
 // paramInfo holds a parameter's name and Go type string for harness generation.
 type paramInfo struct {
 	Name   string
 	GoType string
 	// Stub is non-nil when the parameter is an interface with no concrete
-	// implementation in the analyzed file and a method count of 1 or 2.
-	// The harness generator emits a stub type satisfying the interface
-	// instead of unmarshaling the parameter from JSON.
+	// implementation in the analyzed file and a method count within
+	// [1, maxInterfaceStubMethods]. The harness generator emits a stub type
+	// satisfying the interface instead of unmarshaling the parameter from JSON.
 	Stub *interfaceStubInfo
 }
 
@@ -1012,7 +1018,7 @@ func interfaceStubFor(expr ast.Expr, info *types.Info, file *ast.File, pkgName s
 		return nil
 	}
 	n := iface.NumMethods()
-	if n < 1 || n > 2 {
+	if n < 1 || n > maxInterfaceStubMethods {
 		return nil
 	}
 	if localStructImplements(file, info, iface) {
