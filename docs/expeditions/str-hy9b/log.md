@@ -200,14 +200,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `dcad0860516377b0ad8ac63f35c3e4c20dccd105`.
 
 
+### 2026-04-21T04:24:37Z — Closed task (reconciled)
+- Branch: `str-hy9b-15-e2-target-classifier`.
+- Outcome: `kept`.
+- Summary: Target classifier: planner.Classify returns DirectFunction/Method/AdapterCandidate/Unsupported (reasons: generic_unconstrained/interface_receiver/cgo_dependency/test_only_visibility); DiscoveredTarget extended with HasTypeParams/HasCGoDep/IsTestFile + ReceiverShape.IsInterface from AST+types.Info; 7 classification paths + 2 priority-order tests
+- Reconciliation: task code already merged into base by prior session (commit ae7bf6ef); close-task.py merge would conflict on stale task-branch state.json. State updated manually; base branch pending rebase onto main.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-15-e2-target-classifier`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier`
-- Last completed: `str-hy9b-14-e1-invocation-plan-schemas (kept)`
-- Next action: Complete work on `str-hy9b-15-e2-target-classifier` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-15-e2-target-classifier (kept)`
+- Next action: Create the next task branch from the expedition base branch (pending rebase onto main).
 <!-- expedition-resume:end -->

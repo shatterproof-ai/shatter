@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "dcad0860516377b0ad8ac63f35c3e4c20dccd105",
-    "branch": "str-hy9b-15-e2-target-classifier",
-    "kind": "task",
-    "number": 15,
-    "slug": "e2-target-classifier",
-    "started_at": "2026-04-21T01:54:53Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-14-e1-invocation-plan-schemas",
-    "completed_at": "2026-04-21T01:22:21Z",
+    "branch": "str-hy9b-15-e2-target-classifier",
+    "completed_at": "2026-04-21T04:24:37Z",
     "kind": "task",
-    "number": 14,
+    "number": 15,
     "outcome": "kept",
-    "slug": "e1-invocation-plan-schemas",
-    "summary": "Invocation plan schemas: protocol/invocation_plan.go adds InvocationRequirement, ValueRequirement, RuntimeRequirement, InvocationPlan, ValuePlan, UnsatisfiedRequirement as Go-only planner types; all 6 types have round-trip JSON tests and JSON constant spelling tests; parity matrix already marks invocation_plan as go: supported",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-14-e1-invocation-plan-schemas"
+    "slug": "e2-target-classifier",
+    "summary": "Target classifier: planner.Classify returns DirectFunction/Method/AdapterCandidate/Unsupported (reasons: generic_unconstrained/interface_receiver/cgo_dependency/test_only_visibility); DiscoveredTarget extended with HasTypeParams/HasCGoDep/IsTestFile + ReceiverShape.IsInterface from AST+types.Info; 7 classification paths + 2 priority-order tests",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier"
   },
-  "next_action": "Complete work on `str-hy9b-15-e2-target-classifier` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier`.",
-  "next_task_number": 15,
+  "next_action": "Create the next task branch from the expedition base branch (pending rebase onto main).",
+  "next_task_number": 16,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-21T01:54:53Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-21T04:24:37Z"
 }
