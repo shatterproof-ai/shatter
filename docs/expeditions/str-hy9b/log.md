@@ -187,14 +187,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `ea9abaee799b6a928f124c96c34fe140e6429ee3`.
 
 
+### 2026-04-21T01:22:21Z — Closed task
+- Branch: `str-hy9b-14-e1-invocation-plan-schemas`.
+- Outcome: `kept`.
+- Summary: Invocation plan schemas: protocol/invocation_plan.go adds InvocationRequirement, ValueRequirement, RuntimeRequirement, InvocationPlan, ValuePlan, UnsatisfiedRequirement as Go-only planner types; all 6 types have round-trip JSON tests and JSON constant spelling tests; parity matrix already marks invocation_plan as go: supported
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-14-e1-invocation-plan-schemas`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-14-e1-invocation-plan-schemas`
-- Last completed: `str-hy9b-13-d6-build-orchestrator (kept)`
-- Next action: Complete work on `str-hy9b-14-e1-invocation-plan-schemas` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-14-e1-invocation-plan-schemas`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-14-e1-invocation-plan-schemas (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
