@@ -30,3 +30,13 @@ func (c Counter) Add(n int) int {
 func (c *Counter) Reset() {
 	c.value = 0
 }
+
+// Map is a generic function with an unconstrained type parameter. The analyzer
+// should set HasTypeParams to true.
+func Map[T any](s []T, f func(T) T) []T {
+	out := make([]T, len(s))
+	for i, v := range s {
+		out[i] = f(v)
+	}
+	return out
+}

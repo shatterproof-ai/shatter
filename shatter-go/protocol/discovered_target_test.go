@@ -192,6 +192,80 @@ func TestDiscoveredTargetJSONRoundtrip(t *testing.T) {
 			if got.Receiver.IsPointer != target.Receiver.IsPointer {
 				rt.Errorf("Receiver.IsPointer: got %v, want %v", got.Receiver.IsPointer, target.Receiver.IsPointer)
 			}
+			if got.Receiver.IsInterface != target.Receiver.IsInterface {
+				rt.Errorf("Receiver.IsInterface: got %v, want %v", got.Receiver.IsInterface, target.Receiver.IsInterface)
+			}
+		}
+		if got.HasTypeParams != target.HasTypeParams {
+			rt.Errorf("HasTypeParams: got %v, want %v", got.HasTypeParams, target.HasTypeParams)
+		}
+		if got.HasCGoDep != target.HasCGoDep {
+			rt.Errorf("HasCGoDep: got %v, want %v", got.HasCGoDep, target.HasCGoDep)
+		}
+		if got.IsTestFile != target.IsTestFile {
+			rt.Errorf("IsTestFile: got %v, want %v", got.IsTestFile, target.IsTestFile)
+		}
+	})
+}
+
+func TestBuildDiscoveredTargetClassificationFields(t *testing.T) {
+	fix := loadTargetsFixture(t)
+
+	t.Run("non_generic_function_has_no_type_params", func(t *testing.T) {
+		fn := findFuncDeclByName(fix.file, "Increment")
+		if fn == nil {
+			t.Fatal("Increment not found")
+		}
+		target := BuildDiscoveredTarget(fix.fset, fn, fix.info, "example.com/pkg", "pkg", fix.fset.Position(fn.Pos()).Filename)
+		if target.HasTypeParams {
+			t.Errorf("HasTypeParams = true for non-generic function, want false")
+		}
+	})
+
+	t.Run("generic_function_has_type_params", func(t *testing.T) {
+		fn := findFuncDeclByName(fix.file, "Map")
+		if fn == nil {
+			t.Fatal("Map not found in testdata/targets.go")
+		}
+		target := BuildDiscoveredTarget(fix.fset, fn, fix.info, "example.com/pkg", "pkg", fix.fset.Position(fn.Pos()).Filename)
+		if !target.HasTypeParams {
+			t.Errorf("HasTypeParams = false for generic function, want true")
+		}
+	})
+
+	t.Run("non_test_file_has_is_test_file_false", func(t *testing.T) {
+		fn := findFuncDeclByName(fix.file, "Increment")
+		if fn == nil {
+			t.Fatal("Increment not found")
+		}
+		target := BuildDiscoveredTarget(fix.fset, fn, fix.info, "example.com/pkg", "pkg", "/src/pkg/foo.go")
+		if target.IsTestFile {
+			t.Errorf("IsTestFile = true for non-test path, want false")
+		}
+	})
+
+	t.Run("test_file_path_sets_is_test_file", func(t *testing.T) {
+		fn := findFuncDeclByName(fix.file, "Increment")
+		if fn == nil {
+			t.Fatal("Increment not found")
+		}
+		target := BuildDiscoveredTarget(fix.fset, fn, fix.info, "example.com/pkg", "pkg", "/src/pkg/foo_test.go")
+		if !target.IsTestFile {
+			t.Errorf("IsTestFile = false for _test.go path, want true")
+		}
+	})
+
+	t.Run("concrete_method_receiver_is_not_interface", func(t *testing.T) {
+		fn := findFuncDeclByName(fix.file, "Reset")
+		if fn == nil {
+			t.Fatal("Reset not found")
+		}
+		target := BuildDiscoveredTarget(fix.fset, fn, fix.info, "example.com/pkg", "pkg", fix.fset.Position(fn.Pos()).Filename)
+		if target.Receiver == nil {
+			t.Fatal("Receiver is nil")
+		}
+		if target.Receiver.IsInterface {
+			t.Errorf("Receiver.IsInterface = true for concrete type receiver, want false")
 		}
 	})
 }
@@ -201,8 +275,9 @@ func genReceiverShape() *rapid.Generator[*ReceiverShape] {
 		rapid.Just[*ReceiverShape](nil),
 		rapid.Custom(func(rt *rapid.T) *ReceiverShape {
 			return &ReceiverShape{
-				TypeName:  rapid.StringMatching(`[A-Z][a-zA-Z0-9]{1,8}`).Draw(rt, "type_name"),
-				IsPointer: rapid.Bool().Draw(rt, "is_pointer"),
+				TypeName:    rapid.StringMatching(`[A-Z][a-zA-Z0-9]{1,8}`).Draw(rt, "type_name"),
+				IsPointer:   rapid.Bool().Draw(rt, "is_pointer"),
+				IsInterface: rapid.Bool().Draw(rt, "is_interface"),
 			}
 		}),
 	)
@@ -228,6 +303,9 @@ func genDiscoveredTarget() *rapid.Generator[DiscoveredTarget] {
 			Parameters:    []ParamInfo{},
 			Results:       []TypeInfo{},
 			Visibility:    vis,
+			HasTypeParams: rapid.Bool().Draw(rt, "has_type_params"),
+			HasCGoDep:     rapid.Bool().Draw(rt, "has_cgo_dep"),
+			IsTestFile:    rapid.Bool().Draw(rt, "is_test_file"),
 		}
 	})
 }

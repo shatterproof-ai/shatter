@@ -25,8 +25,9 @@ const (
 
 // ReceiverShape describes the receiver type of a method target.
 type ReceiverShape struct {
-	TypeName  string `json:"type_name"`
-	IsPointer bool   `json:"is_pointer"`
+	TypeName    string `json:"type_name"`
+	IsPointer   bool   `json:"is_pointer"`
+	IsInterface bool   `json:"is_interface,omitempty"`
 }
 
 // DiscoveredTarget is a single invocation target found during package analysis.
@@ -46,6 +47,9 @@ type DiscoveredTarget struct {
 	Parameters    []ParamInfo    `json:"parameters"`
 	Results       []TypeInfo     `json:"results"`
 	Visibility    string         `json:"visibility"`
+	HasTypeParams bool           `json:"has_type_params,omitempty"`
+	HasCGoDep     bool           `json:"has_cgo_dep,omitempty"`
+	IsTestFile    bool           `json:"is_test_file,omitempty"`
 }
 
 // ConstructorCandidate is a function inferred to construct a same-package type.
