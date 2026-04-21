@@ -1294,6 +1294,78 @@ func TestStructTypeInfoFieldsNeverNull(t *testing.T) {
 	}
 }
 
+// TestAnalyzeFile_MultiFileServiceFixture verifies that the persistent
+// examples/go/multi-file-service fixture loads correctly through the
+// packages-based analyzer. NewGreeter's return type is declared in iface.go;
+// it resolves to kind:"unknown" (interface), confirming sibling type info was
+// available.
+func TestAnalyzeFile_MultiFileServiceFixture(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	// thisFile is shatter-go/protocol/analyzer_test.go; two levels up is repo root.
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	serviceFile := filepath.Join(repoRoot, "examples", "go", "multi-file-service", "service.go")
+
+	if _, err := os.Stat(serviceFile); err != nil {
+		t.Skipf("multi-file-service fixture not present: %v", err)
+	}
+
+	results, err := AnalyzeFile(serviceFile, "")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one function, got none")
+	}
+
+	// Verify NewGreeter is present and its return type resolved (not empty).
+	for _, fa := range results {
+		if fa.Name == "NewGreeter" {
+			if fa.ReturnType.Kind == "" {
+				t.Errorf("NewGreeter ReturnType.Kind empty — sibling interface type not resolved")
+			}
+			return
+		}
+	}
+	t.Errorf("NewGreeter not found in results; got %v", funcNames(results))
+}
+
+// TestAnalyzeFile_InternalImportPackage verifies that a file in a package that
+// imports from an internal sub-package does not produce visibility errors. Under
+// the old single-file typechecker this failed with internal-import visibility
+// diagnostics; the packages-based loader resolves the full module graph.
+func TestAnalyzeFile_InternalImportPackage(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	// thisFile is shatter-go/protocol/analyzer_test.go; two levels up is repo root.
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	apiFile := filepath.Join(repoRoot, "examples", "go", "internal-method", "api.go")
+
+	if _, err := os.Stat(apiFile); err != nil {
+		t.Skipf("internal-method/api.go fixture not present: %v", err)
+	}
+
+	results, err := AnalyzeFile(apiFile, "Process")
+	if err != nil {
+		t.Fatalf("AnalyzeFile returned error — internal-import visibility violation: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "Process" {
+		t.Errorf("function name = %q, want Process", results[0].Name)
+	}
+	if results[0].ReturnType.Kind != "int" {
+		t.Errorf("ReturnType.Kind = %q, want int", results[0].ReturnType.Kind)
+	}
+}
+
+func funcNames(results []FunctionAnalysis) []string {
+	names := make([]string, len(results))
+	for i, r := range results {
+		names[i] = r.Name
+	}
+	return names
+}
+
 // TestAnalyzeFile_MultiFilePackage_ResolvesSiblingTypes verifies C2's core
 // acceptance criterion: a file in a multi-file package sees sibling type
 // declarations through the packages-based loader. Under the old single-file
