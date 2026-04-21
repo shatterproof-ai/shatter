@@ -3,15 +3,18 @@ package protocol
 import (
 	"fmt"
 	"go/ast"
-	"go/importer"
-	"go/parser"
 	"go/printer"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
+	"golang.org/x/tools/go/packages"
 )
 
 // fileContext carries file-level metadata needed for static opacity heuristics.
@@ -24,77 +27,76 @@ type fileContext struct {
 	pkgPath string
 }
 
-// buildFileContext scans an *ast.File and type-checked *types.Info to populate
-// a fileContext with exported function names and interface implementors.
-func buildFileContext(file *ast.File, info *types.Info) *fileContext {
+// buildFileContext scans every file in the package to populate a fileContext
+// with exported function names and interface implementors. Using the full
+// package syntax (not just the target file) lets constructor suppression and
+// interface-implementation lookups see siblings in multi-file packages.
+func buildFileContext(pkgName string, syntaxFiles []*ast.File, info *types.Info) *fileContext {
 	fc := &fileContext{
 		exportedFuncNames: make(map[string]bool),
 		implementors:      make(map[string][]string),
-		pkgPath:           file.Name.Name,
+		pkgPath:           pkgName,
 	}
 
-	for _, decl := range file.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if ast.IsExported(d.Name.Name) {
-				fc.exportedFuncNames[d.Name.Name] = true
-			}
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
+	var interfaceDefs []*ast.TypeSpec
+	var structDefs []*ast.TypeSpec
+	for _, file := range syntaxFiles {
+		if file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if ast.IsExported(d.Name.Name) {
+					fc.exportedFuncNames[d.Name.Name] = true
 				}
-				if _, ok := ts.Type.(*ast.StructType); !ok {
-					continue
-				}
-				if !ast.IsExported(ts.Name.Name) {
-					continue
-				}
-				// Check if this struct implements any exported interfaces in the file
-				structObj, ok := info.Defs[ts.Name]
-				if !ok {
-					continue
-				}
-				structType, ok := structObj.Type().(*types.Named)
-				if !ok {
-					continue
-				}
-				// Scan all interface declarations in the file
-				for _, decl2 := range file.Decls {
-					gd2, ok := decl2.(*ast.GenDecl)
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
 					if !ok {
 						continue
 					}
-					for _, spec2 := range gd2.Specs {
-						ts2, ok := spec2.(*ast.TypeSpec)
-						if !ok {
-							continue
-						}
-						if _, ok := ts2.Type.(*ast.InterfaceType); !ok {
-							continue
-						}
-						ifaceObj, ok := info.Defs[ts2.Name]
-						if !ok {
-							continue
-						}
-						ifaceNamed, ok := ifaceObj.Type().(*types.Named)
-						if !ok {
-							continue
-						}
-						iface, ok := ifaceNamed.Underlying().(*types.Interface)
-						if !ok {
-							continue
-						}
-						// Check both pointer and value receiver
-						if types.Implements(structType, iface) ||
-							types.Implements(types.NewPointer(structType), iface) {
-							fc.implementors[ts2.Name.Name] = append(
-								fc.implementors[ts2.Name.Name], ts.Name.Name,
-							)
-						}
+					if !ast.IsExported(ts.Name.Name) {
+						continue
+					}
+					switch ts.Type.(type) {
+					case *ast.InterfaceType:
+						interfaceDefs = append(interfaceDefs, ts)
+					case *ast.StructType:
+						structDefs = append(structDefs, ts)
 					}
 				}
+			}
+		}
+	}
+
+	for _, structSpec := range structDefs {
+		structObj, ok := info.Defs[structSpec.Name]
+		if !ok {
+			continue
+		}
+		structType, ok := structObj.Type().(*types.Named)
+		if !ok {
+			continue
+		}
+		for _, ifaceSpec := range interfaceDefs {
+			ifaceObj, ok := info.Defs[ifaceSpec.Name]
+			if !ok {
+				continue
+			}
+			ifaceNamed, ok := ifaceObj.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			iface, ok := ifaceNamed.Underlying().(*types.Interface)
+			if !ok {
+				continue
+			}
+			if types.Implements(structType, iface) ||
+				types.Implements(types.NewPointer(structType), iface) {
+				fc.implementors[ifaceSpec.Name.Name] = append(
+					fc.implementors[ifaceSpec.Name.Name], structSpec.Name.Name,
+				)
 			}
 		}
 	}
@@ -173,26 +175,64 @@ func detectStaticOpacity(named *types.Named, fc *fileContext) (string, bool) {
 }
 
 // AnalyzeFile parses a Go source file and returns analysis for all exported
-// functions, or a single function if functionName is non-empty.
+// functions, or a single function if functionName is non-empty. The file is
+// loaded through the packages-based loader so sibling files in the same
+// package contribute type information.
 func AnalyzeFile(filePath string, functionName string) ([]FunctionAnalysis, error) {
 	return AnalyzeFileWithTiming(filePath, functionName, nil)
 }
 
-// AnalyzeFileWithTiming parses a Go source file and records phase timings when requested.
+// AnalyzeFileWithTiming loads a Go source file via a transient loader and
+// records phase timings when requested. Handlers that already own a workspace
+// should construct a *goloader.Loader once and call
+// AnalyzeFileWithLoaderAndTiming directly.
 func AnalyzeFileWithTiming(filePath string, functionName string, timing *frontendtiming.Collector) ([]FunctionAnalysis, error) {
-	fset := token.NewFileSet()
-	finishParse := timing.Start("analyze.parse")
-	file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
-	finishParse()
+	ldr, cleanup, err := newTransientLoader()
 	if err != nil {
-		return nil, fmt.Errorf("parse error: %w", err)
+		return nil, err
+	}
+	defer cleanup()
+	return AnalyzeFileWithLoaderAndTiming(filePath, functionName, ldr, timing)
+}
+
+// AnalyzeFileWithLoaderAndTiming analyzes filePath using the provided loader.
+// Dispatches to LoadPackage when the file lives inside a Go module directory
+// (and no `testdata` segment appears between the module root and the file);
+// otherwise materializes a synthetic module via LoadFile.
+func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *goloader.Loader, timing *frontendtiming.Collector) ([]FunctionAnalysis, error) {
+	if ldr == nil {
+		return nil, fmt.Errorf("analyzer requires a loader")
 	}
 
-	finishTypeCheck := timing.Start("analyze.typecheck")
-	info := typeCheck(fset, file)
-	finishTypeCheck()
+	absoluteFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("normalize file path %q: %w", filePath, err)
+	}
 
-	fc := buildFileContext(file, info)
+	// Retain the historical "analyze.parse" / "analyze.typecheck" phase names
+	// so existing timing consumers keep working. The loader bundles parse and
+	// typecheck into one go/packages call; we split the timing phases to
+	// preserve the external contract even though both land on load().
+	finishParse := timing.Start("analyze.parse")
+	pkg, err := loadPackageForAnalysis(ldr, absoluteFilePath)
+	finishParse()
+	if err != nil {
+		return nil, fmt.Errorf("load: %w", err)
+	}
+
+	fset := pkg.Fset
+	if fset == nil {
+		return nil, fmt.Errorf("loader returned package with no FileSet")
+	}
+	file := findTargetSyntaxFile(pkg, absoluteFilePath)
+	if file == nil {
+		return nil, fmt.Errorf("target file %q not found in loaded package syntax", absoluteFilePath)
+	}
+
+	info := pkg.TypesInfo
+	finishTypeCheck := timing.Start("analyze.typecheck")
+	fc := buildFileContext(pkg.Name, pkg.Syntax, info)
+	finishTypeCheck()
 
 	var results []FunctionAnalysis
 	finishWalk := timing.Start("analyze.walk")
@@ -259,21 +299,122 @@ func syntheticParamsForAdapter(adapterID string) []ParamInfo {
 	}
 }
 
-// typeCheck runs the Go type checker and returns the resulting Info.
-// Import errors are silently ignored so we can still extract types from
-// successfully resolved identifiers.
-func typeCheck(fset *token.FileSet, file *ast.File) *types.Info {
-	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Defs:  make(map[*ast.Ident]types.Object),
-		Uses:  make(map[*ast.Ident]types.Object),
+// loadPackageForAnalysis chooses between package-rooted loading (for files in
+// a real Go module) and synthetic-module loading (for standalone files and
+// testdata directories). Both paths use the lenient loader variants so that
+// unresolved third-party imports don't abort analysis — the recognizers and
+// AST walkers tolerate partial type information, matching the historical
+// permissive typechecker behavior.
+func loadPackageForAnalysis(ldr *goloader.Loader, absoluteFilePath string) (*packages.Package, error) {
+	if shouldLoadAsPackage(absoluteFilePath) {
+		if pkg, err := ldr.LoadPackageLenient(filepath.Dir(absoluteFilePath)); err == nil {
+			return pkg, nil
+		}
+		// Fall through to synthetic-module path if package load fails for any
+		// reason (e.g., sibling package-name conflicts). LoadFile creates an
+		// isolated single-file module that is guaranteed to be self-consistent.
 	}
-	conf := types.Config{
-		Importer: importer.Default(),
-		Error:    func(error) {}, // swallow errors from missing imports
+	return ldr.LoadFileLenient(absoluteFilePath)
+}
+
+// shouldLoadAsPackage returns true when the file's directory is inside a real
+// Go module and no `testdata` segment separates it from the module root.
+// `testdata` directories are ignored by the Go build system by convention, so
+// they are treated as standalone files for loading purposes.
+func shouldLoadAsPackage(absoluteFilePath string) bool {
+	fileDir := filepath.Dir(absoluteFilePath)
+	moduleRoot, found := findGoModuleRoot(fileDir)
+	if !found {
+		return false
 	}
-	conf.Check(file.Name.Name, fset, []*ast.File{file}, info) //nolint:errcheck
-	return info
+	rel, err := filepath.Rel(moduleRoot, fileDir)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	for _, segment := range strings.Split(rel, string(filepath.Separator)) {
+		if segment == "testdata" {
+			return false
+		}
+	}
+	return true
+}
+
+func findGoModuleRoot(startDir string) (string, bool) {
+	current := startDir
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current, true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		current = parent
+	}
+}
+
+// findTargetSyntaxFile locates the *ast.File in pkg.Syntax whose file name
+// matches absoluteFilePath. Returns nil if no syntax file matches.
+func findTargetSyntaxFile(pkg *packages.Package, absoluteFilePath string) *ast.File {
+	for _, file := range pkg.Syntax {
+		if file == nil {
+			continue
+		}
+		position := pkg.Fset.Position(file.Pos())
+		syntaxPath, err := filepath.Abs(position.Filename)
+		if err != nil {
+			syntaxPath = position.Filename
+		}
+		if syntaxPath == absoluteFilePath {
+			return file
+		}
+		if filepath.Base(syntaxPath) == filepath.Base(absoluteFilePath) && len(pkg.Syntax) == 1 {
+			// Synthetic-module path: materialized file lives at a different
+			// absolute path from the original but keeps its base name, and the
+			// synthetic module contains exactly one file.
+			return file
+		}
+	}
+	return nil
+}
+
+// newTransientLoader builds a throwaway loader for AnalyzeFile callers that
+// do not provide a long-lived workspace. Honors SHATTER_GO_WORKSPACE_ROOT
+// when set; otherwise creates (and removes on cleanup) a per-call tempdir.
+func newTransientLoader() (*goloader.Loader, func(), error) {
+	if strings.TrimSpace(os.Getenv(workspace.EnvironmentRootKey)) != "" {
+		workspaceHandle, err := workspace.Initialize(workspace.ResolveOptions{})
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("initialize workspace: %w", err)
+		}
+		ldr, err := goloader.New(workspaceHandle)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("construct loader: %w", err)
+		}
+		return ldr, func() {}, nil
+	}
+
+	tempRoot, err := os.MkdirTemp("", "shatter-go-analyzer-*")
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("create temp workspace: %w", err)
+	}
+	workspaceHandle, err := workspace.Open(tempRoot)
+	if err != nil {
+		_ = os.RemoveAll(tempRoot)
+		return nil, func() {}, fmt.Errorf("open temp workspace: %w", err)
+	}
+	ldr, err := goloader.New(workspaceHandle)
+	if err != nil {
+		_ = os.RemoveAll(tempRoot)
+		return nil, func() {}, fmt.Errorf("construct loader: %w", err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tempRoot)
+	}
+	return ldr, cleanup, nil
 }
 
 func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, file *ast.File) FunctionAnalysis {
