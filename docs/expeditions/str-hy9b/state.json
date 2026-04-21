@@ -1,5 +1,13 @@
 {
-  "active_task": null,
+  "active_task": {
+    "base_head": "ea9abaee799b6a928f124c96c34fe140e6429ee3",
+    "branch": "str-hy9b-14-e1-invocation-plan-schemas",
+    "kind": "task",
+    "number": 14,
+    "slug": "e1-invocation-plan-schemas",
+    "started_at": "2026-04-21T00:28:33Z",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-14-e1-invocation-plan-schemas"
+  },
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -14,11 +22,11 @@
     "summary": "Build orchestrator and binary registry: build/builder.go Builder.Build() coordinates D3 wrapper generation + D4 launcher compilation, keyed by discovery hash; BinaryRegistry (in-memory+JSON persist) ensures two plans\u2192one build; ParseBuildOutput extracts structured Diagnostics; build logs to workspace/runs/<runID>/; integration tests verify all 3 ACs",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-13-d6-build-orchestrator"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_action": "Complete work on `str-hy9b-14-e1-invocation-plan-schemas` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-14-e1-invocation-plan-schemas`.",
   "next_task_number": 14,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-21T00:27:35Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-21T00:28:33Z"
 }
