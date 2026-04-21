@@ -95,6 +95,29 @@ crashing or returning malformed data.
 
 Every execute response carries an `InvocationOutcome` under `response.outcome`. The status is one of `completed`, `build_failed`, `runtime_failed`, `timed_out`, or `unsupported` (the last for a function not present in the source). Non-completed statuses always carry a non-empty one-sentence `short_reason`; `build_failed` and `runtime_failed` also carry a `thrown_error` with compiler diagnostics or a panic trace. Classification lives in `failureOutcome()` (host-level errors) and `outcomeFromResult()` (harness-captured runtime state) in `protocol/handler.go`. Legacy `response.code` / `response.message` fields are preserved on error paths for backwards compatibility.
 
+## Safety Policy Contract (str-hy9b.G4)
+
+Every direct `execute` is gated by a default safety policy before any harness runs. The gate classifies the target via its cached `FunctionAnalysis` (parameter types + declared external dependencies) into `SideEffectClass` values defined in `protocol/policy.go`: `pure`, `local_fs`, `network`, `subprocess`, `database`, `process_global`, `unknown_high`.
+
+Default allow set: `pure`, `local_fs`. Any classification outside the allow set produces an `InvocationOutcome` with `status = skipped_by_policy` and a `short_reason` naming the offending class and component. No build, no harness, no side effects.
+
+Per-target overrides live in `.shatter/config.yaml` parsed by `shatter-go/config/loader.go`:
+
+```yaml
+functions:
+  "path/to/file.go:FuncName":
+    policy:
+      allow: [database]
+```
+
+The loader walks upward from the target file looking for `.shatter/config.yaml`. Match entries use `path.Match` semantics; the most specific match wins. Unknown allow strings are dropped with a warn-level log.
+
+Adapter-owned targets (those with `InvocationModel.Kind == "adapter"`) bypass the gate because the adapter's curated httptest harness provides its own safety envelope.
+
+The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability — it currently parses the `functions[<glob>].policy.allow` subset only. Broader hint-schema support (mocks, defaults, generators) is tracked under str-hy9b.G3.
+
+**Deferred work:** local_fs sandbox enforcement (confining file I/O to `<workspace>/runs/<runID>/sandbox/`) is not implemented; `local_fs` is allow-by-default unconditionally. A follow-up story should add path rewriting and chroot-style confinement before treating `local_fs` classification as enforcement rather than advisory.
+
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 
 Every `go build` invoked from shatter-go pins `GOCACHE` to `<workspace>/cache/build` via `Workspace.GoEnv()`. Wiring lives in `instrument.applyGoBuildEnv` (for `instrument/` build sites) and `instrument.WorkspaceGoEnv()` (consumed by `setup/loader.go`). The handler installs the provider from its workspace handle in `newHandler()`; tests that construct a handler without a workspace fall back to the legacy `SHATTER_HARNESS_CACHE`-based cache hierarchy.

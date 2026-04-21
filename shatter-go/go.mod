@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/extism/go-sdk v1.7.1
 	golang.org/x/tools v0.34.0
+	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.2.0
 )
 
