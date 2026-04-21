@@ -218,6 +218,138 @@ cases:
         - code
         - message
 
+  # --- H4: feature_capabilities assertions ------------------------------
+  #
+  # These cases back the parity-matrix.yaml `feature_capabilities` block
+  # (str-hy9b.H3) with observable behavior. Layout:
+  #
+  #   outcome               → driven against Go (which emits outcome on
+  #                           both success and build-failure execute
+  #                           responses); the declared outcome.status enum
+  #                           is asserted. TS and Rust outcome emission
+  #                           requires a full analyze→prepare→execute
+  #                           cycle and is covered by per-frontend
+  #                           integration tests, not by this harness.
+  #   adapter_http_nethttp  → analyze a Go http handler fixture. Go must
+  #                           surface functions[0].invocation_model with
+  #                           adapter_id "go/http-handler". TS and Rust
+  #                           must return a clean error response.
+  #   invocation_plan       → no wire surface in frontends today; the
+  #                           capability is declared but not observable.
+  #                           Intentionally no case.
+  #   hint_config_v1        → consumed internally by the Go
+  #                           .shatter/config.yaml loader; no wire probe.
+  #                           Intentionally no case.
+
+  - name: execute_outcome_shape_go
+    frontends: [go]
+    request:
+      protocol_version: "0.1.0"
+      id: 20
+      command: execute
+      file: "protocol/conformance/fixtures/go/handler.go"
+      function: "Serve"
+      inputs: []
+      mocks: []
+    expect:
+      status_oneof: [execute, error]
+      required_fields_by_status:
+        execute:
+          outcome:
+            type: object
+            fields:
+              status:
+                type: string
+                enum:
+                  - completed
+                  - completed_with_findings
+                  - unsupported
+                  - build_failed
+                  - runtime_failed
+                  - timed_out
+                  - skipped_by_policy
+        error:
+          outcome:
+            type: object
+            fields:
+              status:
+                type: string
+                enum:
+                  - completed
+                  - completed_with_findings
+                  - unsupported
+                  - build_failed
+                  - runtime_failed
+                  - timed_out
+                  - skipped_by_policy
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - outcome
+        - branch_path
+        - return_value
+        - code
+        - message
+        - details
+        - functions
+
+  - name: adapter_http_nethttp_go_analyze
+    frontends: [go]
+    request:
+      protocol_version: "0.1.0"
+      id: 21
+      command: analyze
+      file: "protocol/conformance/fixtures/go/handler.go"
+      function: "Serve"
+      project_root: "."
+    expect:
+      status_oneof: [analyze, error]
+      required_fields_by_status:
+        analyze:
+          functions:
+            type: array
+            min_length: 1
+            first_item_fields:
+              invocation_model:
+                type: object
+                fields:
+                  adapter_id:
+                    type: string
+                    enum: ["go/http-handler"]
+        error:
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - functions
+        - code
+        - message
+        - details
+
+  - name: adapter_http_nethttp_ts_rust_reject
+    frontends: [typescript, rust]
+    request:
+      protocol_version: "0.1.0"
+      id: 22
+      command: analyze
+      file: "protocol/conformance/fixtures/go/handler.go"
+      function: "Serve"
+      project_root: "."
+    expect:
+      status: error
+      required_fields:
+        code:
+          type: string
+        message:
+          type: string
+      dynamic_fields:
+        - code
+        - message
+        - details
+
   - name: shutdown
     request:
       protocol_version: "0.1.0"
