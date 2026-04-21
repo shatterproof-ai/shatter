@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/setup"
@@ -38,6 +39,11 @@ type Handler struct {
 	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
+
+	// policyConfigLoader returns the parsed .shatter/config.yaml nearest to
+	// the given source file. Injectable so tests can supply a synthetic
+	// config without touching the real filesystem. Nil defers to config.Load.
+	policyConfigLoader func(file string) (config.File, error)
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -478,6 +484,26 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	// of the instrumented subprocess harness.
 	cacheKey := file + "\x00" + *req.Function
 	cachedAnalysis := h.cachedAnalyses[cacheKey]
+
+	// --- Safety policy gate (str-hy9b.G4) ---
+	// Classify the target against the default safety policy + any
+	// per-target overrides from .shatter/config.yaml. Direct execution
+	// paths that touch dangerous side-effect classes are skipped here
+	// with an outcome of skipped_by_policy, before any harness is built.
+	// Adapter-owned targets (InvocationModel.Kind=="adapter") bypass the
+	// gate: they run inside a curated httptest harness whose safety
+	// envelope is enforced by the adapter itself.
+	if cachedAnalysis != nil && !isAdapterOwned(cachedAnalysis) {
+		if decision, applied := h.evaluateExecutePolicy(file, *req.Function, cachedAnalysis); applied && !decision.Allow {
+			reason := decision.Reason
+			resp.Status = "execute"
+			resp.Outcome = &InvocationOutcome{
+				Status:      OutcomeStatusSkippedByPolicy,
+				ShortReason: &reason,
+			}
+			return finalizeResponse(resp, timing)
+		}
+	}
 
 	var runtimeHooks RuntimeHooks
 	if len(h.hookFactories) > 0 {
