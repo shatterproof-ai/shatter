@@ -1,5 +1,13 @@
 {
-  "active_task": null,
+  "active_task": {
+    "base_head": "24e6fe5c33de3200e8168e1bdb48ce1e5fb68079",
+    "branch": "str-hy9b-13-d6-build-orchestrator",
+    "kind": "task",
+    "number": 13,
+    "slug": "d6-build-orchestrator",
+    "started_at": "2026-04-21T00:13:44Z",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-13-d6-build-orchestrator"
+  },
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -14,11 +22,11 @@
     "summary": "Per-target launcher loop harness: launcher/launcher.go generates self-contained main.go (stdlib + target pkg), BuildLauncher compiles with overlay and caches binary at workspace/binaries; LauncherSession tracks InvocationsDispatched; harness.Request extended with Plan field; integration test verifies 5 plans \u00d7 10 inputs = 50 invocations, 1 build, 1 binary invocation",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-12-d4-launcher-loop-harness"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_action": "Complete work on `str-hy9b-13-d6-build-orchestrator` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-13-d6-build-orchestrator`.",
   "next_task_number": 13,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-21T00:13:22Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-21T00:13:44Z"
 }
