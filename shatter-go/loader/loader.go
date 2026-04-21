@@ -70,6 +70,19 @@ func New(workspace *workspace.Workspace) (*Loader, error) {
 
 // LoadPackage loads the package rooted at packageDirectory.
 func (l *Loader) LoadPackage(packageDirectory string) (*packages.Package, error) {
+	return l.loadPackage(packageDirectory, strictValidation)
+}
+
+// LoadPackageLenient is like LoadPackage but tolerates go/packages Errors
+// (e.g. unresolved imports). Syntax, Types, and TypesInfo are still required
+// to be populated. Intended for the analyzer, whose predecessor swallowed
+// typecheck errors to keep partial type info. Strict callers must use
+// LoadPackage.
+func (l *Loader) LoadPackageLenient(packageDirectory string) (*packages.Package, error) {
+	return l.loadPackage(packageDirectory, lenientValidation)
+}
+
+func (l *Loader) loadPackage(packageDirectory string, validation validationMode) (*packages.Package, error) {
 	absoluteDirectory, err := filepath.Abs(packageDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("normalize package directory %q: %w", packageDirectory, err)
@@ -88,12 +101,22 @@ func (l *Loader) LoadPackage(packageDirectory string) (*packages.Package, error)
 	if err != nil {
 		return nil, err
 	}
-	return l.loadFromEntry(cacheKey, entry)
+	return l.loadFromEntry(cacheKey, entry, validation)
 }
 
 // LoadFile loads a standalone Go file by materializing a synthetic module in
 // the workspace loader cache.
 func (l *Loader) LoadFile(filePath string) (*packages.Package, error) {
+	return l.loadFile(filePath, strictValidation)
+}
+
+// LoadFileLenient is like LoadFile but tolerates go/packages Errors. See
+// LoadPackageLenient for the rationale.
+func (l *Loader) LoadFileLenient(filePath string) (*packages.Package, error) {
+	return l.loadFile(filePath, lenientValidation)
+}
+
+func (l *Loader) loadFile(filePath string, validation validationMode) (*packages.Package, error) {
 	absoluteFilePath, err := filepath.Abs(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("normalize file path %q: %w", filePath, err)
@@ -129,7 +152,7 @@ func (l *Loader) LoadFile(filePath string) (*packages.Package, error) {
 		}
 	}
 
-	return l.loadFromEntry(cacheKey, entry)
+	return l.loadFromEntry(cacheKey, entry, validation)
 }
 
 func (l *Loader) readOrCreatePackageEntry(cacheKey string, absoluteDirectory string) (*cacheEntry, error) {
@@ -193,7 +216,8 @@ func (l *Loader) materializeStandaloneFile(entry *cacheEntry, absoluteFilePath s
 		return fmt.Errorf("write synthetic go.mod %q: %w", goModPath, err)
 	}
 
-	if err := os.WriteFile(entry.MaterializedFile, sourceBytes, syntheticModuleFilePerms); err != nil {
+	materializedBytes := stripSyntheticBuildConstraints(sourceBytes)
+	if err := os.WriteFile(entry.MaterializedFile, materializedBytes, syntheticModuleFilePerms); err != nil {
 		return fmt.Errorf("write materialized source %q: %w", entry.MaterializedFile, err)
 	}
 	entry.LoadDir = entry.MaterializedRoot
@@ -201,7 +225,54 @@ func (l *Loader) materializeStandaloneFile(entry *cacheEntry, absoluteFilePath s
 	return nil
 }
 
-func (l *Loader) loadFromEntry(cacheKey string, entry *cacheEntry) (*packages.Package, error) {
+// stripSyntheticBuildConstraints neutralizes leading `//go:build ...` and
+// `// +build ...` constraint lines so the materialized copy is always
+// picked up by go/packages. The synthetic module exists solely to host the
+// file for analysis; honoring build tags that exclude the file would defeat
+// its purpose. Each constraint line is replaced with a plain-comment line
+// of the same line count so downstream byte offsets and line numbers stay
+// aligned with the original source — callers that compare positions against
+// the original file (e.g. AST-walking recognizers in test code) rely on
+// this property.
+func stripSyntheticBuildConstraints(source []byte) []byte {
+	lines := strings.SplitAfter(string(source), "\n")
+	var output strings.Builder
+	inConstraintHeader := true
+	for _, line := range lines {
+		if inConstraintHeader {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//go:build") || strings.HasPrefix(trimmed, "// +build") {
+				if strings.HasSuffix(line, "\n") {
+					output.WriteString("// shatter: build constraint stripped\n")
+				} else {
+					output.WriteString("// shatter: build constraint stripped")
+				}
+				continue
+			}
+			if trimmed == "" {
+				output.WriteString(line)
+				continue
+			}
+			if strings.HasPrefix(trimmed, "//") {
+				output.WriteString(line)
+				continue
+			}
+			inConstraintHeader = false
+		}
+		output.WriteString(line)
+	}
+	return []byte(output.String())
+}
+
+// validationMode selects the strictness of loaded-package validation.
+type validationMode int
+
+const (
+	strictValidation validationMode = iota
+	lenientValidation
+)
+
+func (l *Loader) loadFromEntry(cacheKey string, entry *cacheEntry, validation validationMode) (*packages.Package, error) {
 	if loadedPackage, found := l.packageByKey[cacheKey]; found {
 		return loadedPackage, nil
 	}
@@ -220,7 +291,7 @@ func (l *Loader) loadFromEntry(cacheKey string, entry *cacheEntry) (*packages.Pa
 	if err != nil {
 		return nil, fmt.Errorf("select loaded package for %q: %w", entry.SourcePath, err)
 	}
-	if err := validateLoadedPackage(loadedPackage); err != nil {
+	if err := validateLoadedPackage(loadedPackage, validation); err != nil {
 		return nil, fmt.Errorf("validate loaded package for %q: %w", entry.SourcePath, err)
 	}
 
@@ -245,11 +316,11 @@ func selectLoadedPackage(loadedPackages []*packages.Package) (*packages.Package,
 	return nil, fmt.Errorf("go/packages returned only empty package results")
 }
 
-func validateLoadedPackage(loadedPackage *packages.Package) error {
+func validateLoadedPackage(loadedPackage *packages.Package, validation validationMode) error {
 	if loadedPackage == nil {
 		return fmt.Errorf("package is nil")
 	}
-	if len(loadedPackage.Errors) > 0 {
+	if validation == strictValidation && len(loadedPackage.Errors) > 0 {
 		return fmt.Errorf("package load errors: %s", joinPackageErrors(loadedPackage.Errors))
 	}
 	if loadedPackage.Types == nil {

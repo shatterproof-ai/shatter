@@ -16,6 +16,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
 	"github.com/shatter-dev/shatter/shatter-go/setup"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
@@ -34,6 +35,7 @@ type Handler struct {
 	setupLoader       *setup.Loader
 	timingEnabled     bool
 	workspace         *workspace.Workspace
+	loader            *goloader.Loader // lazy: built from workspace on first analyze call
 	preparedHarnesses map[string]*instrument.PreparedHarness
 	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
 	hookFactories     []RuntimeHookFactory
@@ -255,7 +257,7 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	}
 
 	finishAnalyze := timing.Start("analyze.total")
-	functions, err := AnalyzeFileWithTiming(req.File, functionName, timing)
+	functions, err := h.analyzeFile(req.File, functionName, timing)
 	finishAnalyze()
 	if err != nil {
 		if functionName != "" && isNotFound(err) {
@@ -288,6 +290,23 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 
 func isNotFound(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "function not found")
+}
+
+// analyzeFile runs analysis via the handler's loader when a workspace is
+// available; otherwise falls back to the transient-loader entry point so
+// test handlers constructed without a workspace keep working.
+func (h *Handler) analyzeFile(filePath string, functionName string, timing *frontendtiming.Collector) ([]FunctionAnalysis, error) {
+	if h.workspace == nil {
+		return AnalyzeFileWithTiming(filePath, functionName, timing)
+	}
+	if h.loader == nil {
+		ldr, err := goloader.New(h.workspace)
+		if err != nil {
+			return nil, fmt.Errorf("construct analyzer loader: %w", err)
+		}
+		h.loader = ldr
+	}
+	return AnalyzeFileWithLoaderAndTiming(filePath, functionName, h.loader, timing)
 }
 
 func (h *Handler) handleInstrument(resp Response, req Request) Response {
