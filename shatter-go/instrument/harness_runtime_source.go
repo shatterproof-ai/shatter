@@ -27,6 +27,7 @@ const stdinBufferSize = 4 * 1024 * 1024
 const panicStackSize = 4096
 
 type Request struct {
+	Plan    json.RawMessage   ` + "`" + `json:"plan,omitempty"` + "`" + `
 	Inputs  []json.RawMessage ` + "`" + `json:"inputs"` + "`" + `
 	Capture bool              ` + "`" + `json:"capture"` + "`" + `
 }

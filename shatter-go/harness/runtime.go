@@ -33,6 +33,7 @@ const panicStackSize = 4096
 
 // Request is the JSON request sent to the harness loop per execution.
 type Request struct {
+	Plan    json.RawMessage   `json:"plan,omitempty"`
 	Inputs  []json.RawMessage `json:"inputs"`
 	Capture bool              `json:"capture"`
 }
