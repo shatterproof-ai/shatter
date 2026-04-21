@@ -174,14 +174,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `24e6fe5c33de3200e8168e1bdb48ce1e5fb68079`.
 
 
+### 2026-04-21T00:27:35Z — Closed task
+- Branch: `str-hy9b-13-d6-build-orchestrator`.
+- Outcome: `kept`.
+- Summary: Build orchestrator and binary registry: build/builder.go Builder.Build() coordinates D3 wrapper generation + D4 launcher compilation, keyed by discovery hash; BinaryRegistry (in-memory+JSON persist) ensures two plans→one build; ParseBuildOutput extracts structured Diagnostics; build logs to workspace/runs/<runID>/; integration tests verify all 3 ACs
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-13-d6-build-orchestrator`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-13-d6-build-orchestrator`
-- Last completed: `str-hy9b-12-d4-launcher-loop-harness (kept)`
-- Next action: Complete work on `str-hy9b-13-d6-build-orchestrator` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-13-d6-build-orchestrator`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-13-d6-build-orchestrator (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
