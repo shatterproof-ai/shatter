@@ -286,27 +286,74 @@ def validate_shape(response: dict[str, Any], expect: dict[str, Any], request: di
         required_fields = expect["required_fields_by_status"].get(actual_status, {}) or {}
 
     # Check required fields
+    errors.extend(_validate_required_fields(response, required_fields, path=""))
+
+    return errors
+
+
+def _validate_required_fields(
+    container: Any,
+    required_fields: dict[str, Any],
+    path: str,
+) -> list[str]:
+    """Check each field name exists on `container` and satisfies its constraints.
+
+    Supports one level of nested validation via `fields:` on object constraints,
+    and value-set validation via `enum:` on leaf constraints. Used so cases can
+    assert structural shape (e.g., outcome.status ∈ enum) without duplicating
+    the flat-key contract.
+    """
+    errors: list[str] = []
+    if not isinstance(container, dict):
+        errors.append(f"{path or '<root>'}: expected object, got {type(container).__name__}")
+        return errors
+
     for field_name, constraints in required_fields.items():
-        if field_name not in response:
-            errors.append(f"missing required field: {field_name}")
+        qualified = f"{path}.{field_name}" if path else field_name
+        if field_name not in container:
+            errors.append(f"missing required field: {qualified}")
             continue
 
-        value = response[field_name]
+        value = container[field_name]
         expected_type = constraints.get("type", "any")
         if expected_type != "any":
             py_type = TYPE_MAP.get(expected_type)
             if py_type and not isinstance(value, py_type):
                 errors.append(
-                    f"field {field_name}: expected type {expected_type}, "
+                    f"field {qualified}: expected type {expected_type}, "
                     f"got {type(value).__name__}"
                 )
+                continue
 
         min_length = constraints.get("min_length")
         if min_length is not None and isinstance(value, list) and len(value) < min_length:
             errors.append(
-                f"field {field_name}: expected min_length {min_length}, "
+                f"field {qualified}: expected min_length {min_length}, "
                 f"got {len(value)}"
             )
+
+        allowed_values = constraints.get("enum")
+        if allowed_values is not None and value not in allowed_values:
+            errors.append(
+                f"field {qualified}: expected one of {allowed_values}, got {value!r}"
+            )
+
+        nested_fields = constraints.get("fields")
+        if nested_fields:
+            errors.extend(_validate_required_fields(value, nested_fields, qualified))
+
+        item_fields = constraints.get("first_item_fields")
+        if item_fields:
+            if not isinstance(value, list) or not value:
+                errors.append(
+                    f"field {qualified}: expected non-empty array for first_item_fields"
+                )
+            else:
+                errors.extend(
+                    _validate_required_fields(
+                        value[0], item_fields, f"{qualified}[0]"
+                    )
+                )
 
     return errors
 
@@ -470,11 +517,18 @@ def run_conformance() -> int:
 
             case_responses: dict[str, dict[str, Any]] = {}
             skip_frontends = set(case.get("skip_frontends", []))
+            allowlist = case.get("frontends")
+            allow_frontends = set(allowlist) if allowlist is not None else None
 
             for fname, fp in list(frontends.items()):
                 # Skip frontends explicitly excluded from this case
                 if fname in skip_frontends:
                     print(f"    {fname}: {_skip('(excluded from case)')}")
+                    continue
+
+                # Skip frontends not in the case's inclusion list (if provided)
+                if allow_frontends is not None and fname not in allow_frontends:
+                    print(f"    {fname}: {_skip('(not in case allowlist)')}")
                     continue
 
                 total_checks += 1
