@@ -9,6 +9,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "workspace" {
+		os.Exit(runWorkspaceSubcommand(os.Args[2:]))
+	}
+
 	artifactWorkspace, err := workspace.Initialize(workspace.ResolveOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[shatter-go] Fatal: initialize workspace: %v\n", err)

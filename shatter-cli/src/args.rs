@@ -1259,6 +1259,12 @@ pub(crate) enum CliCommand {
         action: CacheAction,
     },
 
+    /// Manage the Go frontend artifact workspace.
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+
     /// Review and classify suspected-nondeterministic fields.
     Nondeterminism {
         #[command(subcommand)]
@@ -1360,6 +1366,33 @@ pub(crate) enum CacheAction {
         /// Clear only the results cache (`.shatter-cache/behavior-maps/`).
         #[arg(long)]
         results: bool,
+    },
+}
+
+/// Sub-subcommands for `shatter workspace`.
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum WorkspaceAction {
+    /// Prune old runs and cap total workspace disk use.
+    Gc {
+        /// List candidates without deleting.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Keep the N most recent runs.
+        #[arg(long, default_value_t = 20)]
+        keep: u32,
+
+        /// Delete runs older than this many days.
+        #[arg(long = "max-age-days", default_value_t = 14)]
+        max_age_days: u32,
+
+        /// Hard cap on total runs/ size (human-readable, e.g. 5GiB, 512MiB).
+        #[arg(long = "max-runs-size", default_value = "5GiB")]
+        max_runs_size: String,
+
+        /// Per-cache-dir size cap (human-readable, e.g. 5GiB, 512MiB).
+        #[arg(long = "max-cache-size", default_value = "5GiB")]
+        max_cache_size: String,
     },
 }
 
