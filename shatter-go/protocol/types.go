@@ -161,6 +161,11 @@ type Request struct {
 	Name   string           `json:"name,omitempty"`
 	Kind   string           `json:"kind,omitempty"`
 	Recipe *json.RawMessage `json:"recipe,omitempty"`
+
+	// GetInvocationPlan fields (str-zbyp).
+	// Populated only for the get_invocation_plan command; one
+	// InvocationRequirement per target the core wants the planner to resolve.
+	InvocationRequirements []InvocationRequirement `json:"invocation_requirements,omitempty"`
 }
 
 // Response is a message from the frontend to the core engine.
@@ -209,6 +214,11 @@ type Response struct {
 	Value       *json.RawMessage `json:"value,omitempty"`
 	GeneratorID string           `json:"generator_id,omitempty"`
 	Recipe      *json.RawMessage `json:"recipe,omitempty"`
+
+	// InvocationPlan (str-zbyp). Populated on status "invocation_plan"
+	// replies to the get_invocation_plan command.
+	InvocationPlans         []InvocationPlan         `json:"invocation_plans,omitempty"`
+	UnsatisfiedRequirements []UnsatisfiedRequirement `json:"unsatisfied_requirements,omitempty"`
 
 	// Error
 	Code    string           `json:"code,omitempty"`

@@ -741,3 +741,239 @@ func TestExecuteResponseLoopBodyStatesRoundTrip(t *testing.T) {
 		t.Errorf("locals[i].kind = %q, want const", decoded.LoopBodyStates[0].Locals["i"].Kind)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// get_invocation_plan request / invocation_plan response (str-zbyp).
+//
+// The per-plan struct round-trips are covered in invocation_plan_test.go;
+// these tests cover the transport envelope — Request.InvocationRequirements
+// and Response.InvocationPlans / UnsatisfiedRequirements — plus a cross-
+// language JSON fixture that shatter-core must also accept verbatim.
+// -----------------------------------------------------------------------------
+
+func TestRequestGetInvocationPlanRoundTrip(t *testing.T) {
+	req := Request{
+		ProtocolVersion: "0.1.0",
+		ID:              42,
+		Command:         "get_invocation_plan",
+		InvocationRequirements: []InvocationRequirement{
+			{
+				TargetID: "example.com/pkg:Add",
+				ValueRequirements: []ValueRequirement{
+					{
+						ParamIndex: 0,
+						ParamName:  "x",
+						TypeName:   "int",
+						Kind:       ValueRequirementKindAny,
+					},
+					{
+						ParamIndex: 1,
+						ParamName:  "y",
+						TypeName:   "int",
+						Kind:       ValueRequirementKindSpecific,
+						Literal:    json.RawMessage(`42`),
+					},
+				},
+				RuntimeRequirements: []RuntimeRequirement{
+					{
+						Kind:     RuntimeRequirementKindReceiverConstruction,
+						TypeName: "Counter",
+						Detail:   "needs new Counter",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"command":"get_invocation_plan"`) {
+		t.Errorf("missing command tag in %s", data)
+	}
+
+	var decoded Request
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.InvocationRequirements) != 1 {
+		t.Fatalf("requirements len = %d, want 1", len(decoded.InvocationRequirements))
+	}
+	got := decoded.InvocationRequirements[0]
+	if got.TargetID != "example.com/pkg:Add" {
+		t.Errorf("target_id = %q", got.TargetID)
+	}
+	if len(got.ValueRequirements) != 2 {
+		t.Fatalf("value_requirements len = %d, want 2", len(got.ValueRequirements))
+	}
+	if got.ValueRequirements[1].Kind != ValueRequirementKindSpecific {
+		t.Errorf("kind = %q, want specific", got.ValueRequirements[1].Kind)
+	}
+	if len(got.RuntimeRequirements) != 1 {
+		t.Fatalf("runtime_requirements len = %d, want 1", len(got.RuntimeRequirements))
+	}
+	if got.RuntimeRequirements[0].Kind != RuntimeRequirementKindReceiverConstruction {
+		t.Errorf("runtime kind = %q", got.RuntimeRequirements[0].Kind)
+	}
+}
+
+func TestResponseInvocationPlanRoundTrip(t *testing.T) {
+	resp := Response{
+		ProtocolVersion: "0.1.0",
+		ID:              42,
+		Status:          "invocation_plan",
+		InvocationPlans: []InvocationPlan{
+			{
+				TargetID:     "example.com/pkg:Add",
+				ReceiverKind: "constructor:NewCounter",
+				ArgumentPlans: []ValuePlan{
+					{
+						ParamIndex: 0,
+						ParamName:  "x",
+						Kind:       ValuePlanKindLiteral,
+						Literal:    json.RawMessage(`7`),
+						TypeHint:   "int",
+					},
+					{
+						ParamIndex: 1,
+						ParamName:  "y",
+						Kind:       ValuePlanKindSymbolic,
+						TypeHint:   "int",
+					},
+				},
+				Priority: 0,
+				Label:    "constructor_new_counter",
+			},
+		},
+		UnsatisfiedRequirements: []UnsatisfiedRequirement{
+			{
+				Kind:     UnsatisfiedRequirementKindCGODependency,
+				TargetID: "example.com/pkg:Native",
+				Detail:   "package uses cgo",
+			},
+		},
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"status":"invocation_plan"`) {
+		t.Errorf("missing status tag in %s", data)
+	}
+
+	var decoded Response
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.InvocationPlans) != 1 {
+		t.Fatalf("invocation_plans len = %d, want 1", len(decoded.InvocationPlans))
+	}
+	if decoded.InvocationPlans[0].Label != "constructor_new_counter" {
+		t.Errorf("label = %q", decoded.InvocationPlans[0].Label)
+	}
+	if len(decoded.UnsatisfiedRequirements) != 1 {
+		t.Fatalf("unsatisfied len = %d, want 1", len(decoded.UnsatisfiedRequirements))
+	}
+	if decoded.UnsatisfiedRequirements[0].Kind != UnsatisfiedRequirementKindCGODependency {
+		t.Errorf("unsatisfied kind = %q", decoded.UnsatisfiedRequirements[0].Kind)
+	}
+}
+
+func TestResponseInvocationPlanEmpty(t *testing.T) {
+	// Empty plans and unsatisfied lists serialize via omitempty and still
+	// deserialize cleanly.
+	resp := Response{
+		ProtocolVersion: "0.1.0",
+		ID:              7,
+		Status:          "invocation_plan",
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "invocation_plans") {
+		t.Errorf("empty invocation_plans should be omitted: %s", data)
+	}
+	if strings.Contains(string(data), "unsatisfied_requirements") {
+		t.Errorf("empty unsatisfied_requirements should be omitted: %s", data)
+	}
+	var decoded Response
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Status != "invocation_plan" {
+		t.Errorf("status = %q", decoded.Status)
+	}
+}
+
+// TestInvocationPlanRustFixtureDeserializes verifies the Go side accepts a
+// JSON payload shaped exactly as shatter-core/src/protocol.rs would emit it.
+// This is the mirror of go_invocation_plan_fixture_deserializes in Rust: if
+// either side drifts on a field name or kind spelling, one of the two tests
+// fails.
+func TestInvocationPlanRustFixtureDeserializes(t *testing.T) {
+	rustJSON := `{
+		"protocol_version": "0.1.0",
+		"id": 42,
+		"status": "invocation_plan",
+		"invocation_plans": [
+			{
+				"target_id": "example.com/pkg:Add",
+				"receiver_kind": "constructor:NewCounter",
+				"argument_plans": [
+					{
+						"param_index": 0,
+						"param_name": "x",
+						"kind": "literal",
+						"literal": 7,
+						"type_hint": "int"
+					},
+					{
+						"param_index": 1,
+						"param_name": "y",
+						"kind": "symbolic",
+						"param_name": "y",
+						"type_hint": "int"
+					}
+				],
+				"priority": 0,
+				"label": "constructor_new_counter"
+			}
+		],
+		"unsatisfied_requirements": [
+			{
+				"kind": "cgo_dependency",
+				"target_id": "example.com/pkg:Native",
+				"detail": "package uses cgo"
+			}
+		]
+	}`
+	var resp Response
+	if err := json.Unmarshal([]byte(rustJSON), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != "invocation_plan" {
+		t.Errorf("status = %q", resp.Status)
+	}
+	if len(resp.InvocationPlans) != 1 {
+		t.Fatalf("plans len = %d", len(resp.InvocationPlans))
+	}
+	plan := resp.InvocationPlans[0]
+	if plan.TargetID != "example.com/pkg:Add" {
+		t.Errorf("target_id = %q", plan.TargetID)
+	}
+	if len(plan.ArgumentPlans) != 2 {
+		t.Fatalf("argument_plans len = %d", len(plan.ArgumentPlans))
+	}
+	if plan.ArgumentPlans[0].Kind != ValuePlanKindLiteral {
+		t.Errorf("arg[0].kind = %q", plan.ArgumentPlans[0].Kind)
+	}
+	if plan.ArgumentPlans[1].Kind != ValuePlanKindSymbolic {
+		t.Errorf("arg[1].kind = %q", plan.ArgumentPlans[1].Kind)
+	}
+	if resp.UnsatisfiedRequirements[0].Kind != UnsatisfiedRequirementKindCGODependency {
+		t.Errorf("unsatisfied kind = %q", resp.UnsatisfiedRequirements[0].Kind)
+	}
+}

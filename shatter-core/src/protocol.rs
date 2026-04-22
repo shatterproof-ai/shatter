@@ -114,6 +114,163 @@ pub enum ExecutionAdapterApply {
 }
 
 // ---------------------------------------------------------------------------
+// Planner wire types (str-hy9b.E1 / str-zbyp)
+//
+// These mirror the Go-side structs defined in shatter-go/protocol/invocation_plan.go.
+// The JSON shape is the contract: each kind field is a free-standing discriminator
+// on an otherwise-flat struct, matching Go's `Kind FooKind \`json:"kind"\`` pattern.
+// Do NOT reshape these into serde-tagged sum enums — that would change the wire
+// format and break cross-frontend compatibility with Go's round-trip tests.
+// ---------------------------------------------------------------------------
+
+/// Constraint kind on a parameter value produced by the planner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueRequirementKind {
+    /// Any value is acceptable.
+    Any,
+    /// A non-zero value is required.
+    NonZero,
+    /// A positive numeric value is required.
+    Positive,
+    /// The exact literal carried in the companion `literal` field is required.
+    Specific,
+}
+
+/// Constraint on a single parameter for an invocation plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueRequirement {
+    /// Zero-based parameter index.
+    pub param_index: u32,
+    /// Declared parameter name (may be empty for unnamed parameters).
+    pub param_name: String,
+    /// Language-specific type string, e.g. "int" or "*Counter".
+    pub type_name: String,
+    /// Value constraint classification.
+    pub kind: ValueRequirementKind,
+    /// Required literal value when `kind` is `specific`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub literal: Option<serde_json::Value>,
+}
+
+/// Classification of a runtime-setup precondition required before invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRequirementKind {
+    /// A method receiver must be constructed before invocation.
+    ReceiverConstruction,
+    /// Package-level initialization must have run.
+    PackageInitialization,
+}
+
+/// Runtime-setup precondition for an invocation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeRequirement {
+    /// Requirement classification.
+    pub kind: RuntimeRequirementKind,
+    /// Type involved in the requirement (e.g. a receiver type name).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_name: String,
+    /// Human-readable explanation of the requirement.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// Planner input describing one target and the constraints its invocation
+/// plan must satisfy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvocationRequirement {
+    /// Stable target identifier, e.g. "example.com/pkg:Add".
+    pub target_id: String,
+    /// Per-parameter value constraints in declaration order.
+    #[serde(default)]
+    pub value_requirements: Vec<ValueRequirement>,
+    /// Optional runtime-setup preconditions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_requirements: Vec<RuntimeRequirement>,
+}
+
+/// Strategy for producing a concrete argument value in an `InvocationPlan`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValuePlanKind {
+    /// Use the exact literal carried in the companion `literal` field.
+    Literal,
+    /// Use the zero value of the parameter type.
+    Zero,
+    /// Select a random value from the type's value space.
+    Random,
+    /// Track the parameter as a symbolic variable for concolic exploration.
+    Symbolic,
+}
+
+/// Concrete production strategy for one argument of an `InvocationPlan`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValuePlan {
+    /// Zero-based argument position.
+    pub param_index: u32,
+    /// Declared parameter name (may be empty).
+    pub param_name: String,
+    /// Production strategy.
+    pub kind: ValuePlanKind,
+    /// Concrete value when `kind` is `literal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub literal: Option<serde_json::Value>,
+    /// Language-specific type hint for code generation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_hint: String,
+}
+
+/// Resolved plan for invoking a target once.
+///
+/// Primary output of the planner for a satisfiable `InvocationRequirement`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvocationPlan {
+    /// Stable target identifier.
+    pub target_id: String,
+    /// Receiver construction strategy. Use `"zero_value"` for zero-value
+    /// receivers, `"constructor:<FuncName>"` for named constructors, or an
+    /// empty string for free functions.
+    pub receiver_kind: String,
+    /// One `ValuePlan` per parameter, in declaration order.
+    #[serde(default)]
+    pub argument_plans: Vec<ValuePlan>,
+    /// Relative ordering within a plan set; lower values are tried first.
+    pub priority: i32,
+    /// Optional human-readable name for this plan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// Why a planner requirement could not be satisfied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsatisfiedRequirementKind {
+    /// No constructor is available for the required receiver type.
+    NoConstructor,
+    /// Receiver type is an interface and cannot be directly instantiated.
+    InterfaceReceiver,
+    /// A generic type parameter has no concrete instantiation available.
+    GenericUnconstrained,
+    /// Package depends on cgo, which blocks overlay-based compilation.
+    CgoDependency,
+    /// Parameter type is too complex for the planner to synthesize.
+    ComplexType,
+}
+
+/// Planning failure for one target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnsatisfiedRequirement {
+    /// Failure classification.
+    pub kind: UnsatisfiedRequirementKind,
+    /// Target for which planning failed.
+    pub target_id: String,
+    /// Human-readable explanation of the failure.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+// ---------------------------------------------------------------------------
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
 
@@ -249,6 +406,17 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
     },
+    /// Ask the frontend to produce `InvocationPlan`s for the supplied targets.
+    ///
+    /// The frontend returns a `ResponseResult::InvocationPlan` with one plan
+    /// per satisfiable requirement, plus an `unsatisfied_requirements` list
+    /// enumerating targets that could not be planned. Frontends that do not
+    /// support the `invocation_plan` capability reply with a `not_supported`
+    /// error.
+    GetInvocationPlan {
+        /// Targets to plan for, one requirement each.
+        requirements: Vec<InvocationRequirement>,
+    },
     /// Request graceful shutdown of the frontend process.
     Shutdown,
 }
@@ -365,6 +533,18 @@ pub enum ResponseResult {
     },
     /// Acknowledgment of shutdown request.
     ShutdownAck,
+    /// Successful planner result for a `GetInvocationPlan` request.
+    InvocationPlan {
+        /// Resolved plans, one per satisfiable requirement. Order is arbitrary;
+        /// consumers that need a specific ordering should sort by
+        /// `InvocationPlan::priority` or `target_id`.
+        #[serde(default)]
+        plans: Vec<InvocationPlan>,
+        /// Requirements the planner could not satisfy, each annotated with a
+        /// reason. Empty when every supplied requirement produced a plan.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unsatisfied_requirements: Vec<UnsatisfiedRequirement>,
+    },
     /// Error response for any command.
     Error {
         /// Machine-readable error code.
@@ -3019,6 +3199,320 @@ mod tests {
             let decoded: OutcomeStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(decoded, status);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Planner wire types (str-zbyp).
+    //
+    // Cross-language compatibility with Go is asserted via
+    // `go_invocation_plan_fixture_deserializes` below — it parses a
+    // byte-for-byte fixture of what shatter-go/protocol/invocation_plan.go
+    // produces and fails if the field names or kind spellings drift.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn value_requirement_kinds_round_trip_all_variants() {
+        for kind in [
+            ValueRequirementKind::Any,
+            ValueRequirementKind::NonZero,
+            ValueRequirementKind::Positive,
+            ValueRequirementKind::Specific,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let decoded: ValueRequirementKind =
+                serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, kind);
+        }
+        assert_eq!(
+            serde_json::to_string(&ValueRequirementKind::NonZero).unwrap(),
+            "\"non_zero\""
+        );
+    }
+
+    #[test]
+    fn runtime_requirement_kinds_round_trip_all_variants() {
+        for kind in [
+            RuntimeRequirementKind::ReceiverConstruction,
+            RuntimeRequirementKind::PackageInitialization,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let decoded: RuntimeRequirementKind =
+                serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, kind);
+        }
+        assert_eq!(
+            serde_json::to_string(&RuntimeRequirementKind::ReceiverConstruction).unwrap(),
+            "\"receiver_construction\""
+        );
+    }
+
+    #[test]
+    fn value_plan_kinds_round_trip_all_variants() {
+        for kind in [
+            ValuePlanKind::Literal,
+            ValuePlanKind::Zero,
+            ValuePlanKind::Random,
+            ValuePlanKind::Symbolic,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let decoded: ValuePlanKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, kind);
+        }
+    }
+
+    #[test]
+    fn unsatisfied_requirement_kinds_round_trip_all_variants() {
+        for kind in [
+            UnsatisfiedRequirementKind::NoConstructor,
+            UnsatisfiedRequirementKind::InterfaceReceiver,
+            UnsatisfiedRequirementKind::GenericUnconstrained,
+            UnsatisfiedRequirementKind::CgoDependency,
+            UnsatisfiedRequirementKind::ComplexType,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let decoded: UnsatisfiedRequirementKind =
+                serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, kind);
+        }
+        // Go's `UnsatisfiedRequirementKindCGODependency = "cgo_dependency"`
+        // must not drift to "cgoDependency" or similar.
+        assert_eq!(
+            serde_json::to_string(&UnsatisfiedRequirementKind::CgoDependency).unwrap(),
+            "\"cgo_dependency\""
+        );
+    }
+
+    #[test]
+    fn invocation_requirement_round_trips() {
+        let requirement = InvocationRequirement {
+            target_id: "example.com/pkg:Add".into(),
+            value_requirements: vec![
+                ValueRequirement {
+                    param_index: 0,
+                    param_name: "x".into(),
+                    type_name: "int".into(),
+                    kind: ValueRequirementKind::Any,
+                    literal: None,
+                },
+                ValueRequirement {
+                    param_index: 1,
+                    param_name: "y".into(),
+                    type_name: "int".into(),
+                    kind: ValueRequirementKind::Specific,
+                    literal: Some(serde_json::json!(42)),
+                },
+            ],
+            runtime_requirements: vec![RuntimeRequirement {
+                kind: RuntimeRequirementKind::ReceiverConstruction,
+                type_name: "Counter".into(),
+                detail: "needs new Counter".into(),
+            }],
+        };
+        let json = serde_json::to_string(&requirement).expect("serialize");
+        let decoded: InvocationRequirement =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, requirement);
+    }
+
+    #[test]
+    fn invocation_plan_round_trips() {
+        let plan = InvocationPlan {
+            target_id: "example.com/pkg:Add".into(),
+            receiver_kind: "constructor:NewCounter".into(),
+            argument_plans: vec![
+                ValuePlan {
+                    param_index: 0,
+                    param_name: "x".into(),
+                    kind: ValuePlanKind::Literal,
+                    literal: Some(serde_json::json!(7)),
+                    type_hint: "int".into(),
+                },
+                ValuePlan {
+                    param_index: 1,
+                    param_name: "y".into(),
+                    kind: ValuePlanKind::Symbolic,
+                    literal: None,
+                    type_hint: "int".into(),
+                },
+            ],
+            priority: 0,
+            label: "constructor_new_counter".into(),
+        };
+        let json = serde_json::to_string(&plan).expect("serialize");
+        let decoded: InvocationPlan = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, plan);
+    }
+
+    #[test]
+    fn unsatisfied_requirement_round_trips() {
+        let failure = UnsatisfiedRequirement {
+            kind: UnsatisfiedRequirementKind::InterfaceReceiver,
+            target_id: "example.com/pkg:Store.Put".into(),
+            detail: "receiver is interface Store".into(),
+        };
+        let json = serde_json::to_string(&failure).expect("serialize");
+        let decoded: UnsatisfiedRequirement =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, failure);
+    }
+
+    #[test]
+    fn get_invocation_plan_request_round_trips() {
+        let request = Request::new(
+            42,
+            Command::GetInvocationPlan {
+                requirements: vec![InvocationRequirement {
+                    target_id: "example.com/pkg:Add".into(),
+                    value_requirements: vec![],
+                    runtime_requirements: vec![],
+                }],
+            },
+        );
+        let json = serde_json::to_string(&request).expect("serialize");
+        assert!(
+            json.contains("\"command\":\"get_invocation_plan\""),
+            "expected snake_case command tag, got: {json}"
+        );
+        let decoded: Request = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn invocation_plan_response_round_trips_populated() {
+        let response = Response::new(
+            42,
+            ResponseResult::InvocationPlan {
+                plans: vec![InvocationPlan {
+                    target_id: "example.com/pkg:Add".into(),
+                    receiver_kind: String::new(),
+                    argument_plans: vec![ValuePlan {
+                        param_index: 0,
+                        param_name: "x".into(),
+                        kind: ValuePlanKind::Zero,
+                        literal: None,
+                        type_hint: "int".into(),
+                    }],
+                    priority: 1,
+                    label: "zero_args".into(),
+                }],
+                unsatisfied_requirements: vec![UnsatisfiedRequirement {
+                    kind: UnsatisfiedRequirementKind::CgoDependency,
+                    target_id: "example.com/pkg:Native".into(),
+                    detail: String::new(),
+                }],
+            },
+        );
+        let json = serde_json::to_string(&response).expect("serialize");
+        assert!(
+            json.contains("\"status\":\"invocation_plan\""),
+            "expected snake_case status tag, got: {json}"
+        );
+        let decoded: Response = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn invocation_plan_response_round_trips_empty() {
+        let response = Response::new(
+            7,
+            ResponseResult::InvocationPlan {
+                plans: vec![],
+                unsatisfied_requirements: vec![],
+            },
+        );
+        let json = serde_json::to_string(&response).expect("serialize");
+        let decoded: Response = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, response);
+    }
+
+    /// Byte-for-byte fixture mirroring what
+    /// `shatter-go/protocol/invocation_plan.go` produces when marshaled via
+    /// `encoding/json`. This is the cross-language compatibility check: if Go
+    /// or Rust ever drifts on a field name or kind spelling, this test fails.
+    #[test]
+    fn go_invocation_plan_fixture_deserializes() {
+        let go_json = r#"{
+            "target_id": "example.com/pkg:Add",
+            "receiver_kind": "constructor:NewCounter",
+            "argument_plans": [
+                {
+                    "param_index": 0,
+                    "param_name": "x",
+                    "kind": "literal",
+                    "literal": 7,
+                    "type_hint": "int"
+                },
+                {
+                    "param_index": 1,
+                    "param_name": "y",
+                    "kind": "symbolic",
+                    "type_hint": "int"
+                }
+            ],
+            "priority": 0,
+            "label": "constructor_new_counter"
+        }"#;
+        let plan: InvocationPlan = serde_json::from_str(go_json).expect("deserialize");
+        assert_eq!(plan.target_id, "example.com/pkg:Add");
+        assert_eq!(plan.receiver_kind, "constructor:NewCounter");
+        assert_eq!(plan.argument_plans.len(), 2);
+        assert_eq!(plan.argument_plans[0].kind, ValuePlanKind::Literal);
+        assert_eq!(
+            plan.argument_plans[0].literal,
+            Some(serde_json::json!(7))
+        );
+        assert_eq!(plan.argument_plans[1].kind, ValuePlanKind::Symbolic);
+        assert_eq!(plan.argument_plans[1].literal, None);
+        assert_eq!(plan.label, "constructor_new_counter");
+    }
+
+    #[test]
+    fn go_invocation_requirement_fixture_deserializes() {
+        let go_json = r#"{
+            "target_id": "example.com/pkg:Put",
+            "value_requirements": [
+                {
+                    "param_index": 0,
+                    "param_name": "key",
+                    "type_name": "string",
+                    "kind": "non_zero"
+                }
+            ],
+            "runtime_requirements": [
+                {
+                    "kind": "package_initialization",
+                    "detail": "init() must run"
+                }
+            ]
+        }"#;
+        let req: InvocationRequirement =
+            serde_json::from_str(go_json).expect("deserialize");
+        assert_eq!(req.target_id, "example.com/pkg:Put");
+        assert_eq!(
+            req.value_requirements[0].kind,
+            ValueRequirementKind::NonZero
+        );
+        assert_eq!(
+            req.runtime_requirements[0].kind,
+            RuntimeRequirementKind::PackageInitialization
+        );
+        assert_eq!(req.runtime_requirements[0].type_name, "");
+    }
+
+    #[test]
+    fn go_unsatisfied_requirement_fixture_deserializes() {
+        let go_json = r#"{
+            "kind": "cgo_dependency",
+            "target_id": "example.com/pkg:Native",
+            "detail": "package uses cgo"
+        }"#;
+        let failure: UnsatisfiedRequirement =
+            serde_json::from_str(go_json).expect("deserialize");
+        assert_eq!(
+            failure.kind,
+            UnsatisfiedRequirementKind::CgoDependency
+        );
+        assert_eq!(failure.target_id, "example.com/pkg:Native");
     }
 
     #[test]
