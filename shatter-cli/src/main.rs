@@ -153,6 +153,7 @@ async fn main() -> ExitCode {
             cold_start,
             strategy_floor,
             strategy_weights,
+            planner,
             solver_timeout,
             memory_limit,
             clean,
@@ -273,6 +274,7 @@ async fn main() -> ExitCode {
                 time_limit,
                 coverage_threshold,
                 max_executions,
+                planner.as_deref(),
             )
             .await
         }

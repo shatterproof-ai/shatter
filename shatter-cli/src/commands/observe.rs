@@ -119,6 +119,7 @@ pub(crate) async fn run_observe(
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             mcdc: false,
             fuzz: shatter_core::config::FuzzConfig::default(),
+            planner: None,
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend
@@ -220,6 +221,7 @@ pub(crate) async fn run_observe(
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
         };
         explorer::explore_function(&mut frontend, &func, &explore_config, None, None).await
     };

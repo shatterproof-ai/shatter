@@ -1471,7 +1471,18 @@ pub(crate) async fn run_explore(
     time_limit: Option<f64>,
     coverage_threshold: Option<f64>,
     max_executions: Option<u64>,
+    planner: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(name) = planner {
+        return Err(format!(
+            "--planner={name}: invocation planner is not yet implemented. \
+             The Rust-side InvocationPlan protocol type is missing \
+             (tracked as str-zbyp, which blocks str-x20u / str-4z2b / str-3iwg). \
+             Omit --planner to run exploration without a planner."
+        )
+        .into());
+    }
+
     // Early return: finalize from saved artifacts instead of running exploration.
     if let Some(artifact_dir) = from_artifacts {
         return finalize_explore(
@@ -2138,6 +2149,7 @@ pub(crate) async fn run_explore(
                 capture_side_effects,
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+                planner: planner.map(str::to_string),
             };
 
             // Build concolic-specific config if needed.
@@ -2217,6 +2229,7 @@ pub(crate) async fn run_explore(
                     shrink_budget,
                     mcdc,
                     fuzz: resolved.fuzz.clone(),
+                    planner: planner.map(str::to_string),
                 };
                 (Some(cc), seeds, users)
             } else {

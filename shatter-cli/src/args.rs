@@ -387,6 +387,14 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         strategy_weights: Option<String>,
 
+        /// Select a frontend-provided invocation planner by name. Currently no
+        /// strategies are accepted: the Rust-side `InvocationPlan` protocol
+        /// type is not yet defined (blocked on str-zbyp). Passing this flag
+        /// produces an explicit "not yet implemented" error. Structural hook
+        /// for the follow-on str-x20u / str-4z2b / str-3iwg wiring.
+        #[arg(long)]
+        planner: Option<String>,
+
         /// Z3 solver timeout in seconds per query. Default: no limit.
         #[arg(long)]
         solver_timeout: Option<u64>,

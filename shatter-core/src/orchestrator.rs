@@ -139,6 +139,13 @@ pub struct ExploreConfig {
     pub mcdc: bool,
     /// Configuration for the hybrid fuzzing phase.
     pub fuzz: crate::config::FuzzConfig,
+    /// Name of a frontend-provided invocation planner to consult. `None` means
+    /// the orchestrator drives input generation on its own (Z3 + drilling +
+    /// meta-strategy). No strategies are currently accepted end-to-end: the
+    /// `InvocationPlan` protocol type is not yet defined (blocked on str-zbyp).
+    /// Threaded through from the CLI `--planner` flag as a structural hook;
+    /// the eventual MetaStrategy-integration site is tracked by str-3iwg.
+    pub planner: Option<String>,
 }
 
 /// Default shrink budget per behavior witness.
@@ -183,6 +190,7 @@ impl Default for ExploreConfig {
             shrink_budget: DEFAULT_SHRINK_BUDGET,
             mcdc: false,
             fuzz: crate::config::FuzzConfig::default(),
+            planner: None,
         }
     }
 }

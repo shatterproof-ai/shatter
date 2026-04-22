@@ -1002,6 +1002,7 @@ async fn explorer_explore_function_with_setup() {
         capture_side_effects: false,
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1228,6 +1229,7 @@ async fn concolic_mock_status_branches_discovered() {
         capture_side_effects: false,
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
     };
 
     let result =
@@ -1315,6 +1317,7 @@ async fn concolic_mock_result_branches_discovered() {
         capture_side_effects: false,
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
     };
 
     let result =
@@ -1409,6 +1412,7 @@ async fn concolic_mock_loop_branches_discovered() {
         capture_side_effects: false,
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
     };
 
     let result =
