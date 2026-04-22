@@ -81,6 +81,9 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 
 	family, ok := classifyParamFamily(p)
 	if !ok {
+		if runtimePlans := runtimeValuePlans(paramIndex, p, maxPlans); len(runtimePlans) > 0 {
+			return runtimePlans, nil
+		}
 		return nil, &protocol.UnsatisfiedRequirement{
 			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
 			TargetID: targetID,

@@ -87,6 +87,12 @@ const (
 	// ValuePlanKindSymbolic marks the parameter as a symbolic variable tracked
 	// by the concolic engine.
 	ValuePlanKindSymbolic ValuePlanKind = "symbolic"
+	// ValuePlanKindRuntimeValue sources the argument from the Go runtime-value
+	// registry (e.g. context.Background() for context.Context). Literal is a
+	// JSON-encoded string carrying the Go source expression; TypeHint names the
+	// registered type so code generators can resolve package imports via
+	// planner.LookupRuntimeValue.
+	ValuePlanKindRuntimeValue ValuePlanKind = "runtime_value"
 )
 
 // ValuePlan describes how to produce a concrete value for one argument in an
