@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "d30be6506d578d66c1934f00f3a8984a1f08e256",
-    "branch": "str-hy9b-20-f2-runtime-values-registry",
-    "kind": "task",
-    "number": 20,
-    "slug": "f2-runtime-values-registry",
-    "started_at": "2026-04-22T17:24:36Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-19-f1-composite-literal-synthesis",
-    "completed_at": "2026-04-22T15:34:05Z",
+    "branch": "str-hy9b-20-f2-runtime-values-registry",
+    "completed_at": "2026-04-22T20:16:29Z",
     "kind": "task",
-    "number": 19,
+    "number": 20,
     "outcome": "kept",
-    "slug": "f1-composite-literal-synthesis",
-    "summary": "Composite literal synthesis: shatter-go/planner/composite.go PlanComposite emits Go composite-literal for primitives + elided nested structs + pointer-as-nil; bounded recursion via MaxDepth; all 4 F1 ACs and rapid termination property covered; smoke passes",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-19-f1-composite-literal-synthesis"
+    "slug": "f2-runtime-values-registry",
+    "summary": "Runtime values registry: shatter-go/planner/runtime_values.go RuntimeValue{Expression,TypeHint,Imports,SideEffectClass} registry for context.Context/*bytes.Buffer/io.Reader/io.Writer/time.Time/http.Header; PlanParam consults registry before UnsatisfiedRequirement fallback; adds ValuePlanKindRuntimeValue (Go-only invocation_plan); AC func(ctx context.Context) emits context.Background(); all defaults + registry isolation + cap + unknown-opaque + sorted listing + rapid roundtrip covered; 941 tests + smoke pass",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry"
   },
-  "next_action": "Complete work on `str-hy9b-20-f2-runtime-values-registry` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry`.",
-  "next_task_number": 20,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 21,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-22T17:24:36Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-22T20:16:29Z"
 }

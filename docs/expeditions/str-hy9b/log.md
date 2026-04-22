@@ -265,14 +265,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `d30be6506d578d66c1934f00f3a8984a1f08e256`.
 
 
+### 2026-04-22T20:16:30Z — Closed task
+- Branch: `str-hy9b-20-f2-runtime-values-registry`.
+- Outcome: `kept`.
+- Summary: Runtime values registry: shatter-go/planner/runtime_values.go RuntimeValue{Expression,TypeHint,Imports,SideEffectClass} registry for context.Context/*bytes.Buffer/io.Reader/io.Writer/time.Time/http.Header; PlanParam consults registry before UnsatisfiedRequirement fallback; adds ValuePlanKindRuntimeValue (Go-only invocation_plan); AC func(ctx context.Context) emits context.Background(); all defaults + registry isolation + cap + unknown-opaque + sorted listing + rapid roundtrip covered; 941 tests + smoke pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-20-f2-runtime-values-registry`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry`
-- Last completed: `str-hy9b-19-f1-composite-literal-synthesis (kept)`
-- Next action: Complete work on `str-hy9b-20-f2-runtime-values-registry` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-20-f2-runtime-values-registry (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
