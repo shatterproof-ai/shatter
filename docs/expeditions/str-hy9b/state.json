@@ -1,5 +1,13 @@
 {
-  "active_task": null,
+  "active_task": {
+    "base_head": "d30be6506d578d66c1934f00f3a8984a1f08e256",
+    "branch": "str-hy9b-20-f2-runtime-values-registry",
+    "kind": "task",
+    "number": 20,
+    "slug": "f2-runtime-values-registry",
+    "started_at": "2026-04-22T17:24:36Z",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry"
+  },
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -14,11 +22,11 @@
     "summary": "Composite literal synthesis: shatter-go/planner/composite.go PlanComposite emits Go composite-literal for primitives + elided nested structs + pointer-as-nil; bounded recursion via MaxDepth; all 4 F1 ACs and rapid termination property covered; smoke passes",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-19-f1-composite-literal-synthesis"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_action": "Complete work on `str-hy9b-20-f2-runtime-values-registry` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry`.",
   "next_task_number": 20,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-22T15:34:05Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-22T17:24:36Z"
 }
