@@ -213,14 +213,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `008675e75bf01d7aa783288458b5ad08c7cf8a3a`.
 
 
+### 2026-04-22T01:55:44Z — Closed task
+- Branch: `str-hy9b-16-e3-receiver-planner`.
+- Outcome: `kept`.
+- Summary: Receiver planner: shatter-go/planner/receiver.go implements PlanReceivers with strategy order adapter>same-pkg-ctor>nearby-pkg-ctor>composite-literal>useful-zero-value>hint, capped at DefaultMaxReceiverPlans=3; 3 ACs + ordering + cap + interface/generic short-circuit + rapid invariants covered; smoke and standard tier pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-16-e3-receiver-planner`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner`
-- Last completed: `str-hy9b-15-e2-target-classifier (kept)`
-- Next action: Complete work on `str-hy9b-16-e3-receiver-planner` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-16-e3-receiver-planner (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

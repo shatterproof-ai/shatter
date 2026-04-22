@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "008675e75bf01d7aa783288458b5ad08c7cf8a3a",
-    "branch": "str-hy9b-16-e3-receiver-planner",
-    "kind": "task",
-    "number": 16,
-    "slug": "e3-receiver-planner",
-    "started_at": "2026-04-22T01:19:18Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-15-e2-target-classifier",
-    "completed_at": "2026-04-21T04:24:37Z",
+    "branch": "str-hy9b-16-e3-receiver-planner",
+    "completed_at": "2026-04-22T01:55:44Z",
     "kind": "task",
-    "number": 15,
+    "number": 16,
     "outcome": "kept",
-    "slug": "e2-target-classifier",
-    "summary": "Target classifier: planner.Classify returns DirectFunction/Method/AdapterCandidate/Unsupported (reasons: generic_unconstrained/interface_receiver/cgo_dependency/test_only_visibility); DiscoveredTarget extended with HasTypeParams/HasCGoDep/IsTestFile + ReceiverShape.IsInterface from AST+types.Info; 7 classification paths + 2 priority-order tests",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-15-e2-target-classifier"
+    "slug": "e3-receiver-planner",
+    "summary": "Receiver planner: shatter-go/planner/receiver.go implements PlanReceivers with strategy order adapter>same-pkg-ctor>nearby-pkg-ctor>composite-literal>useful-zero-value>hint, capped at DefaultMaxReceiverPlans=3; 3 ACs + ordering + cap + interface/generic short-circuit + rapid invariants covered; smoke and standard tier pass",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner"
   },
-  "next_action": "Complete work on `str-hy9b-16-e3-receiver-planner` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner`.",
-  "next_task_number": 16,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 17,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-22T01:19:18Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-22T01:55:44Z"
 }
