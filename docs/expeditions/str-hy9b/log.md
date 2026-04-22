@@ -226,14 +226,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `b7c5faffcb3678426d795d1cf550fc1d625c18af`.
 
 
+### 2026-04-22T04:42:29Z — Closed task
+- Branch: `str-hy9b-17-e4-param-planner-primitives`.
+- Outcome: `kept`.
+- Summary: Parameter planner primitives: shatter-go/planner/param.go implements PlanParam/PlanParams over primitive families string/int/float/bool/[]byte; unsupported types emit per-parameter complex_type UnsatisfiedRequirement without blocking siblings; capped at DefaultMaxParamValuePlans=4; both ACs covered plus hint-priority, mixed-support, rapid invariants; smoke passes
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-17-e4-param-planner-primitives`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-17-e4-param-planner-primitives`
-- Last completed: `str-hy9b-16-e3-receiver-planner (kept)`
-- Next action: Complete work on `str-hy9b-17-e4-param-planner-primitives` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-17-e4-param-planner-primitives`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-17-e4-param-planner-primitives (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
