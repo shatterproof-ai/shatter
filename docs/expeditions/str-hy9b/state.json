@@ -1,5 +1,13 @@
 {
-  "active_task": null,
+  "active_task": {
+    "base_head": "b7c5faffcb3678426d795d1cf550fc1d625c18af",
+    "branch": "str-hy9b-17-e4-param-planner-primitives",
+    "kind": "task",
+    "number": 17,
+    "slug": "e4-param-planner-primitives",
+    "started_at": "2026-04-22T03:13:14Z",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-17-e4-param-planner-primitives"
+  },
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -14,11 +22,11 @@
     "summary": "Receiver planner: shatter-go/planner/receiver.go implements PlanReceivers with strategy order adapter>same-pkg-ctor>nearby-pkg-ctor>composite-literal>useful-zero-value>hint, capped at DefaultMaxReceiverPlans=3; 3 ACs + ordering + cap + interface/generic short-circuit + rapid invariants covered; smoke and standard tier pass",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-16-e3-receiver-planner"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_action": "Complete work on `str-hy9b-17-e4-param-planner-primitives` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-17-e4-param-planner-primitives`.",
   "next_task_number": 17,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-22T01:55:44Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-22T03:13:14Z"
 }
