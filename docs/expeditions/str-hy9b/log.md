@@ -278,14 +278,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `2faf6c8b73cc4393f9cbe2edd09f11573daee9ca`.
 
 
+### 2026-04-22T23:21:30Z — Closed task
+- Branch: `str-hy9b-21-f3-constructor-scoring`.
+- Outcome: `kept`.
+- Summary: Constructor scoring: shatter-go/planner/constructor.go additive weights (+3 same-pkg, +2 return-match, +1 zero-param, +1/satisfiable param, +1 New/Default, -1 error, -2 Must); RankConstructors sorts desc with alpha tie-break; reuses classifyParamFamily/runtimeValuePlans for satisfiability; AC two *Service ctors satisfiable scores higher + each rule + Must/idiomatic exclusivity + rank monotonicity + deterministic tie-break + rapid invariants; 91 planner tests + smoke pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-21-f3-constructor-scoring`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring`
-- Last completed: `str-hy9b-20-f2-runtime-values-registry (kept)`
-- Next action: Complete work on `str-hy9b-21-f3-constructor-scoring` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-21-f3-constructor-scoring (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

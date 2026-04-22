@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "2faf6c8b73cc4393f9cbe2edd09f11573daee9ca",
-    "branch": "str-hy9b-21-f3-constructor-scoring",
-    "kind": "task",
-    "number": 21,
-    "slug": "f3-constructor-scoring",
-    "started_at": "2026-04-22T23:08:40Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-20-f2-runtime-values-registry",
-    "completed_at": "2026-04-22T20:16:29Z",
+    "branch": "str-hy9b-21-f3-constructor-scoring",
+    "completed_at": "2026-04-22T23:21:30Z",
     "kind": "task",
-    "number": 20,
+    "number": 21,
     "outcome": "kept",
-    "slug": "f2-runtime-values-registry",
-    "summary": "Runtime values registry: shatter-go/planner/runtime_values.go RuntimeValue{Expression,TypeHint,Imports,SideEffectClass} registry for context.Context/*bytes.Buffer/io.Reader/io.Writer/time.Time/http.Header; PlanParam consults registry before UnsatisfiedRequirement fallback; adds ValuePlanKindRuntimeValue (Go-only invocation_plan); AC func(ctx context.Context) emits context.Background(); all defaults + registry isolation + cap + unknown-opaque + sorted listing + rapid roundtrip covered; 941 tests + smoke pass",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-20-f2-runtime-values-registry"
+    "slug": "f3-constructor-scoring",
+    "summary": "Constructor scoring: shatter-go/planner/constructor.go additive weights (+3 same-pkg, +2 return-match, +1 zero-param, +1/satisfiable param, +1 New/Default, -1 error, -2 Must); RankConstructors sorts desc with alpha tie-break; reuses classifyParamFamily/runtimeValuePlans for satisfiability; AC two *Service ctors satisfiable scores higher + each rule + Must/idiomatic exclusivity + rank monotonicity + deterministic tie-break + rapid invariants; 91 planner tests + smoke pass",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring"
   },
-  "next_action": "Complete work on `str-hy9b-21-f3-constructor-scoring` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring`.",
-  "next_task_number": 21,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 22,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-22T23:08:40Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-22T23:21:30Z"
 }
