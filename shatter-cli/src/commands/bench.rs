@@ -272,6 +272,7 @@ async fn run_single_exploration(
         capture_side_effects: false,
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
     };
 
     // Use a scoped timing handle for per-run phase capture.

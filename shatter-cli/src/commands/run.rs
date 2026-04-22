@@ -274,6 +274,7 @@ pub(crate) async fn run_run(
                 capture_side_effects: false,
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+                planner: None,
             };
 
             match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None)

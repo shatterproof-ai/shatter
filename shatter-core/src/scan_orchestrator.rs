@@ -1251,6 +1251,7 @@ pub async fn scan(
             capture_side_effects: config.capture_side_effects,
             budget_surplus: None,
             claim_policy: ClaimPolicy::default(),
+            planner: None,
         };
 
         let exploration =
@@ -3109,6 +3110,7 @@ pub async fn parallel_scan_with_progress(
                 capture_side_effects: config.capture_side_effects,
                 budget_surplus: Some(Arc::clone(&layer_surplus)),
                 claim_policy: ClaimPolicy::default(),
+                planner: None,
             };
 
             tasks.push(ExploreTask {

@@ -654,6 +654,7 @@ mod tests {
             capture_side_effects: false,
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);
