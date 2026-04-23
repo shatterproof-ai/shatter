@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/shatter-dev/shatter/shatter-go/planner"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
@@ -20,6 +21,12 @@ func main() {
 	}
 
 	handler := protocol.NewHandlerWithWorkspace(os.Stdin, os.Stdout, os.Stderr, artifactWorkspace)
+	handler.RegisterPlanner(func(
+		requirements []protocol.InvocationRequirement,
+		lookup func(string) *protocol.FunctionAnalysis,
+	) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
+		return planner.PlanRequirements(requirements, lookup, planner.PlanRequirementsOptions{})
+	})
 	if err := handler.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "[shatter-go] Fatal: %v\n", err)
 		os.Exit(1)

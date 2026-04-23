@@ -24,4 +24,4 @@ var AllErrorCodes = []string{
 }
 
 // CommandCapabilities lists the standard protocol commands this frontend supports.
-var CommandCapabilities = []string{"analyze", "execute", "instrument", "generate", "setup", "teardown", "prepare"}
+var CommandCapabilities = []string{"analyze", "execute", "instrument", "generate", "setup", "teardown", "prepare", "get_invocation_plan"}

@@ -41,6 +41,10 @@ type Handler struct {
 	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
+	// planRequirements, when non-nil, is dispatched from handleGetInvocationPlan.
+	// Injected at construction time by callers that link the planner package;
+	// keeping it a function pointer avoids a protocol→planner import cycle.
+	planRequirements PlannerFunc
 
 	// policyConfigLoader returns the parsed .shatter/config.yaml nearest to
 	// the given source file. Injectable so tests can supply a synthetic
@@ -83,6 +87,22 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
 	}
 	return h
+}
+
+// PlannerFunc services get_invocation_plan requests. Callers wire in the real
+// planner via RegisterPlanner; keeping it a function pointer avoids a
+// protocol→planner import cycle. The lookup closure resolves a target_id to
+// its cached FunctionAnalysis or nil when the target was not analyzed.
+type PlannerFunc func(
+	requirements []InvocationRequirement,
+	lookup func(targetID string) *FunctionAnalysis,
+) (plans []InvocationPlan, unsatisfied []UnsatisfiedRequirement)
+
+// RegisterPlanner installs a PlannerFunc. Passing nil clears any previously
+// registered planner; unregistered handlers reply with ErrNotSupported on
+// get_invocation_plan.
+func (h *Handler) RegisterPlanner(fn PlannerFunc) {
+	h.planRequirements = fn
 }
 
 // NewHandlerWithLogLevel creates a handler with an explicit log level (for testing).
@@ -170,6 +190,8 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		return h.handleTeardown(base, req), false
 	case "generate":
 		return h.handleGenerate(base, req), false
+	case "get_invocation_plan":
+		return h.handleGetInvocationPlan(base, req), false
 	case "shutdown":
 		return h.handleShutdown(base), true
 	default:
@@ -1075,6 +1097,64 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 		resp.Recipe = &recipeCopy
 	}
 	return finalizeResponse(resp, timing)
+}
+
+func (h *Handler) handleGetInvocationPlan(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
+	if h.planRequirements == nil {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = "get_invocation_plan: no planner registered in this frontend build"
+		return resp
+	}
+
+	lookup := func(targetID string) *FunctionAnalysis {
+		return h.lookupAnalyzedByTargetID(targetID)
+	}
+
+	finishPlan := timing.Start("get_invocation_plan.total")
+	plans, unsatisfied := h.planRequirements(req.InvocationRequirements, lookup)
+	finishPlan()
+
+	resp.Status = "invocation_plan"
+	resp.InvocationPlans = plans
+	resp.UnsatisfiedRequirements = unsatisfied
+	return finalizeResponse(resp, timing)
+}
+
+// lookupAnalyzedByTargetID maps a protocol target_id to a cached
+// FunctionAnalysis. The cache is keyed on "file\x00function"; callers of
+// get_invocation_plan must have previously issued analyze for the target's
+// file so the entry exists. Matching extracts the bare symbol name from
+// "pkgPath:QualifiedName" (splitting on the final ":"), then scans cached
+// analyses for a matching Name on the most recently analyzed file.
+func (h *Handler) lookupAnalyzedByTargetID(targetID string) *FunctionAnalysis {
+	bare := bareSymbolFromTargetID(targetID)
+	if bare == "" {
+		return nil
+	}
+	if h.lastAnalyzedFile != "" {
+		if analysis, ok := h.cachedAnalyses[h.lastAnalyzedFile+"\x00"+bare]; ok {
+			return analysis
+		}
+	}
+	// Fall back to linear scan so targets from prior analyses still resolve.
+	for key, analysis := range h.cachedAnalyses {
+		if analysis.Name != bare {
+			continue
+		}
+		_ = key
+		return analysis
+	}
+	return nil
+}
+
+func bareSymbolFromTargetID(targetID string) string {
+	idx := strings.LastIndex(targetID, ":")
+	if idx < 0 {
+		return targetID
+	}
+	return targetID[idx+1:]
 }
 
 // Registry returns the generator registry, allowing custom builds to register
