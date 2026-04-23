@@ -81,6 +81,11 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 
 	family, ok := classifyParamFamily(p)
 	if !ok {
+		if aggPlans, aggUnsat := PlanAggregate(targetID, paramIndex, p, maxPlans); aggPlans != nil {
+			return aggPlans, nil
+		} else if aggUnsat != nil {
+			return nil, aggUnsat
+		}
 		if runtimePlans := runtimeValuePlans(paramIndex, p, maxPlans); len(runtimePlans) > 0 {
 			return runtimePlans, nil
 		}
