@@ -291,14 +291,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `afd9beacb779970c087695b0a20765fc4e7231c9`.
 
 
+### 2026-04-23T02:47:39Z — Closed task
+- Branch: `str-hy9b-22-f4-param-aggregate-types`.
+- Outcome: `kept`.
+- Summary: Parameter planner aggregate types: shatter-go/planner/aggregate.go PlanAggregate dispatches on slice/map/struct TypeInfo, reuses synthesizeFieldValue/PlanComposite; emits runtime_value ValuePlans with Go source expression in Literal. Wired into PlanParam after primitive family, before runtime_values. AC1 []int/[]string/[]bool zero-length+one-element + AC2 map[string]int one-entry + AC3 pkg.Req composite + AC4 unsupported aggregates fall through without blocking siblings + rapid determinism + cap + byte-slice primitive-routing preserved + no-TypeName fallthrough; 965 go tests + smoke pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-22-f4-param-aggregate-types`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-22-f4-param-aggregate-types`
-- Last completed: `str-hy9b-21-f3-constructor-scoring (kept)`
-- Next action: Complete work on `str-hy9b-22-f4-param-aggregate-types` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-22-f4-param-aggregate-types`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-22-f4-param-aggregate-types (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->

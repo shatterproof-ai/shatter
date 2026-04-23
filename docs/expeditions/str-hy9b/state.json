@@ -1,32 +1,24 @@
 {
-  "active_task": {
-    "base_head": "afd9beacb779970c087695b0a20765fc4e7231c9",
-    "branch": "str-hy9b-22-f4-param-aggregate-types",
-    "kind": "task",
-    "number": 22,
-    "slug": "f4-param-aggregate-types",
-    "started_at": "2026-04-23T02:12:30Z",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-22-f4-param-aggregate-types"
-  },
+  "active_task": null,
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "last_completed": {
-    "branch": "str-hy9b-21-f3-constructor-scoring",
-    "completed_at": "2026-04-22T23:21:30Z",
+    "branch": "str-hy9b-22-f4-param-aggregate-types",
+    "completed_at": "2026-04-23T02:47:39Z",
     "kind": "task",
-    "number": 21,
+    "number": 22,
     "outcome": "kept",
-    "slug": "f3-constructor-scoring",
-    "summary": "Constructor scoring: shatter-go/planner/constructor.go additive weights (+3 same-pkg, +2 return-match, +1 zero-param, +1/satisfiable param, +1 New/Default, -1 error, -2 Must); RankConstructors sorts desc with alpha tie-break; reuses classifyParamFamily/runtimeValuePlans for satisfiability; AC two *Service ctors satisfiable scores higher + each rule + Must/idiomatic exclusivity + rank monotonicity + deterministic tie-break + rapid invariants; 91 planner tests + smoke pass",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-21-f3-constructor-scoring"
+    "slug": "f4-param-aggregate-types",
+    "summary": "Parameter planner aggregate types: shatter-go/planner/aggregate.go PlanAggregate dispatches on slice/map/struct TypeInfo, reuses synthesizeFieldValue/PlanComposite; emits runtime_value ValuePlans with Go source expression in Literal. Wired into PlanParam after primitive family, before runtime_values. AC1 []int/[]string/[]bool zero-length+one-element + AC2 map[string]int one-entry + AC3 pkg.Req composite + AC4 unsupported aggregates fall through without blocking siblings + rapid determinism + cap + byte-slice primitive-routing preserved + no-TypeName fallthrough; 965 go tests + smoke pass",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-22-f4-param-aggregate-types"
   },
-  "next_action": "Complete work on `str-hy9b-22-f4-param-aggregate-types` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-22-f4-param-aggregate-types`.",
-  "next_task_number": 22,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 23,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-23T02:12:30Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-23T02:47:39Z"
 }
