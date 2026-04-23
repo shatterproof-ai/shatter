@@ -330,14 +330,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `d6e926472955174246ebc12d192c5dd55bbd9dc3`.
 
 
+### 2026-04-23T19:16:25Z — Closed task
+- Branch: `str-hy9b-25-j1-retirement-inventory`.
+- Outcome: `kept`.
+- Summary: J1 Retirement gate inventory: docs/specs/2026-04-23-go-harness-retirement-checklist.md enumerates every shatter-go file/test/env var/fixture/doc to remove or rewrite when legacy foreign-module direct-call harness retires. Grouped by J2 (code removal), J3 (CI regression gate), J4 (walkthrough/docs); each item names replacement path (launcher/builder/registry/overlay/planner). Structural finding: D4 launcher + D6 builder packages exist but not wired into protocol/handler.go — J2 must rewrite handler.go:366,625-639 against build.Builder+BinaryRegistry+launcher.Session before deletions are safe. Gates: 991 shatter-go tests pass; root test-standard trips on pre-existing environmental failure in shatter-core project::tests::returns_none_for_isolated_file (reproduces on clean main, not introduced by this change).
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-25-j1-retirement-inventory`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-25-j1-retirement-inventory`
-- Last completed: `str-hy9b-24-h2-planner-wire (kept)`
-- Next action: Complete work on `str-hy9b-25-j1-retirement-inventory` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-25-j1-retirement-inventory`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-25-j1-retirement-inventory (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
