@@ -89,6 +89,11 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		if runtimePlans := runtimeValuePlans(paramIndex, p, maxPlans); len(runtimePlans) > 0 {
 			return runtimePlans, nil
 		}
+		if fbPlans, fbUnsat := PlanFallback(targetID, paramIndex, p, maxPlans); fbPlans != nil {
+			return fbPlans, nil
+		} else if fbUnsat != nil {
+			return nil, fbUnsat
+		}
 		return nil, &protocol.UnsatisfiedRequirement{
 			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
 			TargetID: targetID,
