@@ -29,17 +29,33 @@ Completed in prior workflow (merged to main):
 - str-hy9b.H3: Parity matrix update
 - str-hy9b.I1: Single-method interface stub
 
-Remaining (from beads tracker — see below for open items):
-- Group A: Outcome plumbing (A2, A3, A4, A5)
-- Group B: Workspace gc (B2, B3)
-- Group C: Packages-based analyzer + DiscoveredTarget + classifiers (C2–C6)
-- Group D: Build orchestrator and derived artifacts (D3, D4, D6)
-- Group E: Invocation plan schemas and planners (E1–E5)
-- Group F: Argument synthesis (F1–F5)
-- Group G: Side-effect safety and hints (G1–G4)
-- Group H: Explorer planner audit and conformance (H1, H2, H4, H5)
-- Group I: Multi-method interface stubs (I2, I3)
-- Group J: Retirement gate (J1–J4)
+Completed under the expedition (merged into the base branch):
+- str-hy9b.A2 Outcome plumbing, A3 Markdown renderer, A4 Empty-report regression
+- str-hy9b.B3 Workspace gc
+- str-hy9b.C2 Packages-based analyzer, C3 DiscoveredTarget schema, C4 Method classification gate, C5 Constructor catalog
+- str-hy9b.D4 Launcher loop harness, D6 Build orchestrator
+- str-hy9b.E1 Invocation plan schemas, E2 Target classifier, E3 Receiver planner, E4 Parameter planner primitives, E5 Plan ranking and budget
+- str-hy9b.F1 Composite literal synthesis, F2 Runtime values registry, F3 Constructor scoring
+- str-hy9b.H4 Conformance tests
+- str-hy9b.I2 Multi-method interface stub
+
+Already implemented under prior redesign work (tracked only in shatter-go/CLAUDE.md and parity matrix):
+- str-hy9b.G1 adapter_http_nethttp
+- str-hy9b.G2 adapter_gin
+- str-hy9b.G4 Safety Policy Contract (default gate)
+- str-hy9b.H1 Planner parity audit (docs/audits/2026-04-19-go-planner-parity.md)
+
+Remaining (filed in beads; work serially through the expedition):
+- str-6juk — str-hy9b.F4: Parameter planner — aggregate types
+- str-ptk5 — str-hy9b.F5: Parameter planner — error / chan / func fallbacks
+- str-ruw0 — str-hy9b.G3: hint_config_v1 expansion beyond policy.allow
+- str-kt63 — str-hy9b.H2: Wire Go planner (invocation_plan) into explorer and orchestrator
+- str-ekjh — str-hy9b.H5: Planner-driven E2E test re-enabled (blocked by H2)
+- str-sdtu — str-hy9b.I3: Multi-package / embedded interface stubs
+- str-mj9r — str-hy9b.J1: Retirement gate — inventory of legacy harness
+- str-kzxt — str-hy9b.J2: Retirement gate — remove legacy direct-call harness (blocked by J1)
+- str-ga7r — str-hy9b.J3: Retirement gate — CI gate against regression (blocked by J2)
+- str-mbmw — str-hy9b.J4: Retirement gate — walkthrough and docs update (blocked by J2)
 
 ## Experiment Register
 
