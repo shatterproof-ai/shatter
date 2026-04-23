@@ -317,14 +317,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `deea7009958f8a9c57903dc40bf76cb10c240578`.
 
 
+### 2026-04-23T04:38:41Z — Closed task
+- Branch: `str-hy9b-24-h2-planner-wire`.
+- Outcome: `kept`.
+- Summary: H2 Wire Go planner into explorer+orchestrator: protocol wire fixes (invocation_requirements / invocation_plans rename for Go parity + Go-shape response fixture test); planner.PlanRequirements entry point in shatter-go (free functions only, methods get NoConstructor); handleGetInvocationPlan in Go handler w/ PlannerFunc injection hook; get_invocation_plan advertised in CommandCapabilities; shatter-core/src/planner_consumer.rs materializes Literal+Zero ValuePlans (Random/Symbolic fall through); CLI --planner=go drops hard-error, primes task_frontend analyze cache, feeds planner seeds via ObserveStageOptions.extra_seeds (single call site; both explorer user_seeds and concolic seed_inputs consume the same channel, no parallel-path divergence); parity-matrix + registry updated. Gates: 991 go tests, 5 planner_consumer + 3 invocation_plan protocol tests, 17 e2e_concolic, parity+conformance pass, CLI E2E against ClassifyNumber returns 3 planner seeds affecting exploration.
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-24-h2-planner-wire`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-24-h2-planner-wire`
-- Last completed: `str-hy9b-23-f5-param-error-chan-func (kept)`
-- Next action: Complete work on `str-hy9b-24-h2-planner-wire` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-24-h2-planner-wire`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-24-h2-planner-wire (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
