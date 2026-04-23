@@ -415,6 +415,12 @@ pub enum Command {
     /// error.
     GetInvocationPlan {
         /// Targets to plan for, one requirement each.
+        ///
+        /// Wire-named `invocation_requirements` for parity with the Go
+        /// Request struct in `shatter-go/protocol/types.go`. The Rust-side
+        /// identifier stays short (`requirements`) for ergonomic pattern
+        /// matching; serde rename bridges the two names.
+        #[serde(rename = "invocation_requirements")]
         requirements: Vec<InvocationRequirement>,
     },
     /// Request graceful shutdown of the frontend process.
@@ -538,7 +544,10 @@ pub enum ResponseResult {
         /// Resolved plans, one per satisfiable requirement. Order is arbitrary;
         /// consumers that need a specific ordering should sort by
         /// `InvocationPlan::priority` or `target_id`.
-        #[serde(default)]
+        ///
+        /// Wire-named `invocation_plans` for parity with the Go Response
+        /// struct in `shatter-go/protocol/types.go`.
+        #[serde(default, rename = "invocation_plans")]
         plans: Vec<InvocationPlan>,
         /// Requirements the planner could not satisfy, each annotated with a
         /// reason. Empty when every supplied requirement produced a plan.
@@ -3373,6 +3382,10 @@ mod tests {
             json.contains("\"command\":\"get_invocation_plan\""),
             "expected snake_case command tag, got: {json}"
         );
+        assert!(
+            json.contains("\"invocation_requirements\""),
+            "expected Go-compatible field `invocation_requirements`, got: {json}"
+        );
         let decoded: Request = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, request);
     }
@@ -3407,8 +3420,56 @@ mod tests {
             json.contains("\"status\":\"invocation_plan\""),
             "expected snake_case status tag, got: {json}"
         );
+        assert!(
+            json.contains("\"invocation_plans\""),
+            "expected Go-compatible field `invocation_plans`, got: {json}"
+        );
         let decoded: Response = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn go_response_invocation_plan_fixture_deserializes() {
+        // Wire-shape fixture matching shatter-go/protocol/types.go Response
+        // (InvocationPlans + UnsatisfiedRequirements under status
+        // "invocation_plan"). Guards against cross-language field-name drift.
+        let go_json = r#"{
+            "protocol_version": "1.0.0",
+            "id": 3,
+            "status": "invocation_plan",
+            "invocation_plans": [
+                {
+                    "target_id": "example.com/pkg:Add",
+                    "receiver_kind": "",
+                    "argument_plans": [],
+                    "priority": 0,
+                    "label": "free_function"
+                }
+            ],
+            "unsatisfied_requirements": [
+                {
+                    "kind": "no_constructor",
+                    "target_id": "example.com/pkg:(*Service).Run",
+                    "detail": "receiver planning deferred"
+                }
+            ]
+        }"#;
+        let response: Response = serde_json::from_str(go_json).expect("deserialize");
+        match response.result {
+            ResponseResult::InvocationPlan {
+                plans,
+                unsatisfied_requirements,
+            } => {
+                assert_eq!(plans.len(), 1);
+                assert_eq!(plans[0].target_id, "example.com/pkg:Add");
+                assert_eq!(unsatisfied_requirements.len(), 1);
+                assert_eq!(
+                    unsatisfied_requirements[0].kind,
+                    UnsatisfiedRequirementKind::NoConstructor
+                );
+            }
+            other => panic!("expected InvocationPlan, got: {other:?}"),
+        }
     }
 
     #[test]

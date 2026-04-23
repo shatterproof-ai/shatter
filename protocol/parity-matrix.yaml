@@ -578,9 +578,14 @@ feature_capabilities:
   invocation_plan:
     status: optional
     notes: >
-      Planner artifact schema (str-hy9b.E1). Describes the ordered plan of
-      invocations a frontend intends to run for a discovered target. Go-only at
-      this stage; TS and Rust will reach parity in a later phase.
+      Planner artifact schema (str-hy9b.E1) and the `get_invocation_plan`
+      command wired through the Rust engine (str-hy9b.H2). Go frontend
+      advertises the capability and services planning via
+      planner.PlanRequirements — free functions only in this release; method
+      targets respond with NoConstructor pending receiver wiring. Rust core is
+      the consumer (planner_consumer::fetch_planner_seeds), and the CLI
+      `--planner=go` flag seeds the observe stage for both explorer and
+      orchestrator paths. TypeScript has no planner yet.
     frontends:
       typescript: not_supported
       go: supported

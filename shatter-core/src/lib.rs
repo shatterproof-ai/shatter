@@ -56,6 +56,7 @@ pub mod observe;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod pipeline_orchestrator;
+pub mod planner_consumer;
 pub mod project;
 pub mod protocol;
 pub mod recorded_mocks;
