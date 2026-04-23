@@ -304,14 +304,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `92a3d07b19cd46b70467909419568b78a274f8e8`.
 
 
+### 2026-04-23T03:12:36Z — Closed task
+- Branch: `str-hy9b-23-f5-param-error-chan-func`.
+- Outcome: `kept`.
+- Summary: Parameter planner error/chan/func fallbacks: shatter-go/planner/fallback.go PlanFallback emits runtime_value ValuePlans for error (nil + fmt.Errorf), chan T (nil + make(chan T), directional variants nil only), and func types (nil only, non-nil literal deferred). Wired into PlanParam after runtime-value registry, before complex_type UnsatisfiedRequirement. AC1 error nil+Errorf + AC2 chan int/string + AC3 func nil + AC4 mixed-support unsupported-chan-without-TypeName + AC5 rapid primitive/fallback mutual exclusion + regression: context.Context registry preserved, maxPlans cap, directional chan nil-only; 983 shatter-go tests + smoke pass
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-23-f5-param-error-chan-func`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-23-f5-param-error-chan-func`
-- Last completed: `str-hy9b-22-f4-param-aggregate-types (kept)`
-- Next action: Complete work on `str-hy9b-23-f5-param-error-chan-func` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-23-f5-param-error-chan-func`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-23-f5-param-error-chan-func (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
