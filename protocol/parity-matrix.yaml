@@ -126,6 +126,18 @@ commands:
       go: implemented
       rust: implemented
 
+  get_invocation_plan:
+    status: optional
+    notes: >
+      Invocation planner consultation (str-hy9b.H2). The frontend resolves
+      InvocationRequirements into concrete InvocationPlans for the Rust core's
+      planner_consumer. Only Go currently advertises this capability; the Rust
+      core is the consumer side. TypeScript has no planner yet.
+    frontends:
+      typescript: not_implemented
+      go: implemented
+      rust: not_implemented
+
   teardown:
     status: optional
     notes: >

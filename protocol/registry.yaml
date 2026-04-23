@@ -141,6 +141,7 @@ capabilities:
     - setup
     - teardown
     - generate
+    - get_invocation_plan
 
   complex_type:
     - date
