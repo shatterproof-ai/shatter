@@ -1,5 +1,13 @@
 {
-  "active_task": null,
+  "active_task": {
+    "base_head": "deea7009958f8a9c57903dc40bf76cb10c240578",
+    "branch": "str-hy9b-24-h2-planner-wire",
+    "kind": "task",
+    "number": 24,
+    "slug": "h2-planner-wire",
+    "started_at": "2026-04-23T03:41:50Z",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-24-h2-planner-wire"
+  },
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -14,11 +22,11 @@
     "summary": "Parameter planner error/chan/func fallbacks: shatter-go/planner/fallback.go PlanFallback emits runtime_value ValuePlans for error (nil + fmt.Errorf), chan T (nil + make(chan T), directional variants nil only), and func types (nil only, non-nil literal deferred). Wired into PlanParam after runtime-value registry, before complex_type UnsatisfiedRequirement. AC1 error nil+Errorf + AC2 chan int/string + AC3 func nil + AC4 mixed-support unsupported-chan-without-TypeName + AC5 rapid primitive/fallback mutual exclusion + regression: context.Context registry preserved, maxPlans cap, directional chan nil-only; 983 shatter-go tests + smoke pass",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-23-f5-param-error-chan-func"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_action": "Complete work on `str-hy9b-24-h2-planner-wire` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-24-h2-planner-wire`.",
   "next_task_number": 24,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 1,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-23T03:12:36Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-23T03:41:50Z"
 }
