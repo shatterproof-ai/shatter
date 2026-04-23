@@ -337,14 +337,20 @@ These must be removed before starting those tasks under the expedition model.
 - Base branch rebased onto the primary branch.
 
 
+### 2026-04-23T20:12:04Z — Started task
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Base head at branch creation: `b045556a51f1f4c2c3cd45c929ae6edde6b6dee8`.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `ready_for_task`
+- Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `none`
-- Active task worktree: `none`
+- Active task branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`
 - Last completed: `str-hy9b-25-j1-retirement-inventory (kept)`
-- Next action: Create the next task branch from the rebased expedition base branch.
+- Next action: Complete work on `str-hy9b-26-j2-remove-legacy-direct-call-harness` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`.
 <!-- expedition-resume:end -->
