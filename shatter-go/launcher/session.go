@@ -3,6 +3,7 @@ package launcher
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,14 +14,45 @@ const sessionBufferSize = 4 * 1024 * 1024
 // LauncherRequest is the JSON request sent to a running launcher binary.
 // Plan selects the invocation strategy; Inputs are the argument values.
 type LauncherRequest struct {
-	Plan   json.RawMessage   `json:"plan"`
-	Inputs []json.RawMessage `json:"inputs"`
+	Plan    json.RawMessage   `json:"plan"`
+	Inputs  []json.RawMessage `json:"inputs"`
+	Capture bool              `json:"capture"`
+}
+
+type LauncherSideEffect struct {
+	Kind     string          `json:"kind"`
+	Level    string          `json:"level,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	Variable string          `json:"variable,omitempty"`
+	Before   json.RawMessage `json:"before,omitempty"`
+	After    json.RawMessage `json:"after,omitempty"`
+}
+
+type LauncherError struct {
+	ErrorType     string `json:"error_type"`
+	Message       string `json:"message"`
+	Stack         string `json:"stack,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+}
+
+type LauncherPerf struct {
+	WallTimeMs         float64 `json:"wall_time_ms"`
+	CPUTimeUs          int64   `json:"cpu_time_us"`
+	HeapUsedBytes      int64   `json:"heap_used_bytes"`
+	HeapAllocatedBytes int64   `json:"heap_allocated_bytes"`
 }
 
 // LauncherResponse is the JSON response from a running launcher binary.
 type LauncherResponse struct {
-	ReturnValue json.RawMessage `json:"return_value,omitempty"`
-	Error       string          `json:"error,omitempty"`
+	ReturnValue   json.RawMessage      `json:"return_value,omitempty"`
+	BranchPath    json.RawMessage      `json:"branch_path"`
+	LinesExecuted json.RawMessage      `json:"lines_executed"`
+	ScopeEvents   json.RawMessage      `json:"scope_events"`
+	ExternalCalls json.RawMessage      `json:"external_calls,omitempty"`
+	SideEffects   []LauncherSideEffect `json:"side_effects"`
+	ThrownError   *LauncherError       `json:"thrown_error,omitempty"`
+	Performance   *LauncherPerf        `json:"performance,omitempty"`
+	Error         string               `json:"error,omitempty"`
 }
 
 // LauncherSession manages a running launcher binary subprocess. Invoke sends
@@ -92,5 +124,22 @@ func (s *LauncherSession) Invoke(req LauncherRequest) (LauncherResponse, error) 
 // binary to exit; Wait collects the exit status.
 func (s *LauncherSession) Close() error {
 	_ = s.stdin.Close()
+	err := s.cmd.Wait()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return nil
+	}
+	return err
+}
+
+// Kill forcibly terminates the launcher subprocess. Intended for recovery
+// tests that verify a dead session is respawned on the next execute.
+func (s *LauncherSession) Kill() error {
+	if s.cmd.Process == nil {
+		return nil
+	}
+	if err := s.cmd.Process.Kill(); err != nil {
+		return err
+	}
 	return s.cmd.Wait()
 }

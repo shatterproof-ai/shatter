@@ -2,8 +2,6 @@ package protocol
 
 import (
 	"fmt"
-
-	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // httpHandlerHook implements InvocationHook for net/http handler functions.
@@ -14,7 +12,7 @@ type httpHandlerHook struct{}
 func (h *httpHandlerHook) ID() string { return HTTPHandlerAdapterID }
 
 func (h *httpHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error) {
-	result, err := instrument.ExecuteHTTPHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
+	result, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("http handler execution: %w", err)
 	}

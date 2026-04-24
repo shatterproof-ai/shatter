@@ -10,7 +10,9 @@ See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) fo
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
 - `protocol/log.go` — slog configuration: `LevelTrace` constant, `prefixHandler` for `[shatter-go]` format
-- `instrument/executor.go` — Function execution and instrumentation
+- `protocol/prepared_launcher.go` — Direct execute/prepare path via launcher-backed cached programs
+- `launcher/launcher.go` — Generated launcher module build/runtime bridge
+- `instrument/executor.go` — Execution-side capture and legacy prepared harness support still exercised by tests
 
 ## Property-Based Testing (rapid + native fuzzing)
 
@@ -41,7 +43,7 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` a
 
 ## Prepare Parity Contract
 
-Go implements `prepare` to pre-build the instrumented harness binary so subsequent execute calls skip `go build`. Handler: `handlePrepare()` in `protocol/handler.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]*instrument.PreparedHarness`. Idempotent. `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses.
+Go implements `prepare` to pre-build a launcher-backed execution binary so subsequent execute calls skip rebuilds. Handler: `handlePrepare()` in `protocol/handler.go`, with launcher preparation in `protocol/prepared_launcher.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]preparedExecution`. Idempotent. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on cached prepared executions.
 
 ## Invocation Model Parity Contract
 
@@ -49,9 +51,9 @@ Go has the adapter substrate (registry, dispatch, invocation hooks) and two conc
 
 ### go/http-handler adapter
 
-Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter compiles a harness that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
+Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
 
-Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `instrument/http_harness.go` (harness generation/execution).
+Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `protocol/adapter_launcher.go` (launcher generation/execution).
 
 ### Adapter hint recognizers
 
@@ -64,9 +66,9 @@ High-confidence hints auto-promote to `InvocationModel` (with `SyntheticParams` 
 
 ### go/gin adapter
 
-Recognizes functions with `*gin.Context` parameter via hint-based AST detection (type checker cannot resolve third-party imports). When recognized with high confidence, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/gin"}` with 5 synthetic params (method, path, headers, body, route_params). At execute time, the adapter compiles a harness that runs the handler against `gin.CreateTestContext(httptest.NewRecorder())` with `gin.SetMode(gin.TestMode)`, sets `c.Request` and `c.Params` from inputs, and returns the HTTP response (status, headers, body) as `return_value`. Route parameters are injected directly via `c.Params` (bypassing Gin's router). Instrumentation fields are empty for adapter-owned calls.
+Recognizes functions with `*gin.Context` parameter via hint-based AST detection (type checker cannot resolve third-party imports). When recognized with high confidence, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/gin"}` with 5 synthetic params (method, path, headers, body, route_params). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `gin.CreateTestContext(httptest.NewRecorder())` with `gin.SetMode(gin.TestMode)`, sets `c.Request` and `c.Params` from inputs, and returns the HTTP response (status, headers, body) as `return_value`. Route parameters are injected directly via `c.Params` (bypassing Gin's router). Instrumentation fields are empty for adapter-owned calls.
 
-Key files: `protocol/recognizer.go` (detection), `protocol/gin_adapter.go` (factory/hook), `instrument/gin_harness.go` (harness generation/execution).
+Key files: `protocol/recognizer.go` (detection), `protocol/gin_adapter.go` (factory/hook), `protocol/adapter_launcher.go` (launcher generation/execution).
 
 The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
 

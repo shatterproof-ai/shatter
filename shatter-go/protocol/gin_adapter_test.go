@@ -102,6 +102,44 @@ func TestAnalyze_GinHandler_ProtocolResponse(t *testing.T) {
 	}
 }
 
+func TestExecuteAdapterViaLauncher_GinHandler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "gin_project/handler.go")
+	methodJSON, _ := json.Marshal("GET")
+	pathJSON, _ := json.Marshal("/users")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+	routeParamsJSON, _ := json.Marshal(map[string]string{})
+
+	result, err := executeAdapterViaLauncher(GinAdapterID, InvocationContext{
+		File:         file,
+		FunctionName: "ListUsers",
+		Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON, routeParamsJSON},
+		Capture:      true,
+	})
+	if err != nil {
+		t.Fatalf("execute adapter via launcher: %v", err)
+	}
+
+	var ginResp struct {
+		Status  int                 `json:"status"`
+		Headers map[string][]string `json:"headers"`
+		Body    string              `json:"body"`
+	}
+	if err := json.Unmarshal(result.ReturnValue, &ginResp); err != nil {
+		t.Fatalf("unmarshal return value: %v (raw: %s)", err, result.ReturnValue)
+	}
+	if ginResp.Status != 200 {
+		t.Fatalf("expected status 200, got %d", ginResp.Status)
+	}
+	if !strings.Contains(ginResp.Body, "alice") || !strings.Contains(ginResp.Body, "bob") {
+		t.Fatalf("expected body containing alice and bob, got %q", ginResp.Body)
+	}
+}
+
 func TestGinHandler_Execute_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

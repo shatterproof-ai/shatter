@@ -9,13 +9,15 @@ package build
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	goprotocol "github.com/shatter-dev/shatter/shatter-go/protocol"
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
@@ -27,7 +29,7 @@ type BuildRequest struct {
 	// Targets is the list of discovered invocation targets in the package.
 	Targets []wrapper.WrapperTarget
 	// Constructors is the list of constructor candidates (may be nil).
-	Constructors []goprotocol.ConstructorCandidate
+	Constructors []wrapper.ConstructorCandidate
 	// PackageName is the Go package declaration name (e.g. "targets").
 	PackageName string
 	// TargetModulePath is the module import path (e.g. "example.com/targets").
@@ -40,6 +42,14 @@ type BuildRequest struct {
 	// TargetPackageDir is the on-disk directory of the target package, used to
 	// determine the wrapper file's in-tree path.
 	TargetPackageDir string
+	// InstrumentedSourceFile enables the J2 loop-harness launcher path. When
+	// set, the builder overlays recorder-aware instrumented sources for the
+	// target package and produces a launcher binary that returns branch data.
+	InstrumentedSourceFile string
+	// Mocks carries the current execute/prepare mock configuration. The builder
+	// uses it when generating loop-harness support files and when deriving a
+	// cache key for mock-sensitive launcher binaries.
+	Mocks []instrument.MockConfig
 }
 
 // BuildResult is returned by Builder.Build on success.
@@ -87,7 +97,7 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (BuildResult, err
 		return BuildResult{}, err
 	}
 
-	hash := wrapper.DiscoveryHash(req.Targets, req.Constructors)
+	hash := cacheKey(req)
 
 	if path, ok := b.registry.Lookup(hash); ok {
 		return BuildResult{BinaryPath: path, FromCache: true}, nil
@@ -111,14 +121,20 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (BuildResult, err
 	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
 		return BuildResult{}, fmt.Errorf("build: mkdir wrapper: %w", err)
 	}
-	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, req.PackageName, req.Targets, req.Constructors)
+	wrapperPkgName := normalizedPackageName(req.PackageName)
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, wrapperPkgName, req.Targets, req.Constructors)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("build: generate wrapper: %w", err)
 	}
-	wrapperInTree := filepath.Join(req.TargetPackageDir, wrapper.WrapperFilename(hash))
+	wrapperInTree := filepath.Join(req.TargetPackageDir, wrapper.WrapperFilename(wrapper.DiscoveryHash(req.Targets, req.Constructors)))
+
+	overlayPath, harnessRuntimeDir, err := b.writeOverlayManifest(req, hash, generatedDir, wrapperPath, wrapperInTree, wrapperPkgName)
+	if err != nil {
+		return BuildResult{}, err
+	}
 
 	// Compile the launcher binary (D4), capturing output for diagnostics.
-	binaryPath, diags, buildErr := b.compileLauncher(ctx, req, hash, generatedDir, wrapperPath, wrapperInTree)
+	binaryPath, diags, buildErr := b.compileLauncher(ctx, req, hash, generatedDir, overlayPath, harnessRuntimeDir)
 	if buildErr != nil {
 		return BuildResult{Diagnostics: diags}, buildErr
 	}
@@ -133,7 +149,7 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (BuildResult, err
 func (b *Builder) compileLauncher(
 	_ context.Context,
 	req BuildRequest,
-	hash, generatedDir, wrapperPath, wrapperInTree string,
+	hash, generatedDir, overlayPath, harnessRuntimeDir string,
 ) (binaryPath string, diags []Diagnostic, err error) {
 	logDir := filepath.Join(b.ws.RunsDir(), b.runID)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -146,11 +162,12 @@ func (b *Builder) compileLauncher(
 		TargetModuleDir:   req.TargetModuleDir,
 		TargetImportPath:  req.TargetImportPath,
 		DiscoveryHash:     hash,
-		WrapperRealPath:   wrapperPath,
-		WrapperInTreePath: wrapperInTree,
 		GeneratedDir:      generatedDir,
 		BinariesDir:       b.ws.BinariesDir(),
 		GoEnv:             b.ws.GoEnv(),
+		OverlayPath:       overlayPath,
+		UseHarnessLoop:    req.InstrumentedSourceFile != "",
+		HarnessRuntimeDir: harnessRuntimeDir,
 	}
 
 	binaryPath, fresh, buildErr := launchBuildWithLog(opts, logPath)
@@ -166,6 +183,20 @@ func (b *Builder) compileLauncher(
 		return "", diags, fmt.Errorf("build: compilation failed for %s: %w", hash, buildErr)
 	}
 	return binaryPath, nil, nil
+}
+
+func cacheKey(req BuildRequest) string {
+	base := wrapper.DiscoveryHash(req.Targets, req.Constructors)
+	if req.InstrumentedSourceFile == "" && len(req.Mocks) == 0 {
+		return base
+	}
+
+	h := sha256.New()
+	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00")
+	for _, mock := range req.Mocks {
+		fmt.Fprint(h, mock.Symbol, "\x00")
+	}
+	return base + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 // launchBuildWithLog builds the launcher and writes go build output to logPath.

@@ -19,8 +19,6 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
-
-	goprotocol "github.com/shatter-dev/shatter/shatter-go/protocol"
 )
 
 // WrapperParam describes one parameter of a wrapper target, including the
@@ -33,9 +31,9 @@ type WrapperParam struct {
 // WrapperTarget is an enriched description of a discovered invocation target
 // with Go-level type information for code generation.
 type WrapperTarget struct {
-	ID            string                 // stable target ID, e.g. "example.com/pkg:Add"
-	SymbolName    string                 // bare function or method name
-	Kind          goprotocol.TargetKind
+	ID            string // stable target ID, e.g. "example.com/pkg:Add"
+	SymbolName    string // bare function or method name
+	Kind          TargetKind
 	ReceiverType  string // bare type name (without *) for method targets
 	IsPointerRecv bool   // true for (*T).Method receivers
 	Parameters    []WrapperParam
@@ -55,7 +53,7 @@ const (
 // sorted target IDs and sorted constructor function names. The hash is fully
 // determined by the discovery results so the wrapper filename is stable for
 // the same set of targets and constructors.
-func DiscoveryHash(targets []WrapperTarget, constructors []goprotocol.ConstructorCandidate) string {
+func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate) string {
 	ids := make([]string, len(targets))
 	for i, t := range targets {
 		ids[i] = t.ID
@@ -88,19 +86,19 @@ func WrapperFilename(hash string) string {
 func GenerateWrapper(
 	pkgName string,
 	targets []WrapperTarget,
-	constructors []goprotocol.ConstructorCandidate,
+	constructors []ConstructorCandidate,
 ) string {
 	// Sort targets and constructors for determinism.
 	sorted := make([]WrapperTarget, len(targets))
 	copy(sorted, targets)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 
-	sortedCtors := make([]goprotocol.ConstructorCandidate, len(constructors))
+	sortedCtors := make([]ConstructorCandidate, len(constructors))
 	copy(sortedCtors, constructors)
 	sort.Slice(sortedCtors, func(i, j int) bool { return sortedCtors[i].FuncName < sortedCtors[j].FuncName })
 
 	// Index constructors by target type for receiver-kind enumeration.
-	ctorsByType := make(map[string][]goprotocol.ConstructorCandidate)
+	ctorsByType := make(map[string][]ConstructorCandidate)
 	for _, c := range sortedCtors {
 		ctorsByType[c.TargetType] = append(ctorsByType[c.TargetType], c)
 	}
@@ -136,8 +134,8 @@ func GenerateWrapper(
 	return b.String()
 }
 
-func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string][]goprotocol.ConstructorCandidate) {
-	if t.Kind == goprotocol.TargetKindFunction {
+func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string][]ConstructorCandidate) {
+	if t.Kind == TargetKindFunction {
 		writeParamDeserialization(b, t.Parameters, "\t\t")
 		writeCall(b, t, "", "\t\t")
 		return
@@ -235,12 +233,12 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	qualName := wrapperQualifiedName(fn)
 	id := pkg.PkgPath + ":" + qualName
 
-	kind := goprotocol.TargetKindFunction
+	kind := TargetKindFunction
 	var recvType string
 	var isPtr bool
 
 	if fn.Recv != nil && len(fn.Recv.List) > 0 {
-		kind = goprotocol.TargetKindMethod
+		kind = TargetKindMethod
 		expr := fn.Recv.List[0].Type
 		if star, ok := expr.(*ast.StarExpr); ok {
 			isPtr = true
@@ -352,7 +350,7 @@ func WriteWrapperFile(
 	dir string,
 	pkgName string,
 	targets []WrapperTarget,
-	constructors []goprotocol.ConstructorCandidate,
+	constructors []ConstructorCandidate,
 ) (filePath string, fresh bool, err error) {
 	hash := DiscoveryHash(targets, constructors)
 	name := WrapperFilename(hash)

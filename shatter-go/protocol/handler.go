@@ -37,7 +37,7 @@ type Handler struct {
 	timingEnabled     bool
 	workspace         *workspace.Workspace
 	loader            *goloader.Loader // lazy: built from workspace on first analyze call
-	preparedHarnesses map[string]*instrument.PreparedHarness
+	preparedHarnesses map[string]preparedExecution
 	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
@@ -73,7 +73,7 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 		workspace:         workspace,
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
-		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
+		preparedHarnesses: make(map[string]preparedExecution),
 		preparedTargets:   make(map[string]string),
 		cachedAnalyses:    make(map[string]*FunctionAnalysis),
 	}
@@ -449,23 +449,30 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		delete(h.preparedTargets, targetKey)
 	}
 
-	// Idempotent: return immediately if already prepared.
-	if _, exists := h.preparedHarnesses[prepareID]; exists {
-		h.log.Debug("prepare cache hit", "prepare_id", prepareID)
-		resp.Status = "prepare"
-		resp.PrepareID = prepareID
-		return finalizeResponse(resp, timing)
+	// Idempotent: return immediately if already prepared and still valid.
+	if existing, exists := h.preparedHarnesses[prepareID]; exists {
+		if existing.IsValid() {
+			h.log.Debug("prepare cache hit", "prepare_id", prepareID)
+			resp.Status = "prepare"
+			resp.PrepareID = prepareID
+			return finalizeResponse(resp, timing)
+		}
+		existing.Cleanup()
+		delete(h.preparedHarnesses, prepareID)
+		delete(h.preparedTargets, targetKey)
 	}
 
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
-	harness, err := instrument.PrepareHarness(file, *req.Function, timing, execMocks)
+	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare")
 	finishPrepare()
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
 			resp.Code = ErrFunctionNotFound
+		} else if strings.Contains(err.Error(), "receiver planning") {
+			resp.Code = ErrNotSupported
 		} else if strings.Contains(err.Error(), "build failed") {
 			resp.Code = ErrInstrumentationFailed
 		} else {
@@ -595,9 +602,8 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return mapExecuteResult(resp, result, timing)
 	}
 
-	// --- Direct execution (default path, unchanged) ---
+	// --- Direct execution via builder/launcher ---
 
-	// Convert protocol MockConfigs to instrument MockConfigs and pass to executor.
 	var execMocks []instrument.MockConfig
 	for _, m := range req.Mocks {
 		execMocks = append(execMocks, instrument.MockConfig{
@@ -608,41 +614,54 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		})
 	}
 
-	var result *instrument.ExecuteResult
-	var err error
+	var (
+		result       *instrument.ExecuteResult
+		err          error
+		oneShot      *preparedLauncher
+		preparedExec preparedExecution
+	)
 
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
-		harness, ok := h.preparedHarnesses[*req.PrepareID]
-		if ok && !harness.IsValid() {
-			// Artifacts deleted externally — prune stale entry and fall through.
+		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
+		if preparedExec != nil && !preparedExec.IsValid() {
 			h.log.Warn("prepared harness artifacts missing, rebuilding", "prepare_id", *req.PrepareID)
-			harness.Cleanup()
+			preparedExec.Cleanup()
 			delete(h.preparedHarnesses, *req.PrepareID)
-			ok = false
+			preparedExec = nil
 		}
-		if ok {
-			result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
-		} else {
-			// Stale or invalidated prepare_id — fall through to auto-lookup or one-shot.
+		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
-			if autoHarness := h.lookupPreparedHarness(file, *req.Function, execMocks); autoHarness != nil {
-				result, err = instrument.ExecuteWithPreparedHarness(autoHarness, req.Inputs, timing, capture)
-			} else {
-				result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
-			}
+			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks)
 		}
-	} else if harness := h.lookupPreparedHarness(file, *req.Function, execMocks); harness != nil {
-		h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
-		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
 	} else {
-		result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
+		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks)
+		if preparedExec != nil {
+			h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
+		}
+	}
+
+	if preparedExec == nil {
+		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute")
+		if err == nil {
+			preparedExec = oneShot
+		}
+	}
+	if err == nil {
+		finishRun := timing.Start("execute.run")
+		result, err = preparedExec.Invoke(req.Inputs, capture)
+		finishRun()
 	}
 	finishExecute()
+	if oneShot != nil {
+		oneShot.Cleanup()
+	}
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
 			resp.Code = ErrFunctionNotFound
+		} else if strings.Contains(err.Error(), "receiver planning") {
+			resp.Code = ErrNotSupported
 		} else if strings.Contains(err.Error(), "build failed") {
 			resp.Code = ErrInstrumentationFailed
 		} else if strings.Contains(err.Error(), "timed out") {
@@ -913,7 +932,7 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 
 // lookupPreparedHarness checks if a prepared harness already exists for the
 // given file, function, and mock configuration.
-func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig) *instrument.PreparedHarness {
+func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig) preparedExecution {
 	prepareID := computePrepareID(file, function, mocks)
 	harness, ok := h.preparedHarnesses[prepareID]
 	if !ok {
@@ -1045,7 +1064,7 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 		for _, ph := range h.preparedHarnesses {
 			ph.Cleanup()
 		}
-		h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+		h.preparedHarnesses = make(map[string]preparedExecution)
 		h.preparedTargets = make(map[string]string)
 		h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	}
@@ -1176,7 +1195,7 @@ func (h *Handler) handleShutdown(resp Response) Response {
 	for _, ph := range h.preparedHarnesses {
 		ph.Cleanup()
 	}
-	h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+	h.preparedHarnesses = make(map[string]preparedExecution)
 	h.preparedTargets = make(map[string]string)
 	h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	h.registry.Close()

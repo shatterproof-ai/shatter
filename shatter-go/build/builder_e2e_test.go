@@ -4,6 +4,7 @@ package build_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/build"
-	goprotocol "github.com/shatter-dev/shatter/shatter-go/protocol"
+	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
@@ -105,7 +106,7 @@ func TestBuilderBuildFailureDiagnostics(t *testing.T) {
 
 	req := build.BuildRequest{
 		Targets: []wrapper.WrapperTarget{
-			{ID: "bad.example/nope:Fn", SymbolName: "Fn", Kind: goprotocol.TargetKindFunction},
+			{ID: "bad.example/nope:Fn", SymbolName: "Fn", Kind: wrapper.TargetKindFunction},
 		},
 		PackageName:      "nope",
 		TargetModulePath: "bad.example/nope",
@@ -131,6 +132,90 @@ func TestBuilderBuildFailureDiagnostics(t *testing.T) {
 	}
 }
 
+// TestBuilderInstrumentedLauncherEmitsRecorderData verifies that the J2
+// retirement path builds a launcher binary that returns recorder-backed
+// branch and line data rather than the old direct-call harness output.
+func TestBuilderInstrumentedLauncherEmitsRecorderData(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	modDir, ws := setupFixtureModule(t, branchingTargetSrc, "example.com/targets")
+	b := build.NewBuilder(ws)
+
+	req := build.BuildRequest{
+		Targets: []wrapper.WrapperTarget{
+			{
+				ID:           "example.com/targets:Classify",
+				SymbolName:   "Classify",
+				Kind:         wrapper.TargetKindFunction,
+				Parameters:   []wrapper.WrapperParam{{Name: "n", GoType: "int"}},
+				HasResult:    true,
+				ResultGoType: "string",
+			},
+		},
+		PackageName:            "targets",
+		TargetModulePath:       "example.com/targets",
+		TargetModuleDir:        modDir,
+		TargetImportPath:       "example.com/targets",
+		TargetPackageDir:       modDir,
+		InstrumentedSourceFile: filepath.Join(modDir, "targets.go"),
+	}
+
+	res, err := b.Build(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	session, err := launcher.OpenSession(res.BinaryPath)
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer func() {
+		if closeErr := session.Close(); closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+	}()
+
+	planJSON, err := json.Marshal(map[string]any{
+		"target_id":     "example.com/targets:Classify",
+		"receiver_kind": "",
+	})
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	inputJSON, err := json.Marshal(7)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+
+	resp, err := session.Invoke(launcher.LauncherRequest{
+		Plan:    planJSON,
+		Inputs:  []json.RawMessage{inputJSON},
+		Capture: true,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.Error != "" {
+		t.Fatalf("launcher error: %s", resp.Error)
+	}
+	if len(resp.BranchPath) == 0 {
+		t.Fatal("expected branch_path to be populated")
+	}
+	if len(resp.LinesExecuted) == 0 {
+		t.Fatal("expected lines_executed to be populated")
+	}
+
+	var ret string
+	if err := json.Unmarshal(resp.ReturnValue, &ret); err != nil {
+		t.Fatalf("unmarshal return value: %v", err)
+	}
+	if ret != "positive" {
+		t.Fatalf("return value = %q, want positive", ret)
+	}
+}
+
 // ---- helpers ----
 
 const singleTargetSrc = `package targets
@@ -142,6 +227,16 @@ const twoTargetSrc = `package targets
 
 func Add(a, b int) int  { return a + b }
 func Sub(a, b int) int  { return a - b }
+`
+
+const branchingTargetSrc = `package targets
+
+func Classify(n int) string {
+	if n > 0 {
+		return "positive"
+	}
+	return "nonpositive"
+}
 `
 
 func setupFixtureModule(t *testing.T, src, modulePath string) (modDir string, ws *workspace.Workspace) {
@@ -176,7 +271,7 @@ func singleTargetRequest(modDir string) build.BuildRequest {
 			{
 				ID:         "example.com/targets:Add",
 				SymbolName: "Add",
-				Kind:       goprotocol.TargetKindFunction,
+				Kind:       wrapper.TargetKindFunction,
 				Parameters: []wrapper.WrapperParam{
 					{Name: "a", GoType: "int"},
 					{Name: "b", GoType: "int"},
@@ -205,7 +300,7 @@ func twoTargetRequestB(modDir string) build.BuildRequest {
 			{
 				ID:         "example.com/targets:Sub",
 				SymbolName: "Sub",
-				Kind:       goprotocol.TargetKindFunction,
+				Kind:       wrapper.TargetKindFunction,
 				Parameters: []wrapper.WrapperParam{
 					{Name: "a", GoType: "int"},
 					{Name: "b", GoType: "int"},

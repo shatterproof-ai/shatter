@@ -1,0 +1,458 @@
+package protocol
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"golang.org/x/tools/go/packages"
+
+	"github.com/shatter-dev/shatter/shatter-go/build"
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"github.com/shatter-dev/shatter/shatter-go/launcher"
+	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
+	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
+	"github.com/shatter-dev/shatter/shatter-go/wrapper"
+)
+
+type preparedExecution interface {
+	IsValid() bool
+	Cleanup()
+	KillProc()
+	Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error)
+}
+
+type preparedLauncher struct {
+	ArtifactDir string
+	BinaryPath  string
+	PlanJSON    json.RawMessage
+	DiscDeps    []instrument.DiscoveredDependency
+
+	mu      sync.Mutex
+	session *launcher.LauncherSession
+}
+
+func (p *preparedLauncher) IsValid() bool {
+	if p.ArtifactDir != "" {
+		if _, err := os.Stat(p.ArtifactDir); err != nil {
+			return false
+		}
+	}
+	if _, err := os.Stat(p.BinaryPath); err != nil {
+		return false
+	}
+	return true
+}
+
+func (p *preparedLauncher) Cleanup() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeSessionLocked()
+	if p.ArtifactDir != "" {
+		_ = os.RemoveAll(p.ArtifactDir)
+	}
+}
+
+func (p *preparedLauncher) KillProc() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.session == nil {
+		return
+	}
+	_ = p.session.Kill()
+	p.session = nil
+}
+
+func (p *preparedLauncher) Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error) {
+	req := launcher.LauncherRequest{
+		Plan:    p.PlanJSON,
+		Inputs:  inputs,
+		Capture: capture,
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		session, err := p.sessionOrOpen()
+		if err != nil {
+			return nil, fmt.Errorf("launcher: open session: %w", err)
+		}
+
+		resp, err := session.Invoke(req)
+		if err != nil {
+			p.resetSession()
+			if attempt == 0 {
+				continue
+			}
+			return nil, err
+		}
+		if resp.Error != "" {
+			return nil, errors.New(resp.Error)
+		}
+		return launcherResponseToExecuteResult(resp, p.DiscDeps)
+	}
+
+	return nil, fmt.Errorf("launcher: exhausted session retries")
+}
+
+func (p *preparedLauncher) sessionOrOpen() (*launcher.LauncherSession, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.session != nil {
+		return p.session, nil
+	}
+
+	session, err := launcher.OpenSession(p.BinaryPath)
+	if err != nil {
+		return nil, err
+	}
+	p.session = session
+	return session, nil
+}
+
+func (p *preparedLauncher) resetSession() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeSessionLocked()
+}
+
+func (p *preparedLauncher) closeSessionLocked() {
+	if p.session == nil {
+		return
+	}
+	_ = p.session.Close()
+	p.session = nil
+}
+
+func (h *Handler) prepareDirectExecution(
+	file string,
+	function string,
+	mocks []instrument.MockConfig,
+	timing *frontendtiming.Collector,
+	phasePrefix string,
+) (*preparedLauncher, error) {
+	absoluteFilePath, err := filepath.Abs(file)
+	if err != nil {
+		return nil, fmt.Errorf("normalize file path: %w", err)
+	}
+
+	finishAnalyze := timing.Start(phasePrefix + ".analyze")
+	ws, ldr, err := h.ensureExecutionLoader(absoluteFilePath)
+	if err != nil {
+		finishAnalyze()
+		return nil, err
+	}
+
+	pkg, err := loadPackageForAnalysis(ldr, absoluteFilePath)
+	if err != nil {
+		finishAnalyze()
+		return nil, fmt.Errorf("analyzing function: %w", err)
+	}
+
+	req, planJSON, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks)
+	finishAnalyze()
+	if err != nil {
+		return nil, fmt.Errorf("analyzing function: %w", err)
+	}
+
+	// The builder currently owns overlay instrumentation internally; record a
+	// dedicated timing phase so the direct execute contract still reports it.
+	finishInstrument := timing.Start(phasePrefix + ".instrument")
+	finishInstrument()
+
+	finishBuild := timing.Start(phasePrefix + ".build")
+	result, err := build.NewBuilder(ws).Build(context.Background(), req)
+	finishBuild()
+	if err != nil {
+		return nil, fmt.Errorf("build failed: %w", err)
+	}
+
+	return &preparedLauncher{
+		BinaryPath: result.BinaryPath,
+		PlanJSON:   planJSON,
+		DiscDeps:   instrument.DiscoverDependencies(absoluteFilePath, mocks),
+	}, nil
+}
+
+func (h *Handler) ensureExecutionLoader(file string) (*workspace.Workspace, *goloader.Loader, error) {
+	if h.workspace == nil {
+		ws, err := resolveExecutionWorkspace(file)
+		if err != nil {
+			return nil, nil, fmt.Errorf("initialize workspace: %w", err)
+		}
+		h.workspace = ws
+		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
+	}
+	if err := h.workspace.Ensure(); err != nil {
+		return nil, nil, fmt.Errorf("ensure workspace: %w", err)
+	}
+	if h.loader == nil {
+		ldr, err := goloader.New(h.workspace)
+		if err != nil {
+			return nil, nil, fmt.Errorf("construct analyzer loader: %w", err)
+		}
+		h.loader = ldr
+	}
+	return h.workspace, h.loader, nil
+}
+
+func resolveExecutionWorkspace(file string) (*workspace.Workspace, error) {
+	if shouldLoadAsPackage(file) {
+		return workspace.Initialize(workspace.ResolveOptions{StartDir: filepath.Dir(file)})
+	}
+
+	root := filepath.Join(filepath.Dir(file), ".shatter-cache", "go-workspace")
+	ws, err := workspace.Open(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := ws.Ensure(); err != nil {
+		return nil, err
+	}
+	return ws, nil
+}
+
+func buildDirectExecutionRequest(
+	pkg *packages.Package,
+	absoluteFilePath string,
+	function string,
+	mocks []instrument.MockConfig,
+) (build.BuildRequest, json.RawMessage, error) {
+	targets := wrapper.BuildWrapperTargets(pkg)
+	target, err := selectDirectWrapperTarget(targets, function)
+	if err != nil {
+		return build.BuildRequest{}, nil, err
+	}
+
+	packageDir, err := packageDirForBuild(pkg)
+	if err != nil {
+		return build.BuildRequest{}, nil, err
+	}
+	modulePath, moduleDir, err := moduleInfoForBuild(pkg, packageDir)
+	if err != nil {
+		return build.BuildRequest{}, nil, err
+	}
+
+	planJSON, err := json.Marshal(map[string]string{
+		"target_id":     target.ID,
+		"receiver_kind": "",
+	})
+	if err != nil {
+		return build.BuildRequest{}, nil, fmt.Errorf("marshal plan: %w", err)
+	}
+
+	return build.BuildRequest{
+		Targets:                targets,
+		Constructors:           toWrapperConstructors(ScanConstructors(pkg)),
+		PackageName:            pkg.Name,
+		TargetModulePath:       modulePath,
+		TargetModuleDir:        moduleDir,
+		TargetImportPath:       packageImportPathForBuild(pkg, modulePath),
+		TargetPackageDir:       packageDir,
+		InstrumentedSourceFile: packageFileForBuild(pkg, absoluteFilePath),
+		Mocks:                  mocks,
+	}, planJSON, nil
+}
+
+func selectDirectWrapperTarget(targets []wrapper.WrapperTarget, function string) (wrapper.WrapperTarget, error) {
+	var sawMethod bool
+	for _, target := range targets {
+		if target.SymbolName != function {
+			continue
+		}
+		if target.Kind == wrapper.TargetKindFunction {
+			return target, nil
+		}
+		if target.Kind == wrapper.TargetKindMethod {
+			sawMethod = true
+		}
+	}
+	if sawMethod {
+		return wrapper.WrapperTarget{}, fmt.Errorf("method target not supported: %s requires receiver planning (Phase E)", function)
+	}
+	return wrapper.WrapperTarget{}, fmt.Errorf("function not found: %s", function)
+}
+
+func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.ConstructorCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	constructors := make([]wrapper.ConstructorCandidate, len(candidates))
+	for i, candidate := range candidates {
+		constructors[i] = wrapper.ConstructorCandidate{
+			FuncName:   candidate.FuncName,
+			TargetType: candidate.TargetType,
+		}
+	}
+	return constructors
+}
+
+func packageDirForBuild(pkg *packages.Package) (string, error) {
+	files := pkg.GoFiles
+	if len(files) == 0 {
+		files = pkg.CompiledGoFiles
+	}
+	if len(files) == 0 {
+		return "", fmt.Errorf("package has no Go files")
+	}
+	return filepath.Dir(files[0]), nil
+}
+
+func moduleInfoForBuild(pkg *packages.Package, packageDir string) (modulePath string, moduleDir string, err error) {
+	if pkg.Module != nil && pkg.Module.Path != "" && pkg.Module.Dir != "" {
+		return pkg.Module.Path, pkg.Module.Dir, nil
+	}
+
+	moduleDir, found := findGoModuleRoot(packageDir)
+	if !found {
+		return "", "", fmt.Errorf("module root not found for %s", packageDir)
+	}
+	if pkg.PkgPath == "" {
+		return "", "", fmt.Errorf("package import path missing for %s", packageDir)
+	}
+
+	rel, relErr := filepath.Rel(moduleDir, packageDir)
+	if relErr == nil && rel != "." {
+		suffix := filepath.ToSlash(rel)
+		if strings.HasSuffix(pkg.PkgPath, "/"+suffix) {
+			return strings.TrimSuffix(pkg.PkgPath, "/"+suffix), moduleDir, nil
+		}
+	}
+	return pkg.PkgPath, moduleDir, nil
+}
+
+func packageImportPathForBuild(pkg *packages.Package, modulePath string) string {
+	if pkg.PkgPath != "" {
+		return pkg.PkgPath
+	}
+	return modulePath
+}
+
+func packageFileForBuild(pkg *packages.Package, absoluteFilePath string) string {
+	candidates := append([]string{}, pkg.GoFiles...)
+	candidates = append(candidates, pkg.CompiledGoFiles...)
+	for _, candidate := range candidates {
+		if sameSourceFile(candidate, absoluteFilePath) {
+			return candidate
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	return absoluteFilePath
+}
+
+func sameSourceFile(candidate string, absoluteFilePath string) bool {
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		candidateAbs = candidate
+	}
+	return candidateAbs == absoluteFilePath
+}
+
+func launcherResponseToExecuteResult(
+	resp launcher.LauncherResponse,
+	deps []instrument.DiscoveredDependency,
+) (*instrument.ExecuteResult, error) {
+	branchPath, err := decodeJSONArray[instrument.BranchDecision](resp.BranchPath)
+	if err != nil {
+		return nil, fmt.Errorf("decode branch_path: %w", err)
+	}
+	linesExecuted, err := decodeJSONArray[int](resp.LinesExecuted)
+	if err != nil {
+		return nil, fmt.Errorf("decode lines_executed: %w", err)
+	}
+	scopeEvents, err := decodeJSONArray[json.RawMessage](resp.ScopeEvents)
+	if err != nil {
+		return nil, fmt.Errorf("decode scope_events: %w", err)
+	}
+	externalCalls, err := decodeJSONArray[instrument.ExternalCall](resp.ExternalCalls)
+	if err != nil {
+		return nil, fmt.Errorf("decode external_calls: %w", err)
+	}
+
+	result := &instrument.ExecuteResult{
+		ReturnValue:            resp.ReturnValue,
+		ThrownError:            convertLauncherError(resp.ThrownError),
+		BranchPath:             branchPath,
+		LinesExecuted:          linesExecuted,
+		ExternalCalls:          externalCalls,
+		DiscoveredDependencies: deps,
+		SideEffects:            convertLauncherSideEffects(resp.SideEffects),
+		ScopeEvents:            scopeEvents,
+		Performance:            convertLauncherPerf(resp.Performance),
+	}
+	return result, nil
+}
+
+func decodeJSONArray[T any](data json.RawMessage) ([]T, error) {
+	if len(data) == 0 {
+		return []T{}, nil
+	}
+	var decoded []T
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, err
+	}
+	if decoded == nil {
+		return []T{}, nil
+	}
+	return decoded, nil
+}
+
+func convertLauncherSideEffects(effects []launcher.LauncherSideEffect) []instrument.SideEffect {
+	if len(effects) == 0 {
+		return []instrument.SideEffect{}
+	}
+	converted := make([]instrument.SideEffect, len(effects))
+	for i, effect := range effects {
+		before := effect.Before
+		after := effect.After
+		converted[i] = instrument.SideEffect{
+			Kind:     effect.Kind,
+			Level:    effect.Level,
+			Message:  effect.Message,
+			Variable: effect.Variable,
+			Before:   &before,
+			After:    &after,
+		}
+		if len(effect.Before) == 0 {
+			converted[i].Before = nil
+		}
+		if len(effect.After) == 0 {
+			converted[i].After = nil
+		}
+	}
+	return converted
+}
+
+func convertLauncherError(err *launcher.LauncherError) *instrument.ErrorInfo {
+	if err == nil {
+		return nil
+	}
+	var category *string
+	if err.ErrorCategory != "" {
+		category = &err.ErrorCategory
+	}
+	return &instrument.ErrorInfo{
+		ErrorType:     err.ErrorType,
+		Message:       err.Message,
+		Stack:         err.Stack,
+		ErrorCategory: category,
+	}
+}
+
+func convertLauncherPerf(perf *launcher.LauncherPerf) instrument.PerfMetrics {
+	if perf == nil {
+		return instrument.PerfMetrics{}
+	}
+	return instrument.PerfMetrics{
+		WallTimeMs:         perf.WallTimeMs,
+		CPUTimeUs:          int(perf.CPUTimeUs),
+		HeapUsedBytes:      int(perf.HeapUsedBytes),
+		HeapAllocatedBytes: int(perf.HeapAllocatedBytes),
+	}
+}

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	goprotocol "github.com/shatter-dev/shatter/shatter-go/protocol"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
@@ -18,7 +17,7 @@ var threeTargets = []wrapper.WrapperTarget{
 	{
 		ID:         "example.com/targets:Add",
 		SymbolName: "Add",
-		Kind:       goprotocol.TargetKindFunction,
+		Kind:       wrapper.TargetKindFunction,
 		Parameters: []wrapper.WrapperParam{
 			{Name: "a", GoType: "int"},
 			{Name: "b", GoType: "int"},
@@ -29,7 +28,7 @@ var threeTargets = []wrapper.WrapperTarget{
 	{
 		ID:            "example.com/targets:(*Counter).Inc",
 		SymbolName:    "Inc",
-		Kind:          goprotocol.TargetKindMethod,
+		Kind:          wrapper.TargetKindMethod,
 		ReceiverType:  "Counter",
 		IsPointerRecv: true,
 		HasResult:     false,
@@ -37,7 +36,7 @@ var threeTargets = []wrapper.WrapperTarget{
 	{
 		ID:            "example.com/targets:(Counter).Get",
 		SymbolName:    "Get",
-		Kind:          goprotocol.TargetKindMethod,
+		Kind:          wrapper.TargetKindMethod,
 		ReceiverType:  "Counter",
 		IsPointerRecv: false,
 		HasResult:     true,
@@ -45,7 +44,7 @@ var threeTargets = []wrapper.WrapperTarget{
 	},
 }
 
-var twoCtors = []goprotocol.ConstructorCandidate{
+var twoCtors = []wrapper.ConstructorCandidate{
 	{FuncName: "NewCounter", TargetType: "Counter"},
 	{FuncName: "MustNewCounter", TargetType: "Counter"},
 }
