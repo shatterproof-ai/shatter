@@ -516,7 +516,7 @@ func buildAndSpawnHarness(sourcePath, funcName string, activeMocks []MockConfig,
 
 	// Instrument the file into the prepared directory.
 	finishInstrument := timing.Start("execute.instrument")
-	err = InstrumentFileToDir(sourcePath, outputDir, &funcName, nil, timing)
+	err = materializeInstrumentedFiles(sourcePath, outputDir, &funcName, nil, timing)
 	finishInstrument()
 	if err != nil {
 		return nil, fmt.Errorf("instrumenting: %w", err)
