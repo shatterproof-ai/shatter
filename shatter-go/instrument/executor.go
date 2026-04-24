@@ -236,57 +236,40 @@ func moduleGoBuildCacheDir() string {
 }
 
 // harnessRuntimeModuleName is the Go module path used by the shared harness
-// runtime package. Generated harness binaries import this module and the
-// output directory's go.mod has a replace directive pointing at the cached
-// source.
+// runtime package. Generated harness binaries import this module and resolve it
+// to the checked-in shatter-go/harness module via a replace directive.
 const harnessRuntimeModuleName = "shatter-harness"
 
-// harnessRuntimeSourceCache caches the resolved path to the harness runtime
-// source directory so we only write it once per process.
+// harnessRuntimeOnce caches the resolved path to the checked-in harness module
+// so repeated builds do not need to rediscover it.
 var (
 	harnessRuntimeOnce sync.Once
 	harnessRuntimeDir  string
 	harnessRuntimeErr  error
 )
 
-// ensureHarnessRuntimeDir writes the harness runtime Go source to a cache
-// directory and returns the absolute path. The directory contains a go.mod
-// and runtime.go ready to be used as a replace target. The source is written
-// once per process and reused thereafter.
+// ensureHarnessRuntimeDir returns the absolute path to the checked-in
+// shatter-go/harness module so generated launcher and legacy harness builds can
+// import shatter-harness through a stable local replace target.
 func ensureHarnessRuntimeDir() (string, error) {
 	harnessRuntimeOnce.Do(func() {
-		var base string
-		if cache := harnessCacheDir(); cache != "" {
-			base = filepath.Join(cache, "go", "harness-runtime")
-		} else if scratch := harnessScratchDir(); scratch != "" {
-			base = filepath.Join(scratch, "go", "harness-runtime")
-		} else {
-			base, harnessRuntimeErr = os.MkdirTemp("", "shatter-harness-runtime-*")
-			if harnessRuntimeErr != nil {
-				return
-			}
-		}
-		if err := os.MkdirAll(base, 0755); err != nil {
-			harnessRuntimeErr = fmt.Errorf("creating harness runtime dir: %w", err)
+		_, currentFile, _, ok := runtime.Caller(0)
+		if !ok {
+			harnessRuntimeErr = fmt.Errorf("locating instrument package source")
 			return
 		}
 
-		goMod := "module " + harnessRuntimeModuleName + "\n\ngo 1.23\n"
-		if err := os.WriteFile(filepath.Join(base, "go.mod"), []byte(goMod), 0644); err != nil {
-			harnessRuntimeErr = fmt.Errorf("writing harness runtime go.mod: %w", err)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(base, "runtime.go"), []byte(harnessRuntimeSource()), 0644); err != nil {
-			harnessRuntimeErr = fmt.Errorf("writing harness runtime.go: %w", err)
-			return
-		}
-
-		abs, err := filepath.Abs(base)
+		moduleDir := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "harness"))
+		absModuleDir, err := filepath.Abs(moduleDir)
 		if err != nil {
-			harnessRuntimeDir = base
-		} else {
-			harnessRuntimeDir = abs
+			harnessRuntimeErr = fmt.Errorf("resolving harness runtime dir: %w", err)
+			return
 		}
+		if _, err := os.Stat(filepath.Join(absModuleDir, "go.mod")); err != nil {
+			harnessRuntimeErr = fmt.Errorf("stat harness runtime go.mod: %w", err)
+			return
+		}
+		harnessRuntimeDir = absModuleDir
 	})
 	return harnessRuntimeDir, harnessRuntimeErr
 }
