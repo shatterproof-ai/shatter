@@ -437,8 +437,8 @@ func removeHarness(id harnessID) {
 	delete(harnessProcs, id)
 }
 
-// CloseAllHarnesses kills all cached harness subprocesses and removes their temp
-// directories. Should be called from the shutdown handler.
+// CloseAllHarnesses kills all cached legacy executor harness subprocesses and
+// removes their temp directories.
 func CloseAllHarnesses() {
 	harnessProcsMu.Lock()
 	defer harnessProcsMu.Unlock()

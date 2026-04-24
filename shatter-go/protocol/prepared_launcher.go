@@ -76,15 +76,19 @@ func (p *preparedLauncher) Invoke(inputs []json.RawMessage, capture bool) (*inst
 		Capture: capture,
 	}
 
+	timeout := instrument.ExecTimeout()
 	for attempt := 0; attempt < 2; attempt++ {
 		session, err := p.sessionOrOpen()
 		if err != nil {
 			return nil, fmt.Errorf("launcher: open session: %w", err)
 		}
 
-		resp, err := session.Invoke(req)
+		resp, err := session.InvokeWithTimeout(req, timeout)
 		if err != nil {
 			p.resetSession()
+			if strings.Contains(err.Error(), "timed out") {
+				return nil, err
+			}
 			if attempt == 0 {
 				continue
 			}

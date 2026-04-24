@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 )
 
 const sessionBufferSize = 4 * 1024 * 1024
@@ -103,15 +104,54 @@ func OpenSession(binaryPath string) (*LauncherSession, error) {
 // Invoke sends one request to the launcher binary and returns the response.
 // InvocationsDispatched is incremented on every successful round-trip.
 func (s *LauncherSession) Invoke(req LauncherRequest) (LauncherResponse, error) {
+	return s.InvokeWithTimeout(req, 0)
+}
+
+// InvokeWithTimeout sends one request and races the response read against the
+// supplied timeout. A non-positive timeout disables the timer and blocks
+// indefinitely. On timeout the subprocess is killed and the returned error
+// message contains "timed out" so it flows through failureOutcome as
+// OutcomeStatusTimedOut.
+func (s *LauncherSession) InvokeWithTimeout(req LauncherRequest, timeout time.Duration) (LauncherResponse, error) {
 	if err := s.enc.Encode(req); err != nil {
 		return LauncherResponse{}, fmt.Errorf("launcher: send request: %w", err)
 	}
-	if !s.sc.Scan() {
-		if err := s.sc.Err(); err != nil {
-			return LauncherResponse{}, fmt.Errorf("launcher: read response: %w", err)
-		}
-		return LauncherResponse{}, fmt.Errorf("launcher: subprocess exited unexpectedly")
+
+	type scanResult struct {
+		ok  bool
+		err error
 	}
+	done := make(chan scanResult, 1)
+	go func() {
+		ok := s.sc.Scan()
+		done <- scanResult{ok: ok, err: s.sc.Err()}
+	}()
+
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		timerC = timer.C
+		defer timer.Stop()
+	}
+
+	select {
+	case r := <-done:
+		if !r.ok {
+			if r.err != nil {
+				return LauncherResponse{}, fmt.Errorf("launcher: read response: %w", r.err)
+			}
+			return LauncherResponse{}, fmt.Errorf("launcher: subprocess exited unexpectedly")
+		}
+	case <-timerC:
+		if s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+		<-done
+		_ = s.cmd.Wait()
+		return LauncherResponse{}, fmt.Errorf("launcher: execution timed out after %s", timeout)
+	}
+
 	var resp LauncherResponse
 	if err := json.Unmarshal(s.sc.Bytes(), &resp); err != nil {
 		return LauncherResponse{}, fmt.Errorf("launcher: decode response: %w", err)

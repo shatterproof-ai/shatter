@@ -1190,7 +1190,6 @@ func (h *Handler) RegisterHookFactory(f RuntimeHookFactory) {
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
-	instrument.CloseAllHarnesses()
 	h.pruneOrphans()
 	for _, ph := range h.preparedHarnesses {
 		ph.Cleanup()

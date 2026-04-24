@@ -1,5 +1,14 @@
 package instrument
 
+import "time"
+
+// ExecTimeout returns the per-invocation execution timeout. Reads
+// SHATTER_EXEC_TIMEOUT (seconds, float) with a 5-second default. See the
+// Timeout Contract in shatter-go/CLAUDE.md.
+func ExecTimeout() time.Duration {
+	return execTimeout()
+}
+
 // HarnessRuntimeModuleName is the module path used by generated launcher and
 // harness builds when importing the shared runtime support package.
 const HarnessRuntimeModuleName = harnessRuntimeModuleName
