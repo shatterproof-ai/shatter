@@ -78,6 +78,45 @@ func timingPhaseNames(resp Response) map[string]bool {
 	return phases
 }
 
+type fakePreparedExecution struct {
+	ArtifactDir  string
+	BinaryPath   string
+	InvokeResult *instrument.ExecuteResult
+	InvokeErr    error
+}
+
+func (f *fakePreparedExecution) IsValid() bool {
+	if f.ArtifactDir != "" {
+		if _, err := os.Stat(f.ArtifactDir); err != nil {
+			return false
+		}
+	}
+	if f.BinaryPath != "" {
+		if _, err := os.Stat(f.BinaryPath); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *fakePreparedExecution) Cleanup() {
+	if f.ArtifactDir != "" {
+		_ = os.RemoveAll(f.ArtifactDir)
+	}
+}
+
+func (f *fakePreparedExecution) KillProc() {}
+
+func (f *fakePreparedExecution) Invoke(_ []json.RawMessage, _ bool) (*instrument.ExecuteResult, error) {
+	if f.InvokeErr != nil {
+		return nil, f.InvokeErr
+	}
+	if f.InvokeResult != nil {
+		return f.InvokeResult, nil
+	}
+	return &instrument.ExecuteResult{}, nil
+}
+
 func TestHandshakeResponse(t *testing.T) {
 	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
@@ -124,16 +163,16 @@ func TestShutdownReturnsAckAndStops(t *testing.T) {
 }
 
 // TestShutdownCleansUpPreparedHarnesses verifies that handleShutdown calls
-// Cleanup() on all cached PreparedHarness entries, removing their artifact
+// Cleanup() on all cached prepared executions, removing their artifact
 // directories and clearing the preparedHarnesses map.
 func TestShutdownCleansUpPreparedHarnesses(t *testing.T) {
 	artifactDir := t.TempDir()
 
-	// Build a handler and inject a PreparedHarness with a known artifact dir.
+	// Build a handler and inject a prepared execution with a known artifact dir.
 	// No subprocess is needed — we test the dir-removal path here.
 	var output bytes.Buffer
 	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
-	h.preparedHarnesses["test-prepare-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses["test-prepare-id"] = &fakePreparedExecution{ArtifactDir: artifactDir}
 
 	if err := h.Run(); err != nil {
 		t.Fatalf("handler.Run: %v", err)
@@ -1848,7 +1887,7 @@ func TestPruneOrphansRemovesStaleEntries(t *testing.T) {
 	prepareID := "orphan-id"
 	targetKey := fakeFile + "\x00" + "MyFunc"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = prepareID
 
 	pruned := h.pruneOrphans()
@@ -1879,7 +1918,7 @@ func TestPruneOrphansKeepsValidEntries(t *testing.T) {
 	prepareID := "valid-id"
 	targetKey := realFile + "\x00" + "MyFunc"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = prepareID
 
 	pruned := h.pruneOrphans()
@@ -1897,7 +1936,7 @@ func TestPruneOrphansIsIdempotent(t *testing.T) {
 	prepareID := "orphan-id"
 	targetKey := fakeFile + "\x00" + "Foo"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: t.TempDir()}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: t.TempDir()}
 	h.preparedTargets[targetKey] = prepareID
 
 	first := h.pruneOrphans()
@@ -1918,7 +1957,7 @@ func TestShutdownPrunesOrphansBeforeCleanup(t *testing.T) {
 
 	var output bytes.Buffer
 	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
-	h.preparedHarnesses["orphan-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses["orphan-id"] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = "orphan-id"
 
 	if err := h.Run(); err != nil {
@@ -1950,7 +1989,7 @@ func TestLookupPreparedHarnessPrunesInvalid(t *testing.T) {
 	prepareID := computePrepareID(realFile, "Foo", nil)
 
 	// Register and then delete the artifact dir.
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{
 		ArtifactDir: artifactDir,
 		BinaryPath:  filepath.Join(artifactDir, "binary"),
 	}

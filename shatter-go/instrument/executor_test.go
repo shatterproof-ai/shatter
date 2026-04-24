@@ -3,14 +3,11 @@ package instrument
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
 func writeExecTestSource(t *testing.T, dir, filename, content string) string {
@@ -1854,42 +1851,8 @@ func Quadruple(n int) int {
 	}
 }
 
-// BenchmarkExecuteWithPreparedHarness measures the cost of repeated execute calls
-// when the harness has been pre-built via PrepareHarness. The compile step runs
-// once before b.ResetTimer() so the benchmark captures only the execute overhead.
-func BenchmarkExecuteWithPreparedHarness(b *testing.B) {
-	srcDir := b.TempDir()
-	src := `package main
-
-func add(a int, b int) int {
-	return a + b
-}
-`
-	srcPath := filepath.Join(srcDir, "target.go")
-	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
-		b.Fatalf("writing source: %v", err)
-	}
-
-	timing := frontendtiming.NewCollector()
-	harness, err := PrepareHarness(srcPath, "add", timing, nil)
-	if err != nil {
-		b.Fatalf("PrepareHarness: %v", err)
-	}
-	defer harness.Cleanup()
-
-	inputs := []json.RawMessage{json.RawMessage("3"), json.RawMessage("4")}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := ExecuteWithPreparedHarness(harness, inputs, frontendtiming.NewCollector(), false)
-		if err != nil {
-			b.Fatalf("ExecuteWithPreparedHarness: %v", err)
-		}
-	}
-}
-
 // BenchmarkExecuteFunction measures the cost of repeated execute calls without
-// a pre-built harness — each call rebuilds the binary from source. Comparing
-// this against BenchmarkExecuteWithPreparedHarness shows the prepare benefit.
+// a pre-built harness — each call rebuilds the binary from source.
 func BenchmarkExecuteFunction(b *testing.B) {
 	srcDir := b.TempDir()
 	src := `package main
@@ -1910,106 +1873,6 @@ func add(a int, b int) int {
 		if err != nil {
 			b.Fatalf("ExecuteFunction: %v", err)
 		}
-	}
-}
-
-// ─── PreparedHarness.Cleanup() tests ─────────────────────────────────────────
-
-// TestPreparedHarnessCleanupRemovesArtifactDir verifies that Cleanup() removes
-// the artifact directory even when no subprocess has been spawned.
-func TestPreparedHarnessCleanupRemovesArtifactDir(t *testing.T) {
-	t.Parallel()
-	artifactDir := t.TempDir()
-
-	h := &PreparedHarness{ArtifactDir: artifactDir}
-	h.Cleanup()
-
-	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
-		t.Errorf("artifact dir should be removed by Cleanup(), os.Stat error = %v", err)
-	}
-}
-
-// TestPreparedHarnessCleanupHandlesDeadProcess verifies that Cleanup() removes
-// the artifact directory and does not panic when the subprocess has already exited
-// (i.e. h.proc is non-nil but the process is dead).
-func TestPreparedHarnessCleanupHandlesDeadProcess(t *testing.T) {
-	t.Parallel()
-	artifactDir := t.TempDir()
-
-	// Spawn a long-running subprocess (cat blocks on stdin) to populate proc.
-	cmd := exec.Command("cat")
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		t.Fatal("creating pipe:", err)
-	}
-	cmd.Stdin = stdinR
-	if startErr := cmd.Start(); startErr != nil {
-		stdinR.Close()
-		stdinW.Close()
-		t.Skip("cannot start subprocess:", startErr)
-	}
-	stdinR.Close() // parent does not need the read end
-
-	h := &PreparedHarness{
-		ArtifactDir: artifactDir,
-		proc: &persistentHarness{
-			cmd:   cmd,
-			stdin: stdinW,
-		},
-	}
-
-	// Kill the process directly, leaving h.proc non-nil to simulate a crashed
-	// subprocess discovered at cleanup time (not via spawnOrReuse).
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait() // collect exit status; Cleanup's own Wait will get an error (ignored)
-
-	// Cleanup() must handle the already-dead process without panicking and still
-	// remove the artifact directory.
-	h.Cleanup()
-
-	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
-		t.Errorf("artifact dir should be removed after Cleanup() on dead process, os.Stat error = %v", err)
-	}
-}
-
-func TestPreparedHarnessIsValid(t *testing.T) {
-	artifactDir := t.TempDir()
-	binaryPath := filepath.Join(artifactDir, "binary")
-	if err := os.WriteFile(binaryPath, []byte("fake"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	h := &PreparedHarness{
-		ArtifactDir: artifactDir,
-		BinaryPath:  binaryPath,
-	}
-
-	if !h.IsValid() {
-		t.Error("IsValid() should return true when both artifact dir and binary exist")
-	}
-
-	// Delete only the binary.
-	os.Remove(binaryPath)
-	if h.IsValid() {
-		t.Error("IsValid() should return false when binary is missing")
-	}
-}
-
-func TestPreparedHarnessIsValidMissingDir(t *testing.T) {
-	artifactDir := t.TempDir()
-	binaryPath := filepath.Join(artifactDir, "binary")
-	if err := os.WriteFile(binaryPath, []byte("fake"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	h := &PreparedHarness{
-		ArtifactDir: artifactDir,
-		BinaryPath:  binaryPath,
-	}
-
-	os.RemoveAll(artifactDir)
-	if h.IsValid() {
-		t.Error("IsValid() should return false when artifact dir is missing")
 	}
 }
 

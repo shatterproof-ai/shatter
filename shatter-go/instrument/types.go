@@ -1,0 +1,110 @@
+package instrument
+
+import "encoding/json"
+
+// SideEffect represents an observable side effect during execution.
+// Fields correspond 1:1 with the protocol.SideEffect wire format (all 7 kinds).
+// Only fields relevant to the specific Kind are populated.
+type SideEffect struct {
+	Kind string `json:"kind"`
+
+	Level   string `json:"level,omitempty"`
+	Message string `json:"message,omitempty"`
+
+	Path    string `json:"path,omitempty"`
+	Content string `json:"content,omitempty"`
+
+	Method string           `json:"method,omitempty"`
+	URL    string           `json:"url,omitempty"`
+	Body   *json.RawMessage `json:"body,omitempty"`
+
+	Name string `json:"name,omitempty"`
+
+	ErrorType string  `json:"error_type,omitempty"`
+	Stack     *string `json:"stack,omitempty"`
+
+	Value *string `json:"value,omitempty"`
+
+	Variable string           `json:"variable,omitempty"`
+	Before   *json.RawMessage `json:"before,omitempty"`
+	After    *json.RawMessage `json:"after,omitempty"`
+}
+
+// DiscoveredDependency represents a dependency found at execution time
+// that was not covered by the provided mocks.
+type DiscoveredDependency struct {
+	Symbol            string `json:"symbol"`
+	SourceModule      string `json:"source_module"`
+	Kind              string `json:"kind"`
+	IsSubprocessSpawn bool   `json:"is_subprocess_spawn"`
+}
+
+// ExecuteResult holds the output of running an instrumented function.
+type ExecuteResult struct {
+	ReturnValue            json.RawMessage        `json:"return_value,omitempty"`
+	ThrownError            *ErrorInfo             `json:"thrown_error,omitempty"`
+	BranchPath             []BranchDecision       `json:"branch_path"`
+	LinesExecuted          []int                  `json:"lines_executed"`
+	ExternalCalls          []ExternalCall         `json:"external_calls,omitempty"`
+	DiscoveredDependencies []DiscoveredDependency `json:"discovered_dependencies,omitempty"`
+	SideEffects            []SideEffect           `json:"side_effects"`
+	ScopeEvents            []json.RawMessage      `json:"scope_events"`
+	LoopBodyStates         []LoopBodyState        `json:"loop_body_states,omitempty"`
+	Performance            PerfMetrics            `json:"performance"`
+}
+
+// LoopBodyState captures per-iteration local state for bounded-loop snapshotting.
+type LoopBodyState struct {
+	LoopID    int                        `json:"loop_id"`
+	Iteration int                        `json:"iteration"`
+	Locals    map[string]json.RawMessage `json:"locals,omitempty"`
+}
+
+// ExternalCall records one call to a mocked external dependency.
+type ExternalCall struct {
+	Symbol      string          `json:"symbol"`
+	Args        json.RawMessage `json:"args"`
+	ReturnValue json.RawMessage `json:"return_value"`
+}
+
+// ErrorInfo describes an error thrown during execution.
+type ErrorInfo struct {
+	ErrorType     string  `json:"error_type"`
+	Message       string  `json:"message"`
+	Stack         string  `json:"stack"`
+	ErrorCategory *string `json:"error_category,omitempty"`
+}
+
+// ConditionOutcome records the result of an individual condition within a
+// compound boolean decision (MC/DC analysis).
+type ConditionOutcome struct {
+	ConditionIndex int    `json:"condition_index"`
+	Value          *bool  `json:"value"`
+	Masked         bool   `json:"masked,omitempty"`
+	ConstraintJSON string `json:"constraint_json,omitempty"`
+}
+
+// BranchDecision records which way a branch was taken during execution.
+type BranchDecision struct {
+	BranchID       int                `json:"branch_id"`
+	Line           int                `json:"line"`
+	Taken          bool               `json:"taken"`
+	ConstraintJSON string             `json:"constraint_json,omitempty"`
+	Conditions     []ConditionOutcome `json:"conditions,omitempty"`
+}
+
+// PerfMetrics captures execution performance data.
+type PerfMetrics struct {
+	WallTimeMs         float64 `json:"wall_time_ms"`
+	CPUTimeUs          int     `json:"cpu_time_us"`
+	HeapUsedBytes      int     `json:"heap_used_bytes"`
+	HeapAllocatedBytes int     `json:"heap_allocated_bytes"`
+}
+
+// MockConfig specifies how to mock an external dependency during execution.
+type MockConfig struct {
+	Symbol           string `json:"symbol"`
+	ReturnValues     []any  `json:"return_values"`
+	ShouldTrackCalls bool   `json:"should_track_calls"`
+	DefaultBehavior  string `json:"default_behavior"`
+}

@@ -1,7 +1,5 @@
 package instrument
 
-import "encoding/json"
-
 // HarnessRuntimeModuleName is the module path used by generated launcher and
 // harness builds when importing the shared runtime support package.
 const HarnessRuntimeModuleName = harnessRuntimeModuleName
@@ -28,10 +26,4 @@ func GenerateLoopMockFile(mocks []MockConfig) string {
 // current mock configuration.
 func DiscoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDependency {
 	return discoverDependencies(sourcePath, mocks)
-}
-
-// Invoke runs the prepared harness once, opening or respawning its subprocess
-// as needed.
-func (h *PreparedHarness) Invoke(inputs []json.RawMessage, capture bool) (*ExecuteResult, error) {
-	return ExecuteWithPreparedHarness(h, inputs, nil, capture)
 }
