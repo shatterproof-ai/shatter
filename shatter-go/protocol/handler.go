@@ -363,7 +363,18 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	h.lastAnalyzedFile = req.File
 
 	finishInstrument := timing.Start("instrument.total")
-	outputDir, err := instrument.InstrumentFileWithTiming(req.File, req.Function, req.ProjectRoot, timing)
+	ws, err := h.ensureWorkspace(req.File)
+	if err != nil {
+		finishInstrument()
+		resp.Status = "error"
+		resp.Code = ErrInternalError
+		resp.Message = fmt.Sprintf("initialize workspace: %v", err)
+		return resp
+	}
+	outputDir, err := os.MkdirTemp(ws.GeneratedDir(), "instrument-*")
+	if err == nil {
+		err = instrument.MaterializeInstrumentedDirectory(req.File, req.Function, outputDir, req.ProjectRoot, timing)
+	}
 	finishInstrument()
 	if err != nil {
 		resp.Status = "error"

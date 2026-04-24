@@ -182,26 +182,34 @@ func (h *Handler) prepareDirectExecution(
 	}, nil
 }
 
-func (h *Handler) ensureExecutionLoader(file string) (*workspace.Workspace, *goloader.Loader, error) {
+func (h *Handler) ensureWorkspace(file string) (*workspace.Workspace, error) {
 	if h.workspace == nil {
 		ws, err := resolveExecutionWorkspace(file)
 		if err != nil {
-			return nil, nil, fmt.Errorf("initialize workspace: %w", err)
+			return nil, fmt.Errorf("initialize workspace: %w", err)
 		}
 		h.workspace = ws
 		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
 	}
 	if err := h.workspace.Ensure(); err != nil {
-		return nil, nil, fmt.Errorf("ensure workspace: %w", err)
+		return nil, fmt.Errorf("ensure workspace: %w", err)
+	}
+	return h.workspace, nil
+}
+
+func (h *Handler) ensureExecutionLoader(file string) (*workspace.Workspace, *goloader.Loader, error) {
+	ws, err := h.ensureWorkspace(file)
+	if err != nil {
+		return nil, nil, err
 	}
 	if h.loader == nil {
-		ldr, err := goloader.New(h.workspace)
+		ldr, err := goloader.New(ws)
 		if err != nil {
 			return nil, nil, fmt.Errorf("construct analyzer loader: %w", err)
 		}
 		h.loader = ldr
 	}
-	return h.workspace, h.loader, nil
+	return ws, h.loader, nil
 }
 
 func resolveExecutionWorkspace(file string) (*workspace.Workspace, error) {

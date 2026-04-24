@@ -479,6 +479,11 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 	if resp.OutputFile == nil || *resp.OutputFile == "" {
 		t.Error("output_file should be set")
 	}
+	if resp.OutputFile != nil {
+		if _, err := os.Stat(filepath.Join(*resp.OutputFile, filepath.Base(tmp))); err != nil {
+			t.Fatalf("instrumented source missing from output dir: %v", err)
+		}
+	}
 	// Cleanup
 	if resp.OutputFile != nil {
 		os.RemoveAll(*resp.OutputFile)
