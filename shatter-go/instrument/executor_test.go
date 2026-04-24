@@ -19,6 +19,16 @@ func writeExecTestSource(t *testing.T, dir, filename, content string) string {
 	return path
 }
 
+func cleanupHarnessCache(t *testing.T) {
+	t.Helper()
+	harnessProcsMu.Lock()
+	defer harnessProcsMu.Unlock()
+	for id, h := range harnessProcs {
+		h.close()
+		delete(harnessProcs, id)
+	}
+}
+
 func TestExecuteFunctionReturnsIntResult(t *testing.T) {
 	srcDir := t.TempDir()
 	src := writeExecTestSource(t, srcDir, "target.go", `package main
@@ -1446,8 +1456,7 @@ func double(n int) int {
 		t.Errorf("second call spawned a new subprocess (pid %d → %d), expected reuse", pid1, h2.cmd.Process.Pid)
 	}
 
-	// Cleanup
-	CloseAllHarnesses()
+	cleanupHarnessCache(t)
 }
 
 // TestPersistentHarnessResultsDoNotAccumulate verifies that branch recordings from
@@ -1492,30 +1501,7 @@ func classify(n int) string {
 		}
 	}
 
-	CloseAllHarnesses()
-}
-
-// TestCloseAllHarnesses verifies that CloseAllHarnesses terminates subprocesses and
-// clears the cache.
-func TestCloseAllHarnesses(t *testing.T) {
-	srcDir := t.TempDir()
-	src := writeExecTestSource(t, srcDir, "target.go", `package main
-
-func inc(n int) int { return n + 1 }
-`)
-	if _, err := ExecuteFunction(src, "inc", []json.RawMessage{json.RawMessage("1")}, false); err != nil {
-		t.Fatalf("ExecuteFunction: %v", err)
-	}
-	id := harnessID{sourcePath: src, funcName: "inc", mocksHash: ""}
-	if getHarness(id) == nil {
-		t.Fatal("expected harness in cache")
-	}
-
-	CloseAllHarnesses()
-
-	if getHarness(id) != nil {
-		t.Error("expected cache empty after CloseAllHarnesses")
-	}
+	cleanupHarnessCache(t)
 }
 
 // TestPersistentHarnessCrashRecovery verifies that after a harness crash the next
@@ -1557,7 +1543,7 @@ func inc(n int) int { return n + 1 }
 		t.Errorf("expected 42, got %d", v)
 	}
 
-	CloseAllHarnesses()
+	cleanupHarnessCache(t)
 }
 
 // --- Module-backed semantic harness tests ---
@@ -1722,7 +1708,7 @@ func TestExecuteFunctionModuleBackedWithSiblingHelper(t *testing.T) {
 	cacheBase := t.TempDir()
 	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
 	t.Setenv("SHATTER_HARNESS_CACHE", cacheBase)
-	t.Cleanup(CloseAllHarnesses)
+	t.Cleanup(func() { cleanupHarnessCache(t) })
 
 	// Create a module-backed project directory.
 	pkgDir := filepath.Join(t.TempDir(), "mypkg")
@@ -1788,7 +1774,7 @@ func TestExecuteFunctionModuleBackedWithIntraModuleImport(t *testing.T) {
 	cacheBase := t.TempDir()
 	t.Setenv("SHATTER_HARNESS_SCRATCH", scratchBase)
 	t.Setenv("SHATTER_HARNESS_CACHE", cacheBase)
-	t.Cleanup(CloseAllHarnesses)
+	t.Cleanup(func() { cleanupHarnessCache(t) })
 
 	// Create a multi-package module:
 	//   projRoot/

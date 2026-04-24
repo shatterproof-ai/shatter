@@ -420,17 +420,6 @@ func removeHarness(id harnessID) {
 	delete(harnessProcs, id)
 }
 
-// CloseAllHarnesses kills all cached legacy executor harness subprocesses and
-// removes their temp directories.
-func CloseAllHarnesses() {
-	harnessProcsMu.Lock()
-	defer harnessProcsMu.Unlock()
-	for id, h := range harnessProcs {
-		h.close()
-		delete(harnessProcs, id)
-	}
-}
-
 // close terminates the harness subprocess and removes its temp directory.
 func (h *persistentHarness) close() {
 	h.stdin.Close() // sends EOF to the harness loop → graceful exit

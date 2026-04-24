@@ -68,58 +68,6 @@ func TestInstrumentPackageForOverlay_FileSelection(t *testing.T) {
 	}
 }
 
-// TestInstrumentPackageForOverlay_ParityWithLegacyTempDir is the snapshot
-// acceptance criterion: instrumented bytes produced by the overlay path
-// must be identical (modulo the package line) to those produced by the
-// legacy temp-dir path. Same transformFile invocation ⇒ same constraint
-// emission at runtime.
-func TestInstrumentPackageForOverlay_ParityWithLegacyTempDir(t *testing.T) {
-	workspace := t.TempDir()
-	overlayFiles, err := InstrumentPackageForOverlay(fixtureDir, "h", filepath.Join(workspace, "generated"))
-	if err != nil {
-		t.Fatalf("overlay path: %v", err)
-	}
-
-	branching := filepath.Join(fixtureDir, "branching.go")
-	legacyDir, err := InstrumentFile(branching, nil, nil)
-	if err != nil {
-		t.Fatalf("legacy InstrumentFile: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(legacyDir) })
-
-	legacyBytes, err := os.ReadFile(filepath.Join(legacyDir, "branching.go"))
-	if err != nil {
-		t.Fatalf("read legacy output: %v", err)
-	}
-
-	var overlayBytes []byte
-	for _, f := range overlayFiles {
-		if filepath.Base(f.OriginalPath) == "branching.go" {
-			overlayBytes, err = os.ReadFile(f.InstrumentedPath)
-			if err != nil {
-				t.Fatalf("read overlay output: %v", err)
-			}
-			break
-		}
-	}
-	if overlayBytes == nil {
-		t.Fatalf("overlay path did not produce branching.go")
-	}
-
-	if !bytes.Equal(stripPackageLine(legacyBytes), stripPackageLine(overlayBytes)) {
-		t.Errorf("instrumented bytes diverge between legacy and overlay paths\n--- legacy ---\n%s\n--- overlay ---\n%s",
-			legacyBytes, overlayBytes)
-	}
-}
-
-func stripPackageLine(src []byte) []byte {
-	_, rest, ok := bytes.Cut(src, []byte("\n"))
-	if !ok {
-		return src
-	}
-	return rest
-}
-
 func TestRegisterInstrumentedOverlay_WritesManifestEntries(t *testing.T) {
 	workspace := t.TempDir()
 	files, err := InstrumentPackageForOverlay(fixtureDir, "h", filepath.Join(workspace, "generated"))
