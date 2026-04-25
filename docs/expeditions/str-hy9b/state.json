@@ -1,15 +1,6 @@
 {
   "active_branches": [
     {
-      "base_head": "f38ff4d6d370c99521b5890251ee7219ca22c012",
-      "branch": "str-hy9b-27-g3-hint-config-v1-expansion",
-      "kind": "task",
-      "number": 27,
-      "slug": "g3-hint-config-v1-expansion",
-      "started_at": "2026-04-25T03:34:34Z",
-      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion"
-    },
-    {
       "base_head": "aef66b228ec8dc209c7973cd9d8d976a23fd077c",
       "branch": "str-hy9b-28-h5-planner-driven-e2e",
       "kind": "task",
@@ -23,25 +14,22 @@
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": {
-    "acquired_at": "2026-04-25T17:26:22Z",
-    "held_by_branch": "str-hy9b-27-g3-hint-config-v1-expansion"
-  },
+  "landing_lease": null,
   "last_completed": {
-    "branch": "str-hy9b-26-j2-remove-legacy-direct-call-harness",
-    "completed_at": "2026-04-25T03:09:30Z",
+    "branch": "str-hy9b-27-g3-hint-config-v1-expansion",
+    "completed_at": "2026-04-25T17:26:23Z",
     "kind": "task",
-    "number": 26,
+    "number": 27,
     "outcome": "kept",
-    "slug": "j2-remove-legacy-direct-call-harness",
-    "summary": "J2: trim legacy direct-call harness from executor.go (1666 \u2192 364 lines); migrate MC/DC integration tests to launcher.Session under shatter-go/build",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness"
+    "slug": "g3-hint-config-v1-expansion",
+    "summary": "G3: hint_config_v1 expansion beyond policy.allow \u2014 loader parses defaults/mocks/generators with unknown-key warns; planner consumes defaults via PerTargetHints.Defaults precedence and generators via runtime-values registry; mocks emitted as deterministic MockSpec artifacts (substitution at execute time deferred to str-8v66). 7 loader tests + 11 planner tests including 2 rapid property tests. Pre-existing cli:clippy failure unrelated (str-7syr).",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion"
   },
-  "next_action": "Complete work on `str-hy9b-28-h5-planner-driven-e2e` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e`.",
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
   "next_task_number": 29,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
   "status": "task_in_progress",
-  "updated_at": "2026-04-25T03:34:38Z"
+  "updated_at": "2026-04-25T17:26:23Z"
 }
