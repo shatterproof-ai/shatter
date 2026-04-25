@@ -1,5 +1,15 @@
 {
-  "active_branches": [],
+  "active_branches": [
+    {
+      "base_head": "f38ff4d6d370c99521b5890251ee7219ca22c012",
+      "branch": "str-hy9b-27-g3-hint-config-v1-expansion",
+      "kind": "task",
+      "number": 27,
+      "slug": "g3-hint-config-v1-expansion",
+      "started_at": "2026-04-25T03:34:34Z",
+      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion"
+    }
+  ],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -15,11 +25,11 @@
     "summary": "J2: trim legacy direct-call harness from executor.go (1666 \u2192 364 lines); migrate MC/DC integration tests to launcher.Session under shatter-go/build",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
-  "next_task_number": 27,
+  "next_action": "Complete work on `str-hy9b-27-g3-hint-config-v1-expansion` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion`.",
+  "next_task_number": 28,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-25T03:09:30Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-25T03:34:34Z"
 }
