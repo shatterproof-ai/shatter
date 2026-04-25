@@ -33,29 +33,6 @@ func FuzzExecTimeout(f *testing.F) {
 	})
 }
 
-// FuzzBuildTimeout verifies that buildTimeout() never panics regardless of
-// SHATTER_BUILD_TIMEOUT env var content.
-func FuzzBuildTimeout(f *testing.F) {
-	seeds := []string{
-		"30", "0", "-1", "0.5", "1e3",
-		"NaN", "Inf", "abc", "", " ",
-	}
-	for _, s := range seeds {
-		f.Add(s)
-	}
-
-	f.Fuzz(func(t *testing.T, val string) {
-		if strings.ContainsRune(val, 0) {
-			return
-		}
-		t.Setenv("SHATTER_BUILD_TIMEOUT", val)
-		dur := buildTimeout()
-		if dur <= 0 {
-			t.Errorf("buildTimeout returned non-positive duration %v for input %q", dur, val)
-		}
-	})
-}
-
 // FuzzSanitizeMockName verifies that sanitizeMockName never panics and always
 // produces output containing only valid Go identifier characters.
 func FuzzSanitizeMockName(f *testing.F) {
@@ -182,30 +159,6 @@ func FuzzBranchDecisionDeserialization(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data string) {
 		var decision BranchDecision
 		_ = json.Unmarshal([]byte(data), &decision)
-	})
-}
-
-// FuzzHarnessLoopResponseDeserialization fuzzes the harnessLoopResponse type
-// which is deserialized from harness subprocess stdout — an untrusted input
-// boundary. Contains nested BranchDecision, SideEffect, json.RawMessage, and
-// optional ErrorInfo fields.
-func FuzzHarnessLoopResponseDeserialization(f *testing.F) {
-	seeds := []string{
-		`{"return_value":42,"branch_path":[{"branch_id":0,"line":5,"taken":true}],"lines_executed":[5,6],"scope_events":[],"side_effects":[],"performance":{"wall_time_ms":1.5}}`,
-		`{"return_value":"hello","branch_path":[],"lines_executed":[],"scope_events":[],"side_effects":[{"kind":"console_output","level":"log","message":"hi"}]}`,
-		`{"error":"compile failed"}`,
-		`{"return_value":null,"branch_path":[],"lines_executed":[],"scope_events":[],"side_effects":[],"thrown_error":{"error_type":"panic","message":"index out of range","stack":"goroutine 1"}}`,
-		`{"return_value":{"x":1},"branch_path":[{"branch_id":0,"line":1,"taken":true,"conditions":[{"condition_index":0,"value":true}]}],"lines_executed":[1,2,3],"scope_events":[{"type":"enter"}],"side_effects":[{"kind":"global_state_change","variable":"count","before":0,"after":1}],"external_calls":[{"symbol":"fmt.Println","args":["test"],"return_value":null}]}`,
-		`{}`,
-		`{"branch_path":null,"lines_executed":null,"side_effects":null,"scope_events":null}`,
-	}
-	for _, s := range seeds {
-		f.Add(s)
-	}
-
-	f.Fuzz(func(t *testing.T, data string) {
-		var resp harnessLoopResponse
-		_ = json.Unmarshal([]byte(data), &resp)
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -59,26 +60,6 @@ func TestPropertySanitizeMockNamePreservesRuneCount(t *testing.T) {
 // Semantic properties — timeout contract
 // ---------------------------------------------------------------------------
 
-func TestPropertyBuildTimeoutAlwaysPositive(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		val := rapid.OneOf(
-			rapid.StringMatching(`[0-9]{1,5}(\.[0-9]{1,3})?`),
-			rapid.StringMatching(`[a-zA-Z ]{0,10}`),
-			rapid.Just(""),
-			rapid.Just("0"),
-			rapid.Just("-1"),
-		).Draw(t, "envVal")
-
-		os.Setenv("SHATTER_BUILD_TIMEOUT", val)
-		defer os.Unsetenv("SHATTER_BUILD_TIMEOUT")
-		dur := buildTimeout()
-
-		if dur <= 0 {
-			t.Fatalf("buildTimeout() returned non-positive %v for input %q", dur, val)
-		}
-	})
-}
-
 func TestPropertyTimeoutBoundedByMax(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		val := rapid.OneOf(
@@ -94,13 +75,6 @@ func TestPropertyTimeoutBoundedByMax(t *testing.T) {
 		dur := execTimeout()
 		if dur > maxDur {
 			t.Fatalf("execTimeout()=%v exceeds max %v for input %q", dur, maxDur, val)
-		}
-
-		os.Setenv("SHATTER_BUILD_TIMEOUT", val)
-		defer os.Unsetenv("SHATTER_BUILD_TIMEOUT")
-		dur = buildTimeout()
-		if dur > maxDur {
-			t.Fatalf("buildTimeout()=%v exceeds max %v for input %q", dur, maxDur, val)
 		}
 	})
 }
@@ -165,7 +139,7 @@ func TestPropertyThrowErrorMockContainsPanic(t *testing.T) {
 			},
 		}
 		source := generateLoopMockFile(mocks)
-		if !contains(source, "panic(msg)") {
+		if !strings.Contains(source, "panic(msg)") {
 			t.Fatalf("throw_error mock for %q missing panic(msg)", symbol)
 		}
 	})
@@ -241,7 +215,7 @@ func TestPropertyMockFileAlwaysStartsWithPackageMain(t *testing.T) {
 			mocks[i] = genMockConfig(t)
 		}
 		source := generateLoopMockFile(mocks)
-		if !contains(source, "package main") {
+		if !strings.Contains(source, "package main") {
 			t.Fatal("generated mock file must start with package main")
 		}
 	})
@@ -258,7 +232,7 @@ func TestPropertyPassthroughProducesNoMockFunction(t *testing.T) {
 		}
 		source := generateLoopMockFile(mocks)
 		safeName := sanitizeMockName(symbol)
-		if contains(source, "ShatterMock_"+safeName) {
+		if strings.Contains(source, "ShatterMock_"+safeName) {
 			t.Fatalf("passthrough mock for %q should not generate ShatterMock_ function", symbol)
 		}
 	})
@@ -277,10 +251,10 @@ func TestPropertyThrowErrorProducesBothVariants(t *testing.T) {
 		source := generateLoopMockFile(mocks)
 		safeName := sanitizeMockName(symbol)
 
-		if !contains(source, "func ShatterMock_"+safeName+"(args ...any) any") {
+		if !strings.Contains(source, "func ShatterMock_"+safeName+"(args ...any) any") {
 			t.Fatalf("missing panic variant for %q", symbol)
 		}
-		if !contains(source, "func ShatterMockErr_"+safeName+"(args ...any) (any, error)") {
+		if !strings.Contains(source, "func ShatterMockErr_"+safeName+"(args ...any) (any, error)") {
 			t.Fatalf("missing error-return variant for %q", symbol)
 		}
 	})
@@ -302,7 +276,7 @@ func TestPropertyCallTrackingConditional(t *testing.T) {
 			},
 		}
 		source := generateLoopMockFile(mocks)
-		hasTracking := contains(source, fmt.Sprintf(`shatterRecordMockCall(%q`, symbol))
+		hasTracking := strings.Contains(source, fmt.Sprintf(`shatterRecordMockCall(%q`, symbol))
 
 		if track && !hasTracking {
 			t.Fatalf("ShouldTrackCalls=true but no shatterRecordMockCall for %q (behavior=%s)", symbol, behavior)
