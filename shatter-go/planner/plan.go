@@ -59,18 +59,30 @@ type PerTargetHints struct {
 }
 
 // MockSpec is the planner's representation of a single hint_config_v1 mock
-// substitution scoped to a target. A code generator pastes Expression at
-// every call site of QualifiedFunction inside the harness wrapping the
-// target. MockSpec is a Go-internal artifact — it does not appear on the
-// protocol wire because hint_config_v1 is a Go-only capability.
+// substitution scoped to a target. It is a planner output describing the
+// intended mock substitution: a code generator is expected to paste
+// Expression at every call site of QualifiedFunction inside the harness
+// wrapping the target. MockSpec is a Go-internal artifact — it does not
+// appear on the protocol wire because hint_config_v1 is a Go-only
+// capability.
+//
+// IMPORTANT: emitting a MockSpec is the planner-side half of mock
+// substitution. The execute-time half — a build-time symbol swap or
+// launcher-level shim that actually replaces the call site at runtime — is
+// NOT IMPLEMENTED in str-hy9b.G3 (str-ruw0). Anyone relying on user-
+// supplied mocks taking effect at runtime today is unsupported. The
+// substitution mechanism is tracked under follow-up issue str-8v66
+// ("hint_config_v1 mocks substitution mechanism", blocked by str-ruw0).
 type MockSpec struct {
 	// TargetID is the planner-scoped target the mock applies to (e.g.
 	// "example.com/pkg:Func").
 	TargetID string
-	// QualifiedFunction is the call site to be replaced (e.g.
+	// QualifiedFunction is the call site intended for replacement (e.g.
 	// "fmt.Println"). Comes verbatim from the user's hint config.
 	QualifiedFunction string
-	// Expression is the Go source expression that replaces the call site.
+	// Expression is the Go source expression intended to replace the call
+	// site once the executor-side substitution mechanism (str-8v66) is
+	// wired.
 	Expression string
 }
 
@@ -79,11 +91,15 @@ type MockSpec struct {
 // hints carry no mocks. Ordering is alphabetical by QualifiedFunction so
 // callers and tests see deterministic output.
 //
-// This is the public planner artifact called out in str-hy9b.G3 AC2 — the
-// "ValuePlan or adapter hook" the planner emits in response to user mock
-// hints. Code generators consume MockSpec entries when constructing the
-// harness for an InvocationPlan; runtime-time substitution lives in the
-// executor/codegen path, which this planner-side artifact feeds.
+// This is the planner-output half of str-hy9b.G3 AC2 — the artifact a
+// future code generator will consume to substitute mocks at execute time.
+// The substitution itself (build-time symbol swap or launcher-level shim)
+// is NOT IMPLEMENTED yet; it is tracked under str-8v66 ("hint_config_v1
+// mocks substitution mechanism", blocked by str-ruw0). Until str-8v66
+// ships, calling this function and observing its output is safe and
+// deterministic, but the resulting MockSpec entries do not affect runtime
+// behaviour. Callers MUST NOT assume that a mock declared in the user's
+// `.shatter/config.yaml` takes effect when execute is invoked today.
 func ResolveMockSpecs(targetID string, hints PerTargetHints) []MockSpec {
 	if len(hints.Mocks) == 0 {
 		return nil

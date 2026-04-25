@@ -116,9 +116,26 @@ The loader walks upward from the target file looking for `.shatter/config.yaml`.
 
 Adapter-owned targets (those with `InvocationModel.Kind == "adapter"`) bypass the gate because the adapter's curated httptest harness provides its own safety envelope.
 
-The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability — it currently parses the `functions[<glob>].policy.allow` subset only. Broader hint-schema support (mocks, defaults, generators) is tracked under str-hy9b.G3.
+The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability; broader hint-schema support is described in the Hint Config v1 Contract below.
 
 **Deferred work:** local_fs sandbox enforcement (confining file I/O to `<workspace>/runs/<runID>/sandbox/`) is not implemented; `local_fs` is allow-by-default unconditionally. A follow-up story should add path rewriting and chroot-style confinement before treating `local_fs` classification as enforcement rather than advisory.
+
+## Hint Config v1 Contract (str-hy9b.G3)
+
+`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, and `generators` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
+
+Wired end-to-end today:
+- `defaults`: per-parameter literal overrides flow into `planner.ParamPlanOptions.HintsByName` and become top-priority `ValuePlan`s, taking precedence over `classifyParamFamily` defaults.
+- `generators`: per-parameter runtime-value registry name flows into `planner.ParamPlanOptions.GeneratorsByName`; `PlanParam` consults the named registry entry before falling back to primitive families. An unknown generator name yields `UnsatisfiedRequirementKindComplexType` so config typos surface.
+- `policy.allow`: unchanged from the G4 contract above.
+
+Mocks are partially wired:
+- The loader parses the `mocks` map and the planner emits sorted, target-scoped `planner.MockSpec` entries via `planner.ResolveMockSpecs` for use by code generators.
+- **Not yet wired:** execute-time substitution (build-time symbol swap or launcher-level shim) is **not implemented**. Anything relying on `mocks` to take effect at runtime today is unsupported. Tracked under **str-8v66** (blocked by str-ruw0).
+
+Resolution flow: `protocol/handler.go` populates `FunctionAnalysis.SourceFile` during `analyze`; `main.go`'s planner closure (`hintConfigResolver` + `translateHintConfig`) loads `.shatter/config.yaml` per target and threads the matched entry into `planner.PlanRequirementsOptions.PerTargetHints`.
+
+`hint_config_v1` is declared as Go-only with no wire probe in `protocol/parity-matrix.yaml`; nothing here flows over the protocol boundary, so adding mock substitution in str-8v66 will not require a parity-matrix change.
 
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 
