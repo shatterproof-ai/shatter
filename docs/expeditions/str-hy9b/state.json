@@ -1,38 +1,25 @@
 {
-  "active_branches": [
-    {
-      "base_head": "b045556a51f1f4c2c3cd45c929ae6edde6b6dee8",
-      "branch": "str-hy9b-26-j2-remove-legacy-direct-call-harness",
-      "kind": "task",
-      "number": 26,
-      "slug": "j2-remove-legacy-direct-call-harness",
-      "started_at": "2026-04-23T20:12:04Z",
-      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness"
-    }
-  ],
+  "active_branches": [],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": {
-    "acquired_at": "2026-04-25T03:09:29Z",
-    "held_by_branch": "str-hy9b-26-j2-remove-legacy-direct-call-harness"
-  },
+  "landing_lease": null,
   "last_completed": {
-    "branch": "str-hy9b-25-j1-retirement-inventory",
-    "completed_at": "2026-04-23T19:16:25Z",
+    "branch": "str-hy9b-26-j2-remove-legacy-direct-call-harness",
+    "completed_at": "2026-04-25T03:09:30Z",
     "kind": "task",
-    "number": 25,
+    "number": 26,
     "outcome": "kept",
-    "slug": "j1-retirement-inventory",
-    "summary": "J1 Retirement gate inventory: docs/specs/2026-04-23-go-harness-retirement-checklist.md enumerates every shatter-go file/test/env var/fixture/doc to remove or rewrite when legacy foreign-module direct-call harness retires. Grouped by J2 (code removal), J3 (CI regression gate), J4 (walkthrough/docs); each item names replacement path (launcher/builder/registry/overlay/planner). Structural finding: D4 launcher + D6 builder packages exist but not wired into protocol/handler.go \u2014 J2 must rewrite handler.go:366,625-639 against build.Builder+BinaryRegistry+launcher.Session before deletions are safe. Gates: 991 shatter-go tests pass; root test-standard trips on pre-existing environmental failure in shatter-core project::tests::returns_none_for_isolated_file (reproduces on clean main, not introduced by this change).",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-25-j1-retirement-inventory"
+    "slug": "j2-remove-legacy-direct-call-harness",
+    "summary": "J2: trim legacy direct-call harness from executor.go (1666 \u2192 364 lines); migrate MC/DC integration tests to launcher.Session under shatter-go/build",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness"
   },
-  "next_action": "Complete work on `str-hy9b-26-j2-remove-legacy-direct-call-harness` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`.",
-  "next_task_number": 26,
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
+  "next_task_number": 27,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-23T20:12:04Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-25T03:09:30Z"
 }

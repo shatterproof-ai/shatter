@@ -431,14 +431,21 @@ These must be removed before starting those tasks under the expedition model.
   - `go vet ./...`
 
 
+### 2026-04-25T03:09:30Z — Closed task
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Outcome: `kept`.
+- Summary: J2: trim legacy direct-call harness from executor.go (1666 → 364 lines); migrate MC/DC integration tests to launcher.Session under shatter-go/build
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`
-- Last completed: `str-hy9b-25-j1-retirement-inventory (kept)`
-- Next action: Continue `str-hy9b-26-j2-remove-legacy-direct-call-harness` by deleting the remaining `ExecuteFunction` legacy runtime/tests and the `SHATTER_HARNESS_CACHE` / `SHATTER_HARNESS_SCRATCH` fallout, then tackle `wrapper/` removal from `build.Builder`. The launcher-backed runtime replacement is stable, the `shatter-harness` bridge resolves to the checked-in module, and both legacy `protocol` callsites plus the old `InstrumentFile*` API surface are gone.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-26-j2-remove-legacy-direct-call-harness (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
