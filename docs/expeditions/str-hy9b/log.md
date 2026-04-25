@@ -343,6 +343,94 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `b045556a51f1f4c2c3cd45c929ae6edde6b6dee8`.
 
 
+### 2026-04-23T22:45:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Rewired the protocol free-function `prepare`/`execute` path off `instrument.PrepareHarness` / `ExecuteFunctionWithTiming` onto launcher-backed cached programs. Added a protocol-local prepared-launcher cache with dead-session recovery, synthetic-module workspace bootstrapping, launcher-response -> `instrument.ExecuteResult` mapping, and handler timing phases for analyze/build/run. Broke the `protocol` -> `build` cycle by moving wrapper-only target/constructor types into `shatter-go/wrapper/`, and extended the launcher/runtime generation so standalone temp-file targets build cleanly (`go 1.23.0` launcher go.mod and self-contained generated target runtime). Remaining J2 scope: adapter hooks still route through `instrument.ExecuteHTTPHandler` / `ExecuteGinHandler`, `instrument` legacy executor code still exists, and wrapper/legacy-instrument retirement is not finished.
+- Verification:
+  - `go test ./protocol -run TestPrepareWithValidFileReturnsSuccess -count=1 -v`
+  - `go test ./protocol -run TestExecuteRunsFunctionAndReturnsBranchData -count=1 -v`
+  - `go test ./protocol -run 'Test(PrepareIsIdempotent|PrepareAndExecuteSucceeds|PreparedHarnessDeadProcessRecovery|ExecuteAutoLookupPreparedHarness|ExecuteWithStalePrepareIdFallsThrough|ExecuteEmitsTimingWhenRequested|ExecuteEmitsBuildFailedOutcome|ExecuteMethodTargetEmitsUnsupportedOutcome|ShutdownCleansUpPreparedHarnesses)' -count=1`
+  - `go test ./protocol -run 'Test(HandleExecute_AdapterDispatch|HTTPHandler_Execute_Integration|GinHandler_Execute_Integration)' -count=1`
+  - `go test ./wrapper ./build -count=1`
+  - `go test ./build -run TestBuilderInstrumentedLauncherEmitsRecorderData -tags=integration -count=1`
+
+
+### 2026-04-24T02:24:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Migrated both adapter hooks off `instrument.ExecuteHTTPHandler` / `ExecuteGinHandler` onto a new launcher-backed `protocol/adapter_launcher.go` path, including direct launcher tests for net/http and Gin handlers. Hardened launcher module builds for adapter-owned entrypoints by seeding `go.sum` from the target module and building generated launcher modules with `-mod=mod`. Deleted the now-dead legacy adapter harness implementations in `instrument/http_harness.go` and `instrument/gin_harness.go`, and updated `shatter-go/CLAUDE.md` to describe the launcher-backed prepare/adapter contracts. Remaining J2 scope: the broader `instrument.PreparedHarness` / legacy executor retirement is still open because protocol tests and compatibility glue still reference that concrete type.
+- Verification:
+  - `go test ./instrument ./launcher ./build ./wrapper -count=1`
+  - `go test ./protocol -run 'Test(ExecuteAdapterViaLauncher_(HTTPHandler|GinHandler)|HTTPHandler_Execute_Integration|HTTPHandler_Execute_POST|GinHandler_Execute_Integration|GinHandler_Execute_WithRouteParams|HandleExecute_AdapterDispatch|PrepareWithValidFileReturnsSuccess|PrepareIsIdempotent|PrepareAndExecuteSucceeds|ExecuteRunsFunctionAndReturnsBranchData|PreparedHarnessDeadProcessRecovery|ExecuteAutoLookupPreparedHarness|ExecuteWithStalePrepareIdFallsThrough|ExecuteEmitsTimingWhenRequested|ExecuteEmitsBuildFailedOutcome|ExecuteMethodTargetEmitsUnsupportedOutcome|ShutdownCleansUpPreparedHarnesses)' -count=1`
+  - `go vet ./...`
+
+
+### 2026-04-24T02:28:35Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Removed the last protocol-side dependency on `*instrument.PreparedHarness` by switching `protocol/handler_test.go` to a local fake `preparedExecution`, then deleted the `PreparedHarness.Invoke` compatibility shim from `instrument/api.go`. That narrows the remaining legacy prepared-harness surface to `instrument/executor.go` and its own tests/benchmarks; protocol/runtime code no longer imports or injects the concrete type.
+- Verification:
+  - `go test ./instrument -count=1`
+  - `go test ./protocol -run 'Test(HandleExecute_AdapterDispatch|ExecuteAdapterViaLauncher_(HTTPHandler|GinHandler)|HTTPHandler_Execute_Integration|HTTPHandler_Execute_POST|GinHandler_Execute_Integration|GinHandler_Execute_WithRouteParams|PrepareWithValidFileReturnsSuccess|PrepareIsIdempotent|PrepareAndExecuteSucceeds|ExecuteRunsFunctionAndReturnsBranchData|PreparedHarnessDeadProcessRecovery|ExecuteAutoLookupPreparedHarness|ExecuteWithStalePrepareIdFallsThrough|ExecuteEmitsTimingWhenRequested|ExecuteEmitsBuildFailedOutcome|ExecuteMethodTargetEmitsUnsupportedOutcome|ShutdownCleansUpPreparedHarnesses|PruneOrphansRemovesStaleEntries|PruneOrphansKeepsValidEntries|PruneOrphansIsIdempotent|ShutdownPrunesOrphansBeforeCleanup|LookupPreparedHarnessPrunesInvalid)' -count=1`
+  - `go vet ./...`
+
+
+### 2026-04-24T02:35:51Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Deleted the legacy prepared-harness implementation from `instrument/executor.go` (`PreparedHarness`, `PrepareHarness`, `ExecuteWithPreparedHarness`, and related lifecycle helpers) and removed the associated benchmark/cleanup tests from `instrument/executor_test.go`. The direct and adapter runtime paths are now fully launcher-backed; the remaining J2 retirement scope is the broader legacy temp-dir executor/instrumentation path (`ExecuteFunction`, `InstrumentFileWithTiming`, related tests/env knobs) and the still-live `wrapper/` package used by `build.Builder`.
+- Verification:
+  - `go test ./instrument -count=1`
+  - `go test ./protocol -run 'Test(HandleExecute_AdapterDispatch|ExecuteAdapterViaLauncher_(HTTPHandler|GinHandler)|HTTPHandler_Execute_Integration|HTTPHandler_Execute_POST|GinHandler_Execute_Integration|GinHandler_Execute_WithRouteParams|PrepareWithValidFileReturnsSuccess|PrepareIsIdempotent|PrepareAndExecuteSucceeds|ExecuteRunsFunctionAndReturnsBranchData|PreparedHarnessDeadProcessRecovery|ExecuteAutoLookupPreparedHarness|ExecuteWithStalePrepareIdFallsThrough|ExecuteEmitsTimingWhenRequested|ExecuteEmitsBuildFailedOutcome|ExecuteMethodTargetEmitsUnsupportedOutcome|ShutdownCleansUpPreparedHarnesses|PruneOrphansRemovesStaleEntries|PruneOrphansKeepsValidEntries|PruneOrphansIsIdempotent|ShutdownPrunesOrphansBeforeCleanup|LookupPreparedHarnessPrunesInvalid)' -count=1`
+  - `go vet ./...`
+
+
+### 2026-04-24T03:54:18Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Tightened the launcher-backed runtime by adding session-level execution timeouts (`launcher/session.go` + `protocol/prepared_launcher.go`) so launcher executes now classify timed-out subprocesses the same way the old executor did. Removed the last production call into the legacy global harness cache (`instrument.CloseAllHarnesses()` from `protocol/handler.go`). The task branch now has two pushed commits on top of the prior J2 work: `str-kzxt: remove legacy prepared harness path` and `str-kzxt: enforce launcher execution timeouts`. Remaining J2 scope is now clearly the larger retirement checklist: the old temp-dir executor/instrumentation entrypoints (`ExecuteFunction`, `InstrumentFileWithTiming`, related env knobs/tests) and the still-live `wrapper/` package used by `build.Builder`.
+- Verification:
+  - `go test ./instrument -count=1`
+  - `go test ./protocol -run 'Test(ShutdownCleansUpPreparedHarnesses|HandleExecute_AdapterDispatch|ExecuteAdapterViaLauncher_(HTTPHandler|GinHandler)|HTTPHandler_Execute_Integration|HTTPHandler_Execute_POST|GinHandler_Execute_Integration|GinHandler_Execute_WithRouteParams|PrepareWithValidFileReturnsSuccess|PrepareIsIdempotent|PrepareAndExecuteSucceeds|ExecuteRunsFunctionAndReturnsBranchData|PreparedHarnessDeadProcessRecovery|ExecuteAutoLookupPreparedHarness|ExecuteWithStalePrepareIdFallsThrough|ExecuteEmitsTimingWhenRequested|ExecuteEmitsBuildFailedOutcome|ExecuteMethodTargetEmitsUnsupportedOutcome|ShutdownPrunesOrphansBeforeCleanup|LookupPreparedHarnessPrunesInvalid)' -count=1`
+  - `go vet ./...`
+
+
+### 2026-04-24T06:05:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Removed the embedded `instrument/harness_runtime_source.go` bridge and switched `EnsureHarnessRuntimeDir()` to resolve the checked-in `shatter-go/harness` module directly. This preserves the live launcher/adapter `shatter-harness` import path but deletes another legacy runtime duplication layer and its dedicated test file. Remaining J2 scope is still the larger retirement checklist: old temp-dir executor/instrumentation entrypoints (`ExecuteFunction`, `InstrumentFileWithTiming`, env-var cache/scratch handling, broad `instrument/*` legacy tests) plus the still-live `wrapper/` package used by `build.Builder`.
+- Verification:
+  - `go test ./instrument -run 'Test(EnsureHarnessRuntimeDirPointsAtCheckedInModule|GenerateLoopMockFileUsesAtomicCounters)' -count=1`
+  - `go test ./build -run TestBuilderInstrumentedLauncherEmitsRecorderData -tags=integration -count=1`
+  - `go test ./protocol -run TestPrepareAndExecuteSucceeds -count=1 -timeout 120s`
+  - `go test ./protocol -run 'TestExecuteAdapterViaLauncher_(HTTPHandler|GinHandler)' -count=1 -timeout 120s`
+  - `go vet ./instrument ./build ./protocol`
+
+
+### 2026-04-24T06:40:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Pruned more production-dead legacy executor surface. Removed `CloseAllHarnesses()` from `instrument/executor.go` now that no non-test caller remains, moved cache cleanup into a test-local helper in `executor_test.go`, dropped the `overlay_test.go` legacy-tempdir parity assertion that compared overlay output against `InstrumentFile`, and deleted the fully unused `instrument/entropy.go` utility plus its test file. This reduces J2’s remaining work to live legacy behaviors rather than dead helpers and legacy-only test comparisons.
+- Verification:
+  - `go test ./instrument -run 'Test(PersistentHarnessWarmReuse|PersistentHarnessResultsDoNotAccumulate|PersistentHarnessCrashRecovery|ExecuteFunctionModuleBackedWithSiblingHelper|ExecuteFunctionModuleBackedWithIntraModuleImport|InstrumentPackageForOverlay_FileSelection|RegisterInstrumentedOverlay_WritesManifestEntries|InstrumentPackageForOverlay_PropertyValidGoWithBranchRecorders)' -count=1`
+  - `go test ./build ./protocol -run '^$' -count=1`
+  - `go vet ./instrument ./build ./protocol`
+
+
+### 2026-04-24T07:20:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Removed the last production `protocol` callsite of `instrument.InstrumentFileWithTiming`. `handleInstrument()` now resolves a workspace, creates a workspace-backed generated output directory, and materializes the instrumented source/recorder/go.mod via the new `instrument.MaterializeInstrumentedDirectory()` helper. `prepared_launcher.go` now shares a smaller `ensureWorkspace()` helper so both instrument/prepare paths use the same workspace bootstrap. This makes `instrument.go` temp-dir entrypoints production-dead; they now survive only for direct legacy tests.
+- Verification:
+  - `go test ./protocol -run 'Test(InstrumentWithValidFileReturnsSuccess|ExecuteAfterInstrumentWithoutAnalyze|PrepareWithValidFileReturnsSuccess|PrepareAndExecuteSucceeds)' -count=1 -timeout 120s`
+  - `go test ./instrument ./build ./protocol -run '^$' -count=1`
+  - `go vet ./instrument ./build ./protocol`
+
+
+### 2026-04-24T09:05:00Z — Progress update
+- Branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Summary: Deleted `shatter-go/instrument/instrument.go` entirely. The remaining directory-materialization logic now lives in `instrument/materialize.go`, `executor.go` uses that internal helper directly, and `instrument_test.go` targets `MaterializeInstrumentedDirectory()` instead of the removed temp-dir convenience wrappers. This retires the old `InstrumentFile*` API surface completely; `protocol` and `instrument` now share the same directory materialization path.
+- Verification:
+  - `go test ./instrument -run 'Test(InstrumentSimpleIfElseCompiles|InstrumentAndRunClassify|InstrumentMainOnlyImportPreserved|InstrumentFileNotFound)' -count=1 -timeout 120s`
+  - `go test ./build ./protocol -run '^$' -count=1`
+  - `go vet ./instrument ./build ./protocol`
+  - `go test ./...`
+  - `go vet ./...`
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
@@ -352,5 +440,5 @@ These must be removed before starting those tasks under the expedition model.
 - Active task branch: `str-hy9b-26-j2-remove-legacy-direct-call-harness`
 - Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`
 - Last completed: `str-hy9b-25-j1-retirement-inventory (kept)`
-- Next action: Complete work on `str-hy9b-26-j2-remove-legacy-direct-call-harness` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness`.
+- Next action: Continue `str-hy9b-26-j2-remove-legacy-direct-call-harness` by deleting the remaining `ExecuteFunction` legacy runtime/tests and the `SHATTER_HARNESS_CACHE` / `SHATTER_HARNESS_SCRATCH` fallout, then tackle `wrapper/` removal from `build.Builder`. The launcher-backed runtime replacement is stable, the `shatter-harness` bridge resolves to the checked-in module, and both legacy `protocol` callsites plus the old `InstrumentFile*` API surface are gone.
 <!-- expedition-resume:end -->
