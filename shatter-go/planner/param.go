@@ -36,6 +36,12 @@ type ParamPlanOptions struct {
 	// An entry matching a parameter produces the top-priority ValuePlan for
 	// that parameter (literal kind).
 	HintsByName map[string]ParamValueHint
+	// GeneratorsByName names a runtime-value registry entry per parameter
+	// (parameter name → registered Go type spelling, e.g. "context.Context").
+	// When a parameter has a generator entry, PlanParam consults the named
+	// generator before falling back to primitive families. This is the
+	// hint_config_v1 generators surface (str-hy9b.G3 AC3).
+	GeneratorsByName map[string]string
 	// MaxPlansPerParam caps each parameter's ValuePlan slice. Zero means
 	// DefaultMaxParamValuePlans.
 	MaxPlansPerParam int
@@ -77,6 +83,24 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	maxPlans := opts.MaxPlansPerParam
 	if maxPlans <= 0 {
 		maxPlans = DefaultMaxParamValuePlans
+	}
+
+	// AC3 (str-hy9b.G3): a named generator on this parameter takes priority
+	// over primitive-family classification. The generator name is a
+	// runtime-value registry key (e.g. "context.Context"). A name with no
+	// registry match is treated as a planning failure rather than silently
+	// falling through, so configuration typos surface as
+	// UnsatisfiedRequirementKindComplexType.
+	if generatorName, ok := opts.GeneratorsByName[p.Name]; ok && generatorName != "" {
+		plans := generatorPlans(paramIndex, p, generatorName, maxPlans)
+		if len(plans) > 0 {
+			return plans, nil
+		}
+		return nil, &protocol.UnsatisfiedRequirement{
+			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
+			TargetID: targetID,
+			Detail:   fmt.Sprintf("parameter %q: generator %q is not registered in the runtime-value registry", p.Name, generatorName),
+		}
 	}
 
 	family, ok := classifyParamFamily(p)

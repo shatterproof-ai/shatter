@@ -306,8 +306,14 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	}
 
 	// Cache analysis records so execute can read invocation_model and
-	// decide whether to dispatch through an adapter-owned hook.
+	// decide whether to dispatch through an adapter-owned hook. Populating
+	// SourceFile here gives the planner closure (str-hy9b.G3) the file
+	// context it needs to resolve hint_config_v1 entries per target without
+	// changing the PlannerFunc signature.
 	for i := range functions {
+		if functions[i].SourceFile == "" {
+			functions[i].SourceFile = req.File
+		}
 		key := req.File + "\x00" + functions[i].Name
 		h.cachedAnalyses[key] = &functions[i]
 	}

@@ -174,6 +174,41 @@ func runtimeValuePlans(paramIndex int, p protocol.ParamInfo, maxPlans int) []pro
 	return plans
 }
 
+// generatorPlans returns ValuePlans for the runtime-value registry entry
+// named by typeName (the generator name supplied via
+// ParamPlanOptions.GeneratorsByName). Returns nil when the registry has no
+// matching entry — callers should treat that as a configuration error
+// because the parameter has no other planning path once a generator was
+// explicitly named.
+//
+// The encoding mirrors runtimeValuePlans (Kind=ValuePlanKindRuntimeValue,
+// Literal=JSON-encoded Go expression, TypeHint=registered type spelling).
+// maxPlans caps the returned slice.
+func generatorPlans(paramIndex int, p protocol.ParamInfo, typeName string, maxPlans int) []protocol.ValuePlan {
+	candidates := LookupRuntimeValue(typeName)
+	if len(candidates) == 0 {
+		return nil
+	}
+	if maxPlans > 0 && len(candidates) > maxPlans {
+		candidates = candidates[:maxPlans]
+	}
+	plans := make([]protocol.ValuePlan, 0, len(candidates))
+	for _, rv := range candidates {
+		literal, err := json.Marshal(rv.Expression)
+		if err != nil {
+			continue
+		}
+		plans = append(plans, protocol.ValuePlan{
+			ParamIndex: paramIndex,
+			ParamName:  p.Name,
+			Kind:       protocol.ValuePlanKindRuntimeValue,
+			Literal:    literal,
+			TypeHint:   rv.TypeHint,
+		})
+	}
+	return plans
+}
+
 func sortedUniqueImports(paths []string) []string {
 	if len(paths) == 0 {
 		return nil
