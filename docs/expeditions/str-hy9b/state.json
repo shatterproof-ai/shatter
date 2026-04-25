@@ -8,6 +8,15 @@
       "slug": "g3-hint-config-v1-expansion",
       "started_at": "2026-04-25T03:34:34Z",
       "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion"
+    },
+    {
+      "base_head": "aef66b228ec8dc209c7973cd9d8d976a23fd077c",
+      "branch": "str-hy9b-28-h5-planner-driven-e2e",
+      "kind": "task",
+      "number": 28,
+      "slug": "h5-planner-driven-e2e",
+      "started_at": "2026-04-25T03:34:38Z",
+      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e"
     }
   ],
   "base_branch": "str-hy9b",
@@ -25,11 +34,11 @@
     "summary": "J2: trim legacy direct-call harness from executor.go (1666 \u2192 364 lines); migrate MC/DC integration tests to launcher.Session under shatter-go/build",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-26-j2-remove-legacy-direct-call-harness"
   },
-  "next_action": "Complete work on `str-hy9b-27-g3-hint-config-v1-expansion` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion`.",
-  "next_task_number": 28,
+  "next_action": "Complete work on `str-hy9b-28-h5-planner-driven-e2e` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e`.",
+  "next_task_number": 29,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
   "status": "task_in_progress",
-  "updated_at": "2026-04-25T03:34:34Z"
+  "updated_at": "2026-04-25T03:34:38Z"
 }
