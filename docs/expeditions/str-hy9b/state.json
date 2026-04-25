@@ -23,7 +23,10 @@
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": null,
+  "landing_lease": {
+    "acquired_at": "2026-04-25T17:26:22Z",
+    "held_by_branch": "str-hy9b-27-g3-hint-config-v1-expansion"
+  },
   "last_completed": {
     "branch": "str-hy9b-26-j2-remove-legacy-direct-call-harness",
     "completed_at": "2026-04-25T03:09:30Z",
