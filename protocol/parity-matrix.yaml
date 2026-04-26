@@ -710,6 +710,21 @@ allowed_divergences:
       Field-presence-without-effect is a tracked divergence rather than an
       unadvertised drop so callers can rely on the field shape across
       languages even when only Go acts on it today.
+
+      The divergence has a second, observable axis on method targets.
+      In Go (str-hy9b.H5), an Execute on a method now dispatches through
+      the launcher wrapper's receiver-kind switch: with a plan it invokes
+      the named constructor (or zero-value strategy); without a plan the
+      switch's default arm emits a `runtime_failed` outcome whose
+      `short_reason` contains `"unknown receiver kind"`. TypeScript and
+      Rust still respond to a method target with their pre-H5 capability
+      rejection — `unsupported` outcome with `error_type =
+      method_not_supported` — because neither has a planner-driven
+      method dispatch path. Callers must therefore branch on frontend
+      when interpreting method-target outcomes: Go yields `runtime_failed`
+      (when no plan is supplied) or `completed` (when a viable plan is
+      supplied); TS/Rust always yield `unsupported`/`method_not_supported`
+      regardless of plan presence.
     affected_frontends: [typescript, rust]
     affected_commands: [execute]
     status: tracked
