@@ -1,38 +1,25 @@
 {
-  "active_branches": [
-    {
-      "base_head": "5d9360e718c77027f14a0bd0f4569f810e464788",
-      "branch": "str-hy9b-29-h2-execute-plan-wiring",
-      "kind": "task",
-      "number": 29,
-      "slug": "h2-execute-plan-wiring",
-      "started_at": "2026-04-26T19:58:01Z",
-      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring"
-    }
-  ],
+  "active_branches": [],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": {
-    "acquired_at": "2026-04-26T21:39:42Z",
-    "held_by_branch": "str-hy9b-29-h2-execute-plan-wiring"
-  },
+  "landing_lease": null,
   "last_completed": {
-    "branch": "str-hy9b-28-h5-planner-driven-e2e",
-    "completed_at": "2026-04-26T18:48:08Z",
+    "branch": "str-hy9b-29-h2-execute-plan-wiring",
+    "completed_at": "2026-04-26T21:39:48Z",
     "kind": "task",
-    "number": 28,
+    "number": 29,
     "outcome": "kept",
-    "slug": "h5-planner-driven-e2e",
-    "summary": "H5: Planner-driven E2E for method-receiver dispatch. e2e_concolic now drives a real analyze \u2192 plan \u2192 execute roundtrip against examples/go/service-method via the Go frontend subprocess. Additive Command::Execute.plan and ExecuteResult.outcome on Rust; Go launcher dispatches method targets through the wrapper's receiver-kind switch driven by plan.receiver_kind; method targets without a plan now emit runtime_failed with short_reason containing \"unknown receiver kind\", retiring the pre-H5 unsupported/method_not_supported rejection. Followups str-yi9y, str-oegu filed P2 blocked-by str-ekjh. Pre-existing cli:clippy failure unrelated (str-7syr).",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e"
+    "slug": "h2-execute-plan-wiring",
+    "summary": "str-yi9y + str-oegu: wire InvocationPlan through Execute and Prepare paths. default_execute_plan propagates from ObserveStageOptions into both explorer and concolic orchestrator ExploreConfig; all Command::Execute calls carry the plan so method targets dispatch via constructor. Command::Prepare gains optional plan field; computePrepareID keys on receiver_kind. New E2E test go_method_planner_driven_via_orchestrator (orchestrator path AC3). Two Rust round-trip tests for plan-bearing Prepare (AC4). CLAUDE.md Prepare Parity Contract updated (AC5).",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring"
   },
-  "next_action": "Complete work on `str-hy9b-29-h2-execute-plan-wiring` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring`.",
+  "next_action": "Create the next task branch from the rebased expedition base branch.",
   "next_task_number": 30,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-26T19:58:01Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-26T21:39:48Z"
 }

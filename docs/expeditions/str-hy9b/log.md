@@ -469,14 +469,21 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `5d9360e718c77027f14a0bd0f4569f810e464788`.
 
 
+### 2026-04-26T21:39:48Z — Closed task
+- Branch: `str-hy9b-29-h2-execute-plan-wiring`.
+- Outcome: `kept`.
+- Summary: str-yi9y + str-oegu: wire InvocationPlan through Execute and Prepare paths. default_execute_plan propagates from ObserveStageOptions into both explorer and concolic orchestrator ExploreConfig; all Command::Execute calls carry the plan so method targets dispatch via constructor. Command::Prepare gains optional plan field; computePrepareID keys on receiver_kind. New E2E test go_method_planner_driven_via_orchestrator (orchestrator path AC3). Two Rust round-trip tests for plan-bearing Prepare (AC4). CLAUDE.md Prepare Parity Contract updated (AC5).
+- Base branch rebased onto the primary branch.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-29-h2-execute-plan-wiring`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring`
-- Last completed: `str-hy9b-28-h5-planner-driven-e2e (kept)`
-- Next action: Complete work on `str-hy9b-29-h2-execute-plan-wiring` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring`.
+- Active task branch: `none`
+- Active task worktree: `none`
+- Last completed: `str-hy9b-29-h2-execute-plan-wiring (kept)`
+- Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
