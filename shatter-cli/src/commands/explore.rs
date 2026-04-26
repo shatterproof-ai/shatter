@@ -1540,15 +1540,15 @@ pub(crate) async fn run_explore(
     max_executions: Option<u64>,
     planner: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(name) = planner {
-        if name != "go" {
-            return Err(format!(
-                "--planner={name}: only `go` is currently supported. \
-                 The Go frontend advertises the `get_invocation_plan` capability; \
-                 TypeScript and Rust frontends do not yet implement the planner."
-            )
-            .into());
-        }
+    if let Some(name) = planner
+        && name != "go"
+    {
+        return Err(format!(
+            "--planner={name}: only `go` is currently supported. \
+             The Go frontend advertises the `get_invocation_plan` capability; \
+             TypeScript and Rust frontends do not yet implement the planner."
+        )
+        .into());
     }
 
     // Early return: finalize from saved artifacts instead of running exploration.
@@ -2601,7 +2601,6 @@ pub(crate) async fn run_explore(
                         progress_hints,
                         resume_state,
                         extra_seeds: &planner_extra_seeds,
-                        ..shatter_core::pipeline_orchestrator::ObserveStageOptions::default()
                     },
                 )
                 .instrument(tracing::info_span!("pipeline.observe"))
