@@ -14,7 +14,10 @@
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": null,
+  "landing_lease": {
+    "acquired_at": "2026-04-26T21:39:42Z",
+    "held_by_branch": "str-hy9b-29-h2-execute-plan-wiring"
+  },
   "last_completed": {
     "branch": "str-hy9b-28-h5-planner-driven-e2e",
     "completed_at": "2026-04-26T18:48:08Z",
