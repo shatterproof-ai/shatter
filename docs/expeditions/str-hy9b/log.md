@@ -457,14 +457,18 @@ These must be removed before starting those tasks under the expedition model.
 - Base branch rebased onto the primary branch.
 
 
+### 2026-04-26T18:48:08Z — Closed task
+- Branch: `str-hy9b-28-h5-planner-driven-e2e`.
+- Outcome: `kept`.
+- Summary: H5: Planner-driven E2E for method-receiver dispatch. `shatter-core/tests/e2e_concolic.rs` now drives a real analyze → plan → execute roundtrip against `examples/go/service-method` via the Go frontend subprocess. Additive `Command::Execute.plan: Option<InvocationPlan>` and `ExecuteResult.outcome: Option<InvocationOutcome>` on the Rust side. Go launcher dispatches method targets through the wrapper's receiver-kind switch driven by `plan.receiver_kind`; method targets without a plan now emit `runtime_failed` with `short_reason` containing "unknown receiver kind", retiring the pre-H5 `unsupported`/`method_not_supported` capability rejection. Tracked divergence widened in `protocol/parity-matrix.yaml::ts-rust-execute-plan-not-implemented`. Followups str-yi9y (orchestrator/explorer Execute.plan wiring) and str-oegu (Prepare-path receiver_kind support) filed P2 blocked-by str-ekjh. Pre-existing cli:clippy failure unrelated (str-7syr); branch rebased onto str-hy9b before merge to incorporate G3 work, two real conflicts in `shatter-go/planner/plan.go` plus signature adapter in `main.go` resolved by combining both feature sets.
+
+
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `task_in_progress`
+- Status: `ready_for_task`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-28-h5-planner-driven-e2e`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e`
-- Last completed: `str-hy9b-27-g3-hint-config-v1-expansion (kept)`
+- Last completed: `str-hy9b-28-h5-planner-driven-e2e (kept)`
 - Next action: Create the next task branch from the rebased expedition base branch.
 <!-- expedition-resume:end -->
