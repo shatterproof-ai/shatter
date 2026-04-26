@@ -477,6 +477,13 @@ These must be removed before starting those tasks under the expedition model.
 
 
 ## RESUME HERE
+### 2026-04-26T21:45:00Z — Closed task
+- Branch: `str-hy9b-29-h2-execute-plan-wiring`.
+- Outcome: `kept`.
+- Summary: str-yi9y + str-oegu: wire InvocationPlan through Execute and Prepare paths. All Command::Execute calls in explorer.rs and orchestrator.rs now use config.default_execute_plan (set from fetch_planner_extra_seeds's first plan via ObserveStageOptions.execute_plan). Command::Prepare gains optional plan field; computePrepareID/lookupPreparedHarness/handleExecute key on receiver_kind so plan-aware callers pre-build the right wrapper case. New E2E test go_method_planner_driven_via_orchestrator validates orchestrator path (str-yi9y AC3). Two Rust round-trip tests for plan-bearing Prepare (str-oegu AC4). shatter-go/CLAUDE.md Prepare Parity Contract updated (str-oegu AC5). 2886 Rust unit tests pass; Go prepare tests pass; pre-existing TS E2E and slow Go tests unaffected.
+- Base branch rebased onto the primary branch.
+
+## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
 - Status: `ready_for_task`
