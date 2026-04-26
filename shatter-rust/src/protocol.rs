@@ -671,6 +671,14 @@ pub struct Response {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+
+    // Standardized invocation outcome (str-hy9b.A1/A5). Emitted by handle_execute
+    // for both success and error responses so cross-frontend consumers can rely
+    // on a uniform invocation-result envelope. Status is derived from the
+    // executor result: completed | runtime_failed | timed_out on the success
+    // path, build_failed on compilation_error, unsupported on non_executable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<InvocationOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -725,6 +733,7 @@ impl Response {
             prepare_id: None,
             code: None,
             message: None,
+            outcome: None,
         }
     }
 }
@@ -1005,6 +1014,7 @@ mod tests {
             code: None,
             message: None,
             prepare_id: None,
+            outcome: None,
         };
         round_trip(&resp);
     }
@@ -1038,6 +1048,7 @@ mod tests {
             code: None,
             message: None,
             prepare_id: None,
+            outcome: None,
         };
         round_trip(&resp);
     }
@@ -1071,6 +1082,7 @@ mod tests {
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
             prepare_id: None,
+            outcome: None,
         };
         round_trip(&resp);
     }
@@ -1104,6 +1116,7 @@ mod tests {
             code: None,
             message: None,
             prepare_id: None,
+            outcome: None,
         };
         round_trip(&resp);
     }
@@ -1317,6 +1330,7 @@ mod tests {
             code: None,
             message: None,
             prepare_id: None,
+            outcome: None,
         };
         round_trip(&resp);
     }
@@ -1350,6 +1364,7 @@ mod tests {
             code: None,
             message: None,
             prepare_id: None,
+            outcome: None,
         };
         let json = serde_json::to_value(&resp).expect("serialize");
         assert!(

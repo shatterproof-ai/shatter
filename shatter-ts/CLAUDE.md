@@ -91,6 +91,28 @@ plan-aware callers can speak a single wire shape across frontends without
 branching on language. Implementation is deferred until TS grows a
 planner.
 
+## Outcome Emission Contract
+
+Every `execute` response (status `execute`) carries an `outcome:
+InvocationOutcome` field. `deriveOutcome` in `src/executor.ts` classifies
+the result:
+
+| Condition on `rawResult.thrown_error` | `outcome.status` |
+|---|---|
+| `null` | `completed` (carries `return_value`) |
+| `error_type == "ERR_SCRIPT_EXECUTION_TIMEOUT"`, or `error_category == "infrastructure"` whose message matches `TIMEOUT_PATTERNS` | `timed_out` |
+| any other thrown error | `runtime_failed` |
+
+Status values `build_failed`, `unsupported`, `completed_with_findings`, and
+`skipped_by_policy` are not produced by this path. `completed_with_findings`
+is reserved for upstream consumers; the TS executor does not surface
+build/unsupported through `execute` — those arrive on `error` responses
+from earlier pipeline stages.
+
+The wire shape is identical to Rust and Go (str-hy9b.A5,
+parity-matrix.yaml `feature_capabilities.outcome`). Conformance lock:
+`protocol/conformance/conformance_cases.yaml` `execute_outcome_shape_ts`.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

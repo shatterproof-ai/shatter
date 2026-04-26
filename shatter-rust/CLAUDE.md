@@ -70,6 +70,30 @@ so plan-aware callers can speak a single wire shape across frontends
 without branching on language. Implementation is deferred until the
 Rust frontend grows method-target invocation support.
 
+## Outcome Emission Contract
+
+Every `execute` response carries an `outcome: InvocationOutcome` field
+(str-hy9b.A1/A5). The Rust frontend emits outcomes on both success and
+error responses so cross-frontend consumers see a uniform invocation
+envelope. Emission lives in `derive_execute_outcome` and `error_outcome`
+in `src/handler.rs`, plumbed from `handle_execute`.
+
+| Source path | `outcome.status` |
+|---|---|
+| `Ok(result)` with `result.thrown_error == None` | `completed` (carries `return_value`) |
+| `Ok(result)` with `thrown_error.error_type == "timeout"` (set by the executor's `RecvTimeoutError::Timeout` arm) | `timed_out` |
+| `Ok(result)` with any other thrown error | `runtime_failed` |
+| `Err(CompilationFailed(_))` | `build_failed` |
+| `Err(NonExecutable(_))` | `unsupported` |
+| `Err(FileError(_))` and any other `Err(_)` | `runtime_failed` |
+
+`completed_with_findings` and `skipped_by_policy` are reserved for
+upstream consumers and are not produced here. The wire shape matches the
+TS and Go frontends — see `protocol/parity-matrix.yaml`
+`feature_capabilities.outcome` and the conformance lock in
+`protocol/conformance/conformance_cases.yaml`
+(`execute_outcome_shape_rust`).
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

@@ -223,13 +223,13 @@ cases:
   # These cases back the parity-matrix.yaml `feature_capabilities` block
   # (str-hy9b.H3) with observable behavior. Layout:
   #
-  #   outcome               → driven against Go (which emits outcome on
-  #                           both success and build-failure execute
-  #                           responses); the declared outcome.status enum
-  #                           is asserted. TS and Rust outcome emission
-  #                           requires a full analyze→prepare→execute
-  #                           cycle and is covered by per-frontend
-  #                           integration tests, not by this harness.
+  #   outcome               → driven against all three frontends (Go, TS,
+  #                           Rust). Each frontend emits an `outcome` on
+  #                           successful execute with status one of the
+  #                           declared OutcomeStatus enum values. Per
+  #                           str-hy9b.A5 the wire shape is identical
+  #                           across frontends; the per-frontend cases
+  #                           assert the same enum and field structure.
   #   adapter_http_nethttp  → analyze a Go http handler fixture. Go must
   #                           surface functions[0].invocation_model with
   #                           adapter_id "go/http-handler". TS and Rust
@@ -294,6 +294,115 @@ cases:
         - message
         - details
         - functions
+
+  - name: execute_outcome_shape_ts
+    frontends: [typescript]
+    request:
+      protocol_version: "0.1.0"
+      id: 30
+      command: execute
+      file: "protocol/conformance/fixtures/ts/add.ts"
+      function: "protocol/conformance/fixtures/ts/add.ts:add"
+      inputs: [3, 4]
+      mocks: []
+    expect:
+      status_oneof: [execute, error]
+      required_fields_by_status:
+        execute:
+          outcome:
+            type: object
+            fields:
+              status:
+                type: string
+                enum:
+                  - completed
+                  - completed_with_findings
+                  - unsupported
+                  - build_failed
+                  - runtime_failed
+                  - timed_out
+                  - skipped_by_policy
+        error:
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - outcome
+        - branch_path
+        - return_value
+        - thrown_error
+        - lines_executed
+        - calls_to_external
+        - path_constraints
+        - side_effects
+        - performance
+        - scope_events
+        - code
+        - message
+        - details
+
+  - name: execute_outcome_shape_rust
+    frontends: [rust]
+    # Rust execute compiles a per-target harness via cargo on first invocation,
+    # which can take well over the default 30s on cold caches.
+    timeout_s: 240
+    request:
+      protocol_version: "0.1.0"
+      id: 31
+      command: execute
+      file: "protocol/conformance/fixtures/rust/add.rs"
+      function: "add"
+      inputs: [3, 4]
+      mocks: []
+    expect:
+      status_oneof: [execute, error]
+      required_fields_by_status:
+        execute:
+          outcome:
+            type: object
+            fields:
+              status:
+                type: string
+                enum:
+                  - completed
+                  - completed_with_findings
+                  - unsupported
+                  - build_failed
+                  - runtime_failed
+                  - timed_out
+                  - skipped_by_policy
+        error:
+          outcome:
+            type: object
+            fields:
+              status:
+                type: string
+                enum:
+                  - completed
+                  - completed_with_findings
+                  - unsupported
+                  - build_failed
+                  - runtime_failed
+                  - timed_out
+                  - skipped_by_policy
+          code:
+            type: string
+          message:
+            type: string
+      dynamic_fields:
+        - outcome
+        - branch_path
+        - return_value
+        - thrown_error
+        - lines_executed
+        - calls_to_external
+        - path_constraints
+        - side_effects
+        - performance
+        - code
+        - message
+        - details
 
   - name: adapter_http_nethttp_go_analyze
     frontends: [go]

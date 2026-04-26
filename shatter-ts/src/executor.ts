@@ -34,6 +34,7 @@ import type {
   RuntimeCryptoBoundary,
   LoopBodyState,
   LoopInfo,
+  InvocationOutcome,
 } from "./protocol.js";
 import { detectRuntimeHints } from "./runtime-hints.js";
 import type {
@@ -2493,7 +2494,53 @@ export function buildExecuteResponse(
     response.adapter_hints = rawResult.adapter_hints;
   }
 
+  response.outcome = deriveOutcome(rawResult);
+
   return response;
+}
+
+/**
+ * Derive the standardized InvocationOutcome from a raw execute result.
+ *
+ * Status assignment (str-hy9b.A1/A5):
+ * - `completed` — function returned normally (no thrown_error).
+ * - `timed_out` — thrown_error indicates an execution timeout (vm.runInContext
+ *   timeout, async race timeout, or a timeout-classified infrastructure error).
+ * - `runtime_failed` — any other thrown error from the user function.
+ *
+ * The TS executor currently does not surface `build_failed`, `unsupported`,
+ * `completed_with_findings`, or `skipped_by_policy` from this path; those
+ * either arrive on `error` responses (compile/parse errors, unsupported
+ * targets) or are reserved for upstream consumers.
+ */
+function deriveOutcome(rawResult: RawExecuteResult): InvocationOutcome {
+  const thrown = rawResult.thrown_error;
+  if (!thrown) {
+    return {
+      status: "completed",
+      return_value: rawResult.return_value,
+    };
+  }
+  if (isTimeoutError(thrown)) {
+    return {
+      status: "timed_out",
+      short_reason: thrown.message || "execution timed out",
+      thrown_error: thrown,
+    };
+  }
+  return {
+    status: "runtime_failed",
+    short_reason: thrown.message || `${thrown.error_type} thrown`,
+    thrown_error: thrown,
+  };
+}
+
+function isTimeoutError(err: ErrorInfo): boolean {
+  if (err.error_type === "ERR_SCRIPT_EXECUTION_TIMEOUT") return true;
+  if (err.error_category === "infrastructure") {
+    return classifyConnectionFailure(err.message) === "timeout";
+  }
+  return false;
 }
 
 /**

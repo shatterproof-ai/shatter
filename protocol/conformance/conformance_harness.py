@@ -540,8 +540,13 @@ def run_conformance() -> int:
                         print(f"    {fname}: {_skip('(not in capabilities)')}")
                         continue
 
-                # Use longer timeout for handshake (frontends may compile on first request)
-                timeout = HANDSHAKE_TIMEOUT_S if case_name == "handshake" else COMMAND_TIMEOUT_S
+                # Use longer timeout for handshake (frontends may compile on first request).
+                # Cases that exercise on-demand compilation (e.g. the Rust executor's
+                # cargo build) can override via the optional `timeout_s` field.
+                if case_name == "handshake":
+                    timeout = HANDSHAKE_TIMEOUT_S
+                else:
+                    timeout = case.get("timeout_s", COMMAND_TIMEOUT_S)
                 resp = fp.send(request, timeout=timeout)
                 if resp is None:
                     msg = f"{fname} / {case_name} -- no response (timeout or crash)"
