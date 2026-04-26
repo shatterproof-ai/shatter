@@ -139,11 +139,13 @@ pub struct ExploreConfig {
     pub fuzz: crate::config::FuzzConfig,
     /// Name of a frontend-provided invocation planner to consult. `None` means
     /// the orchestrator drives input generation on its own (Z3 + drilling +
-    /// meta-strategy). No strategies are currently accepted end-to-end: the
-    /// `InvocationPlan` protocol type is not yet defined (blocked on str-zbyp).
-    /// Threaded through from the CLI `--planner` flag as a structural hook;
-    /// the eventual MetaStrategy-integration site is tracked by str-3iwg.
+    /// meta-strategy). Set `default_execute_plan` to pass a plan on every
+    /// Execute for this target.
     pub planner: Option<String>,
+    /// InvocationPlan to attach to every Execute request for this target.
+    /// Set from the first plan returned by the planner; `None` when not using
+    /// `--planner` or when the frontend returned no plans.
+    pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
 }
 
 /// Default shrink budget per behavior witness.
@@ -189,6 +191,7 @@ impl Default for ExploreConfig {
             mcdc: false,
             fuzz: crate::config::FuzzConfig::default(),
             planner: None,
+            default_execute_plan: None,
         }
     }
 }
@@ -870,7 +873,7 @@ async fn observe_one(
             capture: true,
             prepare_id: prepare_id.map(|s| s.to_string()),
             execution_profile: config.execution_profile.clone(),
-            plan: None,
+            plan: config.default_execute_plan.clone(),
         })
         .await?;
 
@@ -1573,6 +1576,7 @@ async fn refine_boundaries_async(
     param_infos: &[ParamInfo],
     budget_per_boundary: usize,
     setup_context: &Option<SetupContextStack>,
+    execute_plan: Option<crate::protocol::InvocationPlan>,
 ) -> Vec<boundary_search::BoundaryResult> {
     // Collect branch IDs with witnesses on both sides.
     let mut branch_ids: Vec<u32> = Vec::new();
@@ -1620,7 +1624,7 @@ async fn refine_boundaries_async(
                     capture: false,
                     prepare_id: None,
                     execution_profile: None,
-                    plan: None,
+                    plan: execute_plan.clone(),
                 })
                 .await
             {
@@ -1824,7 +1828,7 @@ pub async fn explore(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -1837,7 +1841,7 @@ pub async fn explore(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -2099,7 +2103,7 @@ pub async fn explore(
                                     capture: true,
                                     prepare_id: prepare_id.clone(),
                                     execution_profile: config.execution_profile.clone(),
-                                    plan: None,
+                                    plan: config.default_execute_plan.clone(),
                                 })
                                 .await?;
 
@@ -2456,6 +2460,7 @@ pub async fn explore(
                 param_infos,
                 budget,
                 &setup_context,
+                config.default_execute_plan.clone(),
             )
             .await
         } else {
@@ -2545,7 +2550,7 @@ pub async fn explore(
                         capture: true,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await;
                 if let Ok(resp) = resp
@@ -2579,7 +2584,7 @@ pub async fn explore(
                             capture: false,
                             prepare_id: prepare_id.clone(),
                             execution_profile: config.execution_profile.clone(),
-                            plan: None,
+                            plan: config.default_execute_plan.clone(),
                         })
                         .await;
                     if let Ok(resp) = resp
@@ -2615,7 +2620,7 @@ pub async fn explore(
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
                                 execution_profile: config.execution_profile.clone(),
-                                plan: None,
+                                plan: config.default_execute_plan.clone(),
                             })
                             .await;
 

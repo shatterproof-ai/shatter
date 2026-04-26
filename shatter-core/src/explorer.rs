@@ -159,12 +159,13 @@ pub struct ExploreConfig {
     /// `Some`. Controls the minimum hit rate and maximum claim fraction.
     pub claim_policy: crate::scan_orchestrator::ClaimPolicy,
     /// Name of a frontend-provided invocation planner to consult. `None` means
-    /// the random explorer selects inputs on its own. No strategies are
-    /// currently accepted end-to-end: the `InvocationPlan` protocol type is
-    /// not yet defined (blocked on str-zbyp). Threaded through from the CLI
-    /// `--planner` flag as a structural hook; the eventual consumption site
-    /// (input generation) is tracked by str-4z2b.
+    /// the random explorer selects inputs on its own. Set `default_execute_plan`
+    /// to pass a plan on every Execute for this target.
     pub planner: Option<String>,
+    /// InvocationPlan to attach to every Execute request for this target.
+    /// Set from the first plan returned by the planner; `None` when not using
+    /// `--planner` or when the frontend returned no plans.
+    pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
 }
 
 /// Default interval between periodic progress summaries.
@@ -900,6 +901,7 @@ pub async fn explore_function(
                 mocks: config.mocks.clone(),
                 project_root: config.project_root.clone(),
                 execution_profile: config.execution_profile.clone(),
+                plan: config.default_execute_plan.clone(),
             })
             .instrument(tracing::info_span!("explore.prepare"))
             .await
@@ -959,7 +961,7 @@ pub async fn explore_function(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -972,7 +974,7 @@ pub async fn explore_function(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -1388,7 +1390,7 @@ pub async fn explore_function(
                         capture: true,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
-                        plan: None,
+                        plan: config.default_execute_plan.clone(),
                     })
                     .instrument(tracing::info_span!("shrink.execute_round_trip"))
                     .await;
@@ -1423,7 +1425,7 @@ pub async fn explore_function(
                             capture: false,
                             prepare_id: prepare_id.clone(),
                             execution_profile: config.execution_profile.clone(),
-                            plan: None,
+                            plan: config.default_execute_plan.clone(),
                         })
                         .instrument(tracing::info_span!("shrink.execute_round_trip"))
                         .await;
@@ -1460,7 +1462,7 @@ pub async fn explore_function(
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
                                 execution_profile: config.execution_profile.clone(),
-                                plan: None,
+                                plan: config.default_execute_plan.clone(),
                             })
                             .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;
@@ -3369,6 +3371,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3408,6 +3411,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3447,6 +3451,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3485,6 +3490,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3527,6 +3533,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3565,6 +3572,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3602,6 +3610,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3657,6 +3666,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3719,6 +3729,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await

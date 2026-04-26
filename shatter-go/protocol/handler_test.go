@@ -1746,17 +1746,60 @@ func TestPreparedHarnessStaleKeyForceRebuild(t *testing.T) {
 	mocksA := []instrument.MockConfig{}
 	mocksB := []instrument.MockConfig{{Symbol: "someFunc"}}
 
-	idA := computePrepareID(tmp, "add", mocksA)
-	idB := computePrepareID(tmp, "add", mocksB)
+	idA := computePrepareID(tmp, "add", mocksA, "")
+	idB := computePrepareID(tmp, "add", mocksB, "")
 
 	if idA == idB {
 		t.Errorf("different mock configs must produce different prepare_ids: %s == %s", idA, idB)
 	}
 
 	// Also verify same inputs produce same id (idempotent).
-	idA2 := computePrepareID(tmp, "add", mocksA)
+	idA2 := computePrepareID(tmp, "add", mocksA, "")
 	if idA != idA2 {
 		t.Errorf("same inputs must produce same prepare_id: %s != %s", idA, idA2)
+	}
+}
+
+// TestComputePrepareIDReceiverKindSensitive verifies that two computePrepareID
+// calls with the same (file, function, mocks) but different receiver_kind values
+// produce different IDs (str-oegu).
+func TestComputePrepareIDReceiverKindSensitive(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mocks := []instrument.MockConfig{}
+	idFreeFunc := computePrepareID(tmp, "NewService", mocks, "")
+	idConstructor := computePrepareID(tmp, "NewService", mocks, "constructor:NewService")
+
+	if idFreeFunc == idConstructor {
+		t.Errorf("different receiver_kind must produce different prepare_ids: both=%s", idFreeFunc)
+	}
+
+	// Idempotency: same receiver_kind must reproduce the same ID.
+	idConstructor2 := computePrepareID(tmp, "NewService", mocks, "constructor:NewService")
+	if idConstructor != idConstructor2 {
+		t.Errorf("same receiver_kind must be deterministic: first=%s second=%s", idConstructor, idConstructor2)
+	}
+}
+
+// TestHandlePrepareWithPlanKeysOnReceiverKind verifies that a Prepare request
+// carrying a plan with a non-empty receiver_kind produces a prepare_id that
+// differs from a plan-less Prepare for the same target (str-oegu).
+func TestHandlePrepareWithPlanKeysOnReceiverKind(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ID for a plan-less prepare (receiverKind = "").
+	idNoReceiver := computePrepareID(tmp, "add", nil, "")
+	// ID for a plan with a concrete receiver_kind.
+	idWithReceiver := computePrepareID(tmp, "add", nil, "constructor:NewService")
+
+	if idNoReceiver == idWithReceiver {
+		t.Errorf("plan-less prepare and plan-with-receiver must have different prepare_ids: both=%s", idNoReceiver)
 	}
 }
 
@@ -2001,17 +2044,17 @@ func TestLookupPreparedHarnessPrunesInvalid(t *testing.T) {
 	}
 
 	// Compute the real prepare_id so lookupPreparedHarness finds the entry.
-	prepareID := computePrepareID(realFile, "Foo", nil)
+	prepareID := computePrepareID(realFile, "Foo", nil, "")
 
 	// Register and then delete the artifact dir.
 	h.preparedHarnesses[prepareID] = &fakePreparedExecution{
 		ArtifactDir: artifactDir,
 		BinaryPath:  filepath.Join(artifactDir, "binary"),
 	}
-	h.preparedTargets[realFile+"\x00"+"Foo"] = prepareID
+	h.preparedTargets[realFile+"\x00"+"Foo"+"\x00"+""] = prepareID
 	os.RemoveAll(artifactDir)
 
-	result := h.lookupPreparedHarness(realFile, "Foo", nil)
+	result := h.lookupPreparedHarness(realFile, "Foo", nil, "")
 	if result != nil {
 		t.Error("lookupPreparedHarness should return nil for invalid harness")
 	}

@@ -974,6 +974,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                 mocks,
                 project_root: None,
                 execution_profile: None,
+                plan: None,
             }),
         (
             arb_ident(),

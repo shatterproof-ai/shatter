@@ -1252,6 +1252,7 @@ pub async fn scan(
             budget_surplus: None,
             claim_policy: ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
 
         let exploration =
@@ -3108,6 +3109,7 @@ pub async fn parallel_scan_with_progress(
                 budget_surplus: Some(Arc::clone(&layer_surplus)),
                 claim_policy: ClaimPolicy::default(),
                 planner: None,
+                default_execute_plan: None,
             };
 
             tasks.push(ExploreTask {

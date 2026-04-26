@@ -41,7 +41,7 @@ type Handler struct {
 	workspace         *workspace.Workspace
 	loader            *goloader.Loader // lazy: built from workspace on first analyze call
 	preparedHarnesses map[string]preparedExecution
-	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
+	preparedTargets   map[string]string // "file\x00function\x00receiverKind" → current prepare_id for stale detection (str-oegu)
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
 	// planRequirements, when non-nil, is dispatched from handleGetInvocationPlan.
@@ -407,8 +407,10 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 }
 
 // computePrepareID returns a deterministic 16-hex-char ID derived from the
-// file path, function name, and sorted mock symbols.
-func computePrepareID(file, function string, mocks []instrument.MockConfig) string {
+// file path, function name, sorted mock symbols, and receiver_kind. Two
+// callers with different receiver_kind values produce different IDs so that
+// plan-aware callers can pre-build the right wrapper-case launcher (str-oegu).
+func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
 	symbols := make([]string, len(mocks))
@@ -419,6 +421,7 @@ func computePrepareID(file, function string, mocks []instrument.MockConfig) stri
 	for _, s := range symbols {
 		fmt.Fprintf(h, "%s\x00", s)
 	}
+	fmt.Fprintf(h, "%s\x00", receiverKind)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -463,8 +466,16 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		})
 	}
 
-	prepareID := computePrepareID(file, *req.Function, execMocks)
-	targetKey := file + "\x00" + *req.Function
+	// Extract receiver_kind from the plan when present so the prepare_id
+	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
+	// callers to pre-build the right wrapper case (str-oegu).
+	receiverKind := ""
+	if req.Plan != nil {
+		receiverKind = req.Plan.ReceiverKind
+	}
+
+	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind)
+	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind
 
 	// Invalidate stale harness if the same target was prepared with different inputs.
 	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
@@ -492,12 +503,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
-	// Prepare always uses the free-function default plan; method targets
-	// are dispatched per-Invoke via Execute.plan + InvokeWithPlan
-	// (str-hy9b.H5). The launcher binary itself is receiver-kind-
-	// independent so this default is safe regardless of how Execute
-	// callers later override the plan.
-	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", "")
+	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", receiverKind)
 	finishPrepare()
 	if err != nil {
 		resp.Status = "error"
@@ -653,6 +659,19 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		preparedExec preparedExecution
 	)
 
+	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
+	// plan's receiver_kind into Invoke so the wrapper's switch dispatches
+	// against the right constructor / zero-value strategy. Plan-less
+	// requests keep the legacy free-function path. The plan's target_id
+	// is intentionally NOT honored here — the prepared launcher knows its
+	// own target_id (the wrapper's source of truth), and a mismatched
+	// caller-provided id would only confuse the launcher's case lookup.
+	// Extract early so lookupPreparedHarness can key on receiver_kind (str-oegu).
+	requestReceiverKind := ""
+	if req.Plan != nil {
+		requestReceiverKind = req.Plan.ReceiverKind
+	}
+
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
 		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
@@ -664,25 +683,13 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		}
 		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
-			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks)
+			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
 		}
 	} else {
-		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks)
+		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
 		if preparedExec != nil {
 			h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
 		}
-	}
-
-	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
-	// plan's receiver_kind into Invoke so the wrapper's switch dispatches
-	// against the right constructor / zero-value strategy. Plan-less
-	// requests keep the legacy free-function path. The plan's target_id
-	// is intentionally NOT honored here — the prepared launcher knows its
-	// own target_id (the wrapper's source of truth), and a mismatched
-	// caller-provided id would only confuse the launcher's case lookup.
-	requestReceiverKind := ""
-	if req.Plan != nil {
-		requestReceiverKind = req.Plan.ReceiverKind
 	}
 
 	if preparedExec == nil && err == nil {
@@ -975,9 +982,9 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 }
 
 // lookupPreparedHarness checks if a prepared harness already exists for the
-// given file, function, and mock configuration.
-func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig) preparedExecution {
-	prepareID := computePrepareID(file, function, mocks)
+// given file, function, mock configuration, and receiver kind (str-oegu).
+func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig, receiverKind string) preparedExecution {
+	prepareID := computePrepareID(file, function, mocks, receiverKind)
 	harness, ok := h.preparedHarnesses[prepareID]
 	if !ok {
 		return nil
@@ -987,7 +994,7 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
 		harness.Cleanup()
 		delete(h.preparedHarnesses, prepareID)
-		targetKey := file + "\x00" + function
+		targetKey := file + "\x00" + function + "\x00" + receiverKind
 		if h.preparedTargets[targetKey] == prepareID {
 			delete(h.preparedTargets, targetKey)
 		}

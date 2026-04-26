@@ -341,6 +341,11 @@ pub enum Command {
         /// Opaque execution profile selected for this target, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_profile: Option<ExecutionProfile>,
+        /// Optional invocation plan; when present, the prepare_id is keyed on the
+        /// plan's receiver_kind so plan-aware callers can pre-build a launcher
+        /// for a specific receiver strategy (str-oegu).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<InvocationPlan>,
     },
     /// Execute an instrumented function with specific inputs and mocks.
     Execute {
@@ -1299,6 +1304,7 @@ mod tests {
                 mocks: vec![],
                 project_root: None,
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -1318,8 +1324,58 @@ mod tests {
                 }],
                 project_root: Some(".".into()),
                 execution_profile: None,
+                plan: None,
             },
         ));
+    }
+
+    /// str-oegu AC4: plan-bearing Prepare requests survive serialization round-trip.
+    #[test]
+    fn prepare_request_with_plan_round_trips() {
+        round_trip(&Request::new(
+            9,
+            Command::Prepare {
+                file: "svc/svc.go".into(),
+                function: "Compute".into(),
+                mocks: vec![],
+                project_root: None,
+                execution_profile: None,
+                plan: Some(InvocationPlan {
+                    target_id: "example.com/svc:Compute".into(),
+                    receiver_kind: "constructor:New".into(),
+                    argument_plans: vec![ValuePlan {
+                        param_index: 0,
+                        param_name: "x".into(),
+                        kind: ValuePlanKind::Zero,
+                        literal: None,
+                        type_hint: "int".into(),
+                    }],
+                    priority: 1,
+                    label: "constructor:New + x=0".into(),
+                }),
+            },
+        ));
+    }
+
+    /// str-oegu AC4: plan field is omitted from JSON when None.
+    #[test]
+    fn prepare_plan_omitted_when_none() {
+        let req = Request::new(
+            10,
+            Command::Prepare {
+                file: "svc/svc.go".into(),
+                function: "Compute".into(),
+                mocks: vec![],
+                project_root: None,
+                execution_profile: None,
+                plan: None,
+            },
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert!(
+            !json.as_object().expect("object").contains_key("plan"),
+            "plan: None should be omitted from JSON"
+        );
     }
 
     #[test]

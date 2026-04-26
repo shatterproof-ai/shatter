@@ -43,7 +43,7 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` a
 
 ## Prepare Parity Contract
 
-Go implements `prepare` to pre-build a launcher-backed execution binary so subsequent execute calls skip rebuilds. Handler: `handlePrepare()` in `protocol/handler.go`, with launcher preparation in `protocol/prepared_launcher.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]preparedExecution`. Idempotent. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on cached prepared executions.
+Go implements `prepare` to pre-build a launcher-backed execution binary so subsequent execute calls skip rebuilds. Handler: `handlePrepare()` in `protocol/handler.go`, with launcher preparation in `protocol/prepared_launcher.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols:receiver_kind`, first 16 hex chars (`computePrepareID`). When a Prepare request carries an `InvocationPlan`, `plan.receiver_kind` is included in the key so different receiver strategies for the same target produce different IDs and don't collide in the harness cache (str-oegu). Plan-less Prepare requests use an empty `receiver_kind` (equivalent to pre-str-oegu behavior). Storage: `handler.preparedHarnesses map[string]preparedExecution`. Idempotent. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on cached prepared executions.
 
 ## Invocation Model Parity Contract
 

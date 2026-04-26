@@ -452,9 +452,9 @@ async fn fetch_planner_extra_seeds(
     func: &shatter_core::protocol::FunctionAnalysis,
     file_str: &str,
     project_root: Option<&str>,
-) -> Vec<Vec<serde_json::Value>> {
+) -> (Vec<Vec<serde_json::Value>>, Option<shatter_core::protocol::InvocationPlan>) {
     let Some(_planner_name) = explore_config.planner.as_deref() else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
 
     // Prime the task frontend's analysis cache so get_invocation_plan can
@@ -472,7 +472,7 @@ async fn fetch_planner_extra_seeds(
             "planner: analyze priming failed for {}: {e}",
             func.name
         );
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     // Free functions: target_id carries only the bare symbol. Our Go handler
@@ -495,11 +495,12 @@ async fn fetch_planner_extra_seeds(
                 bundle.plans.len(),
                 bundle.unsatisfied.len(),
             );
-            bundle.seeds
+            let first_plan = bundle.plans.into_iter().next();
+            (bundle.seeds, first_plan)
         }
         Err(e) => {
             tracing::warn!("planner: fetch failed for {}: {e}", func.name);
-            Vec::new()
+            (Vec::new(), None)
         }
     }
 }
@@ -1544,9 +1545,7 @@ pub(crate) async fn run_explore(
         && name != "go"
     {
         return Err(format!(
-            "--planner={name}: only `go` is currently supported. \
-             The Go frontend advertises the `get_invocation_plan` capability; \
-             TypeScript and Rust frontends do not yet implement the planner."
+            "--planner={name}: only `go` is currently supported."
         )
         .into());
     }
@@ -2218,6 +2217,7 @@ pub(crate) async fn run_explore(
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
                 planner: planner.map(str::to_string),
+                default_execute_plan: None,
             };
 
             // Build concolic-specific config if needed.
@@ -2298,6 +2298,7 @@ pub(crate) async fn run_explore(
                     mcdc,
                     fuzz: resolved.fuzz.clone(),
                     planner: planner.map(str::to_string),
+                    default_execute_plan: None,
                 };
                 (Some(cc), seeds, users)
             } else {
@@ -2565,7 +2566,7 @@ pub(crate) async fn run_explore(
                 // `extra_seeds` channel on ObserveStageOptions, preserving
                 // the single-source-of-truth rule for parallel explorer and
                 // orchestrator paths.
-                let planner_extra_seeds: Vec<Vec<serde_json::Value>> =
+                let (planner_extra_seeds, planner_default_plan) =
                     fetch_planner_extra_seeds(
                         &mut task_frontend,
                         &item.explore_config,
@@ -2601,6 +2602,7 @@ pub(crate) async fn run_explore(
                         progress_hints,
                         resume_state,
                         extra_seeds: &planner_extra_seeds,
+                        execute_plan: planner_default_plan,
                     },
                 )
                 .instrument(tracing::info_span!("pipeline.observe"))

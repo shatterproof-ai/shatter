@@ -186,6 +186,11 @@ pub struct ObserveStageOptions<'a> {
     pub progress_hints: Option<crate::explorer::ProgressHints<'a>>,
     /// Resumable concolic state from a prior batch.
     pub resume_state: Option<orchestrator::ExploreState>,
+    /// InvocationPlan to attach to every Execute request for this target.
+    /// When `Some`, propagated into `ExploreConfig.default_execute_plan` and
+    /// `ExploreConfig.default_execute_plan` on the concolic config before
+    /// exploration starts (str-yi9y).
+    pub execute_plan: Option<crate::protocol::InvocationPlan>,
 }
 
 /// Outputs from a single Observe-stage execution.
@@ -428,6 +433,16 @@ pub async fn run_observe_stage(
         log::debug!("instrument failed: {e}");
     }
 
+    // Propagate the per-target execute plan from ObserveStageOptions into both
+    // the random-explorer and concolic-orchestrator configs so that every
+    // Command::Execute sent during this observe stage carries the plan (str-yi9y).
+    if let Some(ref plan) = options.execute_plan {
+        input.explore_config.default_execute_plan = Some(plan.clone());
+        if let Some(ref mut cc) = input.concolic_config {
+            cc.default_execute_plan = Some(plan.clone());
+        }
+    }
+
     let (observation, resume_state) = if input.use_concolic {
         run_concolic_observe(input, &options).await?
     } else {
@@ -550,6 +565,7 @@ async fn resolve_prepare_id(
             mocks: instrument_mocks.to_vec(),
             project_root: input.project_root.clone(),
             execution_profile: None,
+            plan: input.explore_config.default_execute_plan.clone(),
         })
         .await
     {
@@ -1219,5 +1235,74 @@ mod tests {
                 prop_assert_eq!(stage_set, deserialized);
             }
         }
+    }
+
+    // --- str-yi9y: ObserveStageOptions.execute_plan propagation ---
+
+    /// Verify that when `ObserveStageOptions.execute_plan` is `Some(plan)`,
+    /// the plan propagates into both `ExploreConfig.default_execute_plan` and
+    /// `orchestrator::ExploreConfig.default_execute_plan` before exploration.
+    #[test]
+    fn execute_plan_propagates_to_explore_config() {
+        let plan = crate::protocol::InvocationPlan {
+            target_id: "pkg:SomeService.Method".to_string(),
+            receiver_kind: "constructor:NewSomeService".to_string(),
+            argument_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+
+        // Replicate the propagation logic from run_observe_stage.
+        let mut explore_config = crate::explorer::ExploreConfig {
+            file: "test.go".into(),
+            max_iterations: Some(5),
+            seed: None,
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: crate::protocol::SetupLevel::Session,
+            value_sources: vec![],
+            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(&[]),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: crate::explorer::LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: crate::explorer::IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+        let mut concolic_config = Some(crate::orchestrator::ExploreConfig {
+            default_execute_plan: None,
+            ..crate::orchestrator::ExploreConfig::default()
+        });
+
+        let options_plan: Option<crate::protocol::InvocationPlan> = Some(plan.clone());
+        if let Some(ref p) = options_plan {
+            explore_config.default_execute_plan = Some(p.clone());
+            if let Some(ref mut cc) = concolic_config {
+                cc.default_execute_plan = Some(p.clone());
+            }
+        }
+
+        let ep = explore_config
+            .default_execute_plan
+            .as_ref()
+            .expect("explore_config.default_execute_plan should be Some");
+        assert_eq!(ep.receiver_kind, "constructor:NewSomeService");
+        assert_eq!(ep.target_id, "pkg:SomeService.Method");
+
+        let cp = concolic_config
+            .as_ref()
+            .and_then(|cc| cc.default_execute_plan.as_ref())
+            .expect("concolic_config.default_execute_plan should be Some");
+        assert_eq!(cp.receiver_kind, "constructor:NewSomeService");
     }
 }

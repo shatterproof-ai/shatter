@@ -657,6 +657,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);

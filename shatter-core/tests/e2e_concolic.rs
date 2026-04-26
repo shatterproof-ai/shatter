@@ -1004,6 +1004,7 @@ async fn explorer_explore_function_with_setup() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1231,6 +1232,7 @@ async fn concolic_mock_status_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1319,6 +1321,7 @@ async fn concolic_mock_result_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1414,6 +1417,7 @@ async fn concolic_mock_loop_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1856,6 +1860,125 @@ async fn go_method_planner_driven_e2e() {
         plan.label,
         outcome.short_reason,
         outcome.thrown_error,
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-yi9y AC3 — Orchestrator path threads `default_execute_plan` into Execute.
+///
+/// Validates that `orchestrator::ExploreConfig.default_execute_plan` propagates
+/// to every `Command::Execute` issued by the concolic orchestrator, so method
+/// targets dispatch into a real constructor rather than falling through to
+/// "unknown receiver kind".
+///
+/// Uses the same `service-method` fixture as `go_method_planner_driven_e2e`:
+/// `(*Service).Compute(x int) int` with a `New() *Service` constructor.
+/// The test obtains a plan via `fetch_planner_seeds`, sets it as the
+/// `default_execute_plan`, runs the concolic orchestrator for a small budget,
+/// and asserts that at least one execution reached `completed` (i.e., the plan
+/// was threaded into Execute and the Go launcher dispatched via the constructor).
+#[tokio::test]
+async fn go_method_planner_driven_via_orchestrator() {
+    use shatter_core::orchestrator::{ExploreConfig, explore};
+    use shatter_core::planner_consumer::fetch_planner_seeds;
+    use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
+
+    let mut frontend = spawn_go_frontend().await;
+    let fixture = h5_method_receiver_fixture();
+    assert!(
+        fixture.exists(),
+        "fixture missing: {} (was the worktree set up correctly?)",
+        fixture.display()
+    );
+    let file_str = fixture.to_string_lossy().into_owned();
+
+    // Analyze: the Go frontend emits a FunctionAnalysis with name "Compute".
+    let analyze_resp = frontend
+        .send(Command::Analyze {
+            file: file_str.clone(),
+            function: Some("Compute".into()),
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("analyze command transport failed");
+
+    let analysis = match analyze_resp.result {
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == "Compute")
+            .expect("FRONTEND GAP: analyze did not return a `Compute` entry"),
+        other => panic!("FRONTEND GAP: expected Analyze response, got {other:?}"),
+    };
+
+    // Consult the planner to get an InvocationPlan with a non-empty receiver_kind.
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+
+    let plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| !p.receiver_kind.is_empty())
+        .expect(
+            "PLANNER GAP: no plan with non-empty receiver_kind; receiver-aware planning \
+             (str-hy9b.H5) must emit ≥1 plan when a same-package constructor is in scope.",
+        );
+
+    // Build orchestrator config with the plan as the default Execute plan.
+    let config = ExploreConfig {
+        max_iterations: Some(5),
+        max_executions: Some(20),
+        plateau_threshold: 10,
+        default_execute_plan: Some(plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(0)]];
+
+    let (result, _) = explore(
+        &mut frontend,
+        "Compute",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("ORCHESTRATOR GAP: orchestrator::explore returned an error");
+
+    // At least one execution must have produced `completed`; if all executions
+    // returned `runtime_failed: "unknown receiver kind"`, the plan was not
+    // threaded into Execute.
+    let completed_count = result
+        .executions
+        .iter()
+        .filter(|e| {
+            e.outcome
+                .as_ref()
+                .map(|o| o.status == OutcomeStatus::Completed)
+                .unwrap_or(false)
+        })
+        .count();
+
+    assert!(
+        completed_count > 0,
+        "ORCHESTRATOR GAP: no execution reached `completed`; \
+         default_execute_plan was not propagated into Command::Execute. \
+         total_executions={}, outcomes={:?}",
+        result.executions.len(),
+        result
+            .executions
+            .iter()
+            .map(|e| e.outcome.as_ref().map(|o| (&o.status, o.short_reason.as_deref())))
+            .collect::<Vec<_>>(),
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");

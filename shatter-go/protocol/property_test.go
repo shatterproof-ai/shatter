@@ -983,7 +983,7 @@ func TestPropertyComputePrepareIDAlways16Hex(t *testing.T) {
 		for i := range mocks {
 			mocks[i] = genMock(t, fmt.Sprintf("mock%d", i))
 		}
-		id := computePrepareID(file, fn, mocks)
+		id := computePrepareID(file, fn, mocks, "")
 		if !hexPattern.MatchString(id) {
 			t.Fatalf("computePrepareID(%q, %q, mocks) = %q, want 16 lowercase hex chars", file, fn, id)
 		}
@@ -1001,8 +1001,8 @@ func TestPropertyComputePrepareIDDeterministic(t *testing.T) {
 		for i := range mocks {
 			mocks[i] = genMock(t, fmt.Sprintf("mock%d", i))
 		}
-		id1 := computePrepareID(file, fn, mocks)
-		id2 := computePrepareID(file, fn, mocks)
+		id1 := computePrepareID(file, fn, mocks, "")
+		id2 := computePrepareID(file, fn, mocks, "")
 		if id1 != id2 {
 			t.Fatalf("not deterministic: first=%q second=%q", id1, id2)
 		}
@@ -1028,8 +1028,8 @@ func TestPropertyComputePrepareIDMockOrderIndependent(t *testing.T) {
 		for i, m := range mocks {
 			reversed[n-1-i] = m
 		}
-		id1 := computePrepareID(file, fn, mocks)
-		id2 := computePrepareID(file, fn, reversed)
+		id1 := computePrepareID(file, fn, mocks, "")
+		id2 := computePrepareID(file, fn, reversed, "")
 		if id1 != id2 {
 			t.Fatalf("mock order affected ID: forward=%q reversed=%q", id1, id2)
 		}
@@ -1046,8 +1046,8 @@ func TestPropertyComputePrepareIDFileSensitive(t *testing.T) {
 			t.Skip()
 		}
 		fn := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn")
-		id1 := computePrepareID(file1, fn, nil)
-		id2 := computePrepareID(file2, fn, nil)
+		id1 := computePrepareID(file1, fn, nil, "")
+		id2 := computePrepareID(file2, fn, nil, "")
 		if id1 == id2 {
 			t.Fatalf("different files produced same ID: file1=%q file2=%q id=%q", file1, file2, id1)
 		}
@@ -1064,8 +1064,8 @@ func TestPropertyComputePrepareIDFunctionSensitive(t *testing.T) {
 		if fn1 == fn2 {
 			t.Skip()
 		}
-		id1 := computePrepareID(file, fn1, nil)
-		id2 := computePrepareID(file, fn2, nil)
+		id1 := computePrepareID(file, fn1, nil, "")
+		id2 := computePrepareID(file, fn2, nil, "")
 		if id1 == id2 {
 			t.Fatalf("different functions produced same ID: fn1=%q fn2=%q id=%q", fn1, fn2, id1)
 		}
@@ -1182,8 +1182,8 @@ func TestPropertyComputePrepareIDMocksSensitive(t *testing.T) {
 		file := rapid.StringMatching(`[a-z]{3,10}/[a-z]{3,10}\.go`).Draw(t, "file")
 		fn := rapid.StringMatching(`[A-Za-z][A-Za-z0-9]{0,10}`).Draw(t, "fn")
 		mock := genMock(t, "mock")
-		idWithout := computePrepareID(file, fn, nil)
-		idWith := computePrepareID(file, fn, []instrument.MockConfig{mock})
+		idWithout := computePrepareID(file, fn, nil, "")
+		idWith := computePrepareID(file, fn, []instrument.MockConfig{mock}, "")
 		if idWithout == idWith {
 			t.Fatalf("adding mock did not change ID: file=%q fn=%q mock=%q id=%q", file, fn, mock.Symbol, idWithout)
 		}
