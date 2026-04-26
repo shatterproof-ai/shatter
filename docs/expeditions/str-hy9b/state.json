@@ -1,35 +1,25 @@
 {
-  "active_branches": [
-    {
-      "base_head": "aef66b228ec8dc209c7973cd9d8d976a23fd077c",
-      "branch": "str-hy9b-28-h5-planner-driven-e2e",
-      "kind": "task",
-      "number": 28,
-      "slug": "h5-planner-driven-e2e",
-      "started_at": "2026-04-25T03:34:38Z",
-      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e"
-    }
-  ],
+  "active_branches": [],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
   "landing_lease": null,
   "last_completed": {
-    "branch": "str-hy9b-27-g3-hint-config-v1-expansion",
-    "completed_at": "2026-04-25T17:26:23Z",
+    "branch": "str-hy9b-28-h5-planner-driven-e2e",
+    "completed_at": "2026-04-26T18:48:08Z",
     "kind": "task",
-    "number": 27,
+    "number": 28,
     "outcome": "kept",
-    "slug": "g3-hint-config-v1-expansion",
-    "summary": "G3: hint_config_v1 expansion beyond policy.allow \u2014 loader parses defaults/mocks/generators with unknown-key warns; planner consumes defaults via PerTargetHints.Defaults precedence and generators via runtime-values registry; mocks emitted as deterministic MockSpec artifacts (substitution at execute time deferred to str-8v66). 7 loader tests + 11 planner tests including 2 rapid property tests. Pre-existing cli:clippy failure unrelated (str-7syr).",
-    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-27-g3-hint-config-v1-expansion"
+    "slug": "h5-planner-driven-e2e",
+    "summary": "H5: Planner-driven E2E for method-receiver dispatch. e2e_concolic now drives a real analyze → plan → execute roundtrip against examples/go/service-method via the Go frontend subprocess. Additive Command::Execute.plan and ExecuteResult.outcome on Rust; Go launcher dispatches method targets through the wrapper's receiver-kind switch driven by plan.receiver_kind; method targets without a plan now emit runtime_failed with short_reason containing \"unknown receiver kind\", retiring the pre-H5 unsupported/method_not_supported rejection. Followups str-yi9y, str-oegu filed P2 blocked-by str-ekjh. Pre-existing cli:clippy failure unrelated (str-7syr).",
+    "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-28-h5-planner-driven-e2e"
   },
   "next_action": "Create the next task branch from the rebased expedition base branch.",
   "next_task_number": 29,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "task_in_progress",
-  "updated_at": "2026-04-25T17:26:23Z"
+  "status": "ready_for_task",
+  "updated_at": "2026-04-26T18:48:08Z"
 }
