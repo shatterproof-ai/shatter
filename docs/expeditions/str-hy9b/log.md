@@ -476,6 +476,12 @@ These must be removed before starting those tasks under the expedition model.
 - Base branch rebased onto the primary branch.
 
 
+### 2026-04-26T21:54:29Z — Started task
+- Branch: `str-hy9b-30-a5-outcome-parity-ts-rust`.
+- Worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust`.
+- Base head at branch creation: `643b982521c42f34e218157847125750ea6d53f9`.
+
+
 ## RESUME HERE
 ### 2026-04-26T21:45:00Z — Closed task
 - Branch: `str-hy9b-29-h2-execute-plan-wiring`.
@@ -486,11 +492,11 @@ These must be removed before starting those tasks under the expedition model.
 ## RESUME HERE
 <!-- expedition-resume:start -->
 - Expedition: `str-hy9b`
-- Status: `ready_for_task`
+- Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `none`
-- Active task worktree: `none`
+- Active task branch: `str-hy9b-30-a5-outcome-parity-ts-rust`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust`
 - Last completed: `str-hy9b-29-h2-execute-plan-wiring (kept)`
-- Next action: Create the next task branch from the rebased expedition base branch.
+- Next action: Complete work on `str-hy9b-30-a5-outcome-parity-ts-rust` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust`.
 <!-- expedition-resume:end -->

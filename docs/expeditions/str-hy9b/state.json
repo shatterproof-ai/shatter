@@ -1,5 +1,15 @@
 {
-  "active_branches": [],
+  "active_branches": [
+    {
+      "base_head": "643b982521c42f34e218157847125750ea6d53f9",
+      "branch": "str-hy9b-30-a5-outcome-parity-ts-rust",
+      "kind": "task",
+      "number": 30,
+      "slug": "a5-outcome-parity-ts-rust",
+      "started_at": "2026-04-26T21:54:29Z",
+      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust"
+    }
+  ],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -15,11 +25,11 @@
     "summary": "str-yi9y + str-oegu: wire InvocationPlan through Execute and Prepare paths. default_execute_plan propagates from ObserveStageOptions into both explorer and concolic orchestrator ExploreConfig; all Command::Execute calls carry the plan so method targets dispatch via constructor. Command::Prepare gains optional plan field; computePrepareID keys on receiver_kind. New E2E test go_method_planner_driven_via_orchestrator (orchestrator path AC3). Two Rust round-trip tests for plan-bearing Prepare (AC4). CLAUDE.md Prepare Parity Contract updated (AC5).",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-29-h2-execute-plan-wiring"
   },
-  "next_action": "Create the next task branch from the rebased expedition base branch.",
-  "next_task_number": 30,
+  "next_action": "Complete work on `str-hy9b-30-a5-outcome-parity-ts-rust` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust`.",
+  "next_task_number": 31,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-26T21:39:48Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-26T21:54:29Z"
 }
