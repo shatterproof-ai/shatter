@@ -447,6 +447,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         }
     }
 

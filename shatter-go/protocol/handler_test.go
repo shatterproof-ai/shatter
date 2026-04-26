@@ -83,6 +83,11 @@ type fakePreparedExecution struct {
 	BinaryPath   string
 	InvokeResult *instrument.ExecuteResult
 	InvokeErr    error
+	// LastReceiverKind records the receiver_kind the most recent
+	// InvokeWithReceiverKind call received. Tests assert on this to
+	// verify the receiver-aware Execute path threads the plan through
+	// (str-hy9b.H5).
+	LastReceiverKind string
 }
 
 func (f *fakePreparedExecution) IsValid() bool {
@@ -108,6 +113,11 @@ func (f *fakePreparedExecution) Cleanup() {
 func (f *fakePreparedExecution) KillProc() {}
 
 func (f *fakePreparedExecution) Invoke(_ []json.RawMessage, _ bool) (*instrument.ExecuteResult, error) {
+	return f.InvokeWithReceiverKind("", nil, false)
+}
+
+func (f *fakePreparedExecution) InvokeWithReceiverKind(receiverKind string, _ []json.RawMessage, _ bool) (*instrument.ExecuteResult, error) {
+	f.LastReceiverKind = receiverKind
 	if f.InvokeErr != nil {
 		return nil, f.InvokeErr
 	}

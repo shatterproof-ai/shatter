@@ -152,6 +152,16 @@ type Request struct {
 	// remain correct regardless of this setting.
 	Capture *bool `json:"capture,omitempty"`
 
+	// Plan is an optional InvocationPlan from a prior get_invocation_plan
+	// response (str-hy9b.H5). When present on an Execute request, the
+	// frontend uses Plan.ReceiverKind to construct the receiver for method
+	// targets and dispatch through the launcher's wrapper-aware path. When
+	// absent, Execute takes its legacy free-function path with an empty
+	// receiver_kind. TS/Rust frontends ignore this field — see the
+	// `ts-rust-execute-plan-not-implemented` divergence in
+	// protocol/parity-matrix.yaml.
+	Plan *InvocationPlan `json:"plan,omitempty"`
+
 	// Setup/Teardown fields
 	Scope         string             `json:"scope,omitempty"`
 	Level         SetupLevel         `json:"level,omitempty"`

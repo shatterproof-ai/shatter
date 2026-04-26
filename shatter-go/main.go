@@ -25,7 +25,7 @@ func main() {
 	handler := protocol.NewHandlerWithWorkspace(os.Stdin, os.Stdout, os.Stderr, artifactWorkspace)
 	handler.RegisterPlanner(func(
 		requirements []protocol.InvocationRequirement,
-		lookup func(string) *protocol.FunctionAnalysis,
+		lookup func(string) *protocol.TargetContext,
 	) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
 		opts := planner.PlanRequirementsOptions{
 			PerTargetHints: hintConfigResolver(lookup),
@@ -48,12 +48,13 @@ func main() {
 // Loader errors are ignored at this layer because the existing safety-policy
 // gate (str-hy9b.G4) is the canonical place where a corrupt config surfaces
 // to the operator — silently re-failing here would double-report.
-func hintConfigResolver(lookup func(string) *protocol.FunctionAnalysis) func(string) planner.PerTargetHints {
+func hintConfigResolver(lookup func(string) *protocol.TargetContext) func(string) planner.PerTargetHints {
 	return func(targetID string) planner.PerTargetHints {
-		analysis := lookup(targetID)
-		if analysis == nil || analysis.SourceFile == "" {
+		ctx := lookup(targetID)
+		if ctx == nil || ctx.Analysis == nil || ctx.Analysis.SourceFile == "" {
 			return planner.PerTargetHints{}
 		}
+		analysis := ctx.Analysis
 		file, err := config.Load(analysis.SourceFile)
 		if err != nil {
 			return planner.PerTargetHints{}

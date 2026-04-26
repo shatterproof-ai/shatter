@@ -1,0 +1,16 @@
+# 2026/04/25 12:47:31.600638 [TestPlanRequirements_MethodInvariants] [rapid] draw paramCount: 1
+# 2026/04/25 12:47:31.600647 [TestPlanRequirements_MethodInvariants] [rapid] draw ctorCount: 1
+# 2026/04/25 12:47:31.600801 [TestPlanRequirements_MethodInvariants] [rapid] draw isPointer: false
+# 2026/04/25 12:47:31.600808 [TestPlanRequirements_MethodInvariants] [rapid] draw kind: "string"
+# 2026/04/25 12:47:31.600916 [TestPlanRequirements_MethodInvariants] expected ≥1 plan for method with 1 ctors and 1 primitive params
+# 
+v0.4.8#4073567511106043979
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1

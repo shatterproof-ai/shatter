@@ -870,6 +870,7 @@ async fn observe_one(
             capture: true,
             prepare_id: prepare_id.map(|s| s.to_string()),
             execution_profile: config.execution_profile.clone(),
+            plan: None,
         })
         .await?;
 
@@ -1619,6 +1620,7 @@ async fn refine_boundaries_async(
                     capture: false,
                     prepare_id: None,
                     execution_profile: None,
+                    plan: None,
                 })
                 .await
             {
@@ -1822,6 +1824,7 @@ pub async fn explore(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: None,
                     })
                     .await?;
 
@@ -1834,6 +1837,7 @@ pub async fn explore(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: None,
                     })
                     .await?;
 
@@ -2095,6 +2099,7 @@ pub async fn explore(
                                     capture: true,
                                     prepare_id: prepare_id.clone(),
                                     execution_profile: config.execution_profile.clone(),
+                                    plan: None,
                                 })
                                 .await?;
 
@@ -2540,6 +2545,7 @@ pub async fn explore(
                         capture: true,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: None,
                     })
                     .await;
                 if let Ok(resp) = resp
@@ -2573,6 +2579,7 @@ pub async fn explore(
                             capture: false,
                             prepare_id: prepare_id.clone(),
                             execution_profile: config.execution_profile.clone(),
+                            plan: None,
                         })
                         .await;
                     if let Ok(resp) = resp
@@ -2608,6 +2615,7 @@ pub async fn explore(
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
                                 execution_profile: config.execution_profile.clone(),
+                                plan: None,
                             })
                             .await;
 
@@ -2726,6 +2734,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         }
     }
@@ -4608,6 +4617,7 @@ mod tests {
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -4911,6 +4921,7 @@ mod tests {
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
                 performance: empty_perf(),
             },
             source: InputSource::Seed,
@@ -5115,6 +5126,7 @@ mod tests {
                     discovered_dependencies: vec![],
                     connection_failures: vec![],
                     runtime_crypto_boundaries: vec![],
+                    outcome: None,
                     performance: empty_perf(),
                 },
                 source: InputSource::Seed,

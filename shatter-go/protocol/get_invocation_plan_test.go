@@ -12,13 +12,13 @@ import (
 // package (which would create an import cycle).
 func stubPlanner(
 	requirements []InvocationRequirement,
-	lookup func(string) *FunctionAnalysis,
+	lookup func(string) *TargetContext,
 ) ([]InvocationPlan, []UnsatisfiedRequirement) {
 	var plans []InvocationPlan
 	var unsat []UnsatisfiedRequirement
 	for _, req := range requirements {
-		analysis := lookup(req.TargetID)
-		if analysis == nil {
+		ctx := lookup(req.TargetID)
+		if ctx == nil || ctx.Analysis == nil {
 			unsat = append(unsat, UnsatisfiedRequirement{
 				Kind:     UnsatisfiedRequirementKindComplexType,
 				TargetID: req.TargetID,
@@ -77,7 +77,7 @@ func TestHandleGetInvocationPlan_PlansSingleTarget(t *testing.T) {
 
 	planner := func(
 		requirements []InvocationRequirement,
-		_ func(string) *FunctionAnalysis,
+		_ func(string) *TargetContext,
 	) ([]InvocationPlan, []UnsatisfiedRequirement) {
 		// Ignore lookup; return plan for Add, unsat for Missing.
 		var plans []InvocationPlan

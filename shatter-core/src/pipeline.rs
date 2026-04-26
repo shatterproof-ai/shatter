@@ -877,6 +877,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
 
@@ -986,6 +987,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
 
@@ -1199,6 +1201,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let observe = ObservationOutput {
@@ -1360,6 +1363,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let observe = stub_observe_stage(
@@ -1419,6 +1423,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let observe = stub_observe_stage("opaque", 1, vec![(vec![json!(1)], vec![], result)]);
@@ -1469,6 +1474,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let observe = stub_observe_stage("solvable", 1, vec![(vec![json!(5)], vec![], result)]);
@@ -1538,6 +1544,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         // 3 branches in analysis: branch 0 (solvable, one direction), branch 1 (opaque, one direction),
@@ -1810,6 +1817,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
 

@@ -697,6 +697,10 @@ pub fn arb_execute_result() -> impl Strategy<Value = ExecuteResult> {
                     discovered_dependencies,
                     connection_failures,
                     runtime_crypto_boundaries,
+                    // outcome: None — proptest generator covers wire-compat
+                    // legacy shape; receiver-aware path is exercised via
+                    // explicit fixtures in e2e_concolic.rs (str-hy9b.H5).
+                    outcome: None,
                 }
             },
         )
@@ -987,6 +991,7 @@ pub fn arb_command() -> impl Strategy<Value = Command> {
                     capture: true,
                     prepare_id,
                     execution_profile: None,
+                    plan: None,
                 }
             }),
         (arb_ident(), arb_ident(), arb_setup_level()).prop_map(|(file, scope, level)| {

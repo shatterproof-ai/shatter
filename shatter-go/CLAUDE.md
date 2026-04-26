@@ -80,7 +80,7 @@ Go declares support for all four redesign feature capabilities in
 `protocol/parity-matrix.yaml` `feature_capabilities`:
 
 - `outcome` — standardized invocation-outcome wire shape (str-hy9b.A1).
-- `invocation_plan` — planner artifact schema (str-hy9b.E1). Go-only at this stage.
+- `invocation_plan` — planner artifact schema (str-hy9b.E1) and the receiver-aware planner pathway (str-hy9b.H5). Go-only at this stage. `planner.PlanRequirements` returns method-target plans with non-empty `receiver_kind` (e.g. `"constructor:NewService"`) and `argument_plans` per parameter; `Command::Execute.plan` (an optional InvocationPlan on Execute requests) is the bridge from the Rust core's `planner_consumer` into the Go launcher's wrapper-aware dispatch path. TS/Rust frontends accept `Execute.plan` on the wire (additive, omitempty) but ignore it — see `ts-rust-execute-plan-not-implemented` in `protocol/parity-matrix.yaml`.
 - `adapter_http_nethttp` — net/http handler adapter, ID `go/http-handler` (str-hy9b.G1). See the Invocation Model Parity Contract above. Go-specific.
 - `hint_config_v1` — `.shatter/config.yaml` hint schema (str-hy9b.G3). Go-only.
 
@@ -96,6 +96,8 @@ crashing or returning malformed data.
 ## Invocation Outcome Contract (str-hy9b.A2)
 
 Every execute response carries an `InvocationOutcome` under `response.outcome`. The status is one of `completed`, `build_failed`, `runtime_failed`, `timed_out`, or `unsupported` (the last for a function not present in the source). Non-completed statuses always carry a non-empty one-sentence `short_reason`; `build_failed` and `runtime_failed` also carry a `thrown_error` with compiler diagnostics or a panic trace. Classification lives in `failureOutcome()` (host-level errors) and `outcomeFromResult()` (harness-captured runtime state) in `protocol/handler.go`. Legacy `response.code` / `response.message` fields are preserved on error paths for backwards compatibility.
+
+**Method targets require a plan (str-hy9b.H5).** Method execution is dispatched through the launcher wrapper's receiver-kind switch, driven by `Command::Execute.plan.receiver_kind`. An Execute request that targets a method but does not carry a `plan` field falls into the wrapper's default case and surfaces a `runtime_failed` outcome whose `short_reason` (and `thrown_error.message`) contains `"unknown receiver kind"`. This is intentionally **not** the pre-H5 hard rejection: the C4 `unsupported` / `method_not_supported` outcome was retired so that pipeline behavior stays uniform regardless of plan presence — plan-aware callers (`planner_consumer` against the Go planner) get clean dispatch into a real constructor; plan-less callers get a uniform runtime failure rather than a special-cased capability rejection. Free-function targets are unaffected and still take the empty-receiver path. The `unsupported` / `method_not_supported` classification in `failureOutcome` is now reserved for host-level "receiver planning" errors that surface before the launcher runs (see the `receiver planning` arm), not for the launcher's own dispatch outcome.
 
 ## Safety Policy Contract (str-hy9b.G4)
 

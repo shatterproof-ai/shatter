@@ -866,6 +866,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.0,
                 cpu_time_us: 0,

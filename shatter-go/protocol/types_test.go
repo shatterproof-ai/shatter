@@ -977,3 +977,78 @@ func TestInvocationPlanRustFixtureDeserializes(t *testing.T) {
 		t.Errorf("unsatisfied kind = %q", resp.UnsatisfiedRequirements[0].Kind)
 	}
 }
+
+// TestRequestExecuteWithPlanRoundTrip locks the wire shape of an Execute
+// request that carries an InvocationPlan (str-hy9b.H5). The optional `plan`
+// field is the bridge from Rust core (planner_consumer output) into the Go
+// launcher's receiver-aware dispatch path. Wire-output divergence here would
+// break the H5 end-to-end pipeline.
+func TestRequestExecuteWithPlanRoundTrip(t *testing.T) {
+	function := "(*Service).DoIt"
+	req := Request{
+		ProtocolVersion: "0.1.0",
+		ID:              23,
+		Command:         "execute",
+		Function:        &function,
+		Inputs:          []json.RawMessage{json.RawMessage(`7`)},
+		Plan: &InvocationPlan{
+			TargetID:     "example.com/svc:(*Service).DoIt",
+			ReceiverKind: "constructor:New",
+			ArgumentPlans: []ValuePlan{
+				{
+					ParamIndex: 0,
+					ParamName:  "x",
+					Kind:       ValuePlanKindLiteral,
+					Literal:    json.RawMessage(`7`),
+					TypeHint:   "int",
+				},
+			},
+			Priority: 0,
+			Label:    "ctor_new",
+		},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"plan":`) {
+		t.Errorf("missing plan in serialized request: %s", data)
+	}
+	if !strings.Contains(string(data), `"receiver_kind":"constructor:New"`) {
+		t.Errorf("missing receiver_kind in plan: %s", data)
+	}
+	var decoded Request
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Plan == nil {
+		t.Fatal("decoded.Plan is nil")
+	}
+	if decoded.Plan.ReceiverKind != "constructor:New" {
+		t.Errorf("receiver_kind = %q", decoded.Plan.ReceiverKind)
+	}
+	if len(decoded.Plan.ArgumentPlans) != 1 {
+		t.Fatalf("argument_plans len = %d", len(decoded.Plan.ArgumentPlans))
+	}
+}
+
+// TestRequestExecuteWithoutPlanOmitsField guarantees the additive `plan`
+// field stays omitempty — a free-function Execute request must serialize
+// bit-identically to its pre-H5 shape.
+func TestRequestExecuteWithoutPlanOmitsField(t *testing.T) {
+	function := "Add"
+	req := Request{
+		ProtocolVersion: "0.1.0",
+		ID:              24,
+		Command:         "execute",
+		Function:        &function,
+		Inputs:          []json.RawMessage{json.RawMessage(`1`), json.RawMessage(`2`)},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"plan":`) {
+		t.Errorf("plan should be omitted when nil: %s", data)
+	}
+}

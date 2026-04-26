@@ -25,14 +25,31 @@ type preparedExecution interface {
 	IsValid() bool
 	Cleanup()
 	KillProc()
+	// Invoke runs the prepared target with the implementation's default
+	// receiver_kind (free-function path: "" baked in at prepare time).
 	Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error)
+	// InvokeWithReceiverKind dispatches a single invocation overriding the
+	// default receiver_kind. Used by the receiver-aware Execute path
+	// (str-hy9b.H5) to thread an InvocationPlan's receiver_kind into the
+	// wrapper's switch without rebuilding the launcher binary. The empty
+	// string means "use the default" (equivalent to plain Invoke).
+	InvokeWithReceiverKind(receiverKind string, inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error)
 }
 
 type preparedLauncher struct {
 	ArtifactDir string
 	BinaryPath  string
-	PlanJSON    json.RawMessage
-	DiscDeps    []instrument.DiscoveredDependency
+	// TargetID is the stable target identifier the wrapper's switch keys on
+	// (`<pkg.PkgPath>:<qualified_name>`). Stored separately from the
+	// default receiver_kind so receiver overrides don't risk picking up a
+	// stale or differently-shaped target_id from a hand-crafted plan.
+	TargetID string
+	// DefaultReceiverKind is the receiver_kind used by Invoke and by
+	// InvokeWithReceiverKind when the override is empty. The handler sets
+	// this at prepare time; for free functions it's "", for method-aware
+	// callers it can be e.g. "constructor:New".
+	DefaultReceiverKind string
+	DiscDeps            []instrument.DiscoveredDependency
 
 	mu      sync.Mutex
 	session *launcher.LauncherSession
@@ -69,9 +86,40 @@ func (p *preparedLauncher) KillProc() {
 	p.session = nil
 }
 
+// Invoke runs the prepared target with its default receiver_kind (set at
+// prepare time). For free-function targets that's "", which the wrapper
+// short-circuits to a direct call; for method-aware callers preferring
+// non-default receiver strategies, use InvokeWithReceiverKind instead.
 func (p *preparedLauncher) Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error) {
+	return p.InvokeWithReceiverKind("", inputs, capture)
+}
+
+// InvokeWithReceiverKind dispatches a single launcher invocation, overriding
+// the prepared target's DefaultReceiverKind when receiverKind is non-empty.
+// The launcher binary itself does not depend on receiver_kind (the wrapper
+// handles dispatch via PlanDescriptor.ReceiverKind), so a single prepared
+// binary can serve invocations across multiple receiver strategies — no
+// rebuild or cache invalidation is required when the override varies.
+//
+// The plan's TargetID is always taken from the prepared launcher's TargetID
+// (the wrapper's source of truth) regardless of caller input. Callers that
+// want to invoke a different target must build a separate prepared
+// launcher; mismatched target_ids would otherwise hit the wrapper's
+// "shatter: unknown target" error path.
+func (p *preparedLauncher) InvokeWithReceiverKind(receiverKind string, inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error) {
+	rk := receiverKind
+	if rk == "" {
+		rk = p.DefaultReceiverKind
+	}
+	planJSON, err := json.Marshal(map[string]string{
+		"target_id":     p.TargetID,
+		"receiver_kind": rk,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal launcher plan: %w", err)
+	}
 	req := launcher.LauncherRequest{
-		Plan:    p.PlanJSON,
+		Plan:    planJSON,
 		Inputs:  inputs,
 		Capture: capture,
 	}
@@ -132,12 +180,26 @@ func (p *preparedLauncher) closeSessionLocked() {
 	p.session = nil
 }
 
+// prepareDirectExecution builds a launcher binary and returns a
+// preparedLauncher whose DefaultPlanJSON encodes the supplied
+// defaultReceiverKind. Callers that omit receiverKind (pass "") get the
+// legacy free-function plan; method-aware callers should pass the
+// receiver_kind they expect Invoke to dispatch with by default. Per-Invoke
+// overrides via InvokeWithPlan still work regardless of the default —
+// the launcher binary is receiver-kind-agnostic.
+//
+// Note: the prepare cache key (computePrepareID) deliberately does NOT
+// include defaultReceiverKind because the launcher binary itself is
+// receiver-kind-independent. Caching across receiver strategies is
+// correct and avoids unnecessary rebuilds when a target is invoked
+// with multiple receiver_kind values.
 func (h *Handler) prepareDirectExecution(
 	file string,
 	function string,
 	mocks []instrument.MockConfig,
 	timing *frontendtiming.Collector,
 	phasePrefix string,
+	defaultReceiverKind string,
 ) (*preparedLauncher, error) {
 	absoluteFilePath, err := filepath.Abs(file)
 	if err != nil {
@@ -157,7 +219,7 @@ func (h *Handler) prepareDirectExecution(
 		return nil, fmt.Errorf("analyzing function: %w", err)
 	}
 
-	req, planJSON, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks)
+	req, targetID, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks)
 	finishAnalyze()
 	if err != nil {
 		return nil, fmt.Errorf("analyzing function: %w", err)
@@ -176,9 +238,10 @@ func (h *Handler) prepareDirectExecution(
 	}
 
 	return &preparedLauncher{
-		BinaryPath: result.BinaryPath,
-		PlanJSON:   planJSON,
-		DiscDeps:   instrument.DiscoverDependencies(absoluteFilePath, mocks),
+		BinaryPath:          result.BinaryPath,
+		TargetID:            targetID,
+		DefaultReceiverKind: defaultReceiverKind,
+		DiscDeps:            instrument.DiscoverDependencies(absoluteFilePath, mocks),
 	}, nil
 }
 
@@ -228,33 +291,37 @@ func resolveExecutionWorkspace(file string) (*workspace.Workspace, error) {
 	return ws, nil
 }
 
+// buildDirectExecutionRequest constructs the BuildRequest + canonical
+// target_id for a single Execute target. The launcher binary itself is
+// receiver-kind-agnostic (the wrapper switches on PlanDescriptor.ReceiverKind
+// at invocation time), so this helper deliberately does not bake the
+// receiver_kind into its output — each Invoke / InvokeWithReceiverKind
+// call produces a fresh PlanDescriptor with the per-call receiver_kind.
+// This keeps the prepared binary cacheable across receiver strategies.
+//
+// The returned target_id is the wrapper's stable identifier
+// (`<pkg.PkgPath>:<qualified_name>`); callers store it on the prepared
+// launcher so every subsequent invocation hits the wrapper's correct
+// switch case regardless of how the high-level caller named the target.
 func buildDirectExecutionRequest(
 	pkg *packages.Package,
 	absoluteFilePath string,
 	function string,
 	mocks []instrument.MockConfig,
-) (build.BuildRequest, json.RawMessage, error) {
+) (build.BuildRequest, string, error) {
 	targets := wrapper.BuildWrapperTargets(pkg)
 	target, err := selectDirectWrapperTarget(targets, function)
 	if err != nil {
-		return build.BuildRequest{}, nil, err
+		return build.BuildRequest{}, "", err
 	}
 
 	packageDir, err := packageDirForBuild(pkg)
 	if err != nil {
-		return build.BuildRequest{}, nil, err
+		return build.BuildRequest{}, "", err
 	}
 	modulePath, moduleDir, err := moduleInfoForBuild(pkg, packageDir)
 	if err != nil {
-		return build.BuildRequest{}, nil, err
-	}
-
-	planJSON, err := json.Marshal(map[string]string{
-		"target_id":     target.ID,
-		"receiver_kind": "",
-	})
-	if err != nil {
-		return build.BuildRequest{}, nil, fmt.Errorf("marshal plan: %w", err)
+		return build.BuildRequest{}, "", err
 	}
 
 	return build.BuildRequest{
@@ -267,24 +334,28 @@ func buildDirectExecutionRequest(
 		TargetPackageDir:       packageDir,
 		InstrumentedSourceFile: packageFileForBuild(pkg, absoluteFilePath),
 		Mocks:                  mocks,
-	}, planJSON, nil
+	}, target.ID, nil
 }
 
+// selectDirectWrapperTarget returns the wrapper target matching `function`.
+// Method targets (str-hy9b.H5) are now legal first-class targets; selection
+// prefers a free function when both share a name, matching pre-H5 behavior
+// for the free-function path.
 func selectDirectWrapperTarget(targets []wrapper.WrapperTarget, function string) (wrapper.WrapperTarget, error) {
-	var sawMethod bool
-	for _, target := range targets {
+	var methodMatch *wrapper.WrapperTarget
+	for i, target := range targets {
 		if target.SymbolName != function {
 			continue
 		}
 		if target.Kind == wrapper.TargetKindFunction {
 			return target, nil
 		}
-		if target.Kind == wrapper.TargetKindMethod {
-			sawMethod = true
+		if target.Kind == wrapper.TargetKindMethod && methodMatch == nil {
+			methodMatch = &targets[i]
 		}
 	}
-	if sawMethod {
-		return wrapper.WrapperTarget{}, fmt.Errorf("method target not supported: %s requires receiver planning (Phase E)", function)
+	if methodMatch != nil {
+		return *methodMatch, nil
 	}
 	return wrapper.WrapperTarget{}, fmt.Errorf("function not found: %s", function)
 }
