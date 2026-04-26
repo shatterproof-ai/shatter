@@ -1214,6 +1214,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 1.0,
                 cpu_time_us: 800,
@@ -1255,6 +1256,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 5.0,
                 cpu_time_us: 3000,
@@ -1333,6 +1335,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.1,
                 cpu_time_us: 50,
@@ -1407,6 +1410,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 2.0,
                 cpu_time_us: 1500,
@@ -1445,6 +1449,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: PerformanceMetrics {
                 wall_time_ms: 0.5,
                 cpu_time_us: 300,

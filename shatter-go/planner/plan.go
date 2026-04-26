@@ -12,12 +12,21 @@ import (
 // InvocationRequirement when PlanOptions.MaxPlansPerTarget is zero.
 const DefaultMaxPlansPerRequirement = 5
 
-// AnalysisLookup resolves the analyzed parameter metadata for a single
-// target_id. The handler supplies this closure so Plan can stay agnostic of
-// the caller's analysis cache layout. A nil return means the target has not
-// been analyzed and Plan should emit UnsatisfiedRequirementKindComplexType
-// with a "not analyzed" detail.
-type AnalysisLookup func(targetID string) *protocol.FunctionAnalysis
+// TargetLookup resolves a target_id to the per-target context the planner
+// needs. The handler supplies this closure so Plan stays agnostic of the
+// caller's analysis cache layout.
+//
+// Callers must populate `Analysis` whenever the target is known. For method
+// targets, callers must additionally populate `Target` (with Receiver shape
+// and HasTypeParams) and `Constructors` (same-package constructor candidates
+// whose TargetType matches the receiver type) to enable receiver-aware
+// planning. Callers that only need free-function planning may leave Target
+// and Constructors nil; PlanRequirements will fall back to the legacy free-
+// function path for any non-method analysis.
+//
+// A nil return means the target was not analyzed and PlanRequirements should
+// emit UnsatisfiedRequirementKindComplexType with detail "target not analyzed".
+type TargetLookup func(targetID string) *protocol.TargetContext
 
 // PlanRequirementsOptions bundles Compose-level knobs.
 type PlanRequirementsOptions struct {
@@ -33,6 +42,10 @@ type PlanRequirementsOptions struct {
 	// planner. A nil resolver disables hint config consumption (the
 	// behaviour before str-hy9b.G3).
 	PerTargetHints func(targetID string) PerTargetHints
+	// MaxReceiverPlans caps the receiver plan count for a single method
+	// target. Zero means DefaultMaxReceiverPlans (3). Free-function
+	// requirements ignore this knob.
+	MaxReceiverPlans int
 }
 
 // PerTargetHints is the resolved hint_config_v1 entry for a single target.
@@ -118,20 +131,22 @@ func ResolveMockSpecs(targetID string, hints PerTargetHints) []MockSpec {
 	return specs
 }
 
-// PlanRequirements fans out PlanParams + Compose for every requirement.
+// PlanRequirements fans out PlanReceivers + PlanParams + Compose for every
+// requirement.
 //
-// For each requirement, Plan looks up the target's FunctionAnalysis via lookup
-// and plans parameters only — this release handles free functions only;
-// method targets get an UnsatisfiedRequirementKindNoConstructor with a
-// "receiver planning deferred" detail (planner receiver wiring is tracked by
-// str-hy9b.H2 follow-ups).
+// For each requirement the planner consults `lookup` for the per-target
+// context. Free functions take the existing parameter-only path. Method
+// targets — distinguished by `TargetContext.Target.Kind == TargetKindMethod`,
+// or as a fallback by the legacy `(*Type).Method` qualified-name shape when
+// only `Analysis` is populated — invoke `PlanReceivers` with the supplied
+// constructor candidates and compose them with the parameter plans.
 //
 // Returns aggregated plans (ordered by requirement index) and aggregated
 // unsatisfied requirements. Callers that need deterministic ordering across
 // requirements should pass an already-ordered slice.
 func PlanRequirements(
 	requirements []protocol.InvocationRequirement,
-	lookup AnalysisLookup,
+	lookup TargetLookup,
 	opts PlanRequirementsOptions,
 ) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
 	var plans []protocol.InvocationPlan
@@ -146,11 +161,11 @@ func PlanRequirements(
 
 func planOne(
 	req protocol.InvocationRequirement,
-	lookup AnalysisLookup,
+	lookup TargetLookup,
 	opts PlanRequirementsOptions,
 ) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
-	analysis := lookup(req.TargetID)
-	if analysis == nil {
+	ctx := lookup(req.TargetID)
+	if ctx == nil || ctx.Analysis == nil {
 		return nil, []protocol.UnsatisfiedRequirement{{
 			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
 			TargetID: req.TargetID,
@@ -158,12 +173,8 @@ func planOne(
 		}}
 	}
 
-	if isMethodQualifiedName(analysis.Name) {
-		return nil, []protocol.UnsatisfiedRequirement{{
-			Kind:     protocol.UnsatisfiedRequirementKindNoConstructor,
-			TargetID: req.TargetID,
-			Detail:   fmt.Sprintf("method receiver planning is not wired yet for %s", analysis.Name),
-		}}
+	if isMethodTarget(ctx) {
+		return planMethod(req, ctx, opts)
 	}
 
 	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
@@ -176,7 +187,7 @@ func planOne(
 			paramOpts.GeneratorsByName = hints.Generators
 		}
 	}
-	paramMatrix, paramUnsat := PlanParams(req.TargetID, analysis.Params, paramOpts)
+	paramMatrix, paramUnsat := PlanParams(req.TargetID, ctx.Analysis.Params, paramOpts)
 
 	composeOpts := ComposeOptions{
 		MaxPlans:  opts.MaxPlansPerTarget,
@@ -184,6 +195,58 @@ func planOne(
 		IsMethod:  false,
 	}
 	return Compose(req.TargetID, nil, paramMatrix, paramUnsat, composeOpts)
+}
+
+// planMethod composes receiver plans (from PlanReceivers) with parameter
+// plans for a method target. Returns NoConstructor when no receiver strategy
+// applies — callers map this to AC #4's "planner gap" diagnostic.
+func planMethod(
+	req protocol.InvocationRequirement,
+	ctx *protocol.TargetContext,
+	opts PlanRequirementsOptions,
+) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
+	target := ctx.Target
+	if target == nil {
+		// Caller surfaced a method-shaped analysis but did not provide the
+		// Go-internal DiscoveredTarget. Without Receiver shape we cannot
+		// invoke PlanReceivers; emit NoConstructor with a detail that names
+		// the upstream gap so producers can debug the lookup.
+		return nil, []protocol.UnsatisfiedRequirement{{
+			Kind:     protocol.UnsatisfiedRequirementKindNoConstructor,
+			TargetID: req.TargetID,
+			Detail:   fmt.Sprintf("method target %s missing DiscoveredTarget context", ctx.Analysis.Name),
+		}}
+	}
+
+	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
+		SamePackageConstructors:        ctx.Constructors,
+		ReceiverIsCompositeLiteralSafe: false,
+		MaxPlans:                       opts.MaxReceiverPlans,
+	})
+	if receiverUnsat != nil {
+		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}
+	}
+
+	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
+	paramMatrix, paramUnsat := PlanParams(req.TargetID, ctx.Analysis.Params, paramOpts)
+
+	composeOpts := ComposeOptions{
+		MaxPlans:  opts.MaxPlansPerTarget,
+		BeamWidth: opts.MaxPlansPerTarget,
+		IsMethod:  true,
+	}
+	return Compose(req.TargetID, receiverPlans, paramMatrix, paramUnsat, composeOpts)
+}
+
+// isMethodTarget reports whether the planner should follow the method path.
+// Prefers the explicit DiscoveredTarget.Kind when available (handler-built
+// contexts always populate this for methods); falls back to the legacy
+// qualified-name heuristic for callers that only carry FunctionAnalysis.
+func isMethodTarget(ctx *protocol.TargetContext) bool {
+	if ctx.Target != nil {
+		return ctx.Target.Kind == protocol.TargetKindMethod
+	}
+	return isMethodQualifiedName(ctx.Analysis.Name)
 }
 
 // isMethodQualifiedName returns true when name is formatted like a Go method

@@ -183,11 +183,72 @@ func present() {}
 	}
 }
 
-// TestExecuteMethodTargetEmitsUnsupportedOutcome verifies C4: requesting a
-// method target produces an InvocationOutcome with status=unsupported and a
-// short_reason documenting that receiver planning is pending (Phase E), rather
-// than a build failure.
-func TestExecuteMethodTargetEmitsUnsupportedOutcome(t *testing.T) {
+// TestExecuteMethodTargetWithPlanCompletes verifies the H5 (str-hy9b.H5)
+// happy path: an Execute request that carries a `plan` whose `receiver_kind`
+// names a known constructor dispatches through the wrapper's receiver-kind
+// switch, runs the method against the constructed receiver, and produces
+// outcome=completed. This is the protocol-level mirror of the Rust e2e_concolic
+// receiver-aware test and locks the planner→Execute→launcher contract on the
+// Go side.
+func TestExecuteMethodTargetWithPlanCompletes(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "service.go")
+	src := `package main
+
+type Service struct{}
+
+func New() *Service { return &Service{} }
+
+func (s *Service) Compute(n int) int {
+	if n > 0 {
+		return n + 1
+	}
+	return -1
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	planJSON := `{"target_id":"main:(*Service).Compute","receiver_kind":"constructor:New","argument_plans":[],"priority":0}`
+	extra := fmt.Sprintf(`"file":"%s","function":"Compute","inputs":[5],"plan":%s`, tmp, planJSON)
+	req := reqJSON(1, "execute", extra)
+	resp := sendRecv(t, req)
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		var errDetail string
+		if resp.Outcome.ThrownError != nil {
+			errDetail = fmt.Sprintf(" thrown_error.message=%q error_type=%q", resp.Outcome.ThrownError.Message, resp.Outcome.ThrownError.ErrorType)
+		}
+		var reason string
+		if resp.Outcome.ShortReason != nil {
+			reason = *resp.Outcome.ShortReason
+		}
+		t.Errorf("outcome.Status = %q, want completed (H5: plan-aware method execute, short_reason=%q%s)", resp.Outcome.Status, reason, errDetail)
+	}
+	if resp.Outcome.ReturnValue == nil {
+		t.Errorf("expected non-nil ReturnValue for completed outcome, got %+v", resp.Outcome)
+	} else {
+		got := strings.TrimSpace(string(resp.Outcome.ReturnValue))
+		if got != "6" {
+			t.Errorf("ReturnValue = %q, want 6 (= 5+1)", got)
+		}
+	}
+}
+
+// TestExecuteMethodTargetWithoutPlanEmitsRuntimeFailure verifies the H5
+// (str-hy9b.H5) contract: a method target now goes through the launcher's
+// receiver-aware dispatch path. Calling Execute on a method without supplying
+// a `plan` field produces a runtime failure (the wrapper's receiver-kind
+// switch emits "unknown receiver kind" because the default plan carries an
+// empty receiver_kind), NOT the pre-H5 `unsupported` outcome with
+// `method_not_supported`. The C4 unsupported gate has been deliberately
+// removed: a planner-aware caller (str-hy9b.H5) should pass `plan` so the
+// receiver_kind dispatches into a real constructor; callers that omit the
+// plan get a clean `runtime_failed` outcome instead of a hard rejection,
+// keeping pipeline behavior uniform regardless of plan presence.
+func TestExecuteMethodTargetWithoutPlanEmitsRuntimeFailure(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "service.go")
 	src := `package main
 
@@ -204,13 +265,13 @@ func (s *Service) Compute(n int) int { return s.value + n }
 	if resp.Outcome == nil {
 		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
 	}
-	if resp.Outcome.Status != OutcomeStatusUnsupported {
-		t.Errorf("outcome.Status = %q, want unsupported (response: %+v)", resp.Outcome.Status, resp)
+	if resp.Outcome.Status != OutcomeStatusRuntimeFailed {
+		t.Errorf("outcome.Status = %q, want runtime_failed (H5: method without plan should fall through to runtime error, response: %+v)", resp.Outcome.Status, resp)
 	}
-	if resp.Outcome.ShortReason == nil || !strings.Contains(*resp.Outcome.ShortReason, "receiver planning") {
-		t.Errorf("outcome.ShortReason = %v, want message containing 'receiver planning'", resp.Outcome.ShortReason)
+	if resp.Outcome.ThrownError == nil {
+		t.Fatalf("expected ThrownError populated for runtime_failed outcome (response: %+v)", resp)
 	}
-	if resp.Outcome.ThrownError == nil || resp.Outcome.ThrownError.ErrorType != "method_not_supported" {
-		t.Errorf("outcome.ThrownError.ErrorType = %v, want method_not_supported", resp.Outcome.ThrownError)
+	if !strings.Contains(resp.Outcome.ThrownError.Message, "unknown receiver kind") {
+		t.Errorf("ThrownError.Message should mention 'unknown receiver kind' from wrapper switch, got %q", resp.Outcome.ThrownError.Message)
 	}
 }

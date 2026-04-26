@@ -515,6 +515,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             })
             .await
             .expect("execute failed");
@@ -606,6 +607,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             })
             .await
             .expect("execute failed");
@@ -647,6 +649,7 @@ mod tests {
                     capture: true,
                     prepare_id: None,
                     execution_profile: None,
+                    plan: None,
                 })
                 .entered();
             }

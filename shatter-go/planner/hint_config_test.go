@@ -122,7 +122,7 @@ func TestPlanRequirements_PerTargetHints_DefaultsApplied(t *testing.T) {
 		},
 		SourceFile: "math.go",
 	}
-	lookup := func(string) *protocol.FunctionAnalysis { return analysis }
+	lookup := func(string) *protocol.TargetContext { return &protocol.TargetContext{Analysis: analysis} }
 
 	hints := planner.PerTargetHints{
 		Defaults: map[string]planner.ParamValueHint{
@@ -168,7 +168,7 @@ func TestPlanRequirements_PerTargetHints_GeneratorApplied(t *testing.T) {
 			{Name: "ctx", Type: protocol.TypeInfo{Kind: "int"}, TypeName: strPtr("int")},
 		},
 	}
-	lookup := func(string) *protocol.FunctionAnalysis { return analysis }
+	lookup := func(string) *protocol.TargetContext { return &protocol.TargetContext{Analysis: analysis} }
 	hints := planner.PerTargetHints{
 		Generators: map[string]string{"ctx": "context.Context"},
 	}

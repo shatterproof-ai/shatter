@@ -81,6 +81,16 @@ implement them; conformance tests (`npx task conformance`) expect TS to
 return a clean "capability not supported" response rather than crashing
 or returning malformed data when these are probed.
 
+The Execute command's optional `plan` field (an `InvocationPlan` from
+`get_invocation_plan`, added in str-hy9b.H5) is accepted on the wire but
+ignored by the TS executor. This is a tracked divergence — see the
+`ts-rust-execute-plan-not-implemented` entry in
+`protocol/parity-matrix.yaml`. TS callers that pass `plan` should expect
+identical behavior to a request without `plan`; the field exists so that
+plan-aware callers can speak a single wire shape across frontends without
+branching on language. Implementation is deferred until TS grows a
+planner.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

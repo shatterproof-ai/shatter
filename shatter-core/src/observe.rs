@@ -196,6 +196,7 @@ pub async fn observe_single(
             capture,
             prepare_id: prepare_id.map(|s| s.to_string()),
             execution_profile: execution_profile.cloned(),
+            plan: None,
         })
         .await?;
 
@@ -555,6 +556,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         }
     }
 
@@ -778,6 +780,7 @@ mod proptests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         })
     }
 

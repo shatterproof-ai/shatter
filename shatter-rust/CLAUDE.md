@@ -60,6 +60,16 @@ implement them; conformance tests (`npx task conformance`) expect Rust to
 return a clean "capability not supported" response rather than crashing
 or returning malformed data when these are probed.
 
+The Execute command's optional `plan` field (an `InvocationPlan` from
+`get_invocation_plan`, added in str-hy9b.H5) is accepted on the wire but
+ignored by the Rust frontend. This is a tracked divergence — see the
+`ts-rust-execute-plan-not-implemented` entry in
+`protocol/parity-matrix.yaml`. Rust callers that pass `plan` should
+expect identical behavior to a request without `plan`; the field exists
+so plan-aware callers can speak a single wire shape across frontends
+without branching on language. Implementation is deferred until the
+Rust frontend grows method-target invocation support.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).

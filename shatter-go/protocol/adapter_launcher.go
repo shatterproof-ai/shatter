@@ -3,7 +3,6 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -95,7 +94,11 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 
 	return &preparedLauncher{
 		BinaryPath: binaryPath,
-		PlanJSON:   json.RawMessage(`{}`),
+		// Adapter-owned launcher exposes a synthetic invocation surface
+		// rather than a wrapper-target-keyed switch; TargetID and the
+		// receiver_kind override are unused on the adapter path. Leave
+		// them blank — the adapter's launcher main_source generates its
+		// own dispatch and ignores PlanDescriptor entirely.
 	}, nil
 }
 

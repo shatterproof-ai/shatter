@@ -365,6 +365,16 @@ pub enum Command {
         /// Opaque execution profile selected for this target, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_profile: Option<ExecutionProfile>,
+        /// Optional InvocationPlan from `get_invocation_plan`. When present,
+        /// the frontend uses the plan's `receiver_kind` to construct the
+        /// receiver (for method targets) before invoking the function with
+        /// `inputs`. When absent, the frontend takes its legacy free-function
+        /// path with an empty receiver_kind. Only the Go frontend currently
+        /// consumes this field (str-hy9b.H5); TypeScript and Rust frontends
+        /// ignore it. See `protocol/parity-matrix.yaml::invocation_plan` and
+        /// the `ts-rust-execute-plan-not-implemented` divergence entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<InvocationPlan>,
     },
     /// Run a setup file to initialize state before function execution.
     Setup {
@@ -974,7 +984,7 @@ pub struct InvocationOutcome {
 }
 
 /// Result of executing an instrumented function.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecuteResult {
     /// Return value from the function, if it returned normally.
     pub return_value: Option<serde_json::Value>,
@@ -1021,6 +1031,17 @@ pub struct ExecuteResult {
     /// on the plaintext then re-encrypt to produce valid ciphertext inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_crypto_boundaries: Vec<RuntimeCryptoBoundary>,
+    /// Structured invocation outcome.
+    ///
+    /// The Go frontend always emits `outcome` on Execute responses (see
+    /// `outcomeFromResult` in `shatter-go/protocol/handler.go`). Adding the
+    /// field here is purely additive on the Rust side — the wire shape was
+    /// already established by the Go frontend; this catches up the Rust
+    /// parser so callers can read `outcome.status` without going through
+    /// raw JSON. TS / Rust frontends do not currently emit this field;
+    /// callers must treat None as "outcome not reported by frontend".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<InvocationOutcome>,
 }
 
 /// Performance metrics from a single execution.
@@ -1323,6 +1344,7 @@ mod tests {
                 capture: true,
                 prepare_id: Some("a1b2c3d4e5f6a7b8".into()),
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -1339,6 +1361,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1360,6 +1383,7 @@ mod tests {
                 capture: true,
                 prepare_id: Some("deadbeef12345678".into()),
                 execution_profile: None,
+                plan: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -1378,6 +1402,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -1544,6 +1569,7 @@ mod tests {
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
             })),
         ));
     }
@@ -1577,6 +1603,7 @@ mod tests {
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
             })),
         ));
     }
@@ -1616,6 +1643,7 @@ mod tests {
                     },
                 ],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
             })),
         ));
     }
@@ -1679,6 +1707,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(
@@ -1704,6 +1733,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(
@@ -1729,6 +1759,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(
@@ -2070,6 +2101,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -2453,6 +2485,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -2482,6 +2515,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2505,6 +2539,7 @@ mod tests {
                 capture: false,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         ));
     }
@@ -2534,6 +2569,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -2556,6 +2592,7 @@ mod tests {
                 capture: false,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             },
         );
         let json = serde_json::to_value(&req).expect("serialize");
@@ -3047,6 +3084,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert!(validate_execute_result(&result));
     }
@@ -3078,6 +3116,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert!(!validate_execute_result(&result));
     }
@@ -3596,5 +3635,143 @@ mod tests {
         let json = serde_json::to_string(&outcome).expect("serialize");
         let decoded: InvocationOutcome = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, outcome);
+    }
+
+    /// Round-trip an Execute command carrying an InvocationPlan (str-hy9b.H5).
+    /// Verifies the new `plan` field serializes under the expected key, omits
+    /// when None, and survives a Rust-only round-trip.
+    #[test]
+    fn execute_command_with_plan_round_trips() {
+        let plan = InvocationPlan {
+            target_id: "example.com/svc:(*Service).DoIt".into(),
+            receiver_kind: "constructor:New".into(),
+            argument_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "x".into(),
+                kind: ValuePlanKind::Literal,
+                literal: Some(serde_json::json!(7)),
+                type_hint: "int".into(),
+            }],
+            priority: 0,
+            label: "ctor_new".into(),
+        };
+        let request = Request::new(
+            17,
+            Command::Execute {
+                function: "(*Service).DoIt".into(),
+                inputs: vec![serde_json::json!(7)],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+                prepare_id: None,
+                execution_profile: None,
+                plan: Some(plan.clone()),
+            },
+        );
+        let json = serde_json::to_string(&request).expect("serialize");
+        assert!(
+            json.contains("\"plan\""),
+            "expected plan field present, got: {json}"
+        );
+        assert!(
+            json.contains("\"receiver_kind\":\"constructor:New\""),
+            "expected receiver_kind in plan, got: {json}"
+        );
+        let decoded: Request = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, request);
+    }
+
+    /// Round-trip an Execute command with no plan: `plan` MUST be omitted from
+    /// the JSON output so the wire shape stays bit-identical to pre-H5
+    /// behavior. This is the parity guarantee for the additive field.
+    #[test]
+    fn execute_command_without_plan_omits_field() {
+        let request = Request::new(
+            18,
+            Command::Execute {
+                function: "Add".into(),
+                inputs: vec![serde_json::json!(1), serde_json::json!(2)],
+                mocks: vec![],
+                setup_context: None,
+                capture: true,
+                prepare_id: None,
+                execution_profile: None,
+                plan: None,
+            },
+        );
+        let json = serde_json::to_string(&request).expect("serialize");
+        assert!(
+            !json.contains("\"plan\""),
+            "expected plan field omitted when None, got: {json}"
+        );
+        let decoded: Request = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, request);
+    }
+
+    /// Round-trip an Execute response carrying an `outcome` field (str-hy9b.H5
+    /// step 2b). The Go frontend always emits `outcome`; previously the Rust
+    /// parser silently dropped it. This test locks the new Rust-side field so
+    /// callers can read `outcome.status` after a round-trip.
+    #[test]
+    fn execute_result_with_outcome_round_trips() {
+        let outcome = InvocationOutcome {
+            status: OutcomeStatus::Completed,
+            short_reason: None,
+            return_value: Some(serde_json::json!(1)),
+            thrown_error: None,
+            side_effects: vec![],
+        };
+        let result = ExecuteResult {
+            return_value: Some(serde_json::json!(1)),
+            outcome: Some(outcome.clone()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(
+            json.contains("\"outcome\""),
+            "expected outcome field present, got: {json}"
+        );
+        assert!(
+            json.contains("\"status\":\"completed\""),
+            "expected outcome.status='completed', got: {json}"
+        );
+        let decoded: ExecuteResult =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.outcome, Some(outcome));
+    }
+
+    /// Wire-shape fixture: a Go-emitted Execute response with `outcome`
+    /// populated must round-trip cleanly into the Rust `ExecuteResult`,
+    /// preserving outcome.status. Mirrors the JSON shape produced by
+    /// `shatter-go/protocol/handler.go::outcomeFromResult`.
+    #[test]
+    fn go_execute_response_with_outcome_deserializes() {
+        let go_json = r#"{
+            "protocol_version": "1.0.0",
+            "id": 9,
+            "status": "execute",
+            "return_value": 1,
+            "branch_path": [],
+            "lines_executed": [],
+            "performance": {
+                "wall_time_ms": 0.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            },
+            "outcome": {
+                "status": "completed",
+                "return_value": 1
+            }
+        }"#;
+        let response: Response = serde_json::from_str(go_json).expect("deserialize");
+        match response.result {
+            ResponseResult::Execute(er) => {
+                let outcome = er.outcome.expect("outcome should be parsed");
+                assert_eq!(outcome.status, OutcomeStatus::Completed);
+                assert_eq!(outcome.return_value, Some(serde_json::json!(1)));
+            }
+            other => panic!("expected Execute, got: {other:?}"),
+        }
     }
 }

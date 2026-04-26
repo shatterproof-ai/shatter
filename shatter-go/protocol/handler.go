@@ -7,12 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"io"
 	"log/slog"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/generators"
@@ -92,10 +95,17 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 // PlannerFunc services get_invocation_plan requests. Callers wire in the real
 // planner via RegisterPlanner; keeping it a function pointer avoids a
 // protocol→planner import cycle. The lookup closure resolves a target_id to
-// its cached FunctionAnalysis or nil when the target was not analyzed.
+// its TargetContext (analysis + DiscoveredTarget + same-package constructors)
+// or nil when the target was not analyzed.
+//
+// The handler builds TargetContext on demand for each requirement: cached
+// FunctionAnalysis lookup as today, plus on-demand package reload to recover
+// Receiver shape and HasTypeParams (Go-internal fields that are not on the
+// wire FunctionAnalysis) and to scan same-package constructor candidates.
+// See handler.handleGetInvocationPlan and handler.buildTargetContext.
 type PlannerFunc func(
 	requirements []InvocationRequirement,
-	lookup func(targetID string) *FunctionAnalysis,
+	lookup func(targetID string) *TargetContext,
 ) (plans []InvocationPlan, unsatisfied []UnsatisfiedRequirement)
 
 // RegisterPlanner installs a PlannerFunc. Passing nil clears any previously
@@ -482,7 +492,12 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
-	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare")
+	// Prepare always uses the free-function default plan; method targets
+	// are dispatched per-Invoke via Execute.plan + InvokeWithPlan
+	// (str-hy9b.H5). The launcher binary itself is receiver-kind-
+	// independent so this default is safe regardless of how Execute
+	// callers later override the plan.
+	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", "")
 	finishPrepare()
 	if err != nil {
 		resp.Status = "error"
@@ -658,15 +673,27 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		}
 	}
 
-	if preparedExec == nil {
-		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute")
+	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
+	// plan's receiver_kind into Invoke so the wrapper's switch dispatches
+	// against the right constructor / zero-value strategy. Plan-less
+	// requests keep the legacy free-function path. The plan's target_id
+	// is intentionally NOT honored here — the prepared launcher knows its
+	// own target_id (the wrapper's source of truth), and a mismatched
+	// caller-provided id would only confuse the launcher's case lookup.
+	requestReceiverKind := ""
+	if req.Plan != nil {
+		requestReceiverKind = req.Plan.ReceiverKind
+	}
+
+	if preparedExec == nil && err == nil {
+		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind)
 		if err == nil {
 			preparedExec = oneShot
 		}
 	}
 	if err == nil {
 		finishRun := timing.Start("execute.run")
-		result, err = preparedExec.Invoke(req.Inputs, capture)
+		result, err = preparedExec.InvokeWithReceiverKind(requestReceiverKind, req.Inputs, capture)
 		finishRun()
 	}
 	finishExecute()
@@ -1144,8 +1171,8 @@ func (h *Handler) handleGetInvocationPlan(resp Response, req Request) Response {
 		return resp
 	}
 
-	lookup := func(targetID string) *FunctionAnalysis {
-		return h.lookupAnalyzedByTargetID(targetID)
+	lookup := func(targetID string) *TargetContext {
+		return h.buildTargetContext(targetID)
 	}
 
 	finishPlan := timing.Start("get_invocation_plan.total")
@@ -1165,13 +1192,24 @@ func (h *Handler) handleGetInvocationPlan(resp Response, req Request) Response {
 // "pkgPath:QualifiedName" (splitting on the final ":"), then scans cached
 // analyses for a matching Name on the most recently analyzed file.
 func (h *Handler) lookupAnalyzedByTargetID(targetID string) *FunctionAnalysis {
+	analysis, _ := h.lookupAnalyzedLocation(targetID)
+	return analysis
+}
+
+// lookupAnalyzedLocation is like lookupAnalyzedByTargetID but additionally
+// returns the file path the analysis came from. Callers that need to reload
+// the parsed package (e.g. to recover Receiver shape or to scan constructors)
+// use the file path as input to loadPackageForAnalysis.
+//
+// Returns (nil, "") when the target is not in the analysis cache.
+func (h *Handler) lookupAnalyzedLocation(targetID string) (*FunctionAnalysis, string) {
 	bare := bareSymbolFromTargetID(targetID)
 	if bare == "" {
-		return nil
+		return nil, ""
 	}
 	if h.lastAnalyzedFile != "" {
 		if analysis, ok := h.cachedAnalyses[h.lastAnalyzedFile+"\x00"+bare]; ok {
-			return analysis
+			return analysis, h.lastAnalyzedFile
 		}
 	}
 	// Fall back to linear scan so targets from prior analyses still resolve.
@@ -1179,8 +1217,103 @@ func (h *Handler) lookupAnalyzedByTargetID(targetID string) *FunctionAnalysis {
 		if analysis.Name != bare {
 			continue
 		}
-		_ = key
-		return analysis
+		// key is "file\x00function"; recover the file prefix.
+		if idx := strings.IndexByte(key, '\x00'); idx >= 0 {
+			return analysis, key[:idx]
+		}
+		return analysis, ""
+	}
+	return nil, ""
+}
+
+// buildTargetContext is the planner's TargetLookup-shaped closure. It
+// resolves a target_id into a TargetContext suitable for both the free-
+// function and the receiver-aware planner paths.
+//
+// For free functions only Analysis is populated; the planner takes the legacy
+// parameter-only path. For method targets the handler additionally rebuilds
+// the Go-internal DiscoveredTarget (carrying Receiver shape and HasTypeParams)
+// from the parsed package and scans same-package constructor candidates whose
+// TargetType matches the receiver type. The DiscoveredTarget is not on the
+// wire (FunctionAnalysis is the wire shape — and the analyzer emits bare
+// `fn.Name.Name`, which doesn't expose method-vs-function on its own);
+// building DiscoveredTarget here is the only way to recover that distinction.
+//
+// On any error (cache miss, package load failure, FuncDecl not found in pkg)
+// the returned TargetContext omits Target and Constructors; the planner then
+// follows its free-function path or surfaces NoConstructor depending on what
+// it sees. Callers can distinguish "no analyze cache" (returns nil) from
+// "method without resolvable receiver" (Target nil but Analysis set).
+func (h *Handler) buildTargetContext(targetID string) *TargetContext {
+	analysis, file := h.lookupAnalyzedLocation(targetID)
+	if analysis == nil {
+		return nil
+	}
+	ctx := &TargetContext{Analysis: analysis}
+
+	// Always load the package when possible: the analyzer emits a bare
+	// function name (`fn.Name.Name`) whether the symbol is a free function
+	// or a method, so we cannot tell the two apart from FunctionAnalysis
+	// alone. The loader caches packages, so repeat lookups within a
+	// session are cheap.
+	if h.loader == nil || file == "" {
+		return ctx
+	}
+
+	pkg, err := loadPackageForAnalysis(h.loader, file)
+	if err != nil || pkg == nil || pkg.Fset == nil {
+		return ctx
+	}
+
+	fn := findFuncDeclByBareName(pkg, analysis.Name)
+	if fn == nil {
+		return ctx
+	}
+
+	// Only methods need DiscoveredTarget + Constructors. Free functions
+	// take the legacy path with Analysis-only context.
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ctx
+	}
+
+	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
+	ctx.Target = &target
+
+	if target.Receiver != nil && target.Receiver.TypeName != "" {
+		all := ScanConstructors(pkg)
+		recvType := target.Receiver.TypeName
+		var matched []ConstructorCandidate
+		for _, c := range all {
+			if c.TargetType == recvType {
+				matched = append(matched, c)
+			}
+		}
+		ctx.Constructors = matched
+	}
+	return ctx
+}
+
+// findFuncDeclByBareName scans every syntax file in pkg for the FuncDecl
+// whose bare name matches `name`. Mirrors the analyzer's matching shape:
+// the analyzer emits the bare `fn.Name.Name` whether the symbol is a free
+// function or a method, so the same matcher works for both. When multiple
+// methods share a name (different receiver types), this returns the first
+// in source order — sufficient for the H5 path where the caller already
+// supplied a target_id pointing at one specific declaration.
+func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
+	for _, file := range pkg.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if fn.Name.Name == name {
+				return fn
+			}
+		}
 	}
 	return nil
 }
