@@ -1,6 +1,6 @@
 <!-- launch-work-log
-last-updated: 2026-04-27T18:39:19Z
-checkpoint: worktree-ready
+last-updated: 2026-04-27T18:40:11Z
+checkpoint: deps-installed
 -->
 
 # Launch-Work Progress Log
