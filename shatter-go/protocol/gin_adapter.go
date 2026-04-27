@@ -47,10 +47,10 @@ func createGinHandlerFactory() RuntimeHookFactory {
 // (*gin.Context) with HTTP request attributes that the explorer can generate.
 func ginHandlerSyntheticParams() []ParamInfo {
 	return []ParamInfo{
-		{Name: "method", Type: TypeInfo{Kind: "primitive", Label: "string"}},
-		{Name: "path", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+		{Name: "method", Type: TypeInfo{Kind: "str", Label: "string"}},
+		{Name: "path", Type: TypeInfo{Kind: "str", Label: "string"}},
 		{Name: "headers", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
-		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+		{Name: "body", Type: TypeInfo{Kind: "str", Label: "string"}},
 		{Name: "route_params", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
 	}
 }

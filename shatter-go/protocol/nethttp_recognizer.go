@@ -45,10 +45,10 @@ func recognizeHTTPHandler(fn *ast.FuncDecl, info *types.Info) *InvocationModel {
 		Kind:      "adapter",
 		AdapterID: HTTPHandlerAdapterID,
 		SyntheticParams: []ParamInfo{
-			{Name: "method", Type: TypeInfo{Kind: "primitive", Label: "string"}},
-			{Name: "path", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+			{Name: "method", Type: TypeInfo{Kind: "str", Label: "string"}},
+			{Name: "path", Type: TypeInfo{Kind: "str", Label: "string"}},
 			{Name: "headers", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
-			{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
+			{Name: "body", Type: TypeInfo{Kind: "str", Label: "string"}},
 		},
 	}
 }
