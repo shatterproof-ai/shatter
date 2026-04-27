@@ -1,6 +1,6 @@
 <!-- launch-work-log
-last-updated: 2026-04-27T18:42:45Z
-checkpoint: tests-green
+last-updated: 2026-04-27T18:43:30Z
+checkpoint: ready-to-land
 -->
 
 # Launch-Work Progress Log
