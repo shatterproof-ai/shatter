@@ -488,6 +488,13 @@ These must be removed before starting those tasks under the expedition model.
 - Base head at branch creation: `84ec90f7ad19f975273a08ba0ae11cd6bed5cea0`.
 
 
+### 2026-04-27T01:28:33Z — Closed task
+- Branch: `str-hy9b-30-a5-outcome-parity-ts-rust`.
+- Outcome: `kept`.
+- Summary: str-hy9b.A5: outcome parity for TS and Rust frontends. TS deriveOutcome and Rust derive_execute_outcome/error_outcome emit completed/runtime_failed/timed_out. New conformance cases execute_outcome_shape_ts/_rust; 23/23 checks pass. Outcome Emission Contract documented in shatter-ts/CLAUDE.md and shatter-rust/CLAUDE.md.
+- Task merged into base branch.
+
+
 ## RESUME HERE
 ### 2026-04-26T21:45:00Z — Closed task
 - Branch: `str-hy9b-29-h2-execute-plan-wiring`.
@@ -501,8 +508,8 @@ These must be removed before starting those tasks under the expedition model.
 - Status: `task_in_progress`
 - Base branch: `str-hy9b`
 - Base worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b`
-- Active task branch: `str-hy9b-30-a5-outcome-parity-ts-rust, str-hy9b-31-j1-retirement-gate-script`
-- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-30-a5-outcome-parity-ts-rust, /home/ketan/project/shatter/.claude/worktrees/str-hy9b-31-j1-retirement-gate-script`
-- Last completed: `str-hy9b-29-h2-execute-plan-wiring (kept)`
-- Next action: Complete work on `str-hy9b-31-j1-retirement-gate-script` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-31-j1-retirement-gate-script`.
+- Active task branch: `str-hy9b-31-j1-retirement-gate-script`
+- Active task worktree: `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-31-j1-retirement-gate-script`
+- Last completed: `str-hy9b-30-a5-outcome-parity-ts-rust (kept)`
+- Next action: Create the next task branch from the expedition base branch.
 <!-- expedition-resume:end -->
