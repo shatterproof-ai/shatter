@@ -109,6 +109,47 @@ neg, XOR → bitwise_not, NOT → not. For unsupported ops, return
 | --- | --- | --- |
 | `str-s3s4` | Scan aborts on NotSupported from frontend (str-1giz regression) | P1 |
 | `str-gq7c` | Go frontend buildUnOp emits binary-op names for unsupported unary tokens | P1 |
+| `str-dcqc` | HTTP adapters emit invalid TypeKind 'primitive' (str) | P1 |
+
+## Update — 2026-04-27 second pass
+
+After str-s3s4 and str-gq7c landed on main (commits 6fa927a0 and 036ad951
+respectively), the scan was re-run against kapow with a freshly built release
+binary. The first two regressions are confirmed fixed:
+
+- **str-s3s4** — confirmed: the scan now emits `[warn] skipping unsupported
+  file during batch analyze: …/api/graph/model/models_gen.go (generated files
+  are skipped by default)` and continues, instead of aborting.
+- **str-gq7c** — confirmed: files using `&x` no longer break deserialization;
+  the scan reaches files much deeper in the API tree.
+
+A **third** regression surfaced and aborts the second pass:
+
+### str-dcqc — HTTP adapters emit invalid TypeKind `primitive` (P1)
+
+`shatter-go/protocol/{gin_adapter.go, nethttp_adapter.go,
+nethttp_recognizer.go}` emit synthetic_params with
+`TypeInfo{Kind: "primitive", Label: "string"}` for adapter-recognized HTTP
+handler functions (method/path/body fields). The Rust core's TypeInfo enum
+has no `primitive` variant — valid variants are int, float, str, bool,
+array, object, union, nullable, complex, opaque, unknown.
+
+```
+Error: batch analyze failed: frontend error for /home/ketan/project/kapow/api/internal/handler/log_config.go:
+  failed to deserialize frontend response (49893 bytes): unknown variant `primitive`,
+  expected one of `int`, `float`, `str`, `bool`, `array`, `object`, `union`, `nullable`, `complex`, `opaque`, `unknown`
+```
+
+Triggered by any Go file that imports `net/http` or `gin` and is matched by
+the adapter recognizer — covers most of kapow's `api/internal/handler/`
+subtree (~23 files in api/, more transitively via the recognizer).
+
+**Fix preference:** change `Kind: "primitive"` to `Kind: "str"` in those
+three files (the `Label: "string"` hint stays the same; serde tolerates the
+extra `Label` field on the `Str` variant unless `deny_unknown_fields` is
+set). Add a round-trip test covering an adapter-recognized HTTP handler.
+
+The validation cannot produce before/after numbers until str-dcqc lands.
 
 ## Items deferred (originally requested)
 
