@@ -465,6 +465,43 @@ func TestTokenToOpBitwise(t *testing.T) {
 	}
 }
 
+func TestBuildUnOpUnsupportedUnaryTokensReturnUnknown(t *testing.T) {
+	params := map[string]bool{"x": true}
+	tests := []token.Token{token.AND, token.MUL, token.ADD, token.ARROW}
+
+	for _, tok := range tests {
+		expr := ast.UnaryExpr{Op: tok, X: &ast.Ident{Name: "x"}}
+		got := buildUnOp(&expr, params)
+		if got.Kind != "unknown" {
+			t.Fatalf("buildUnOp(%v).Kind = %q, want unknown", tok, got.Kind)
+		}
+	}
+}
+
+func TestAnalyzeAddressOfBranchUsesUnknownConstraintOperand(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("unary_exprs.go"), "AddressOfBranch")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	br := results[0].Branches[0]
+	if br.Condition == nil {
+		t.Fatal("condition is nil")
+	}
+	if br.Condition.Kind != "bin_op" || br.Condition.Op != "ne" {
+		t.Fatalf("condition = %+v, want bin_op ne", br.Condition)
+	}
+	if br.Condition.Left == nil {
+		t.Fatal("condition.Left is nil")
+	}
+	if br.Condition.Left.Kind != "unknown" {
+		t.Fatalf("condition.Left.Kind = %q, want unknown", br.Condition.Left.Kind)
+	}
+}
+
 // --- Dependency detection ---
 
 func TestAnalyzeFormatNameDetectsDependencies(t *testing.T) {
