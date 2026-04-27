@@ -38,7 +38,8 @@ type WrapperTarget struct {
 	IsPointerRecv bool   // true for (*T).Method receivers
 	Parameters    []WrapperParam
 	HasResult     bool
-	ResultGoType  string // Go type string for the single return value
+	ResultGoType  string // Go type string for the first return value
+	ResultCount   int    // total number of return values (0 when HasResult is false)
 }
 
 const (
@@ -197,7 +198,12 @@ func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, indent stri
 	}
 
 	if t.HasResult {
-		fmt.Fprintf(b, "%s_result := %s\n", indent, callExpr)
+		if t.ResultCount > 1 {
+			blanks := strings.Repeat(", _", t.ResultCount-1)
+			fmt.Fprintf(b, "%s_result%s := %s\n", indent, blanks, callExpr)
+		} else {
+			fmt.Fprintf(b, "%s_result := %s\n", indent, callExpr)
+		}
 		fmt.Fprintf(b, "%sreturn _result, nil\n", indent)
 	} else {
 		fmt.Fprintf(b, "%s%s\n", indent, callExpr)
@@ -254,9 +260,17 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 
 	hasResult := false
 	var resultGoType string
+	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
 		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name)
+		for _, field := range fn.Type.Results.List {
+			if len(field.Names) == 0 {
+				resultCount++
+			} else {
+				resultCount += len(field.Names)
+			}
+		}
 	}
 
 	return &WrapperTarget{
@@ -268,6 +282,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		Parameters:    params,
 		HasResult:     hasResult,
 		ResultGoType:  resultGoType,
+		ResultCount:   resultCount,
 	}
 }
 

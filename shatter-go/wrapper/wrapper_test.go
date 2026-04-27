@@ -191,6 +191,75 @@ func (c Counter) Get() int       { return c.n }
 	}
 }
 
+// TestGeneratedWrapperCompilesMutliReturn verifies that functions returning
+// multiple values (e.g. (int, error)) produce compilable wrapper code.
+// Regression for the "assignment mismatch: 1 variable but F returns 2 values" build error.
+func TestGeneratedWrapperCompilesMultiReturn(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package divide
+
+import "fmt"
+
+func SafeDivide(a, b int) (int, error) {
+	if b == 0 {
+		return 0, fmt.Errorf("divide by zero")
+	}
+	return a / b, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "divide.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write divide.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/divide\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:           "example.com/divide:SafeDivide",
+			SymbolName:   "SafeDivide",
+			Kind:         wrapper.TargetKindFunction,
+			Parameters:   []wrapper.WrapperParam{{Name: "a", GoType: "int"}, {Name: "b", GoType: "int"}},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  2,
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "divide", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		src, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), src)
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 
