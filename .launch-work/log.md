@@ -1,6 +1,6 @@
 <!-- launch-work-log
-last-updated: 2026-04-27T18:43:30Z
-checkpoint: ready-to-land
+last-updated: 2026-04-27T18:45:30Z
+checkpoint: deps-installed
 -->
 
 # Launch-Work Progress Log
