@@ -287,6 +287,13 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		return resp
 	}
 
+	if isGeneratedFile(req.File) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("generated files are skipped by default: %s", req.File)
+		return resp
+	}
+
 	h.lastAnalyzedFile = req.File
 
 	var functionName string
@@ -376,6 +383,13 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 		return resp
 	}
 
+	if isGeneratedFile(req.File) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("generated files are skipped by default: %s", req.File)
+		return resp
+	}
+
 	h.lastAnalyzedFile = req.File
 
 	finishInstrument := timing.Start("instrument.total")
@@ -453,6 +467,12 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		resp.Status = "error"
 		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", file)
+		return resp
+	}
+	if isGeneratedFile(file) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("generated files are skipped by default: %s", file)
 		return resp
 	}
 
@@ -558,6 +578,13 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		resp.Status = "error"
 		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", file)
+		return resp
+	}
+
+	if isGeneratedFile(file) {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = fmt.Sprintf("generated files are skipped by default: %s", file)
 		return resp
 	}
 
