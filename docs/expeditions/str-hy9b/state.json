@@ -14,7 +14,10 @@
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
   "expedition": "str-hy9b",
-  "landing_lease": null,
+  "landing_lease": {
+    "acquired_at": "2026-04-27T02:24:49Z",
+    "held_by_branch": "str-hy9b-32-j4-retirement-validation-gates"
+  },
   "last_completed": {
     "branch": "str-hy9b-31-j1-retirement-gate-script",
     "completed_at": "2026-04-27T01:42:03Z",
