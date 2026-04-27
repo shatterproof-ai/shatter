@@ -1373,11 +1373,12 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
                 performance: PerformanceMetrics {
                     wall_time_ms: 1.0,
                     cpu_time_us: 100,

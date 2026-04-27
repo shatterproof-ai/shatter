@@ -282,21 +282,21 @@ impl BatchScheduler {
         // is `stored_rank - cooldown_penalty - attempt_penalty` (str-b2my.8,
         // str-b2my.9). `>` (strictly greater) keeps the earliest index on
         // ties, yielding stable FIFO tie-break.
-        let best = self.queue.iter().enumerate().fold(
-            None,
-            |acc: Option<(usize, i64)>, (i, e)| {
-                let cooldown = self.cooldown.get(&e.task_index).copied().unwrap_or(0);
-                let attempt = self.miss_streak.get(&e.task_index).copied().unwrap_or(0)
-                    as i64
-                    * MISS_PENALTY_PER_STREAK;
-                let effective = e.rank - cooldown - attempt;
-                match acc {
-                    None => Some((i, effective)),
-                    Some((_, best_rank)) if effective > best_rank => Some((i, effective)),
-                    Some(prev) => Some(prev),
-                }
-            },
-        )?;
+        let best =
+            self.queue
+                .iter()
+                .enumerate()
+                .fold(None, |acc: Option<(usize, i64)>, (i, e)| {
+                    let cooldown = self.cooldown.get(&e.task_index).copied().unwrap_or(0);
+                    let attempt = self.miss_streak.get(&e.task_index).copied().unwrap_or(0) as i64
+                        * MISS_PENALTY_PER_STREAK;
+                    let effective = e.rank - cooldown - attempt;
+                    match acc {
+                        None => Some((i, effective)),
+                        Some((_, best_rank)) if effective > best_rank => Some((i, effective)),
+                        Some(prev) => Some(prev),
+                    }
+                })?;
 
         let entry = self.queue.remove(best.0)?;
         let batch_iters = match entry.remaining {
@@ -389,8 +389,7 @@ impl BatchScheduler {
         if deferred_budget.is_none() {
             let is_miss = match &outcome.summary {
                 Some(s) => {
-                    s.coverage_after.covered == s.coverage_before.covered
-                        && s.new_classes == 0
+                    s.coverage_after.covered == s.coverage_before.covered && s.new_classes == 0
                 }
                 None => outcome.rank == 0,
             };
@@ -533,8 +532,7 @@ impl BatchScheduler {
     /// when the function has no consecutive no-progress batches. Used by
     /// callers to display attempt penalty in periodic batch summaries.
     pub fn attempt_penalty(&self, task_index: usize) -> i64 {
-        self.miss_streak.get(&task_index).copied().unwrap_or(0) as i64
-            * MISS_PENALTY_PER_STREAK
+        self.miss_streak.get(&task_index).copied().unwrap_or(0) as i64 * MISS_PENALTY_PER_STREAK
     }
 
     /// Configured batch size.
@@ -1757,7 +1755,10 @@ mod tests {
         // Round 3: task 1 should be picked first because task 0 has a
         // higher attempt penalty.
         let next = s.next_batch().unwrap();
-        assert_eq!(next.task_index, 1, "productive task should be scheduled before stuck one");
+        assert_eq!(
+            next.task_index, 1,
+            "productive task should be scheduled before stuck one"
+        );
     }
 
     #[test]
@@ -1794,45 +1795,96 @@ mod tests {
         let mut s = BatchScheduler::new(3, None, 50);
         let b = s.next_batch().unwrap();
         assert_eq!(b.task_index, 0);
-        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
         let b = s.next_batch().unwrap();
         assert_eq!(b.task_index, 1, "cooldown should deprioritize function 0");
-        s.record_outcome(BatchOutcome { task_index: 1, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: 1,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         let b = s.next_batch().unwrap();
-        assert_eq!(b.task_index, 2, "function 2 should be picked next (no cooldown)");
+        assert_eq!(
+            b.task_index, 2,
+            "function 2 should be picked next (no cooldown)"
+        );
     }
 
     #[test]
     fn high_rank_overrides_cooldown() {
         let mut s = BatchScheduler::new(2, None, 50);
         let _b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 5, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 5,
+            summary: None,
+        });
         let b = s.next_batch().unwrap();
-        assert_eq!(b.task_index, 0, "rank 5 - cooldown 3 = effective 2 beats idle rank 0");
+        assert_eq!(
+            b.task_index, 0,
+            "rank 5 - cooldown 3 = effective 2 beats idle rank 0"
+        );
     }
 
     #[test]
     fn moderate_rank_loses_to_idle_with_cooldown() {
         let mut s = BatchScheduler::new(2, None, 50);
         let _b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: false, rank: 2, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 2,
+            summary: None,
+        });
         let b = s.next_batch().unwrap();
-        assert_eq!(b.task_index, 1, "rank 2 - cooldown 3 = effective -1 loses to idle rank 0");
+        assert_eq!(
+            b.task_index, 1,
+            "rank 2 - cooldown 3 = effective -1 loses to idle rank 0"
+        );
     }
 
     #[test]
     fn cooldown_decays_over_ticks() {
         let mut s = BatchScheduler::new(3, None, 50);
         let b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
         let b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY - 1);
         assert_eq!(s.cooldown_score(1), COOLDOWN_PENALTY);
         let b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY - 2);
         assert_eq!(s.cooldown_score(1), COOLDOWN_PENALTY - 1);
         assert_eq!(s.cooldown_score(2), COOLDOWN_PENALTY);
@@ -1843,22 +1895,54 @@ mod tests {
         let mut s = BatchScheduler::new(1, None, 50);
         let _b = s.next_batch().unwrap();
         s.enqueue(0, Some(100));
-        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: true, rank: 5, summary: None });
-        assert_eq!(s.cooldown_score(0), 0, "deferred re-enqueue must clear cooldown");
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 5,
+            summary: None,
+        });
+        assert_eq!(
+            s.cooldown_score(0),
+            0,
+            "deferred re-enqueue must clear cooldown"
+        );
     }
 
     #[test]
     fn cooldown_removed_on_exhaustion() {
         let mut s = BatchScheduler::new(2, None, 50);
         let b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         assert_eq!(s.cooldown_score(0), COOLDOWN_PENALTY);
         let b = s.next_batch().unwrap();
-        s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+        s.record_outcome(BatchOutcome {
+            task_index: b.task_index,
+            iterations_used: 50,
+            exhausted: false,
+            rank: 0,
+            summary: None,
+        });
         let b = s.next_batch().unwrap();
         assert_eq!(b.task_index, 0);
-        s.record_outcome(BatchOutcome { task_index: 0, iterations_used: 50, exhausted: true, rank: 0, summary: None });
-        assert_eq!(s.cooldown_score(0), 0, "exhausted function must not leak cooldown entries");
+        s.record_outcome(BatchOutcome {
+            task_index: 0,
+            iterations_used: 50,
+            exhausted: true,
+            rank: 0,
+            summary: None,
+        });
+        assert_eq!(
+            s.cooldown_score(0),
+            0,
+            "exhausted function must not leak cooldown entries"
+        );
     }
 
     #[test]
@@ -1868,8 +1952,18 @@ mod tests {
         for round in 0..3 {
             for expected in 0..n {
                 let b = s.next_batch().unwrap();
-                assert_eq!(b.task_index, expected, "round {round}: expected task {expected}, got {}", b.task_index);
-                s.record_outcome(BatchOutcome { task_index: b.task_index, iterations_used: 50, exhausted: false, rank: 0, summary: None });
+                assert_eq!(
+                    b.task_index, expected,
+                    "round {round}: expected task {expected}, got {}",
+                    b.task_index
+                );
+                s.record_outcome(BatchOutcome {
+                    task_index: b.task_index,
+                    iterations_used: 50,
+                    exhausted: false,
+                    rank: 0,
+                    summary: None,
+                });
             }
         }
     }
@@ -2539,10 +2633,7 @@ mod proptests {
         let b = s.next_batch().unwrap();
 
         assert_eq!(s.enqueue(0, Some(100)), EnqueueResult::Deferred);
-        assert!(
-            !s.is_frontier_exhausted(),
-            "deferred work pending"
-        );
+        assert!(!s.is_frontier_exhausted(), "deferred work pending");
 
         s.record_outcome(BatchOutcome {
             task_index: b.task_index,
@@ -2607,5 +2698,4 @@ mod proptests {
             "function 0 has positive rank again"
         );
     }
-
 }

@@ -61,6 +61,11 @@ commands:
     fields: []
     response_status: shutdown_ack
 
+  get_invocation_plan:
+    description: Ask the frontend's planner to produce invocation plans for the supplied targets.
+    fields: [requirements]
+    response_status: invocation_plan
+
 # --- Response statuses (frontend → core) ---
 statuses:
   handshake:
@@ -81,6 +86,8 @@ statuses:
     description: Generated value result.
   shutdown_ack:
     description: Shutdown acknowledged.
+  invocation_plan:
+    description: Planner result for get_invocation_plan; includes invocation_plans and unsatisfied_requirements.
   error:
     description: Error response for any command.
 
@@ -134,6 +141,7 @@ capabilities:
     - setup
     - teardown
     - generate
+    - get_invocation_plan
 
   complex_type:
     - date

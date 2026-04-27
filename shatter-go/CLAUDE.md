@@ -10,7 +10,9 @@ See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) fo
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
 - `protocol/log.go` — slog configuration: `LevelTrace` constant, `prefixHandler` for `[shatter-go]` format
-- `instrument/executor.go` — Function execution and instrumentation
+- `protocol/prepared_launcher.go` — Direct execute/prepare path via launcher-backed cached programs
+- `launcher/launcher.go` — Generated launcher module build/runtime bridge
+- `instrument/executor.go` — Execution-side capture and legacy prepared harness support still exercised by tests
 
 ## Property-Based Testing (rapid + native fuzzing)
 
@@ -41,7 +43,7 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` a
 
 ## Prepare Parity Contract
 
-Go implements `prepare` to pre-build the instrumented harness binary so subsequent execute calls skip `go build`. Handler: `handlePrepare()` in `protocol/handler.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`computePrepareID`). Storage: `handler.preparedHarnesses map[string]*instrument.PreparedHarness`. Idempotent. `generateHarnessTemplate` generates code that reads `shatter_inputs.json` at runtime. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on all harnesses.
+Go implements `prepare` to pre-build a launcher-backed execution binary so subsequent execute calls skip rebuilds. Handler: `handlePrepare()` in `protocol/handler.go`, with launcher preparation in `protocol/prepared_launcher.go`. Advertised in `CommandCapabilities` (`protocol/constants.go`). `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols:receiver_kind`, first 16 hex chars (`computePrepareID`). When a Prepare request carries an `InvocationPlan`, `plan.receiver_kind` is included in the key so different receiver strategies for the same target produce different IDs and don't collide in the harness cache (str-oegu). Plan-less Prepare requests use an empty `receiver_kind` (equivalent to pre-str-oegu behavior). Storage: `handler.preparedHarnesses map[string]preparedExecution`. Idempotent. `handleTeardown` (level=function) + `handleShutdown` call `Cleanup()` on cached prepared executions.
 
 ## Invocation Model Parity Contract
 
@@ -49,9 +51,9 @@ Go has the adapter substrate (registry, dispatch, invocation hooks) and two conc
 
 ### go/http-handler adapter
 
-Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter compiles a harness that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
+Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
 
-Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `instrument/http_harness.go` (harness generation/execution).
+Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `protocol/adapter_launcher.go` (launcher generation/execution).
 
 ### Adapter hint recognizers
 
@@ -64,9 +66,9 @@ High-confidence hints auto-promote to `InvocationModel` (with `SyntheticParams` 
 
 ### go/gin adapter
 
-Recognizes functions with `*gin.Context` parameter via hint-based AST detection (type checker cannot resolve third-party imports). When recognized with high confidence, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/gin"}` with 5 synthetic params (method, path, headers, body, route_params). At execute time, the adapter compiles a harness that runs the handler against `gin.CreateTestContext(httptest.NewRecorder())` with `gin.SetMode(gin.TestMode)`, sets `c.Request` and `c.Params` from inputs, and returns the HTTP response (status, headers, body) as `return_value`. Route parameters are injected directly via `c.Params` (bypassing Gin's router). Instrumentation fields are empty for adapter-owned calls.
+Recognizes functions with `*gin.Context` parameter via hint-based AST detection (type checker cannot resolve third-party imports). When recognized with high confidence, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/gin"}` with 5 synthetic params (method, path, headers, body, route_params). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `gin.CreateTestContext(httptest.NewRecorder())` with `gin.SetMode(gin.TestMode)`, sets `c.Request` and `c.Params` from inputs, and returns the HTTP response (status, headers, body) as `return_value`. Route parameters are injected directly via `c.Params` (bypassing Gin's router). Instrumentation fields are empty for adapter-owned calls.
 
-Key files: `protocol/recognizer.go` (detection), `protocol/gin_adapter.go` (factory/hook), `instrument/gin_harness.go` (harness generation/execution).
+Key files: `protocol/recognizer.go` (detection), `protocol/gin_adapter.go` (factory/hook), `protocol/adapter_launcher.go` (launcher generation/execution).
 
 The handler caches analyses from `handleAnalyze` and reads `invocation_model` in `handleExecute` to dispatch. Cache is cleared on function-level teardown and shutdown.
 
@@ -78,7 +80,7 @@ Go declares support for all four redesign feature capabilities in
 `protocol/parity-matrix.yaml` `feature_capabilities`:
 
 - `outcome` — standardized invocation-outcome wire shape (str-hy9b.A1).
-- `invocation_plan` — planner artifact schema (str-hy9b.E1). Go-only at this stage.
+- `invocation_plan` — planner artifact schema (str-hy9b.E1) and the receiver-aware planner pathway (str-hy9b.H5). Go-only at this stage. `planner.PlanRequirements` returns method-target plans with non-empty `receiver_kind` (e.g. `"constructor:NewService"`) and `argument_plans` per parameter; `Command::Execute.plan` (an optional InvocationPlan on Execute requests) is the bridge from the Rust core's `planner_consumer` into the Go launcher's wrapper-aware dispatch path. TS/Rust frontends accept `Execute.plan` on the wire (additive, omitempty) but ignore it — see `ts-rust-execute-plan-not-implemented` in `protocol/parity-matrix.yaml`.
 - `adapter_http_nethttp` — net/http handler adapter, ID `go/http-handler` (str-hy9b.G1). See the Invocation Model Parity Contract above. Go-specific.
 - `hint_config_v1` — `.shatter/config.yaml` hint schema (str-hy9b.G3). Go-only.
 
@@ -94,6 +96,8 @@ crashing or returning malformed data.
 ## Invocation Outcome Contract (str-hy9b.A2)
 
 Every execute response carries an `InvocationOutcome` under `response.outcome`. The status is one of `completed`, `build_failed`, `runtime_failed`, `timed_out`, or `unsupported` (the last for a function not present in the source). Non-completed statuses always carry a non-empty one-sentence `short_reason`; `build_failed` and `runtime_failed` also carry a `thrown_error` with compiler diagnostics or a panic trace. Classification lives in `failureOutcome()` (host-level errors) and `outcomeFromResult()` (harness-captured runtime state) in `protocol/handler.go`. Legacy `response.code` / `response.message` fields are preserved on error paths for backwards compatibility.
+
+**Method targets require a plan (str-hy9b.H5).** Method execution is dispatched through the launcher wrapper's receiver-kind switch, driven by `Command::Execute.plan.receiver_kind`. An Execute request that targets a method but does not carry a `plan` field falls into the wrapper's default case and surfaces a `runtime_failed` outcome whose `short_reason` (and `thrown_error.message`) contains `"unknown receiver kind"`. This is intentionally **not** the pre-H5 hard rejection: the C4 `unsupported` / `method_not_supported` outcome was retired so that pipeline behavior stays uniform regardless of plan presence — plan-aware callers (`planner_consumer` against the Go planner) get clean dispatch into a real constructor; plan-less callers get a uniform runtime failure rather than a special-cased capability rejection. Free-function targets are unaffected and still take the empty-receiver path. The `unsupported` / `method_not_supported` classification in `failureOutcome` is now reserved for host-level "receiver planning" errors that surface before the launcher runs (see the `receiver planning` arm), not for the launcher's own dispatch outcome.
 
 ## Safety Policy Contract (str-hy9b.G4)
 
@@ -114,9 +118,26 @@ The loader walks upward from the target file looking for `.shatter/config.yaml`.
 
 Adapter-owned targets (those with `InvocationModel.Kind == "adapter"`) bypass the gate because the adapter's curated httptest harness provides its own safety envelope.
 
-The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability — it currently parses the `functions[<glob>].policy.allow` subset only. Broader hint-schema support (mocks, defaults, generators) is tracked under str-hy9b.G3.
+The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability; broader hint-schema support is described in the Hint Config v1 Contract below.
 
 **Deferred work:** local_fs sandbox enforcement (confining file I/O to `<workspace>/runs/<runID>/sandbox/`) is not implemented; `local_fs` is allow-by-default unconditionally. A follow-up story should add path rewriting and chroot-style confinement before treating `local_fs` classification as enforcement rather than advisory.
+
+## Hint Config v1 Contract (str-hy9b.G3)
+
+`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, and `generators` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
+
+Wired end-to-end today:
+- `defaults`: per-parameter literal overrides flow into `planner.ParamPlanOptions.HintsByName` and become top-priority `ValuePlan`s, taking precedence over `classifyParamFamily` defaults.
+- `generators`: per-parameter runtime-value registry name flows into `planner.ParamPlanOptions.GeneratorsByName`; `PlanParam` consults the named registry entry before falling back to primitive families. An unknown generator name yields `UnsatisfiedRequirementKindComplexType` so config typos surface.
+- `policy.allow`: unchanged from the G4 contract above.
+
+Mocks are partially wired:
+- The loader parses the `mocks` map and the planner emits sorted, target-scoped `planner.MockSpec` entries via `planner.ResolveMockSpecs` for use by code generators.
+- **Not yet wired:** execute-time substitution (build-time symbol swap or launcher-level shim) is **not implemented**. Anything relying on `mocks` to take effect at runtime today is unsupported. Tracked under **str-8v66** (blocked by str-ruw0).
+
+Resolution flow: `protocol/handler.go` populates `FunctionAnalysis.SourceFile` during `analyze`; `main.go`'s planner closure (`hintConfigResolver` + `translateHintConfig`) loads `.shatter/config.yaml` per target and threads the matched entry into `planner.PlanRequirementsOptions.PerTargetHints`.
+
+`hint_config_v1` is declared as Go-only with no wire probe in `protocol/parity-matrix.yaml`; nothing here flows over the protocol boundary, so adding mock substitution in str-8v66 will not require a parity-matrix change.
 
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 

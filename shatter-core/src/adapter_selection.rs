@@ -284,7 +284,11 @@ fn promote_requirements(
                 continue;
             }
             // Skip adapters that were explicitly disabled (rejected).
-            if result.rejected.iter().any(|r| r.adapter_id == req.adapter_id) {
+            if result
+                .rejected
+                .iter()
+                .any(|r| r.adapter_id == req.adapter_id)
+            {
                 continue;
             }
             // Check if the required adapter has a hint eligible for auto-apply.
@@ -638,7 +642,10 @@ mod tests {
         ];
         let result = select_adapters(Some(&profile), &hints).unwrap();
         assert!(
-            !result.active.iter().any(|a| a.adapter.id == "ts/browser-dom"),
+            !result
+                .active
+                .iter()
+                .any(|a| a.adapter.id == "ts/browser-dom"),
             "disabled adapter ts/browser-dom should not be in active"
         );
         assert_eq!(result.rejected.len(), 1);

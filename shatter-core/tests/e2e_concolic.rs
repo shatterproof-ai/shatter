@@ -182,8 +182,8 @@ async fn concolic_classifynumber_discovers_all_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -270,8 +270,8 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -349,8 +349,8 @@ async fn concolic_safedivide_discovers_error_paths() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -435,8 +435,8 @@ async fn concolic_validateemail_discovers_string_paths() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -520,8 +520,8 @@ async fn concolic_validateemail_with_literal_seeds() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -649,6 +649,7 @@ async fn setup_session_context_flows_to_execute() {
             capture: true,
             prepare_id: None,
             execution_profile: None,
+            plan: None,
         })
         .await
         .expect("execute with setup context failed");
@@ -1003,6 +1004,7 @@ async fn explorer_explore_function_with_setup() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1086,8 +1088,8 @@ async fn orchestrator_explore_with_setup_context() {
         Some(setup_ctx),
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("orchestrator explore with setup context failed");
@@ -1230,6 +1232,7 @@ async fn concolic_mock_status_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1318,6 +1321,7 @@ async fn concolic_mock_result_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1413,6 +1417,7 @@ async fn concolic_mock_loop_branches_discovered() {
         budget_surplus: None,
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
+        default_execute_plan: None,
     };
 
     let result =
@@ -1504,8 +1509,8 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1594,8 +1599,8 @@ async fn mcdc_compound_or_discovers_all_branches() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");
@@ -1633,28 +1638,350 @@ async fn mcdc_compound_or_discovers_all_branches() {
 }
 
 // ---------------------------------------------------------------------------
-// Go internal-method spike fixture (str-hy9b.D7)
+// Go method-receiver planner-driven E2E (str-hy9b.H5)
 // ---------------------------------------------------------------------------
 
-/// Spike: execute one method on an `internal/...` package without a visibility error.
+/// Build the Go frontend on demand (mirroring shatter-cli/build.rs but
+/// inside the integration test) and return the binary path. Caches the
+/// build into a per-process tmpdir keyed on a stable name so repeat
+/// invocations within one `cargo test` invocation reuse the binary.
+fn ensure_go_frontend_binary() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let go_dir = manifest_dir.join("..").join("shatter-go");
+    assert!(
+        go_dir.join("main.go").exists(),
+        "shatter-go/main.go not found at {} — repo layout drift?",
+        go_dir.display()
+    );
+    let tmpdir = env::temp_dir().join("shatter-h5-go-frontend");
+    std::fs::create_dir_all(&tmpdir).expect("create tmpdir for go binary");
+    let binary_path = tmpdir.join("shatter-go");
+
+    let status = std::process::Command::new("go")
+        .args(["build", "-o"])
+        .arg(&binary_path)
+        .arg(".")
+        .current_dir(&go_dir)
+        .status()
+        .expect("failed to run `go build` — is Go installed?");
+    assert!(
+        status.success(),
+        "go build failed (working_dir = {})",
+        go_dir.display()
+    );
+    assert!(
+        binary_path.exists(),
+        "go binary missing after build: {}",
+        binary_path.display()
+    );
+    binary_path
+}
+
+/// Spawn the Go frontend subprocess from the freshly-built binary.
+async fn spawn_go_frontend() -> Frontend {
+    let binary = ensure_go_frontend_binary();
+    let mut config = FrontendConfig::new(binary);
+    config.request_timeout = std::time::Duration::from_secs(60);
+    Frontend::spawn(&config)
+        .await
+        .expect("failed to spawn Go frontend binary")
+}
+
+/// Path to the H5 method-receiver fixture. The fixture is a minimal
+/// `example.com/service-method` module with a `*Service.Compute(x int) int`
+/// method and a same-package `func New() *Service` constructor. It
+/// deliberately does NOT live under `internal/...` because the launcher
+/// synthesizes its module outside the target's tree and Go's internal-
+/// visibility rule would block the import — orthogonal to H5's AC scope.
+fn h5_method_receiver_fixture() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .join("..")
+        .join("examples")
+        .join("go")
+        .join("service-method")
+        .join("svc.go")
+}
+
+/// str-hy9b.H5 — Planner-driven E2E for a method target with a same-package
+/// constructor. Exercises analyze → `get_invocation_plan` → Execute against
+/// the Go frontend, validating that:
 ///
-/// Fixture: `examples/go/internal-method/internal/svc/svc.go`
-///   - module `example.com/spike`
-///   - `type Service struct{}`; `func New() *Service`
-///   - `func (s *Service) DoIt(x int) int` with a branch on `x`
+///   1. The planner emits a non-trivial `InvocationPlan` (non-empty
+///      `receiver_kind` AND ≥1 parameter `ValuePlan`).
+///   2. Execute consumes the plan and produces an outcome of `completed`
+///      or `runtime_failed` (NOT `unsupported` / `build_failed`).
+///   3. Failure modes are distinguishable per AC #4: assertion text marks
+///      the gap as PLANNER GAP (planner returned nothing / wrong shape),
+///      EXECUTOR GAP (Execute transport-errored), or EXECUTOR GAP (outcome
+///      was the wrong status).
 ///
-/// When str-hy9b.D3–D6 (wrapper template, launcher harness, build orchestrator,
-/// concolic instrumentation overlay) and str-hy9b.E1 (planner skeleton) are
-/// complete, this test should:
-///   1. Spawn the Go frontend and analyze `internal/svc/svc.go`.
-///   2. Assert the analyzer returns a target named `(*Service).DoIt` with kind `"method"`.
-///   3. Assert the planner emits a plan with `receiver_kind: "new_service"`.
-///   4. Assert `go build` succeeds (no `internal` package visibility error from the overlay).
-///   5. Assert the launcher runs and emits an outcome with `status: "completed"`.
+/// The fixture is `examples/go/internal-method/internal/svc/svc.go` —
+/// `*Service.DoIt(x int) int` with a same-package `func New() *Service`
+/// constructor and a branch on `x`. Targeting a method-with-receiver
+/// fixture closes the H2 gap (free-function-only planning) by exercising
+/// `planner.PlanReceivers` + `Compose(IsMethod=true)` end-to-end and
+/// dispatching through the wrapper's receiver-kind switch.
 #[tokio::test]
-#[ignore = "requires str-hy9b.D3-D6 (wrapper, launcher, build orchestrator, overlay) and str-hy9b.E1 (planner)"]
-async fn go_internal_method_spike() {
-    unimplemented!("str-hy9b.D3-D6 and str-hy9b.E1 not yet implemented")
+async fn go_method_planner_driven_e2e() {
+    use shatter_core::planner_consumer::fetch_planner_seeds;
+    use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
+
+    let mut frontend = spawn_go_frontend().await;
+    let fixture = h5_method_receiver_fixture();
+    assert!(
+        fixture.exists(),
+        "fixture missing: {} (was the worktree set up correctly?)",
+        fixture.display()
+    );
+    let file_str = fixture.to_string_lossy().into_owned();
+
+    // Step 1 — analyze the method. The Go frontend emits one
+    // FunctionAnalysis per declared func; the analyzed name is the
+    // qualified-method form `(*Service).DoIt`.
+    let analyze_resp = frontend
+        .send(Command::Analyze {
+            file: file_str.clone(),
+            function: Some("Compute".into()),
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("analyze command transport failed");
+
+    // The Go analyzer emits the bare `fn.Name.Name` for both free functions
+    // and methods (the qualified-name distinction is recovered later via
+    // BuildDiscoveredTarget in the handler's TargetContext builder). Match
+    // by bare name here; method-vs-function discrimination flows through
+    // the planner's TargetContext path on the handler side.
+    let analysis = match analyze_resp.result {
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == "Compute")
+            .expect("FRONTEND GAP: analyze did not return a `Compute` entry"),
+        other => panic!("FRONTEND GAP: expected Analyze response, got {other:?}"),
+    };
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "FRONTEND GAP: (*Service).Compute should have 1 param, got {}",
+        analysis.params.len()
+    );
+
+    // Step 2 — consult the planner. The Go planner resolves the cached
+    // analysis, scans same-package constructors (finding `New`), and
+    // composes receiver plans with parameter plans. AC #4 distinguishability
+    // is anchored in this assertion's message.
+    // Use the colon-prefix form the existing CLI planner-seeding path uses
+    // (see shatter-cli/src/commands/explore.rs::fetch_planner_extra_seeds);
+    // the Go handler's `bareSymbolFromTargetID` strips everything before
+    // the final colon, so any package prefix (or empty) followed by the
+    // analyzed bare name resolves the cached analysis.
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+
+    assert!(
+        !bundle.plans.is_empty(),
+        "PLANNER GAP: planner returned 0 plans for method target {target_id}; \
+         unsatisfied={:?}. Receiver-aware planning (str-hy9b.H5) should emit \
+         ≥1 plan when a same-package constructor is in scope.",
+        bundle.unsatisfied
+    );
+
+    // AC #2: at least one plan must have a non-empty receiver_kind AND ≥1
+    // parameter ValuePlan. Method plans should always populate both — the
+    // `len == argument_plans` invariant is the property test in plan_test.go.
+    let plan = bundle
+        .plans
+        .iter()
+        .find(|p| !p.receiver_kind.is_empty() && !p.argument_plans.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: no plan satisfies AC #2 (non-empty receiver_kind \
+                 AND ≥1 parameter ValuePlan). Got plans: {:#?}",
+                bundle.plans
+            )
+        });
+    assert!(
+        plan.receiver_kind.starts_with("constructor:")
+            || plan.receiver_kind == "zero_value",
+        "PLANNER GAP: plan.receiver_kind = {:?}, expected `constructor:<Name>` \
+         or `zero_value` (the strategies PlanReceivers emits for a same-package \
+         non-interface receiver).",
+        plan.receiver_kind
+    );
+
+    // Step 3 — execute the chosen plan. The Go frontend threads
+    // plan.receiver_kind through `InvokeWithReceiverKind` so the wrapper's
+    // switch dispatches against the right constructor and the method runs
+    // against a constructed receiver.
+    let exec_resp = frontend
+        .send(Command::Execute {
+            function: analysis.name.clone(),
+            inputs: vec![serde_json::json!(7)],
+            mocks: vec![],
+            setup_context: None,
+            capture: true,
+            prepare_id: None,
+            execution_profile: None,
+            plan: Some(plan.clone()),
+        })
+        .await
+        .expect("EXECUTOR GAP (transport): Execute command transport failed");
+
+    let exec = match exec_resp.result {
+        ResponseResult::Execute(er) => *er,
+        ResponseResult::Error {
+            code,
+            message,
+            details,
+        } => panic!(
+            "EXECUTOR GAP (transport): Execute returned protocol error \
+             code={code:?} message={message} details={details:?}"
+        ),
+        other => panic!("EXECUTOR GAP (shape): expected Execute response, got {other:?}"),
+    };
+
+    let outcome = exec
+        .outcome
+        .expect("EXECUTOR GAP: Go frontend should always emit `outcome` on Execute responses");
+    assert!(
+        matches!(
+            outcome.status,
+            OutcomeStatus::Completed | OutcomeStatus::RuntimeFailed
+        ),
+        "EXECUTOR GAP: outcome.status = {:?} for plan {{receiver_kind={:?}, label={:?}}}, \
+         expected `completed` or `runtime_failed` (NOT `unsupported`/`build_failed`). \
+         short_reason = {:?}, thrown_error = {:?}.",
+        outcome.status,
+        plan.receiver_kind,
+        plan.label,
+        outcome.short_reason,
+        outcome.thrown_error,
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-yi9y AC3 — Orchestrator path threads `default_execute_plan` into Execute.
+///
+/// Validates that `orchestrator::ExploreConfig.default_execute_plan` propagates
+/// to every `Command::Execute` issued by the concolic orchestrator, so method
+/// targets dispatch into a real constructor rather than falling through to
+/// "unknown receiver kind".
+///
+/// Uses the same `service-method` fixture as `go_method_planner_driven_e2e`:
+/// `(*Service).Compute(x int) int` with a `New() *Service` constructor.
+/// The test obtains a plan via `fetch_planner_seeds`, sets it as the
+/// `default_execute_plan`, runs the concolic orchestrator for a small budget,
+/// and asserts that at least one execution reached `completed` (i.e., the plan
+/// was threaded into Execute and the Go launcher dispatched via the constructor).
+#[tokio::test]
+async fn go_method_planner_driven_via_orchestrator() {
+    use shatter_core::orchestrator::{ExploreConfig, explore};
+    use shatter_core::planner_consumer::fetch_planner_seeds;
+    use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
+
+    let mut frontend = spawn_go_frontend().await;
+    let fixture = h5_method_receiver_fixture();
+    assert!(
+        fixture.exists(),
+        "fixture missing: {} (was the worktree set up correctly?)",
+        fixture.display()
+    );
+    let file_str = fixture.to_string_lossy().into_owned();
+
+    // Analyze: the Go frontend emits a FunctionAnalysis with name "Compute".
+    let analyze_resp = frontend
+        .send(Command::Analyze {
+            file: file_str.clone(),
+            function: Some("Compute".into()),
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("analyze command transport failed");
+
+    let analysis = match analyze_resp.result {
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == "Compute")
+            .expect("FRONTEND GAP: analyze did not return a `Compute` entry"),
+        other => panic!("FRONTEND GAP: expected Analyze response, got {other:?}"),
+    };
+
+    // Consult the planner to get an InvocationPlan with a non-empty receiver_kind.
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+
+    let plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| !p.receiver_kind.is_empty())
+        .expect(
+            "PLANNER GAP: no plan with non-empty receiver_kind; receiver-aware planning \
+             (str-hy9b.H5) must emit ≥1 plan when a same-package constructor is in scope.",
+        );
+
+    // Build orchestrator config with the plan as the default Execute plan.
+    let config = ExploreConfig {
+        max_iterations: Some(5),
+        max_executions: Some(20),
+        plateau_threshold: 10,
+        default_execute_plan: Some(plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(0)]];
+
+    let (result, _) = explore(
+        &mut frontend,
+        "Compute",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("ORCHESTRATOR GAP: orchestrator::explore returned an error");
+
+    // At least one execution must have produced `completed`; if all executions
+    // returned `runtime_failed: "unknown receiver kind"`, the plan was not
+    // threaded into Execute.
+    let completed_count = result
+        .executions
+        .iter()
+        .filter(|e| {
+            e.outcome
+                .as_ref()
+                .map(|o| o.status == OutcomeStatus::Completed)
+                .unwrap_or(false)
+        })
+        .count();
+
+    assert!(
+        completed_count > 0,
+        "ORCHESTRATOR GAP: no execution reached `completed`; \
+         default_execute_plan was not propagated into Command::Execute. \
+         total_executions={}, outcomes={:?}",
+        result.executions.len(),
+        result
+            .executions
+            .iter()
+            .map(|e| e.outcome.as_ref().map(|o| (&o.status, o.short_reason.as_deref())))
+            .collect::<Vec<_>>(),
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
 // ---------------------------------------------------------------------------
@@ -1715,8 +2042,8 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         None,
         None,
         vec![],
-    None,
-    None,
+        None,
+        None,
     )
     .await
     .expect("concolic exploration failed");

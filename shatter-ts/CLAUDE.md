@@ -81,6 +81,38 @@ implement them; conformance tests (`npx task conformance`) expect TS to
 return a clean "capability not supported" response rather than crashing
 or returning malformed data when these are probed.
 
+The Execute command's optional `plan` field (an `InvocationPlan` from
+`get_invocation_plan`, added in str-hy9b.H5) is accepted on the wire but
+ignored by the TS executor. This is a tracked divergence — see the
+`ts-rust-execute-plan-not-implemented` entry in
+`protocol/parity-matrix.yaml`. TS callers that pass `plan` should expect
+identical behavior to a request without `plan`; the field exists so that
+plan-aware callers can speak a single wire shape across frontends without
+branching on language. Implementation is deferred until TS grows a
+planner.
+
+## Outcome Emission Contract
+
+Every `execute` response (status `execute`) carries an `outcome:
+InvocationOutcome` field. `deriveOutcome` in `src/executor.ts` classifies
+the result:
+
+| Condition on `rawResult.thrown_error` | `outcome.status` |
+|---|---|
+| `null` | `completed` (carries `return_value`) |
+| `error_type == "ERR_SCRIPT_EXECUTION_TIMEOUT"`, or `error_category == "infrastructure"` whose message matches `TIMEOUT_PATTERNS` | `timed_out` |
+| any other thrown error | `runtime_failed` |
+
+Status values `build_failed`, `unsupported`, `completed_with_findings`, and
+`skipped_by_policy` are not produced by this path. `completed_with_findings`
+is reserved for upstream consumers; the TS executor does not surface
+build/unsupported through `execute` — those arrive on `error` responses
+from earlier pipeline stages.
+
+The wire shape is identical to Rust and Go (str-hy9b.A5,
+parity-matrix.yaml `feature_capabilities.outcome`). Conformance lock:
+`protocol/conformance/conformance_cases.yaml` `execute_outcome_shape_ts`.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

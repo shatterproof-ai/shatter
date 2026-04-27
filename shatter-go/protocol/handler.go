@@ -7,12 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"io"
 	"log/slog"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/generators"
@@ -37,10 +40,14 @@ type Handler struct {
 	timingEnabled     bool
 	workspace         *workspace.Workspace
 	loader            *goloader.Loader // lazy: built from workspace on first analyze call
-	preparedHarnesses map[string]*instrument.PreparedHarness
-	preparedTargets   map[string]string // "file\x00function" → current prepare_id for stale detection
+	preparedHarnesses map[string]preparedExecution
+	preparedTargets   map[string]string // "file\x00function\x00receiverKind" → current prepare_id for stale detection (str-oegu)
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
+	// planRequirements, when non-nil, is dispatched from handleGetInvocationPlan.
+	// Injected at construction time by callers that link the planner package;
+	// keeping it a function pointer avoids a protocol→planner import cycle.
+	planRequirements PlannerFunc
 
 	// policyConfigLoader returns the parsed .shatter/config.yaml nearest to
 	// the given source file. Injectable so tests can supply a synthetic
@@ -69,7 +76,7 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 		workspace:         workspace,
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
-		preparedHarnesses: make(map[string]*instrument.PreparedHarness),
+		preparedHarnesses: make(map[string]preparedExecution),
 		preparedTargets:   make(map[string]string),
 		cachedAnalyses:    make(map[string]*FunctionAnalysis),
 	}
@@ -83,6 +90,29 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
 	}
 	return h
+}
+
+// PlannerFunc services get_invocation_plan requests. Callers wire in the real
+// planner via RegisterPlanner; keeping it a function pointer avoids a
+// protocol→planner import cycle. The lookup closure resolves a target_id to
+// its TargetContext (analysis + DiscoveredTarget + same-package constructors)
+// or nil when the target was not analyzed.
+//
+// The handler builds TargetContext on demand for each requirement: cached
+// FunctionAnalysis lookup as today, plus on-demand package reload to recover
+// Receiver shape and HasTypeParams (Go-internal fields that are not on the
+// wire FunctionAnalysis) and to scan same-package constructor candidates.
+// See handler.handleGetInvocationPlan and handler.buildTargetContext.
+type PlannerFunc func(
+	requirements []InvocationRequirement,
+	lookup func(targetID string) *TargetContext,
+) (plans []InvocationPlan, unsatisfied []UnsatisfiedRequirement)
+
+// RegisterPlanner installs a PlannerFunc. Passing nil clears any previously
+// registered planner; unregistered handlers reply with ErrNotSupported on
+// get_invocation_plan.
+func (h *Handler) RegisterPlanner(fn PlannerFunc) {
+	h.planRequirements = fn
 }
 
 // NewHandlerWithLogLevel creates a handler with an explicit log level (for testing).
@@ -170,6 +200,8 @@ func (h *Handler) dispatch(req Request) (Response, bool) {
 		return h.handleTeardown(base, req), false
 	case "generate":
 		return h.handleGenerate(base, req), false
+	case "get_invocation_plan":
+		return h.handleGetInvocationPlan(base, req), false
 	case "shutdown":
 		return h.handleShutdown(base), true
 	default:
@@ -284,8 +316,14 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	}
 
 	// Cache analysis records so execute can read invocation_model and
-	// decide whether to dispatch through an adapter-owned hook.
+	// decide whether to dispatch through an adapter-owned hook. Populating
+	// SourceFile here gives the planner closure (str-hy9b.G3) the file
+	// context it needs to resolve hint_config_v1 entries per target without
+	// changing the PlannerFunc signature.
 	for i := range functions {
+		if functions[i].SourceFile == "" {
+			functions[i].SourceFile = req.File
+		}
 		key := req.File + "\x00" + functions[i].Name
 		h.cachedAnalyses[key] = &functions[i]
 	}
@@ -341,7 +379,18 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	h.lastAnalyzedFile = req.File
 
 	finishInstrument := timing.Start("instrument.total")
-	outputDir, err := instrument.InstrumentFileWithTiming(req.File, req.Function, req.ProjectRoot, timing)
+	ws, err := h.ensureWorkspace(req.File)
+	if err != nil {
+		finishInstrument()
+		resp.Status = "error"
+		resp.Code = ErrInternalError
+		resp.Message = fmt.Sprintf("initialize workspace: %v", err)
+		return resp
+	}
+	outputDir, err := os.MkdirTemp(ws.GeneratedDir(), "instrument-*")
+	if err == nil {
+		err = instrument.MaterializeInstrumentedDirectory(req.File, req.Function, outputDir, req.ProjectRoot, timing)
+	}
 	finishInstrument()
 	if err != nil {
 		resp.Status = "error"
@@ -358,8 +407,10 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 }
 
 // computePrepareID returns a deterministic 16-hex-char ID derived from the
-// file path, function name, and sorted mock symbols.
-func computePrepareID(file, function string, mocks []instrument.MockConfig) string {
+// file path, function name, sorted mock symbols, and receiver_kind. Two
+// callers with different receiver_kind values produce different IDs so that
+// plan-aware callers can pre-build the right wrapper-case launcher (str-oegu).
+func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
 	symbols := make([]string, len(mocks))
@@ -370,6 +421,7 @@ func computePrepareID(file, function string, mocks []instrument.MockConfig) stri
 	for _, s := range symbols {
 		fmt.Fprintf(h, "%s\x00", s)
 	}
+	fmt.Fprintf(h, "%s\x00", receiverKind)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -414,8 +466,16 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		})
 	}
 
-	prepareID := computePrepareID(file, *req.Function, execMocks)
-	targetKey := file + "\x00" + *req.Function
+	// Extract receiver_kind from the plan when present so the prepare_id
+	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
+	// callers to pre-build the right wrapper case (str-oegu).
+	receiverKind := ""
+	if req.Plan != nil {
+		receiverKind = req.Plan.ReceiverKind
+	}
+
+	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind)
+	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind
 
 	// Invalidate stale harness if the same target was prepared with different inputs.
 	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
@@ -427,23 +487,30 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		delete(h.preparedTargets, targetKey)
 	}
 
-	// Idempotent: return immediately if already prepared.
-	if _, exists := h.preparedHarnesses[prepareID]; exists {
-		h.log.Debug("prepare cache hit", "prepare_id", prepareID)
-		resp.Status = "prepare"
-		resp.PrepareID = prepareID
-		return finalizeResponse(resp, timing)
+	// Idempotent: return immediately if already prepared and still valid.
+	if existing, exists := h.preparedHarnesses[prepareID]; exists {
+		if existing.IsValid() {
+			h.log.Debug("prepare cache hit", "prepare_id", prepareID)
+			resp.Status = "prepare"
+			resp.PrepareID = prepareID
+			return finalizeResponse(resp, timing)
+		}
+		existing.Cleanup()
+		delete(h.preparedHarnesses, prepareID)
+		delete(h.preparedTargets, targetKey)
 	}
 
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
-	harness, err := instrument.PrepareHarness(file, *req.Function, timing, execMocks)
+	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", receiverKind)
 	finishPrepare()
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
 			resp.Code = ErrFunctionNotFound
+		} else if strings.Contains(err.Error(), "receiver planning") {
+			resp.Code = ErrNotSupported
 		} else if strings.Contains(err.Error(), "build failed") {
 			resp.Code = ErrInstrumentationFailed
 		} else {
@@ -573,9 +640,8 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return mapExecuteResult(resp, result, timing)
 	}
 
-	// --- Direct execution (default path, unchanged) ---
+	// --- Direct execution via builder/launcher ---
 
-	// Convert protocol MockConfigs to instrument MockConfigs and pass to executor.
 	var execMocks []instrument.MockConfig
 	for _, m := range req.Mocks {
 		execMocks = append(execMocks, instrument.MockConfig{
@@ -586,41 +652,67 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		})
 	}
 
-	var result *instrument.ExecuteResult
-	var err error
+	var (
+		result       *instrument.ExecuteResult
+		err          error
+		oneShot      *preparedLauncher
+		preparedExec preparedExecution
+	)
+
+	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
+	// plan's receiver_kind into Invoke so the wrapper's switch dispatches
+	// against the right constructor / zero-value strategy. Plan-less
+	// requests keep the legacy free-function path. The plan's target_id
+	// is intentionally NOT honored here — the prepared launcher knows its
+	// own target_id (the wrapper's source of truth), and a mismatched
+	// caller-provided id would only confuse the launcher's case lookup.
+	// Extract early so lookupPreparedHarness can key on receiver_kind (str-oegu).
+	requestReceiverKind := ""
+	if req.Plan != nil {
+		requestReceiverKind = req.Plan.ReceiverKind
+	}
 
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
-		harness, ok := h.preparedHarnesses[*req.PrepareID]
-		if ok && !harness.IsValid() {
-			// Artifacts deleted externally — prune stale entry and fall through.
+		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
+		if preparedExec != nil && !preparedExec.IsValid() {
 			h.log.Warn("prepared harness artifacts missing, rebuilding", "prepare_id", *req.PrepareID)
-			harness.Cleanup()
+			preparedExec.Cleanup()
 			delete(h.preparedHarnesses, *req.PrepareID)
-			ok = false
+			preparedExec = nil
 		}
-		if ok {
-			result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
-		} else {
-			// Stale or invalidated prepare_id — fall through to auto-lookup or one-shot.
+		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
-			if autoHarness := h.lookupPreparedHarness(file, *req.Function, execMocks); autoHarness != nil {
-				result, err = instrument.ExecuteWithPreparedHarness(autoHarness, req.Inputs, timing, capture)
-			} else {
-				result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
-			}
+			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
 		}
-	} else if harness := h.lookupPreparedHarness(file, *req.Function, execMocks); harness != nil {
-		h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
-		result, err = instrument.ExecuteWithPreparedHarness(harness, req.Inputs, timing, capture)
 	} else {
-		result, err = instrument.ExecuteFunctionWithTiming(file, *req.Function, req.Inputs, timing, capture, execMocks)
+		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
+		if preparedExec != nil {
+			h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
+		}
+	}
+
+	if preparedExec == nil && err == nil {
+		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind)
+		if err == nil {
+			preparedExec = oneShot
+		}
+	}
+	if err == nil {
+		finishRun := timing.Start("execute.run")
+		result, err = preparedExec.InvokeWithReceiverKind(requestReceiverKind, req.Inputs, capture)
+		finishRun()
 	}
 	finishExecute()
+	if oneShot != nil {
+		oneShot.Cleanup()
+	}
 	if err != nil {
 		resp.Status = "error"
 		if strings.Contains(err.Error(), "function not found") {
 			resp.Code = ErrFunctionNotFound
+		} else if strings.Contains(err.Error(), "receiver planning") {
+			resp.Code = ErrNotSupported
 		} else if strings.Contains(err.Error(), "build failed") {
 			resp.Code = ErrInstrumentationFailed
 		} else if strings.Contains(err.Error(), "timed out") {
@@ -652,6 +744,10 @@ func failureOutcome(err error) *InvocationOutcome {
 	errInfo := &ErrorInfo{ErrorType: "executor_error", Message: msg}
 	var status OutcomeStatus
 	switch {
+	case strings.Contains(msg, "receiver planning"):
+		status = OutcomeStatusUnsupported
+		reason = "method invocation requires receiver planning (Phase E)"
+		errInfo.ErrorType = "method_not_supported"
 	case strings.Contains(msg, "function not found"):
 		status = OutcomeStatusUnsupported
 		reason = "target function not found in source file"
@@ -886,9 +982,9 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 }
 
 // lookupPreparedHarness checks if a prepared harness already exists for the
-// given file, function, and mock configuration.
-func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig) *instrument.PreparedHarness {
-	prepareID := computePrepareID(file, function, mocks)
+// given file, function, mock configuration, and receiver kind (str-oegu).
+func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig, receiverKind string) preparedExecution {
+	prepareID := computePrepareID(file, function, mocks, receiverKind)
 	harness, ok := h.preparedHarnesses[prepareID]
 	if !ok {
 		return nil
@@ -898,7 +994,7 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
 		harness.Cleanup()
 		delete(h.preparedHarnesses, prepareID)
-		targetKey := file + "\x00" + function
+		targetKey := file + "\x00" + function + "\x00" + receiverKind
 		if h.preparedTargets[targetKey] == prepareID {
 			delete(h.preparedTargets, targetKey)
 		}
@@ -1019,7 +1115,7 @@ func (h *Handler) handleTeardown(resp Response, req Request) Response {
 		for _, ph := range h.preparedHarnesses {
 			ph.Cleanup()
 		}
-		h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+		h.preparedHarnesses = make(map[string]preparedExecution)
 		h.preparedTargets = make(map[string]string)
 		h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	}
@@ -1073,6 +1169,170 @@ func (h *Handler) handleGenerate(resp Response, req Request) Response {
 	return finalizeResponse(resp, timing)
 }
 
+func (h *Handler) handleGetInvocationPlan(resp Response, req Request) Response {
+	timing := h.maybeTimingCollector()
+	if h.planRequirements == nil {
+		resp.Status = "error"
+		resp.Code = ErrNotSupported
+		resp.Message = "get_invocation_plan: no planner registered in this frontend build"
+		return resp
+	}
+
+	lookup := func(targetID string) *TargetContext {
+		return h.buildTargetContext(targetID)
+	}
+
+	finishPlan := timing.Start("get_invocation_plan.total")
+	plans, unsatisfied := h.planRequirements(req.InvocationRequirements, lookup)
+	finishPlan()
+
+	resp.Status = "invocation_plan"
+	resp.InvocationPlans = plans
+	resp.UnsatisfiedRequirements = unsatisfied
+	return finalizeResponse(resp, timing)
+}
+
+// lookupAnalyzedByTargetID maps a protocol target_id to a cached
+// FunctionAnalysis. The cache is keyed on "file\x00function"; callers of
+// get_invocation_plan must have previously issued analyze for the target's
+// file so the entry exists. Matching extracts the bare symbol name from
+// "pkgPath:QualifiedName" (splitting on the final ":"), then scans cached
+// analyses for a matching Name on the most recently analyzed file.
+func (h *Handler) lookupAnalyzedByTargetID(targetID string) *FunctionAnalysis {
+	analysis, _ := h.lookupAnalyzedLocation(targetID)
+	return analysis
+}
+
+// lookupAnalyzedLocation is like lookupAnalyzedByTargetID but additionally
+// returns the file path the analysis came from. Callers that need to reload
+// the parsed package (e.g. to recover Receiver shape or to scan constructors)
+// use the file path as input to loadPackageForAnalysis.
+//
+// Returns (nil, "") when the target is not in the analysis cache.
+func (h *Handler) lookupAnalyzedLocation(targetID string) (*FunctionAnalysis, string) {
+	bare := bareSymbolFromTargetID(targetID)
+	if bare == "" {
+		return nil, ""
+	}
+	if h.lastAnalyzedFile != "" {
+		if analysis, ok := h.cachedAnalyses[h.lastAnalyzedFile+"\x00"+bare]; ok {
+			return analysis, h.lastAnalyzedFile
+		}
+	}
+	// Fall back to linear scan so targets from prior analyses still resolve.
+	for key, analysis := range h.cachedAnalyses {
+		if analysis.Name != bare {
+			continue
+		}
+		// key is "file\x00function"; recover the file prefix.
+		if idx := strings.IndexByte(key, '\x00'); idx >= 0 {
+			return analysis, key[:idx]
+		}
+		return analysis, ""
+	}
+	return nil, ""
+}
+
+// buildTargetContext is the planner's TargetLookup-shaped closure. It
+// resolves a target_id into a TargetContext suitable for both the free-
+// function and the receiver-aware planner paths.
+//
+// For free functions only Analysis is populated; the planner takes the legacy
+// parameter-only path. For method targets the handler additionally rebuilds
+// the Go-internal DiscoveredTarget (carrying Receiver shape and HasTypeParams)
+// from the parsed package and scans same-package constructor candidates whose
+// TargetType matches the receiver type. The DiscoveredTarget is not on the
+// wire (FunctionAnalysis is the wire shape — and the analyzer emits bare
+// `fn.Name.Name`, which doesn't expose method-vs-function on its own);
+// building DiscoveredTarget here is the only way to recover that distinction.
+//
+// On any error (cache miss, package load failure, FuncDecl not found in pkg)
+// the returned TargetContext omits Target and Constructors; the planner then
+// follows its free-function path or surfaces NoConstructor depending on what
+// it sees. Callers can distinguish "no analyze cache" (returns nil) from
+// "method without resolvable receiver" (Target nil but Analysis set).
+func (h *Handler) buildTargetContext(targetID string) *TargetContext {
+	analysis, file := h.lookupAnalyzedLocation(targetID)
+	if analysis == nil {
+		return nil
+	}
+	ctx := &TargetContext{Analysis: analysis}
+
+	// Always load the package when possible: the analyzer emits a bare
+	// function name (`fn.Name.Name`) whether the symbol is a free function
+	// or a method, so we cannot tell the two apart from FunctionAnalysis
+	// alone. The loader caches packages, so repeat lookups within a
+	// session are cheap.
+	if h.loader == nil || file == "" {
+		return ctx
+	}
+
+	pkg, err := loadPackageForAnalysis(h.loader, file)
+	if err != nil || pkg == nil || pkg.Fset == nil {
+		return ctx
+	}
+
+	fn := findFuncDeclByBareName(pkg, analysis.Name)
+	if fn == nil {
+		return ctx
+	}
+
+	// Only methods need DiscoveredTarget + Constructors. Free functions
+	// take the legacy path with Analysis-only context.
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ctx
+	}
+
+	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
+	ctx.Target = &target
+
+	if target.Receiver != nil && target.Receiver.TypeName != "" {
+		all := ScanConstructors(pkg)
+		recvType := target.Receiver.TypeName
+		var matched []ConstructorCandidate
+		for _, c := range all {
+			if c.TargetType == recvType {
+				matched = append(matched, c)
+			}
+		}
+		ctx.Constructors = matched
+	}
+	return ctx
+}
+
+// findFuncDeclByBareName scans every syntax file in pkg for the FuncDecl
+// whose bare name matches `name`. Mirrors the analyzer's matching shape:
+// the analyzer emits the bare `fn.Name.Name` whether the symbol is a free
+// function or a method, so the same matcher works for both. When multiple
+// methods share a name (different receiver types), this returns the first
+// in source order — sufficient for the H5 path where the caller already
+// supplied a target_id pointing at one specific declaration.
+func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
+	for _, file := range pkg.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if fn.Name.Name == name {
+				return fn
+			}
+		}
+	}
+	return nil
+}
+
+func bareSymbolFromTargetID(targetID string) string {
+	idx := strings.LastIndex(targetID, ":")
+	if idx < 0 {
+		return targetID
+	}
+	return targetID[idx+1:]
+}
+
 // Registry returns the generator registry, allowing custom builds to register
 // native generators before calling Run().
 func (h *Handler) Registry() *generators.Registry {
@@ -1087,12 +1347,11 @@ func (h *Handler) RegisterHookFactory(f RuntimeHookFactory) {
 }
 
 func (h *Handler) handleShutdown(resp Response) Response {
-	instrument.CloseAllHarnesses()
 	h.pruneOrphans()
 	for _, ph := range h.preparedHarnesses {
 		ph.Cleanup()
 	}
-	h.preparedHarnesses = make(map[string]*instrument.PreparedHarness)
+	h.preparedHarnesses = make(map[string]preparedExecution)
 	h.preparedTargets = make(map[string]string)
 	h.cachedAnalyses = make(map[string]*FunctionAnalysis)
 	h.registry.Close()

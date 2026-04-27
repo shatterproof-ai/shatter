@@ -14,6 +14,54 @@ import (
 
 const ProtocolVersion = "0.1.0"
 
+// TargetKind classifies a discovered invocation target.
+type TargetKind string
+
+const (
+	TargetKindFunction TargetKind = "function"
+	TargetKindMethod   TargetKind = "method"
+	TargetKindAdapter  TargetKind = "adapter"
+)
+
+// ReceiverShape describes the receiver type of a method target.
+type ReceiverShape struct {
+	TypeName    string `json:"type_name"`
+	IsPointer   bool   `json:"is_pointer"`
+	IsInterface bool   `json:"is_interface,omitempty"`
+}
+
+// DiscoveredTarget is a single invocation target found during package analysis.
+// IDs are stable across repeated analysis runs: each ID is derived from the
+// package path and the qualified symbol name only.
+type DiscoveredTarget struct {
+	ID            string         `json:"id"`
+	PackagePath   string         `json:"package_path"`
+	PackageName   string         `json:"package_name"`
+	FilePath      string         `json:"file_path"`
+	StartLine     int            `json:"start_line"`
+	EndLine       int            `json:"end_line"`
+	SymbolName    string         `json:"symbol_name"`
+	QualifiedName string         `json:"qualified_name"`
+	Kind          TargetKind     `json:"kind"`
+	Receiver      *ReceiverShape `json:"receiver,omitempty"`
+	Parameters    []ParamInfo    `json:"parameters"`
+	Results       []TypeInfo     `json:"results"`
+	Visibility    string         `json:"visibility"`
+	HasTypeParams bool           `json:"has_type_params,omitempty"`
+	HasCGoDep     bool           `json:"has_cgo_dep,omitempty"`
+	IsTestFile    bool           `json:"is_test_file,omitempty"`
+}
+
+// ConstructorCandidate is a function inferred to construct a same-package type.
+// Candidates are collected by ScanConstructors and consumed by the receiver
+// planner (Phase E) to synthesize receiver values for method targets.
+type ConstructorCandidate struct {
+	FuncName     string      `json:"func_name"`
+	TargetType   string      `json:"target_type"`
+	Parameters   []ParamInfo `json:"parameters"`
+	ReturnsError bool        `json:"returns_error"`
+}
+
 // SetupLevel defines the lifecycle granularity for setup/teardown.
 // Values match the Rust core's SetupLevel enum (snake_case serialization).
 type SetupLevel string
@@ -104,6 +152,16 @@ type Request struct {
 	// remain correct regardless of this setting.
 	Capture *bool `json:"capture,omitempty"`
 
+	// Plan is an optional InvocationPlan from a prior get_invocation_plan
+	// response (str-hy9b.H5). When present on an Execute request, the
+	// frontend uses Plan.ReceiverKind to construct the receiver for method
+	// targets and dispatch through the launcher's wrapper-aware path. When
+	// absent, Execute takes its legacy free-function path with an empty
+	// receiver_kind. TS/Rust frontends ignore this field — see the
+	// `ts-rust-execute-plan-not-implemented` divergence in
+	// protocol/parity-matrix.yaml.
+	Plan *InvocationPlan `json:"plan,omitempty"`
+
 	// Setup/Teardown fields
 	Scope         string             `json:"scope,omitempty"`
 	Level         SetupLevel         `json:"level,omitempty"`
@@ -113,6 +171,11 @@ type Request struct {
 	Name   string           `json:"name,omitempty"`
 	Kind   string           `json:"kind,omitempty"`
 	Recipe *json.RawMessage `json:"recipe,omitempty"`
+
+	// GetInvocationPlan fields (str-zbyp).
+	// Populated only for the get_invocation_plan command; one
+	// InvocationRequirement per target the core wants the planner to resolve.
+	InvocationRequirements []InvocationRequirement `json:"invocation_requirements,omitempty"`
 }
 
 // Response is a message from the frontend to the core engine.
@@ -161,6 +224,11 @@ type Response struct {
 	Value       *json.RawMessage `json:"value,omitempty"`
 	GeneratorID string           `json:"generator_id,omitempty"`
 	Recipe      *json.RawMessage `json:"recipe,omitempty"`
+
+	// InvocationPlan (str-zbyp). Populated on status "invocation_plan"
+	// replies to the get_invocation_plan command.
+	InvocationPlans         []InvocationPlan         `json:"invocation_plans,omitempty"`
+	UnsatisfiedRequirements []UnsatisfiedRequirement `json:"unsatisfied_requirements,omitempty"`
 
 	// Error
 	Code    string           `json:"code,omitempty"`

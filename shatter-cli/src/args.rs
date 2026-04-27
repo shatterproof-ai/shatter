@@ -387,11 +387,11 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         strategy_weights: Option<String>,
 
-        /// Select a frontend-provided invocation planner by name. Currently no
-        /// strategies are accepted: the Rust-side `InvocationPlan` protocol
-        /// type is not yet defined (blocked on str-zbyp). Passing this flag
-        /// produces an explicit "not yet implemented" error. Structural hook
-        /// for the follow-on str-x20u / str-4z2b / str-3iwg wiring.
+        /// Select a frontend-provided invocation planner by name. When set to
+        /// `go`, consults the Go frontend's invocation planner
+        /// (get_invocation_plan) before exploring each target. The returned
+        /// InvocationPlan is fed as seeds and attached to every Execute request
+        /// so method targets dispatch into a real constructor.
         #[arg(long)]
         planner: Option<String>,
 

@@ -78,6 +78,55 @@ func timingPhaseNames(resp Response) map[string]bool {
 	return phases
 }
 
+type fakePreparedExecution struct {
+	ArtifactDir  string
+	BinaryPath   string
+	InvokeResult *instrument.ExecuteResult
+	InvokeErr    error
+	// LastReceiverKind records the receiver_kind the most recent
+	// InvokeWithReceiverKind call received. Tests assert on this to
+	// verify the receiver-aware Execute path threads the plan through
+	// (str-hy9b.H5).
+	LastReceiverKind string
+}
+
+func (f *fakePreparedExecution) IsValid() bool {
+	if f.ArtifactDir != "" {
+		if _, err := os.Stat(f.ArtifactDir); err != nil {
+			return false
+		}
+	}
+	if f.BinaryPath != "" {
+		if _, err := os.Stat(f.BinaryPath); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *fakePreparedExecution) Cleanup() {
+	if f.ArtifactDir != "" {
+		_ = os.RemoveAll(f.ArtifactDir)
+	}
+}
+
+func (f *fakePreparedExecution) KillProc() {}
+
+func (f *fakePreparedExecution) Invoke(_ []json.RawMessage, _ bool) (*instrument.ExecuteResult, error) {
+	return f.InvokeWithReceiverKind("", nil, false)
+}
+
+func (f *fakePreparedExecution) InvokeWithReceiverKind(receiverKind string, _ []json.RawMessage, _ bool) (*instrument.ExecuteResult, error) {
+	f.LastReceiverKind = receiverKind
+	if f.InvokeErr != nil {
+		return nil, f.InvokeErr
+	}
+	if f.InvokeResult != nil {
+		return f.InvokeResult, nil
+	}
+	return &instrument.ExecuteResult{}, nil
+}
+
 func TestHandshakeResponse(t *testing.T) {
 	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
@@ -124,16 +173,16 @@ func TestShutdownReturnsAckAndStops(t *testing.T) {
 }
 
 // TestShutdownCleansUpPreparedHarnesses verifies that handleShutdown calls
-// Cleanup() on all cached PreparedHarness entries, removing their artifact
+// Cleanup() on all cached prepared executions, removing their artifact
 // directories and clearing the preparedHarnesses map.
 func TestShutdownCleansUpPreparedHarnesses(t *testing.T) {
 	artifactDir := t.TempDir()
 
-	// Build a handler and inject a PreparedHarness with a known artifact dir.
+	// Build a handler and inject a prepared execution with a known artifact dir.
 	// No subprocess is needed — we test the dir-removal path here.
 	var output bytes.Buffer
 	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
-	h.preparedHarnesses["test-prepare-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses["test-prepare-id"] = &fakePreparedExecution{ArtifactDir: artifactDir}
 
 	if err := h.Run(); err != nil {
 		t.Fatalf("handler.Run: %v", err)
@@ -439,6 +488,11 @@ func TestInstrumentWithValidFileReturnsSuccess(t *testing.T) {
 	}
 	if resp.OutputFile == nil || *resp.OutputFile == "" {
 		t.Error("output_file should be set")
+	}
+	if resp.OutputFile != nil {
+		if _, err := os.Stat(filepath.Join(*resp.OutputFile, filepath.Base(tmp))); err != nil {
+			t.Fatalf("instrumented source missing from output dir: %v", err)
+		}
 	}
 	// Cleanup
 	if resp.OutputFile != nil {
@@ -1692,17 +1746,60 @@ func TestPreparedHarnessStaleKeyForceRebuild(t *testing.T) {
 	mocksA := []instrument.MockConfig{}
 	mocksB := []instrument.MockConfig{{Symbol: "someFunc"}}
 
-	idA := computePrepareID(tmp, "add", mocksA)
-	idB := computePrepareID(tmp, "add", mocksB)
+	idA := computePrepareID(tmp, "add", mocksA, "")
+	idB := computePrepareID(tmp, "add", mocksB, "")
 
 	if idA == idB {
 		t.Errorf("different mock configs must produce different prepare_ids: %s == %s", idA, idB)
 	}
 
 	// Also verify same inputs produce same id (idempotent).
-	idA2 := computePrepareID(tmp, "add", mocksA)
+	idA2 := computePrepareID(tmp, "add", mocksA, "")
 	if idA != idA2 {
 		t.Errorf("same inputs must produce same prepare_id: %s != %s", idA, idA2)
+	}
+}
+
+// TestComputePrepareIDReceiverKindSensitive verifies that two computePrepareID
+// calls with the same (file, function, mocks) but different receiver_kind values
+// produce different IDs (str-oegu).
+func TestComputePrepareIDReceiverKindSensitive(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mocks := []instrument.MockConfig{}
+	idFreeFunc := computePrepareID(tmp, "NewService", mocks, "")
+	idConstructor := computePrepareID(tmp, "NewService", mocks, "constructor:NewService")
+
+	if idFreeFunc == idConstructor {
+		t.Errorf("different receiver_kind must produce different prepare_ids: both=%s", idFreeFunc)
+	}
+
+	// Idempotency: same receiver_kind must reproduce the same ID.
+	idConstructor2 := computePrepareID(tmp, "NewService", mocks, "constructor:NewService")
+	if idConstructor != idConstructor2 {
+		t.Errorf("same receiver_kind must be deterministic: first=%s second=%s", idConstructor, idConstructor2)
+	}
+}
+
+// TestHandlePrepareWithPlanKeysOnReceiverKind verifies that a Prepare request
+// carrying a plan with a non-empty receiver_kind produces a prepare_id that
+// differs from a plan-less Prepare for the same target (str-oegu).
+func TestHandlePrepareWithPlanKeysOnReceiverKind(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	if err := os.WriteFile(tmp, []byte(simpleGoSource()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ID for a plan-less prepare (receiverKind = "").
+	idNoReceiver := computePrepareID(tmp, "add", nil, "")
+	// ID for a plan with a concrete receiver_kind.
+	idWithReceiver := computePrepareID(tmp, "add", nil, "constructor:NewService")
+
+	if idNoReceiver == idWithReceiver {
+		t.Errorf("plan-less prepare and plan-with-receiver must have different prepare_ids: both=%s", idNoReceiver)
 	}
 }
 
@@ -1848,7 +1945,7 @@ func TestPruneOrphansRemovesStaleEntries(t *testing.T) {
 	prepareID := "orphan-id"
 	targetKey := fakeFile + "\x00" + "MyFunc"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = prepareID
 
 	pruned := h.pruneOrphans()
@@ -1879,7 +1976,7 @@ func TestPruneOrphansKeepsValidEntries(t *testing.T) {
 	prepareID := "valid-id"
 	targetKey := realFile + "\x00" + "MyFunc"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = prepareID
 
 	pruned := h.pruneOrphans()
@@ -1897,7 +1994,7 @@ func TestPruneOrphansIsIdempotent(t *testing.T) {
 	prepareID := "orphan-id"
 	targetKey := fakeFile + "\x00" + "Foo"
 
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{ArtifactDir: t.TempDir()}
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{ArtifactDir: t.TempDir()}
 	h.preparedTargets[targetKey] = prepareID
 
 	first := h.pruneOrphans()
@@ -1918,7 +2015,7 @@ func TestShutdownPrunesOrphansBeforeCleanup(t *testing.T) {
 
 	var output bytes.Buffer
 	h := NewHandler(strings.NewReader(reqJSON(1, "shutdown")+"\n"), &output, io.Discard)
-	h.preparedHarnesses["orphan-id"] = &instrument.PreparedHarness{ArtifactDir: artifactDir}
+	h.preparedHarnesses["orphan-id"] = &fakePreparedExecution{ArtifactDir: artifactDir}
 	h.preparedTargets[targetKey] = "orphan-id"
 
 	if err := h.Run(); err != nil {
@@ -1947,17 +2044,17 @@ func TestLookupPreparedHarnessPrunesInvalid(t *testing.T) {
 	}
 
 	// Compute the real prepare_id so lookupPreparedHarness finds the entry.
-	prepareID := computePrepareID(realFile, "Foo", nil)
+	prepareID := computePrepareID(realFile, "Foo", nil, "")
 
 	// Register and then delete the artifact dir.
-	h.preparedHarnesses[prepareID] = &instrument.PreparedHarness{
+	h.preparedHarnesses[prepareID] = &fakePreparedExecution{
 		ArtifactDir: artifactDir,
 		BinaryPath:  filepath.Join(artifactDir, "binary"),
 	}
-	h.preparedTargets[realFile+"\x00"+"Foo"] = prepareID
+	h.preparedTargets[realFile+"\x00"+"Foo"+"\x00"+""] = prepareID
 	os.RemoveAll(artifactDir)
 
-	result := h.lookupPreparedHarness(realFile, "Foo", nil)
+	result := h.lookupPreparedHarness(realFile, "Foo", nil, "")
 	if result != nil {
 		t.Error("lookupPreparedHarness should return nil for invalid harness")
 	}

@@ -126,6 +126,18 @@ commands:
       go: implemented
       rust: implemented
 
+  get_invocation_plan:
+    status: optional
+    notes: >
+      Invocation planner consultation (str-hy9b.H2). The frontend resolves
+      InvocationRequirements into concrete InvocationPlans for the Rust core's
+      planner_consumer. Only Go currently advertises this capability; the Rust
+      core is the consumer side. TypeScript has no planner yet.
+    frontends:
+      typescript: not_implemented
+      go: implemented
+      rust: not_implemented
+
   teardown:
     status: optional
     notes: >
@@ -578,9 +590,24 @@ feature_capabilities:
   invocation_plan:
     status: optional
     notes: >
-      Planner artifact schema (str-hy9b.E1). Describes the ordered plan of
-      invocations a frontend intends to run for a discovered target. Go-only at
-      this stage; TS and Rust will reach parity in a later phase.
+      Planner artifact schema (str-hy9b.E1), the `get_invocation_plan`
+      command wired through the Rust engine (str-hy9b.H2), and the
+      receiver-aware planner pathway (str-hy9b.H5). Go frontend advertises
+      the capability and services planning via planner.PlanRequirements.
+      Free functions take the existing parameter-only path; method targets
+      now invoke planner.PlanReceivers with same-package constructor
+      candidates and compose receiver plans with parameter plans, producing
+      InvocationPlans whose `receiver_kind` is non-empty (e.g.
+      `"constructor:NewService"` or `"zero_value"`). Rust core is the
+      consumer (planner_consumer::fetch_planner_seeds), and the
+      `Command::Execute.plan` field (also added in str-hy9b.H5) lets
+      Execute callers thread an InvocationPlan through to the Go launcher
+      so method targets dispatch through the wrapper's receiver-kind
+      switch instead of hard-erroring with `method_not_supported`. The
+      CLI `--planner=go` flag seeds the observe stage for both explorer
+      and orchestrator paths. TypeScript has no planner yet; the Rust
+      frontend does not yet consume `Execute.plan` either — see
+      `ts-rust-execute-plan-not-implemented` below.
     frontends:
       typescript: not_supported
       go: supported
@@ -672,6 +699,40 @@ allowed_divergences:
     resolution: >
       Expand the Rust executor to handle all input types that TS/Go handle,
       removing the NonExecutable early-exit path.
+
+  - id: ts-rust-execute-plan-not-implemented
+    description: >
+      The `Command::Execute.plan` field (str-hy9b.H5) carries an optional
+      InvocationPlan that Go consumes to drive method-receiver invocation
+      through the wrapper's receiver-kind switch. TypeScript and Rust
+      frontends accept the field on the wire (additive, omitempty) but do
+      not consume it — Execute behavior on those frontends is unchanged.
+      Field-presence-without-effect is a tracked divergence rather than an
+      unadvertised drop so callers can rely on the field shape across
+      languages even when only Go acts on it today.
+
+      The divergence has a second, observable axis on method targets.
+      In Go (str-hy9b.H5), an Execute on a method now dispatches through
+      the launcher wrapper's receiver-kind switch: with a plan it invokes
+      the named constructor (or zero-value strategy); without a plan the
+      switch's default arm emits a `runtime_failed` outcome whose
+      `short_reason` contains `"unknown receiver kind"`. TypeScript and
+      Rust still respond to a method target with their pre-H5 capability
+      rejection — `unsupported` outcome with `error_type =
+      method_not_supported` — because neither has a planner-driven
+      method dispatch path. Callers must therefore branch on frontend
+      when interpreting method-target outcomes: Go yields `runtime_failed`
+      (when no plan is supplied) or `completed` (when a viable plan is
+      supplied); TS/Rust always yield `unsupported`/`method_not_supported`
+      regardless of plan presence.
+    affected_frontends: [typescript, rust]
+    affected_commands: [execute]
+    status: tracked
+    resolution: >
+      Implement plan-aware execute in TypeScript (when a planner is added
+      in those frontends) and in Rust (when method-target invocation
+      becomes part of the Rust frontend's surface). Both are deferred
+      until a real planner exists in the corresponding frontend.
 
   - id: rust-prepare-not-supported
     description: >

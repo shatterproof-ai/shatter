@@ -1,0 +1,356 @@
+package build
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"github.com/shatter-dev/shatter/shatter-go/overlay"
+)
+
+const packageMain = "main"
+
+func normalizedPackageName(name string) string {
+	if name == packageMain {
+		return "shattertarget"
+	}
+	return name
+}
+
+func (b *Builder) writeOverlayManifest(
+	req BuildRequest,
+	hash string,
+	generatedDir string,
+	wrapperPath string,
+	wrapperInTree string,
+	packageName string,
+) (overlayPath string, harnessRuntimeDir string, err error) {
+	overlaysDir := filepath.Join(generatedDir, "overlays")
+	builder := overlay.NewBuilder(overlaysDir, hash)
+	if err := builder.Add(wrapperInTree, wrapperPath); err != nil {
+		return "", "", fmt.Errorf("build: overlay wrapper: %w", err)
+	}
+
+	if req.InstrumentedSourceFile != "" {
+		instrumentedFiles, err := instrument.InstrumentPackageForOverlay(req.TargetPackageDir, hash, generatedDir)
+		if err != nil {
+			return "", "", fmt.Errorf("build: instrument package: %w", err)
+		}
+		if packageName != req.PackageName {
+			for _, file := range instrumentedFiles {
+				if err := rewriteFilePackage(file.InstrumentedPath, packageName); err != nil {
+					return "", "", fmt.Errorf("build: rewrite instrumented package %q: %w", file.InstrumentedPath, err)
+				}
+			}
+		}
+		if err := instrument.RegisterInstrumentedOverlay(builder, instrumentedFiles); err != nil {
+			return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
+		}
+
+		recorderPath := filepath.Join(generatedDir, "runtime-support", "shatter_recorder_"+hash+".go")
+		if err := writeGeneratedSource(recorderPath, instrument.GenerateRecorder(packageName)); err != nil {
+			return "", "", fmt.Errorf("build: write recorder: %w", err)
+		}
+		if err := builder.Add(filepath.Join(req.TargetPackageDir, "shatter_recorder_"+hash+".go"), recorderPath); err != nil {
+			return "", "", fmt.Errorf("build: overlay recorder: %w", err)
+		}
+
+		globalVars, err := exportedGlobalVars(req.InstrumentedSourceFile)
+		if err != nil {
+			return "", "", fmt.Errorf("build: analyze globals: %w", err)
+		}
+		runtimePath := filepath.Join(generatedDir, "runtime-support", "shatter_runtime_"+hash+".go")
+		if err := writeGeneratedSource(runtimePath, generateRuntimeHelper(packageName, globalVars, len(req.Mocks) > 0)); err != nil {
+			return "", "", fmt.Errorf("build: write runtime helper: %w", err)
+		}
+		if err := builder.Add(filepath.Join(req.TargetPackageDir, "shatter_runtime_"+hash+".go"), runtimePath); err != nil {
+			return "", "", fmt.Errorf("build: overlay runtime helper: %w", err)
+		}
+
+		if len(req.Mocks) > 0 {
+			mockSource := instrument.GenerateLoopMockFile(req.Mocks)
+			mockSource = strings.Replace(mockSource, "package main", "package "+packageName, 1)
+			mockPath := filepath.Join(generatedDir, "runtime-support", "shatter_mocks_"+hash+".go")
+			if err := writeGeneratedSource(mockPath, mockSource); err != nil {
+				return "", "", fmt.Errorf("build: write mock support: %w", err)
+			}
+			if err := builder.Add(filepath.Join(req.TargetPackageDir, "shatter_mocks_"+hash+".go"), mockPath); err != nil {
+				return "", "", fmt.Errorf("build: overlay mock support: %w", err)
+			}
+		}
+
+		harnessRuntimeDir, err = instrument.EnsureHarnessRuntimeDir()
+		if err != nil {
+			return "", "", fmt.Errorf("build: harness runtime: %w", err)
+		}
+	}
+
+	overlayPath, err = builder.Write()
+	if err != nil {
+		return "", "", fmt.Errorf("build: write overlay manifest: %w", err)
+	}
+	return overlayPath, harnessRuntimeDir, nil
+}
+
+func writeGeneratedSource(path, source string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(source), 0o644)
+}
+
+func rewriteFilePackage(path, packageName string) error {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+	file.Name = ast.NewIdent(packageName)
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return printer.Fprint(out, fset, file)
+}
+
+func exportedGlobalVars(sourcePath string) ([]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range valSpec.Names {
+				if ast.IsExported(name.Name) {
+					names = append(names, name.Name)
+				}
+			}
+		}
+	}
+	return names, nil
+}
+
+func generateRuntimeHelper(packageName string, globalVars []string, hasMocks bool) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "package %s\n\n", packageName)
+	b.WriteString("import (\n")
+	b.WriteString("\t\"bytes\"\n")
+	b.WriteString("\t\"encoding/json\"\n")
+	b.WriteString("\t\"fmt\"\n\n")
+	b.WriteString("\t\"io\"\n")
+	b.WriteString("\t\"os\"\n")
+	b.WriteString("\t\"runtime\"\n")
+	b.WriteString("\t\"strings\"\n")
+	b.WriteString("\t\"time\"\n")
+	b.WriteString(")\n\n")
+	b.WriteString("type ShatterSideEffect struct {\n")
+	b.WriteString("\tKind     string          `json:\"kind\"`\n")
+	b.WriteString("\tLevel    string          `json:\"level,omitempty\"`\n")
+	b.WriteString("\tMessage  string          `json:\"message,omitempty\"`\n")
+	b.WriteString("\tVariable string          `json:\"variable,omitempty\"`\n")
+	b.WriteString("\tBefore   json.RawMessage `json:\"before,omitempty\"`\n")
+	b.WriteString("\tAfter    json.RawMessage `json:\"after,omitempty\"`\n")
+	b.WriteString("}\n\n")
+	b.WriteString("type ShatterError struct {\n")
+	b.WriteString("\tErrorType     string `json:\"error_type\"`\n")
+	b.WriteString("\tMessage       string `json:\"message\"`\n")
+	b.WriteString("\tStack         string `json:\"stack,omitempty\"`\n")
+	b.WriteString("\tErrorCategory string `json:\"error_category,omitempty\"`\n")
+	b.WriteString("}\n\n")
+	b.WriteString("type ShatterPerf struct {\n")
+	b.WriteString("\tWallTimeMs         float64 `json:\"wall_time_ms\"`\n")
+	b.WriteString("\tCPUTimeUs          int64   `json:\"cpu_time_us\"`\n")
+	b.WriteString("\tHeapUsedBytes      int64   `json:\"heap_used_bytes\"`\n")
+	b.WriteString("\tHeapAllocatedBytes int64   `json:\"heap_allocated_bytes\"`\n")
+	b.WriteString("}\n\n")
+	b.WriteString("type ShatterResponse struct {\n")
+	b.WriteString("\tReturnValue   json.RawMessage    `json:\"return_value,omitempty\"`\n")
+	b.WriteString("\tBranchPath    json.RawMessage    `json:\"branch_path\"`\n")
+	b.WriteString("\tLinesExecuted json.RawMessage    `json:\"lines_executed\"`\n")
+	b.WriteString("\tScopeEvents   json.RawMessage    `json:\"scope_events\"`\n")
+	b.WriteString("\tSideEffects   []ShatterSideEffect `json:\"side_effects\"`\n")
+	b.WriteString("\tExternalCalls json.RawMessage    `json:\"external_calls,omitempty\"`\n")
+	b.WriteString("\tThrownError   *ShatterError      `json:\"thrown_error,omitempty\"`\n")
+	b.WriteString("\tPerformance   *ShatterPerf       `json:\"performance,omitempty\"`\n")
+	b.WriteString("\tError         string             `json:\"error,omitempty\"`\n")
+	b.WriteString("}\n\n")
+	b.WriteString("type shatterCapture struct {\n")
+	b.WriteString("\torigOut *os.File\n")
+	b.WriteString("\torigErr *os.File\n")
+	b.WriteString("\twOut    *os.File\n")
+	b.WriteString("\twErr    *os.File\n")
+	b.WriteString("\tcapOut  *bytes.Buffer\n")
+	b.WriteString("\tcapErr  *bytes.Buffer\n")
+	b.WriteString("\tdonOut  chan struct{}\n")
+	b.WriteString("\tdonErr  chan struct{}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterCaptureConsole() *shatterCapture {\n")
+	b.WriteString("\tc := &shatterCapture{}\n")
+	b.WriteString("\trOut, wOut, _ := os.Pipe()\n")
+	b.WriteString("\tc.origOut = os.Stdout\n")
+	b.WriteString("\tos.Stdout = wOut\n")
+	b.WriteString("\tc.wOut = wOut\n")
+	b.WriteString("\tc.capOut = &bytes.Buffer{}\n")
+	b.WriteString("\tc.donOut = make(chan struct{})\n")
+	b.WriteString("\tgo func() { _, _ = io.Copy(c.capOut, rOut); close(c.donOut) }()\n")
+	b.WriteString("\trErr, wErr, _ := os.Pipe()\n")
+	b.WriteString("\tc.origErr = os.Stderr\n")
+	b.WriteString("\tos.Stderr = wErr\n")
+	b.WriteString("\tc.wErr = wErr\n")
+	b.WriteString("\tc.capErr = &bytes.Buffer{}\n")
+	b.WriteString("\tc.donErr = make(chan struct{})\n")
+	b.WriteString("\tgo func() { _, _ = io.Copy(c.capErr, rErr); close(c.donErr) }()\n")
+	b.WriteString("\treturn c\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func (c *shatterCapture) Stop() (string, string) {\n")
+	b.WriteString("\tos.Stdout = c.origOut\n")
+	b.WriteString("\t_ = c.wOut.Close()\n")
+	b.WriteString("\t<-c.donOut\n")
+	b.WriteString("\tos.Stderr = c.origErr\n")
+	b.WriteString("\t_ = c.wErr.Close()\n")
+	b.WriteString("\t<-c.donErr\n")
+	b.WriteString("\treturn c.capOut.String(), c.capErr.String()\n")
+	b.WriteString("}\n\n")
+	b.WriteString("type shatterPerfSnap struct {\n")
+	b.WriteString("\tmemBefore runtime.MemStats\n")
+	b.WriteString("\tstart     time.Time\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterStartPerf() *shatterPerfSnap {\n")
+	b.WriteString("\ts := &shatterPerfSnap{start: time.Now()}\n")
+	b.WriteString("\truntime.ReadMemStats(&s.memBefore)\n")
+	b.WriteString("\treturn s\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func (s *shatterPerfSnap) Finish() *ShatterPerf {\n")
+	b.WriteString("\telapsed := time.Since(s.start)\n")
+	b.WriteString("\tvar memAfter runtime.MemStats\n")
+	b.WriteString("\truntime.ReadMemStats(&memAfter)\n")
+	b.WriteString("\treturn &ShatterPerf{\n")
+	b.WriteString("\t\tWallTimeMs:         float64(elapsed.Microseconds()) / 1000.0,\n")
+	b.WriteString("\t\tCPUTimeUs:          elapsed.Microseconds(),\n")
+	b.WriteString("\t\tHeapUsedBytes:      int64(memAfter.HeapInuse) - int64(s.memBefore.HeapInuse),\n")
+	b.WriteString("\t\tHeapAllocatedBytes: int64(memAfter.TotalAlloc) - int64(s.memBefore.TotalAlloc),\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterSafeCall(fn func()) *ShatterError {\n")
+	b.WriteString("\tvar caught *ShatterError\n")
+	b.WriteString("\tfunc() {\n")
+	b.WriteString("\t\tdefer func() {\n")
+	b.WriteString("\t\t\tif r := recover(); r != nil {\n")
+	b.WriteString("\t\t\t\tstk := make([]byte, 4096)\n")
+	b.WriteString("\t\t\t\tn := runtime.Stack(stk, false)\n")
+	b.WriteString("\t\t\t\tcaught = &ShatterError{ErrorType: \"panic\", Message: fmt.Sprintf(\"%v\", r), Stack: string(stk[:n]), ErrorCategory: \"runtime\"}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}()\n")
+	b.WriteString("\t\tfn()\n")
+	b.WriteString("\t}()\n")
+	b.WriteString("\treturn caught\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterConsoleSideEffects(stdout, stderr string) []ShatterSideEffect {\n")
+	b.WriteString("\tvar effects []ShatterSideEffect\n")
+	b.WriteString("\tif s := strings.TrimSpace(stdout); s != \"\" {\n")
+	b.WriteString("\t\teffects = append(effects, ShatterSideEffect{Kind: \"console_output\", Level: \"log\", Message: s})\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif s := strings.TrimSpace(stderr); s != \"\" {\n")
+	b.WriteString("\t\teffects = append(effects, ShatterSideEffect{Kind: \"console_output\", Level: \"error\", Message: s})\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn effects\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func ShatterExecute(planJSON json.RawMessage, inputs []json.RawMessage, capture bool) ShatterResponse {\n")
+	b.WriteString("\tvar plan PlanDescriptor\n")
+	b.WriteString("\tif err := json.Unmarshal(planJSON, &plan); err != nil {\n")
+	b.WriteString("\t\treturn ShatterResponse{Error: fmt.Sprintf(\"unmarshal plan: %v\", err)}\n")
+	b.WriteString("\t}\n\n")
+	b.WriteString("\t__shatter_reset()\n")
+	if hasMocks {
+		b.WriteString("\tshatterResetMockCounters()\n")
+	}
+	b.WriteString("\n")
+
+	for _, name := range globalVars {
+		fmt.Fprintf(&b, "\t_bef_%s, _ok_%s := func() (json.RawMessage, bool) {\n", name, name)
+		fmt.Fprintf(&b, "\t\t_b, _e := json.Marshal(%s)\n", name)
+		b.WriteString("\t\treturn _b, _e == nil\n")
+		b.WriteString("\t}()\n")
+	}
+	if len(globalVars) > 0 {
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\t_perf := shatterStartPerf()\n")
+	b.WriteString("\t_cap := shatterCaptureConsole()\n")
+	b.WriteString("\tvar (\n")
+	b.WriteString("\t\t_ret       any\n")
+	b.WriteString("\t\t_invokeErr error\n")
+	b.WriteString("\t)\n")
+	b.WriteString("\t_thrownErr := shatterSafeCall(func() {\n")
+	b.WriteString("\t\t_ret, _invokeErr = ShatterInvoke(plan, inputs)\n")
+	b.WriteString("\t})\n")
+	b.WriteString("\t_stdout, _stderr := _cap.Stop()\n")
+	b.WriteString("\t_perfResult := _perf.Finish()\n")
+	b.WriteString("\t_rec := __shatter_collect_results()\n")
+	b.WriteString("\t_branchPath, _ := json.Marshal(_rec.BranchPath)\n")
+	b.WriteString("\t_linesExec, _ := json.Marshal(_rec.LinesExecuted)\n")
+	b.WriteString("\t_scopeEvts, _ := json.Marshal(_rec.ScopeEvents)\n\n")
+
+	b.WriteString("\t_resp := ShatterResponse{\n")
+	b.WriteString("\t\tBranchPath:    _branchPath,\n")
+	b.WriteString("\t\tLinesExecuted: _linesExec,\n")
+	b.WriteString("\t\tScopeEvents:   _scopeEvts,\n")
+	b.WriteString("\t\tThrownError:   _thrownErr,\n")
+	b.WriteString("\t\tPerformance:   _perfResult,\n")
+	b.WriteString("\t}\n\n")
+
+	b.WriteString("\tif _invokeErr != nil && _resp.ThrownError == nil {\n")
+	b.WriteString("\t\t_resp.ThrownError = &ShatterError{ErrorType: \"function_error\", Message: _invokeErr.Error(), ErrorCategory: \"runtime\"}\n")
+	b.WriteString("\t} else if _ret != nil {\n")
+	b.WriteString("\t\tif _rv, _e := json.Marshal(_ret); _e == nil {\n")
+	b.WriteString("\t\t\t_resp.ReturnValue = _rv\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n\n")
+
+	b.WriteString("\tif capture {\n")
+	b.WriteString("\t\t_resp.SideEffects = append(_resp.SideEffects, shatterConsoleSideEffects(_stdout, _stderr)...)\n")
+	b.WriteString("\t}\n")
+	for _, name := range globalVars {
+		fmt.Fprintf(&b, "\tif _ok_%s {\n", name)
+		fmt.Fprintf(&b, "\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", name, name)
+		fmt.Fprintf(&b, "\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", name, name)
+		b.WriteString("\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, ShatterSideEffect{\n")
+		b.WriteString("\t\t\t\t\tKind:     \"global_state_change\",\n")
+		fmt.Fprintf(&b, "\t\t\t\t\tVariable: %q,\n", name)
+		fmt.Fprintf(&b, "\t\t\t\t\tBefore:   _bef_%s,\n", name)
+		fmt.Fprintf(&b, "\t\t\t\t\tAfter:    _aft_%s,\n", name)
+		b.WriteString("\t\t\t\t})\n")
+		b.WriteString("\t\t\t}\n")
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t}\n")
+	}
+	if hasMocks {
+		b.WriteString("\tif _mockCalls := shatterGetAndResetMockCalls(); len(_mockCalls) > 0 {\n")
+		b.WriteString("\t\t_resp.ExternalCalls, _ = json.Marshal(_mockCalls)\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\n\treturn _resp\n")
+	b.WriteString("}\n")
+
+	return b.String()
+}

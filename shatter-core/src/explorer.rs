@@ -29,9 +29,7 @@ use crate::protocol::{
     ResponseResult, SetupContextEntry, SetupContextStack,
 };
 use crate::setup_manager::SetupManager;
-use crate::strategy::{
-    SpecialCandidatePath, StrategyContext, build_random_explorer_meta_strategy,
-};
+use crate::strategy::{SpecialCandidatePath, StrategyContext, build_random_explorer_meta_strategy};
 
 /// Iteration count bucket boundaries for scope-aware path hashing.
 ///
@@ -161,12 +159,13 @@ pub struct ExploreConfig {
     /// `Some`. Controls the minimum hit rate and maximum claim fraction.
     pub claim_policy: crate::scan_orchestrator::ClaimPolicy,
     /// Name of a frontend-provided invocation planner to consult. `None` means
-    /// the random explorer selects inputs on its own. No strategies are
-    /// currently accepted end-to-end: the `InvocationPlan` protocol type is
-    /// not yet defined (blocked on str-zbyp). Threaded through from the CLI
-    /// `--planner` flag as a structural hook; the eventual consumption site
-    /// (input generation) is tracked by str-4z2b.
+    /// the random explorer selects inputs on its own. Set `default_execute_plan`
+    /// to pass a plan on every Execute for this target.
     pub planner: Option<String>,
+    /// InvocationPlan to attach to every Execute request for this target.
+    /// Set from the first plan returned by the planner; `None` when not using
+    /// `--planner` or when the frontend returned no plans.
+    pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
 }
 
 /// Default interval between periodic progress summaries.
@@ -902,6 +901,7 @@ pub async fn explore_function(
                 mocks: config.mocks.clone(),
                 project_root: config.project_root.clone(),
                 execution_profile: config.execution_profile.clone(),
+                plan: config.default_execute_plan.clone(),
             })
             .instrument(tracing::info_span!("explore.prepare"))
             .await
@@ -961,6 +961,7 @@ pub async fn explore_function(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -973,6 +974,7 @@ pub async fn explore_function(
                         capture: false,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: config.default_execute_plan.clone(),
                     })
                     .await?;
 
@@ -1388,6 +1390,7 @@ pub async fn explore_function(
                         capture: true,
                         prepare_id: prepare_id.clone(),
                         execution_profile: config.execution_profile.clone(),
+                        plan: config.default_execute_plan.clone(),
                     })
                     .instrument(tracing::info_span!("shrink.execute_round_trip"))
                     .await;
@@ -1422,6 +1425,7 @@ pub async fn explore_function(
                             capture: false,
                             prepare_id: prepare_id.clone(),
                             execution_profile: config.execution_profile.clone(),
+                            plan: config.default_execute_plan.clone(),
                         })
                         .instrument(tracing::info_span!("shrink.execute_round_trip"))
                         .await;
@@ -1458,6 +1462,7 @@ pub async fn explore_function(
                                 capture: false,
                                 prepare_id: prepare_id.clone(),
                                 execution_profile: config.execution_profile.clone(),
+                                plan: config.default_execute_plan.clone(),
                             })
                             .instrument(tracing::info_span!("shrink.execute_round_trip"))
                             .await;
@@ -2004,6 +2009,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("positive-even")),
@@ -2020,6 +2026,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -2041,6 +2048,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!(99.0)),
@@ -2057,6 +2065,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert_eq!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -2078,6 +2087,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
@@ -2094,6 +2104,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -2115,6 +2126,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let err = ExecuteResult {
             return_value: None,
@@ -2136,6 +2148,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert_ne!(
             path_hash(&ok, &no_buckets()),
@@ -2168,6 +2181,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let r2 = ExecuteResult {
             return_value: Some(serde_json::json!("same")),
@@ -2192,6 +2206,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         assert_ne!(path_hash(&r1, &no_buckets()), path_hash(&r2, &no_buckets()));
     }
@@ -2260,6 +2275,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         }
     }
@@ -2289,6 +2305,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let hash1 = path_hash(&r, &no_buckets());
@@ -3134,6 +3151,7 @@ mod tests {
             discovered_dependencies: vec![stub_dep("redis"), stub_dep("pg")],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let result2 = ExecuteResult {
             return_value: None,
@@ -3150,6 +3168,7 @@ mod tests {
             discovered_dependencies: vec![stub_dep("pg")], // duplicate
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let raw = vec![(vec![], vec![], result1), (vec![], vec![], result2)];
         let modules = collect_stubbed_modules(&raw);
@@ -3181,6 +3200,7 @@ mod tests {
             }],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
         let raw = vec![(vec![], vec![], result)];
         let modules = collect_stubbed_modules(&raw);
@@ -3217,6 +3237,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -3240,6 +3261,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: Default::default(),
         };
         assert!(classify_error_intent(&result).is_none());
@@ -3278,6 +3300,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: Default::default(),
         };
         let label = classify_error_intent(&result).unwrap();
@@ -3348,6 +3371,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3387,6 +3411,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3426,6 +3451,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3464,6 +3490,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3506,6 +3533,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3544,6 +3572,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3581,6 +3610,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3636,6 +3666,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3698,6 +3729,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -3773,6 +3805,7 @@ mod tests {
                     side_effects: vec![],
                     performance: perf.clone(),
                     capture_truncation: None, discovered_dependencies: vec![], connection_failures: vec![], runtime_crypto_boundaries: vec![],
+                    outcome: None,
                 };
                 let flipped = crate::protocol::ExecuteResult {
                     branch_path: vec![crate::execution_record::BranchDecision {
@@ -3855,6 +3888,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
             performance: empty_perf(),
         };
         let obs = ObservationOutput {
@@ -3906,11 +3940,12 @@ mod tests {
                 path_constraints: vec![],
                 side_effects: vec![],
                 scope_events: vec![],
-            loop_body_states: vec![],
+                loop_body_states: vec![],
                 capture_truncation: None,
                 discovered_dependencies: vec![],
                 connection_failures: vec![],
                 runtime_crypto_boundaries: vec![],
+                outcome: None,
                 performance: empty_perf(),
             }
         };
@@ -3983,6 +4018,7 @@ mod tests {
                 message: "connect ECONNREFUSED 127.0.0.1:5432".into(),
             }],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
 
         update_live_first_states(&result, &mut states);
@@ -4019,6 +4055,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
 
         update_live_first_states(&result, &mut states);
@@ -4056,6 +4093,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         };
 
         update_live_first_states(&result, &mut states);

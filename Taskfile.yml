@@ -261,7 +261,7 @@ tasks:
         SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic
 
   smoke:
-    desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function."
+    desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."
     deps: [ts:build]
     cmds:
       - |
@@ -273,6 +273,7 @@ tasks:
       - |
         examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/go/01-arithmetic.go:ClassifyNumber"
+      - bash scripts/test_empty_report_regression.sh
 
   pre-completion:
     desc: Pre-completion quality gate (smoke + full check + git status)

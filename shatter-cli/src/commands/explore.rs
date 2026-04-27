@@ -437,6 +437,74 @@ struct PreparedTarget {
     work_item_indices: Vec<usize>,
 }
 
+/// Call the frontend's invocation planner (when `--planner` is active) and
+/// return seed inputs materialized from its plans.
+///
+/// This runs once per target before the observe stage. On any failure
+/// (capability missing, analyze error, non-planner response), we log and
+/// return an empty vec so exploration falls through to its regular seed
+/// sources. Primes `task_frontend`'s analysis cache with an extra analyze
+/// because task frontends are freshly spawned and have no cached target
+/// metadata; the planner's target_id lookup needs that cache.
+async fn fetch_planner_extra_seeds(
+    task_frontend: &mut shatter_core::frontend::Frontend,
+    explore_config: &shatter_core::explorer::ExploreConfig,
+    func: &shatter_core::protocol::FunctionAnalysis,
+    file_str: &str,
+    project_root: Option<&str>,
+) -> (Vec<Vec<serde_json::Value>>, Option<shatter_core::protocol::InvocationPlan>) {
+    let Some(_planner_name) = explore_config.planner.as_deref() else {
+        return (Vec::new(), None);
+    };
+
+    // Prime the task frontend's analysis cache so get_invocation_plan can
+    // resolve the target_id via its analyzed-by-name lookup.
+    let analyze_result = task_frontend
+        .send(shatter_core::protocol::Command::Analyze {
+            file: file_str.to_string(),
+            function: Some(func.name.clone()),
+            project_root: project_root.map(str::to_string),
+            execution_profile: explore_config.execution_profile.clone(),
+        })
+        .await;
+    if let Err(e) = analyze_result {
+        tracing::warn!(
+            "planner: analyze priming failed for {}: {e}",
+            func.name
+        );
+        return (Vec::new(), None);
+    }
+
+    // Free functions: target_id carries only the bare symbol. Our Go handler
+    // falls back to linear scan by FunctionAnalysis.Name when the colon
+    // prefix is absent, so `:{name}` is sufficient for the MVP (method
+    // targets would need a resolved package path).
+    let target_id = format!(":{}", func.name);
+    match shatter_core::planner_consumer::fetch_planner_seeds(
+        task_frontend,
+        &target_id,
+        &func.params,
+    )
+    .await
+    {
+        Ok(bundle) => {
+            tracing::info!(
+                "planner: target={} seeds={} plans={} unsatisfied={}",
+                func.name,
+                bundle.seeds.len(),
+                bundle.plans.len(),
+                bundle.unsatisfied.len(),
+            );
+            let first_plan = bundle.plans.into_iter().next();
+            (bundle.seeds, first_plan)
+        }
+        Err(e) => {
+            tracing::warn!("planner: fetch failed for {}: {e}", func.name);
+            (Vec::new(), None)
+        }
+    }
+}
+
 fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
     project_root
         .map(PathBuf::from)
@@ -1473,12 +1541,11 @@ pub(crate) async fn run_explore(
     max_executions: Option<u64>,
     planner: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(name) = planner {
+    if let Some(name) = planner
+        && name != "go"
+    {
         return Err(format!(
-            "--planner={name}: invocation planner is not yet implemented. \
-             The Rust-side InvocationPlan protocol type is missing \
-             (tracked as str-zbyp, which blocks str-x20u / str-4z2b / str-3iwg). \
-             Omit --planner to run exploration without a planner."
+            "--planner={name}: only `go` is currently supported."
         )
         .into());
     }
@@ -2150,6 +2217,7 @@ pub(crate) async fn run_explore(
                 budget_surplus: None,
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
                 planner: planner.map(str::to_string),
+                default_execute_plan: None,
             };
 
             // Build concolic-specific config if needed.
@@ -2230,6 +2298,7 @@ pub(crate) async fn run_explore(
                     mcdc,
                     fuzz: resolved.fuzz.clone(),
                     planner: planner.map(str::to_string),
+                    default_execute_plan: None,
                 };
                 (Some(cc), seeds, users)
             } else {
@@ -2488,6 +2557,25 @@ pub(crate) async fn run_explore(
                     total_branches: Some(item.func.branches.len()),
                 });
 
+                // --- Invocation planner consultation ---
+                //
+                // When `--planner` is set, consult the frontend's planner
+                // (str-hy9b.H2). The resulting seeds feed BOTH the random
+                // explorer (via user_seeds) and the concolic orchestrator
+                // (via build_seed_inputs_with_extras) through the shared
+                // `extra_seeds` channel on ObserveStageOptions, preserving
+                // the single-source-of-truth rule for parallel explorer and
+                // orchestrator paths.
+                let (planner_extra_seeds, planner_default_plan) =
+                    fetch_planner_extra_seeds(
+                        &mut task_frontend,
+                        &item.explore_config,
+                        &item.func,
+                        &file_str_owned,
+                        project_root_owned.as_deref(),
+                    )
+                    .await;
+
                 let instrument_mocks = item
                     .concolic_config
                     .as_ref()
@@ -2513,7 +2601,8 @@ pub(crate) async fn run_explore(
                         concolic_user_inputs: &item.user_inputs,
                         progress_hints,
                         resume_state,
-                        ..shatter_core::pipeline_orchestrator::ObserveStageOptions::default()
+                        extra_seeds: &planner_extra_seeds,
+                        execute_plan: planner_default_plan,
                     },
                 )
                 .instrument(tracing::info_span!("pipeline.observe"))

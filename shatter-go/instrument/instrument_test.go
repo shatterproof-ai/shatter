@@ -18,6 +18,15 @@ type testResults struct {
 	} `json:"branch_path"`
 }
 
+func materializeTestOutputDir(t *testing.T, sourcePath string, funcName *string) string {
+	t.Helper()
+	outputDir := t.TempDir()
+	if err := MaterializeInstrumentedDirectory(sourcePath, funcName, outputDir, nil, nil); err != nil {
+		t.Fatalf("MaterializeInstrumentedDirectory: %v", err)
+	}
+	return outputDir
+}
+
 func writeTestSource(t *testing.T, dir, filename, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, filename)
@@ -40,11 +49,7 @@ func classify(x int) string {
 }
 `)
 
-	outputDir, err := InstrumentFile(src, nil, nil)
-	if err != nil {
-		t.Fatalf("InstrumentFile: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
+	outputDir := materializeTestOutputDir(t, src, nil)
 
 	// Verify the output type-checks (go vet includes type checking)
 	cmd := exec.Command("go", "vet", "./...")
@@ -72,11 +77,7 @@ func classify(x int) string {
 `)
 
 	funcName := "classify"
-	outputDir, err := InstrumentFile(src, &funcName, nil)
-	if err != nil {
-		t.Fatalf("InstrumentFile: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
+	outputDir := materializeTestOutputDir(t, src, &funcName)
 
 	resultsPath := filepath.Join(outputDir, "results.json")
 	mainSrc := `package main
@@ -177,11 +178,7 @@ func main() {
 `)
 
 	funcName := "Add"
-	outputDir, err := InstrumentFile(src, &funcName, nil)
-	if err != nil {
-		t.Fatalf("InstrumentFile: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
+	outputDir := materializeTestOutputDir(t, src, &funcName)
 
 	// go vet checks for unused imports — this must pass
 	cmd := exec.Command("go", "vet", "./...")
@@ -193,7 +190,7 @@ func main() {
 }
 
 func TestInstrumentFileNotFound(t *testing.T) {
-	_, err := InstrumentFile("/nonexistent/file.go", nil, nil)
+	err := MaterializeInstrumentedDirectory("/nonexistent/file.go", nil, t.TempDir(), nil, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}

@@ -196,6 +196,7 @@ pub async fn observe_single(
             capture,
             prepare_id: prepare_id.map(|s| s.to_string()),
             execution_profile: execution_profile.cloned(),
+            plan: None,
         })
         .await?;
 
@@ -555,6 +556,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         }
     }
 
@@ -655,6 +657,7 @@ mod tests {
             budget_surplus: None,
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
+            default_execute_plan: None,
         };
 
         let observe_config = ObserveConfig::from(&explore_config);
@@ -778,6 +781,7 @@ mod proptests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         })
     }
 

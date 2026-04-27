@@ -4567,7 +4567,9 @@ mod tests {
 
     #[test]
     fn pool_to_candidate_inputs_produces_candidates() {
-        use crate::interesting_pool::{BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity};
+        use crate::interesting_pool::{
+            BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity,
+        };
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(42),
@@ -4612,7 +4614,9 @@ mod tests {
 
     #[test]
     fn pool_to_candidate_inputs_deduplicates() {
-        use crate::interesting_pool::{BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity};
+        use crate::interesting_pool::{
+            BehaviorObservation, CoverageMode, InterestingPool, PoolEntry, Severity,
+        };
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(7),

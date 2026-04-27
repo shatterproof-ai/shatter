@@ -76,6 +76,73 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     Ok(out_path.to_string_lossy().into_owned())
 }
 
+/// Build an `InvocationOutcome` for a successful execute path (str-hy9b.A1/A5).
+///
+/// Mapping:
+/// - `thrown_error == None` → `Completed`, carrying `return_value`.
+/// - `thrown_error.error_type == "timeout"` (set by the executor's
+///   `RecvTimeoutError::Timeout` arm) → `TimedOut`.
+/// - any other thrown error → `RuntimeFailed`.
+fn derive_execute_outcome(
+    result: &crate::executor::ExecuteResult,
+) -> crate::protocol::InvocationOutcome {
+    use crate::protocol::{InvocationOutcome, OutcomeStatus};
+    match &result.thrown_error {
+        None => InvocationOutcome {
+            status: OutcomeStatus::Completed,
+            short_reason: None,
+            return_value: result.return_value.clone(),
+            thrown_error: None,
+            side_effects: Vec::new(),
+        },
+        Some(err) => {
+            let error_type = err
+                .get("error_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let message = err
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let status = if error_type == "timeout" {
+                OutcomeStatus::TimedOut
+            } else {
+                OutcomeStatus::RuntimeFailed
+            };
+            let short_reason = if message.is_empty() {
+                format!("{error_type} thrown")
+            } else {
+                message.to_string()
+            };
+            InvocationOutcome {
+                status,
+                short_reason: Some(short_reason),
+                return_value: None,
+                thrown_error: Some(err.clone()),
+                side_effects: Vec::new(),
+            }
+        }
+    }
+}
+
+/// Build an `InvocationOutcome` for an error-path execute response.
+///
+/// Used when the executor returns `Err(...)` and the handler emits an `error`
+/// status (e.g. compilation failure → `BuildFailed`, non-executable target →
+/// `Unsupported`). `short_reason` carries the executor's diagnostic.
+fn error_outcome(
+    status: crate::protocol::OutcomeStatus,
+    message: &str,
+) -> crate::protocol::InvocationOutcome {
+    crate::protocol::InvocationOutcome {
+        status,
+        short_reason: Some(message.to_string()),
+        return_value: None,
+        thrown_error: None,
+        side_effects: Vec::new(),
+    }
+}
+
 /// Lifecycle manager for compiled Rust harness subprocesses.
 ///
 /// Keeps one running harness process per unique (file, function, mocks) triple.
@@ -834,6 +901,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         match execution {
             Ok(result) => {
                 resp.status = "execute".to_string();
+                resp.outcome = Some(derive_execute_outcome(&result));
                 resp.return_value = result.return_value;
                 resp.thrown_error = result.thrown_error;
                 resp.branch_path = Some(result.branch_path);
@@ -847,25 +915,42 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             Err(crate::executor::ExecuteError::FileError(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_FILE_NOT_FOUND.to_string());
+                resp.outcome = Some(error_outcome(
+                    crate::protocol::OutcomeStatus::RuntimeFailed,
+                    &msg,
+                ));
                 resp.message = Some(msg);
                 self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::executor::ExecuteError::CompilationFailed(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_COMPILATION_ERROR.to_string());
+                resp.outcome = Some(error_outcome(
+                    crate::protocol::OutcomeStatus::BuildFailed,
+                    &msg,
+                ));
                 resp.message = Some(msg);
                 self.finalize_response(resp, timing.as_mut())
             }
             Err(crate::executor::ExecuteError::NonExecutable(msg)) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_NOT_SUPPORTED.to_string());
+                resp.outcome = Some(error_outcome(
+                    crate::protocol::OutcomeStatus::Unsupported,
+                    &msg,
+                ));
                 resp.message = Some(msg);
                 self.finalize_response(resp, timing.as_mut())
             }
             Err(e) => {
                 resp.status = "error".to_string();
                 resp.code = Some(ERR_INTERNAL_ERROR.to_string());
-                resp.message = Some(e.to_string());
+                let msg = e.to_string();
+                resp.outcome = Some(error_outcome(
+                    crate::protocol::OutcomeStatus::RuntimeFailed,
+                    &msg,
+                ));
+                resp.message = Some(msg);
                 self.finalize_response(resp, timing.as_mut())
             }
         }

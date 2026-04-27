@@ -377,6 +377,9 @@ fn request_span(command: &ProtoCommand) -> tracing::Span {
         ProtoCommand::Setup { .. } => tracing::info_span!("frontend.request.setup"),
         ProtoCommand::Teardown { .. } => tracing::info_span!("frontend.request.teardown"),
         ProtoCommand::Generate { .. } => tracing::info_span!("frontend.request.generate"),
+        ProtoCommand::GetInvocationPlan { .. } => {
+            tracing::info_span!("frontend.request.get_invocation_plan")
+        }
         ProtoCommand::Shutdown => tracing::info_span!("frontend.request.shutdown"),
     }
 }
@@ -512,6 +515,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             })
             .await
             .expect("execute failed");
@@ -603,6 +607,7 @@ mod tests {
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             })
             .await
             .expect("execute failed");
@@ -644,6 +649,7 @@ mod tests {
                     capture: true,
                     prepare_id: None,
                     execution_profile: None,
+                    plan: None,
                 })
                 .entered();
             }

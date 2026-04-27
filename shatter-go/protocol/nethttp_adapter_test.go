@@ -103,6 +103,43 @@ func TestAnalyze_HTTPHandler_ProtocolResponse(t *testing.T) {
 	}
 }
 
+func TestExecuteAdapterViaLauncher_HTTPHandler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "httphandler.go")
+	methodJSON, _ := json.Marshal("GET")
+	pathJSON, _ := json.Marshal("/hello")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+
+	result, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, InvocationContext{
+		File:         file,
+		FunctionName: "HelloHandler",
+		Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON},
+		Capture:      true,
+	})
+	if err != nil {
+		t.Fatalf("execute adapter via launcher: %v", err)
+	}
+
+	var httpResp struct {
+		Status  int                 `json:"status"`
+		Headers map[string][]string `json:"headers"`
+		Body    string              `json:"body"`
+	}
+	if err := json.Unmarshal(result.ReturnValue, &httpResp); err != nil {
+		t.Fatalf("unmarshal return value: %v (raw: %s)", err, result.ReturnValue)
+	}
+	if httpResp.Status != 200 {
+		t.Fatalf("expected status 200, got %d", httpResp.Status)
+	}
+	if httpResp.Body != "hello" {
+		t.Fatalf("expected body 'hello', got %q", httpResp.Body)
+	}
+}
+
 func TestHTTPHandler_Execute_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

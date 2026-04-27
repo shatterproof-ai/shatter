@@ -95,7 +95,7 @@ func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool,
 	}
 }
 
-func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, _ /*loopID*/, _ /*callSiteID*/ *int) {
 	for _, stmt := range s.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
@@ -146,7 +146,7 @@ func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]boo
 	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID)
 }
 
-func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, _ /*params*/ map[string]bool, branchID, loopID, _ /*callSiteID*/ *int) {
 	if s.Body != nil {
 		line := fset.Position(s.Pos()).Line
 		unknownConstraint := `{"kind":"unknown","hint":"range loop"}`

@@ -1136,6 +1136,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         }
     }
 
@@ -1168,6 +1169,7 @@ mod tests {
             discovered_dependencies: vec![],
             connection_failures: vec![],
             runtime_crypto_boundaries: vec![],
+            outcome: None,
         }
     }
 
@@ -1177,7 +1179,13 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let count = harvest_from_exploration(&mut pool, &[], &make_params(&[TypeInfo::Int]), "f", CoverageMode::Branch);
+        let count = harvest_from_exploration(
+            &mut pool,
+            &[],
+            &make_params(&[TypeInfo::Int]),
+            "f",
+            CoverageMode::Branch,
+        );
         assert_eq!(count, 0);
         assert!(pool.buckets.is_empty());
     }
@@ -1195,7 +1203,8 @@ mod tests {
             vec![],
             make_exec_result_error("TypeError", 5),
         )];
-        let count = harvest_from_exploration(&mut pool, &raw, &params, "myFunc", CoverageMode::Branch);
+        let count =
+            harvest_from_exploration(&mut pool, &raw, &params, "myFunc", CoverageMode::Branch);
         assert_eq!(count, 1);
         let key = type_key(&TypeInfo::Int);
         let bucket = &pool.buckets[&key];
@@ -1599,8 +1608,12 @@ mod tests {
         assert_eq!(pool.witness_count(&sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
 
         // Insert a string value — maximally distinct (distance 1.0 to any integer).
-        let inserted =
-            pool.insert(json_behavior_entry(json!("hello"), "foo", 1, Severity::Crash));
+        let inserted = pool.insert(json_behavior_entry(
+            json!("hello"),
+            "foo",
+            1,
+            Severity::Crash,
+        ));
         assert!(inserted, "distinct value should evict a near-duplicate");
         assert_eq!(
             pool.witness_count(&sig),
@@ -1688,7 +1701,12 @@ mod tests {
         assert_eq!(pool.witness_count(&sig_b), 1);
 
         // Insert a distinct value that would normally evict 8 or 9.
-        pool.insert(json_behavior_entry(json!("distinct"), "foo", 1, Severity::Crash));
+        pool.insert(json_behavior_entry(
+            json!("distinct"),
+            "foo",
+            1,
+            Severity::Crash,
+        ));
 
         // Value 8 must still be present (sole witness for sig_b is protected).
         let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
@@ -1732,25 +1750,34 @@ mod tests {
             });
         }
         // Add another witness for sig_c so value 9 isn't the sole witness.
-        pool.insert(json_behavior_entry(json!(42), "baz", 3, Severity::HandledError));
+        pool.insert(json_behavior_entry(
+            json!(42),
+            "baz",
+            3,
+            Severity::HandledError,
+        ));
         assert_eq!(pool.witness_count(&sig_c), 2);
 
         // Insert a distinct value to trigger diversity eviction of sig_a.
-        pool.insert(json_behavior_entry(json!("evict"), "foo", 1, Severity::Crash));
+        pool.insert(json_behavior_entry(
+            json!("evict"),
+            "foo",
+            1,
+            Severity::Crash,
+        ));
 
         // sig_a cap holds.
         assert_eq!(pool.witness_count(&sig_a), MAX_REPRESENTATIVES_PER_BEHAVIOR);
         // If value 9 was evicted from sig_a, it should still witness sig_c.
         let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
-        let evicted_9 = !bucket
-            .iter()
-            .any(|e| e.value == json!(9) && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_a));
+        let evicted_9 = !bucket.iter().any(|e| {
+            e.value == json!(9) && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_a)
+        });
         if evicted_9 {
             // Value 9 lost its sig_a observation, but if it still has sig_c
             // it should still exist.
             let still_has_sig_c = bucket.iter().any(|e| {
-                e.value == json!(9)
-                    && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_c)
+                e.value == json!(9) && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_c)
             });
             assert!(
                 still_has_sig_c,
@@ -1780,7 +1807,10 @@ mod tests {
             severity: Severity::RarePath,
             mode: CoverageMode::Branch,
         };
-        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert_eq!(
+            pool.witness_count(&branch_sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR
+        );
 
         // MC/DC-mode observation should still be admitted.
         let mcdc_entry = PoolEntry {
@@ -1807,7 +1837,10 @@ mod tests {
         };
         assert_eq!(pool.witness_count(&mcdc_sig), 1);
         // Branch quota unchanged.
-        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert_eq!(
+            pool.witness_count(&branch_sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR
+        );
     }
 
     #[test]
@@ -1845,12 +1878,20 @@ mod tests {
             severity: Severity::Crash,
             mode: CoverageMode::Mcdc,
         };
-        assert_eq!(pool.witness_count(&branch_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
-        assert_eq!(pool.witness_count(&mcdc_sig), MAX_REPRESENTATIVES_PER_BEHAVIOR);
+        assert_eq!(
+            pool.witness_count(&branch_sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR
+        );
+        assert_eq!(
+            pool.witness_count(&mcdc_sig),
+            MAX_REPRESENTATIVES_PER_BEHAVIOR
+        );
 
         // Further insertions in either mode are rejected (or enter via eviction).
-        let overflow_branch = behavior_entry_with_mode(999, "foo", 1, Severity::Crash, CoverageMode::Branch);
-        let overflow_mcdc = behavior_entry_with_mode(998, "foo", 1, Severity::Crash, CoverageMode::Mcdc);
+        let overflow_branch =
+            behavior_entry_with_mode(999, "foo", 1, Severity::Crash, CoverageMode::Branch);
+        let overflow_mcdc =
+            behavior_entry_with_mode(998, "foo", 1, Severity::Crash, CoverageMode::Mcdc);
         // Whether they're admitted depends on diversity eviction, but cap must hold.
         let _ = pool.insert(overflow_branch);
         let _ = pool.insert(overflow_mcdc);

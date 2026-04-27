@@ -190,6 +190,7 @@ pub async fn revalidate_behaviors(
                 capture: true,
                 prepare_id: None,
                 execution_profile: None,
+                plan: None,
             })
             .await;
 

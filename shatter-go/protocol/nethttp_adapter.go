@@ -1,10 +1,7 @@
 package protocol
 
 import (
-	"encoding/json"
 	"fmt"
-
-	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // httpHandlerHook implements InvocationHook for net/http handler functions.
@@ -15,7 +12,7 @@ type httpHandlerHook struct{}
 func (h *httpHandlerHook) ID() string { return HTTPHandlerAdapterID }
 
 func (h *httpHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error) {
-	result, err := instrument.ExecuteHTTPHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
+	result, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("http handler execution: %w", err)
 	}
@@ -56,13 +53,4 @@ func httpHandlerSyntheticParams() []ParamInfo {
 		{Name: "headers", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
 		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
 	}
-}
-
-// marshalHTTPInputs converts protocol-level JSON inputs (4 synthetic params)
-// into the format expected by the HTTP harness.
-func marshalHTTPInputs(inputs []json.RawMessage) ([]json.RawMessage, error) {
-	if len(inputs) != 4 {
-		return nil, fmt.Errorf("http handler expects 4 inputs, got %d", len(inputs))
-	}
-	return inputs, nil
 }

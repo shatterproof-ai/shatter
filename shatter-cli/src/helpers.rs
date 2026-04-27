@@ -395,10 +395,7 @@ mod mcdc_budget_tests {
     #[test]
     fn zero_max_iterations_means_unbounded() {
         let b = resolve_mcdc_budgets(Some(0), None, None, false);
-        assert_eq!(
-            b.max_iterations, None,
-            "--max-iterations 0 means unbounded"
-        );
+        assert_eq!(b.max_iterations, None, "--max-iterations 0 means unbounded");
     }
 
     #[test]

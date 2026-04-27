@@ -1,10 +1,7 @@
 package protocol
 
 import (
-	"encoding/json"
 	"fmt"
-
-	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 // ginHandlerHook implements InvocationHook for Gin handler functions.
@@ -15,7 +12,7 @@ type ginHandlerHook struct{}
 func (h *ginHandlerHook) ID() string { return GinAdapterID }
 
 func (h *ginHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutcome, error) {
-	result, err := instrument.ExecuteGinHandler(ctx.File, ctx.FunctionName, ctx.Inputs, ctx.Capture)
+	result, err := executeAdapterViaLauncher(GinAdapterID, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gin handler execution: %w", err)
 	}
@@ -56,13 +53,4 @@ func ginHandlerSyntheticParams() []ParamInfo {
 		{Name: "body", Type: TypeInfo{Kind: "primitive", Label: "string"}},
 		{Name: "route_params", Type: TypeInfo{Kind: "object", Fields: []ObjectField{}}},
 	}
-}
-
-// marshalGinInputs converts protocol-level JSON inputs (5 synthetic params)
-// into the format expected by the Gin harness.
-func marshalGinInputs(inputs []json.RawMessage) ([]json.RawMessage, error) {
-	if len(inputs) != 5 {
-		return nil, fmt.Errorf("gin handler expects 5 inputs, got %d", len(inputs))
-	}
-	return inputs, nil
 }
