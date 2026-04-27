@@ -39,6 +39,22 @@ func TestGinHandlerSyntheticParams(t *testing.T) {
 			t.Errorf("param %d: expected %s, got %s", i, name, params[i].Name)
 		}
 	}
+	wantKinds := map[string]string{
+		"method":       "str",
+		"path":         "str",
+		"headers":      "object",
+		"body":         "str",
+		"route_params": "object",
+	}
+	for _, p := range params {
+		want, ok := wantKinds[p.Name]
+		if !ok {
+			continue
+		}
+		if p.Type.Kind != want {
+			t.Errorf("param %q: kind = %q, want %q (Rust core rejects any other variant)", p.Name, p.Type.Kind, want)
+		}
+	}
 }
 
 func TestAnalyze_GinHandler_SetsInvocationModel(t *testing.T) {
