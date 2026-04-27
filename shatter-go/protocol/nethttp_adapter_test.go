@@ -39,6 +39,17 @@ func TestHTTPHandlerSyntheticParams(t *testing.T) {
 			t.Errorf("param %d: expected %s, got %s", i, name, params[i].Name)
 		}
 	}
+	wantKinds := map[string]string{
+		"method":  "str",
+		"path":    "str",
+		"headers": "object",
+		"body":    "str",
+	}
+	for _, p := range params {
+		if got, want := p.Type.Kind, wantKinds[p.Name]; got != want {
+			t.Errorf("param %q: kind = %q, want %q (Rust core rejects any other variant)", p.Name, got, want)
+		}
+	}
 }
 
 func TestAnalyze_HTTPHandler_SetsInvocationModel(t *testing.T) {
