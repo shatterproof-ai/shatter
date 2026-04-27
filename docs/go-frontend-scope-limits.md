@@ -40,9 +40,16 @@ Shatter's charter is to *generate* tests for production code. Existing tests are
 
 ## Generated code
 
-**Deferred.** Tracked: `str-1giz` — *Go frontend: skip generated files by default*.
+**Implemented.** Generated files are skipped by default (str-1giz).
 
-Generated files (protoc-gen outputs, `stringer`, `mockgen`, etc.) are currently in-scope by default. Analyzing them wastes cycles and produces tests that get overwritten on the next regeneration. The standard detection heuristic — the `// Code generated ... DO NOT EDIT.` header per Go tooling conventions, optionally combined with filename patterns (`*.pb.go`, `*_gen.go`, `zz_generated_*.go`) — is a straightforward add once we agree on whether the skip is default-on with an override or opt-in.
+Generated files (protoc-gen outputs, `stringer`, `mockgen`, controller-gen, etc.) are routinely overwritten on the next regeneration, so any harness produced from them is throw-away work. Analyzing them also wastes cycles on machine-emitted boilerplate that rarely encodes interesting domain logic. The Go frontend therefore rejects generated files at every command entry point (`analyze`, `instrument`, `prepare`, `execute`) with `not_supported`, mirroring the existing `_test.go` skip.
+
+Two detection mechanisms run independently; either one is sufficient:
+
+1. The standard `// Code generated ... DO NOT EDIT.` header per Go tooling conventions (https://pkg.go.dev/cmd/go#hdr-Generate_Go_files_by_processing_source). The marker must occupy its own `//` comment line and appear before the first non-comment, non-blank line of the file.
+2. Well-known generated-code filename patterns: `*.pb.go`, `*.pb.gw.go`, `*_gen.go`, `zz_generated*.go`.
+
+There is currently no override flag — if a project genuinely needs analysis of a header-marked or pattern-matching file, rename it or strip the marker. An opt-in override can be added if real workloads call for it.
 
 ## How to extend
 
