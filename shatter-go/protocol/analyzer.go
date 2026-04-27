@@ -1301,8 +1301,10 @@ func buildUnOp(expr *ast.UnaryExpr, params map[string]bool) *SymExpr {
 		op = "neg"
 	case token.XOR:
 		op = "bitwise_not"
+	case token.NOT:
+		op = "not"
 	default:
-		op = tokenToOp(expr.Op)
+		return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 	}
 	operand := buildSymExpr(expr.X, params)
 	return &SymExpr{
