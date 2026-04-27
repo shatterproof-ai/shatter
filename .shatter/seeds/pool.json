@@ -7,6 +7,7 @@
           {
             "branch_id": 1,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -27,6 +28,7 @@
           {
             "branch_id": 10,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -49,6 +51,7 @@
           {
             "branch_id": 0,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -70,6 +73,7 @@
           {
             "branch_id": 1,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -93,6 +97,7 @@
           {
             "branch_id": 10,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -116,6 +121,7 @@
           {
             "branch_id": 0,
             "function": "resolvePrice",
+            "mode": "branch",
             "severity": "unhandled_error"
           }
         ],
@@ -139,11 +145,13 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           },
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -159,11 +167,13 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           },
           {
             "branch_id": 0,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -179,11 +189,13 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           },
           {
             "branch_id": 0,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -199,11 +211,13 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           },
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -219,6 +233,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -234,6 +249,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -249,6 +265,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -264,6 +281,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -279,6 +297,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -294,6 +313,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -309,6 +329,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -324,6 +345,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -339,6 +361,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -354,6 +377,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -369,6 +393,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -384,6 +409,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -399,6 +425,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -414,6 +441,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -429,6 +457,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -444,6 +473,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -459,6 +489,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -474,6 +505,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -489,6 +521,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -504,6 +537,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -519,6 +553,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -534,6 +569,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -549,6 +585,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -564,6 +601,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -579,6 +617,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -594,6 +633,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -609,6 +649,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -624,6 +665,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -639,6 +681,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -654,6 +697,7 @@
           {
             "branch_id": 0,
             "function": "safeDivide",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -669,6 +713,7 @@
           {
             "branch_id": 0,
             "function": "safe_divide",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -684,6 +729,7 @@
           {
             "branch_id": 1,
             "function": "safe_divide",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -699,6 +745,7 @@
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -714,6 +761,7 @@
           {
             "branch_id": 0,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -729,6 +777,7 @@
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -744,6 +793,7 @@
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -759,6 +809,7 @@
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -774,6 +825,7 @@
           {
             "branch_id": 2,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -789,6 +841,7 @@
           {
             "branch_id": 1,
             "function": "formatCurrency",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -804,6 +857,7 @@
           {
             "branch_id": 0,
             "function": "classifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -821,16 +875,19 @@
           {
             "branch_id": 0,
             "function": "classify_number",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -846,11 +903,13 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 2,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -866,11 +925,13 @@
           {
             "branch_id": 2,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -886,6 +947,7 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -901,6 +963,7 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -916,6 +979,7 @@
           {
             "branch_id": 2,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -931,6 +995,7 @@
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -946,6 +1011,7 @@
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -961,6 +1027,7 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -976,6 +1043,7 @@
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -991,6 +1059,7 @@
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1006,6 +1075,7 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1021,6 +1091,7 @@
           {
             "branch_id": 0,
             "function": "SmokeClassify",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1036,6 +1107,7 @@
           {
             "branch_id": 2,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1051,6 +1123,7 @@
           {
             "branch_id": 0,
             "function": "ClassifyNumber",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1068,6 +1141,7 @@
           {
             "branch_id": 4,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1114,6 +1188,7 @@
           {
             "branch_id": 3,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1160,6 +1235,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1206,6 +1282,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1252,6 +1329,7 @@
           {
             "branch_id": 2,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -1298,6 +1376,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1344,6 +1423,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1390,6 +1470,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1436,6 +1517,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1482,6 +1564,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1528,6 +1611,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1574,6 +1658,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1620,6 +1705,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1666,6 +1752,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1712,6 +1799,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1758,6 +1846,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1804,6 +1893,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1850,6 +1940,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1896,6 +1987,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1942,6 +2034,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -1988,6 +2081,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2034,6 +2128,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2080,6 +2175,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2126,6 +2222,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2172,6 +2269,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2218,6 +2316,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2264,6 +2363,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2310,6 +2410,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2356,6 +2457,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2402,6 +2504,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2448,6 +2551,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2494,6 +2598,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2540,6 +2645,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2586,6 +2692,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2632,6 +2739,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2678,6 +2786,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2724,6 +2833,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2770,6 +2880,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2816,6 +2927,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2862,6 +2974,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2908,6 +3021,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -2954,6 +3068,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3000,6 +3115,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3046,6 +3162,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3092,6 +3209,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3138,6 +3256,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3184,6 +3303,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3230,6 +3350,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3276,6 +3397,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3322,6 +3444,7 @@
           {
             "branch_id": 0,
             "function": "categorizeUser",
+            "mode": "branch",
             "severity": "handled_error"
           }
         ],
@@ -3370,16 +3493,19 @@
           {
             "branch_id": 0,
             "function": "classifyString",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 2,
             "function": "classifyString",
+            "mode": "branch",
             "severity": "rare_path"
           },
           {
             "branch_id": 2,
             "function": "ClassifyString",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -3395,6 +3521,7 @@
           {
             "branch_id": 0,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -3410,6 +3537,7 @@
           {
             "branch_id": 10,
             "function": "negotiate_language",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
@@ -3425,6 +3553,7 @@
           {
             "branch_id": 4,
             "function": "classify_string",
+            "mode": "branch",
             "severity": "rare_path"
           }
         ],
