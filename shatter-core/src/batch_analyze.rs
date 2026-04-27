@@ -176,6 +176,13 @@ pub async fn batch_analyze(
                 message,
                 details,
             } => {
+                if code == crate::protocol::ErrorCode::NotSupported {
+                    log::warn!(
+                        "skipping unsupported file during batch analyze: {} ({message})",
+                        file_path.display()
+                    );
+                    continue;
+                }
                 return Err(BatchAnalyzeError::Frontend {
                     file: file_path.to_string_lossy().into_owned(),
                     source: FrontendError::Protocol {
@@ -653,6 +660,18 @@ mod tests {
         config
     }
 
+    fn generated_skip_frontend_path() -> PathBuf {
+        let manifest_dir = StdPath::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir.join("../protocol/generated-skip-frontend.sh")
+    }
+
+    fn generated_skip_config() -> crate::frontend::FrontendConfig {
+        let mut config = crate::frontend::FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![generated_skip_frontend_path().to_string_lossy().into_owned()];
+        config.request_timeout = std::time::Duration::from_secs(5);
+        config
+    }
+
     #[tokio::test]
     async fn batch_analyze_with_noop_frontend() {
         let config = noop_config();
@@ -746,6 +765,32 @@ mod tests {
                 .len(),
             1
         );
+
+        for (_, frontend) in frontends {
+            frontend.shutdown().await.expect("shutdown failed");
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_analyze_skips_not_supported_files() {
+        let config = generated_skip_config();
+        let frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let mut frontends = HashMap::new();
+        frontends.insert(Language::Go, frontend);
+
+        let files = vec![
+            (PathBuf::from("pkg/generated/generated.go"), Language::Go),
+            (PathBuf::from("pkg/handler.go"), Language::Go),
+        ];
+
+        let registry = batch_analyze(&mut frontends, &files, None, None)
+            .await
+            .expect("batch analyze should soft-skip unsupported files");
+
+        assert_eq!(registry.len(), 1);
+        assert!(registry.functions_in_file(Path::new("pkg/generated/generated.go")).is_empty());
+        assert_eq!(registry.functions_in_file(Path::new("pkg/handler.go")).len(), 1);
 
         for (_, frontend) in frontends {
             frontend.shutdown().await.expect("shutdown failed");
