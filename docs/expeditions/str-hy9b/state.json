@@ -1,5 +1,15 @@
 {
-  "active_branches": [],
+  "active_branches": [
+    {
+      "base_head": "41bc91bd13152edf05a487919ecf3effaacfc1f6",
+      "branch": "str-hy9b-32-j4-retirement-validation-gates",
+      "kind": "task",
+      "number": 32,
+      "slug": "j4-retirement-validation-gates",
+      "started_at": "2026-04-27T01:42:58Z",
+      "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-32-j4-retirement-validation-gates"
+    }
+  ],
   "base_branch": "str-hy9b",
   "base_worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b",
   "created_at": "2026-04-19T19:50:54Z",
@@ -15,11 +25,11 @@
     "summary": "str-hy9b.J1: scripts/go-frontend-retirement-gate.sh retirement gate script. Probes gauntlet (analyze \u00d73), D7 spike (explore), net/http G1 adapter (go test ./protocol/). All 5 fixtures PASS. RESULT: PASS.",
     "worktree": "/home/ketan/project/shatter/.claude/worktrees/str-hy9b-31-j1-retirement-gate-script"
   },
-  "next_action": "Create the next task branch from the expedition base branch.",
-  "next_task_number": 32,
+  "next_action": "Complete work on `str-hy9b-32-j4-retirement-validation-gates` in `/home/ketan/project/shatter/.claude/worktrees/str-hy9b-32-j4-retirement-validation-gates`.",
+  "next_task_number": 33,
   "preserved_experiments": [],
   "primary_branch": "main",
   "schema_version": 2,
-  "status": "ready_for_task",
-  "updated_at": "2026-04-27T01:42:03Z"
+  "status": "task_in_progress",
+  "updated_at": "2026-04-27T01:42:58Z"
 }
