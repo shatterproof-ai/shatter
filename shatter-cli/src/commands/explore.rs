@@ -1639,14 +1639,10 @@ pub(crate) async fn run_explore(
     let mut total_lines: u32 = 0;
     let mut header_printed = false;
 
-    // Resolve effective worker count: 0 means auto-detect (CPU count).
-    let effective_workers = if workers == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    } else {
-        workers
-    };
+    // Resolve effective worker count: 0 means auto-detect, otherwise honor the
+    // user value. Both paths are clamped into the global [floor, ceiling]
+    // range — see `resolve_parallelism` (str-eam2).
+    let effective_workers = resolve_parallelism(workers);
 
     // Resolve project root once for harness storage env propagation.
     // Explicit --project-dir wins; otherwise auto-detect from the first target.
