@@ -42,6 +42,66 @@ pub(crate) fn resolve_parallelism(requested: usize) -> usize {
     clamped
 }
 
+/// Per-language ceiling on auto-detected parallelism. Multi-process toolchains
+/// (Go's `go build`, Rust's `cargo`) consume substantially more host resources
+/// per worker than a single-process Node frontend, so the auto-detected
+/// default must be capped tighter when these languages participate.
+///
+/// Explicit `--parallelism N` requests are NOT capped by this table — only the
+/// auto-detect path is — so power users can opt past the per-language default
+/// up to the global ceiling.
+pub(crate) const TS_AUTODETECT_CAP: usize = usize::MAX;
+pub(crate) const GO_AUTODETECT_CAP: usize = 8;
+pub(crate) const RUST_AUTODETECT_CAP: usize = 8;
+
+/// Per-language autodetect cap for a single language. See `TS_AUTODETECT_CAP`
+/// et al. for rationale.
+fn language_autodetect_cap(lang: DiscoveryLanguage) -> usize {
+    match lang {
+        DiscoveryLanguage::TypeScript => TS_AUTODETECT_CAP,
+        DiscoveryLanguage::Go => GO_AUTODETECT_CAP,
+        DiscoveryLanguage::Rust => RUST_AUTODETECT_CAP,
+    }
+}
+
+/// Worst-case (minimum) per-language autodetect cap across `needed_langs`.
+/// An empty set yields `usize::MAX` (no per-language cap), preserving the
+/// pre-str-qp31 behavior when language detection has not yet happened.
+pub(crate) fn per_language_autodetect_cap<'a, I>(needed_langs: I) -> usize
+where
+    I: IntoIterator<Item = &'a DiscoveryLanguage>,
+{
+    needed_langs
+        .into_iter()
+        .map(|l| language_autodetect_cap(*l))
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
+/// Resolve effective parallelism for a scan, taking the participating
+/// languages into account (str-qp31).
+///
+/// For `requested == 0` (auto-detect): take `available_parallelism()`, apply
+/// the per-language cap (worst-case-wins for mixed-language scans), then apply
+/// the global `[PARALLELISM_FLOOR, PARALLELISM_CEILING]` clamp from str-eam2.
+///
+/// For an explicit non-zero `requested`: only the global clamp applies — the
+/// per-language table governs the *default*, not user-supplied values.
+pub(crate) fn resolve_parallelism_for_langs<'a, I>(requested: usize, needed_langs: I) -> usize
+where
+    I: IntoIterator<Item = &'a DiscoveryLanguage>,
+{
+    if requested == 0 {
+        let detected = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let lang_cap = per_language_autodetect_cap(needed_langs);
+        let after_lang_cap = detected.min(lang_cap);
+        return after_lang_cap.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+    }
+    resolve_parallelism(requested)
+}
+
 /// Resolve the project root: explicit `project_dir` wins, otherwise auto-detect from `reference_path`.
 pub(crate) fn resolve_project_root(
     project_dir: Option<&Path>,
@@ -718,6 +778,129 @@ mod tests {
         let v = resolve_parallelism(0);
         assert!((PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
             "auto-detected parallelism {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]");
+    }
+
+    // ---- str-qp31: per-language parallelism defaults ----
+
+    #[test]
+    fn per_lang_cap_ts_only_is_unbounded() {
+        let langs = [DiscoveryLanguage::TypeScript];
+        assert_eq!(per_language_autodetect_cap(&langs), TS_AUTODETECT_CAP);
+        assert_eq!(TS_AUTODETECT_CAP, usize::MAX);
+    }
+
+    #[test]
+    fn per_lang_cap_go_only_is_eight() {
+        let langs = [DiscoveryLanguage::Go];
+        assert_eq!(per_language_autodetect_cap(&langs), GO_AUTODETECT_CAP);
+        assert_eq!(GO_AUTODETECT_CAP, 8);
+    }
+
+    #[test]
+    fn per_lang_cap_rust_only_is_eight() {
+        let langs = [DiscoveryLanguage::Rust];
+        assert_eq!(per_language_autodetect_cap(&langs), RUST_AUTODETECT_CAP);
+        assert_eq!(RUST_AUTODETECT_CAP, 8);
+    }
+
+    #[test]
+    fn per_lang_cap_mixed_takes_worst_case() {
+        // TS is unbounded, Go is 8 → mixed must be 8 (the tighter cap wins).
+        let mixed_ts_go = [DiscoveryLanguage::TypeScript, DiscoveryLanguage::Go];
+        assert_eq!(per_language_autodetect_cap(&mixed_ts_go), 8);
+
+        let mixed_ts_rust = [DiscoveryLanguage::TypeScript, DiscoveryLanguage::Rust];
+        assert_eq!(per_language_autodetect_cap(&mixed_ts_rust), 8);
+
+        let mixed_go_rust = [DiscoveryLanguage::Go, DiscoveryLanguage::Rust];
+        assert_eq!(per_language_autodetect_cap(&mixed_go_rust), 8);
+
+        let all_three = [
+            DiscoveryLanguage::TypeScript,
+            DiscoveryLanguage::Go,
+            DiscoveryLanguage::Rust,
+        ];
+        assert_eq!(per_language_autodetect_cap(&all_three), 8);
+    }
+
+    #[test]
+    fn per_lang_cap_empty_is_unbounded() {
+        let langs: [DiscoveryLanguage; 0] = [];
+        assert_eq!(per_language_autodetect_cap(&langs), usize::MAX);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_autodetect_ts_only_uses_global_clamp() {
+        // TS-only autodetect: capped only by [FLOOR, CEILING].
+        let langs = [DiscoveryLanguage::TypeScript];
+        let v = resolve_parallelism_for_langs(0, &langs);
+        assert!(
+            (PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
+            "TS-only autodetect {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]"
+        );
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_autodetect_go_only_capped_at_eight() {
+        let langs = [DiscoveryLanguage::Go];
+        let v = resolve_parallelism_for_langs(0, &langs);
+        assert!(
+            (PARALLELISM_FLOOR..=GO_AUTODETECT_CAP).contains(&v),
+            "Go-only autodetect {v} outside [{PARALLELISM_FLOOR}, {GO_AUTODETECT_CAP}]"
+        );
+        // The global ceiling is still 16, but the Go cap is tighter — we must
+        // never exceed 8 in this branch even on a 32-core host.
+        assert!(v <= GO_AUTODETECT_CAP);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_autodetect_rust_only_capped_at_eight() {
+        let langs = [DiscoveryLanguage::Rust];
+        let v = resolve_parallelism_for_langs(0, &langs);
+        assert!(
+            (PARALLELISM_FLOOR..=RUST_AUTODETECT_CAP).contains(&v),
+            "Rust-only autodetect {v} outside [{PARALLELISM_FLOOR}, {RUST_AUTODETECT_CAP}]"
+        );
+        assert!(v <= RUST_AUTODETECT_CAP);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_autodetect_mixed_takes_worst_case() {
+        let langs = [DiscoveryLanguage::TypeScript, DiscoveryLanguage::Go];
+        let v = resolve_parallelism_for_langs(0, &langs);
+        // Mixed TS+Go: worst case (Go=8) wins.
+        assert!(v <= GO_AUTODETECT_CAP);
+        assert!(v >= PARALLELISM_FLOOR);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_explicit_value_ignores_lang_cap() {
+        // Per spec: per-language table governs the *default*, not explicit
+        // user requests. An explicit --parallelism 12 with Go should still
+        // produce 12 (clamped only by the global [4, 16] range).
+        let langs = [DiscoveryLanguage::Go];
+        assert_eq!(resolve_parallelism_for_langs(12, &langs), 12);
+        assert_eq!(resolve_parallelism_for_langs(16, &langs), 16);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_explicit_value_still_clamps_to_global() {
+        // Explicit values must still pass through the [4, 16] clamp from str-eam2.
+        let langs = [DiscoveryLanguage::Go];
+        assert_eq!(resolve_parallelism_for_langs(32, &langs), PARALLELISM_CEILING);
+        assert_eq!(resolve_parallelism_for_langs(1, &langs), PARALLELISM_FLOOR);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_autodetect_empty_set_matches_legacy() {
+        // An empty needed_langs set must behave like the language-agnostic
+        // resolve_parallelism: clamped only by the global range.
+        let langs: [DiscoveryLanguage; 0] = [];
+        let v = resolve_parallelism_for_langs(0, &langs);
+        assert!(
+            (PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
+            "empty-langs autodetect {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]"
+        );
     }
 
     #[test]
