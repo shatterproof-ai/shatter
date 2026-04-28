@@ -1,6 +1,6 @@
 <!-- launch-work-log
-last-updated: 2026-04-27T18:46:57Z
-checkpoint: tests-green
+last-updated: 2026-04-28T22:10:26Z
+checkpoint: worktree-ready
 -->
 
 # Launch-Work Progress Log
@@ -11,7 +11,8 @@ checkpoint: tests-green
 
 ## Original task
 
-<!-- The user's original request that started this session, in one line. -->
+str-8amu: detect build-tag-gated Go files in analyzer and return NotSupported with build-tag reason
+
 
 ## Branch & worktree
 
