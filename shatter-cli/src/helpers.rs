@@ -9,6 +9,39 @@ use shatter_core::log_level::LogLevel;
 
 use crate::args::Language;
 
+/// Lower bound on resolved parallelism. Avoids sub-saturating small machines and
+/// keeps benchmarks comparable across hosts.
+pub(crate) const PARALLELISM_FLOOR: usize = 4;
+
+/// Upper bound on resolved parallelism. Each frontend may shell out to a
+/// multi-process toolchain (e.g. `go build` with `GOMAXPROCS=nproc`); without a
+/// ceiling, large hosts fork-bomb themselves into OOM. See str-eam2.
+pub(crate) const PARALLELISM_CEILING: usize = 16;
+
+/// Resolve the effective `--parallelism` from a user request.
+///
+/// `requested == 0` means "auto-detect": query `available_parallelism()` and
+/// clamp into `[PARALLELISM_FLOOR, PARALLELISM_CEILING]`. An explicit non-zero
+/// value is also clamped to the same range, with a warning logged when the
+/// clamp changes the value so the user knows the bound is in effect.
+///
+/// User-overridable floor/ceiling are tracked separately (str-v01r).
+pub(crate) fn resolve_parallelism(requested: usize) -> usize {
+    if requested == 0 {
+        let detected = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        return detected.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+    }
+    let clamped = requested.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+    if clamped != requested {
+        log::warn!(
+            "--parallelism {requested} clamped to {clamped} (range [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}])"
+        );
+    }
+    clamped
+}
+
 /// Resolve the project root: explicit `project_dir` wins, otherwise auto-detect from `reference_path`.
 pub(crate) fn resolve_project_root(
     project_dir: Option<&Path>,
@@ -659,6 +692,33 @@ mod cli_parity_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_parallelism_clamps_explicit_above_ceiling() {
+        assert_eq!(resolve_parallelism(32), PARALLELISM_CEILING);
+        assert_eq!(resolve_parallelism(PARALLELISM_CEILING + 1), PARALLELISM_CEILING);
+    }
+
+    #[test]
+    fn resolve_parallelism_clamps_explicit_below_floor() {
+        assert_eq!(resolve_parallelism(1), PARALLELISM_FLOOR);
+        assert_eq!(resolve_parallelism(PARALLELISM_FLOOR - 1), PARALLELISM_FLOOR);
+    }
+
+    #[test]
+    fn resolve_parallelism_passes_explicit_in_range() {
+        let mid = (PARALLELISM_FLOOR + PARALLELISM_CEILING) / 2;
+        assert_eq!(resolve_parallelism(mid), mid);
+        assert_eq!(resolve_parallelism(PARALLELISM_FLOOR), PARALLELISM_FLOOR);
+        assert_eq!(resolve_parallelism(PARALLELISM_CEILING), PARALLELISM_CEILING);
+    }
+
+    #[test]
+    fn resolve_parallelism_autodetect_is_in_range() {
+        let v = resolve_parallelism(0);
+        assert!((PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
+            "auto-detected parallelism {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]");
+    }
 
     #[test]
     fn frontend_config_passes_timeout_env_vars() {
