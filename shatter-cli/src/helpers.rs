@@ -18,6 +18,15 @@ pub(crate) const PARALLELISM_FLOOR: usize = 4;
 /// ceiling, large hosts fork-bomb themselves into OOM. See str-eam2.
 pub(crate) const PARALLELISM_CEILING: usize = 16;
 
+/// Cap injected as `GOMAXPROCS` into the Go frontend's environment. The Go
+/// frontend invokes `go build` to compile the wrapper; that toolchain run
+/// defaults to `GOMAXPROCS=nproc`, so N concurrent Go frontends each spawn
+/// their own `nproc`-wide toolchain and exhaust CPU/memory on large hosts.
+/// Capping at 2 keeps each toolchain compact without changing Shatter-level
+/// parallelism (which is governed by `PARALLELISM_FLOOR`/`_CEILING`). See
+/// str-ovs6 for the kapow-scan blowup that motivated this cap.
+pub(crate) const GO_FRONTEND_GOMAXPROCS: &str = "2";
+
 /// Resolve the effective `--parallelism` from a user request.
 ///
 /// `requested == 0` means "auto-detect": query `available_parallelism()` and
@@ -262,6 +271,15 @@ pub(crate) fn frontend_config(
         config
             .env_vars
             .push(("GOMEMLIMIT".to_string(), format!("{bytes}B")));
+    }
+
+    // Cap the inner `go build` toolchain's parallelism so N concurrent Go
+    // frontends don't fork-bomb large hosts. See str-ovs6.
+    if language == Language::Go {
+        config.env_vars.push((
+            "GOMAXPROCS".to_string(),
+            GO_FRONTEND_GOMAXPROCS.to_string(),
+        ));
     }
 
     Ok(config)
@@ -968,6 +986,64 @@ mod tests {
         assert!(
             cmd_str.contains("go-frontend-"),
             "expected embedded binary path, got: {cmd_str}",
+        );
+    }
+
+    /// The Go frontend shells out to `go build` for wrapper compilation, which by
+    /// default uses `GOMAXPROCS=nproc`. When N frontends each run their own
+    /// toolchain, large hosts fork-bomb themselves. The Go branch of
+    /// `frontend_config` must inject `GOMAXPROCS=GO_FRONTEND_GOMAXPROCS` to cap
+    /// the inner toolchain. See str-ovs6.
+    #[test]
+    fn frontend_config_go_caps_gomaxprocs() {
+        let config = frontend_config(
+            Language::Go,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let env_map: std::collections::HashMap<&str, &str> = config
+            .env_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            env_map.get("GOMAXPROCS").copied(),
+            Some(GO_FRONTEND_GOMAXPROCS),
+            "Go frontend must inject GOMAXPROCS={GO_FRONTEND_GOMAXPROCS} to cap \
+             inner `go build` toolchain (str-ovs6); got env={:?}",
+            config.env_vars,
+        );
+    }
+
+    /// Non-Go frontends should not receive `GOMAXPROCS` — it's a Go-toolchain
+    /// knob and leaking it into TS would be confusing noise.
+    #[test]
+    fn frontend_config_non_go_omits_gomaxprocs() {
+        let config = frontend_config(
+            Language::TypeScript,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let keys: std::collections::HashSet<&str> =
+            config.env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            !keys.contains("GOMAXPROCS"),
+            "non-Go frontends must not carry GOMAXPROCS; got env={:?}",
+            config.env_vars,
         );
     }
 
