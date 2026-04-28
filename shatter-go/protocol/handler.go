@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"io"
@@ -309,6 +310,16 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 			resp.Status = "error"
 			resp.Code = ErrFunctionNotFound
 			resp.Message = fmt.Sprintf("function %q not found in %s", functionName, req.File)
+			return resp
+		}
+		// Build-tag-excluded files surface as NotSupported so the Rust core's
+		// batch_analyze soft-skip path consumes them rather than aborting on
+		// a ParseError. See str-8amu.
+		var buildTagErr *BuildTagExcludedError
+		if errors.As(err, &buildTagErr) {
+			resp.Status = "error"
+			resp.Code = ErrNotSupported
+			resp.Message = buildTagErr.Error()
 			return resp
 		}
 		resp.Status = "error"
