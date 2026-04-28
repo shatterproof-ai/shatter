@@ -550,14 +550,10 @@ pub(crate) async fn run_scan(
         shutdown_frontend(frontend).await;
     }
 
-    // Resolve effective parallelism: 0 means auto-detect (CPU count).
-    let effective_parallelism = if parallelism == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    } else {
-        parallelism
-    };
+    // Resolve effective parallelism: 0 means auto-detect, otherwise honor the
+    // user value. Both paths are clamped into the global [floor, ceiling]
+    // range — see `resolve_parallelism` (str-eam2).
+    let effective_parallelism = resolve_parallelism(parallelism);
 
     // Dry run: show the full exploration plan without executing.
     if dry_run {
