@@ -551,9 +551,13 @@ pub(crate) async fn run_scan(
     }
 
     // Resolve effective parallelism: 0 means auto-detect, otherwise honor the
-    // user value. Both paths are clamped into the global [floor, ceiling]
-    // range — see `resolve_parallelism` (str-eam2).
-    let effective_parallelism = resolve_parallelism(parallelism);
+    // user value. Auto-detect first applies a per-language cap based on
+    // `needed_langs` (str-qp31: TS unbounded, Go/Rust capped at 8 because
+    // their frontends shell out to multi-process toolchains; mixed-language
+    // scans take the worst-case cap), then the global [floor, ceiling] clamp
+    // from str-eam2. Explicit non-zero values pass through the global clamp
+    // only.
+    let effective_parallelism = resolve_parallelism_for_langs(parallelism, &needed_langs);
 
     // Dry run: show the full exploration plan without executing.
     if dry_run {
