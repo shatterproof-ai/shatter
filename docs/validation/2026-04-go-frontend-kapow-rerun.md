@@ -194,3 +194,134 @@ shatter scan ~/project/kapow --language go \
 
 Without the `--exclude` flags the scan aborts at the first generated file
 (str-s3s4). With the flags it aborts at the first file using `&` (str-gq7c).
+
+## Update — 2026-04-28 fourth pass: scan completes
+
+After str-jdz8 (`extract_function_source` panic) and str-dcqc (HTTP/Gin
+`Kind:"primitive"`) landed on main, the scan was re-run with all four code
+fixes in place. **The scan completed (exit 0) and produced a full
+`scan-report.md` and `timing.json` for the first time.** Run duration:
+357 seconds (timing.json: 357032 ms).
+
+A fifth issue (str-a2n2, P2) surfaced during this pass: `batch_analyze`
+treats `ParseError` from build-tag-excluded files as fatal. Worked around
+with three additional `--exclude` patterns (`api/tools.go`,
+`api/ui/embed.go`, `api/ui/stub.go`); not yet fixed.
+
+### Outcome distribution
+
+| Bucket | v1 baseline (per str-hy9b.J3 description) | v2 fourth pass |
+| --- | ---: | ---: |
+| Functions explored (success or WARN) | 0 | 1 |
+| Functions discovered & attempted | ~0 (Go-skipped wholesale) | 547 |
+| Internal-package errors | 191 | 336 |
+| Undefined errors | 161 | 43 |
+| Syntax errors | 56 | 0 |
+| Empty `.md` reports | 108 | n/a (different reporter) |
+| Timeouts (30s) | not reported | 155 |
+| Package-layout errors (main + main_test in same dir) | not reported | 6 |
+| Module-resolution errors (`unknown revision`) | not reported | 3 |
+| Other build failures | not reported | 3 |
+
+### Interpretation
+
+The error categories changed shape between v1 and v2 because the failures
+moved layers:
+
+- **v1**: Go targets failed at the **analyze / discovery** layer. The
+  `source-code.md` from 2026-04-16 records 485 discovered Go targets, 0
+  eligible, 0 attempted — the Go frontend never produced usable analyses.
+  The 191/161/56 baseline numbers come from a slightly earlier v1 run that
+  surfaced those errors as analyze failures.
+- **v2**: 547 Go targets get past analyze, planning, and instrumentation;
+  one explores cleanly (`UnmarshalFilterValue`, 57.1% coverage). The
+  remaining 546 fail at the **launcher build** stage. The launcher
+  generator emits a synthetic `shatter-launcher-<hash>` package OUTSIDE
+  the kapow module tree, which Go's `internal/` visibility rule then
+  rejects when the target uses any `kapow/.../internal/...` import. So
+  the v2 internal-package errors (336) reflect a different,
+  build-time barrier than v1's analyze-time barrier.
+
+This is meaningful progress for the Go frontend redesign: analyze and
+planning now work for hundreds of real-world functions. The remaining
+internal-package errors are a launcher-architecture problem (the
+generated harness needs to live inside the target module to access
+`internal/`), not an analyzer problem.
+
+### v1 vs v2 — bucket-by-bucket reading
+
+- **Internal-package: 191 → 336.** Apparent regression, but actually progress
+  shifted layers: v1 hit this at analyze, v2 hits it at launcher build because
+  more functions now reach the build stage. To make the comparison meaningful,
+  fix the launcher to live inside the target module so internal/ rules don't
+  apply.
+- **Undefined: 161 → 43.** ~73% reduction. Most v1 "undefined" errors came
+  from packages-based-loader misses; the v2 packages-based analyzer (str-hy9b.C2)
+  resolves them. Remaining 43 are real cross-package symbol issues during
+  launcher build.
+- **Syntax errors: 56 → 0.** Eliminated. The packages-based loader respects
+  the Go AST cleanly; v1's syntax-error class came from line-based parsing
+  shortcuts that no longer exist.
+- **Timeouts: not reported → 155.** New visibility, not a regression. v1
+  never reached the explore stage so timeouts didn't materialize. 30s per
+  function on shared kapow targets is plausible — many are large rendering /
+  database-bound handlers. Worth filing follow-up to surface a per-class
+  timeout knob.
+
+### Successful exploration sample
+
+`UnmarshalFilterValue` (`api/graph/scalar/filter_value.go`):
+
+- Coverage: 57.1% (4/7 lines, 1/1 branches)
+- Mocks resolved: `json.Marshal`, `json.RawMessage`
+- Behavior clusters: returns `0.5` for input `0.5`, returns `-391` for
+  input `-391`, returns NaN for several other primitives — i.e. real
+  exploration data.
+
+This is the first time the v2 Go frontend has produced a non-trivial
+explore result against an external real-world codebase.
+
+### Follow-ups surfaced (filed beyond the original three)
+
+| ID | Title | Priority | Status |
+| --- | --- | --- | --- |
+| `str-jdz8` | extract_function_source panics when start_line > file length | P1 | closed (landed) |
+| `str-a2n2` | batch_analyze ParseError on build-tag-excluded files aborts scan | P2 | open |
+
+### Known follow-ups still deferred (originally requested by J3 description)
+
+- `_test.go`-only packages: not exercised in this pass (kapow's `_test.go`
+  files are inline with sources; the analyzer may already cover them via
+  the packages-based loader, but no targeted check was run).
+- cgo-dependent packages: not surfaced as a distinct error class;
+  re-survey after the launcher-internal-package issue is resolved.
+- vendor/ subtrees: kapow does not vendor at the repo root.
+
+### Recommended next steps (revised)
+
+1. **Launcher inside-module synthesis.** File a P1 issue: the launcher
+   harness must be generated inside the target module so Go's `internal/`
+   visibility allows access. This will re-classify ~336 of the current 546
+   errors. *(Gates the substantive comparison vs v1.)*
+2. Fix str-a2n2 (build-tag-excluded files → soft-skip via NotSupported).
+3. Investigate the 155 30s timeouts: are they really hung or do they need
+   a higher per-function budget for kapow-scale handlers?
+4. Then re-run str-hy9b.J3 a fifth time for a clean before/after.
+
+### Reproduction (current)
+
+```bash
+shatter scan ~/project/kapow --language go \
+  --exclude "**/.claude/**" --exclude "**/.shatter/**" \
+  --exclude "**/.shatter-cache/**" --exclude "**/shatter-artifacts/**" \
+  --exclude "**/shatter-artifacts-j3/**" --exclude "**/.worktrees/**" \
+  --exclude "**/.cache/**" \
+  --exclude "**/api/tools.go" --exclude "**/api/ui/embed.go" --exclude "**/api/ui/stub.go" \
+  --output /tmp/scan-report.md \
+  --timing summary --timing-output /tmp/timing.json --timing-format json \
+  --log-level warn
+```
+
+The first 7 excludes filter scratch dirs / generated files / build-tag
+files (the latter as workaround for str-a2n2). With these in place the
+scan completes in ~6 minutes against kapow's 547 Go targets.
