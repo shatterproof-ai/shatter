@@ -262,8 +262,8 @@ pub fn extract_function_source(
 ) -> Result<String, std::io::Error> {
     let contents = std::fs::read_to_string(file_path)?;
     let lines: Vec<&str> = contents.lines().collect();
-    let start = (start_line as usize).saturating_sub(1);
     let end = (end_line as usize).min(lines.len());
+    let start = (start_line as usize).saturating_sub(1).min(end);
     Ok(lines[start..end].join("\n"))
 }
 
@@ -784,6 +784,18 @@ mod tests {
 
         let source = extract_function_source(&file, 1, 1).unwrap();
         assert_eq!(source, "only line");
+    }
+
+    #[test]
+    fn extract_function_source_start_past_eof_returns_empty() {
+        // Frontend may report stale line numbers (e.g. cached analysis vs.
+        // file edited since). The helper must not panic when start > EOF.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("short.go");
+        std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+
+        let source = extract_function_source(&file, 149, 200).unwrap();
+        assert_eq!(source, "");
     }
 
     // --- deep fingerprint tests ---
