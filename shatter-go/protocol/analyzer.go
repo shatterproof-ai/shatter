@@ -209,6 +209,31 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		return nil, fmt.Errorf("normalize file path %q: %w", filePath, err)
 	}
 
+	// Build-tag exclusion check: files gated by //go:build directives that do
+	// not match the analyzer's default build context (or filename suffixes
+	// such as *_windows.go on linux) are excluded from pkg.Syntax by
+	// go/packages. Detect that case up front and surface a typed error so the
+	// handler can emit ErrNotSupported and the Rust core's batch_analyze
+	// soft-skip path consumes it instead of aborting on a generic
+	// ParseError. See str-8amu.
+	//
+	// Gated on shouldLoadAsPackage: only files that will be loaded inside
+	// their real Go module are subject to build-tag exclusion. Files outside
+	// a module — and files under testdata — fall through to LoadFileLenient,
+	// which materializes a synthetic single-file module and intentionally
+	// analyzes the file regardless of its tags. This keeps fixtures like
+	// shatter-go/protocol/testdata/gin_handler.go (//go:build ignore)
+	// analyzable from tests while still soft-skipping tag-gated files in
+	// real-world packages such as kapow's api/ui/embed.go.
+	if shouldLoadAsPackage(absoluteFilePath) {
+		if excluded, constraintExpr := isBuildTagExcluded(absoluteFilePath); excluded {
+			return nil, &BuildTagExcludedError{
+				Path:       absoluteFilePath,
+				Constraint: constraintExpr,
+			}
+		}
+	}
+
 	// Retain the historical "analyze.parse" / "analyze.typecheck" phase names
 	// so existing timing consumers keep working. The loader bundles parse and
 	// typecheck into one go/packages call; we split the timing phases to
