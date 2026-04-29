@@ -1247,6 +1247,7 @@ mod tests {
         let plan = crate::protocol::InvocationPlan {
             target_id: "pkg:SomeService.Method".to_string(),
             receiver_kind: "constructor:NewSomeService".to_string(),
+            generic_type_args: vec![],
             argument_plans: vec![],
             priority: 0,
             label: String::new(),
