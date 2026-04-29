@@ -1540,6 +1540,7 @@ pub(crate) async fn run_explore(
     coverage_threshold: Option<f64>,
     max_executions: Option<u64>,
     planner: Option<&str>,
+    parallelism_bounds: crate::helpers::ParallelismBounds,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(name) = planner
         && name != "go"
@@ -1640,9 +1641,9 @@ pub(crate) async fn run_explore(
     let mut header_printed = false;
 
     // Resolve effective worker count: 0 means auto-detect, otherwise honor the
-    // user value. Both paths are clamped into the global [floor, ceiling]
-    // range — see `resolve_parallelism` (str-eam2).
-    let effective_workers = resolve_parallelism(workers);
+    // user value. Both paths are clamped into `[bounds.floor, bounds.ceiling]`
+    // — built-in defaults from str-eam2, override-aware via str-v01r.
+    let effective_workers = resolve_parallelism_with_bounds(workers, parallelism_bounds);
 
     // Resolve project root once for harness storage env propagation.
     // Explicit --project-dir wins; otherwise auto-detect from the first target.

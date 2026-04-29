@@ -27,25 +27,90 @@ pub(crate) const PARALLELISM_CEILING: usize = 16;
 /// str-ovs6 for the kapow-scan blowup that motivated this cap.
 pub(crate) const GO_FRONTEND_GOMAXPROCS: &str = "2";
 
-/// Resolve the effective `--parallelism` from a user request.
+/// Effective floor/ceiling for the parallelism clamp.
+///
+/// Defaults to `[PARALLELISM_FLOOR, PARALLELISM_CEILING]` (str-eam2). Users on
+/// tiny CI runners or large dedicated machines can widen the range via
+/// `--parallelism-min` / `--parallelism-max` flags or matching
+/// `parallelism_min` / `parallelism_max` keys in `shatter.config.json`
+/// (str-v01r).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParallelismBounds {
+    pub(crate) floor: usize,
+    pub(crate) ceiling: usize,
+}
+
+impl ParallelismBounds {
+    /// Built-in defaults from str-eam2: `[PARALLELISM_FLOOR, PARALLELISM_CEILING]`.
+    #[allow(dead_code)] // used by tests and the str-eam2 fallback path
+    pub(crate) const fn defaults() -> Self {
+        Self {
+            floor: PARALLELISM_FLOOR,
+            ceiling: PARALLELISM_CEILING,
+        }
+    }
+
+    /// Resolve effective bounds from optional user overrides. `None` falls
+    /// back to the built-in default for that side.
+    ///
+    /// Returns an error when the resolved range is empty (`min > max`) or
+    /// non-positive (`min == 0` or `max == 0`).
+    pub(crate) fn from_overrides(
+        min_override: Option<usize>,
+        max_override: Option<usize>,
+    ) -> Result<Self, String> {
+        let floor = min_override.unwrap_or(PARALLELISM_FLOOR);
+        let ceiling = max_override.unwrap_or(PARALLELISM_CEILING);
+        if floor == 0 {
+            return Err(
+                "parallelism floor must be at least 1 (got --parallelism-min 0)".to_string(),
+            );
+        }
+        if ceiling == 0 {
+            return Err(
+                "parallelism ceiling must be at least 1 (got --parallelism-max 0)".to_string(),
+            );
+        }
+        if floor > ceiling {
+            return Err(format!(
+                "parallelism floor ({floor}) cannot exceed ceiling ({ceiling}); \
+                 check --parallelism-min / --parallelism-max"
+            ));
+        }
+        Ok(Self { floor, ceiling })
+    }
+}
+
+/// Resolve the effective parallelism using the built-in default bounds.
+/// Thin wrapper over [`resolve_parallelism_with_bounds`] for callers that do
+/// not honor the str-v01r override flags.
+#[allow(dead_code)] // retained as a default-bounds shorthand and used by tests
+pub(crate) fn resolve_parallelism(requested: usize) -> usize {
+    resolve_parallelism_with_bounds(requested, ParallelismBounds::defaults())
+}
+
+/// Resolve effective parallelism using caller-supplied bounds (str-v01r).
 ///
 /// `requested == 0` means "auto-detect": query `available_parallelism()` and
-/// clamp into `[PARALLELISM_FLOOR, PARALLELISM_CEILING]`. An explicit non-zero
-/// value is also clamped to the same range, with a warning logged when the
-/// clamp changes the value so the user knows the bound is in effect.
-///
-/// User-overridable floor/ceiling are tracked separately (str-v01r).
-pub(crate) fn resolve_parallelism(requested: usize) -> usize {
+/// clamp into `[bounds.floor, bounds.ceiling]`. An explicit non-zero value is
+/// also clamped to the same range, with a warning logged when the clamp
+/// changes the value so the user knows the bound is in effect.
+pub(crate) fn resolve_parallelism_with_bounds(
+    requested: usize,
+    bounds: ParallelismBounds,
+) -> usize {
     if requested == 0 {
         let detected = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        return detected.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+        return detected.clamp(bounds.floor, bounds.ceiling);
     }
-    let clamped = requested.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+    let clamped = requested.clamp(bounds.floor, bounds.ceiling);
     if clamped != requested {
         log::warn!(
-            "--parallelism {requested} clamped to {clamped} (range [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}])"
+            "--parallelism {requested} clamped to {clamped} (range [{floor}, {ceiling}])",
+            floor = bounds.floor,
+            ceiling = bounds.ceiling,
         );
     }
     clamped
@@ -88,15 +153,20 @@ where
 }
 
 /// Resolve effective parallelism for a scan, taking the participating
-/// languages into account (str-qp31).
+/// languages into account (str-qp31) and honoring user-supplied bounds
+/// (str-v01r).
 ///
 /// For `requested == 0` (auto-detect): take `available_parallelism()`, apply
 /// the per-language cap (worst-case-wins for mixed-language scans), then apply
-/// the global `[PARALLELISM_FLOOR, PARALLELISM_CEILING]` clamp from str-eam2.
+/// the global `[bounds.floor, bounds.ceiling]` clamp.
 ///
 /// For an explicit non-zero `requested`: only the global clamp applies — the
 /// per-language table governs the *default*, not user-supplied values.
-pub(crate) fn resolve_parallelism_for_langs<'a, I>(requested: usize, needed_langs: I) -> usize
+pub(crate) fn resolve_parallelism_for_langs<'a, I>(
+    requested: usize,
+    needed_langs: I,
+    bounds: ParallelismBounds,
+) -> usize
 where
     I: IntoIterator<Item = &'a DiscoveryLanguage>,
 {
@@ -106,9 +176,9 @@ where
             .unwrap_or(1);
         let lang_cap = per_language_autodetect_cap(needed_langs);
         let after_lang_cap = detected.min(lang_cap);
-        return after_lang_cap.clamp(PARALLELISM_FLOOR, PARALLELISM_CEILING);
+        return after_lang_cap.clamp(bounds.floor, bounds.ceiling);
     }
-    resolve_parallelism(requested)
+    resolve_parallelism_with_bounds(requested, bounds)
 }
 
 /// Resolve the project root: explicit `project_dir` wins, otherwise auto-detect from `reference_path`.
@@ -851,7 +921,7 @@ mod tests {
     fn resolve_parallelism_for_langs_autodetect_ts_only_uses_global_clamp() {
         // TS-only autodetect: capped only by [FLOOR, CEILING].
         let langs = [DiscoveryLanguage::TypeScript];
-        let v = resolve_parallelism_for_langs(0, &langs);
+        let v = resolve_parallelism_for_langs(0, &langs, ParallelismBounds::defaults());
         assert!(
             (PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
             "TS-only autodetect {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]"
@@ -861,7 +931,7 @@ mod tests {
     #[test]
     fn resolve_parallelism_for_langs_autodetect_go_only_capped_at_eight() {
         let langs = [DiscoveryLanguage::Go];
-        let v = resolve_parallelism_for_langs(0, &langs);
+        let v = resolve_parallelism_for_langs(0, &langs, ParallelismBounds::defaults());
         assert!(
             (PARALLELISM_FLOOR..=GO_AUTODETECT_CAP).contains(&v),
             "Go-only autodetect {v} outside [{PARALLELISM_FLOOR}, {GO_AUTODETECT_CAP}]"
@@ -874,7 +944,7 @@ mod tests {
     #[test]
     fn resolve_parallelism_for_langs_autodetect_rust_only_capped_at_eight() {
         let langs = [DiscoveryLanguage::Rust];
-        let v = resolve_parallelism_for_langs(0, &langs);
+        let v = resolve_parallelism_for_langs(0, &langs, ParallelismBounds::defaults());
         assert!(
             (PARALLELISM_FLOOR..=RUST_AUTODETECT_CAP).contains(&v),
             "Rust-only autodetect {v} outside [{PARALLELISM_FLOOR}, {RUST_AUTODETECT_CAP}]"
@@ -885,7 +955,7 @@ mod tests {
     #[test]
     fn resolve_parallelism_for_langs_autodetect_mixed_takes_worst_case() {
         let langs = [DiscoveryLanguage::TypeScript, DiscoveryLanguage::Go];
-        let v = resolve_parallelism_for_langs(0, &langs);
+        let v = resolve_parallelism_for_langs(0, &langs, ParallelismBounds::defaults());
         // Mixed TS+Go: worst case (Go=8) wins.
         assert!(v <= GO_AUTODETECT_CAP);
         assert!(v >= PARALLELISM_FLOOR);
@@ -897,16 +967,28 @@ mod tests {
         // user requests. An explicit --parallelism 12 with Go should still
         // produce 12 (clamped only by the global [4, 16] range).
         let langs = [DiscoveryLanguage::Go];
-        assert_eq!(resolve_parallelism_for_langs(12, &langs), 12);
-        assert_eq!(resolve_parallelism_for_langs(16, &langs), 16);
+        assert_eq!(
+            resolve_parallelism_for_langs(12, &langs, ParallelismBounds::defaults()),
+            12
+        );
+        assert_eq!(
+            resolve_parallelism_for_langs(16, &langs, ParallelismBounds::defaults()),
+            16
+        );
     }
 
     #[test]
     fn resolve_parallelism_for_langs_explicit_value_still_clamps_to_global() {
         // Explicit values must still pass through the [4, 16] clamp from str-eam2.
         let langs = [DiscoveryLanguage::Go];
-        assert_eq!(resolve_parallelism_for_langs(32, &langs), PARALLELISM_CEILING);
-        assert_eq!(resolve_parallelism_for_langs(1, &langs), PARALLELISM_FLOOR);
+        assert_eq!(
+            resolve_parallelism_for_langs(32, &langs, ParallelismBounds::defaults()),
+            PARALLELISM_CEILING
+        );
+        assert_eq!(
+            resolve_parallelism_for_langs(1, &langs, ParallelismBounds::defaults()),
+            PARALLELISM_FLOOR
+        );
     }
 
     #[test]
@@ -914,11 +996,153 @@ mod tests {
         // An empty needed_langs set must behave like the language-agnostic
         // resolve_parallelism: clamped only by the global range.
         let langs: [DiscoveryLanguage; 0] = [];
-        let v = resolve_parallelism_for_langs(0, &langs);
+        let v = resolve_parallelism_for_langs(0, &langs, ParallelismBounds::defaults());
         assert!(
             (PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
             "empty-langs autodetect {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]"
         );
+    }
+
+    // ---- str-v01r: parallelism floor/ceiling overrides ----
+
+    #[test]
+    fn parallelism_bounds_defaults_match_global_constants() {
+        let b = ParallelismBounds::defaults();
+        assert_eq!(b.floor, PARALLELISM_FLOOR);
+        assert_eq!(b.ceiling, PARALLELISM_CEILING);
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_neither_set_uses_defaults() {
+        let b = ParallelismBounds::from_overrides(None, None).unwrap();
+        assert_eq!(b, ParallelismBounds::defaults());
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_only_min_raises_floor() {
+        // Only --parallelism-min: floor moves, ceiling keeps the default.
+        let b = ParallelismBounds::from_overrides(Some(2), None).unwrap();
+        assert_eq!(b.floor, 2);
+        assert_eq!(b.ceiling, PARALLELISM_CEILING);
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_only_max_lowers_ceiling() {
+        // Only --parallelism-max: ceiling moves, floor keeps the default.
+        let b = ParallelismBounds::from_overrides(None, Some(32)).unwrap();
+        assert_eq!(b.floor, PARALLELISM_FLOOR);
+        assert_eq!(b.ceiling, 32);
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_min_equals_max_pins_value() {
+        let b = ParallelismBounds::from_overrides(Some(6), Some(6)).unwrap();
+        assert_eq!(b.floor, 6);
+        assert_eq!(b.ceiling, 6);
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_min_greater_than_max_errors() {
+        let err = ParallelismBounds::from_overrides(Some(10), Some(5))
+            .expect_err("min > max must error");
+        assert!(
+            err.contains("floor (10)") && err.contains("ceiling (5)"),
+            "error should name both bounds: {err}"
+        );
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_zero_min_errors() {
+        let err = ParallelismBounds::from_overrides(Some(0), None)
+            .expect_err("min == 0 must error");
+        assert!(err.contains("at least 1"), "error should say >= 1: {err}");
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_zero_max_errors() {
+        let err = ParallelismBounds::from_overrides(None, Some(0))
+            .expect_err("max == 0 must error");
+        assert!(err.contains("at least 1"), "error should say >= 1: {err}");
+    }
+
+    #[test]
+    fn parallelism_bounds_from_overrides_implicit_default_floor_below_explicit_max() {
+        // Pathological: if a user sets --parallelism-max 2, the implicit
+        // default floor (4) would exceed it. We must error rather than
+        // silently produce an empty range.
+        let err = ParallelismBounds::from_overrides(None, Some(2))
+            .expect_err("default floor (4) above explicit max (2) must error");
+        assert!(
+            err.contains("floor (4)") && err.contains("ceiling (2)"),
+            "error should name both bounds: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_parallelism_with_bounds_explicit_clamps_to_custom_range() {
+        let bounds = ParallelismBounds::from_overrides(Some(2), Some(32)).unwrap();
+        // Above custom ceiling: clamped down.
+        assert_eq!(resolve_parallelism_with_bounds(64, bounds), 32);
+        // Below custom floor: clamped up.
+        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 2);
+        // In range: passes through.
+        assert_eq!(resolve_parallelism_with_bounds(20, bounds), 20);
+    }
+
+    #[test]
+    fn resolve_parallelism_with_bounds_pinned_value() {
+        // min == max pins the value regardless of input.
+        let bounds = ParallelismBounds::from_overrides(Some(7), Some(7)).unwrap();
+        assert_eq!(resolve_parallelism_with_bounds(0, bounds), 7);
+        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 7);
+        assert_eq!(resolve_parallelism_with_bounds(100, bounds), 7);
+    }
+
+    #[test]
+    fn resolve_parallelism_with_bounds_autodetect_in_custom_range() {
+        let bounds = ParallelismBounds::from_overrides(Some(2), Some(32)).unwrap();
+        let v = resolve_parallelism_with_bounds(0, bounds);
+        assert!(
+            (bounds.floor..=bounds.ceiling).contains(&v),
+            "autodetect {v} outside [{}, {}]",
+            bounds.floor,
+            bounds.ceiling
+        );
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_with_custom_bounds_lower_ceiling_wins() {
+        // Go's per-language cap is 8. With --parallelism-max 32, the lang cap
+        // (8) is still tighter and should win on the autodetect path.
+        let bounds = ParallelismBounds::from_overrides(Some(2), Some(32)).unwrap();
+        let langs = [DiscoveryLanguage::Go];
+        let v = resolve_parallelism_for_langs(0, &langs, bounds);
+        assert!(v <= GO_AUTODETECT_CAP);
+        assert!(v >= bounds.floor);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_with_custom_bounds_explicit_uses_custom_ceiling() {
+        // Explicit value bypasses the per-language cap but is clamped by the
+        // user-supplied ceiling. --parallelism-max 32 with --parallelism 64
+        // should yield 32, not the default ceiling (16) and not the lang cap
+        // (8).
+        let bounds = ParallelismBounds::from_overrides(Some(2), Some(32)).unwrap();
+        let langs = [DiscoveryLanguage::Go];
+        assert_eq!(resolve_parallelism_for_langs(64, &langs, bounds), 32);
+        assert_eq!(resolve_parallelism_for_langs(20, &langs, bounds), 20);
+        assert_eq!(resolve_parallelism_for_langs(1, &langs, bounds), 2);
+    }
+
+    #[test]
+    fn resolve_parallelism_for_langs_lowered_ceiling_below_lang_cap_wins() {
+        // User explicitly tightens the ceiling below the per-language cap:
+        // override wins. --parallelism-max 4 with Go (lang cap 8) → at most 4.
+        let bounds = ParallelismBounds::from_overrides(None, Some(4)).unwrap();
+        let langs = [DiscoveryLanguage::Go];
+        let v = resolve_parallelism_for_langs(0, &langs, bounds);
+        assert!(v <= 4);
+        assert_eq!(v, 4); // floor is default 4 too; the range is pinned
     }
 
     #[test]

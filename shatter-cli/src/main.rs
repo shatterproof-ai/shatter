@@ -183,9 +183,21 @@ async fn main() -> ExitCode {
             format,
             workers,
             from_artifacts,
+            parallelism_min,
+            parallelism_max,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
+            let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
+                parallelism_min,
+                parallelism_max,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
             if let Some(secs) = setup_timeout {
                 // Safety: CLI is single-threaded at this point (before spawning frontends).
@@ -275,6 +287,7 @@ async fn main() -> ExitCode {
                 coverage_threshold,
                 max_executions,
                 planner.as_deref(),
+                parallelism_bounds,
             )
             .await
         }
@@ -399,6 +412,8 @@ async fn main() -> ExitCode {
             isolation,
             capture_side_effects,
             workers_per_fn,
+            parallelism_min,
+            parallelism_max,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
@@ -464,6 +479,23 @@ async fn main() -> ExitCode {
             let effective_parallelism = parallelism
                 .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism))
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_PARALLELISM);
+            // Resolve parallelism bound overrides (str-v01r): CLI flag wins
+            // over config; either side may be unset and falls back to the
+            // built-in default in `ParallelismBounds::from_overrides`.
+            let effective_parallelism_min = parallelism_min
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_min));
+            let effective_parallelism_max = parallelism_max
+                .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_max));
+            let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
+                effective_parallelism_min,
+                effective_parallelism_max,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             // For Vec/bool fields: CLI non-empty/true overrides config.
             let effective_include = if include.is_empty() {
                 project_cfg
@@ -552,6 +584,7 @@ async fn main() -> ExitCode {
                 effective_capture,
                 workers_per_fn,
                 &genetic_config,
+                parallelism_bounds,
             )
             .await
         }
