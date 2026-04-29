@@ -260,6 +260,76 @@ func SafeDivide(a, b int) (int, error) {
 	}
 }
 
+func TestGeneratedWrapperCompilesGenericInstantiation(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package ident
+
+func Identity[T any](v T) T {
+	return v
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "identity.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write identity.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/ident\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/ident:Identity",
+			SymbolName: "Identity",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "v", GoType: "T"},
+			},
+			TypeParams:   []wrapper.TypeParamInfo{{Name: "T", Constraint: "any"}},
+			HasResult:    true,
+			ResultGoType: "T",
+			ResultCount:  1,
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "ident", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	src, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+	if !strings.Contains(string(src), "Identity[string](v)") {
+		t.Fatalf("generated wrapper missing generic instantiation call; source:\n%s", src)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), src)
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 

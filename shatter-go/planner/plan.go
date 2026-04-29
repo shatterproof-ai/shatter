@@ -177,24 +177,8 @@ func planOne(
 		return planMethod(req, ctx, opts)
 	}
 
-	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
-	if opts.PerTargetHints != nil {
-		hints := opts.PerTargetHints(req.TargetID)
-		if len(hints.Defaults) > 0 {
-			paramOpts.HintsByName = hints.Defaults
-		}
-		if len(hints.Generators) > 0 {
-			paramOpts.GeneratorsByName = hints.Generators
-		}
-	}
-	paramMatrix, paramUnsat := PlanParams(req.TargetID, ctx.Analysis.Params, paramOpts)
-
-	composeOpts := ComposeOptions{
-		MaxPlans:  opts.MaxPlansPerTarget,
-		BeamWidth: opts.MaxPlansPerTarget,
-		IsMethod:  false,
-	}
-	return Compose(req.TargetID, nil, paramMatrix, paramUnsat, composeOpts)
+	paramOpts := paramOptionsForRequirement(req.TargetID, opts)
+	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
 // planMethod composes receiver plans (from PlanReceivers) with parameter
@@ -228,14 +212,159 @@ func planMethod(
 	}
 
 	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
-	paramMatrix, paramUnsat := PlanParams(req.TargetID, ctx.Analysis.Params, paramOpts)
+	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
+}
+
+func paramOptionsForRequirement(targetID string, opts PlanRequirementsOptions) ParamPlanOptions {
+	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
+	if opts.PerTargetHints != nil {
+		hints := opts.PerTargetHints(targetID)
+		if len(hints.Defaults) > 0 {
+			paramOpts.HintsByName = hints.Defaults
+		}
+		if len(hints.Generators) > 0 {
+			paramOpts.GeneratorsByName = hints.Generators
+		}
+	}
+	return paramOpts
+}
+
+func planWithGenericArgs(
+	req protocol.InvocationRequirement,
+	ctx *protocol.TargetContext,
+	receiverPlans []ReceiverPlan,
+	isMethod bool,
+	paramOpts ParamPlanOptions,
+	opts PlanRequirementsOptions,
+) ([]protocol.InvocationPlan, []protocol.UnsatisfiedRequirement) {
+	typeArgSets, unsat := typeArgSetsForTarget(req.TargetID, ctx.Target)
+	if unsat != nil {
+		return nil, []protocol.UnsatisfiedRequirement{*unsat}
+	}
 
 	composeOpts := ComposeOptions{
 		MaxPlans:  opts.MaxPlansPerTarget,
 		BeamWidth: opts.MaxPlansPerTarget,
-		IsMethod:  true,
+		IsMethod:  isMethod,
 	}
-	return Compose(req.TargetID, receiverPlans, paramMatrix, paramUnsat, composeOpts)
+
+	groups := make([][]protocol.InvocationPlan, 0, len(typeArgSets))
+	var allUnsat []protocol.UnsatisfiedRequirement
+	for _, typeArgs := range typeArgSets {
+		params := substituteGenericParams(ctx.Analysis.Params, ctx.Target, typeArgs)
+		paramMatrix, paramUnsat := PlanParams(req.TargetID, params, paramOpts)
+		plans, groupUnsat := Compose(req.TargetID, receiverPlans, paramMatrix, paramUnsat, composeOpts)
+		if len(groupUnsat) > 0 {
+			allUnsat = append(allUnsat, groupUnsat...)
+			continue
+		}
+		for i := range plans {
+			plans[i].GenericTypeArgs = genericTypeNamesToStrings(typeArgs)
+		}
+		groups = append(groups, plans)
+	}
+	if len(groups) == 0 && len(allUnsat) > 0 {
+		return nil, allUnsat
+	}
+
+	plans := interleaveGenericPlanGroups(groups)
+	maxPlans := opts.MaxPlansPerTarget
+	if maxPlans <= 0 {
+		maxPlans = DefaultMaxPlansPerRequirement
+	}
+	if len(plans) > maxPlans {
+		plans = plans[:maxPlans]
+	}
+	for i := range plans {
+		plans[i].Priority = i
+	}
+	return plans, nil
+}
+
+func typeArgSetsForTarget(targetID string, target *protocol.DiscoveredTarget) ([][]GenericTypeName, *protocol.UnsatisfiedRequirement) {
+	if target == nil || !target.HasTypeParams {
+		return [][]GenericTypeName{{}}, nil
+	}
+	if len(target.TypeParams) == 0 {
+		return nil, &protocol.UnsatisfiedRequirement{
+			Kind:     protocol.UnsatisfiedRequirementKindGenericUnconstrained,
+			TargetID: targetID,
+			Detail:   "target has type parameters but no constraints were discovered",
+		}
+	}
+	return PlanGenericTypeArgSets(targetID, target.TypeParams)
+}
+
+func substituteGenericParams(params []protocol.ParamInfo, target *protocol.DiscoveredTarget, typeArgs []GenericTypeName) []protocol.ParamInfo {
+	if target == nil || len(typeArgs) == 0 || len(target.TypeParams) == 0 {
+		return params
+	}
+	subst := make(map[string]GenericTypeName, len(target.TypeParams))
+	for i, tp := range target.TypeParams {
+		if i < len(typeArgs) {
+			subst[tp.Name] = typeArgs[i]
+		}
+	}
+
+	out := make([]protocol.ParamInfo, len(params))
+	for i, p := range params {
+		out[i] = p
+		if p.TypeName == nil {
+			continue
+		}
+		typeArg, ok := subst[*p.TypeName]
+		if !ok {
+			continue
+		}
+		typeName := string(typeArg)
+		out[i].TypeName = &typeName
+		out[i].Type = typeInfoForGenericTypeArg(typeArg)
+	}
+	return out
+}
+
+func typeInfoForGenericTypeArg(typeArg GenericTypeName) protocol.TypeInfo {
+	switch typeArg {
+	case genericTypeString:
+		return protocol.TypeInfo{Kind: "str"}
+	case genericTypeInt, genericTypeInt64:
+		return protocol.TypeInfo{Kind: "int"}
+	case genericTypeFloat64:
+		return protocol.TypeInfo{Kind: "float"}
+	case genericTypeBool:
+		return protocol.TypeInfo{Kind: "bool"}
+	default:
+		return protocol.TypeInfo{Kind: "unknown"}
+	}
+}
+
+func genericTypeNamesToStrings(typeArgs []GenericTypeName) []string {
+	if len(typeArgs) == 0 {
+		return nil
+	}
+	out := make([]string, len(typeArgs))
+	for i, typeArg := range typeArgs {
+		out[i] = string(typeArg)
+	}
+	return out
+}
+
+func interleaveGenericPlanGroups(groups [][]protocol.InvocationPlan) []protocol.InvocationPlan {
+	var plans []protocol.InvocationPlan
+	for depth := 0; ; depth++ {
+		added := false
+		for _, group := range groups {
+			if depth >= len(group) {
+				continue
+			}
+			plans = append(plans, group[depth])
+			added = true
+		}
+		if !added {
+			break
+		}
+	}
+	return plans
 }
 
 // isMethodTarget reports whether the planner should follow the method path.

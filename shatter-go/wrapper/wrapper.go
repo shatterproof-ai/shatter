@@ -13,6 +13,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"go/ast"
+	"go/printer"
+	"go/token"
 	"go/types"
 	"os"
 	"sort"
@@ -28,6 +30,12 @@ type WrapperParam struct {
 	GoType string // concrete Go type string, e.g. "int", "*Counter", "string"
 }
 
+// TypeParamInfo describes one generic type parameter declared by a wrapper target.
+type TypeParamInfo struct {
+	Name       string
+	Constraint string
+}
+
 // WrapperTarget is an enriched description of a discovered invocation target
 // with Go-level type information for code generation.
 type WrapperTarget struct {
@@ -37,6 +45,7 @@ type WrapperTarget struct {
 	ReceiverType  string // bare type name (without *) for method targets
 	IsPointerRecv bool   // true for (*T).Method receivers
 	Parameters    []WrapperParam
+	TypeParams    []TypeParamInfo
 	HasResult     bool
 	ResultGoType  string // Go type string for the first return value
 	ResultCount   int    // total number of return values (0 when HasResult is false)
@@ -57,7 +66,7 @@ const (
 func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate) string {
 	ids := make([]string, len(targets))
 	for i, t := range targets {
-		ids[i] = t.ID
+		ids[i] = t.ID + ":" + typeParamSignature(t.TypeParams)
 	}
 	sort.Strings(ids)
 
@@ -111,12 +120,16 @@ func GenerateWrapper(
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
+	if hasGenericTargets(sorted) {
+		b.WriteString("\t\"strings\"\n")
+	}
 	b.WriteString(")\n\n")
 
 	b.WriteString("// PlanDescriptor selects one invocation strategy for one ShatterInvoke call.\n")
 	b.WriteString("type PlanDescriptor struct {\n")
 	b.WriteString("\tTargetID     string `json:\"target_id\"`\n")
 	b.WriteString("\tReceiverKind string `json:\"receiver_kind\"`\n")
+	b.WriteString("\tGenericTypeArgs []string `json:\"generic_type_args,omitempty\"`\n")
 	b.WriteString("}\n\n")
 
 	b.WriteString("// ShatterInvoke executes the strategy in d against inputs and returns the result.\n")
@@ -136,9 +149,13 @@ func GenerateWrapper(
 }
 
 func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string][]ConstructorCandidate) {
+	if len(t.TypeParams) > 0 {
+		writeGenericTargetCase(b, t)
+		return
+	}
 	if t.Kind == TargetKindFunction {
 		writeParamDeserialization(b, t.Parameters, "\t\t")
-		writeCall(b, t, "", "\t\t")
+		writeCall(b, t, "", nil, "\t\t")
 		return
 	}
 
@@ -152,7 +169,7 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 		fmt.Fprintf(b, "\t\t\tvar _recv %s\n", t.ReceiverType)
 	}
 	writeParamDeserialization(b, t.Parameters, "\t\t\t")
-	writeCall(b, t, "_recv", "\t\t\t")
+	writeCall(b, t, "_recv", nil, "\t\t\t")
 
 	if ctors, ok := ctorsByType[t.ReceiverType]; ok {
 		for _, c := range ctors {
@@ -164,7 +181,7 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 				fmt.Fprintf(b, "\t\t\t_recv := *%s()\n", c.FuncName)
 			}
 			writeParamDeserialization(b, t.Parameters, "\t\t\t")
-			writeCall(b, t, "_recv", "\t\t\t")
+			writeCall(b, t, "_recv", nil, "\t\t\t")
 		}
 	}
 
@@ -183,7 +200,24 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 	}
 }
 
-func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, indent string) {
+func writeGenericTargetCase(b *strings.Builder, t WrapperTarget) {
+	if t.Kind != TargetKindFunction {
+		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"shatter: generic method targets are not supported: %s\")\n", t.ID)
+		return
+	}
+	combos := wrapperGenericTypeArgSets(t.TypeParams)
+	b.WriteString("\t\tswitch strings.Join(d.GenericTypeArgs, \",\") {\n")
+	for _, combo := range combos {
+		key := strings.Join(combo, ",")
+		fmt.Fprintf(b, "\t\tcase %q:\n", key)
+		writeParamDeserializationWithTypeArgs(b, t.Parameters, t.TypeParams, combo, "\t\t\t")
+		writeCall(b, t, "", combo, "\t\t\t")
+	}
+	b.WriteString("\t\t}\n")
+	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"shatter: unsupported generic type args for %s: %%v\", d.GenericTypeArgs)\n", t.ID)
+}
+
+func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, typeArgs []string, indent string) {
 	args := make([]string, len(t.Parameters))
 	for i, p := range t.Parameters {
 		args[i] = p.Name
@@ -191,10 +225,14 @@ func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, indent stri
 	argList := strings.Join(args, ", ")
 
 	var callExpr string
+	symbolName := t.SymbolName
+	if len(typeArgs) > 0 {
+		symbolName += "[" + strings.Join(typeArgs, ", ") + "]"
+	}
 	if recvExpr == "" {
-		callExpr = fmt.Sprintf("%s(%s)", t.SymbolName, argList)
+		callExpr = fmt.Sprintf("%s(%s)", symbolName, argList)
 	} else {
-		callExpr = fmt.Sprintf("%s.%s(%s)", recvExpr, t.SymbolName, argList)
+		callExpr = fmt.Sprintf("%s.%s(%s)", recvExpr, symbolName, argList)
 	}
 
 	if t.HasResult {
@@ -257,6 +295,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	}
 
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name)
+	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
 	var resultGoType string
@@ -280,6 +319,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		ReceiverType:  recvType,
 		IsPointerRecv: isPtr,
 		Parameters:    params,
+		TypeParams:    typeParams,
 		HasResult:     hasResult,
 		ResultGoType:  resultGoType,
 		ResultCount:   resultCount,
@@ -316,6 +356,26 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string) []
 	return params
 }
 
+func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
+	if fn.Type.TypeParams == nil || len(fn.Type.TypeParams.List) == 0 {
+		return nil
+	}
+	var params []TypeParamInfo
+	for _, field := range fn.Type.TypeParams.List {
+		constraint := "any"
+		if field.Type != nil {
+			constraint = strings.TrimSpace(wrapperASTExprString(field.Type))
+			if constraint == "" {
+				constraint = "any"
+			}
+		}
+		for _, name := range field.Names {
+			params = append(params, TypeParamInfo{Name: name.Name, Constraint: constraint})
+		}
+	}
+	return params
+}
+
 // wrapperGoType returns the Go type string for use in the target package.
 func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string) string {
 	if info != nil {
@@ -330,6 +390,14 @@ func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string) string {
 		}
 	}
 	return wrapperASTTypeString(expr)
+}
+
+func wrapperASTExprString(expr ast.Expr) string {
+	var b strings.Builder
+	if err := printer.Fprint(&b, token.NewFileSet(), expr); err != nil {
+		return ""
+	}
+	return b.String()
 }
 
 func wrapperASTTypeString(expr ast.Expr) string {
@@ -351,6 +419,75 @@ func wrapperASTTypeString(expr ast.Expr) string {
 		return "any"
 	default:
 		return "any"
+	}
+}
+
+func hasGenericTargets(targets []WrapperTarget) bool {
+	for _, target := range targets {
+		if len(target.TypeParams) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func typeParamSignature(params []TypeParamInfo) string {
+	if len(params) == 0 {
+		return ""
+	}
+	parts := make([]string, len(params))
+	for i, param := range params {
+		parts[i] = param.Name + "=" + param.Constraint
+	}
+	return strings.Join(parts, ",")
+}
+
+func writeParamDeserializationWithTypeArgs(
+	b *strings.Builder,
+	params []WrapperParam,
+	typeParams []TypeParamInfo,
+	typeArgs []string,
+	indent string,
+) {
+	subst := make(map[string]string, len(typeParams))
+	for i, param := range typeParams {
+		if i < len(typeArgs) {
+			subst[param.Name] = typeArgs[i]
+		}
+	}
+	resolved := make([]WrapperParam, len(params))
+	for i, param := range params {
+		resolved[i] = param
+		if typeArg, ok := subst[param.GoType]; ok {
+			resolved[i].GoType = typeArg
+		}
+	}
+	writeParamDeserialization(b, resolved, indent)
+}
+
+func wrapperGenericTypeArgSets(params []TypeParamInfo) [][]string {
+	sets := [][]string{{}}
+	for _, param := range params {
+		defaults := wrapperGenericDefaults(param.Constraint)
+		next := make([][]string, 0, len(sets)*len(defaults))
+		for _, prefix := range sets {
+			for _, def := range defaults {
+				next = append(next, append(append([]string{}, prefix...), def))
+			}
+		}
+		sets = next
+	}
+	return sets
+}
+
+func wrapperGenericDefaults(constraint string) []string {
+	switch strings.TrimSpace(constraint) {
+	case "", "any", "interface{}", "comparable":
+		return []string{"string", "int", "bool", "int64", "float64"}
+	case "cmp.Ordered", "constraints.Ordered":
+		return []string{"string", "int", "int64", "float64"}
+	default:
+		return nil
 	}
 }
 

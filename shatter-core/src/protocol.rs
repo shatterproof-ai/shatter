@@ -232,6 +232,9 @@ pub struct InvocationPlan {
     /// receivers, `"constructor:<FuncName>"` for named constructors, or an
     /// empty string for free functions.
     pub receiver_kind: String,
+    /// Ordered concrete type argument list for generic targets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generic_type_args: Vec<String>,
     /// One `ValuePlan` per parameter, in declaration order.
     #[serde(default)]
     pub argument_plans: Vec<ValuePlan>,
@@ -1343,6 +1346,7 @@ mod tests {
                 plan: Some(InvocationPlan {
                     target_id: "example.com/svc:Compute".into(),
                     receiver_kind: "constructor:New".into(),
+                    generic_type_args: vec![],
                     argument_plans: vec![ValuePlan {
                         param_index: 0,
                         param_name: "x".into(),
@@ -3423,6 +3427,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "example.com/pkg:Add".into(),
             receiver_kind: "constructor:NewCounter".into(),
+            generic_type_args: vec!["string".into()],
             argument_plans: vec![
                 ValuePlan {
                     param_index: 0,
@@ -3493,6 +3498,7 @@ mod tests {
                 plans: vec![InvocationPlan {
                     target_id: "example.com/pkg:Add".into(),
                     receiver_kind: String::new(),
+                    generic_type_args: vec![],
                     argument_plans: vec![ValuePlan {
                         param_index: 0,
                         param_name: "x".into(),
@@ -3701,6 +3707,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "example.com/svc:(*Service).DoIt".into(),
             receiver_kind: "constructor:New".into(),
+            generic_type_args: vec![],
             argument_plans: vec![ValuePlan {
                 param_index: 0,
                 param_name: "x".into(),

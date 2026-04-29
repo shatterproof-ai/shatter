@@ -57,6 +57,29 @@ func fnHasTypeParams(fn *ast.FuncDecl) bool {
 	return fn.Type.TypeParams != nil && len(fn.Type.TypeParams.List) > 0
 }
 
+func typeParamsOf(fset *token.FileSet, fn *ast.FuncDecl) []TypeParamInfo {
+	if fn.Type.TypeParams == nil || len(fn.Type.TypeParams.List) == 0 {
+		return nil
+	}
+	var params []TypeParamInfo
+	for _, field := range fn.Type.TypeParams.List {
+		constraint := "any"
+		if field.Type != nil {
+			constraint = strings.TrimSpace(exprText(fset, field.Type))
+			if constraint == "" {
+				constraint = "any"
+			}
+		}
+		for _, name := range field.Names {
+			params = append(params, TypeParamInfo{
+				Name:       name.Name,
+				Constraint: constraint,
+			})
+		}
+	}
+	return params
+}
+
 // receiverIsInterface reports whether the receiver type's underlying type is an interface.
 func receiverIsInterface(fn *ast.FuncDecl, info *types.Info) bool {
 	if fn.Recv == nil || len(fn.Recv.List) == 0 {
@@ -173,6 +196,7 @@ func BuildDiscoveredTarget(
 		Parameters:    extractParamsWithContext(fn, info, nil),
 		Results:       extractResultTypes(fn, info),
 		Visibility:    visibility,
+		TypeParams:    typeParamsOf(fset, fn),
 		HasTypeParams: fnHasTypeParams(fn),
 		HasCGoDep:     fnHasCGoDep(fn, info),
 		IsTestFile:    strings.HasSuffix(filePath, "_test.go"),

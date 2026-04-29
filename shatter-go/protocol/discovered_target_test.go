@@ -231,6 +231,15 @@ func TestBuildDiscoveredTargetClassificationFields(t *testing.T) {
 		if !target.HasTypeParams {
 			t.Errorf("HasTypeParams = false for generic function, want true")
 		}
+		if len(target.TypeParams) != 1 {
+			t.Fatalf("TypeParams len = %d, want 1; target=%+v", len(target.TypeParams), target)
+		}
+		if target.TypeParams[0].Name != "T" {
+			t.Errorf("TypeParams[0].Name = %q, want T", target.TypeParams[0].Name)
+		}
+		if target.TypeParams[0].Constraint != "any" {
+			t.Errorf("TypeParams[0].Constraint = %q, want any", target.TypeParams[0].Constraint)
+		}
 	})
 
 	t.Run("non_test_file_has_is_test_file_false", func(t *testing.T) {
