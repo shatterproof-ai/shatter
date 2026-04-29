@@ -74,6 +74,65 @@ func TestPlanRequirements_FreeFunctionProducesPlans(t *testing.T) {
 	}
 }
 
+func TestPlanRequirements_GenericFreeFunctionProducesInstantiatedPlans(t *testing.T) {
+	t.Parallel()
+	const targetID = "example.com/pkg:Identity"
+	analysis := &protocol.FunctionAnalysis{
+		Name: "Identity",
+		Params: []protocol.ParamInfo{
+			{Name: "v", Type: protocol.TypeInfo{Kind: "unknown"}, TypeName: strPtr("T")},
+		},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:            targetID,
+		PackagePath:   "example.com/pkg",
+		PackageName:   "pkg",
+		SymbolName:    "Identity",
+		QualifiedName: "Identity",
+		Kind:          protocol.TargetKindFunction,
+		Parameters:    analysis.Params,
+		TypeParams:    []protocol.TypeParamInfo{{Name: "T", Constraint: "any"}},
+		HasTypeParams: true,
+	}
+	lookup := richLookup(func(id string) *protocol.TargetContext {
+		if id != targetID {
+			return nil
+		}
+		return &protocol.TargetContext{Analysis: analysis, Target: target}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+
+	if len(unsat) != 0 {
+		t.Fatalf("expected no unsatisfied requirements, got %+v", unsat)
+	}
+	if len(plans) != 5 {
+		t.Fatalf("len(plans) = %d, want 5; plans=%+v", len(plans), plans)
+	}
+	seen := map[string]bool{}
+	for _, p := range plans {
+		if len(p.GenericTypeArgs) != 1 {
+			t.Fatalf("plan %+v GenericTypeArgs len = %d, want 1", p, len(p.GenericTypeArgs))
+		}
+		seen[p.GenericTypeArgs[0]] = true
+		if len(p.ArgumentPlans) == 0 {
+			t.Fatalf("plan %+v missing argument plans", p)
+		}
+		if p.ArgumentPlans[0].TypeHint != p.GenericTypeArgs[0] {
+			t.Errorf("TypeHint = %q, want generic type arg %q", p.ArgumentPlans[0].TypeHint, p.GenericTypeArgs[0])
+		}
+	}
+	for _, want := range []string{"string", "int", "bool", "int64", "float64"} {
+		if !seen[want] {
+			t.Errorf("missing generic instantiation %q in plans %+v", want, plans)
+		}
+	}
+}
+
 func TestPlanRequirements_TargetNotAnalyzed(t *testing.T) {
 	t.Parallel()
 	lookup := analysisLookup(func(string) *protocol.FunctionAnalysis { return nil })
@@ -373,4 +432,3 @@ func TestPlanRequirements_AggregatesAcrossRequirements(t *testing.T) {
 		t.Fatalf("expected one unsatisfied for Missing, got %+v", unsat)
 	}
 }
-
