@@ -20,8 +20,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+)
+
+const (
+	launcherBuildLockPollInterval = 50 * time.Millisecond
+	launcherBuildLockStaleAfter   = 30 * time.Minute
 )
 
 // BuildOptions are the inputs required to build a launcher binary.
@@ -98,6 +104,19 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return binaryPath, false, nil
 	}
 
+	releaseLock, lockAcquired, err := acquireLauncherBuildLock(binaryPath)
+	if err != nil {
+		return "", false, err
+	}
+	if !lockAcquired {
+		return binaryPath, false, nil
+	}
+	defer releaseLock()
+
+	if _, statErr := os.Stat(binaryPath); statErr == nil {
+		return binaryPath, false, nil
+	}
+
 	launcherDir := filepath.Join(opts.GeneratedDir, opts.DiscoveryHash, "launcher")
 	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
 		return "", false, fmt.Errorf("launcher: create launcher dir: %w", err)
@@ -152,6 +171,38 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	}
 
 	return binaryPath, true, nil
+}
+
+func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool, err error) {
+	lockPath := binaryPath + ".lock"
+	for {
+		lockFile, openErr := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if openErr == nil {
+			_, _ = fmt.Fprintf(lockFile, "%d\n", os.Getpid())
+			if closeErr := lockFile.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, false, fmt.Errorf("launcher: close build lock %q: %w", lockPath, closeErr)
+			}
+			return func() { _ = os.Remove(lockPath) }, true, nil
+		}
+		if !os.IsExist(openErr) {
+			return nil, false, fmt.Errorf("launcher: acquire build lock %q: %w", lockPath, openErr)
+		}
+
+		if _, statErr := os.Stat(binaryPath); statErr == nil {
+			return nil, false, nil
+		}
+		if lockIsStale(lockPath) {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		time.Sleep(launcherBuildLockPollInterval)
+	}
+}
+
+func lockIsStale(lockPath string) bool {
+	info, err := os.Stat(lockPath)
+	return err == nil && time.Since(info.ModTime()) > launcherBuildLockStaleAfter
 }
 
 // GenerateLauncherMain generates the main.go source for a launcher binary.

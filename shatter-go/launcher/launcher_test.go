@@ -1,7 +1,11 @@
 package launcher_test
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
@@ -109,5 +113,103 @@ func TestBuildOptionsValidation(t *testing.T) {
 				t.Errorf("error %q missing %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildLauncherConcurrentCallsShareSingleBuild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake go script uses POSIX shell")
+	}
+
+	fakeBinDir := t.TempDir()
+	countDir := t.TempDir()
+	fakeGo := filepath.Join(fakeBinDir, "go")
+	fakeGoScript := `#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-o" ]; then
+		shift
+		out="$1"
+	fi
+	shift || true
+done
+if [ -z "$out" ]; then
+	exit 0
+fi
+touch "$SHATTER_FAKE_GO_COUNT_DIR/invocation-$$"
+sleep 0.2
+mkdir -p "$(dirname "$out")"
+printf '#!/bin/sh\nexit 0\n' > "$out"
+chmod +x "$out"
+`
+	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SHATTER_FAKE_GO_COUNT_DIR", countDir)
+
+	targetModuleDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "go.mod"), []byte("module example.com/targets\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write target go.mod: %v", err)
+	}
+
+	opts := launcher.BuildOptions{
+		TargetModulePath: "example.com/targets",
+		TargetModuleDir:  targetModuleDir,
+		TargetImportPath: "example.com/targets",
+		DiscoveryHash:    "same-discovery-hash",
+		GeneratedDir:     filepath.Join(t.TempDir(), "generated"),
+		BinariesDir:      filepath.Join(t.TempDir(), "binaries"),
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	freshResults := make(chan bool, workers)
+	errs := make(chan error, workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, fresh, err := launcher.BuildLauncher(opts)
+			if err != nil {
+				errs <- err
+				return
+			}
+			freshResults <- fresh
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(freshResults)
+
+	for err := range errs {
+		t.Errorf("BuildLauncher returned error: %v", err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	markers, err := os.ReadDir(countDir)
+	if err != nil {
+		t.Fatalf("read fake go markers: %v", err)
+	}
+	if len(markers) != 1 {
+		t.Fatalf("go build invocations = %d, want 1", len(markers))
+	}
+
+	freshCount := 0
+	for fresh := range freshResults {
+		if fresh {
+			freshCount++
+		}
+	}
+	if freshCount != 1 {
+		t.Fatalf("fresh builds = %d, want 1", freshCount)
 	}
 }
