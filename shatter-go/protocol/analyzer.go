@@ -266,6 +266,18 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		if !ok || fn.Body == nil {
 			continue
 		}
+		// Cross-file safety check (str-fg8e): ensure the declaration's token
+		// position genuinely lives in the requested target file. Skip any
+		// declaration whose fset position resolves to a sibling source —
+		// surfacing it would produce StartLine/EndLine values past the target
+		// file's EOF (the symptom that originally panicked
+		// shatter-core/src/fingerprint.rs::extract_function_source against a
+		// 43-line kapow source file). The defensive clamp landed in
+		// fingerprint.rs (str-jdz8) stays as a downstream guard; this check
+		// keeps the upstream contract honest.
+		if !declarationBelongsToTargetFile(fset, fn, absoluteFilePath) {
+			continue
+		}
 		if functionName != "" && fn.Name.Name != functionName {
 			continue
 		}
@@ -379,6 +391,44 @@ func findGoModuleRoot(startDir string) (string, bool) {
 		}
 		current = parent
 	}
+}
+
+// declarationBelongsToTargetFile reports whether the function declaration's
+// token position resolves to the same source file as absoluteTargetPath.
+// Used to gate StartLine/EndLine recording so the analyzer never attributes
+// a sibling declaration's positions to the requested target file. See
+// str-fg8e for the originating panic and the package-aware-loader root
+// cause.
+//
+// The match is path-equality after filepath.Abs normalization on both sides.
+// A degenerate position with an empty filename (synthesized AST nodes
+// without source backing) is treated as not belonging to the target file —
+// the analyzer cannot honestly report line numbers for such declarations.
+func declarationBelongsToTargetFile(fset *token.FileSet, fn *ast.FuncDecl, absoluteTargetPath string) bool {
+	if fset == nil || fn == nil {
+		return false
+	}
+	position := fset.Position(fn.Pos())
+	if position.Filename == "" {
+		return false
+	}
+	declaredPath, err := filepath.Abs(position.Filename)
+	if err != nil {
+		declaredPath = position.Filename
+	}
+	if declaredPath == absoluteTargetPath {
+		return true
+	}
+	// Synthetic-module load mirrors the source into a tempdir but preserves
+	// the base filename. When the loader returns a single-file syntax view
+	// (LoadFileLenient path), accept a base-name match so standalone-file
+	// analysis keeps working. The findTargetSyntaxFile contract already
+	// limits this fallback to single-file packages, so a sibling cannot be
+	// silently accepted here.
+	if filepath.Base(declaredPath) == filepath.Base(absoluteTargetPath) {
+		return true
+	}
+	return false
 }
 
 // findTargetSyntaxFile locates the *ast.File in pkg.Syntax whose file name
