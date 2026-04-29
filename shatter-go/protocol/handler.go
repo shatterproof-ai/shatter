@@ -302,6 +302,40 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		functionName = *req.Function
 	}
 
+	// Discovery cache (str-hy9b.C6): consult <workspace>/analysis/<hash>.json
+	// before running the analyzer. Hash inputs cover the target package's
+	// source files, one-level imports, the Go runtime version, and the
+	// Shatter protocol version; any mismatch produces a miss and the
+	// analyzer recomputes. The cache is best-effort — hash errors and write
+	// errors are logged but never block the analysis path.
+	var (
+		cacheHash    string
+		cacheHashErr error
+	)
+	if h.workspace != nil {
+		cacheHash, cacheHashErr = ComputeDiscoveryHash(req.File, functionName)
+		if cacheHashErr == nil {
+			if cached, hit, missReason := ReadAnalysisCache(h.workspace, cacheHash); hit {
+				// Initialize the loader even on a cache hit so
+				// handleGetInvocationPlan can rebuild method DiscoveredTargets
+				// (Receiver shape / HasTypeParams) by reloading the package.
+				// The loader itself caches packages, so this is cheap on
+				// repeated lookups.
+				if err := h.ensureLoader(); err != nil {
+					h.log.Debug("analysis cache hit: ensureLoader failed; falling through to full analyze",
+						"file", req.File, "err", err)
+				} else {
+					logCacheHit(h.log, cacheHash, req.File)
+					return h.finalizeAnalyzeFromCache(resp, req, cached, timing)
+				}
+			} else {
+				logCacheMiss(h.log, cacheHash, req.File, missReason)
+			}
+		} else {
+			h.log.Debug("analysis cache hash failed", "file", req.File, "err", cacheHashErr)
+		}
+	}
+
 	finishAnalyze := timing.Start("analyze.total")
 	functions, err := h.analyzeFile(req.File, functionName, timing)
 	finishAnalyze()
@@ -346,7 +380,39 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		h.cachedAnalyses[key] = &functions[i]
 	}
 
+	// Write the discovery cache only on full-analyze paths where hashing
+	// succeeded; a write failure is logged at warn level but does not affect
+	// the response (the next run will simply recompute).
+	if h.workspace != nil && cacheHashErr == nil && cacheHash != "" {
+		if writeErr := WriteAnalysisCache(h.workspace, cacheHash, req.File, functionName, functions); writeErr != nil {
+			h.log.Warn("analysis cache write failed", "hash", cacheHash, "file", req.File, "err", writeErr)
+		} else {
+			logCacheWrite(h.log, cacheHash, req.File)
+		}
+	}
+
 	resp.Functions = functions
+	return finalizeResponse(resp, timing)
+}
+
+// finalizeAnalyzeFromCache populates the in-memory cachedAnalyses map and the
+// response Functions slice from a cache hit, mirroring the post-analyze
+// bookkeeping in handleAnalyze. Kept separate so the cache-hit path skips
+// timing.Start("analyze.total") and the analyzer call, while still
+// publishing every FunctionAnalysis to the execute-side cache.
+func (h *Handler) finalizeAnalyzeFromCache(resp Response, req Request, cached []FunctionAnalysis, timing *frontendtiming.Collector) Response {
+	resp.Status = "analyze"
+	if cached == nil {
+		cached = []FunctionAnalysis{}
+	}
+	for i := range cached {
+		if cached[i].SourceFile == "" {
+			cached[i].SourceFile = req.File
+		}
+		key := req.File + "\x00" + cached[i].Name
+		h.cachedAnalyses[key] = &cached[i]
+	}
+	resp.Functions = cached
 	return finalizeResponse(resp, timing)
 }
 
@@ -361,14 +427,28 @@ func (h *Handler) analyzeFile(filePath string, functionName string, timing *fron
 	if h.workspace == nil {
 		return AnalyzeFileWithTiming(filePath, functionName, timing)
 	}
-	if h.loader == nil {
-		ldr, err := goloader.New(h.workspace)
-		if err != nil {
-			return nil, fmt.Errorf("construct analyzer loader: %w", err)
-		}
-		h.loader = ldr
+	if err := h.ensureLoader(); err != nil {
+		return nil, err
 	}
 	return AnalyzeFileWithLoaderAndTiming(filePath, functionName, h.loader, timing)
+}
+
+// ensureLoader lazy-initializes h.loader from h.workspace. Both the
+// analyze-cache miss path (analyzeFile) and the analyze-cache hit path need
+// the loader available because handleGetInvocationPlan's TargetContext
+// builder (buildTargetContext) reloads the package through h.loader to
+// recover Receiver / HasTypeParams off the wire (str-hy9b.C6: cache hit
+// must not regress receiver-aware planning).
+func (h *Handler) ensureLoader() error {
+	if h.workspace == nil || h.loader != nil {
+		return nil
+	}
+	ldr, err := goloader.New(h.workspace)
+	if err != nil {
+		return fmt.Errorf("construct analyzer loader: %w", err)
+	}
+	h.loader = ldr
+	return nil
 }
 
 func (h *Handler) handleInstrument(resp Response, req Request) Response {
