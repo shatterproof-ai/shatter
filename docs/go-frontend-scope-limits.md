@@ -10,9 +10,9 @@ Companion docs:
 
 ## `vendor/` directories
 
-**Deferred.** Tracked: `str-nm5e` — *Go frontend: vendor/ directory support*.
+**Implemented.** Closed: `str-nm5e`.
 
-The analyzer currently resolves imports through the module cache and `GOPATH` only. Projects that vendor their dependencies (`go mod vendor`, or legacy `vendor/` trees) will not have those imports resolved, which can cause missing type information and, in turn, missing invocation-model detection or synthetic-param resolution. A vendored lookup path is additive to the existing resolver and does not require architectural changes.
+Modules that vendor their dependencies (`go mod vendor` producing `vendor/modules.txt` alongside the vendored tree) are resolved through `vendor/` automatically. The analyzer's `go/packages` loader inherits the toolchain's vendor-mode auto-detection (Go ≥ 1.14: a `vendor/modules.txt` consistent with `go.mod` enables `-mod=vendor` by default), so vendored imports flow through `pkg.TypesInfo` exactly like module-cache imports. Regression coverage lives in `shatter-go/protocol/vendor_test.go`, which builds an isolated module with `GOPROXY=off` to prove vendor is the only resolution path. Pre-1.14 GOPATH-style `vendor/` trees (no `modules.txt`) are not exercised; modern `go mod vendor` output is the supported shape.
 
 ## `go.work` workspaces
 
