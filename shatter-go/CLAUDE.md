@@ -10,6 +10,10 @@ See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) fo
 
 `vendor/` directories are honored. The analyzer loads packages via `golang.org/x/tools/go/packages`, which delegates to `go list`; with `vendor/modules.txt` present and consistent with `go.mod`, the toolchain selects `-mod=vendor` automatically and vendored dependencies populate `pkg.TypesInfo`. No analyzer-side flag plumbing is required. Regression test: `shatter-go/protocol/vendor_test.go`.
 
+### go.work Workspace Resolution (str-b66s)
+
+`go.work` multi-module workspaces are honored. The same `go/packages` → `go list` path that handles vendor mode also picks up workspace mode: when a `go.work` file is present in the loader `Dir`'s ancestry (or `GOWORK` is set), cross-module imports between workspace `use` members resolve through `pkg.TypesInfo` without analyzer-side flag plumbing. Regression test: `shatter-go/protocol/goworkspace_test.go`.
+
 ## Key Files
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging

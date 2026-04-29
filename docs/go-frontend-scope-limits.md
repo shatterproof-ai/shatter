@@ -16,9 +16,9 @@ Modules that vendor their dependencies (`go mod vendor` producing `vendor/module
 
 ## `go.work` workspaces
 
-**Deferred.** Tracked: `str-b66s` — *Go frontend: go.work workspace support*.
+**Implemented.** Closed: `str-b66s`.
 
-The analyzer assumes a single-module root. Multi-module workspace mode (`go.work` + multiple `go.mod` files under one checkout) requires walking cross-module dependencies and selecting the active workspace member per file. Until this is implemented, projects built with workspaces should point the analyzer at a single module at a time.
+Multi-module workspaces (`go.work` listing multiple `use` members, each with its own `go.mod`) are resolved across module boundaries automatically. The analyzer's `go/packages` loader inherits the toolchain's workspace-mode auto-detection: when a `go.work` file exists in the cwd ancestry (or `GOWORK` is set), `go list` resolves cross-module imports by treating the `use` members as one virtual build, so imports across workspace siblings flow through `pkg.TypesInfo` exactly like single-module imports. No analyzer-side flag plumbing is required — passing the full `os.Environ()` and a `Dir` inside the workspace tree to `packages.Config` is sufficient. Regression coverage lives in `shatter-go/protocol/goworkspace_test.go`, which builds an isolated 2-module workspace with `GOPROXY=off` to prove `go.work` is the only resolution path.
 
 ## Build tags
 
