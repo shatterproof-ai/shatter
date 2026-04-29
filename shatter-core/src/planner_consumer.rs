@@ -194,6 +194,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
+            generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7)), zero_plan(1, "b")],
             priority: 0,
             label: String::new(),
@@ -207,6 +208,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
+            generic_type_args: vec![],
             argument_plans: vec![zero_plan(0, "s")],
             priority: 0,
             label: String::new(),
@@ -220,6 +222,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
+            generic_type_args: vec![],
             argument_plans: vec![ValuePlan {
                 param_index: 0,
                 param_name: "a".into(),
@@ -239,6 +242,7 @@ mod tests {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
+            generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7))],
             priority: 0,
             label: String::new(),
@@ -253,6 +257,7 @@ mod tests {
         let mk = |v: i64| InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
+            generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(v))],
             priority: 0,
             label: String::new(),
