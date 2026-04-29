@@ -65,6 +65,7 @@ pub(crate) async fn run_scan(
     capture_side_effects: bool,
     workers_per_fn: usize,
     genetic_config: &shatter_core::config::GeneticConfig,
+    parallelism_bounds: crate::helpers::ParallelismBounds,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -557,7 +558,8 @@ pub(crate) async fn run_scan(
     // scans take the worst-case cap), then the global [floor, ceiling] clamp
     // from str-eam2. Explicit non-zero values pass through the global clamp
     // only.
-    let effective_parallelism = resolve_parallelism_for_langs(parallelism, &needed_langs);
+    let effective_parallelism =
+        resolve_parallelism_for_langs(parallelism, &needed_langs, parallelism_bounds);
 
     // Dry run: show the full exploration plan without executing.
     if dry_run {

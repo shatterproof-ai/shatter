@@ -214,6 +214,19 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<usize>,
 
+    /// Override the lower bound of the global parallelism clamp (built-in
+    /// default: 4). Useful on tiny CI runners that need a lower floor than
+    /// the built-in default. See str-v01r.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism_min: Option<usize>,
+
+    /// Override the upper bound of the global parallelism clamp (built-in
+    /// default: 16). Useful on large dedicated machines with tuned
+    /// `GOMAXPROCS` that can safely run more than 16 concurrent frontends.
+    /// See str-v01r.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism_max: Option<usize>,
+
     /// Output preferences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputConfig>,
@@ -2835,6 +2848,8 @@ defaults:
                 "timeout_total": 600,
                 "exec_timeout": 15,
                 "parallelism": 4,
+                "parallelism_min": 2,
+                "parallelism_max": 32,
                 "output": {
                     "format": "json",
                     "paths": ["reports/scan.html"],
@@ -2853,6 +2868,8 @@ defaults:
             assert_eq!(config.timeout_total, Some(600));
             assert_eq!(config.exec_timeout, Some(15));
             assert_eq!(config.parallelism, Some(4));
+            assert_eq!(config.parallelism_min, Some(2));
+            assert_eq!(config.parallelism_max, Some(32));
             assert_eq!(config.capture_side_effects, Some(true));
             assert_eq!(config.no_cache, Some(true));
             assert_eq!(
@@ -2915,6 +2932,8 @@ defaults:
                 timeout_total: Some(600),
                 exec_timeout: Some(15),
                 parallelism: Some(4),
+                parallelism_min: Some(2),
+                parallelism_max: Some(32),
                 output: Some(OutputConfig {
                     format: Some("json".to_string()),
                     paths: vec![std::path::PathBuf::from("report.html")],
@@ -3501,12 +3520,16 @@ mod config_proptests {
             timeout_total in proptest::option::of(1u64..3600),
             exec_timeout in proptest::option::of(1u64..120),
             parallelism in proptest::option::of(0usize..64),
+            parallelism_min in proptest::option::of(1usize..64),
+            parallelism_max in proptest::option::of(1usize..64),
             capture in proptest::option::of(proptest::bool::ANY),
         ) {
             let config = super::ProjectConfig {
                 timeout_total,
                 exec_timeout,
                 parallelism,
+                parallelism_min,
+                parallelism_max,
                 capture_side_effects: capture,
                 ..Default::default()
             };

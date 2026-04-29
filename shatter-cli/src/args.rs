@@ -522,6 +522,17 @@ pub(crate) enum CliCommand {
         #[arg(long, short = 'w', default_value_t = 0, alias = "jobs")]
         workers: usize,
 
+        /// Override the lower bound of the parallelism clamp (built-in
+        /// default: 4). Useful on tiny CI runners. See str-v01r.
+        #[arg(long)]
+        parallelism_min: Option<usize>,
+
+        /// Override the upper bound of the parallelism clamp (built-in
+        /// default: 16). Useful on large dedicated machines with tuned
+        /// `GOMAXPROCS`. See str-v01r.
+        #[arg(long)]
+        parallelism_max: Option<usize>,
+
         /// Finalize a previous explore run from saved artifacts on disk.
         /// Skips exploration and produces reports/specs from saved per-function
         /// result files. Use when a prior run wrote artifacts but crashed before
@@ -713,6 +724,19 @@ pub(crate) enum CliCommand {
         /// Overridden by shatter.config.json when not explicitly set.
         #[arg(long)]
         parallelism: Option<usize>,
+
+        /// Override the lower bound of the parallelism clamp (built-in
+        /// default: 4). Useful on tiny CI runners. May also be set via
+        /// `parallelism_min` in shatter.config.json.
+        #[arg(long)]
+        parallelism_min: Option<usize>,
+
+        /// Override the upper bound of the parallelism clamp (built-in
+        /// default: 16). Useful on large dedicated machines with tuned
+        /// `GOMAXPROCS`. May also be set via `parallelism_max` in
+        /// shatter.config.json.
+        #[arg(long)]
+        parallelism_max: Option<usize>,
 
         /// Path to a mock configuration YAML file.
         #[arg(long)]
@@ -2007,6 +2031,70 @@ mod tests {
                 assert!(!no_replay);
             }
             _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_parallelism_overrides() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "scan",
+            "--parallelism-min",
+            "2",
+            "--parallelism-max",
+            "32",
+            "src/",
+        ]);
+        match cli.command {
+            CliCommand::Scan {
+                parallelism_min,
+                parallelism_max,
+                ..
+            } => {
+                assert_eq!(parallelism_min, Some(2));
+                assert_eq!(parallelism_max, Some(32));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_explore_with_parallelism_overrides() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--parallelism-min",
+            "2",
+            "--parallelism-max",
+            "32",
+            "test.ts:foo",
+        ]);
+        match cli.command {
+            CliCommand::Explore {
+                parallelism_min,
+                parallelism_max,
+                ..
+            } => {
+                assert_eq!(parallelism_min, Some(2));
+                assert_eq!(parallelism_max, Some(32));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_scan_parallelism_overrides_default_to_none() {
+        let cli = Cli::parse_from(["shatter", "scan", "src/"]);
+        match cli.command {
+            CliCommand::Scan {
+                parallelism_min,
+                parallelism_max,
+                ..
+            } => {
+                assert_eq!(parallelism_min, None);
+                assert_eq!(parallelism_max, None);
+            }
+            _ => panic!("expected Scan command"),
         }
     }
 
