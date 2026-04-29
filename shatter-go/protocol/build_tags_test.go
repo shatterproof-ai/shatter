@@ -144,3 +144,40 @@ func GatedFunc() int { return 42 }
 		t.Errorf("function name = %q, want %q", results[0].Name, "GatedFunc")
 	}
 }
+
+// TestParseGoflagsTags exercises the GOFLAGS shapes the Go toolchain
+// accepts: -tags=foo, --tags=foo, -tags foo, comma-separated lists, and
+// mixes interleaved with unrelated flags. Empty entries and whitespace are
+// handled the same way the toolchain does so that the analyzer's
+// build-tag guard stays consistent with go list's own parsing.
+func TestParseGoflagsTags(t *testing.T) {
+	cases := []struct {
+		name     string
+		goflags  string
+		expected []string
+	}{
+		{name: "empty", goflags: "", expected: nil},
+		{name: "single equals", goflags: "-tags=alpha", expected: []string{"alpha"}},
+		{name: "double-dash equals", goflags: "--tags=alpha", expected: []string{"alpha"}},
+		{name: "bare flag", goflags: "-tags alpha", expected: []string{"alpha"}},
+		{name: "comma list", goflags: "-tags=alpha,beta", expected: []string{"alpha", "beta"}},
+		{name: "with other flags", goflags: "-mod=vendor -tags=alpha,beta -count=1", expected: []string{"alpha", "beta"}},
+		{name: "drops empty entries", goflags: "-tags=,alpha,,beta,", expected: []string{"alpha", "beta"}},
+		{name: "no tag flag", goflags: "-mod=vendor -count=1", expected: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseGoflagsTags(tc.goflags)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("len(parseGoflagsTags(%q)) = %d (%v), want %d (%v)",
+					tc.goflags, len(got), got, len(tc.expected), tc.expected)
+			}
+			for tagIndex, want := range tc.expected {
+				if got[tagIndex] != want {
+					t.Errorf("parseGoflagsTags(%q)[%d] = %q, want %q",
+						tc.goflags, tagIndex, got[tagIndex], want)
+				}
+			}
+		})
+	}
+}

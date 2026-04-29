@@ -14,6 +14,10 @@ See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) fo
 
 `go.work` multi-module workspaces are honored. The same `go/packages` → `go list` path that handles vendor mode also picks up workspace mode: when a `go.work` file is present in the loader `Dir`'s ancestry (or `GOWORK` is set), cross-module imports between workspace `use` members resolve through `pkg.TypesInfo` without analyzer-side flag plumbing. Regression test: `shatter-go/protocol/goworkspace_test.go`.
 
+### Build Tag Activation (str-jl9r)
+
+Build tags configured via `GOFLAGS=-tags=tag1,tag2` (or via `GOOS` / `GOARCH`) are honored at both analyzer layers. The upfront `isBuildTagExcluded` guard (`protocol/build_tags.go`) builds its `go/build.Context` from `build.Default` extended with tags parsed from `GOFLAGS`, so a file gated on an active tag passes the guard instead of soft-skipping. The `go/packages` loader (`loader/loader.go`) forwards `os.Environ()` as `Env`, so `go list` reads `GOFLAGS=-tags=...` itself and the gated file appears in `pkg.Syntax`. Files gated on tags the user did **not** opt into still surface as `*BuildTagExcludedError` and `not_supported`, consumed by the Rust core's batch_analyze soft-skip path (str-8amu). No protocol field is added; the env-knob shape mirrors vendor and go.work precedent. Regression test: `shatter-go/protocol/build_tags_test.go`.
+
 ## Key Files
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
