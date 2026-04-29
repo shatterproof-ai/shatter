@@ -98,3 +98,49 @@ func GatedFunc() int { return 42 }
 		t.Errorf("response message %q does not contain 'build-tag-excluded'", resp.Message)
 	}
 }
+
+// TestAnalyzeFile_BuildTagActiveViaGOFLAGS verifies that when the user sets
+// GOFLAGS=-tags=mytag, a file gated by //go:build mytag is no longer treated
+// as build-tag-excluded and the analyzer returns its functions. This is the
+// str-jl9r entry point: build tags configured via the Go toolchain's standard
+// env knob (GOFLAGS) must be honored end-to-end, both by the upfront
+// build-tag-exclusion guard (build.Context.MatchFile) and by the underlying
+// go/packages loader (go list reads GOFLAGS itself).
+func TestAnalyzeFile_BuildTagActiveViaGOFLAGS(t *testing.T) {
+	withEnv(t, "GOFLAGS", "-tags=mytag")
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"),
+		[]byte("module example.com/buildtagactive\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	defaultSource := `package buildtagactive
+
+func Default() int { return 1 }
+`
+	if err := os.WriteFile(filepath.Join(moduleRoot, "default.go"),
+		[]byte(defaultSource), 0o644); err != nil {
+		t.Fatalf("write default.go: %v", err)
+	}
+	gatedSource := `//go:build mytag
+
+package buildtagactive
+
+func GatedFunc() int { return 42 }
+`
+	gatedFile := filepath.Join(moduleRoot, "gated.go")
+	if err := os.WriteFile(gatedFile, []byte(gatedSource), 0o644); err != nil {
+		t.Fatalf("write gated.go: %v", err)
+	}
+
+	results, err := AnalyzeFile(gatedFile, "GatedFunc")
+	if err != nil {
+		t.Fatalf("AnalyzeFile with GOFLAGS=-tags=mytag: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (GatedFunc should be visible when its tag is active)", len(results))
+	}
+	if results[0].Name != "GatedFunc" {
+		t.Errorf("function name = %q, want %q", results[0].Name, "GatedFunc")
+	}
+}
