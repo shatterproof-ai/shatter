@@ -6,6 +6,10 @@ Go language frontend. Go binary subprocess implementing the JSON-over-stdio prot
 
 See [`docs/go-frontend-scope-limits.md`](../docs/go-frontend-scope-limits.md) for what the Go frontend does and does not analyze, and which limits are deferred vs. permanent.
 
+### Vendor Resolution (str-nm5e)
+
+`vendor/` directories are honored. The analyzer loads packages via `golang.org/x/tools/go/packages`, which delegates to `go list`; with `vendor/modules.txt` present and consistent with `go.mod`, the toolchain selects `-mod=vendor` automatically and vendored dependencies populate `pkg.TypesInfo`. No analyzer-side flag plumbing is required. Regression test: `shatter-go/protocol/vendor_test.go`.
+
 ## Key Files
 
 - `protocol/handler.go` — Protocol handler, uses `log/slog` for `[shatter-go]` prefixed stderr logging
