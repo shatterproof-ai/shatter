@@ -553,16 +553,37 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 	for _, field := range fn.Type.Params.List {
 		ti := goTypeFromExprWithContext(field.Type, info, fc)
 		for _, name := range field.Names {
-			params = append(params, ParamInfo{
+			param := ParamInfo{
 				Name: name.Name,
 				Type: ti,
-			})
+			}
+			if typeParamName := typeParamTypeName(field.Type, info); typeParamName != "" {
+				param.TypeName = &typeParamName
+			}
+			params = append(params, param)
 		}
 	}
 	if params == nil {
 		return []ParamInfo{}
 	}
 	return params
+}
+
+func typeParamTypeName(expr ast.Expr, info *types.Info) string {
+	if info == nil {
+		return ""
+	}
+	if _, ok := expr.(*ast.Ident); !ok {
+		return ""
+	}
+	tv, ok := info.Types[expr]
+	if !ok {
+		return ""
+	}
+	if tp, ok := tv.Type.(*types.TypeParam); ok {
+		return tp.Obj().Name()
+	}
+	return ""
 }
 
 func extractReturnType(fn *ast.FuncDecl, info *types.Info) TypeInfo {

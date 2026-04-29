@@ -25,15 +25,15 @@ const (
 // invocation plan.
 type ValueRequirement struct {
 	// ParamIndex is the zero-based parameter index.
-	ParamIndex int                  `json:"param_index"`
+	ParamIndex int `json:"param_index"`
 	// ParamName is the declared parameter name (may be empty for unnamed params).
-	ParamName  string               `json:"param_name"`
+	ParamName string `json:"param_name"`
 	// TypeName is the Go type string for this parameter (e.g. "int", "*Counter").
-	TypeName   string               `json:"type_name"`
+	TypeName string `json:"type_name"`
 	// Kind classifies the value constraint.
-	Kind       ValueRequirementKind `json:"kind"`
+	Kind ValueRequirementKind `json:"kind"`
 	// Literal is the required literal value when Kind is "specific".
-	Literal    json.RawMessage      `json:"literal,omitempty"`
+	Literal json.RawMessage `json:"literal,omitempty"`
 }
 
 // RuntimeRequirementKind classifies runtime-setup requirements that must be
@@ -52,20 +52,20 @@ const (
 // RuntimeRequirement describes a runtime-setup precondition for an invocation.
 type RuntimeRequirement struct {
 	// Kind classifies the runtime requirement.
-	Kind     RuntimeRequirementKind `json:"kind"`
+	Kind RuntimeRequirementKind `json:"kind"`
 	// TypeName is the type involved in the requirement (e.g. a receiver type).
-	TypeName string                 `json:"type_name,omitempty"`
+	TypeName string `json:"type_name,omitempty"`
 	// Detail is a human-readable explanation of the requirement.
-	Detail   string                 `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // InvocationRequirement is the planner's input for one target. It captures
 // what the planner must satisfy to produce an InvocationPlan.
 type InvocationRequirement struct {
 	// TargetID is the stable target identifier (e.g. "example.com/pkg:Add").
-	TargetID            string               `json:"target_id"`
+	TargetID string `json:"target_id"`
 	// ValueRequirements lists the constraint for each parameter.
-	ValueRequirements   []ValueRequirement   `json:"value_requirements"`
+	ValueRequirements []ValueRequirement `json:"value_requirements"`
 	// RuntimeRequirements lists any runtime-setup preconditions.
 	RuntimeRequirements []RuntimeRequirement `json:"runtime_requirements,omitempty"`
 }
@@ -99,34 +99,37 @@ const (
 // InvocationPlan.
 type ValuePlan struct {
 	// ParamIndex is the zero-based argument position.
-	ParamIndex int             `json:"param_index"`
+	ParamIndex int `json:"param_index"`
 	// ParamName is the declared parameter name (may be empty).
-	ParamName  string          `json:"param_name"`
+	ParamName string `json:"param_name"`
 	// Kind specifies the value production strategy.
-	Kind       ValuePlanKind   `json:"kind"`
+	Kind ValuePlanKind `json:"kind"`
 	// Literal holds the concrete value when Kind is "literal".
-	Literal    json.RawMessage `json:"literal,omitempty"`
+	Literal json.RawMessage `json:"literal,omitempty"`
 	// TypeHint carries the Go type string for code generation.
-	TypeHint   string          `json:"type_hint,omitempty"`
+	TypeHint string `json:"type_hint,omitempty"`
 }
 
 // InvocationPlan is a complete, resolved plan for invoking a target once.
 // It is the primary output of the planner for a satisfiable InvocationRequirement.
 type InvocationPlan struct {
 	// TargetID is the stable target identifier.
-	TargetID      string      `json:"target_id"`
+	TargetID string `json:"target_id"`
 	// ReceiverKind selects how to construct the method receiver.
 	// Use "zero_value" for zero-value construction, "constructor:<FuncName>"
 	// for a named constructor, or "" for free functions.
-	ReceiverKind  string      `json:"receiver_kind"`
+	ReceiverKind string `json:"receiver_kind"`
+	// GenericTypeArgs is the ordered concrete type argument list for generic
+	// targets, matching the target's TypeParams order.
+	GenericTypeArgs []string `json:"generic_type_args,omitempty"`
 	// ArgumentPlans is one ValuePlan per parameter, in declaration order.
 	ArgumentPlans []ValuePlan `json:"argument_plans"`
 	// Priority is the relative ordering of this plan within a plan set.
 	// Lower values are tried first.
-	Priority      int         `json:"priority"`
+	Priority int `json:"priority"`
 	// Label is an optional human-readable name for this plan
 	// (e.g. "zero_args", "constructor_new_counter").
-	Label         string      `json:"label,omitempty"`
+	Label string `json:"label,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +162,9 @@ const (
 // why the planner could not produce an InvocationPlan.
 type UnsatisfiedRequirement struct {
 	// Kind classifies the reason for the planning failure.
-	Kind     UnsatisfiedRequirementKind `json:"kind"`
+	Kind UnsatisfiedRequirementKind `json:"kind"`
 	// TargetID is the target for which planning failed.
-	TargetID string                     `json:"target_id"`
+	TargetID string `json:"target_id"`
 	// Detail is a human-readable explanation of the failure.
-	Detail   string                     `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
