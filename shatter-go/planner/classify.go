@@ -41,7 +41,12 @@ const (
 // Positive classifications follow: adapter_candidate > method > direct_function.
 func Classify(t protocol.DiscoveredTarget) TargetClass {
 	if t.HasTypeParams {
-		return UnsupportedClass{Reason: UnsupportedReasonGenericUnconstrained}
+		if len(t.TypeParams) == 0 {
+			return UnsupportedClass{Reason: UnsupportedReasonGenericUnconstrained}
+		}
+		if _, unsat := PlanGenericTypeArgSets(t.ID, t.TypeParams); unsat != nil {
+			return UnsupportedClass{Reason: UnsupportedReasonGenericUnconstrained}
+		}
 	}
 	if t.Kind == protocol.TargetKindMethod && t.Receiver != nil && t.Receiver.IsInterface {
 		return UnsupportedClass{Reason: UnsupportedReasonInterfaceReceiver}

@@ -189,6 +189,10 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 		switch *p.TypeName {
 		case "[]byte", "[]uint8":
 			return byteSliceFamily(), true
+		case "int64":
+			family := intFamily()
+			family.typeHint = "int64"
+			return family, true
 		}
 	}
 	switch p.Type.Kind {

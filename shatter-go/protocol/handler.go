@@ -512,10 +512,10 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 }
 
 // computePrepareID returns a deterministic 16-hex-char ID derived from the
-// file path, function name, sorted mock symbols, and receiver_kind. Two
-// callers with different receiver_kind values produce different IDs so that
-// plan-aware callers can pre-build the right wrapper-case launcher (str-oegu).
-func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string) string {
+// file path, function name, sorted mock symbols, receiver_kind, and
+// generic_type_args. Two callers with different plan dispatch values produce
+// different IDs so plan-aware callers can pre-build the right wrapper case.
+func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string, genericTypeArgs ...string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
 	symbols := make([]string, len(mocks))
@@ -527,6 +527,9 @@ func computePrepareID(file, function string, mocks []instrument.MockConfig, rece
 		fmt.Fprintf(h, "%s\x00", s)
 	}
 	fmt.Fprintf(h, "%s\x00", receiverKind)
+	for _, arg := range genericTypeArgs {
+		fmt.Fprintf(h, "%s\x00", arg)
+	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -581,12 +584,14 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
 	// callers to pre-build the right wrapper case (str-oegu).
 	receiverKind := ""
+	var genericTypeArgs []string
 	if req.Plan != nil {
 		receiverKind = req.Plan.ReceiverKind
+		genericTypeArgs = append([]string{}, req.Plan.GenericTypeArgs...)
 	}
 
-	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind)
-	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind
+	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind, genericTypeArgs...)
+	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
 
 	// Invalidate stale harness if the same target was prepared with different inputs.
 	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
@@ -614,7 +619,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
-	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", receiverKind)
+	harness, err := h.prepareDirectExecution(file, *req.Function, execMocks, timing, "prepare", receiverKind, genericTypeArgs)
 	finishPrepare()
 	if err != nil {
 		resp.Status = "error"
@@ -786,8 +791,10 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	// caller-provided id would only confuse the launcher's case lookup.
 	// Extract early so lookupPreparedHarness can key on receiver_kind (str-oegu).
 	requestReceiverKind := ""
+	var requestGenericTypeArgs []string
 	if req.Plan != nil {
 		requestReceiverKind = req.Plan.ReceiverKind
+		requestGenericTypeArgs = append([]string{}, req.Plan.GenericTypeArgs...)
 	}
 
 	finishExecute := timing.Start("execute.total")
@@ -801,24 +808,30 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		}
 		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
-			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
+			preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind, requestGenericTypeArgs...)
 		}
 	} else {
-		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind)
+		preparedExec = h.lookupPreparedHarness(file, *req.Function, execMocks, requestReceiverKind, requestGenericTypeArgs...)
 		if preparedExec != nil {
 			h.log.Debug("auto-reusing prepared harness", "file", file, "function", *req.Function)
 		}
 	}
 
 	if preparedExec == nil && err == nil {
-		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind)
+		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind, requestGenericTypeArgs)
 		if err == nil {
 			preparedExec = oneShot
 		}
 	}
 	if err == nil {
 		finishRun := timing.Start("execute.run")
-		result, err = preparedExec.InvokeWithReceiverKind(requestReceiverKind, req.Inputs, capture)
+		if planAware, ok := preparedExec.(interface {
+			InvokeWithPlan(string, []string, []json.RawMessage, bool) (*instrument.ExecuteResult, error)
+		}); ok {
+			result, err = planAware.InvokeWithPlan(requestReceiverKind, requestGenericTypeArgs, req.Inputs, capture)
+		} else {
+			result, err = preparedExec.InvokeWithReceiverKind(requestReceiverKind, req.Inputs, capture)
+		}
 		finishRun()
 	}
 	finishExecute()
@@ -1101,8 +1114,8 @@ func convertSideEffects(effects []instrument.SideEffect) []SideEffect {
 
 // lookupPreparedHarness checks if a prepared harness already exists for the
 // given file, function, mock configuration, and receiver kind (str-oegu).
-func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig, receiverKind string) preparedExecution {
-	prepareID := computePrepareID(file, function, mocks, receiverKind)
+func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrument.MockConfig, receiverKind string, genericTypeArgs ...string) preparedExecution {
+	prepareID := computePrepareID(file, function, mocks, receiverKind, genericTypeArgs...)
 	harness, ok := h.preparedHarnesses[prepareID]
 	if !ok {
 		return nil
@@ -1112,7 +1125,7 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
 		harness.Cleanup()
 		delete(h.preparedHarnesses, prepareID)
-		targetKey := file + "\x00" + function + "\x00" + receiverKind
+		targetKey := file + "\x00" + function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
 		if h.preparedTargets[targetKey] == prepareID {
 			delete(h.preparedTargets, targetKey)
 		}
@@ -1355,14 +1368,12 @@ func (h *Handler) lookupAnalyzedLocation(targetID string) (*FunctionAnalysis, st
 // resolves a target_id into a TargetContext suitable for both the free-
 // function and the receiver-aware planner paths.
 //
-// For free functions only Analysis is populated; the planner takes the legacy
-// parameter-only path. For method targets the handler additionally rebuilds
-// the Go-internal DiscoveredTarget (carrying Receiver shape and HasTypeParams)
-// from the parsed package and scans same-package constructor candidates whose
-// TargetType matches the receiver type. The DiscoveredTarget is not on the
-// wire (FunctionAnalysis is the wire shape — and the analyzer emits bare
-// `fn.Name.Name`, which doesn't expose method-vs-function on its own);
-// building DiscoveredTarget here is the only way to recover that distinction.
+// The handler rebuilds the Go-internal DiscoveredTarget from the parsed
+// package for both free functions and methods so the planner can read generic
+// type parameters, receiver shape, and HasTypeParams. For method targets it
+// also scans same-package constructor candidates whose TargetType matches the
+// receiver type. FunctionAnalysis is the wire shape, and it does not expose
+// enough target metadata for receiver or generic planning on its own.
 //
 // On any error (cache miss, package load failure, FuncDecl not found in pkg)
 // the returned TargetContext omits Target and Constructors; the planner then
@@ -1392,12 +1403,6 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 
 	fn := findFuncDeclByBareName(pkg, analysis.Name)
 	if fn == nil {
-		return ctx
-	}
-
-	// Only methods need DiscoveredTarget + Constructors. Free functions
-	// take the legacy path with Analysis-only context.
-	if fn.Recv == nil || len(fn.Recv.List) == 0 {
 		return ctx
 	}
 

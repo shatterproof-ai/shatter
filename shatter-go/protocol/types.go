@@ -30,26 +30,33 @@ type ReceiverShape struct {
 	IsInterface bool   `json:"is_interface,omitempty"`
 }
 
+// TypeParamInfo describes one generic type parameter declared by a target.
+type TypeParamInfo struct {
+	Name       string `json:"name"`
+	Constraint string `json:"constraint"`
+}
+
 // DiscoveredTarget is a single invocation target found during package analysis.
 // IDs are stable across repeated analysis runs: each ID is derived from the
 // package path and the qualified symbol name only.
 type DiscoveredTarget struct {
-	ID            string         `json:"id"`
-	PackagePath   string         `json:"package_path"`
-	PackageName   string         `json:"package_name"`
-	FilePath      string         `json:"file_path"`
-	StartLine     int            `json:"start_line"`
-	EndLine       int            `json:"end_line"`
-	SymbolName    string         `json:"symbol_name"`
-	QualifiedName string         `json:"qualified_name"`
-	Kind          TargetKind     `json:"kind"`
-	Receiver      *ReceiverShape `json:"receiver,omitempty"`
-	Parameters    []ParamInfo    `json:"parameters"`
-	Results       []TypeInfo     `json:"results"`
-	Visibility    string         `json:"visibility"`
-	HasTypeParams bool           `json:"has_type_params,omitempty"`
-	HasCGoDep     bool           `json:"has_cgo_dep,omitempty"`
-	IsTestFile    bool           `json:"is_test_file,omitempty"`
+	ID            string          `json:"id"`
+	PackagePath   string          `json:"package_path"`
+	PackageName   string          `json:"package_name"`
+	FilePath      string          `json:"file_path"`
+	StartLine     int             `json:"start_line"`
+	EndLine       int             `json:"end_line"`
+	SymbolName    string          `json:"symbol_name"`
+	QualifiedName string          `json:"qualified_name"`
+	Kind          TargetKind      `json:"kind"`
+	Receiver      *ReceiverShape  `json:"receiver,omitempty"`
+	Parameters    []ParamInfo     `json:"parameters"`
+	Results       []TypeInfo      `json:"results"`
+	Visibility    string          `json:"visibility"`
+	TypeParams    []TypeParamInfo `json:"type_params,omitempty"`
+	HasTypeParams bool            `json:"has_type_params,omitempty"`
+	HasCGoDep     bool            `json:"has_cgo_dep,omitempty"`
+	IsTestFile    bool            `json:"is_test_file,omitempty"`
 }
 
 // ConstructorCandidate is a function inferred to construct a same-package type.

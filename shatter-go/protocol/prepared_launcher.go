@@ -49,7 +49,10 @@ type preparedLauncher struct {
 	// this at prepare time; for free functions it's "", for method-aware
 	// callers it can be e.g. "constructor:New".
 	DefaultReceiverKind string
-	DiscDeps            []instrument.DiscoveredDependency
+	// DefaultGenericTypeArgs is the generic_type_args list used by Invoke and
+	// by InvokeWithPlan when the override is empty.
+	DefaultGenericTypeArgs []string
+	DiscDeps               []instrument.DiscoveredDependency
 
 	mu      sync.Mutex
 	session *launcher.LauncherSession
@@ -107,13 +110,23 @@ func (p *preparedLauncher) Invoke(inputs []json.RawMessage, capture bool) (*inst
 // launcher; mismatched target_ids would otherwise hit the wrapper's
 // "shatter: unknown target" error path.
 func (p *preparedLauncher) InvokeWithReceiverKind(receiverKind string, inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error) {
+	return p.InvokeWithPlan(receiverKind, nil, inputs, capture)
+}
+
+func (p *preparedLauncher) InvokeWithPlan(receiverKind string, genericTypeArgs []string, inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error) {
 	rk := receiverKind
 	if rk == "" {
 		rk = p.DefaultReceiverKind
 	}
-	planJSON, err := json.Marshal(map[string]string{
-		"target_id":     p.TargetID,
-		"receiver_kind": rk,
+	typeArgs := genericTypeArgs
+	if len(typeArgs) == 0 && len(p.DefaultGenericTypeArgs) > 0 {
+		typeArgs = p.DefaultGenericTypeArgs
+	}
+	planJSON, err := json.Marshal(InvocationPlan{
+		TargetID:        p.TargetID,
+		ReceiverKind:    rk,
+		GenericTypeArgs: append([]string{}, typeArgs...),
+		ArgumentPlans:   []ValuePlan{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal launcher plan: %w", err)
@@ -181,18 +194,12 @@ func (p *preparedLauncher) closeSessionLocked() {
 }
 
 // prepareDirectExecution builds a launcher binary and returns a
-// preparedLauncher whose DefaultPlanJSON encodes the supplied
-// defaultReceiverKind. Callers that omit receiverKind (pass "") get the
-// legacy free-function plan; method-aware callers should pass the
-// receiver_kind they expect Invoke to dispatch with by default. Per-Invoke
-// overrides via InvokeWithPlan still work regardless of the default —
-// the launcher binary is receiver-kind-agnostic.
-//
-// Note: the prepare cache key (computePrepareID) deliberately does NOT
-// include defaultReceiverKind because the launcher binary itself is
-// receiver-kind-independent. Caching across receiver strategies is
-// correct and avoids unnecessary rebuilds when a target is invoked
-// with multiple receiver_kind values.
+// preparedLauncher carrying the supplied default receiver_kind and
+// generic_type_args. Callers that omit both defaults get the legacy
+// free-function plan; plan-aware callers should pass the receiver and generic
+// arguments they expect Invoke to dispatch with by default. Per-Invoke
+// overrides via InvokeWithPlan still work regardless of the defaults because
+// the launcher binary is receiver-kind and generic-type-arg agnostic.
 func (h *Handler) prepareDirectExecution(
 	file string,
 	function string,
@@ -200,6 +207,7 @@ func (h *Handler) prepareDirectExecution(
 	timing *frontendtiming.Collector,
 	phasePrefix string,
 	defaultReceiverKind string,
+	defaultGenericTypeArgs []string,
 ) (*preparedLauncher, error) {
 	absoluteFilePath, err := filepath.Abs(file)
 	if err != nil {
@@ -238,10 +246,11 @@ func (h *Handler) prepareDirectExecution(
 	}
 
 	return &preparedLauncher{
-		BinaryPath:          result.BinaryPath,
-		TargetID:            targetID,
-		DefaultReceiverKind: defaultReceiverKind,
-		DiscDeps:            instrument.DiscoverDependencies(absoluteFilePath, mocks),
+		BinaryPath:             result.BinaryPath,
+		TargetID:               targetID,
+		DefaultReceiverKind:    defaultReceiverKind,
+		DefaultGenericTypeArgs: append([]string{}, defaultGenericTypeArgs...),
+		DiscDeps:               instrument.DiscoverDependencies(absoluteFilePath, mocks),
 	}, nil
 }
 
