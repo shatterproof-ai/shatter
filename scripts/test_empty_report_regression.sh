@@ -3,11 +3,11 @@
 #
 # Runs `shatter explore` on the internal-method fixture, which is a Go package
 # whose go.mod is intentionally out of sync (go mod tidy not run). The frontend
-# cannot instrument the package, so the explore should:
+# may fail during build or runtime execution, so the explore should:
 #
 #   1. Produce a non-empty markdown report.
 #   2. Include the target function's name in the report.
-#   3. Report an outcome status of one of: build_failed, unsupported, runtime_failed.
+#   3. Report an honest failure status or thrown runtime error.
 #
 # This test guards against a regression where a failed instrumentation/build
 # silently emitted an empty or placeholder report rather than an honest failure
@@ -77,12 +77,12 @@ if ! grep -q "$FUNCTION_NAME" "$REPORT"; then
     exit 1
 fi
 
-# --- Assertion 3: report contains one of the expected failure status labels ---
-if ! grep -qE '`(build_failed|unsupported|runtime_failed)`' "$REPORT"; then
-    echo "[FAIL] a4: report does not contain one of {build_failed, unsupported, runtime_failed}" >&2
+# --- Assertion 3: report contains an expected failure status or thrown error ---
+if ! grep -qE '`(build_failed|unsupported|runtime_failed)`|throws `function_error:' "$REPORT"; then
+    echo "[FAIL] a4: report does not contain an expected failure status or thrown runtime error" >&2
     echo "       report contents:" >&2
     cat "$REPORT" >&2
     exit 1
 fi
 
-echo "[ok] a4: empty-report regression — report non-empty, contains '$FUNCTION_NAME', outcome is a failure status"
+echo "[ok] a4: empty-report regression — report non-empty, contains '$FUNCTION_NAME', outcome is an honest failure"
