@@ -22,9 +22,16 @@ Multi-module workspaces (`go.work` listing multiple `use` members, each with its
 
 ## Build tags
 
-**Deferred.** Tracked: `str-jl9r` — *Go frontend: build-tag-aware analysis*.
+**Implemented.** Closed: `str-jl9r`.
 
-Files are parsed with default tags only. Functions or function bodies that are conditional on build tags (e.g., `//go:build linux`, `//go:build integration`) are either invisible or analyzed under the wrong configuration. Fixing this requires threading a tag set through the analyzer, through the harness builder, and through the parity matrix so consumers can see which tag combination was used.
+Build tags are honored end-to-end via the user's standard Go toolchain env. Setting `GOFLAGS=-tags=tag1,tag2` (or `GOOS`/`GOARCH`) in the environment that launches the Go frontend opts those tags into both layers of the analyzer's tag handling:
+
+1. The **upfront build-tag-exclusion guard** (`build.Context.MatchFile` in `shatter-go/protocol/build_tags.go`) extends `build.Default.BuildTags` with the value parsed out of `GOFLAGS=-tags=...` so a file gated on an active tag is no longer pre-flagged as `BuildTagExcludedError` / `not_supported`.
+2. The **`go/packages` loader** (`shatter-go/loader/loader.go`) passes `os.Environ()` as the load `Env`, so `go list` itself reads `GOFLAGS=-tags=...` and emits the file in `pkg.Syntax` / `pkg.GoFiles` for the analyzer to walk.
+
+Files gated on tags the user did **not** opt into still surface as `*BuildTagExcludedError` from the analyzer and `not_supported` from the handler, which is what the Rust core's `batch_analyze` path soft-skips (see str-8amu). No protocol-visible knob is added — the env-knob shape matches the precedent set by vendor (`str-nm5e`) and `go.work` (`str-b66s`) where the toolchain already provides the configuration surface.
+
+Regression coverage lives in `shatter-go/protocol/build_tags_test.go`, including a `GOFLAGS=-tags=mytag` activation case and unit coverage of the `GOFLAGS` parser for the `-tags=` / `--tags=` / bare-flag forms.
 
 ## cgo
 
