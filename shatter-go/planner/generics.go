@@ -119,6 +119,40 @@ func PlanGenericInstantiations(targetID, typeParamName, constraint string) ([]Ge
 	return insts, nil
 }
 
+// PlanGenericTypeArgSets returns the ordered concrete type-argument tuples for
+// a target's type parameters. Non-generic targets return one empty tuple so
+// callers can treat generic and non-generic planning uniformly.
+func PlanGenericTypeArgSets(targetID string, typeParams []protocol.TypeParamInfo) ([][]GenericTypeName, *protocol.UnsatisfiedRequirement) {
+	if len(typeParams) == 0 {
+		return [][]GenericTypeName{{}}, nil
+	}
+
+	sets := [][]GenericTypeName{{}}
+	for _, tp := range typeParams {
+		insts, unsat := PlanGenericInstantiations(targetID, tp.Name, tp.Constraint)
+		if unsat != nil {
+			return nil, unsat
+		}
+		if len(insts) == 0 {
+			return nil, &protocol.UnsatisfiedRequirement{
+				Kind:     protocol.UnsatisfiedRequirementKindGenericUnconstrained,
+				TargetID: targetID,
+				Detail:   genericUnsupportedDetail(tp.Name, tp.Constraint),
+			}
+		}
+
+		next := make([][]GenericTypeName, 0, len(sets)*len(insts))
+		for _, prefix := range sets {
+			for _, inst := range insts {
+				tuple := append(append([]GenericTypeName{}, prefix...), inst.TypeName)
+				next = append(next, tuple)
+			}
+		}
+		sets = next
+	}
+	return sets, nil
+}
+
 // genericUnsupportedDetail formats the human-readable reason emitted on
 // UnsatisfiedRequirement.Detail for an unrecognized constraint. The detail
 // names both the type parameter and the offending constraint so the operator

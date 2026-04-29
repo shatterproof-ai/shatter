@@ -128,10 +128,15 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		}
 	}
 	if t.HasTypeParams {
-		return nil, &protocol.UnsatisfiedRequirement{
-			Kind:     protocol.UnsatisfiedRequirementKindGenericUnconstrained,
-			TargetID: t.ID,
-			Detail:   "method has unconstrained type parameters",
+		if len(t.TypeParams) == 0 {
+			return nil, &protocol.UnsatisfiedRequirement{
+				Kind:     protocol.UnsatisfiedRequirementKindGenericUnconstrained,
+				TargetID: t.ID,
+				Detail:   "method has type parameters but no constraints were discovered",
+			}
+		}
+		if _, unsat := PlanGenericTypeArgSets(t.ID, t.TypeParams); unsat != nil {
+			return nil, unsat
 		}
 	}
 
