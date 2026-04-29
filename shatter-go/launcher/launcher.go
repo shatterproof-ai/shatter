@@ -92,6 +92,11 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, fmt.Errorf("launcher: TargetImportPath must not be empty")
 	}
 
+	launcherModuleName, err := computeLauncherModuleName(opts.TargetModulePath, opts.TargetImportPath, opts.DiscoveryHash)
+	if err != nil {
+		return "", false, err
+	}
+
 	binaryName := "shatter_launcher_" + opts.DiscoveryHash
 	if runtime.GOOS == "windows" {
 		binaryName += ".exe"
@@ -134,7 +139,7 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	}
 
 	goMod := buildLauncherGoMod(
-		"shatter-launcher-"+opts.DiscoveryHash,
+		launcherModuleName,
 		opts.TargetModulePath,
 		opts.TargetModuleDir,
 		opts.UseHarnessLoop,
@@ -171,6 +176,30 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	}
 
 	return binaryPath, true, nil
+}
+
+func computeLauncherModuleName(targetModulePath, targetImportPath, discoveryHash string) (string, error) {
+	if targetImportPath != targetModulePath && !strings.HasPrefix(targetImportPath, targetModulePath+"/") {
+		return "", fmt.Errorf(
+			"launcher: target import path %q is outside target module %q",
+			targetImportPath,
+			targetModulePath,
+		)
+	}
+
+	anchorPath := targetModulePath
+	segments := strings.Split(targetImportPath, "/")
+	deepestInternalIndex := -1
+	for index, segment := range segments {
+		if segment == "internal" {
+			deepestInternalIndex = index
+		}
+	}
+	if deepestInternalIndex > 0 {
+		anchorPath = strings.Join(segments[:deepestInternalIndex], "/")
+	}
+
+	return anchorPath + "/shatter_launcher_" + discoveryHash, nil
 }
 
 func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool, err error) {
