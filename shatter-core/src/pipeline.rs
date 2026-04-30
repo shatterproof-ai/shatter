@@ -780,6 +780,15 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             }
         }
 
+        // str-gz8j: lift the orchestrator's per-function timeout signal into
+        // ObservationOutput.timed_out so the CLI explore command can route
+        // the function into the TimedOut bucket instead of treating it as
+        // Completed. Other termination reasons (worklist exhausted, plateau,
+        // max-iterations, etc.) are normal completions.
+        let timed_out = matches!(
+            r.termination_reason,
+            crate::orchestrator::TerminationReason::TimeoutExplore
+        );
         Self {
             function_name: r.function_name,
             iterations: r.total_executions as u32,
@@ -798,6 +807,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             abandoned_frontiers: r.abandoned_frontiers,
             opaque_suggestions: r.opaque_suggestions,
             stubbed_modules: r.stubbed_modules,
+            timed_out,
         }
     }
 }
@@ -899,6 +909,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -932,6 +943,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -1013,6 +1025,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -1055,6 +1068,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -1087,6 +1101,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -1121,6 +1136,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -1155,6 +1171,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -1226,6 +1243,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -1271,6 +1289,51 @@ mod tests {
         assert_eq!(output.unique_paths, 2);
         assert_eq!(output.total_lines, 10);
         assert_eq!(output.discoveries.len(), 1);
+        // str-gz8j: WorklistExhausted is a normal termination, not a timeout.
+        assert!(
+            !output.timed_out,
+            "WorklistExhausted should not flag the observation as timed_out"
+        );
+    }
+
+    /// str-gz8j: per-function timeout signal must propagate from
+    /// `ExploreResult.termination_reason` into `ObservationOutput.timed_out`
+    /// so the CLI explore command can downgrade the function's outcome to
+    /// `OutcomeStatus::TimedOut` instead of silently labelling it
+    /// `Completed`. Concolic-path side of the parallel pair.
+    #[test]
+    fn observation_output_from_concolic_result_marks_timed_out_on_timeout_termination() {
+        let concolic = crate::orchestrator::ExploreResult {
+            function_name: "slow".into(),
+            total_lines: 5,
+            executions: vec![],
+            unique_paths: 0,
+            total_executions: 3,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            termination_reason: crate::orchestrator::TerminationReason::TimeoutExplore,
+            raw_results: vec![],
+            discoveries: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+        };
+        let output: ObservationOutput = concolic.into();
+        assert!(
+            output.timed_out,
+            "TerminationReason::TimeoutExplore must propagate as ObservationOutput.timed_out=true"
+        );
     }
 
     // ---- Solve stage tests ----
@@ -1302,6 +1365,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         ObserveStageOutput {
             observation,
@@ -1839,6 +1903,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis(name, branch_count);

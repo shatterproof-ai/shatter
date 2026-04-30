@@ -701,6 +701,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis(name, branch_count);
@@ -1057,6 +1058,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let observe = ObserveStageOutput {

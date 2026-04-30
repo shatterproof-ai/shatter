@@ -909,6 +909,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            ..Default::default()
         }
     }
 

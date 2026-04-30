@@ -812,6 +812,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1483,6 +1484,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1546,6 +1548,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("fn1", &result);

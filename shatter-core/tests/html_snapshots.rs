@@ -121,6 +121,7 @@ fn make_observation_output() -> ObservationOutput {
         abandoned_frontiers: vec![],
         opaque_suggestions: vec![],
         stubbed_modules: vec![],
+    ..Default::default()
     }
 }
 
@@ -183,6 +184,7 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
                 abandoned_frontiers: vec![],
                 opaque_suggestions: vec![],
                 stubbed_modules: vec![],
+                            ..Default::default()
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),

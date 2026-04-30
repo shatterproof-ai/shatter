@@ -1144,6 +1144,7 @@ mod tests {
                 abandoned_frontiers: vec![],
                 opaque_suggestions: vec![],
                 stubbed_modules: vec![],
+                            ..Default::default()
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -2039,6 +2040,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
         assert!(fragment.contains("myFunc"), "must contain function name");
