@@ -780,6 +780,15 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             }
         }
 
+        // str-gz8j: lift the orchestrator's per-function timeout signal into
+        // ObservationOutput.timed_out so the CLI explore command can route
+        // the function into the TimedOut bucket instead of treating it as
+        // Completed. Other termination reasons (worklist exhausted, plateau,
+        // max-iterations, etc.) are normal completions.
+        let timed_out = matches!(
+            r.termination_reason,
+            crate::orchestrator::TerminationReason::TimeoutExplore
+        );
         Self {
             function_name: r.function_name,
             iterations: r.total_executions as u32,
@@ -798,6 +807,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             abandoned_frontiers: r.abandoned_frontiers,
             opaque_suggestions: r.opaque_suggestions,
             stubbed_modules: r.stubbed_modules,
+            timed_out,
         }
     }
 }
@@ -899,6 +909,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -932,6 +943,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -1013,6 +1025,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -1055,6 +1068,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -1087,6 +1101,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -1121,6 +1136,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -1155,6 +1171,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -1226,6 +1243,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -1347,6 +1365,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         ObserveStageOutput {
             observation,
@@ -1884,6 +1903,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
 
         let analysis = stub_analysis(name, branch_count);

@@ -2595,6 +2595,7 @@ fn merge_replica_results(
         abandoned_frontiers: vec![],
         opaque_suggestions: vec![],
         stubbed_modules: merged_stubbed,
+            ..Default::default()
     };
 
     let analyze_out = analyze_exploration(&merged_exploration, analysis, fingerprint);
@@ -4496,6 +4497,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
+                                            ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -4529,6 +4531,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
+                                            ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -4586,6 +4589,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -4623,6 +4627,7 @@ mod tests {
                     total_lines: 5,
                     new_path_executions: vec![],
                     raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -4673,6 +4678,7 @@ mod tests {
                     total_lines: 5,
                     new_path_executions: vec![],
                     raw_results: vec![], discoveries: vec![], nondeterministic_fields: vec![], float_probe_results: vec![], boundary_results: vec![], shrunk_witnesses: std::collections::HashMap::new(), mcdc_summary: None, shrink_stats: crate::shrink::ShrinkStats::default(), abandoned_frontiers: vec![], opaque_suggestions: vec![], stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "good_func".into(),
@@ -4738,6 +4744,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -4784,6 +4791,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -4837,6 +4845,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -4957,6 +4966,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -5015,6 +5025,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
+                                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -7856,6 +7867,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let analysis = make_analysis(func_name, vec![]);
         let analyze_out = analyze_exploration(&exploration, &analysis, None);
@@ -8342,6 +8354,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
+                                            ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -8375,6 +8388,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
+                                            ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -9255,6 +9269,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            ..Default::default()
         }
     }
 
@@ -9459,6 +9474,7 @@ mod proptests_uncovered {
                 abandoned_frontiers: vec![],
                 opaque_suggestions: vec![],
                 stubbed_modules: vec![],
+                            ..Default::default()
             };
 
             let mut result = compute_uncovered_branch_strings(&analysis, &observation);

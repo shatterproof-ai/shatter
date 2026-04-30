@@ -237,7 +237,7 @@ pub struct ExecutionSummary {
 /// Captures everything produced by either random or concolic exploration:
 /// discovered paths, line coverage, raw execution results, and per-branch
 /// discovery attribution. Used as the input to the Analyze pipeline stage.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ObservationOutput {
     /// Name of the explored function.
     pub function_name: String,
@@ -288,6 +288,16 @@ pub struct ObservationOutput {
     /// **partially analyzed** — coverage may be limited.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stubbed_modules: Vec<String>,
+    /// True when exploration ended because the per-function wall-clock
+    /// timeout (`config.timeout_explore`) tripped before the loop reached a
+    /// natural termination (max_iterations, exhausted worklist, plateau).
+    /// Added by str-gz8j so the CLI explore command can surface the
+    /// function as `OutcomeStatus::TimedOut` instead of silently labelling
+    /// it `Completed` — a successful Result with `timed_out=true` means
+    /// "exploration ran out of time mid-flight," not "explored everything."
+    /// `#[serde(default)]` keeps legacy artifacts loadable as `false`.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// Type alias for pipeline composability. `ObserveResult` is the output of
@@ -1053,6 +1063,9 @@ pub async fn explore_function(
         capabilities: config.capabilities.clone(),
     };
     let explore_start = Instant::now();
+    // str-gz8j: track whether the per-function timeout (timeout_explore)
+    // tripped, so the returned ObservationOutput can carry that signal.
+    let mut timed_out_due_to_budget = false;
     let mut last_summary_time = Instant::now();
     let mut effective_budget = config.max_iterations;
     // Track recent path discoveries for surplus claim decisions.
@@ -1100,6 +1113,11 @@ pub async fn explore_function(
         if let Some(timeout) = config.timeout_explore
             && explore_start.elapsed() >= timeout
         {
+            // str-gz8j: record that we exited because of the per-function
+            // timeout, so the surfaced ObservationOutput can be downgraded
+            // to OutcomeStatus::TimedOut by the CLI explore command rather
+            // than masquerading as a clean Completed run.
+            timed_out_due_to_budget = true;
             break;
         }
 
@@ -1521,6 +1539,7 @@ pub async fn explore_function(
         shrunk_witnesses,
         mcdc_summary: None,
         shrink_stats,
+        timed_out: timed_out_due_to_budget,
         abandoned_frontiers: vec![],
         opaque_suggestions,
         stubbed_modules,
@@ -2805,6 +2824,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -2843,6 +2863,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -2882,6 +2903,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -2908,6 +2930,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -2942,6 +2965,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4,
@@ -2994,6 +3018,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -3049,6 +3074,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -3077,6 +3103,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec!["pg".into(), "redis".into()],
+                    ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(
@@ -3113,6 +3140,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(
@@ -3379,6 +3407,67 @@ mod tests {
         assert_eq!(result.function_name, "stub");
         assert_eq!(result.iterations, 3);
         assert_eq!(result.unique_paths, 1);
+        // str-gz8j: a normal max-iterations termination must not flag the
+        // observation as timed out.
+        assert!(
+            !result.timed_out,
+            "max-iterations completion must leave timed_out=false"
+        );
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-gz8j: tripping `timeout_explore` in the random explorer path must
+    /// surface `timed_out=true` on the returned ObservationOutput. Without
+    /// this, the CLI explore command sees only a successful Result and
+    /// labels the function as Completed even though it ran out of budget.
+    #[tokio::test]
+    async fn explore_function_marks_timed_out_when_per_function_timeout_trips() {
+        use std::time::Duration;
+        let mut frontend = spawn_noop_frontend().await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(10_000),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            // 1ms budget is below any practical iteration time on the noop
+            // frontend, so the loop must exit on the timeout branch.
+            timeout_explore: Some(Duration::from_millis(1)),
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("explore_function should still return Ok on per-function timeout");
+        assert!(
+            result.timed_out,
+            "timeout_explore=1ms must surface as ObservationOutput.timed_out=true; \
+             got iterations={}, unique_paths={}, timed_out={}",
+            result.iterations, result.unique_paths, result.timed_out,
+        );
+        // Sanity: the budget should fire well before max_iterations.
+        assert!(
+            result.iterations < 10_000,
+            "expected timeout to stop exploration before max_iterations; iterations={}",
+            result.iterations,
+        );
         frontend.shutdown().await.expect("shutdown failed");
     }
 
@@ -3852,6 +3941,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -3909,6 +3999,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -3973,6 +4064,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
 
@@ -4192,6 +4284,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -4250,6 +4343,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+                    ..Default::default()
         };
         let report = format_exploration_report(
             &result,

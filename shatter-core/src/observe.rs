@@ -442,6 +442,7 @@ pub async fn observe_function(
         abandoned_frontiers: vec![],
         opaque_suggestions: vec![],
         stubbed_modules,
+            ..Default::default()
     })
 }
 

@@ -309,6 +309,7 @@ impl ExploreResultAccumulator {
             abandoned_frontiers: self.abandoned_frontiers,
             opaque_suggestions: self.opaque_suggestions,
             stubbed_modules: stubbed,
+                    ..Default::default()
         })
     }
 }
@@ -935,6 +936,37 @@ fn bucket_counts_from_entries(entries: &[ExploreSummaryEntry]) -> OutcomeBuckets
 /// `total_functions` is the count of work items the explorer scheduled
 /// (post-resume, post-eligibility filtering). `pre_skipped` is the count of
 /// functions the analyzer rejected as unexecutable before scheduling.
+/// Classify a per-function exploration outcome into the (status, reason)
+/// pair persisted in `ExploreSummaryEntry`.
+///
+/// Single source of truth for the str-gz8j rule that a successful
+/// `Result<ObservationOutput>` whose `timed_out` flag is `true` must surface
+/// as `status = "failed"` with an explicit per-function-budget reason — not
+/// as `"completed"` with a silent zero-paths run. Without this downgrade the
+/// `timed_out` bucket added in str-oo31 stays empty for the most common
+/// timeout scenario (orchestrator's per-function timer), and slow functions
+/// are indistinguishable from clean completions.
+///
+/// `wall_time` is the per-function clock used when synthesising the timeout
+/// reason; the caller already tracks it for progress logging, so we reuse
+/// it instead of plumbing the budget separately.
+fn classify_outcome_status(
+    result: &Result<shatter_core::explorer::ObservationOutput, String>,
+    wall_time: Duration,
+) -> (&'static str, Option<String>) {
+    match result {
+        Ok(obs) if obs.timed_out => (
+            "failed",
+            Some(format!(
+                "function timed out after {:.1}s (per-function budget)",
+                wall_time.as_secs_f64()
+            )),
+        ),
+        Ok(_) => ("completed", None),
+        Err(e) => ("failed", Some(e.clone())),
+    }
+}
+
 fn classify_no_target_reason(total_functions: usize, pre_skipped: usize) -> Option<String> {
     if total_functions > 0 {
         return None;
@@ -2791,16 +2823,21 @@ pub(crate) async fn run_explore(
                     Err(err) => (Err(err.to_string()), None),
                 };
                 let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
+                // str-gz8j: keep the live progress line consistent with the
+                // persisted summary status. A timed-out function is reported
+                // as "failed" so users see the timeout in the streaming log,
+                // not a misleading "completed".
+                let progress_status = match &result {
+                    Ok(obs) if obs.timed_out => "failed",
+                    Ok(_) => "completed",
+                    Err(_) => "failed",
+                };
                 emit_explore_progress(
                     &item.func.name,
                     completed,
                     progress_total,
                     func_start.elapsed(),
-                    if result.is_ok() {
-                        "completed"
-                    } else {
-                        "failed"
-                    },
+                    progress_status,
                     emit_progress_json,
                 );
 
@@ -3162,13 +3199,18 @@ pub(crate) async fn run_explore(
                 }
             };
 
-            let summary_status = if outcome.result.is_ok() {
+            // str-gz8j: route through classify_outcome_status so an Ok result
+            // whose ObservationOutput.timed_out is set lands as "failed" with
+            // an explicit per-function-budget reason (and downstream into the
+            // timed_out bucket via outcome_status_from_entry's reason match)
+            // instead of silently looking like a Completed run.
+            let (summary_status, summary_reason) =
+                classify_outcome_status(&outcome.result, outcome.wall_time);
+            if summary_status == "completed" {
                 explore_summary.completed += 1;
-                "completed"
             } else {
                 explore_summary.failed += 1;
-                "failed"
-            };
+            }
             // str-oo31: also bump the precise per-OutcomeStatus bucket and
             // the produced-coverage denominator. The bucket assignment must
             // match `outcome_status_from_entry`, so we route through it
@@ -3177,7 +3219,7 @@ pub(crate) async fn run_explore(
                 function_name: outcome.func.name.clone(),
                 status: summary_status.to_string(),
                 artifact: artifact_relpath.clone(),
-                reason: outcome.result.as_ref().err().cloned(),
+                reason: summary_reason,
                 deep_fingerprint: deep_fingerprints.get(&outcome.func.name).cloned(),
             };
             match outcome_status_from_entry(&bucket_entry) {
@@ -3892,6 +3934,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            ..Default::default()
         }
     }
 
@@ -3933,6 +3976,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: stubbed,
+            ..Default::default()
         }
     }
 
@@ -5460,7 +5504,7 @@ mod tests {
     /// tell *why* a function failed without reading the artifact.
     #[test]
     fn classify_outcome_status_timed_out_observation_becomes_failed_with_explicit_reason() {
-        let mut obs = sample_observation("slowFn");
+        let mut obs = make_named_observation("slowFn");
         obs.timed_out = true;
         let result: Result<shatter_core::explorer::ObservationOutput, String> = Ok(obs);
         let (status, reason) = classify_outcome_status(&result, Duration::from_millis(31_500));
@@ -5497,7 +5541,7 @@ mod tests {
 
     #[test]
     fn classify_outcome_status_normal_completion_stays_completed() {
-        let obs = sample_observation("ok");
+        let obs = make_named_observation("ok");
         let result: Result<shatter_core::explorer::ObservationOutput, String> = Ok(obs);
         let (status, reason) = classify_outcome_status(&result, Duration::from_millis(120));
         assert_eq!(status, "completed");
@@ -5516,7 +5560,7 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("frontend crashed: signal 11"));
     }
 
-    fn sample_observation(name: &str) -> shatter_core::explorer::ObservationOutput {
+    fn make_named_observation(name: &str) -> shatter_core::explorer::ObservationOutput {
         shatter_core::explorer::ObservationOutput {
             function_name: name.to_string(),
             iterations: 1,
