@@ -366,7 +366,20 @@ struct ExploreSummaryEntry {
 }
 
 /// Summary of an entire explore run, written incrementally to enable crash recovery.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Field history:
+/// - `completed` / `failed` / `skipped` are legacy tri-bucket counters retained
+///   for backward compatibility. They equal the sums of the per-`OutcomeStatus`
+///   buckets below: `failed = build_failed + runtime_failed + timed_out`,
+///   `skipped = unsupported + skipped_by_policy`. Readers that only need the
+///   coarse bucketing keep working unchanged.
+/// - The per-`OutcomeStatus` buckets, `produced_coverage`, and
+///   `no_target_reason` were added by str-oo31 so callers can distinguish
+///   build/runtime/timeout failures, expose an executable-coverage denominator
+///   separate from "discovered" or "attempted", and explain why a file
+///   produced no targets. Old artifacts default each new field to its zero
+///   value via serde, so `parse_explore_summary` keeps reading them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ExploreSummary {
     version: u32,
     status: String,
@@ -376,7 +389,57 @@ struct ExploreSummary {
     failed: usize,
     skipped: usize,
     elapsed_secs: f64,
+    /// Functions that returned an `InstrumentationFailed` / "build failed"
+    /// reason from the executor. Subset of the legacy `failed` count.
+    #[serde(default)]
+    build_failed: usize,
+    /// Functions that failed at runtime (panic, thrown error, frontend error)
+    /// without matching the build-failure or timeout reason heuristics.
+    /// Subset of the legacy `failed` count.
+    #[serde(default)]
+    runtime_failed: usize,
+    /// Functions whose execution exceeded the per-function time budget.
+    /// Subset of the legacy `failed` count.
+    #[serde(default)]
+    timed_out: usize,
+    /// Pre-skipped because the analyzer flagged unexecutable parameter types
+    /// (no compatible value generators). Subset of the legacy `skipped`
+    /// count.
+    #[serde(default)]
+    unsupported: usize,
+    /// Skipped by an explicit user/config policy rather than because of an
+    /// unsupported signature. Subset of the legacy `skipped` count.
+    #[serde(default)]
+    skipped_by_policy: usize,
+    /// Functions that produced at least one explored path. The
+    /// "produced-coverage denominator" — distinct from `total_functions`
+    /// (discovered) and from `completed` (no exception, but possibly zero
+    /// paths because the function had no branches to exercise).
+    #[serde(default)]
+    produced_coverage: usize,
+    /// One-line explanation populated only when `total_functions == 0`.
+    /// Surfaces *why* shatter found nothing to attempt for this file, e.g.
+    /// the analyzer returned an empty function list vs. every discovered
+    /// function was filtered out as unexecutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    no_target_reason: Option<String>,
     functions: Vec<ExploreSummaryEntry>,
+}
+
+/// Per-`OutcomeStatus` counts derived from a slice of `ExploreSummaryEntry`.
+///
+/// Keep in sync with `bucket_counts_from_entries` and with the
+/// `outcome_status_from_entry` mapping. Used both for footer rendering and
+/// for the `ExploreSummary` bucket fields, so a single source of truth keeps
+/// the persisted artifact and the live footer agreeing on counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OutcomeBuckets {
+    completed: usize,
+    runtime_failed: usize,
+    build_failed: usize,
+    timed_out: usize,
+    unsupported: usize,
+    skipped_by_policy: usize,
 }
 
 /// One function ready to be scheduled for exploration. Cloned per batch because
@@ -810,17 +873,26 @@ fn load_explore_summaries(dir: &Path) -> Result<Vec<ExploreSummary>, String> {
 fn outcome_status_from_entry(entry: &ExploreSummaryEntry) -> shatter_core::protocol::OutcomeStatus {
     use shatter_core::protocol::OutcomeStatus;
     let reason = entry.reason.as_deref().unwrap_or("");
+    let reason_lower = reason.to_lowercase();
     match entry.status.as_str() {
         "completed" => OutcomeStatus::Completed,
         "failed" => {
-            if reason.contains("timeout") || reason.contains("timed out") {
+            if reason_lower.contains("timeout") || reason_lower.contains("timed out") {
                 OutcomeStatus::TimedOut
+            } else if reason_lower.contains("instrumentationfailed")
+                || reason_lower.contains("build failed")
+                || reason_lower.contains("compilation failed")
+            {
+                // str-oo31: instrumentation/build failures are distinct from
+                // a runtime panic and deserve their own bucket so root-cause
+                // signal isn't lost in aggregation.
+                OutcomeStatus::BuildFailed
             } else {
                 OutcomeStatus::RuntimeFailed
             }
         }
         "skipped" => {
-            if reason.contains("unexecutable") {
+            if reason_lower.contains("unexecutable") {
                 OutcomeStatus::Unsupported
             } else {
                 OutcomeStatus::SkippedByPolicy
@@ -831,6 +903,81 @@ fn outcome_status_from_entry(entry: &ExploreSummaryEntry) -> shatter_core::proto
         // gets a section in the report instead of vanishing.
         _ => OutcomeStatus::RuntimeFailed,
     }
+}
+
+/// Bucket entries by `OutcomeStatus`. Single source of truth for both the
+/// persisted `ExploreSummary` counters and the live footer breakdown.
+fn bucket_counts_from_entries(entries: &[ExploreSummaryEntry]) -> OutcomeBuckets {
+    use shatter_core::protocol::OutcomeStatus;
+    let mut buckets = OutcomeBuckets::default();
+    for entry in entries {
+        match outcome_status_from_entry(entry) {
+            // The explore command does not currently emit
+            // `CompletedWithFindings`; treat both completed variants as the
+            // same bucket so the count stays meaningful if that changes
+            // upstream (str-hy9b.A2 follow-up).
+            OutcomeStatus::Completed | OutcomeStatus::CompletedWithFindings => {
+                buckets.completed += 1;
+            }
+            OutcomeStatus::RuntimeFailed => buckets.runtime_failed += 1,
+            OutcomeStatus::BuildFailed => buckets.build_failed += 1,
+            OutcomeStatus::TimedOut => buckets.timed_out += 1,
+            OutcomeStatus::Unsupported => buckets.unsupported += 1,
+            OutcomeStatus::SkippedByPolicy => buckets.skipped_by_policy += 1,
+        }
+    }
+    buckets
+}
+
+/// Classify why a file produced no targets to attempt. Returns `None` when
+/// `total_functions > 0` (the file is not a no-target case).
+///
+/// `total_functions` is the count of work items the explorer scheduled
+/// (post-resume, post-eligibility filtering). `pre_skipped` is the count of
+/// functions the analyzer rejected as unexecutable before scheduling.
+fn classify_no_target_reason(total_functions: usize, pre_skipped: usize) -> Option<String> {
+    if total_functions > 0 {
+        return None;
+    }
+    if pre_skipped == 0 {
+        Some("analyzer returned no functions".to_string())
+    } else {
+        Some(format!(
+            "all {pre_skipped} discovered function(s) were skipped as unexecutable"
+        ))
+    }
+}
+
+/// Format a one-line breakdown of non-completed buckets and the
+/// produced-coverage denominator. Returns `None` when every non-completed
+/// bucket is zero — the happy path the demo exercises — so the standard
+/// one-line footer stays uncluttered (per str-oo31 walkthrough guidance).
+fn format_outcome_breakdown(buckets: &OutcomeBuckets, produced_coverage: usize) -> Option<String> {
+    let any_non_completed = buckets.runtime_failed
+        + buckets.build_failed
+        + buckets.timed_out
+        + buckets.unsupported
+        + buckets.skipped_by_policy
+        > 0;
+    if !any_non_completed {
+        return None;
+    }
+    // Append only non-zero buckets so the line stays short on partial runs.
+    let mut parts: Vec<String> = Vec::new();
+    let mut push = |label: &str, count: usize| {
+        if count > 0 {
+            parts.push(format!("{label}: {count}"));
+        }
+    };
+    push("runtime_failed", buckets.runtime_failed);
+    push("build_failed", buckets.build_failed);
+    push("timed_out", buckets.timed_out);
+    push("unsupported", buckets.unsupported);
+    push("skipped_by_policy", buckets.skipped_by_policy);
+    Some(format!(
+        "Outcome breakdown: produced coverage: {produced_coverage} · {}",
+        parts.join(" · ")
+    ))
 }
 
 /// Default human-readable reason for an entry that lacks one.
@@ -2430,15 +2577,28 @@ pub(crate) async fn run_explore(
         }
 
         // Initialize explore summary for crash-recovery.
+        // str-oo31: pre-skipped (unexecutable) functions go straight into the
+        // `unsupported` bucket. The legacy `skipped` counter and per-status
+        // bucket move together to keep the invariant
+        // `skipped == unsupported + skipped_by_policy` true.
+        let pre_skipped = skipped_unexecutable.len();
+        let attempted = work_items.len() - first_work_index;
         let explore_summary = ExploreSummary {
             version: EXPLORE_ARTIFACT_VERSION,
             status: "running".to_string(),
             file: file_str.to_string(),
-            total_functions: work_items.len() - first_work_index,
+            total_functions: attempted,
             completed: 0,
             failed: 0,
-            skipped: skipped_unexecutable.len(),
+            skipped: pre_skipped,
             elapsed_secs: 0.0,
+            build_failed: 0,
+            runtime_failed: 0,
+            timed_out: 0,
+            unsupported: pre_skipped,
+            skipped_by_policy: 0,
+            produced_coverage: 0,
+            no_target_reason: classify_no_target_reason(attempted, pre_skipped),
             functions: skipped_unexecutable
                 .iter()
                 .map(|(name, _)| ExploreSummaryEntry {
@@ -3009,13 +3169,41 @@ pub(crate) async fn run_explore(
                 explore_summary.failed += 1;
                 "failed"
             };
-            explore_summary.functions.push(ExploreSummaryEntry {
+            // str-oo31: also bump the precise per-OutcomeStatus bucket and
+            // the produced-coverage denominator. The bucket assignment must
+            // match `outcome_status_from_entry`, so we route through it
+            // rather than re-deriving here.
+            let bucket_entry = ExploreSummaryEntry {
                 function_name: outcome.func.name.clone(),
                 status: summary_status.to_string(),
-                artifact: artifact_relpath,
+                artifact: artifact_relpath.clone(),
                 reason: outcome.result.as_ref().err().cloned(),
                 deep_fingerprint: deep_fingerprints.get(&outcome.func.name).cloned(),
-            });
+            };
+            match outcome_status_from_entry(&bucket_entry) {
+                shatter_core::protocol::OutcomeStatus::Completed
+                | shatter_core::protocol::OutcomeStatus::CompletedWithFindings => {}
+                shatter_core::protocol::OutcomeStatus::RuntimeFailed => {
+                    explore_summary.runtime_failed += 1;
+                }
+                shatter_core::protocol::OutcomeStatus::BuildFailed => {
+                    explore_summary.build_failed += 1;
+                }
+                shatter_core::protocol::OutcomeStatus::TimedOut => {
+                    explore_summary.timed_out += 1;
+                }
+                // Skipped variants don't appear here: this branch only runs
+                // for scheduled work items (completed | failed). Pre-skipped
+                // functions are seeded into `unsupported` at summary init.
+                shatter_core::protocol::OutcomeStatus::Unsupported
+                | shatter_core::protocol::OutcomeStatus::SkippedByPolicy => {}
+            }
+            if let Ok(ref result) = outcome.result
+                && result.unique_paths > 0
+            {
+                explore_summary.produced_coverage += 1;
+            }
+            explore_summary.functions.push(bucket_entry);
 
             // Clean up the partial resume-state sidecar now that the function
             // is fully done (str-b2my.15).
@@ -3384,6 +3572,26 @@ pub(crate) async fn run_explore(
         && log::log_enabled!(log::Level::Info)
         && (report_outputs.is_empty() || stdout)
     {
+        // str-oo31: aggregate per-OutcomeStatus buckets across every target
+        // for the run-wide breakdown line. We bucket from each summary's
+        // per-function entries via `bucket_counts_from_entries` rather than
+        // summing the persisted bucket fields. That keeps the breakdown
+        // accurate even for legacy summaries written before the bucket
+        // fields existed (their field counts default to zero, but the
+        // per-function `status` + `reason` strings still classify correctly).
+        let mut run_buckets = OutcomeBuckets::default();
+        let mut run_produced_coverage = 0usize;
+        for summary in &report_summaries {
+            let b = bucket_counts_from_entries(&summary.functions);
+            run_buckets.completed += b.completed;
+            run_buckets.runtime_failed += b.runtime_failed;
+            run_buckets.build_failed += b.build_failed;
+            run_buckets.timed_out += b.timed_out;
+            run_buckets.unsupported += b.unsupported;
+            run_buckets.skipped_by_policy += b.skipped_by_policy;
+            run_produced_coverage += summary.produced_coverage;
+        }
+        let breakdown = format_outcome_breakdown(&run_buckets, run_produced_coverage);
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if total_lines > 0 {
                 let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
@@ -3393,10 +3601,14 @@ pub(crate) async fn run_explore(
             } else {
                 String::new()
             };
+            let breakdown_suffix = breakdown
+                .as_deref()
+                .map(|line| format!("\n\n{line}"))
+                .unwrap_or_default();
             print_markdown(
                 &format!(
                     "\n---\n\n**Summary:** {total_paths} path(s) across \
-                     {total_function_count} function(s){coverage_suffix}\n"
+                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}\n"
                 ),
                 use_color,
             );
@@ -3411,6 +3623,9 @@ pub(crate) async fn run_explore(
                     &report_style,
                 )
             );
+            if let Some(line) = breakdown.as_deref() {
+                println!("{line}");
+            }
         }
     }
 
@@ -3521,10 +3736,11 @@ pub(crate) async fn run_explore(
 mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
-        FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        finalize_explore, format_progress_snapshot, load_explore_artifacts, persist_stage_outputs,
-        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
-        write_explore_artifact, write_explore_summary,
+        FuncExploreOutcome, batch_is_exhausted, bucket_counts_from_entries,
+        classify_no_target_reason, emit_explore_progress, explore_summary_path, finalize_explore,
+        format_outcome_breakdown, format_progress_snapshot, load_explore_artifacts,
+        persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
+        stage_persistence_dir, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -4389,6 +4605,7 @@ mod tests {
                     deep_fingerprint: None,
                 },
             ],
+                    ..Default::default()
         };
 
         let json = serde_json::to_string_pretty(&summary).expect("serialize");
@@ -4417,6 +4634,7 @@ mod tests {
             skipped: 0,
             elapsed_secs: 0.0,
             functions: vec![],
+                    ..Default::default()
         };
 
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
@@ -4474,6 +4692,7 @@ mod tests {
                     deep_fingerprint: None,
                 },
             ],
+                    ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
 
@@ -4540,6 +4759,7 @@ mod tests {
                 reason: Some("unexecutable parameter types".to_string()),
                 deep_fingerprint: None,
             }],
+                    ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
 
@@ -4771,6 +4991,7 @@ mod tests {
                     deep_fingerprint: Some("def456".to_string()),
                 },
             ],
+                    ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
         let loaded = read_explore_summary(dir.path(), "src/user.ts");
@@ -4851,6 +5072,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
+                    ..Default::default()
         };
 
         let mut deep_fps = std::collections::HashMap::new();
@@ -4884,6 +5106,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-old".to_string()),
             }],
+                    ..Default::default()
         };
 
         let mut deep_fps = std::collections::HashMap::new();
@@ -4914,6 +5137,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: None, // legacy summary
             }],
+                    ..Default::default()
         };
 
         let func = sample_func_analysis();
@@ -4946,6 +5170,7 @@ mod tests {
                 reason: Some("timeout".to_string()),
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
+                    ..Default::default()
         };
 
         let func = sample_func_analysis();
@@ -4975,6 +5200,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
+                    ..Default::default()
         };
 
         let func = sample_func_analysis();
@@ -5091,5 +5317,135 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output.function_name, "load/user");
         assert_eq!(output.iterations, 1);
+    }
+
+    // ── str-oo31: per-OutcomeStatus aggregation, no-target classification ──
+
+    fn entry(name: &str, status: &str, reason: Option<&str>) -> ExploreSummaryEntry {
+        ExploreSummaryEntry {
+            function_name: name.to_string(),
+            status: status.to_string(),
+            artifact: None,
+            reason: reason.map(|s| s.to_string()),
+            deep_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn bucket_counts_split_failed_into_runtime_build_and_timed_out() {
+        // Mixed status fixture covering each OutcomeStatus the explore command
+        // produces. The legacy tri-bucket (completed/failed/skipped) collapses
+        // every non-Completed function-level status into a single "failed"
+        // bucket; this test pins the new split.
+        let entries = vec![
+            entry("ok1", "completed", None),
+            entry("ok2", "completed", None),
+            entry("rt", "failed", Some("panic: nil pointer")),
+            entry(
+                "build",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: exit 1"),
+            ),
+            entry("timed", "failed", Some("function timed out after 30s")),
+            entry("unsup", "skipped", Some("unexecutable parameter types")),
+            entry("policy", "skipped", Some("explicitly excluded by user")),
+        ];
+        let buckets = bucket_counts_from_entries(&entries);
+        assert_eq!(buckets.completed, 2);
+        assert_eq!(buckets.runtime_failed, 1);
+        assert_eq!(buckets.build_failed, 1);
+        assert_eq!(buckets.timed_out, 1);
+        assert_eq!(buckets.unsupported, 1);
+        assert_eq!(buckets.skipped_by_policy, 1);
+        // Invariant: bucket totals must sum to entry count (no dropped status).
+        let total = buckets.completed
+            + buckets.runtime_failed
+            + buckets.build_failed
+            + buckets.timed_out
+            + buckets.unsupported
+            + buckets.skipped_by_policy;
+        assert_eq!(total, entries.len());
+    }
+
+    #[test]
+    fn classify_no_target_reason_distinguishes_empty_analyzer_from_all_skipped() {
+        // total_functions==0 and skipped==0: analyzer found nothing.
+        assert_eq!(
+            classify_no_target_reason(0, 0).as_deref(),
+            Some("analyzer returned no functions"),
+        );
+        // total_functions==0 and skipped>0: every discovered function was
+        // pre-filtered as unexecutable.
+        assert_eq!(
+            classify_no_target_reason(0, 7).as_deref(),
+            Some("all 7 discovered function(s) were skipped as unexecutable"),
+        );
+        // total_functions>0: not a no-target file; reason is None.
+        assert_eq!(classify_no_target_reason(3, 0), None);
+        assert_eq!(classify_no_target_reason(3, 2), None);
+    }
+
+    #[test]
+    fn format_outcome_breakdown_returns_none_on_happy_path() {
+        // Per team-lead direction: when only `completed` is non-zero, suppress
+        // the breakdown so the demo footer stays one line.
+        let buckets = super::OutcomeBuckets {
+            completed: 5,
+            ..Default::default()
+        };
+        assert!(format_outcome_breakdown(&buckets, 5).is_none());
+    }
+
+    #[test]
+    fn format_outcome_breakdown_emits_line_when_non_completed_buckets_present() {
+        let buckets = super::OutcomeBuckets {
+            completed: 31,
+            runtime_failed: 430,
+            build_failed: 0,
+            timed_out: 5,
+            unsupported: 0,
+            skipped_by_policy: 0,
+        };
+        let line = format_outcome_breakdown(&buckets, 31)
+            .expect("breakdown line should be Some when failures exist");
+        // Must surface runtime_failed and timed_out separately.
+        assert!(line.contains("runtime_failed: 430"), "line was: {line}");
+        assert!(line.contains("timed_out: 5"), "line was: {line}");
+        // produced_coverage denominator must be unambiguous (not "completed").
+        assert!(
+            line.contains("produced coverage: 31"),
+            "should label produced-coverage denominator clearly; got: {line}"
+        );
+        // Empty buckets must be omitted to keep the line compact.
+        assert!(!line.contains("build_failed: 0"), "got: {line}");
+        assert!(!line.contains("unsupported: 0"), "got: {line}");
+    }
+
+    #[test]
+    fn explore_summary_serde_defaults_for_new_fields() {
+        // Old artifacts written before str-oo31 lack the bucket fields. They
+        // must still parse, with bucket counts defaulting to zero and
+        // no_target_reason defaulting to None.
+        let legacy_json = r#"{
+            "version": 4,
+            "status": "completed",
+            "file": "src/foo.ts",
+            "total_functions": 2,
+            "completed": 2,
+            "failed": 0,
+            "skipped": 0,
+            "elapsed_secs": 0.5,
+            "functions": []
+        }"#;
+        let parsed: ExploreSummary =
+            serde_json::from_str(legacy_json).expect("legacy artifact must still parse");
+        assert_eq!(parsed.completed, 2);
+        assert_eq!(parsed.runtime_failed, 0);
+        assert_eq!(parsed.build_failed, 0);
+        assert_eq!(parsed.timed_out, 0);
+        assert_eq!(parsed.unsupported, 0);
+        assert_eq!(parsed.skipped_by_policy, 0);
+        assert_eq!(parsed.produced_coverage, 0);
+        assert_eq!(parsed.no_target_reason, None);
     }
 }
