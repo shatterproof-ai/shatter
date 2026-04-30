@@ -126,7 +126,8 @@ async fn main() -> ExitCode {
         CliCommand::Explore {
             targets,
             max_iterations,
-            timeout,
+            per_function_timeout,
+            timeout: deprecated_timeout,
             scope,
             analyze_only,
             show_clusters,
@@ -222,6 +223,16 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+
+            // Resolve --per-function-timeout (canonical) vs --timeout (deprecated alias).
+            // Clap's conflicts_with prevents both being set simultaneously.
+            let (timeout, used_deprecated_timeout) = crate::args::resolve_per_function_timeout(
+                per_function_timeout,
+                deprecated_timeout,
+            );
+            if used_deprecated_timeout {
+                eprintln!("{}", crate::args::DEPRECATED_TIMEOUT_WARNING);
+            }
 
             // Apply MC/DC budget multipliers for parameters not explicitly provided.
             // User-provided values always win; multipliers only expand the defaults.
