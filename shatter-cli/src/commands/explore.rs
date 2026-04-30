@@ -1655,6 +1655,24 @@ pub(crate) async fn run_explore(
     let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
     let mut fe_configs: HashMap<crate::args::Language, FrontendConfig> = HashMap::new();
     let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
+
+    // str-bnsw: precheck frontend availability for every requested language
+    // BEFORE walking targets / spawning processes. Surfaces the install hint
+    // up front instead of as a per-target spawn failure.
+    for lang in &unique_langs {
+        let availability = crate::helpers::check_frontend_availability(*lang, None);
+        if let Some(msg) = availability.unavailable_message() {
+            let target_count = parsed.iter().filter(|t| t.language == *lang).count();
+            return Err(format!(
+                "{} frontend unavailable for {} target(s): {}",
+                lang.label(),
+                target_count,
+                msg
+            )
+            .into());
+        }
+    }
+
     for lang in unique_langs {
         let mut config = frontend_config(
             lang,

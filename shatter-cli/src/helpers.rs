@@ -262,6 +262,82 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Install hint surfaced when the Rust frontend cannot be found at any of the
+/// search locations. Kept in one place so discovery-time precheck and
+/// spawn-time errors emit the same actionable message (str-bnsw).
+pub(crate) const RUST_FRONTEND_INSTALL_HINT: &str =
+    "install it on PATH or build with `cargo build --manifest-path shatter-rust/Cargo.toml`";
+
+/// Whether a language frontend can be located on this host.
+///
+/// Computed during target discovery (str-bnsw) so that mixed-language scans
+/// can skip files for unavailable languages with a clear status, and
+/// single-language runs can fail fast before walking the source tree.
+#[derive(Debug, Clone)]
+pub(crate) enum FrontendAvailability {
+    Available,
+    Unavailable {
+        language: Language,
+        install_hint: &'static str,
+    },
+}
+
+impl FrontendAvailability {
+    #[cfg(test)]
+    pub(crate) fn is_available(&self) -> bool {
+        matches!(self, FrontendAvailability::Available)
+    }
+
+    /// User-facing one-line message for the unavailable case. Returns `None`
+    /// when the frontend is available.
+    pub(crate) fn unavailable_message(&self) -> Option<String> {
+        match self {
+            FrontendAvailability::Available => None,
+            FrontendAvailability::Unavailable {
+                language,
+                install_hint,
+            } => Some(format!(
+                "shatter-{} frontend not found: {install_hint}",
+                language.label()
+            )),
+        }
+    }
+}
+
+/// Check whether the named language frontend is reachable on this host.
+///
+/// TypeScript and Go ship embedded in the CLI binary, so they are always
+/// available. Rust is sourced externally — checked in this order:
+/// custom binary (`.shatter-cache/bin/`), `$PATH`, then the conventional
+/// `./shatter-rust/target/debug/` and `./target/debug/` build outputs.
+pub(crate) fn check_frontend_availability(
+    language: Language,
+    shatter_dir: Option<&Path>,
+) -> FrontendAvailability {
+    match language {
+        Language::TypeScript | Language::Go => FrontendAvailability::Available,
+        Language::Rust => {
+            if find_custom_binary(shatter_dir, "rust").is_some()
+                || find_on_path("shatter-rust").is_some()
+            {
+                return FrontendAvailability::Available;
+            }
+            let candidates = [
+                PathBuf::from("./shatter-rust/target/debug/shatter-rust"),
+                PathBuf::from("./target/debug/shatter-rust"),
+            ];
+            if candidates.iter().any(|p| p.is_file()) {
+                FrontendAvailability::Available
+            } else {
+                FrontendAvailability::Unavailable {
+                    language: Language::Rust,
+                    install_hint: RUST_FRONTEND_INSTALL_HINT,
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn frontend_config(
     language: Language,
@@ -307,7 +383,9 @@ pub(crate) fn frontend_config(
                 if let Some(path) = candidates.iter().find(|p| p.is_file()) {
                     (path.clone(), vec![])
                 } else {
-                    return Err("shatter-rust frontend not found: install it on PATH or build with `cargo build --manifest-path shatter-rust/Cargo.toml`".to_string());
+                    return Err(format!(
+                        "shatter-rust frontend not found: {RUST_FRONTEND_INSTALL_HINT}"
+                    ));
                 }
             }
         }
@@ -821,6 +899,61 @@ mod cli_parity_tests {
         for var in [ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, ENV_ARTIFACT_DIR] {
             assert!(keys.contains(var), "apply_project_storage must set {var}");
         }
+    }
+
+    // ---- str-bnsw: frontend availability precheck ----
+
+    /// TypeScript and Go ship embedded — always available.
+    #[test]
+    fn frontend_availability_ts_and_go_are_always_available() {
+        assert!(check_frontend_availability(Language::TypeScript, None).is_available());
+        assert!(check_frontend_availability(Language::Go, None).is_available());
+    }
+
+    /// When no `shatter-rust` binary is reachable from any of the search
+    /// locations, the precheck reports `Unavailable` with the install hint —
+    /// no spawn attempt and no generic failure.
+    #[test]
+    fn frontend_availability_rust_unavailable_returns_install_hint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev_path = std::env::var_os("PATH");
+        let prev_cwd = std::env::current_dir().expect("cwd");
+        // Isolate: empty PATH (no shatter-rust on PATH) and cwd in an empty
+        // tempdir (so the ./shatter-rust/target/debug and ./target/debug
+        // candidates miss).
+        // SAFETY: tests in this crate are run single-threaded in the
+        // env-mutating subset; we restore both before returning.
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+        std::env::set_current_dir(tmp.path()).expect("chdir tmp");
+
+        let availability = check_frontend_availability(Language::Rust, None);
+
+        // Restore environment before any assertion can panic.
+        std::env::set_current_dir(&prev_cwd).expect("restore cwd");
+        unsafe {
+            match prev_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(
+            !availability.is_available(),
+            "expected Unavailable, got {availability:?}"
+        );
+        let msg = availability
+            .unavailable_message()
+            .expect("unavailable variant should produce a message");
+        assert!(
+            msg.contains("shatter-rust frontend not found"),
+            "message should name the missing frontend: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build --manifest-path shatter-rust/Cargo.toml"),
+            "message should include the build instructions: {msg}"
+        );
     }
 
     /// `apply_project_storage` is a no-op when project root is None.
