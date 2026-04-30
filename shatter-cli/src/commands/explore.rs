@@ -3737,8 +3737,9 @@ mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, bucket_counts_from_entries,
-        classify_no_target_reason, emit_explore_progress, explore_summary_path, finalize_explore,
-        format_outcome_breakdown, format_progress_snapshot, load_explore_artifacts,
+        classify_no_target_reason, classify_outcome_status, emit_explore_progress,
+        explore_summary_path, finalize_explore, format_outcome_breakdown,
+        format_progress_snapshot, load_explore_artifacts, outcome_status_from_entry,
         persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
         stage_persistence_dir, write_explore_artifact, write_explore_summary,
     };
@@ -5447,5 +5448,94 @@ mod tests {
         assert_eq!(parsed.skipped_by_policy, 0);
         assert_eq!(parsed.produced_coverage, 0);
         assert_eq!(parsed.no_target_reason, None);
+    }
+
+    // ── str-gz8j: per-function timeout surfaces as TimedOut, not Completed ──
+
+    /// A successful `Result<ObservationOutput>` whose `timed_out` flag is
+    /// true means exploration ran out of its per-function budget mid-flight.
+    /// `classify_outcome_status` must downgrade it to status="failed" with
+    /// an explicit timeout reason so it lands in the `timed_out` bucket
+    /// (str-oo31). The reason wording must mention the budget so users can
+    /// tell *why* a function failed without reading the artifact.
+    #[test]
+    fn classify_outcome_status_timed_out_observation_becomes_failed_with_explicit_reason() {
+        let mut obs = sample_observation("slowFn");
+        obs.timed_out = true;
+        let result: Result<shatter_core::explorer::ObservationOutput, String> = Ok(obs);
+        let (status, reason) = classify_outcome_status(&result, Duration::from_millis(31_500));
+        assert_eq!(status, "failed");
+        let reason_str = reason.expect("timed-out outcome must have a reason");
+        let lower = reason_str.to_lowercase();
+        assert!(
+            lower.contains("timed out") || lower.contains("timeout"),
+            "reason must include timeout keyword for outcome_status_from_entry to bucket as TimedOut; got: {reason_str}"
+        );
+        assert!(
+            lower.contains("per-function"),
+            "reason must make timeout scope explicit (per-function) per str-gz8j AC #3; got: {reason_str}"
+        );
+        assert!(
+            reason_str.contains("31.5"),
+            "reason should record elapsed seconds so users see how long the function ran; got: {reason_str}"
+        );
+        // Round-trip through outcome_status_from_entry → must classify as
+        // TimedOut (which then bumps the timed_out bucket).
+        let entry = ExploreSummaryEntry {
+            function_name: "slowFn".into(),
+            status: status.to_string(),
+            artifact: None,
+            reason: Some(reason_str),
+            deep_fingerprint: None,
+        };
+        assert_eq!(
+            outcome_status_from_entry(&entry),
+            shatter_core::protocol::OutcomeStatus::TimedOut,
+            "timed-out observation must round-trip into TimedOut bucket"
+        );
+    }
+
+    #[test]
+    fn classify_outcome_status_normal_completion_stays_completed() {
+        let obs = sample_observation("ok");
+        let result: Result<shatter_core::explorer::ObservationOutput, String> = Ok(obs);
+        let (status, reason) = classify_outcome_status(&result, Duration::from_millis(120));
+        assert_eq!(status, "completed");
+        assert!(
+            reason.is_none(),
+            "completed outcome must not synthesize a reason"
+        );
+    }
+
+    #[test]
+    fn classify_outcome_status_error_preserves_original_message() {
+        let result: Result<shatter_core::explorer::ObservationOutput, String> =
+            Err("frontend crashed: signal 11".into());
+        let (status, reason) = classify_outcome_status(&result, Duration::from_millis(50));
+        assert_eq!(status, "failed");
+        assert_eq!(reason.as_deref(), Some("frontend crashed: signal 11"));
+    }
+
+    fn sample_observation(name: &str) -> shatter_core::explorer::ObservationOutput {
+        shatter_core::explorer::ObservationOutput {
+            function_name: name.to_string(),
+            iterations: 1,
+            unique_paths: 0,
+            lines_covered: 0,
+            total_lines: 0,
+            new_path_executions: vec![],
+            raw_results: vec![],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: Default::default(),
+            mcdc_summary: None,
+            shrink_stats: Default::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: false,
+        }
     }
 }
