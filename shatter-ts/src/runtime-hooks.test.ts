@@ -10,6 +10,15 @@ const RUNTIME_HOOK_FIXTURE = path.join(FIXTURES_DIR, "runtime-hook-setup.ts");
 const TSCONFIG_PATHS_DIR = path.join(FIXTURES_DIR, "tsconfig-paths-runtime");
 const TSCONFIG_PATHS_SETUP = path.join(TSCONFIG_PATHS_DIR, "src", "setup.ts");
 const TSCONFIG_PATHS_EXECUTE = path.join(TSCONFIG_PATHS_DIR, "src", "execute.ts");
+const TSCONFIG_REFERENCES_DIR = path.join(
+  FIXTURES_DIR,
+  "tsconfig-paths-references",
+);
+const TSCONFIG_REFERENCES_EXECUTE = path.join(
+  TSCONFIG_REFERENCES_DIR,
+  "src",
+  "execute.ts",
+);
 
 describe("runtime hook layer", () => {
   beforeAll(() => {
@@ -58,6 +67,67 @@ export function usesAlias(): number {
 }
 `,
     );
+
+    // References-only root tsconfig.json mirroring Vite-style layouts:
+    //   tsconfig.json     — references-only, no compilerOptions.paths
+    //   tsconfig.app.json — has baseUrl + paths
+    fs.mkdirSync(path.join(TSCONFIG_REFERENCES_DIR, "src", "lib"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(TSCONFIG_REFERENCES_DIR, "tsconfig.json"),
+      JSON.stringify(
+        {
+          files: [],
+          references: [
+            { path: "./tsconfig.app.json" },
+            { path: "./tsconfig.node.json" },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    fs.writeFileSync(
+      path.join(TSCONFIG_REFERENCES_DIR, "tsconfig.app.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            baseUrl: ".",
+            paths: { "@/*": ["src/*"] },
+          },
+          include: ["src"],
+        },
+        null,
+        2,
+      ),
+    );
+    fs.writeFileSync(
+      path.join(TSCONFIG_REFERENCES_DIR, "tsconfig.node.json"),
+      JSON.stringify(
+        {
+          compilerOptions: { module: "ESNext" },
+          include: ["vite.config.ts"],
+        },
+        null,
+        2,
+      ),
+    );
+    fs.writeFileSync(
+      path.join(TSCONFIG_REFERENCES_DIR, "src", "lib", "math.ts"),
+      `export function triple(n: number): number {
+  return n * 3;
+}
+`,
+    );
+    fs.writeFileSync(
+      TSCONFIG_REFERENCES_EXECUTE,
+      `import { triple } from "@/lib/math";
+export function usesAlias(): number {
+  return triple(7);
+}
+`,
+    );
   });
 
   afterAll(() => {
@@ -65,6 +135,7 @@ export function usesAlias(): number {
       fs.unlinkSync(RUNTIME_HOOK_FIXTURE);
     }
     fs.rmSync(TSCONFIG_PATHS_DIR, { recursive: true, force: true });
+    fs.rmSync(TSCONFIG_REFERENCES_DIR, { recursive: true, force: true });
   });
 
   it("builds resolver-backed runtime hooks in execution-profile order", async () => {
@@ -185,6 +256,32 @@ export function usesAlias(): number {
 
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe(42);
+  });
+
+  it("resolves paths through a references-only root tsconfig", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [
+          { id: "ts/module-resolution/tsconfig-paths", apply: "required" },
+        ],
+      },
+      {
+        phase: "execute",
+        project_root: TSCONFIG_REFERENCES_DIR,
+        entry_file: TSCONFIG_REFERENCES_EXECUTE,
+      },
+    );
+    const result = await executeFunction(
+      TSCONFIG_REFERENCES_EXECUTE,
+      "usesAlias",
+      [],
+      undefined,
+      true,
+      runtimeHooks.resolver_adapters,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(21);
   });
 });
 
