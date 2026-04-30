@@ -261,6 +261,53 @@ pub(crate) async fn run_scan(
         .filter(|(_, lang)| discovery_lang_to_cli_lang(*lang).is_some())
         .collect();
 
+    // str-bnsw: precheck frontend availability per discovered language so the
+    // scan reports a clear frontend-unavailable status instead of a generic
+    // per-target spawn failure. For mixed-language scans we filter out files
+    // whose frontend is unavailable and continue with the rest; if every
+    // discovered language is unavailable we return early with the install
+    // hint.
+    let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = {
+        let mut langs_in_scan: std::collections::HashSet<DiscoveryLanguage> =
+            analyzable_files.iter().map(|(_, l)| *l).collect();
+        let mut unavailable: std::collections::HashMap<DiscoveryLanguage, String> =
+            std::collections::HashMap::new();
+        for lang in langs_in_scan.iter().copied().collect::<Vec<_>>() {
+            let cli_lang = discovery_lang_to_cli_lang(lang)
+                .expect("discovery_lang_to_cli_lang already filtered above");
+            let availability = crate::helpers::check_frontend_availability(cli_lang, None);
+            if let Some(msg) = availability.unavailable_message() {
+                unavailable.insert(lang, msg);
+                langs_in_scan.remove(&lang);
+            }
+        }
+        if !unavailable.is_empty() {
+            for (lang, msg) in &unavailable {
+                let skipped = analyzable_files.iter().filter(|(_, l)| l == lang).count();
+                log::warn!(
+                    "skipping {} {:?} file(s): {} (run will continue with available languages)",
+                    skipped,
+                    lang,
+                    msg
+                );
+            }
+            if langs_in_scan.is_empty() {
+                let combined: Vec<String> = unavailable.values().cloned().collect();
+                return Err(format!(
+                    "no available frontends for discovered files: {}",
+                    combined.join("; ")
+                )
+                .into());
+            }
+            analyzable_files
+                .into_iter()
+                .filter(|(_, l)| !unavailable.contains_key(l))
+                .collect()
+        } else {
+            analyzable_files
+        }
+    };
+
     if analyzable_files.is_empty() {
         log::info!("No supported source files found in {}", root.display());
         return Ok(());
