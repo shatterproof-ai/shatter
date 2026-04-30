@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	goprotocol "github.com/shatter-dev/shatter/shatter-go/protocol"
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
@@ -43,7 +42,7 @@ func Add(a, b int) int { return a + b }
 		{
 			ID:         "example.com/targets:Add",
 			SymbolName: "Add",
-			Kind:       goprotocol.TargetKindFunction,
+			Kind:       wrapper.TargetKindFunction,
 			Parameters: []wrapper.WrapperParam{
 				{Name: "a", GoType: "int"},
 				{Name: "b", GoType: "int"},
@@ -133,5 +132,97 @@ func Add(a, b int) int { return a + b }
 	if session.InvocationsDispatched != wantInvocations {
 		t.Errorf("InvocationsDispatched = %d, want %d",
 			session.InvocationsDispatched, wantInvocations)
+	}
+}
+
+func TestLauncherBuildsForInternalTargetPackage(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	modDir := t.TempDir()
+	targetDir := filepath.Join(modDir, "api", "internal", "handler")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/target\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	const targetSrc = `package handler
+
+func Double(n int) int { return n * 2 }
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "handler.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write handler.go: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:           "example.com/target/api/internal/handler:Double",
+			SymbolName:   "Double",
+			Kind:         wrapper.TargetKindFunction,
+			Parameters:   []wrapper.WrapperParam{{Name: "n", GoType: "int"}},
+			HasResult:    true,
+			ResultGoType: "int",
+		},
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	wrapperDir := t.TempDir()
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "handler", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	workDir := t.TempDir()
+	binaryPath, _, err := launcher.BuildLauncher(launcher.BuildOptions{
+		TargetModulePath:  "example.com/target",
+		TargetModuleDir:   modDir,
+		TargetImportPath:  "example.com/target/api/internal/handler",
+		DiscoveryHash:     hash,
+		WrapperRealPath:   wrapperPath,
+		WrapperInTreePath: filepath.Join(targetDir, wrapper.WrapperFilename(hash)),
+		GeneratedDir:      filepath.Join(workDir, "generated"),
+		BinariesDir:       filepath.Join(workDir, "binaries"),
+		GoEnv:             append(os.Environ(), "GOFLAGS="),
+	})
+	if err != nil {
+		t.Fatalf("BuildLauncher: %v", err)
+	}
+
+	session, err := launcher.OpenSession(binaryPath)
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer session.Close()
+
+	planJSON, err := json.Marshal(map[string]string{
+		"target_id":     "example.com/target/api/internal/handler:Double",
+		"receiver_kind": "",
+	})
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	inputJSON, err := json.Marshal(21)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	resp, err := session.Invoke(launcher.LauncherRequest{
+		Plan:   planJSON,
+		Inputs: []json.RawMessage{inputJSON},
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.Error != "" {
+		t.Fatalf("launcher error: %s", resp.Error)
+	}
+
+	var got int
+	if err := json.Unmarshal(resp.ReturnValue, &got); err != nil {
+		t.Fatalf("unmarshal return value: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("return value = %d, want 42", got)
 	}
 }
