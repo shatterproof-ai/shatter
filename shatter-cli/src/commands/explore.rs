@@ -3521,10 +3521,11 @@ pub(crate) async fn run_explore(
 mod tests {
     use super::{
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
-        FuncExploreOutcome, batch_is_exhausted, emit_explore_progress, explore_summary_path,
-        finalize_explore, format_progress_snapshot, load_explore_artifacts, persist_stage_outputs,
-        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
-        write_explore_artifact, write_explore_summary,
+        FuncExploreOutcome, batch_is_exhausted, bucket_counts_from_entries,
+        classify_no_target_reason, emit_explore_progress, explore_summary_path, finalize_explore,
+        format_outcome_breakdown, format_progress_snapshot, load_explore_artifacts,
+        persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
+        stage_persistence_dir, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -5091,5 +5092,135 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output.function_name, "load/user");
         assert_eq!(output.iterations, 1);
+    }
+
+    // ── str-oo31: per-OutcomeStatus aggregation, no-target classification ──
+
+    fn entry(name: &str, status: &str, reason: Option<&str>) -> ExploreSummaryEntry {
+        ExploreSummaryEntry {
+            function_name: name.to_string(),
+            status: status.to_string(),
+            artifact: None,
+            reason: reason.map(|s| s.to_string()),
+            deep_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn bucket_counts_split_failed_into_runtime_build_and_timed_out() {
+        // Mixed status fixture covering each OutcomeStatus the explore command
+        // produces. The legacy tri-bucket (completed/failed/skipped) collapses
+        // every non-Completed function-level status into a single "failed"
+        // bucket; this test pins the new split.
+        let entries = vec![
+            entry("ok1", "completed", None),
+            entry("ok2", "completed", None),
+            entry("rt", "failed", Some("panic: nil pointer")),
+            entry(
+                "build",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: exit 1"),
+            ),
+            entry("timed", "failed", Some("function timed out after 30s")),
+            entry("unsup", "skipped", Some("unexecutable parameter types")),
+            entry("policy", "skipped", Some("explicitly excluded by user")),
+        ];
+        let buckets = bucket_counts_from_entries(&entries);
+        assert_eq!(buckets.completed, 2);
+        assert_eq!(buckets.runtime_failed, 1);
+        assert_eq!(buckets.build_failed, 1);
+        assert_eq!(buckets.timed_out, 1);
+        assert_eq!(buckets.unsupported, 1);
+        assert_eq!(buckets.skipped_by_policy, 1);
+        // Invariant: bucket totals must sum to entry count (no dropped status).
+        let total = buckets.completed
+            + buckets.runtime_failed
+            + buckets.build_failed
+            + buckets.timed_out
+            + buckets.unsupported
+            + buckets.skipped_by_policy;
+        assert_eq!(total, entries.len());
+    }
+
+    #[test]
+    fn classify_no_target_reason_distinguishes_empty_analyzer_from_all_skipped() {
+        // total_functions==0 and skipped==0: analyzer found nothing.
+        assert_eq!(
+            classify_no_target_reason(0, 0).as_deref(),
+            Some("analyzer returned no functions"),
+        );
+        // total_functions==0 and skipped>0: every discovered function was
+        // pre-filtered as unexecutable.
+        assert_eq!(
+            classify_no_target_reason(0, 7).as_deref(),
+            Some("all 7 discovered function(s) were skipped as unexecutable"),
+        );
+        // total_functions>0: not a no-target file; reason is None.
+        assert_eq!(classify_no_target_reason(3, 0), None);
+        assert_eq!(classify_no_target_reason(3, 2), None);
+    }
+
+    #[test]
+    fn format_outcome_breakdown_returns_none_on_happy_path() {
+        // Per team-lead direction: when only `completed` is non-zero, suppress
+        // the breakdown so the demo footer stays one line.
+        let buckets = super::OutcomeBuckets {
+            completed: 5,
+            ..Default::default()
+        };
+        assert!(format_outcome_breakdown(&buckets, 5).is_none());
+    }
+
+    #[test]
+    fn format_outcome_breakdown_emits_line_when_non_completed_buckets_present() {
+        let buckets = super::OutcomeBuckets {
+            completed: 31,
+            runtime_failed: 430,
+            build_failed: 0,
+            timed_out: 5,
+            unsupported: 0,
+            skipped_by_policy: 0,
+        };
+        let line = format_outcome_breakdown(&buckets, 31)
+            .expect("breakdown line should be Some when failures exist");
+        // Must surface runtime_failed and timed_out separately.
+        assert!(line.contains("runtime_failed: 430"), "line was: {line}");
+        assert!(line.contains("timed_out: 5"), "line was: {line}");
+        // produced_coverage denominator must be unambiguous (not "completed").
+        assert!(
+            line.contains("produced coverage: 31"),
+            "should label produced-coverage denominator clearly; got: {line}"
+        );
+        // Empty buckets must be omitted to keep the line compact.
+        assert!(!line.contains("build_failed: 0"), "got: {line}");
+        assert!(!line.contains("unsupported: 0"), "got: {line}");
+    }
+
+    #[test]
+    fn explore_summary_serde_defaults_for_new_fields() {
+        // Old artifacts written before str-oo31 lack the bucket fields. They
+        // must still parse, with bucket counts defaulting to zero and
+        // no_target_reason defaulting to None.
+        let legacy_json = r#"{
+            "version": 4,
+            "status": "completed",
+            "file": "src/foo.ts",
+            "total_functions": 2,
+            "completed": 2,
+            "failed": 0,
+            "skipped": 0,
+            "elapsed_secs": 0.5,
+            "functions": []
+        }"#;
+        let parsed: ExploreSummary =
+            serde_json::from_str(legacy_json).expect("legacy artifact must still parse");
+        assert_eq!(parsed.completed, 2);
+        assert_eq!(parsed.runtime_failed, 0);
+        assert_eq!(parsed.build_failed, 0);
+        assert_eq!(parsed.timed_out, 0);
+        assert_eq!(parsed.unsupported, 0);
+        assert_eq!(parsed.skipped_by_policy, 0);
+        assert_eq!(parsed.produced_coverage, 0);
+        assert_eq!(parsed.no_target_reason, None);
     }
 }
