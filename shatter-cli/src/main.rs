@@ -127,7 +127,6 @@ async fn main() -> ExitCode {
             targets,
             max_iterations,
             per_function_timeout,
-            timeout: deprecated_timeout,
             scope,
             analyze_only,
             show_clusters,
@@ -224,19 +223,10 @@ async fn main() -> ExitCode {
                 }
             };
 
-            // Resolve --per-function-timeout (canonical) vs --timeout (deprecated alias).
-            // Clap's conflicts_with prevents both being set simultaneously.
-            let (timeout, used_deprecated_timeout) = crate::args::resolve_per_function_timeout(
-                per_function_timeout,
-                deprecated_timeout,
-            );
-            if used_deprecated_timeout {
-                eprintln!("{}", crate::args::DEPRECATED_TIMEOUT_WARNING);
-            }
-
             // Apply MC/DC budget multipliers for parameters not explicitly provided.
             // User-provided values always win; multipliers only expand the defaults.
-            let budgets = resolve_mcdc_budgets(max_iterations, timeout, solver_timeout, mcdc);
+            let budgets =
+                resolve_mcdc_budgets(max_iterations, per_function_timeout, solver_timeout, mcdc);
 
             commands::explore::run_explore(
                 &targets,
