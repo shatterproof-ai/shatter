@@ -129,13 +129,47 @@ function findTsconfigPath(context: RuntimeHookContext): string | null {
   );
 }
 
+function hasPaths(options: ts.CompilerOptions): boolean {
+  return !!options.paths && Object.keys(options.paths).length > 0;
+}
+
+/** Resolve a `references[].path` entry (relative to its parent tsconfig dir)
+ *  to an absolute tsconfig file path. The entry may point at a tsconfig file
+ *  directly, at a directory containing tsconfig.json, or at a path missing
+ *  the `.json` suffix — TypeScript accepts all three forms. */
+function resolveReferencedTsconfig(referencePath: string): string | null {
+  if (ts.sys.fileExists(referencePath)) {
+    return referencePath;
+  }
+  if (ts.sys.directoryExists(referencePath)) {
+    return (
+      ts.findConfigFile(referencePath, ts.sys.fileExists, "tsconfig.json") ??
+      null
+    );
+  }
+  const withJson = referencePath.endsWith(".json")
+    ? referencePath
+    : `${referencePath}.json`;
+  if (ts.sys.fileExists(withJson)) {
+    return withJson;
+  }
+  return null;
+}
+
 function getTsconfigResolutionState(
   tsconfigPath: string,
+  visited: Set<string> = new Set(),
 ): TsconfigResolutionState {
   const cached = tsconfigStateCache.get(tsconfigPath);
   if (cached) {
     return cached;
   }
+  if (visited.has(tsconfigPath)) {
+    throw new Error(
+      `tsconfig-paths adapter detected reference cycle at ${tsconfigPath}`,
+    );
+  }
+  visited.add(tsconfigPath);
 
   const readResult = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
   if (readResult.error) {
@@ -152,15 +186,42 @@ function getTsconfigResolutionState(
   if (parsed.errors.length > 0) {
     throw new Error(`tsconfig-paths adapter could not parse ${tsconfigPath}`);
   }
-  if (!parsed.options.paths || Object.keys(parsed.options.paths).length === 0) {
-    throw new Error(
-      `tsconfig-paths adapter requires compilerOptions.paths in ${tsconfigPath}`,
-    );
+
+  if (hasPaths(parsed.options)) {
+    const state = { compilerOptions: parsed.options };
+    tsconfigStateCache.set(tsconfigPath, state);
+    return state;
   }
 
-  const state = { compilerOptions: parsed.options };
-  tsconfigStateCache.set(tsconfigPath, state);
-  return state;
+  // Vite-style project layouts use a references-only root tsconfig.json that
+  // points at sibling configs (e.g. tsconfig.app.json) holding the actual
+  // baseUrl/paths. Walk references in declared order and adopt the first
+  // referenced config that supplies paths.
+  const references = parsed.projectReferences ?? [];
+  const referenceErrors: string[] = [];
+  for (const ref of references) {
+    const refTsconfigPath = resolveReferencedTsconfig(ref.path);
+    if (!refTsconfigPath) {
+      continue;
+    }
+    try {
+      const refState = getTsconfigResolutionState(refTsconfigPath, visited);
+      tsconfigStateCache.set(tsconfigPath, refState);
+      return refState;
+    } catch (err) {
+      referenceErrors.push(
+        `${refTsconfigPath}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  const detail =
+    referenceErrors.length > 0
+      ? ` (tried references: ${referenceErrors.join("; ")})`
+      : "";
+  throw new Error(
+    `tsconfig-paths adapter requires compilerOptions.paths in ${tsconfigPath}${detail}`,
+  );
 }
 
 function createTsconfigPathsFactory(): RuntimeHookFactory {
