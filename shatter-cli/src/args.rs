@@ -252,8 +252,16 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         max_iterations: Option<u32>,
 
-        /// Timeout in seconds for the entire exploration.
-        #[arg(long)]
+        /// Per-function default exploration timeout in seconds (applied when no
+        /// .shatter/config.yaml per-function timeout is set). For the per-function
+        /// wall-clock cap, see --timeout-explore. For the whole-run wall-clock cap,
+        /// see --time-limit.
+        #[arg(long, conflicts_with = "timeout")]
+        per_function_timeout: Option<u64>,
+
+        /// Deprecated alias for --per-function-timeout. Will be removed in a future
+        /// release; please migrate to --per-function-timeout.
+        #[arg(long, hide = true)]
         timeout: Option<u64>,
 
         /// Per-function exploration wall-clock timeout in seconds. If both
@@ -1521,6 +1529,29 @@ pub(crate) fn parse_budget_flag(s: &str) -> Result<std::time::Duration, String> 
     shatter_core::test_prioritization::parse_budget(s).map_err(|e| e.to_string())
 }
 
+/// Resolve the per-function default timeout from the canonical
+/// `--per-function-timeout` flag and the deprecated `--timeout` alias.
+///
+/// Returns `(value, used_deprecated_alias)`. Clap's `conflicts_with` rejects the
+/// case where both flags are provided, so this function need not handle it.
+/// When the deprecated alias was used, callers should emit a one-shot stderr
+/// warning recommending `--per-function-timeout`.
+pub(crate) fn resolve_per_function_timeout(
+    per_function_timeout: Option<u64>,
+    deprecated_timeout: Option<u64>,
+) -> (Option<u64>, bool) {
+    match (per_function_timeout, deprecated_timeout) {
+        (Some(v), _) => (Some(v), false),
+        (None, Some(v)) => (Some(v), true),
+        (None, None) => (None, false),
+    }
+}
+
+/// Stderr warning text emitted when the deprecated `--timeout` alias is used.
+pub(crate) const DEPRECATED_TIMEOUT_WARNING: &str =
+    "warning: --timeout is deprecated and will be removed in a future release; \
+     use --per-function-timeout instead";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1680,6 +1711,7 @@ mod tests {
             CliCommand::Explore {
                 targets,
                 max_iterations,
+                per_function_timeout,
                 timeout,
                 scope,
                 analyze_only,
@@ -1693,6 +1725,7 @@ mod tests {
             } => {
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, None);
+                assert_eq!(per_function_timeout, None);
                 assert_eq!(timeout, None);
                 assert!(scope.is_none());
                 assert!(!analyze_only);
@@ -1731,7 +1764,7 @@ mod tests {
             "explore",
             "--max-iterations",
             "50",
-            "--timeout",
+            "--per-function-timeout",
             "120",
             "--analyze-only",
             "a.ts:fn1",
@@ -1741,6 +1774,7 @@ mod tests {
             CliCommand::Explore {
                 targets,
                 max_iterations,
+                per_function_timeout,
                 timeout,
                 scope,
                 analyze_only,
@@ -1754,7 +1788,8 @@ mod tests {
             } => {
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, Some(50));
-                assert_eq!(timeout, Some(120));
+                assert_eq!(per_function_timeout, Some(120));
+                assert_eq!(timeout, None);
                 assert!(scope.is_none());
                 assert!(analyze_only);
                 assert!(!show_clusters);
@@ -3088,6 +3123,7 @@ mod tests {
 #[cfg(test)]
 mod output_format_tests {
     use super::*;
+    use clap::error::ErrorKind;
     use std::path::Path;
 
     #[test]
@@ -3133,5 +3169,89 @@ mod output_format_tests {
     fn test_infer_no_extension() {
         let err = infer_output_format(Path::new("report")).unwrap_err();
         assert!(err.contains("no extension"));
+    }
+
+    // --- str-qe7w: --per-function-timeout rename + deprecated --timeout alias ---
+
+    #[test]
+    fn cli_explore_per_function_timeout_parses() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--per-function-timeout",
+            "75",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore {
+                per_function_timeout,
+                timeout,
+                ..
+            } => {
+                assert_eq!(per_function_timeout, Some(75));
+                assert_eq!(timeout, None);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_explore_deprecated_timeout_alias_parses() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--timeout",
+            "60",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore {
+                per_function_timeout,
+                timeout,
+                ..
+            } => {
+                assert_eq!(per_function_timeout, None);
+                assert_eq!(timeout, Some(60));
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    #[test]
+    fn cli_explore_rejects_both_timeout_flags() {
+        let result = Cli::try_parse_from([
+            "shatter",
+            "explore",
+            "--per-function-timeout",
+            "60",
+            "--timeout",
+            "90",
+            "test.ts:myFunc",
+        ]);
+        let err = result.expect_err("clap must reject both flags simultaneously");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn resolve_per_function_timeout_prefers_canonical() {
+        // Canonical present, deprecated absent: returns canonical, no warning.
+        let (value, used_deprecated) = resolve_per_function_timeout(Some(42), None);
+        assert_eq!(value, Some(42));
+        assert!(!used_deprecated);
+    }
+
+    #[test]
+    fn resolve_per_function_timeout_falls_back_to_alias_with_warning_signal() {
+        // Only deprecated alias supplied: caller is told to warn.
+        let (value, used_deprecated) = resolve_per_function_timeout(None, Some(99));
+        assert_eq!(value, Some(99));
+        assert!(used_deprecated);
+    }
+
+    #[test]
+    fn resolve_per_function_timeout_neither_set() {
+        let (value, used_deprecated) = resolve_per_function_timeout(None, None);
+        assert_eq!(value, None);
+        assert!(!used_deprecated);
     }
 }
