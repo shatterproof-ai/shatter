@@ -53,6 +53,27 @@ func (b *Builder) writeOverlayManifest(
 			return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
 		}
 
+		// When the package was renamed (e.g. main → shattertarget),
+		// `_test.go` siblings still declare the original package name.
+		// `go build` excludes them from the build set, but Go's directory
+		// loader still scans every `*.go` file for package consistency
+		// and rejects the build with
+		//   "found packages shattertarget (X.go) and main (Y_test.go)".
+		// Stage rewritten stubs for those siblings so the directory has
+		// a single primary package name (and a single _test external).
+		// See str-x0sv.
+		if packageName != req.PackageName {
+			testStubs, err := stageRenamedTestSiblings(req.TargetPackageDir, hash, generatedDir, req.PackageName, packageName)
+			if err != nil {
+				return "", "", fmt.Errorf("build: stage test siblings: %w", err)
+			}
+			for _, stub := range testStubs {
+				if err := builder.Add(stub.OriginalPath, stub.OverlayPath); err != nil {
+					return "", "", fmt.Errorf("build: overlay test sibling %q: %w", stub.OriginalPath, err)
+				}
+			}
+		}
+
 		recorderPath := filepath.Join(generatedDir, "runtime-support", "shatter_recorder_"+hash+".go")
 		if err := writeGeneratedSource(recorderPath, instrument.GenerateRecorder(packageName)); err != nil {
 			return "", "", fmt.Errorf("build: write recorder: %w", err)
@@ -103,6 +124,79 @@ func writeGeneratedSource(path, source string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(source), 0o644)
+}
+
+// renamedTestSibling pairs an original `_test.go` path with its rewritten
+// overlay stub. The stub keeps the file as a `_test.go` (so it stays
+// excluded from `go build`) but rewrites only the package declaration so
+// the directory's package set is consistent with the renamed primary
+// source.
+type renamedTestSibling struct {
+	OriginalPath string
+	OverlayPath  string
+}
+
+// stageRenamedTestSiblings writes a stub for every `_test.go` file in
+// packageDir whose package declaration matches the original package name
+// (or its `_test` external variant). The stub preserves the external-test
+// distinction by rewriting:
+//   - `package <orig>`       → `package <new>`
+//   - `package <orig>_test`  → `package <new>_test`
+// File bodies are not preserved: `_test.go` files are excluded from
+// `go build` so only the package declaration matters for build-time
+// directory consistency. Files declaring an unrelated package name are
+// skipped (the directory loader already accepts them).
+func stageRenamedTestSiblings(
+	packageDir, hash, generatedDir, originalPackage, renamedPackage string,
+) ([]renamedTestSibling, error) {
+	if packageDir == "" {
+		return nil, nil
+	}
+	matches, err := filepath.Glob(filepath.Join(packageDir, "*_test.go"))
+	if err != nil {
+		return nil, fmt.Errorf("glob test siblings in %q: %w", packageDir, err)
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	stubsDir := filepath.Join(generatedDir, "test-overlay-stubs", hash)
+	if err := os.MkdirAll(stubsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %q: %w", stubsDir, err)
+	}
+
+	var staged []renamedTestSibling
+	for _, originalPath := range matches {
+		fset := token.NewFileSet()
+		// Parse only the package clause; we don't need the rest.
+		file, parseErr := parser.ParseFile(fset, originalPath, nil, parser.PackageClauseOnly)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse %q: %w", originalPath, parseErr)
+		}
+		filePackage := file.Name.Name
+
+		var stubPackage string
+		switch {
+		case filePackage == originalPackage:
+			stubPackage = renamedPackage
+		case filePackage == originalPackage+"_test":
+			stubPackage = renamedPackage + "_test"
+		default:
+			// Some other package (e.g. an unrelated tag-gated file). Leave it alone.
+			continue
+		}
+
+		stubPath := filepath.Join(stubsDir, filepath.Base(originalPath))
+		stubSource := "package " + stubPackage + "\n"
+		if err := os.WriteFile(stubPath, []byte(stubSource), 0o644); err != nil {
+			return nil, fmt.Errorf("write stub %q: %w", stubPath, err)
+		}
+		staged = append(staged, renamedTestSibling{
+			OriginalPath: originalPath,
+			OverlayPath:  stubPath,
+		})
+	}
+	return staged, nil
 }
 
 func rewriteFilePackage(path, packageName string) error {
