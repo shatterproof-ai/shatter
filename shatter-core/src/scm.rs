@@ -186,6 +186,21 @@ pub fn head_commit(root: &Path) -> Result<String, ScmError> {
     Ok(output.trim().to_string())
 }
 
+/// Return the git repository root for `root`, or `None` if `root` is not
+/// inside a git repo or git is unavailable. Convenience wrapper around the
+/// private `repo_root` for callers that prefer Option to ScmError.
+pub fn repo_root_or_none(root: &Path) -> Option<PathBuf> {
+    repo_root(root).ok()
+}
+
+/// Return whether the working tree at `root` has uncommitted changes
+/// (staged, unstaged, or untracked-but-not-ignored). Returns `Err` when
+/// git is unavailable or the path is not inside a repo.
+pub fn working_tree_dirty(root: &Path) -> Result<bool, ScmError> {
+    let output = run_git(root, &["status", "--porcelain"])?;
+    Ok(!output.trim().is_empty())
+}
+
 /// Run a git command in the given directory and return stdout as a string.
 pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     let output = Command::new("git")

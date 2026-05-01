@@ -65,6 +65,7 @@ pub mod report;
 pub mod report_style;
 pub mod reporter;
 pub mod revalidation;
+pub mod run_manifest;
 pub mod scan_orchestrator;
 pub mod scheduler_policy;
 pub mod scm;
