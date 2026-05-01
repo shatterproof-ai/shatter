@@ -25,6 +25,23 @@ shared_wire_types:
       typescript: implemented
       go: implemented
       rust: implemented
+  no_target_reason:
+    notes: >
+      Closed-taxonomy enum classifying why a per-file run produced zero
+      targets. Canonical snake_case tokens: unclassified, declaration_only,
+      jsx_component_only, test_or_spec, receiver_method_gap, generated,
+      test_file, test_module, build_script, policy_excluded,
+      parser_failure, generated_schema. Default is `unclassified`; the
+      field is omitted (or null) for files that produced at least one
+      target. Defined by str-jeen.21 (schema-only); per-language and
+      cross-cutting classifiers in str-jeen.22–.25 will populate the
+      more specific variants on the wire. No frontend emits this field
+      on a response yet — the type is shared so siblings can adopt it
+      without further protocol change.
+    frontends:
+      typescript: not_implemented
+      go: not_implemented
+      rust: not_implemented
   invocation_outcome:
     notes: >
       Reusable object with fields status, short_reason, return_value,

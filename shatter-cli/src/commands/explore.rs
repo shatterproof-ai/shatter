@@ -554,12 +554,16 @@ struct ExploreSummary {
     /// paths because the function had no branches to exercise).
     #[serde(default)]
     produced_coverage: usize,
-    /// One-line explanation populated only when `total_functions == 0`.
-    /// Surfaces *why* shatter found nothing to attempt for this file, e.g.
-    /// the analyzer returned an empty function list vs. every discovered
-    /// function was filtered out as unexecutable.
+    /// Closed-taxonomy reason populated only when `total_functions == 0`.
+    /// Surfaces *why* shatter found nothing to attempt for this file.
+    ///
+    /// Schema (str-jeen.21): the variant is one of the
+    /// `shatter_core::protocol::NoTargetReason` tokens. Default is
+    /// `unclassified` for any zero-target file until per-language
+    /// (str-jeen.22–.24) or frontend-agnostic (str-jeen.25) classifiers
+    /// refine it. `None` for files that produced at least one target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    no_target_reason: Option<String>,
+    no_target_reason: Option<shatter_core::protocol::NoTargetReason>,
     /// Go-only root-cause breakdown of `build_failed` outcomes for this
     /// file (str-jeen.31). Populated at finalization time when the file
     /// extension is `.go` and at least one `build_failed` outcome was
@@ -1297,17 +1301,25 @@ fn classify_outcome_status(
     }
 }
 
-fn classify_no_target_reason(total_functions: usize, pre_skipped: usize) -> Option<String> {
+/// Classify why a file produced no targets to attempt. Returns `None`
+/// when `total_functions > 0` (the file is not a no-target case).
+///
+/// `total_functions` is the count of work items the explorer scheduled
+/// (post-resume, post-eligibility filtering). `pre_skipped` is the
+/// count of functions the analyzer rejected as unexecutable before
+/// scheduling. Both are accepted for forward-compatibility with siblings
+/// str-jeen.22–.25, which will tighten this classifier as per-language
+/// detection lands; for now the schema-only path always emits
+/// `Unclassified` so all zero-target files share a single default
+/// taxonomy slot.
+fn classify_no_target_reason(
+    total_functions: usize,
+    _pre_skipped: usize,
+) -> Option<shatter_core::protocol::NoTargetReason> {
     if total_functions > 0 {
         return None;
     }
-    if pre_skipped == 0 {
-        Some("analyzer returned no functions".to_string())
-    } else {
-        Some(format!(
-            "all {pre_skipped} discovered function(s) were skipped as unexecutable"
-        ))
-    }
+    Some(shatter_core::protocol::NoTargetReason::Unclassified)
 }
 
 /// Format a one-line breakdown of non-completed buckets and the
@@ -1639,10 +1651,45 @@ fn combine_explore_markdown(
         )
         .collect();
 
-    shatter_core::report::render_explore_outcomes(
-        &entries,
-        "discovery returned no functions for this run",
-    )
+    // str-jeen.21: when the run produced zero targets across every file,
+    // surface the per-file `no_target_reason` taxonomy as a markdown
+    // table column. Files that did produce targets carry `None` and
+    // contribute nothing to the table; only the no-target rows render.
+    let no_target_rows: Vec<(&str, shatter_core::protocol::NoTargetReason)> = summaries
+        .iter()
+        .filter_map(|s| s.no_target_reason.map(|r| (s.file.as_str(), r)))
+        .collect();
+    let empty_reason = if no_target_rows.is_empty() {
+        "discovery returned no functions for this run".to_string()
+    } else {
+        format_no_target_reason_table(
+            "discovery returned no functions for this run",
+            &no_target_rows,
+        )
+    };
+
+    shatter_core::report::render_explore_outcomes(&entries, &empty_reason)
+}
+
+/// Render the per-file no-target-reason table appended to the
+/// "## No targets discovered" markdown section (str-jeen.21).
+///
+/// Two-column markdown table: file path and the snake_case
+/// `NoTargetReason` token. One row per zero-target file in input order;
+/// callers must pre-filter to only files that actually produced no
+/// targets, since the table is rendered unconditionally when any rows
+/// are present.
+fn format_no_target_reason_table(
+    intro: &str,
+    rows: &[(&str, shatter_core::protocol::NoTargetReason)],
+) -> String {
+    let mut out = String::new();
+    out.push_str(intro);
+    out.push_str("\n\n| File | Reason |\n|---|---|\n");
+    for (file, reason) in rows {
+        out.push_str(&format!("| {file} | `{}` |\n", reason.as_token()));
+    }
+    out
 }
 
 /// Minimum iterations-without-discovery before the periodic progress line
@@ -4541,7 +4588,8 @@ mod tests {
         aggregate_go_root_causes_from_entries, batch_is_exhausted, bucket_counts_from_entries,
         check_summary_paths, classify_go_build_failure, classify_no_target_reason,
         classify_outcome_status, emit_explore_progress, explore_summary_path, finalize_explore,
-        format_go_root_causes_md, format_outcome_breakdown, format_progress_snapshot,
+        format_go_root_causes_md, format_no_target_reason_table, format_outcome_breakdown,
+        format_progress_snapshot,
         load_explore_artifacts, outcome_status_from_entry, persist_stage_outputs,
         read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
         validate_artifact_references, write_explore_artifact, write_explore_summary,
@@ -6367,21 +6415,89 @@ mod tests {
     }
 
     #[test]
-    fn classify_no_target_reason_distinguishes_empty_analyzer_from_all_skipped() {
-        // total_functions==0 and skipped==0: analyzer found nothing.
+    fn classify_no_target_reason_defaults_to_unclassified_for_zero_target_files() {
+        use shatter_core::protocol::NoTargetReason;
+        // str-jeen.21 schema-only: every zero-target file gets the
+        // `unclassified` token. Per-language refinements arrive in
+        // str-jeen.22–.25 and will tighten this classifier.
         assert_eq!(
-            classify_no_target_reason(0, 0).as_deref(),
-            Some("analyzer returned no functions"),
+            classify_no_target_reason(0, 0),
+            Some(NoTargetReason::Unclassified),
         );
-        // total_functions==0 and skipped>0: every discovered function was
-        // pre-filtered as unexecutable.
         assert_eq!(
-            classify_no_target_reason(0, 7).as_deref(),
-            Some("all 7 discovered function(s) were skipped as unexecutable"),
+            classify_no_target_reason(0, 7),
+            Some(NoTargetReason::Unclassified),
         );
         // total_functions>0: not a no-target file; reason is None.
         assert_eq!(classify_no_target_reason(3, 0), None);
         assert_eq!(classify_no_target_reason(3, 2), None);
+    }
+
+    #[test]
+    fn explore_summary_no_target_reason_roundtrips_as_enum_token() {
+        // str-jeen.21: the field is a closed enum; serde must emit the
+        // snake_case token and parse it back into the typed variant.
+        use shatter_core::protocol::NoTargetReason;
+        let mut summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/empty.ts".to_string(),
+            no_target_reason: Some(NoTargetReason::Unclassified),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&summary).expect("serialize");
+        assert!(
+            json.contains("\"no_target_reason\":\"unclassified\""),
+            "expected snake_case token in JSON, got: {json}"
+        );
+        let parsed: ExploreSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.no_target_reason, Some(NoTargetReason::Unclassified));
+
+        // Each non-default variant must roundtrip too — the schema
+        // enumerates these so siblings can emit them without further
+        // protocol change.
+        for variant in [
+            NoTargetReason::DeclarationOnly,
+            NoTargetReason::JsxComponentOnly,
+            NoTargetReason::TestOrSpec,
+            NoTargetReason::ReceiverMethodGap,
+            NoTargetReason::Generated,
+            NoTargetReason::TestFile,
+            NoTargetReason::TestModule,
+            NoTargetReason::BuildScript,
+            NoTargetReason::PolicyExcluded,
+            NoTargetReason::ParserFailure,
+            NoTargetReason::GeneratedSchema,
+        ] {
+            summary.no_target_reason = Some(variant);
+            let j = serde_json::to_string(&summary).expect("serialize");
+            let token = variant.as_token();
+            assert!(
+                j.contains(&format!("\"no_target_reason\":\"{token}\"")),
+                "expected token {token} in JSON, got: {j}"
+            );
+            let p: ExploreSummary = serde_json::from_str(&j).expect("deserialize");
+            assert_eq!(p.no_target_reason, Some(variant));
+        }
+
+        // Markdown rendering: zero-target files surface in a "File / Reason"
+        // markdown column appended to the "No targets discovered" section.
+        let rows = vec![
+            ("src/types.d.ts", NoTargetReason::DeclarationOnly),
+            ("src/empty.ts", NoTargetReason::Unclassified),
+        ];
+        let table = format_no_target_reason_table("intro line", &rows);
+        assert!(table.contains("| File | Reason |"), "table header missing: {table}");
+        assert!(table.contains("| src/types.d.ts | `declaration_only` |"), "missing row: {table}");
+        assert!(table.contains("| src/empty.ts | `unclassified` |"), "missing row: {table}");
+
+        // None roundtrips as a missing field (skip_serializing_if).
+        summary.no_target_reason = None;
+        let none_json = serde_json::to_string(&summary).expect("serialize");
+        assert!(
+            !none_json.contains("no_target_reason"),
+            "None variant must be omitted from JSON, got: {none_json}"
+        );
     }
 
     #[test]
