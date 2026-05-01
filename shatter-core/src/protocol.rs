@@ -955,6 +955,79 @@ pub struct RuntimeCryptoBoundary {
     pub iv_value: Option<String>,
 }
 
+/// Reason a per-file run produced no targets to attempt.
+///
+/// This is the closed taxonomy used in `ExploreSummary.no_target_reason`
+/// (and any future protocol message that needs to surface the same
+/// classification). The value is `Some(_)` only for files that yielded
+/// zero scheduled targets; files with at least one target leave the field
+/// unset (`None`).
+///
+/// `Unclassified` is the default when no more specific reason has been
+/// detected. Per-language detection (TS/Go/Rust) and frontend-agnostic
+/// detection (parser-failure, policy-excluded, generated-schema) refine
+/// `Unclassified` into one of the more specific variants in sibling
+/// issues str-jeen.22–.25; this schema-only issue (str-jeen.21) defines
+/// the enum so all producers and consumers agree on the wire format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoTargetReason {
+    /// No more specific reason classifier matched. Default for any file
+    /// with zero targets until a frontend or cross-cutting classifier
+    /// tags it more precisely.
+    Unclassified,
+    /// File contains only declarations / type annotations and no
+    /// executable definitions (TS `.d.ts`, Rust trait-only modules, etc.).
+    DeclarationOnly,
+    /// File contains only JSX / component definitions that the analyzer
+    /// does not treat as callable targets. (TS-specific.)
+    JsxComponentOnly,
+    /// File is a test, spec, story, or demo and is excluded from target
+    /// discovery by convention.
+    TestOrSpec,
+    /// Go file declares only methods on a receiver type that the
+    /// analyzer cannot synthesize an executable target for. (Go-specific.)
+    ReceiverMethodGap,
+    /// File looks like a generated artifact (codegen, schema bindings,
+    /// etc.) and is skipped to avoid testing generated code.
+    Generated,
+    /// File is a `_test.go` (or equivalent) test file. (Go-specific.)
+    TestFile,
+    /// File is a Rust `#[cfg(test)]`-only module. (Rust-specific.)
+    TestModule,
+    /// File is a Cargo build script (`build.rs`). (Rust-specific.)
+    BuildScript,
+    /// File was excluded by an explicit user/config policy.
+    PolicyExcluded,
+    /// Parser or discovery failed; no targets could be enumerated.
+    ParserFailure,
+    /// File looks like a generated schema artifact (e.g. OpenAPI /
+    /// protobuf bindings, GraphQL codegen output).
+    GeneratedSchema,
+}
+
+impl NoTargetReason {
+    /// Stable snake_case token used in JSON, markdown, and logs.
+    /// Keep in sync with the `#[serde(rename_all = "snake_case")]` derive.
+    #[must_use]
+    pub fn as_token(&self) -> &'static str {
+        match self {
+            NoTargetReason::Unclassified => "unclassified",
+            NoTargetReason::DeclarationOnly => "declaration_only",
+            NoTargetReason::JsxComponentOnly => "jsx_component_only",
+            NoTargetReason::TestOrSpec => "test_or_spec",
+            NoTargetReason::ReceiverMethodGap => "receiver_method_gap",
+            NoTargetReason::Generated => "generated",
+            NoTargetReason::TestFile => "test_file",
+            NoTargetReason::TestModule => "test_module",
+            NoTargetReason::BuildScript => "build_script",
+            NoTargetReason::PolicyExcluded => "policy_excluded",
+            NoTargetReason::ParserFailure => "parser_failure",
+            NoTargetReason::GeneratedSchema => "generated_schema",
+        }
+    }
+}
+
 /// Status describing the outcome of one invocation attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
