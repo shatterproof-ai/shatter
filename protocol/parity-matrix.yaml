@@ -45,7 +45,7 @@ shared_wire_types:
       records directly. A future protocol change can flip these entries
       cleanly when frontends start emitting the field on responses.
     frontends:
-      typescript: not_implemented
+      typescript: implemented_via_cli_classifier
       go: not_implemented
       rust: implemented_via_cli_classifier
   invocation_outcome:
