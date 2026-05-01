@@ -140,6 +140,92 @@ let lastAnalyzedFile: string | null = null;
  */
 let lastProjectRoot: string | undefined;
 
+// ---------------------------------------------------------------------------
+// Environment preflight (str-jeen.26)
+//
+// When a TypeScript project lacks `node_modules/`, every per-target execute
+// throws a runtime require() error and the run report fills with N
+// `runtime_failed` rows whose root cause is a single env-setup miss. To
+// surface the env failure once and suppress the per-target noise, the
+// frontend runs a one-shot preflight on the first request that carries a
+// `project_root`. If the check fails, the failure is cached and every
+// subsequent analyze/instrument/prepare/execute/setup short-circuits with the
+// same error response — analyze short-circuits prevent target discovery, so
+// no execute calls happen and no `runtime_failed` rows are produced.
+//
+// Error code: `not_supported` is reused (no new wire-level code) and the
+// message embeds the structured `preflight_failed: <reason>: <path>` so log
+// scrapers and the run report can distinguish env-preflight failures.
+// Followup str-jeen.40 will lift this into a dedicated `preflight_failed`
+// status in the protocol/registry and OutcomeStatus enum.
+// ---------------------------------------------------------------------------
+
+const PREFLIGHT_REASON_MISSING_NODE_MODULES = "missing_node_modules";
+const PREFLIGHT_NODE_MODULES_DIR = "node_modules";
+
+interface PreflightFailure {
+  reason: string;
+  detail: string;
+}
+
+/**
+ * Cached preflight failure. Once set, every command that touches the
+ * environment short-circuits with the same error.
+ */
+let preflightFailure: PreflightFailure | null = null;
+
+/** project_root values already checked (success or failure cached). */
+const preflightCheckedRoots = new Set<string>();
+
+/**
+ * Run a one-shot environment preflight for the supplied project root.
+ *
+ * Idempotent per root: subsequent calls with the same root are no-ops.
+ * Once any root fails, the failure is sticky — a later root with
+ * `node_modules` does not clear it, because in a single run multiple
+ * targets share the same env and we want one failure to be authoritative.
+ */
+function runPreflight(projectRoot: string | null | undefined): void {
+  if (preflightFailure || projectRoot == null || projectRoot === "") {
+    return;
+  }
+  if (preflightCheckedRoots.has(projectRoot)) {
+    return;
+  }
+  preflightCheckedRoots.add(projectRoot);
+  const nodeModulesPath = path.join(projectRoot, PREFLIGHT_NODE_MODULES_DIR);
+  if (!fs.existsSync(nodeModulesPath)) {
+    preflightFailure = {
+      reason: PREFLIGHT_REASON_MISSING_NODE_MODULES,
+      detail: nodeModulesPath,
+    };
+  }
+}
+
+/**
+ * Build the canonical error response for a cached preflight failure.
+ *
+ * The wire-level code is `not_supported` (str-jeen.40 will replace this
+ * with a first-class `preflight_failed` code). The message embeds the
+ * structured prefix `preflight_failed: <reason>: <detail>` so the run
+ * report and log scrapers can identify env-preflight failures by string
+ * match until the dedicated code lands.
+ */
+function preflightErrorResponse(id: number): ErrorResponse {
+  const failure = preflightFailure!;
+  const message = `preflight_failed: ${failure.reason}: ${failure.detail}`;
+  return errorResponse(id, "not_supported", message);
+}
+
+/**
+ * Test seam: clear the preflight cache so each unit test starts from a
+ * pristine environment-preflight state.
+ */
+export function __resetPreflightForTest(): void {
+  preflightFailure = null;
+  preflightCheckedRoots.clear();
+}
+
 /**
  * Stored instrumented sources, keyed by "file:function".
  * Set by the instrument handler, consumed by the execute handler.
@@ -290,6 +376,14 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "analyze": {
       const timing = maybeTimingCollector();
+      // Env preflight runs once per process before any target discovery.
+      // A cached failure short-circuits every subsequent analyze so the run
+      // produces a single env-preflight error instead of N runtime_failed
+      // rows from per-target execute calls (str-jeen.26).
+      runPreflight(request.project_root);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
+      }
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -342,6 +436,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "instrument": {
       const timing = maybeTimingCollector();
+      runPreflight(request.project_root);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
+      }
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -394,6 +492,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "prepare": {
       const timing = maybeTimingCollector();
+      runPreflight(request.project_root);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
+      }
       const resolvedFile = path.resolve(request.file);
       if (!fs.existsSync(resolvedFile)) {
         return {
@@ -466,6 +568,14 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "execute": {
       const timing = maybeTimingCollector();
+      // Execute requests don't carry project_root directly — reuse the value
+      // cached at analyze time. A preflight failure already short-circuited
+      // the analyze that would have produced this target, but we still gate
+      // here so manual execute-only flows fail fast and stay consistent.
+      runPreflight(lastProjectRoot);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
+      }
       const funcRef = request.function;
       const fileForExec = resolveFileForExecute(funcRef);
 
@@ -663,6 +773,10 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "setup": {
       const timing = maybeTimingCollector();
+      runPreflight(request.project_root);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
+      }
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
@@ -951,6 +1065,8 @@ export function clearInstrumentedSources(): void {
   if (_executor) _executor.clearCompiledScriptCache();
   loadedSetupModules.clear();
   setupContexts.clear();
+  preflightFailure = null;
+  preflightCheckedRoots.clear();
   // Worker is kept alive across clears — it's stateless (no caches to reset).
   // Only shutdown and terminateWorker() destroy it.
   _executorPromise = null;  _executor = null;
