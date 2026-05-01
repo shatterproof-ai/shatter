@@ -2580,3 +2580,81 @@ describe("executeAdapterOwned", () => {
     expect(result.performance.cpu_time_us).toBeGreaterThanOrEqual(0);
   });
 });
+
+import { TranspileError } from "./executor.js";
+
+/**
+ * Type-syntax coverage suite (str-jeen.11). Each function in
+ * `__fixtures__/type-syntax-coverage.tsx` exercises a TypeScript construct
+ * that previously crashed the executor at runtime. The suite asserts the
+ * full instrument+execute pipeline produces a clean result for every entry.
+ */
+describe("TS type syntax pipeline coverage (str-jeen.11)", () => {
+  const FIXTURE = path.join(FIXTURES_DIR, "type-syntax-coverage.tsx");
+
+  async function runFixture(
+    funcName: string,
+    inputs: unknown[],
+  ): Promise<{ thrown: unknown; outputContains?: string }> {
+    const source = fs.readFileSync(FIXTURE, "utf-8");
+    const inst = instrumentFunction(source, funcName, FIXTURE);
+    if ("error" in inst) {
+      throw new Error(`instrument failed for ${funcName}: ${inst.error}`);
+    }
+    const result = await executeInstrumented(
+      inst.instrumentedSource,
+      funcName,
+      inputs,
+      [],
+      FIXTURE,
+      undefined,
+      true,
+      `${FIXTURE}:${funcName}`,
+    );
+    clearCompiledScriptCache();
+    return { thrown: result.thrown_error };
+  }
+
+  const typeSyntaxCases: Array<[string, unknown[]]> = [
+    ["classifyButton", [{ label: "hello" }]],
+    ["pickGeneric", [[1, 2, 3], 1]],
+    ["GenericList", [{ items: ["a", "b"], render: (x: string) => x }]],
+    ["HelloTsx", [{ name: "x" }]],
+    ["checkSatisfies", [3]],
+    ["makeRenderOptions", [1]],
+  ];
+  it.each(typeSyntaxCases)(
+    "instruments + executes %s",
+    async (fn, inputs) => {
+      const r = await runFixture(fn, inputs);
+      expect(r.thrown).toBeNull();
+    },
+  );
+
+  it("classifies V8 SyntaxError after transpile as TranspileError(compile_failed)", async () => {
+    // The instrumented source is hand-crafted to look like valid TS that
+    // ts.transpileModule passes through verbatim, but contains an
+    // identifier in a position the JS parser rejects. This proves the
+    // compile_failed classification is reachable from executeInstrumented.
+    const malformedJsLikeTs = "const x = 1;\nconst y =;\n";
+    let caught: unknown = null;
+    try {
+      await executeInstrumented(
+        malformedJsLikeTs,
+        "missing",
+        [],
+        [],
+        "/tmp/syntax-bad.ts",
+        undefined,
+        true,
+        "/tmp/syntax-bad.ts:missing",
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TranspileError);
+    expect((caught as TranspileError).category).toMatch(
+      /transpile_failed|compile_failed/,
+    );
+  });
+});

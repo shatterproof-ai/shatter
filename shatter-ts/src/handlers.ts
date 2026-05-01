@@ -428,7 +428,27 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       // Idempotent: if already prepared, return the same id.
       if (!preparedKeys.has(prepareId)) {
         const executor = await getExecutor();
-        executor.warmCompiledScriptCache(instrumentedSource, instrumentKey);
+        try {
+          executor.warmCompiledScriptCache(instrumentedSource, instrumentKey);
+        } catch (e: unknown) {
+          // TS transform/parse failures during prepare get classified as
+          // compilation_error rather than instrumentation_failed (the
+          // instrumentor already succeeded — this is a downstream transpile
+          // failure caught at prepare time). See str-jeen.11.
+          if (e instanceof Error && e.name === "TranspileError") {
+            const category =
+              (e as { category?: string }).category ?? "transpile_failed";
+            return {
+              response: errorResponse(
+                request.id,
+                "compilation_error",
+                `TS ${category}: ${e.message}`,
+              ),
+              shutdown: false,
+            };
+          }
+          throw e;
+        }
         preparedKeys.set(prepareId, instrumentKey);
         preparedTargets.set(instrumentKey, prepareId);
       }
@@ -613,11 +633,29 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         };
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        const code: ErrorResponse["code"] = msg.includes("execution adapter not supported by TypeScript frontend")
-          ? "not_supported"
-          : "internal_error";
+        // TranspileError → compilation_error: TS-to-JS transform failed, OR
+        // emitted JS was rejected by V8 (typically because TS type syntax
+        // such as `interface`/`Type` annotations survived transpile). Surface
+        // the precise category in the message so callers can distinguish
+        // transform/parser failures from generic runtime crashes (str-jeen.11).
+        const isTranspileError =
+          e instanceof Error && e.name === "TranspileError";
+        let code: ErrorResponse["code"];
+        let message: string;
+        if (isTranspileError) {
+          const category =
+            (e as { category?: string }).category ?? "transpile_failed";
+          code = "compilation_error";
+          message = `TS ${category}: ${msg}`;
+        } else if (msg.includes("execution adapter not supported by TypeScript frontend")) {
+          code = "not_supported";
+          message = `Execute failed: ${msg}`;
+        } else {
+          code = "internal_error";
+          message = `Execute failed: ${msg}`;
+        }
         return {
-          response: errorResponse(request.id, code, `Execute failed: ${msg}`),
+          response: errorResponse(request.id, code, message),
           shutdown: false,
         };
       }
