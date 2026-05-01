@@ -197,8 +197,28 @@ export function instrumentFunction(
     const transformed = ts.transform(sourceFile, [
       createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
     ]);
-    const result = printer.printFile(transformed.transformed[0] as ts.SourceFile);
+    const printed = printer.printFile(transformed.transformed[0] as ts.SourceFile);
     transformed.dispose();
+
+    // Expose the discovered target on `module.exports` so the executor can
+    // resolve it by name even when the user never wrote `export` for the
+    // helper. Discovery (analyzer.ts) reports private top-level functions
+    // and arrow-const helpers as targets; without this trailer the
+    // instrumented module would surface only `export`-marked symbols and
+    // execution would fail with "Function X not found in instrumented
+    // module exports" (str-jeen.9).
+    //
+    // The trailer:
+    //   - guards on `typeof <name> === "function"` so it never throws if
+    //     the binding genuinely does not exist at runtime (e.g. a future
+    //     refactor where the analyzer reports a name the printer dropped);
+    //   - guards on `typeof module !== "undefined"` because the source
+    //     could conceivably be evaluated outside a CommonJS sandbox in
+    //     other tooling;
+    //   - is idempotent for already-exported targets (writes the same
+    //     function value to the same key).
+    const exposeTargetTrailer = synthesizePrivateTargetExposure(functionName);
+    const result = `${printed}\n${exposeTargetTrailer}`;
 
     return {
       instrumentedSource: result,
@@ -212,6 +232,29 @@ export function instrumentFunction(
   return timing
     ? timing.sync("instrument.transform", finalizeInstrumentation)
     : finalizeInstrumentation();
+}
+
+/**
+ * Build a trailer JS snippet that assigns the target function to
+ * `module.exports[name]` so the executor's name lookup succeeds for
+ * private (non-exported) top-level helpers. See str-jeen.9.
+ *
+ * The snippet is appended to the printed instrumented source after
+ * transpile, so it runs after every top-level declaration in the source
+ * has been initialized. Both function declarations (hoisted) and
+ * `const`/`let` arrow helpers (initialized before file end) are bound by
+ * the time this runs.
+ */
+function synthesizePrivateTargetExposure(functionName: string): string {
+  // Encode the target name as a JSON string so a pathological identifier
+  // (which the parser would have already rejected upstream) cannot break
+  // the trailer's JS syntax.
+  const nameLiteral = JSON.stringify(functionName);
+  return (
+    `;try{if(typeof module!=="undefined"&&typeof ${functionName}==="function"){` +
+    `module.exports[${nameLiteral}]=${functionName};` +
+    `}}catch(_e){}`
+  );
 }
 
 /**
