@@ -571,7 +571,71 @@ struct ExploreSummary {
     /// build failures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     go_root_causes: Option<GoRootCauseBreakdown>,
+    /// Sum of `line_count` across every discovered function, regardless of
+    /// outcome (str-jeen.18). Includes pre-skipped (unsupported) entries so
+    /// downstream broad-run reports (str-jeen.19, str-jeen.20) can quote a
+    /// stable "lines-of-source we even saw" denominator independent of how
+    /// many functions we then scheduled or finished.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    discovered_function_span_lines: u32,
+    /// Sum of `line_count` across functions whose exploration was actually
+    /// attempted (str-jeen.18) — i.e., outcome status is one of
+    /// {`completed`, `completed_with_findings`, `build_failed`,
+    /// `runtime_failed`, `timed_out`}. Pre-skipped (`unsupported`,
+    /// `skipped_by_policy`) entries are excluded.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    attempted_function_span_lines: u32,
+    /// Sum of `line_count` across functions whose exploration finished
+    /// without a build / runtime / timeout failure (str-jeen.18).
+    /// Outcome status ∈ {`completed`, `completed_with_findings`}.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    completed_function_span_lines: u32,
     functions: Vec<ExploreSummaryEntry>,
+}
+
+/// Sum of `ExploreSummaryEntry::line_count` partitioned by outcome status,
+/// producing the three named denominators surfaced in the run JSON
+/// (str-jeen.18). The split mirrors the discovery → attempt → completion
+/// lifecycle:
+/// * `discovered`  — every entry, including pre-skipped (unsupported /
+///   skipped-by-policy) functions.
+/// * `attempted`   — entries whose status is one of completed,
+///   completed-with-findings, build_failed, runtime_failed, timed_out.
+/// * `completed`   — entries whose status is completed or
+///   completed_with_findings.
+///
+/// The same `outcome_status_from_entry` mapping that powers
+/// `bucket_counts_from_entries` is used here so the per-status counts and
+/// the per-status line spans cannot drift.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SpanLineDenominators {
+    discovered: u32,
+    attempted: u32,
+    completed: u32,
+}
+
+fn span_line_denominators_from_entries(entries: &[ExploreSummaryEntry]) -> SpanLineDenominators {
+    use shatter_core::protocol::OutcomeStatus;
+    let mut totals = SpanLineDenominators::default();
+    for entry in entries {
+        let lines = entry.line_count;
+        totals.discovered = totals.discovered.saturating_add(lines);
+        match outcome_status_from_entry(entry) {
+            OutcomeStatus::Completed | OutcomeStatus::CompletedWithFindings => {
+                totals.attempted = totals.attempted.saturating_add(lines);
+                totals.completed = totals.completed.saturating_add(lines);
+            }
+            OutcomeStatus::BuildFailed
+            | OutcomeStatus::RuntimeFailed
+            | OutcomeStatus::TimedOut => {
+                totals.attempted = totals.attempted.saturating_add(lines);
+            }
+            OutcomeStatus::Unsupported | OutcomeStatus::SkippedByPolicy => {
+                // Pre-skipped: counted only in `discovered`.
+            }
+        }
+    }
+    totals
 }
 
 /// Per-`OutcomeStatus` counts derived from a slice of `ExploreSummaryEntry`.
@@ -640,7 +704,7 @@ struct PreparedTarget {
         shatter_core::spec::FileSpecBundle,
     )>,
     deep_fingerprints: HashMap<String, String>,
-    skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)>,
+    skipped_unexecutable: Vec<(String, u32, Vec<executability::SkipReason>)>,
     artifact_root: PathBuf,
     target_start: Instant,
     explore_summary: ExploreSummary,
@@ -3175,7 +3239,8 @@ pub(crate) async fn run_explore(
         //   1. Collect work items (sequential — config resolution, mock generation)
         //   2. Parallel exploration (tokio::spawn per function, each with its own frontend)
         //   3. Process results (sequential — stats, reports, specs)
-        let mut skipped_unexecutable: Vec<(String, Vec<executability::SkipReason>)> = Vec::new();
+        let mut skipped_unexecutable: Vec<(String, u32, Vec<executability::SkipReason>)> =
+            Vec::new();
 
         // Capture capabilities from the shared analysis frontend for ExploreConfig construction.
         let frontend_caps =
@@ -3269,7 +3334,14 @@ pub(crate) async fn run_explore(
             let skip_reasons = executability::check_executability(&func.params, &[]);
             if !skip_reasons.is_empty() {
                 log::debug!("Skipping {} (unexecutable parameter types)", func.name);
-                skipped_unexecutable.push((func.name.clone(), skip_reasons));
+                // str-jeen.18: capture the function span so the discovered
+                // span-line denominator includes pre-skipped functions, not
+                // just attempted ones.
+                let span_lines = func
+                    .end_line
+                    .saturating_sub(func.start_line)
+                    .saturating_add(1);
+                skipped_unexecutable.push((func.name.clone(), span_lines, skip_reasons));
                 continue;
             }
 
@@ -3620,7 +3692,7 @@ pub(crate) async fn run_explore(
         // `skipped == unsupported + skipped_by_policy` true.
         let pre_skipped = skipped_unexecutable.len();
         let attempted = work_items.len() - first_work_index;
-        let explore_summary = ExploreSummary {
+        let mut explore_summary = ExploreSummary {
             version: EXPLORE_ARTIFACT_VERSION,
             status: "running".to_string(),
             file: file_str.to_string(),
@@ -3644,7 +3716,7 @@ pub(crate) async fn run_explore(
             go_root_causes: None,
             functions: skipped_unexecutable
                 .iter()
-                .map(|(name, _)| {
+                .map(|(name, span_lines, _)| {
                     ExploreSummaryEntry::unavailable(
                         name.clone(),
                         "skipped".to_string(),
@@ -3652,9 +3724,26 @@ pub(crate) async fn run_explore(
                         Some("unexecutable parameter types".to_string()),
                         None,
                     )
+                    .with_line_count(*span_lines)
                 })
                 .collect(),
+            // str-jeen.18: filled in at finalization once attempted outcomes
+            // have landed in `functions`. Pre-skipped entries already carry
+            // their span via `with_line_count` above so the eventual
+            // `discovered_function_span_lines` reflects every function we
+            // saw, not just every function we scheduled.
+            discovered_function_span_lines: 0,
+            attempted_function_span_lines: 0,
+            completed_function_span_lines: 0,
         };
+        // str-jeen.18: seed the discovered denominator with pre-skipped
+        // entries' spans so the crash-recovery JSON written before any
+        // outcomes land already reports a non-zero "discovered" total.
+        // Finalization recomputes from the full entry list and overwrites.
+        let initial_spans = span_line_denominators_from_entries(&explore_summary.functions);
+        explore_summary.discovered_function_span_lines = initial_spans.discovered;
+        explore_summary.attempted_function_span_lines = initial_spans.attempted;
+        explore_summary.completed_function_span_lines = initial_spans.completed;
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to write initial explore summary: {e}");
         }
@@ -4311,6 +4400,15 @@ pub(crate) async fn run_explore(
             cleanup_resume_state(&artifact_root, &file_str, &outcome.func);
         }
         explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
+        // str-jeen.18: aggregate per-target outcome records into the three
+        // named span-line denominators surfaced in the run JSON. Computed
+        // once at finalization (after every outcome has been pushed) so the
+        // serialized values match the final entry set; downstream readers
+        // (str-jeen.19, str-jeen.20) consume these fields directly.
+        let span_lines = span_line_denominators_from_entries(&explore_summary.functions);
+        explore_summary.discovered_function_span_lines = span_lines.discovered;
+        explore_summary.attempted_function_span_lines = span_lines.attempted;
+        explore_summary.completed_function_span_lines = span_lines.completed;
         // str-jeen.31: attach the Go root-cause breakdown for this file when
         // the target is Go and at least one build_failed outcome was seen.
         // Computed once at finalization rather than incrementally so the
@@ -4624,7 +4722,7 @@ pub(crate) async fn run_explore(
                 "Skipped {} function(s) (unexecutable parameter types):",
                 skipped_unexecutable.len()
             );
-            for (name, reasons) in &skipped_unexecutable {
+            for (name, _span_lines, reasons) in &skipped_unexecutable {
                 for reason in reasons {
                     log::info!("  {name}: {}", reason.format_human());
                 }
@@ -5079,8 +5177,8 @@ mod tests {
         pre_classify_no_target_reason, read_explore_artifact, rust_classify_no_target_reason,
         rust_is_build_script, rust_is_declaration_only, rust_is_test_module_by_content,
         rust_is_test_module_by_path, sanitize_artifact_component,
-        stage_persistence_dir, validate_artifact_references, write_explore_artifact,
-        write_explore_summary,
+        span_line_denominators_from_entries, stage_persistence_dir,
+        validate_artifact_references, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -6732,6 +6830,70 @@ mod tests {
             + buckets.unsupported
             + buckets.skipped_by_policy;
         assert_eq!(total, entries.len());
+    }
+
+    // ── str-jeen.18: function-span line denominators ──
+
+    #[test]
+    fn span_line_denominators_discovery_only_path_counts_in_discovered_only() {
+        // Discovery-only: a function the analyzer rejected as unexecutable
+        // (e.g. opaque parameter type) shows up in the summary as
+        // status=skipped / reason=unexecutable parameter types but never
+        // gets attempted. Its span counts toward `discovered` only — not
+        // `attempted`, not `completed`.
+        let entries = vec![entry_with_lines(
+            "openSocket",
+            "skipped",
+            Some("unexecutable parameter types"),
+            12,
+        )];
+        let totals = span_line_denominators_from_entries(&entries);
+        assert_eq!(totals.discovered, 12);
+        assert_eq!(totals.attempted, 0);
+        assert_eq!(totals.completed, 0);
+    }
+
+    #[test]
+    fn span_line_denominators_attempt_failure_path_counts_in_discovered_and_attempted() {
+        // Attempt-failure: each of the three failure modes (build /
+        // runtime / timeout) was actually scheduled and run. They count
+        // toward `discovered` and `attempted`, but not `completed`.
+        let entries = vec![
+            entry_with_lines(
+                "buildFailed",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: exit 1"),
+                7,
+            ),
+            entry_with_lines("rtFailed", "failed", Some("panic: nil pointer"), 11),
+            entry_with_lines("timed", "failed", Some("function timed out after 30s"), 5),
+        ];
+        let totals = span_line_denominators_from_entries(&entries);
+        let expected_total = 7 + 11 + 5;
+        assert_eq!(totals.discovered, expected_total);
+        assert_eq!(totals.attempted, expected_total);
+        assert_eq!(totals.completed, 0);
+    }
+
+    #[test]
+    fn span_line_denominators_completion_path_counts_in_all_three() {
+        // Completion: a function that ran to completion contributes to
+        // every denominator. Pair with a pre-skipped entry to confirm the
+        // partition: completed lines flow through all three; pre-skipped
+        // lines stop at `discovered`.
+        let entries = vec![
+            entry_with_lines("ok", "completed", None, 9),
+            entry_with_lines(
+                "unsup",
+                "skipped",
+                Some("unexecutable parameter types"),
+                4,
+            ),
+        ];
+        let totals = span_line_denominators_from_entries(&entries);
+        assert_eq!(totals.discovered, 9 + 4);
+        assert_eq!(totals.attempted, 9);
+        assert_eq!(totals.completed, 9);
     }
 
     // ── str-jeen.31: Go broad-run root-cause aggregation ──
