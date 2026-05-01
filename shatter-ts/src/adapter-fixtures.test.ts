@@ -386,6 +386,100 @@ describe("adapter-tsconfig-paths fixture", () => {
 });
 
 // ---------------------------------------------------------------------------
+// adapter-tsconfig-at-alias fixture (str-jeen.28)
+//
+// Exercises the literal `@/` alias shape declared as `paths: { "@/*": [...] }`
+// — the most common shape in real-world Vite/Next-style projects — through the
+// shared tsconfig-paths runtime hook. Mirrors the adapter-tsconfig-paths
+// stub-vs-adapter contrast above so a regression in `@/` resolution surfaces
+// as a TS-side test failure independent of the cross-frontend E2E.
+// ---------------------------------------------------------------------------
+
+describe("adapter-tsconfig-at-alias fixture", () => {
+  const fixtureDir = path.join(FIXTURES_DIR, "adapter-tsconfig-at-alias");
+  const entryFile = path.join(fixtureDir, "src", "entry.ts");
+
+  it("returns stub results without tsconfig-paths adapter", async () => {
+    // Without the adapter, `@/lib/sign` is a bare specifier Node cannot
+    // resolve, so `classifySign` becomes the unresolvable-module stub. The
+    // stub is callable but returns "" (proxy primitive coercion), so the
+    // template literal yields "neg:" / "pos:" instead of the real value.
+    const result = await executeFunction(entryFile, "describeNumber", [42]);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).not.toBe("pos:positive");
+  });
+
+  it("execution succeeds with tsconfig-paths adapter (positive)", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{ id: "ts/module-resolution/tsconfig-paths", apply: "required" }],
+      },
+      {
+        phase: "execute",
+        project_root: fixtureDir,
+        entry_file: entryFile,
+      },
+    );
+    const result = await executeFunction(
+      entryFile,
+      "describeNumber",
+      [42],
+      undefined,
+      true,
+      runtimeHooks.resolver_adapters,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("pos:positive");
+  });
+
+  it("execution succeeds with tsconfig-paths adapter (negative)", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{ id: "ts/module-resolution/tsconfig-paths", apply: "required" }],
+      },
+      {
+        phase: "execute",
+        project_root: fixtureDir,
+        entry_file: entryFile,
+      },
+    );
+    const result = await executeFunction(
+      entryFile,
+      "describeNumber",
+      [-7],
+      undefined,
+      true,
+      runtimeHooks.resolver_adapters,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("neg:negative");
+  });
+
+  it("execution succeeds with tsconfig-paths adapter (zero)", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      {
+        adapters: [{ id: "ts/module-resolution/tsconfig-paths", apply: "required" }],
+      },
+      {
+        phase: "execute",
+        project_root: fixtureDir,
+        entry_file: entryFile,
+      },
+    );
+    const result = await executeFunction(
+      entryFile,
+      "describeNumber",
+      [0],
+      undefined,
+      true,
+      runtimeHooks.resolver_adapters,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("pos:zero");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // tsconfig project-references fixtures (str-jeen.27)
 // ---------------------------------------------------------------------------
 
