@@ -15,6 +15,7 @@ import {
   cachedAnalysesSize,
   __setCachedInvocationModelForTest,
   __setTestRuntimeHookFactoriesForTest,
+  __resetPreflightForTest,
 } from "./handlers.js";
 import type { RuntimeHookFactory, InvocationHook } from "./runtime-hooks.js";
 import { clearModuleCache, compiledModuleCacheSize } from "./executor.js";
@@ -219,6 +220,13 @@ export function usesAlias(): number {
 }
 `,
     );
+    // Create an empty node_modules so the str-jeen.26 env preflight passes for
+    // tests that pass TSCONFIG_PATHS_DIR as project_root. The tsconfig-paths
+    // adapter does its own resolution and does not depend on node_modules
+    // contents, so an empty directory is sufficient.
+    fs.mkdirSync(path.join(TSCONFIG_PATHS_DIR, "node_modules"), {
+      recursive: true,
+    });
   }, 30000);
 
   afterAll(async () => {
@@ -1706,6 +1714,163 @@ export function usesAlias(): number {
       expect(getLoadedModuleNames()).toContain("instrumentor");
     });
   });
+
+  describe("environment preflight (str-jeen.26)", () => {
+    // Cover the env-preflight short-circuit: a TS project missing
+    // `node_modules/` should produce one preflight failure per command,
+    // never a per-target runtime_failed cascade. The wire code is
+    // `not_supported` (stopgap; str-jeen.40 will introduce a dedicated
+    // `preflight_failed` code) and the message embeds the structured
+    // `preflight_failed: missing_node_modules: <path>` prefix.
+    let preflightProjectRoot: string;
+    let preflightFile: string;
+
+    beforeEach(() => {
+      __resetPreflightForTest();
+      preflightProjectRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), "shatter-preflight-"),
+      );
+      preflightFile = path.join(preflightProjectRoot, "target.ts");
+      fs.writeFileSync(
+        preflightFile,
+        "export function add(a: number, b: number): number { return a + b; }\n",
+      );
+    });
+
+    afterEach(() => {
+      __resetPreflightForTest();
+      fs.rmSync(preflightProjectRoot, { recursive: true, force: true });
+    });
+
+    it("reports a single preflight failure when node_modules is absent", async () => {
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: preflightFile,
+          project_root: preflightProjectRoot,
+        }),
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("preflight_failed");
+        expect(response.message).toContain("missing_node_modules");
+        expect(response.message).toContain(
+          path.join(preflightProjectRoot, "node_modules"),
+        );
+      }
+    });
+
+    it("short-circuits subsequent analyze/instrument/prepare/execute/setup with the cached failure", async () => {
+      // Prime the preflight cache via analyze.
+      await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: preflightFile,
+          project_root: preflightProjectRoot,
+        }),
+      );
+
+      const second = await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: preflightFile,
+          project_root: preflightProjectRoot,
+        }),
+      );
+      expect(second.response.status).toBe("error");
+      if (second.response.status === "error") {
+        expect(second.response.code).toBe("not_supported");
+        expect(second.response.message).toContain("missing_node_modules");
+      }
+
+      const instrumented = await handleRequest(
+        makeRequest({
+          command: "instrument",
+          file: preflightFile,
+          function: "add",
+          mocks: [],
+          project_root: preflightProjectRoot,
+        }),
+      );
+      expect(instrumented.response.status).toBe("error");
+      if (instrumented.response.status === "error") {
+        expect(instrumented.response.message).toContain("missing_node_modules");
+      }
+
+      const prepared = await handleRequest(
+        makeRequest({
+          command: "prepare",
+          file: preflightFile,
+          function: "add",
+          mocks: [],
+          project_root: preflightProjectRoot,
+        }),
+      );
+      expect(prepared.response.status).toBe("error");
+      if (prepared.response.status === "error") {
+        expect(prepared.response.message).toContain("missing_node_modules");
+      }
+
+      const executed = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: "add",
+          inputs: [1, 2],
+          mocks: [],
+        }),
+      );
+      expect(executed.response.status).toBe("error");
+      if (executed.response.status === "error") {
+        expect(executed.response.message).toContain("missing_node_modules");
+      }
+
+      const setup = await handleRequest(
+        makeRequest({
+          command: "setup",
+          file: preflightFile,
+          scope: "fn",
+          level: "function",
+          project_root: preflightProjectRoot,
+        }),
+      );
+      expect(setup.response.status).toBe("error");
+      if (setup.response.status === "error") {
+        expect(setup.response.message).toContain("missing_node_modules");
+      }
+    });
+
+    it("passes preflight when node_modules is present (analyze proceeds)", async () => {
+      fs.mkdirSync(path.join(preflightProjectRoot, "node_modules"));
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "analyze",
+          file: preflightFile,
+          project_root: preflightProjectRoot,
+        }),
+      );
+      // Either a successful analyze response or any non-preflight failure is
+      // acceptable; what matters is that we did NOT short-circuit with the
+      // preflight error.
+      if (response.status === "error") {
+        expect(response.message).not.toContain("preflight_failed");
+        expect(response.message).not.toContain("missing_node_modules");
+      } else {
+        expect(response.status).toBe("analyze");
+      }
+    });
+
+    it("does not run preflight when project_root is omitted", async () => {
+      const { response } = await handleRequest(
+        makeRequest({ command: "analyze", file: preflightFile }),
+      );
+      // No project_root means no env preflight runs; analyze should proceed
+      // (success) rather than emit a preflight error.
+      if (response.status === "error") {
+        expect(response.message).not.toContain("preflight_failed");
+      }
+    });
+  });
 });
 
 describe("protocol round-trip", () => {
@@ -1987,3 +2152,4 @@ describe("protocol round-trip", () => {
     }
   });
 });
+
