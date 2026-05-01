@@ -431,6 +431,18 @@ struct ExploreSummaryEntry {
     /// body (or any transitive callee) changed between runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deep_fingerprint: Option<String>,
+    /// Source-line span for the analyzed function (`end_line - start_line + 1`).
+    /// Populated when a `FunctionAnalysis` is in scope at construction time;
+    /// `0` for entries seeded without analyzer metadata. Used by the Go
+    /// broad-run root-cause aggregator (str-jeen.31) to weight build-failure
+    /// categories by lines of source they suppressed, so a 200-line file
+    /// failing on a single category outweighs five 5-line stubs.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    line_count: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 impl ExploreSummaryEntry {
@@ -452,6 +464,7 @@ impl ExploreSummaryEntry {
             artifact: Some(artifact_relpath),
             reason,
             deep_fingerprint,
+            line_count: 0,
         }
     }
 
@@ -475,7 +488,17 @@ impl ExploreSummaryEntry {
             artifact: None,
             reason: Some(reason_text),
             deep_fingerprint,
+            line_count: 0,
         }
+    }
+
+    /// Attach a source-line span. Returns the entry by value so the
+    /// outcome-time construction site can chain it onto either the
+    /// `available` or `unavailable` constructor without restating the
+    /// shared fields. See `line_count` doc on the struct (str-jeen.31).
+    fn with_line_count(mut self, line_count: u32) -> Self {
+        self.line_count = line_count;
+        self
     }
 }
 
@@ -537,6 +560,13 @@ struct ExploreSummary {
     /// function was filtered out as unexecutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     no_target_reason: Option<String>,
+    /// Go-only root-cause breakdown of `build_failed` outcomes for this
+    /// file (str-jeen.31). Populated at finalization time when the file
+    /// extension is `.go` and at least one `build_failed` outcome was
+    /// recorded; absent on TS / Rust files and on Go files with no
+    /// build failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    go_root_causes: Option<GoRootCauseBreakdown>,
     functions: Vec<ExploreSummaryEntry>,
 }
 
@@ -1310,6 +1340,259 @@ fn format_outcome_breakdown(buckets: &OutcomeBuckets, produced_coverage: usize) 
         "Outcome breakdown: produced coverage: {produced_coverage} · {}",
         parts.join(" · ")
     ))
+}
+
+/// Root-cause categories for Go `build_failed` outcomes in a broad run.
+/// Mirrors the buckets the Kapow validation analysis (see
+/// `docs/validation/2026-04-go-frontend-kapow-rerun.md`) used to explain why
+/// a Go scan's `build_failed` rows clustered into a small number of recurring
+/// failure modes. The categories are mutually exclusive at classify time;
+/// `Other` captures `build_failed` reasons that don't match any heuristic so
+/// the aggregator's totals always equal the per-category sum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoBuildFailureCategory {
+    /// Wrapper imported a `.../internal/...` package the target's import path
+    /// is not allowed to reach (Go's `internal/` visibility rule).
+    InternalPackage,
+    /// Wrapper failed to compile because of a missing or unused import — the
+    /// stitched harness referenced (or omitted) a symbol the rewriter did
+    /// not resolve.
+    MissingImport,
+    /// AST rewrite produced syntactically invalid Go (`syntax error`,
+    /// `expected ...`, type-checker rejection that points at rewriter output).
+    RewriteSyntax,
+    /// Wrapper and target ended up in different `package` declarations in
+    /// the same directory — Go forbids mixing package names per directory.
+    MixedPackage,
+    /// Build-time refusal because a parameter type has no compatible value
+    /// generator, surfaced through a build error rather than the analyzer's
+    /// pre-skip path (e.g. unexported type referenced through a wrapper).
+    UnsupportedParamType,
+    /// `build_failed` reason text did not match any of the recognized
+    /// patterns. Kept distinct so totals reconcile and so a future drift in
+    /// frontend wording surfaces as a rising `other` bucket rather than
+    /// silently distorting an existing category.
+    Other,
+}
+
+impl GoBuildFailureCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InternalPackage => "internal_package",
+            Self::MissingImport => "missing_import",
+            Self::RewriteSyntax => "rewrite_syntax",
+            Self::MixedPackage => "mixed_package",
+            Self::UnsupportedParamType => "unsupported_param_type",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify a Go `build_failed` reason into a root-cause bucket.
+///
+/// Heuristics match against the lowercased reason text. Order matters: the
+/// most specific patterns come first so a reason that mentions both
+/// "internal package" and "import" lands in `InternalPackage` rather than
+/// degrading to `MissingImport`.
+fn classify_go_build_failure(reason: &str) -> GoBuildFailureCategory {
+    let r = reason.to_lowercase();
+    // Internal-package visibility rule. Go's compiler and `go list` both
+    // surface this as "use of internal package ... not allowed".
+    if r.contains("internal package") || r.contains("use of internal") {
+        return GoBuildFailureCategory::InternalPackage;
+    }
+    // Mixed-package directory: `found packages X and Y in <dir>`. Match on
+    // the distinguishing prefix so we don't false-positive on the standard
+    // "package main" line.
+    if r.contains("found packages ") || r.contains("multiple packages") {
+        return GoBuildFailureCategory::MixedPackage;
+    }
+    // Unsupported parameter type (build-time variant). The analyzer's
+    // pre-skip path already lands on Unsupported; this branch picks up the
+    // residual cases where the build harness chokes on a parameter shape.
+    if r.contains("unsupported parameter type")
+        || r.contains("no value generator")
+        || r.contains("cannot synthesize value for")
+    {
+        return GoBuildFailureCategory::UnsupportedParamType;
+    }
+    // Missing or undeclared imports. `go build` emits "imported and not
+    // used", `go list` emits "no required module provides package", and the
+    // type checker emits "undefined: <pkg>.<sym>" / "undeclared name".
+    if r.contains("imported and not used")
+        || r.contains("no required module provides package")
+        || r.contains("undefined:")
+        || r.contains("undeclared name")
+        || r.contains("missing import")
+        || r.contains("could not import")
+    {
+        return GoBuildFailureCategory::MissingImport;
+    }
+    // Rewriter output that does not parse / type-check. `syntax error` is
+    // the canonical Go parser message; `expected '...'` covers the parser's
+    // diagnostic prefix; `not a type` and similar fire when the rewriter
+    // emits an identifier in a position the type checker rejects.
+    if r.contains("syntax error")
+        || r.contains("expected '")
+        || r.contains("expected operand")
+        || r.contains("expected type")
+        || r.contains("not a type")
+        || r.contains("invalid recursive type")
+    {
+        return GoBuildFailureCategory::RewriteSyntax;
+    }
+    GoBuildFailureCategory::Other
+}
+
+/// Per-category count and line-weight totals for Go `build_failed` outcomes
+/// across a broad run. Serialized into the per-file `ExploreSummary` JSON
+/// (str-jeen.31) so downstream tooling and the broad-run markdown both read
+/// from a single rollup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct GoRootCauseBreakdown {
+    /// Wrapper imported a `.../internal/...` package not visible to its
+    /// import path.
+    internal_package: GoRootCauseBucket,
+    /// Wrapper had a missing, undeclared, or unused import.
+    missing_import: GoRootCauseBucket,
+    /// Rewriter emitted Go that does not parse or type-check.
+    rewrite_syntax: GoRootCauseBucket,
+    /// Wrapper and target ended up in different `package` declarations.
+    mixed_package: GoRootCauseBucket,
+    /// Build-time unsupported parameter type (residual to the analyzer's
+    /// pre-skip path).
+    unsupported_param_type: GoRootCauseBucket,
+    /// `build_failed` reasons that didn't match any heuristic. Surfaces
+    /// drift in frontend wording as a rising bucket instead of silently
+    /// reweighting an existing category.
+    other: GoRootCauseBucket,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct GoRootCauseBucket {
+    count: u32,
+    line_weight: u32,
+}
+
+impl GoRootCauseBreakdown {
+    fn record(&mut self, category: GoBuildFailureCategory, line_count: u32) {
+        let bucket = match category {
+            GoBuildFailureCategory::InternalPackage => &mut self.internal_package,
+            GoBuildFailureCategory::MissingImport => &mut self.missing_import,
+            GoBuildFailureCategory::RewriteSyntax => &mut self.rewrite_syntax,
+            GoBuildFailureCategory::MixedPackage => &mut self.mixed_package,
+            GoBuildFailureCategory::UnsupportedParamType => &mut self.unsupported_param_type,
+            GoBuildFailureCategory::Other => &mut self.other,
+        };
+        bucket.count = bucket.count.saturating_add(1);
+        bucket.line_weight = bucket.line_weight.saturating_add(line_count);
+    }
+
+    fn merge(&mut self, other: &GoRootCauseBreakdown) {
+        for (dst, src) in [
+            (&mut self.internal_package, &other.internal_package),
+            (&mut self.missing_import, &other.missing_import),
+            (&mut self.rewrite_syntax, &other.rewrite_syntax),
+            (&mut self.mixed_package, &other.mixed_package),
+            (
+                &mut self.unsupported_param_type,
+                &other.unsupported_param_type,
+            ),
+            (&mut self.other, &other.other),
+        ] {
+            dst.count = dst.count.saturating_add(src.count);
+            dst.line_weight = dst.line_weight.saturating_add(src.line_weight);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.internal_package.count == 0
+            && self.missing_import.count == 0
+            && self.rewrite_syntax.count == 0
+            && self.mixed_package.count == 0
+            && self.unsupported_param_type.count == 0
+            && self.other.count == 0
+    }
+
+    /// Iterate categories in a stable display order. The non-`Other`
+    /// categories come first so the markdown table reads down the
+    /// well-known buckets before the catch-all.
+    fn iter_buckets(&self) -> [(GoBuildFailureCategory, &GoRootCauseBucket); 6] {
+        [
+            (
+                GoBuildFailureCategory::InternalPackage,
+                &self.internal_package,
+            ),
+            (GoBuildFailureCategory::MissingImport, &self.missing_import),
+            (GoBuildFailureCategory::RewriteSyntax, &self.rewrite_syntax),
+            (GoBuildFailureCategory::MixedPackage, &self.mixed_package),
+            (
+                GoBuildFailureCategory::UnsupportedParamType,
+                &self.unsupported_param_type,
+            ),
+            (GoBuildFailureCategory::Other, &self.other),
+        ]
+    }
+}
+
+/// Aggregate Go `build_failed` outcomes across `entries` into a
+/// per-category breakdown. Caller is responsible for filtering to entries
+/// from Go targets (typically by file extension on the owning summary).
+fn aggregate_go_root_causes_from_entries(
+    entries: &[ExploreSummaryEntry],
+) -> GoRootCauseBreakdown {
+    use shatter_core::protocol::OutcomeStatus;
+    let mut breakdown = GoRootCauseBreakdown::default();
+    for entry in entries {
+        if outcome_status_from_entry(entry) != OutcomeStatus::BuildFailed {
+            continue;
+        }
+        let reason = entry.reason.as_deref().unwrap_or("");
+        let category = classify_go_build_failure(reason);
+        breakdown.record(category, entry.line_count);
+    }
+    breakdown
+}
+
+/// Aggregate Go `build_failed` outcomes across all per-file summaries in a
+/// broad run. Filters by `.go` file extension so a mixed-language run only
+/// reports Go rows here.
+fn aggregate_go_root_causes(summaries: &[ExploreSummary]) -> GoRootCauseBreakdown {
+    let mut total = GoRootCauseBreakdown::default();
+    for summary in summaries {
+        if !summary.file.to_lowercase().ends_with(".go") {
+            continue;
+        }
+        let per_file = aggregate_go_root_causes_from_entries(&summary.functions);
+        total.merge(&per_file);
+    }
+    total
+}
+
+/// Render the Go root-cause breakdown as a markdown subsection. Returns
+/// `None` when no Go `build_failed` outcomes were recorded so a clean
+/// non-Go run does not get an empty Go header in its footer.
+fn format_go_root_causes_md(breakdown: &GoRootCauseBreakdown) -> Option<String> {
+    if breakdown.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "**Go build-failure root causes** (line-weighted)\n\n\
+         | Category | Count | Lines |\n\
+         | --- | ---: | ---: |\n",
+    );
+    for (category, bucket) in breakdown.iter_buckets() {
+        if bucket.count == 0 {
+            continue;
+        }
+        out.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            category.as_str(),
+            bucket.count,
+            bucket.line_weight,
+        ));
+    }
+    Some(out)
 }
 
 /// Default human-readable reason for an entry that lacks one.
@@ -3015,6 +3298,7 @@ pub(crate) async fn run_explore(
             skipped_by_policy: 0,
             produced_coverage: 0,
             no_target_reason: classify_no_target_reason(attempted, pre_skipped),
+            go_root_causes: None,
             functions: skipped_unexecutable
                 .iter()
                 .map(|(name, _)| {
@@ -3608,6 +3892,15 @@ pub(crate) async fn run_explore(
             // (build / runtime / timeout) so the row's `reason` carries both
             // the persistence failure and the underlying cause.
             let entry_fingerprint = deep_fingerprints.get(&outcome.func.name).cloned();
+            // str-jeen.31: capture function span so the Go broad-run
+            // root-cause aggregator can line-weight build_failed outcomes.
+            // `end_line >= start_line` is the analyzer's contract; saturating
+            // arithmetic guards a malformed frontend response.
+            let entry_line_count = outcome
+                .func
+                .end_line
+                .saturating_sub(outcome.func.start_line)
+                .saturating_add(1);
             let bucket_entry = match artifact_relpath.clone() {
                 Some(path) => ExploreSummaryEntry::available(
                     outcome.func.name.clone(),
@@ -3615,7 +3908,8 @@ pub(crate) async fn run_explore(
                     path,
                     summary_reason.clone(),
                     entry_fingerprint,
-                ),
+                )
+                .with_line_count(entry_line_count),
                 None => {
                     let inferred = match (&outcome.result, summary_status) {
                         (Ok(_), _) => UnavailableReason::WriteFailed,
@@ -3641,6 +3935,7 @@ pub(crate) async fn run_explore(
                         summary_reason.clone(),
                         entry_fingerprint,
                     )
+                    .with_line_count(entry_line_count)
                 }
             };
             match outcome_status_from_entry(&bucket_entry) {
@@ -3673,6 +3968,16 @@ pub(crate) async fn run_explore(
             cleanup_resume_state(&artifact_root, &file_str, &outcome.func);
         }
         explore_summary.elapsed_secs = target_start.elapsed().as_secs_f64();
+        // str-jeen.31: attach the Go root-cause breakdown for this file when
+        // the target is Go and at least one build_failed outcome was seen.
+        // Computed once at finalization rather than incrementally so the
+        // serialized JSON reflects the final entry set.
+        if matches!(target_language, crate::args::Language::Go) {
+            let breakdown = aggregate_go_root_causes_from_entries(&explore_summary.functions);
+            if !breakdown.is_empty() {
+                explore_summary.go_root_causes = Some(breakdown);
+            }
+        }
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to update explore summary: {e}");
         }
@@ -4075,6 +4380,11 @@ pub(crate) async fn run_explore(
             run_produced_coverage += summary.produced_coverage;
         }
         let breakdown = format_outcome_breakdown(&run_buckets, run_produced_coverage);
+        // str-jeen.31: aggregate Go build_failed root-causes across the
+        // whole run so a broad-run footer surfaces the per-category counts
+        // and line weights alongside the existing outcome breakdown.
+        let go_breakdown = aggregate_go_root_causes(&report_summaries);
+        let go_md = format_go_root_causes_md(&go_breakdown);
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if total_lines > 0 {
                 let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
@@ -4088,10 +4398,14 @@ pub(crate) async fn run_explore(
                 .as_deref()
                 .map(|line| format!("\n\n{line}"))
                 .unwrap_or_default();
+            let go_suffix = go_md
+                .as_deref()
+                .map(|s| format!("\n\n{s}"))
+                .unwrap_or_default();
             print_markdown(
                 &format!(
                     "\n---\n\n**Summary:** {total_paths} path(s) across \
-                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}\n"
+                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}{go_suffix}\n"
                 ),
                 use_color,
             );
@@ -4108,6 +4422,9 @@ pub(crate) async fn run_explore(
             );
             if let Some(line) = breakdown.as_deref() {
                 println!("{line}");
+            }
+            if let Some(s) = go_md.as_deref() {
+                println!("\n{s}");
             }
         }
     }
@@ -4220,9 +4537,11 @@ mod tests {
     use super::{
         ArtifactValidationIssue, ArtifactValidationReport, EXPLORE_ARTIFACT_VERSION,
         ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
-        UnavailableReason, batch_is_exhausted, bucket_counts_from_entries, check_summary_paths,
-        classify_no_target_reason, classify_outcome_status, emit_explore_progress,
-        explore_summary_path, finalize_explore, format_outcome_breakdown, format_progress_snapshot,
+        GoRootCauseBreakdown, UnavailableReason, aggregate_go_root_causes,
+        aggregate_go_root_causes_from_entries, batch_is_exhausted, bucket_counts_from_entries,
+        check_summary_paths, classify_go_build_failure, classify_no_target_reason,
+        classify_outcome_status, emit_explore_progress, explore_summary_path, finalize_explore,
+        format_go_root_causes_md, format_outcome_breakdown, format_progress_snapshot,
         load_explore_artifacts, outcome_status_from_entry, persist_stage_outputs,
         read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
         validate_artifact_references, write_explore_artifact, write_explore_summary,
@@ -5083,6 +5402,7 @@ mod tests {
                     artifact: Some("src_user.ts/00012_load.json".to_string()),
                     reason: None,
                     deep_fingerprint: None,
+                    line_count: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save".to_string(),
@@ -5090,6 +5410,7 @@ mod tests {
                     artifact: Some("src_user.ts/00025_save.json".to_string()),
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
+                    line_count: 0,
                 },
             ],
             ..Default::default()
@@ -5163,6 +5484,7 @@ mod tests {
                     artifact: Some(artifact_relpath),
                     reason: None,
                     deep_fingerprint: None,
+                    line_count: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save/user".to_string(),
@@ -5170,6 +5492,7 @@ mod tests {
                     artifact: None,
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
+                    line_count: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "skip/user".to_string(),
@@ -5177,6 +5500,7 @@ mod tests {
                     artifact: None,
                     reason: Some("unexecutable parameter types".to_string()),
                     deep_fingerprint: None,
+                    line_count: 0,
                 },
             ],
             ..Default::default()
@@ -5245,6 +5569,7 @@ mod tests {
                 artifact: None,
                 reason: Some("unexecutable parameter types".to_string()),
                 deep_fingerprint: None,
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5469,6 +5794,7 @@ mod tests {
                     artifact: Some("src_user.ts/00012_load.json".to_string()),
                     reason: None,
                     deep_fingerprint: Some("abc123".to_string()),
+                    line_count: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save".to_string(),
@@ -5476,6 +5802,7 @@ mod tests {
                     artifact: None,
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: Some("def456".to_string()),
+                    line_count: 0,
                 },
             ],
             ..Default::default()
@@ -5558,6 +5885,7 @@ mod tests {
                 artifact: Some(artifact_relpath),
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5592,6 +5920,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_load_user.json".to_string()),
                 reason: None,
                 deep_fingerprint: Some("fp-old".to_string()),
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5623,6 +5952,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_load_user.json".to_string()),
                 reason: None,
                 deep_fingerprint: None, // legacy summary
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5656,6 +5986,7 @@ mod tests {
                 artifact: None,
                 reason: Some("timeout".to_string()),
                 deep_fingerprint: Some("fp-abc".to_string()),
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5686,6 +6017,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_nonexistent.json".to_string()),
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
+                line_count: 0,
             }],
             ..Default::default()
         };
@@ -5815,7 +6147,19 @@ mod tests {
             artifact: None,
             reason: reason.map(|s| s.to_string()),
             deep_fingerprint: None,
+            line_count: 0,
         }
+    }
+
+    fn entry_with_lines(
+        name: &str,
+        status: &str,
+        reason: Option<&str>,
+        line_count: u32,
+    ) -> ExploreSummaryEntry {
+        let mut e = entry(name, status, reason);
+        e.line_count = line_count;
+        e
     }
 
     #[test]
@@ -5852,6 +6196,174 @@ mod tests {
             + buckets.unsupported
             + buckets.skipped_by_policy;
         assert_eq!(total, entries.len());
+    }
+
+    // ── str-jeen.31: Go broad-run root-cause aggregation ──
+
+    #[test]
+    fn classify_go_build_failure_routes_each_category_via_canonical_reason_text() {
+        use super::GoBuildFailureCategory as G;
+        // Each canonical Go-toolchain wording must land in its category. The
+        // assertion is per-pattern so a future heuristic regression points
+        // at the exact wording that drifted.
+        assert_eq!(
+            classify_go_build_failure(
+                "use of internal package github.com/x/y/internal/foo not allowed"
+            ),
+            G::InternalPackage,
+        );
+        assert_eq!(
+            classify_go_build_failure("found packages foo (foo.go) and bar (bar.go) in /tmp/x"),
+            G::MixedPackage,
+        );
+        assert_eq!(
+            classify_go_build_failure("imported and not used: \"fmt\""),
+            G::MissingImport,
+        );
+        assert_eq!(
+            classify_go_build_failure("undefined: pkg.DoThing"),
+            G::MissingImport,
+        );
+        assert_eq!(
+            classify_go_build_failure("syntax error: unexpected newline, expecting comma"),
+            G::RewriteSyntax,
+        );
+        assert_eq!(
+            classify_go_build_failure("expected operand, found ')'"),
+            G::RewriteSyntax,
+        );
+        assert_eq!(
+            classify_go_build_failure("unsupported parameter type chan<- int"),
+            G::UnsupportedParamType,
+        );
+        // Unmatched wording falls into Other so totals reconcile.
+        assert_eq!(
+            classify_go_build_failure("disk full while linking"),
+            G::Other,
+        );
+        // Internal-package + missing-import collision: the more specific
+        // bucket wins so a single reason can't be double-counted.
+        assert_eq!(
+            classify_go_build_failure(
+                "use of internal package x not allowed; undefined: x.Do"
+            ),
+            G::InternalPackage,
+        );
+    }
+
+    #[test]
+    fn aggregate_go_root_causes_line_weights_synthetic_mix() {
+        // Synthetic mix of build_failed entries spanning every category plus
+        // a non-build_failed row that must NOT contribute. The aggregator
+        // must report (a) per-category counts, (b) line-weight equal to the
+        // sum of contributing entries' line_count, (c) zero counts for
+        // categories nothing matched.
+        let entries = vec![
+            // Two internal-package failures totaling 30 lines.
+            entry_with_lines(
+                "InternalA",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: use of internal package x not allowed"),
+                10,
+            ),
+            entry_with_lines(
+                "InternalB",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: use of internal package y not allowed"),
+                20,
+            ),
+            // One missing-import failure of 5 lines.
+            entry_with_lines(
+                "MissingImp",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: undefined: pkg.X"),
+                5,
+            ),
+            // One rewrite-syntax failure of 100 lines (heavy weight).
+            entry_with_lines(
+                "Syntax",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: syntax error: unexpected '}'"),
+                100,
+            ),
+            // One mixed-package failure of 7 lines.
+            entry_with_lines(
+                "MixedPkg",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: found packages foo and bar in /tmp"),
+                7,
+            ),
+            // One unsupported-param-type build failure of 3 lines.
+            entry_with_lines(
+                "BadParam",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: unsupported parameter type chan int"),
+                3,
+            ),
+            // One unmatched build_failed reason of 1 line lands in Other.
+            entry_with_lines(
+                "Mystery",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: linker exit 1"),
+                1,
+            ),
+            // Non-build_failed rows must NOT contribute to any category.
+            entry_with_lines("Slow", "failed", Some("function timed out after 30s"), 999),
+            entry_with_lines("Done", "completed", None, 50),
+        ];
+        let breakdown = aggregate_go_root_causes_from_entries(&entries);
+        assert_eq!(breakdown.internal_package.count, 2);
+        assert_eq!(breakdown.internal_package.line_weight, 30);
+        assert_eq!(breakdown.missing_import.count, 1);
+        assert_eq!(breakdown.missing_import.line_weight, 5);
+        assert_eq!(breakdown.rewrite_syntax.count, 1);
+        assert_eq!(breakdown.rewrite_syntax.line_weight, 100);
+        assert_eq!(breakdown.mixed_package.count, 1);
+        assert_eq!(breakdown.mixed_package.line_weight, 7);
+        assert_eq!(breakdown.unsupported_param_type.count, 1);
+        assert_eq!(breakdown.unsupported_param_type.line_weight, 3);
+        assert_eq!(breakdown.other.count, 1);
+        assert_eq!(breakdown.other.line_weight, 1);
+        // Markdown render exists when any non-zero bucket is present.
+        let md = format_go_root_causes_md(&breakdown).expect("non-empty breakdown renders");
+        assert!(md.contains("`internal_package`"));
+        assert!(md.contains("`rewrite_syntax`"));
+        assert!(md.contains("100"), "syntax line weight must surface: {md}");
+        // Empty breakdown renders to None so non-Go runs stay clean.
+        assert!(format_go_root_causes_md(&GoRootCauseBreakdown::default()).is_none());
+    }
+
+    #[test]
+    fn aggregate_go_root_causes_filters_to_go_files() {
+        // Mixed-language run: a TS file with a build_failed row must NOT
+        // contribute to the Go breakdown, even though its reason text
+        // would otherwise match a Go classifier heuristic.
+        let go_summary = make_summary(
+            "src/foo.go",
+            vec![entry_with_lines(
+                "Foo",
+                "failed",
+                Some(
+                    "execute error (InstrumentationFailed): build failed: use of internal package",
+                ),
+                10,
+            )],
+        );
+        let ts_summary = make_summary(
+            "src/foo.ts",
+            vec![entry_with_lines(
+                "Bar",
+                "failed",
+                Some(
+                    "execute error (InstrumentationFailed): build failed: use of internal package",
+                ),
+                10,
+            )],
+        );
+        let breakdown = aggregate_go_root_causes(&[go_summary, ts_summary]);
+        // Only the Go entry contributes.
+        assert_eq!(breakdown.internal_package.count, 1);
+        assert_eq!(breakdown.internal_package.line_weight, 10);
     }
 
     #[test]
@@ -5973,6 +6485,7 @@ mod tests {
             artifact: None,
             reason: Some(reason_str),
             deep_fingerprint: None,
+            line_count: 0,
         };
         assert_eq!(
             outcome_status_from_entry(&entry),
@@ -6149,6 +6662,7 @@ mod tests {
             artifact: None,
             reason: None,
             deep_fingerprint: None,
+            line_count: 0,
         };
         let summary = make_summary("src.ts", vec![entry]);
         let report = validate_artifact_references(dir.path(), &[summary]);
