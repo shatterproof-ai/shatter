@@ -46,8 +46,74 @@ const DEFAULT_COMPILER_OPTIONS: ts.CompilerOptions = {
 };
 
 /**
+ * Resolve a project-reference `path` (which may be a directory or a tsconfig
+ * file) to the absolute path of its tsconfig.json.
+ */
+function resolveReferencedTsconfigPath(referencePath: string): string {
+  if (referencePath.endsWith(".json")) {
+    return referencePath;
+  }
+  return path.join(referencePath, "tsconfig.json");
+}
+
+/**
+ * Parse a referenced project's tsconfig and return its compiler options,
+ * with `baseUrl` resolved relative to the referenced tsconfig's own directory.
+ *
+ * Single-level only: a referenced tsconfig that itself declares further
+ * `references` is not recursed into for this issue (str-jeen.27).
+ */
+function loadReferencedOptions(referencedTsconfigPath: string): ts.CompilerOptions | null {
+  const readResult = ts.readConfigFile(referencedTsconfigPath, ts.sys.readFile);
+  if (readResult.error) {
+    return null;
+  }
+
+  const referencedDir = path.dirname(referencedTsconfigPath);
+  const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, referencedDir);
+  if (parsed.errors.length > 0) {
+    return null;
+  }
+  return parsed.options;
+}
+
+/**
+ * Merge `baseUrl`, `paths`, and `jsx` from referenced project compiler options
+ * into a root options object. Root-declared values win on conflict; otherwise
+ * the first non-undefined value across references is taken. `paths` keys are
+ * unioned (root keys win).
+ */
+function mergeReferencedOptions(
+  rootOptions: ts.CompilerOptions,
+  referencedOptionsList: ts.CompilerOptions[],
+): ts.CompilerOptions {
+  const merged: ts.CompilerOptions = { ...rootOptions };
+
+  for (const refOptions of referencedOptionsList) {
+    if (merged.baseUrl === undefined && refOptions.baseUrl !== undefined) {
+      merged.baseUrl = refOptions.baseUrl;
+    }
+    if (merged.jsx === undefined && refOptions.jsx !== undefined) {
+      merged.jsx = refOptions.jsx;
+    }
+    if (refOptions.paths) {
+      const existingPaths = merged.paths ?? {};
+      const mergedPaths: ts.MapLike<string[]> = { ...refOptions.paths, ...existingPaths };
+      merged.paths = mergedPaths;
+    }
+  }
+
+  return merged;
+}
+
+/**
  * Load compiler options from tsconfig.json if a project root is provided,
  * falling back to hardcoded defaults on any error or when no root is given.
+ *
+ * If the root tsconfig declares project `references`, this function merges
+ * `baseUrl`, `paths`, and `jsx` from each referenced project's tsconfig
+ * (single-level — referenced configs that themselves have `references` are
+ * not recursed; that is out of scope for str-jeen.27).
  */
 function loadCompilerOptions(absoluteFilePath: string, projectRoot?: string): ts.CompilerOptions {
   if (!projectRoot) {
@@ -70,12 +136,37 @@ function loadCompilerOptions(absoluteFilePath: string, projectRoot?: string): ts
     return DEFAULT_COMPILER_OPTIONS;
   }
 
+  let options: ts.CompilerOptions = parsed.options;
+
+  const projectReferences = parsed.projectReferences ?? [];
+  if (projectReferences.length > 0) {
+    const referencedOptionsList: ts.CompilerOptions[] = [];
+    for (const reference of projectReferences) {
+      const referencedTsconfigPath = resolveReferencedTsconfigPath(reference.path);
+      const refOptions = loadReferencedOptions(referencedTsconfigPath);
+      if (refOptions) {
+        referencedOptionsList.push(refOptions);
+      }
+    }
+    options = mergeReferencedOptions(options, referencedOptionsList);
+  }
+
   // Preserve critical defaults that shatter needs
   return {
-    ...parsed.options,
+    ...options,
     noEmit: true,
     allowJs: true,
   };
+}
+
+/**
+ * Public wrapper: load and (where applicable) project-reference-merge the
+ * compiler options for a project root, without analyzing a specific file.
+ *
+ * Exported for tests asserting the merged-config contract.
+ */
+export function loadProjectCompilerOptions(projectRoot: string): ts.CompilerOptions {
+  return loadCompilerOptions(projectRoot, projectRoot);
 }
 
 /**

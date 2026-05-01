@@ -8,7 +8,9 @@
 
 import * as path from "node:path";
 
-import { analyzeFile } from "./analyzer.js";
+import * as ts from "typescript";
+
+import { analyzeFile, loadProjectCompilerOptions } from "./analyzer.js";
 import { executeFunction, executeAdapterOwned } from "./executor.js";
 import { REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
 import { resolveRuntimeHooks } from "./runtime-hooks.js";
@@ -380,5 +382,58 @@ describe("adapter-tsconfig-paths fixture", () => {
     );
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("Value: zero");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tsconfig project-references fixtures (str-jeen.27)
+// ---------------------------------------------------------------------------
+
+describe("adapter-tsconfig-references fixture", () => {
+  const fixtureDir = path.join(FIXTURES_DIR, "adapter-tsconfig-references");
+  const libProjectDir = path.join(fixtureDir, "packages", "lib");
+  const uiProjectDir = path.join(fixtureDir, "packages", "ui");
+  const mathFile = path.join(libProjectDir, "src", "math.ts");
+  const greetingFile = path.join(uiProjectDir, "src", "greeting.tsx");
+
+  it("merges baseUrl, paths, and jsx from referenced project configs", () => {
+    const options = loadProjectCompilerOptions(fixtureDir);
+
+    // baseUrl came from packages/lib/tsconfig.json (resolved relative to that dir)
+    expect(options.baseUrl).toBeDefined();
+    expect(path.resolve(options.baseUrl!)).toBe(path.resolve(libProjectDir));
+
+    // paths from packages/lib should be merged in
+    expect(options.paths).toBeDefined();
+    expect(Object.keys(options.paths!)).toContain("@lib/*");
+    expect(options.paths!["@lib/*"]).toEqual(["src/*"]);
+
+    // jsx from packages/ui should be merged in (react-jsx)
+    expect(options.jsx).toBe(ts.JsxEmit.ReactJSX);
+  });
+
+  it("discovers and executes a target inside a referenced project (lib/math)", async () => {
+    const analyzed = analyzeFile(mathFile, "clamp", fixtureDir);
+    expect(analyzed).toHaveLength(1);
+    expect(analyzed[0]!.params).toHaveLength(3);
+    expect(analyzed[0]!.branches.length).toBeGreaterThanOrEqual(2);
+
+    const within = await executeFunction(mathFile, "clamp", [5, 0, 10]);
+    expect(within.thrown_error).toBeNull();
+    expect(within.return_value).toBe(5);
+
+    const clampedLow = await executeFunction(mathFile, "clamp", [-3, 0, 10]);
+    expect(clampedLow.return_value).toBe(0);
+
+    const clampedHigh = await executeFunction(mathFile, "clamp", [99, 0, 10]);
+    expect(clampedHigh.return_value).toBe(10);
+  });
+
+  it("analyzes a TSX target inside a referenced project (ui/greeting)", () => {
+    const analyzed = analyzeFile(greetingFile, "buildGreeting", fixtureDir);
+    expect(analyzed).toHaveLength(1);
+    expect(analyzed[0]!.params).toHaveLength(1);
+    expect(analyzed[0]!.params[0]!.type.kind).toBe("str");
+    expect(analyzed[0]!.branches.length).toBeGreaterThanOrEqual(1);
   });
 });
