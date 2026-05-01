@@ -1307,19 +1307,268 @@ fn classify_outcome_status(
 /// `total_functions` is the count of work items the explorer scheduled
 /// (post-resume, post-eligibility filtering). `pre_skipped` is the
 /// count of functions the analyzer rejected as unexecutable before
-/// scheduling. Both are accepted for forward-compatibility with siblings
-/// str-jeen.22–.25, which will tighten this classifier as per-language
-/// detection lands; for now the schema-only path always emits
-/// `Unclassified` so all zero-target files share a single default
+/// scheduling.
+///
+/// Per-language refinement is delegated to a language-specific helper
+/// when the file path's language matches one with a registered classifier
+/// (str-jeen.22–.24). The Rust classifier (str-jeen.24) lives below as
+/// `rust_classify_no_target_reason`; see also the parity-matrix entry
+/// `shared_wire_types.no_target_reason` (`implemented_via:
+/// cli_classifier`). Files that fall through every per-language check
+/// land on `Unclassified` so all zero-target files retain a default
 /// taxonomy slot.
 fn classify_no_target_reason(
     total_functions: usize,
     _pre_skipped: usize,
+    language: crate::args::Language,
+    file: &Path,
 ) -> Option<shatter_core::protocol::NoTargetReason> {
     if total_functions > 0 {
         return None;
     }
+    if language == crate::args::Language::Rust
+        && let Some(reason) = rust_classify_no_target_reason(file)
+    {
+        return Some(reason);
+    }
     Some(shatter_core::protocol::NoTargetReason::Unclassified)
+}
+
+/// Filename Cargo treats as a build script when present at a crate root.
+const RUST_BUILD_SCRIPT_FILENAME: &str = "build.rs";
+
+/// Manifest filename that anchors a Cargo crate root. A `build.rs` file is
+/// only treated as a build script when this manifest sits alongside it.
+const RUST_CRATE_MANIFEST_FILENAME: &str = "Cargo.toml";
+
+/// Cargo's integration-test directory segment. Files under any directory
+/// named exactly `tests` (Cargo's convention for `tests/*.rs` integration
+/// tests) classify as `test_module` regardless of content.
+const RUST_INTEGRATION_TEST_DIR: &str = "tests";
+
+/// Suffix conventions for Rust test files. Either suffix on the basename
+/// is treated as a `test_module` signal even outside a `tests/` directory.
+const RUST_TEST_FILE_SUFFIXES: &[&str] = &["_test.rs", "_tests.rs"];
+
+/// Maximum bytes of source we read when running content-based heuristics
+/// for a Rust no-target file. The file already returned zero analyzer
+/// targets, so a coarse line scan is sufficient — a hard cap protects
+/// against the rare oversized fixture without changing classifier behavior
+/// on real Rust files (well under this size in practice).
+const RUST_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
+
+/// Per-Rust no-target reason classifier (str-jeen.24). Returns the
+/// taxonomy variant a Rust file matches, or `None` if no Rust-specific
+/// signal applies (caller falls back to `Unclassified`). Hosted CLI-side
+/// per the str-jeen.25 precedent — see `parity-matrix.yaml`
+/// `shared_wire_types.no_target_reason`.
+///
+/// Order of checks (first match wins):
+///   1. `build_script` — basename `build.rs` AND sibling `Cargo.toml`.
+///   2. `test_module` (path) — file under any `tests/` directory segment,
+///      OR basename ends in `_test.rs` / `_tests.rs` and is not a crate
+///      root file. Cargo's integration-test convention is unambiguous.
+///   3. `declaration_only` — content scan finds no items beyond
+///      `mod` / `use` / `pub use` / `extern crate` declarations and
+///      attribute lines. Heuristic is conservative: if the scanner finds
+///      anything it doesn't recognize as a pure declaration (notably
+///      `macro_rules!`, `include!`, or any token that might expand into
+///      a definition), the function returns `None` rather than mislabel
+///      a macro-heavy file.
+///   4. `test_module` (content fallback) — every non-attribute item
+///      sits under a `#[cfg(test)]` gate or carries `#[test]`.
+///
+/// Anything else returns `None` so the caller emits `Unclassified`.
+fn rust_classify_no_target_reason(
+    file: &Path,
+) -> Option<shatter_core::protocol::NoTargetReason> {
+    use shatter_core::protocol::NoTargetReason;
+
+    if rust_is_build_script(file) {
+        return Some(NoTargetReason::BuildScript);
+    }
+    if rust_is_test_module_by_path(file) {
+        return Some(NoTargetReason::TestModule);
+    }
+
+    // Content-based heuristics share a single source read.
+    let source = rust_read_capped_source(file)?;
+    if rust_is_declaration_only(&source) {
+        return Some(NoTargetReason::DeclarationOnly);
+    }
+    if rust_is_test_module_by_content(&source) {
+        return Some(NoTargetReason::TestModule);
+    }
+
+    None
+}
+
+/// True when `file` is exactly `build.rs` AND a sibling `Cargo.toml`
+/// sits in the same directory (Cargo's crate-root convention). A
+/// `build.rs` deep in a fixtures tree without a sibling manifest does
+/// NOT classify, per the planning notes in str-jeen.24.
+fn rust_is_build_script(file: &Path) -> bool {
+    let basename_matches = file
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name == RUST_BUILD_SCRIPT_FILENAME);
+    if !basename_matches {
+        return false;
+    }
+    let Some(parent) = file.parent() else {
+        return false;
+    };
+    parent.join(RUST_CRATE_MANIFEST_FILENAME).is_file()
+}
+
+/// True when `file` lives under a `tests/` directory segment OR its
+/// basename ends in `_test.rs` / `_tests.rs` (and is not the crate root,
+/// which Cargo names `lib.rs` or `main.rs`). Path-based test detection
+/// is unambiguous in Cargo so we accept it without reading the source.
+fn rust_is_test_module_by_path(file: &Path) -> bool {
+    let in_tests_dir = file
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|seg| seg == RUST_INTEGRATION_TEST_DIR);
+    if in_tests_dir {
+        return true;
+    }
+    let Some(basename) = file.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    RUST_TEST_FILE_SUFFIXES
+        .iter()
+        .any(|suffix| basename.ends_with(suffix))
+}
+
+/// Read up to `RUST_CONTENT_SCAN_BYTE_CAP` bytes of the file as UTF-8.
+/// Returns `None` on IO error or non-UTF-8 prefix; the caller treats
+/// that as "no Rust-specific signal" and falls back to `Unclassified`.
+fn rust_read_capped_source(file: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut handle = std::fs::File::open(file).ok()?;
+    let mut buf = vec![0u8; RUST_CONTENT_SCAN_BYTE_CAP];
+    let n = handle.read(&mut buf).ok()?;
+    buf.truncate(n);
+    String::from_utf8(buf).ok()
+}
+
+/// True when the source contains only declarations: `mod`, `use`,
+/// `pub use`, `pub mod`, `extern crate`, attribute lines, comments,
+/// and blank lines. A single `fn`, `impl`, `trait`, `struct`, `enum`,
+/// `const`, `static`, `type`, `union`, `macro_rules!`, or any unknown
+/// non-blank statement disqualifies the file — the heuristic stays
+/// conservative so a macro-heavy file (e.g. `include!(...)` or
+/// re-exporting macros) returns `false` and the caller emits
+/// `Unclassified` rather than a wrong taxonomy slot.
+fn rust_is_declaration_only(source: &str) -> bool {
+    let mut saw_declaration = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || rust_line_is_pure_attribute_or_comment(trimmed) {
+            continue;
+        }
+        if rust_line_is_pure_declaration(trimmed) {
+            saw_declaration = true;
+            continue;
+        }
+        // Anything else (a top-level item body, a macro invocation, an
+        // inline `mod foo { ... }` block-open, etc.) is conservatively
+        // "not pure declaration" — return false so the caller falls
+        // through to the content-fallback test_module check or
+        // Unclassified.
+        return false;
+    }
+    saw_declaration
+}
+
+/// True for an attribute (`#[...]` / `#![...]`), a line comment
+/// (`// ...` or `/// ...`), or the trivial single-line block-comment
+/// form (`/* ... */`). Multi-line block comments are conservatively
+/// rejected — they're rare in declaration-only files and a content scanner
+/// for them adds complexity without behavioral wins.
+fn rust_line_is_pure_attribute_or_comment(line: &str) -> bool {
+    if line.starts_with("//") {
+        return true;
+    }
+    if line.starts_with("#[") || line.starts_with("#![") {
+        return true;
+    }
+    if line.starts_with("/*") && line.ends_with("*/") {
+        return true;
+    }
+    false
+}
+
+/// True for a single-line declaration: `mod x;`, `pub mod x;`,
+/// `use a::b;`, `pub use a::b::*;`, `extern crate foo;`. Lines that open
+/// an inline module (`mod x {`) or contain anything beyond a terminating
+/// `;` are NOT pure declarations — the conservative scanner returns
+/// `false` and the caller falls through.
+fn rust_line_is_pure_declaration(line: &str) -> bool {
+    if !line.ends_with(';') {
+        return false;
+    }
+    let stripped = line.trim_end_matches(';').trim();
+    let head = stripped
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    match head {
+        "mod" | "use" | "extern" => true,
+        "pub" => {
+            // `pub mod x`, `pub use a::b`, `pub(crate) mod x`, etc.
+            let after_pub = stripped.split_whitespace().nth(1).unwrap_or("");
+            // Allow `pub(...)` visibility forms — extract the next token
+            // after the visibility marker.
+            let after_pub = if after_pub.starts_with('(') {
+                stripped.split_whitespace().nth(2).unwrap_or("")
+            } else {
+                after_pub
+            };
+            matches!(after_pub, "mod" | "use" | "extern")
+        }
+        _ => false,
+    }
+}
+
+/// True when every non-attribute item in the source sits under a
+/// `#[cfg(test)]` gate (module or item-level) or carries a `#[test]`
+/// attribute. The heuristic walks lines, tracking whether the most
+/// recent attribute(s) before an item include `#[cfg(test)]` /
+/// `#[test]`. Conservative: if any top-level item lacks such a gate,
+/// returns `false`.
+fn rust_is_test_module_by_content(source: &str) -> bool {
+    let mut pending_cfg_test = false;
+    let mut pending_test_attr = false;
+    let mut saw_gated_item = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
+            // Attribute. Track cfg(test) / test markers until the next
+            // non-attribute line consumes them.
+            if trimmed.contains("cfg(test)") {
+                pending_cfg_test = true;
+            }
+            if trimmed.contains("#[test]") || trimmed == "#[test]" {
+                pending_test_attr = true;
+            }
+            continue;
+        }
+        // Non-attribute line — must be gated by a test-related attribute.
+        if pending_cfg_test || pending_test_attr {
+            saw_gated_item = true;
+            pending_cfg_test = false;
+            pending_test_attr = false;
+            continue;
+        }
+        return false;
+    }
+    saw_gated_item
 }
 
 /// Format a one-line breakdown of non-completed buckets and the
@@ -3386,7 +3635,12 @@ pub(crate) async fn run_explore(
             unsupported: pre_skipped,
             skipped_by_policy: 0,
             produced_coverage: 0,
-            no_target_reason: classify_no_target_reason(attempted, pre_skipped),
+            no_target_reason: classify_no_target_reason(
+                attempted,
+                pre_skipped,
+                target.language,
+                &target.file,
+            ),
             go_root_causes: None,
             functions: skipped_unexecutable
                 .iter()
@@ -4822,7 +5076,9 @@ mod tests {
         format_no_target_reason_table, format_outcome_breakdown, format_progress_snapshot,
         leading_bytes_match_generated_marker, load_explore_artifacts, matches_generated_schema,
         matches_policy_exclude, outcome_status_from_entry, persist_stage_outputs,
-        pre_classify_no_target_reason, read_explore_artifact, sanitize_artifact_component,
+        pre_classify_no_target_reason, read_explore_artifact, rust_classify_no_target_reason,
+        rust_is_build_script, rust_is_declaration_only, rust_is_test_module_by_content,
+        rust_is_test_module_by_path, sanitize_artifact_component,
         stage_persistence_dir, validate_artifact_references, write_explore_artifact,
         write_explore_summary,
     };
@@ -6649,20 +6905,28 @@ mod tests {
     #[test]
     fn classify_no_target_reason_defaults_to_unclassified_for_zero_target_files() {
         use shatter_core::protocol::NoTargetReason;
-        // str-jeen.21 schema-only: every zero-target file gets the
-        // `unclassified` token. Per-language refinements arrive in
-        // str-jeen.22–.25 and will tighten this classifier.
+        use std::path::PathBuf;
+        // Path-less Rust file with a non-rust suffix exercises the
+        // fall-through: zero-target file, no Rust signal, defaults to
+        // `unclassified`.
+        let ts_path = PathBuf::from("src/empty.ts");
         assert_eq!(
-            classify_no_target_reason(0, 0),
+            classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &ts_path),
             Some(NoTargetReason::Unclassified),
         );
         assert_eq!(
-            classify_no_target_reason(0, 7),
+            classify_no_target_reason(0, 7, crate::args::Language::Go, &ts_path),
             Some(NoTargetReason::Unclassified),
         );
         // total_functions>0: not a no-target file; reason is None.
-        assert_eq!(classify_no_target_reason(3, 0), None);
-        assert_eq!(classify_no_target_reason(3, 2), None);
+        assert_eq!(
+            classify_no_target_reason(3, 0, crate::args::Language::TypeScript, &ts_path),
+            None,
+        );
+        assert_eq!(
+            classify_no_target_reason(3, 2, crate::args::Language::Rust, &ts_path),
+            None,
+        );
     }
 
     #[test]
@@ -7366,5 +7630,301 @@ mod tests {
             .expect("loaded summary");
         assert_eq!(loaded.no_target_reason, Some(NoTargetReason::ParserFailure));
         assert_eq!(loaded.file, "src/x.ts");
+    }
+
+    // ---------------------------------------------------------------
+    // str-jeen.24: Rust no-target reason classifier
+    // ---------------------------------------------------------------
+
+    /// Helper: write `contents` to `dir/relative` and return the absolute path.
+    fn write_rust_fixture(
+        dir: &std::path::Path,
+        relative: &str,
+        contents: &str,
+    ) -> std::path::PathBuf {
+        let path = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        std::fs::write(&path, contents).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn rust_classifier_recognizes_build_script_at_crate_root() {
+        // build.rs sitting next to a Cargo.toml is the canonical Cargo
+        // build-script convention. Both files must be present.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rust_fixture(dir.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
+        let build_rs = write_rust_fixture(dir.path(), "build.rs", "fn main() {}\n");
+        assert_eq!(
+            rust_classify_no_target_reason(&build_rs),
+            Some(NoTargetReason::BuildScript),
+        );
+        assert!(rust_is_build_script(&build_rs));
+    }
+
+    #[test]
+    fn rust_classifier_does_not_misclassify_build_rs_without_manifest() {
+        // A `build.rs` deep in a fixtures tree without a sibling
+        // Cargo.toml must NOT classify as build_script — the planning
+        // notes explicitly call this out.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stray = write_rust_fixture(
+            dir.path(),
+            "fixtures/nested/build.rs",
+            "fn main() {}\n",
+        );
+        assert!(!rust_is_build_script(&stray));
+        // The content scan sees a fn body, so it falls all the way
+        // through to None (caller emits Unclassified).
+        assert_eq!(rust_classify_no_target_reason(&stray), None);
+    }
+
+    #[test]
+    fn rust_classifier_recognizes_integration_tests_directory() {
+        // Cargo's `tests/*.rs` integration-test convention: any file
+        // with a `tests` path segment classifies as test_module.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_rust_fixture(
+            dir.path(),
+            "crate/tests/integration.rs",
+            "#[test] fn t() {}\n",
+        );
+        assert!(rust_is_test_module_by_path(&path));
+        assert_eq!(
+            rust_classify_no_target_reason(&path),
+            Some(NoTargetReason::TestModule),
+        );
+    }
+
+    #[test]
+    fn rust_classifier_recognizes_test_filename_suffix() {
+        // `_test.rs` and `_tests.rs` suffixes are conventional Rust
+        // test-module names even outside the integration-tests dir.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path_singular = write_rust_fixture(
+            dir.path(),
+            "src/foo_test.rs",
+            "#[test] fn t() {}\n",
+        );
+        let path_plural = write_rust_fixture(
+            dir.path(),
+            "src/foo_tests.rs",
+            "#[test] fn t() {}\n",
+        );
+        assert!(rust_is_test_module_by_path(&path_singular));
+        assert!(rust_is_test_module_by_path(&path_plural));
+        assert_eq!(
+            rust_classify_no_target_reason(&path_singular),
+            Some(NoTargetReason::TestModule),
+        );
+    }
+
+    #[test]
+    fn rust_classifier_recognizes_declaration_only_lib() {
+        // A re-export-only lib.rs is the canonical declaration_only
+        // case. Comments, attributes, and visibility modifiers are
+        // permitted; no item bodies appear.
+        let source = "//! Crate root.\n\
+            #![warn(missing_docs)]\n\
+            \n\
+            pub mod a;\n\
+            pub mod b;\n\
+            pub use a::Thing;\n\
+            pub use b::*;\n\
+            extern crate alloc;\n";
+        assert!(rust_is_declaration_only(source));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_rust_fixture(dir.path(), "src/lib.rs", source);
+        assert_eq!(
+            rust_classify_no_target_reason(&path),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+    }
+
+    #[test]
+    fn rust_classifier_rejects_inline_module_body_as_declaration_only() {
+        // `mod x { ... }` opens a body — not a pure declaration. The
+        // conservative scanner returns false rather than mislabel.
+        let source = "pub mod x {\n    pub fn y() {}\n}\n";
+        assert!(!rust_is_declaration_only(source));
+    }
+
+    #[test]
+    fn rust_classifier_macro_only_file_returns_unclassified_not_declaration_only() {
+        // Per team-lead's note 2: macro-heavy files (e.g. include!,
+        // pub use crate::m::*; with macro re-exports) must not be
+        // misclassified as declaration_only. A bare macro invocation
+        // at top level is conservatively rejected.
+        let source = "include!(\"generated.rs\");\n";
+        assert!(!rust_is_declaration_only(source));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_rust_fixture(dir.path(), "src/macros.rs", source);
+        // Falls through every Rust-specific check — caller emits
+        // Unclassified, which the rust classifier surfaces by
+        // returning None.
+        assert_eq!(rust_classify_no_target_reason(&path), None);
+    }
+
+    #[test]
+    fn rust_classifier_content_fallback_recognizes_cfg_test_only_module() {
+        // A file whose every item is gated on cfg(test) classifies as
+        // test_module via the content fallback even when the path
+        // doesn't match `tests/` or a `_test.rs` suffix.
+        let source = "#[cfg(test)]\n\
+            mod inner;\n\
+            #[cfg(test)]\n\
+            #[test]\n\
+            fn smoke() {}\n";
+        assert!(rust_is_test_module_by_content(source));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_rust_fixture(dir.path(), "src/random_name.rs", source);
+        assert_eq!(
+            rust_classify_no_target_reason(&path),
+            Some(NoTargetReason::TestModule),
+        );
+    }
+
+    #[test]
+    fn rust_classifier_returns_none_for_ungated_top_level_fn() {
+        // A top-level non-test fn must NOT classify as test_module via
+        // content fallback — the heuristic is conservative.
+        let source = "pub fn public_api() {}\n";
+        assert!(!rust_is_test_module_by_content(source));
+        assert!(!rust_is_declaration_only(source));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_rust_fixture(dir.path(), "src/normal.rs", source);
+        assert_eq!(rust_classify_no_target_reason(&path), None);
+    }
+
+    #[test]
+    fn rust_classifier_check_order_build_script_wins_over_test_module_path() {
+        // Putting a `build.rs` under a `tests/` segment is pathological,
+        // but the documented order says build_script comes first.
+        // Cargo doesn't recognize this as a build script (no sibling
+        // Cargo.toml), so it should still fall through correctly.
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No Cargo.toml sibling -> build_script check fails ->
+        // test_module by path wins because the file sits in tests/.
+        let path = write_rust_fixture(
+            dir.path(),
+            "tests/build.rs",
+            "fn main() {}\n",
+        );
+        assert_eq!(
+            rust_classify_no_target_reason(&path),
+            Some(NoTargetReason::TestModule),
+        );
+
+        // With a sibling Cargo.toml, build_script wins (still under
+        // tests/). The order of checks ensures build_script precedence.
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        write_rust_fixture(
+            dir2.path(),
+            "tests/Cargo.toml",
+            "[package]\nname = \"x\"\n",
+        );
+        let p2 = write_rust_fixture(
+            dir2.path(),
+            "tests/build.rs",
+            "fn main() {}\n",
+        );
+        assert_eq!(
+            rust_classify_no_target_reason(&p2),
+            Some(NoTargetReason::BuildScript),
+        );
+    }
+
+    #[test]
+    fn rust_classifier_returns_none_on_io_error() {
+        // Nonexistent file: build_script and test_module-by-path both
+        // require deterministic predicates over the path, so they may
+        // still trigger; but a path with no `tests/` segment, no
+        // build.rs basename, and no readable bytes must return None.
+        let path = std::path::PathBuf::from("/nonexistent/dir/random.rs");
+        assert_eq!(rust_classify_no_target_reason(&path), None);
+    }
+
+    // Property-based invariants (formal-methods-policy: proptest for
+    // the classifier). The grammar is intentionally small — it generates
+    // top-level Rust-ish lines from a fixed alphabet so the classifier's
+    // contract can be asserted without depending on a full parser.
+    proptest::proptest! {
+        /// Invariant 1: declaration_only is monotone — adding a pure
+        /// declaration line to a declaration-only source preserves the
+        /// classification.
+        #[test]
+        fn declaration_only_is_monotone_under_appending_declarations(
+            ref leading in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "mod a;",
+                    "pub mod b;",
+                    "use a::b;",
+                    "pub use a::b::*;",
+                    "extern crate alloc;",
+                    "// comment",
+                    "#[allow(dead_code)]",
+                    "",
+                ]),
+                0..16,
+            ),
+            ref appended in proptest::sample::select(vec![
+                "mod c;",
+                "pub use d::e;",
+                "extern crate core;",
+            ]),
+        ) {
+            let base = leading.join("\n") + "\n";
+            let extended = base.clone() + appended + "\n";
+            // If the base classifies as declaration_only, the extended
+            // version (one more pure declaration) must too.
+            if rust_is_declaration_only(&base) {
+                proptest::prop_assert!(
+                    rust_is_declaration_only(&extended),
+                    "appending a declaration broke declaration_only:\nbase=\n{base}\nappended={appended}",
+                );
+            }
+        }
+
+        /// Invariant 2: a top-level non-test fn body never classifies
+        /// as declaration_only or test_module.
+        #[test]
+        fn non_test_fn_never_classifies_as_declaration_or_test(
+            ref prefix in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "mod a;",
+                    "use b::c;",
+                    "// trailing comment",
+                    "",
+                ]),
+                0..8,
+            ),
+        ) {
+            // Synthesize a file with a real top-level fn body. Any
+            // such file MUST NOT classify as declaration_only or as
+            // test_module by content.
+            let source = format!(
+                "{}\npub fn definitely_real() {{ let _ = 1 + 1; }}\n",
+                prefix.join("\n"),
+            );
+            proptest::prop_assert!(!rust_is_declaration_only(&source));
+            proptest::prop_assert!(!rust_is_test_module_by_content(&source));
+        }
+
+        /// Invariant 3: build.rs at a crate root (sibling Cargo.toml)
+        /// always classifies as build_script regardless of contents.
+        #[test]
+        fn build_rs_with_sibling_manifest_always_classifies_as_build_script(
+            ref body in "[a-zA-Z0-9 \\n_(){}]{0,200}",
+        ) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_rust_fixture(dir.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
+            let path = write_rust_fixture(dir.path(), "build.rs", body);
+            proptest::prop_assert_eq!(
+                rust_classify_no_target_reason(&path),
+                Some(NoTargetReason::BuildScript),
+            );
+        }
     }
 }

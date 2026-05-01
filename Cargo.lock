@@ -1957,6 +1957,7 @@ dependencies = [
  "env_logger",
  "globset",
  "log",
+ "proptest",
  "serde",
  "serde_json",
  "shatter-core",
