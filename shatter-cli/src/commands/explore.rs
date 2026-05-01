@@ -350,7 +350,74 @@ struct ExploreFunctionArtifact {
     error: Option<String>,
 }
 
+/// Why a per-function explore artifact is *not* present on disk.
+///
+/// str-jeen.4: this is a typed projection of the previously free-form
+/// `ExploreSummaryEntry::reason` string. The artifact-reference contract is:
+/// for any summary entry, exactly one of the following holds —
+///   * `artifact: Some(path)` and the file at `<artifact_root>/<path>` exists;
+///   * `artifact: None` and a typed `UnavailableReason` is recorded so report
+///     consumers can classify the row instead of chasing a missing path.
+///
+/// Variants:
+/// * `BuildFailed` — instrumentation, compilation, or wrapper build failed.
+///   Maps to `OutcomeStatus::BuildFailed`. Persisted reason text uses the
+///   token `spec_not_produced_due_to_build_failed` for downstream parsers.
+/// * `RuntimeFailed` — frontend execution raised a runtime error / panic.
+/// * `TimedOut` — exceeded the per-function time budget.
+/// * `Unsupported` — pre-skipped: the analyzer flagged unexecutable parameter
+///   types and no work item was scheduled.
+/// * `SkippedByPolicy` — explicitly skipped by user / config policy.
+/// * `WriteFailed` — the function ran (or attempted to run) but the artifact
+///   JSON itself could not be persisted (disk error, rename failure, etc.).
+///
+/// The string projection (`as_token()` / `Display`) is what gets written into
+/// the on-disk `reason` field today. When str-jeen.16 introduces a typed TSV
+/// status export, the same enum will be the `reason` field's first-class type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum UnavailableReason {
+    BuildFailed,
+    RuntimeFailed,
+    TimedOut,
+    Unsupported,
+    SkippedByPolicy,
+    WriteFailed,
+}
+
+impl UnavailableReason {
+    /// Stable string token used for on-disk `reason` strings and for matching
+    /// the kapow-validation broad-run wrapper's existing `unavailable_reason`
+    /// taxonomy. Kept distinct from the bare snake_case serde form so the
+    /// `spec_not_produced_due_to_*` family stays readable to downstream
+    /// consumers that scan the summary.json text.
+    fn as_token(self) -> &'static str {
+        match self {
+            UnavailableReason::BuildFailed => "spec_not_produced_due_to_build_failed",
+            UnavailableReason::RuntimeFailed => "spec_not_produced_due_to_runtime_failed",
+            UnavailableReason::TimedOut => "spec_not_produced_due_to_timed_out",
+            UnavailableReason::Unsupported => "spec_not_produced_due_to_unsupported",
+            UnavailableReason::SkippedByPolicy => "spec_not_produced_due_to_skipped_by_policy",
+            UnavailableReason::WriteFailed => "artifact_write_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for UnavailableReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_token())
+    }
+}
+
 /// Per-function entry in the explore summary.
+///
+/// Artifact-reference contract (str-jeen.4): if `artifact` is `Some(path)`,
+/// the file at `<artifact_root>/<path>` must exist at finalization. Otherwise
+/// `artifact` must be `None` and the row's `reason` should be populated with
+/// a token derived from [`UnavailableReason`]. Construct via the
+/// [`ExploreSummaryEntry::available`] / [`ExploreSummaryEntry::unavailable`]
+/// helpers; `debug_assert!` calls inside those helpers enforce the invariant
+/// in test builds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExploreSummaryEntry {
     function_name: String,
@@ -364,6 +431,52 @@ struct ExploreSummaryEntry {
     /// body (or any transitive callee) changed between runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deep_fingerprint: Option<String>,
+}
+
+impl ExploreSummaryEntry {
+    /// Construct an entry whose artifact JSON exists on disk.
+    fn available(
+        function_name: String,
+        status: String,
+        artifact_relpath: String,
+        reason: Option<String>,
+        deep_fingerprint: Option<String>,
+    ) -> Self {
+        debug_assert!(
+            !artifact_relpath.is_empty(),
+            "available() requires a non-empty artifact path; use unavailable() for missing artifacts"
+        );
+        Self {
+            function_name,
+            status,
+            artifact: Some(artifact_relpath),
+            reason,
+            deep_fingerprint,
+        }
+    }
+
+    /// Construct an entry whose artifact is intentionally absent. The
+    /// `unavailable_reason` enum is folded into the on-disk `reason` field
+    /// (prefixed with the typed token, then any free-form detail).
+    fn unavailable(
+        function_name: String,
+        status: String,
+        unavailable_reason: UnavailableReason,
+        detail: Option<String>,
+        deep_fingerprint: Option<String>,
+    ) -> Self {
+        let reason_text = match detail {
+            Some(d) if !d.is_empty() => format!("{}: {}", unavailable_reason.as_token(), d),
+            _ => unavailable_reason.as_token().to_string(),
+        };
+        Self {
+            function_name,
+            status,
+            artifact: None,
+            reason: Some(reason_text),
+            deep_fingerprint,
+        }
+    }
 }
 
 /// Summary of an entire explore run, written incrementally to enable crash recovery.
@@ -862,6 +975,175 @@ fn load_explore_summaries(dir: &Path) -> Result<Vec<ExploreSummary>, String> {
     Ok(summaries)
 }
 
+// ---------------------------------------------------------------------------
+// str-jeen.4: artifact-reference validator
+// ---------------------------------------------------------------------------
+
+/// One contract violation surfaced by [`validate_artifact_references`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArtifactValidationIssue {
+    /// Entry claims `artifact: Some(path)` but the file is absent.
+    MissingArtifact {
+        file: String,
+        function_name: String,
+        artifact_relpath: String,
+    },
+    /// Entry has neither an artifact path nor an `unavailable_reason` token —
+    /// downstream consumers can't classify the row.
+    MissingUnavailableReason {
+        file: String,
+        function_name: String,
+        status: String,
+    },
+    /// File on disk under the artifact root that is not referenced by any
+    /// entry in any summary. Reported (per str-jeen.4 issue text) rather than
+    /// deleted — deletion is destructive and the wrapper that owns the
+    /// directory may legitimately stage extras.
+    StaleExtra { absolute_path: PathBuf },
+}
+
+impl std::fmt::Display for ArtifactValidationIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArtifactValidationIssue::MissingArtifact {
+                file,
+                function_name,
+                artifact_relpath,
+            } => write!(
+                f,
+                "missing_artifact: file={file} function={function_name} path={artifact_relpath}"
+            ),
+            ArtifactValidationIssue::MissingUnavailableReason {
+                file,
+                function_name,
+                status,
+            } => write!(
+                f,
+                "missing_unavailable_reason: file={file} function={function_name} status={status}"
+            ),
+            ArtifactValidationIssue::StaleExtra { absolute_path } => {
+                write!(f, "stale_extra: path={}", absolute_path.display())
+            }
+        }
+    }
+}
+
+/// Result of validating one or more explore summaries against an artifact
+/// directory. The integration test in `tests/artifact_references.rs` asserts
+/// `issues` is empty after a normal run.
+#[derive(Debug, Clone, Default)]
+struct ArtifactValidationReport {
+    issues: Vec<ArtifactValidationIssue>,
+}
+
+impl ArtifactValidationReport {
+    fn is_clean(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+/// Walk `summaries` and assert the artifact-reference contract:
+///
+/// 1. For every entry with `artifact: Some(relpath)`, the file at
+///    `<artifact_root>/<relpath>` must exist.
+/// 2. For every entry whose status is not `"completed"`, either an
+///    `artifact` or a typed unavailable-reason token in `reason` must be
+///    present so downstream consumers can classify the row without chasing a
+///    dangling path.
+/// 3. Every per-function `*.json` artifact file under `artifact_root` (other
+///    than `summary.json` and `*.resume-state.json` sidecars) must be
+///    referenced by at least one entry's `artifact` field. Unreferenced
+///    extras are reported as `stale_extra` rather than deleted.
+fn validate_artifact_references(
+    artifact_root: &Path,
+    summaries: &[ExploreSummary],
+) -> ArtifactValidationReport {
+    let mut report = ArtifactValidationReport::default();
+    let referenced = check_summary_paths(artifact_root, summaries, &mut report);
+    scan_stale_extras(artifact_root, &referenced, &mut report);
+    report
+}
+
+/// Path-existence + unavailable-reason half of the contract. Returns the set
+/// of absolute artifact paths referenced (and verified to exist). The
+/// per-target call site uses this directly to avoid false-positive
+/// `stale_extra` reports against sibling targets that share `artifact_root`.
+fn check_summary_paths(
+    artifact_root: &Path,
+    summaries: &[ExploreSummary],
+    report: &mut ArtifactValidationReport,
+) -> std::collections::HashSet<PathBuf> {
+    let mut referenced: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for summary in summaries {
+        for entry in &summary.functions {
+            match &entry.artifact {
+                Some(relpath) if !relpath.is_empty() => {
+                    let abs = artifact_root.join(relpath);
+                    if !abs.is_file() {
+                        report.issues.push(ArtifactValidationIssue::MissingArtifact {
+                            file: summary.file.clone(),
+                            function_name: entry.function_name.clone(),
+                            artifact_relpath: relpath.clone(),
+                        });
+                    } else {
+                        referenced.insert(abs);
+                    }
+                }
+                _ => {
+                    let reason_text = entry.reason.as_deref().unwrap_or("");
+                    if reason_text.is_empty() {
+                        report
+                            .issues
+                            .push(ArtifactValidationIssue::MissingUnavailableReason {
+                                file: summary.file.clone(),
+                                function_name: entry.function_name.clone(),
+                                status: entry.status.clone(),
+                            });
+                    }
+                }
+            }
+        }
+    }
+    referenced
+}
+
+/// Walk `artifact_root` and report any per-function `*.json` files that no
+/// entry in the supplied summaries references. Skips `summary.json` and
+/// resume-state sidecars (control files, not artifact rows).
+fn scan_stale_extras(
+    artifact_root: &Path,
+    referenced: &std::collections::HashSet<PathBuf>,
+    report: &mut ArtifactValidationReport,
+) {
+    let mut dirs_to_visit = vec![artifact_root.to_path_buf()];
+    while let Some(current_dir) = dirs_to_visit.pop() {
+        let entries = match std::fs::read_dir(&current_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs_to_visit.push(path);
+                continue;
+            }
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if file_name == "summary.json"
+                || file_name.ends_with(".resume-state.json")
+                || file_name.ends_with(".tmp")
+                || !file_name.ends_with(".json")
+            {
+                continue;
+            }
+            if !referenced.contains(&path) {
+                report
+                    .issues
+                    .push(ArtifactValidationIssue::StaleExtra { absolute_path: path });
+            }
+        }
+    }
+}
+
 /// Map a stored `ExploreSummaryEntry` to an `OutcomeStatus`.
 ///
 /// This is a temporary local bridge: the existing artifact format records
@@ -875,6 +1157,24 @@ fn outcome_status_from_entry(entry: &ExploreSummaryEntry) -> shatter_core::proto
     use shatter_core::protocol::OutcomeStatus;
     let reason = entry.reason.as_deref().unwrap_or("");
     let reason_lower = reason.to_lowercase();
+    // str-jeen.4: prefer the typed UnavailableReason token when present so a
+    // build_failed or timed_out classification doesn't silently regress to
+    // RuntimeFailed because the new token uses underscores instead of spaces.
+    if reason_lower.contains(UnavailableReason::TimedOut.as_token()) {
+        return OutcomeStatus::TimedOut;
+    }
+    if reason_lower.contains(UnavailableReason::BuildFailed.as_token()) {
+        return OutcomeStatus::BuildFailed;
+    }
+    if reason_lower.contains(UnavailableReason::RuntimeFailed.as_token()) {
+        return OutcomeStatus::RuntimeFailed;
+    }
+    if reason_lower.contains(UnavailableReason::Unsupported.as_token()) {
+        return OutcomeStatus::Unsupported;
+    }
+    if reason_lower.contains(UnavailableReason::SkippedByPolicy.as_token()) {
+        return OutcomeStatus::SkippedByPolicy;
+    }
     match entry.status.as_str() {
         "completed" => OutcomeStatus::Completed,
         "failed" => {
@@ -1414,6 +1714,22 @@ fn finalize_explore(
         artifacts.len(),
         artifact_dir.display()
     );
+
+    // str-jeen.4: validate the artifact-reference contract against the loaded
+    // summaries. Issues are logged at warn level so a finalize against a
+    // partially-corrupt directory still produces a report; the integration
+    // test asserts the report is clean for healthy runs.
+    let validation = validate_artifact_references(artifact_dir, &summaries);
+    if !validation.is_clean() {
+        log::warn!(
+            "artifact-reference validation surfaced {} issue(s) in {}:",
+            validation.issues.len(),
+            artifact_dir.display()
+        );
+        for issue in &validation.issues {
+            log::warn!("  {issue}");
+        }
+    }
 
     let report_style = if use_color {
         shatter_core::report_style::ReportStyle::ansi()
@@ -2701,12 +3017,14 @@ pub(crate) async fn run_explore(
             no_target_reason: classify_no_target_reason(attempted, pre_skipped),
             functions: skipped_unexecutable
                 .iter()
-                .map(|(name, _)| ExploreSummaryEntry {
-                    function_name: name.clone(),
-                    status: "skipped".to_string(),
-                    artifact: None,
-                    reason: Some("unexecutable parameter types".to_string()),
-                    deep_fingerprint: None,
+                .map(|(name, _)| {
+                    ExploreSummaryEntry::unavailable(
+                        name.clone(),
+                        "skipped".to_string(),
+                        UnavailableReason::Unsupported,
+                        Some("unexecutable parameter types".to_string()),
+                        None,
+                    )
                 })
                 .collect(),
         };
@@ -3282,12 +3600,48 @@ pub(crate) async fn run_explore(
             // the produced-coverage denominator. The bucket assignment must
             // match `outcome_status_from_entry`, so we route through it
             // rather than re-deriving here.
-            let bucket_entry = ExploreSummaryEntry {
-                function_name: outcome.func.name.clone(),
-                status: summary_status.to_string(),
-                artifact: artifact_relpath.clone(),
-                reason: summary_reason,
-                deep_fingerprint: deep_fingerprints.get(&outcome.func.name).cloned(),
+            // str-jeen.4: route construction through the typed helpers so the
+            // artifact-reference contract (Some(path) ⇒ file exists; None ⇒
+            // typed UnavailableReason) is enforced at the construction site.
+            // When `artifact_relpath` is None, the artifact JSON itself failed
+            // to land on disk; classify the outcome's logical failure mode
+            // (build / runtime / timeout) so the row's `reason` carries both
+            // the persistence failure and the underlying cause.
+            let entry_fingerprint = deep_fingerprints.get(&outcome.func.name).cloned();
+            let bucket_entry = match artifact_relpath.clone() {
+                Some(path) => ExploreSummaryEntry::available(
+                    outcome.func.name.clone(),
+                    summary_status.to_string(),
+                    path,
+                    summary_reason.clone(),
+                    entry_fingerprint,
+                ),
+                None => {
+                    let inferred = match (&outcome.result, summary_status) {
+                        (Ok(_), _) => UnavailableReason::WriteFailed,
+                        (Err(_), "completed") => UnavailableReason::WriteFailed,
+                        (Err(msg), _) => {
+                            let lower = msg.to_lowercase();
+                            if lower.contains("timeout") || lower.contains("timed out") {
+                                UnavailableReason::TimedOut
+                            } else if lower.contains("build failed")
+                                || lower.contains("compilation failed")
+                                || lower.contains("instrumentationfailed")
+                            {
+                                UnavailableReason::BuildFailed
+                            } else {
+                                UnavailableReason::RuntimeFailed
+                            }
+                        }
+                    };
+                    ExploreSummaryEntry::unavailable(
+                        outcome.func.name.clone(),
+                        summary_status.to_string(),
+                        inferred,
+                        summary_reason.clone(),
+                        entry_fingerprint,
+                    )
+                }
             };
             match outcome_status_from_entry(&bucket_entry) {
                 shatter_core::protocol::OutcomeStatus::Completed
@@ -3638,6 +3992,26 @@ pub(crate) async fn run_explore(
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to finalize explore summary: {e}");
         }
+
+        // str-jeen.4: per-target slice of the artifact-reference contract.
+        // Only the path-existence + unavailable-reason half is checked here
+        // because `artifact_root` is shared across targets in the same run —
+        // sibling targets' artifacts would otherwise look like `stale_extra`.
+        // The full stale-extras sweep happens once at finalize time.
+        let per_target_summaries = std::slice::from_ref(&explore_summary);
+        let mut target_validation = ArtifactValidationReport::default();
+        check_summary_paths(&artifact_root, per_target_summaries, &mut target_validation);
+        if !target_validation.is_clean() {
+            log::warn!(
+                "artifact-reference validation surfaced {} issue(s) for target {}:",
+                target_validation.issues.len(),
+                file_str
+            );
+            for issue in &target_validation.issues {
+                log::warn!("  {issue}");
+            }
+        }
+
         report_summaries.push(explore_summary.clone());
 
         if output_path.is_some() {
@@ -3844,13 +4218,14 @@ pub(crate) async fn run_explore(
 #[cfg(test)]
 mod tests {
     use super::{
-        EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
-        FuncExploreOutcome, batch_is_exhausted, bucket_counts_from_entries,
+        ArtifactValidationIssue, ArtifactValidationReport, EXPLORE_ARTIFACT_VERSION,
+        ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
+        UnavailableReason, batch_is_exhausted, bucket_counts_from_entries, check_summary_paths,
         classify_no_target_reason, classify_outcome_status, emit_explore_progress,
         explore_summary_path, finalize_explore, format_outcome_breakdown, format_progress_snapshot,
         load_explore_artifacts, outcome_status_from_entry, persist_stage_outputs,
         read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
-        write_explore_artifact, write_explore_summary,
+        validate_artifact_references, write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -5648,5 +6023,238 @@ mod tests {
             stubbed_modules: vec![],
             timed_out: false,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // str-jeen.4: artifact-reference contract tests
+    // -----------------------------------------------------------------
+
+    fn write_dummy_artifact(root: &std::path::Path, relpath: &str) {
+        let abs = root.join(relpath);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).expect("artifact parent");
+        }
+        std::fs::write(&abs, b"{}").expect("write dummy artifact");
+    }
+
+    fn make_summary(file: &str, entries: Vec<ExploreSummaryEntry>) -> ExploreSummary {
+        ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: file.to_string(),
+            total_functions: entries.len(),
+            functions: entries,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unavailable_reason_token_is_stable() {
+        // Downstream parsers depend on these literal strings; keep them
+        // anchored even if the variant order changes.
+        assert_eq!(
+            UnavailableReason::BuildFailed.as_token(),
+            "spec_not_produced_due_to_build_failed"
+        );
+        assert_eq!(
+            UnavailableReason::TimedOut.as_token(),
+            "spec_not_produced_due_to_timed_out"
+        );
+        assert_eq!(
+            UnavailableReason::WriteFailed.as_token(),
+            "artifact_write_failed"
+        );
+    }
+
+    #[test]
+    fn entry_helpers_enforce_mutex_invariant() {
+        let avail = ExploreSummaryEntry::available(
+            "f".into(),
+            "completed".into(),
+            "src.ts/00010_f.json".into(),
+            None,
+            None,
+        );
+        assert!(avail.artifact.is_some());
+
+        let unav = ExploreSummaryEntry::unavailable(
+            "g".into(),
+            "failed".into(),
+            UnavailableReason::BuildFailed,
+            Some("compiler exit 1".into()),
+            None,
+        );
+        assert!(unav.artifact.is_none());
+        let reason = unav.reason.expect("unavailable() always populates reason");
+        assert!(reason.contains(UnavailableReason::BuildFailed.as_token()));
+        assert!(reason.contains("compiler exit 1"));
+    }
+
+    #[test]
+    fn validator_clean_when_artifact_present_and_referenced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dummy_artifact(dir.path(), "src.ts/00010_load.json");
+        let summary = make_summary(
+            "src.ts",
+            vec![ExploreSummaryEntry::available(
+                "load".into(),
+                "completed".into(),
+                "src.ts/00010_load.json".into(),
+                None,
+                None,
+            )],
+        );
+        write_explore_summary(dir.path(), "src.ts", &summary).expect("write summary");
+        let report = validate_artifact_references(dir.path(), &[summary]);
+        assert!(
+            report.is_clean(),
+            "healthy artifact dir must validate clean, got {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validator_flags_missing_artifact_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Note: no file written for the referenced artifact.
+        let summary = make_summary(
+            "src.ts",
+            vec![ExploreSummaryEntry::available(
+                "load".into(),
+                "completed".into(),
+                "src.ts/00010_load.json".into(),
+                None,
+                None,
+            )],
+        );
+        let report = validate_artifact_references(dir.path(), &[summary]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| matches!(i, ArtifactValidationIssue::MissingArtifact { .. })),
+            "missing artifact path must be reported, got {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validator_flags_unavailable_without_reason() {
+        // Construct a hand-rolled invalid entry (bypassing the helpers) to
+        // simulate a legacy artifact that pre-dates the contract.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = ExploreSummaryEntry {
+            function_name: "g".into(),
+            status: "failed".into(),
+            artifact: None,
+            reason: None,
+            deep_fingerprint: None,
+        };
+        let summary = make_summary("src.ts", vec![entry]);
+        let report = validate_artifact_references(dir.path(), &[summary]);
+        assert!(
+            report.issues.iter().any(|i| matches!(
+                i,
+                ArtifactValidationIssue::MissingUnavailableReason { .. }
+            )),
+            "entry with neither artifact nor reason must be reported, got {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validator_reports_stale_extras() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dummy_artifact(dir.path(), "src.ts/00010_load.json");
+        write_dummy_artifact(dir.path(), "src.ts/00099_orphan.json");
+        let summary = make_summary(
+            "src.ts",
+            vec![ExploreSummaryEntry::available(
+                "load".into(),
+                "completed".into(),
+                "src.ts/00010_load.json".into(),
+                None,
+                None,
+            )],
+        );
+        let report = validate_artifact_references(dir.path(), &[summary]);
+        let stale: Vec<_> = report
+            .issues
+            .iter()
+            .filter_map(|i| match i {
+                ArtifactValidationIssue::StaleExtra { absolute_path } => Some(absolute_path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stale.len(),
+            1,
+            "exactly one stale extra expected, got {:?}",
+            report.issues
+        );
+        assert!(
+            stale[0].ends_with("00099_orphan.json"),
+            "stale extra must point at the orphan file, got {:?}",
+            stale[0]
+        );
+    }
+
+    #[test]
+    fn per_target_check_does_not_flag_sibling_target_artifacts_as_stale() {
+        // Per-target validation must NOT walk the whole artifact_root for
+        // stale extras — sibling targets share the directory. Only the
+        // run-end finalize sweep should report stale extras.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dummy_artifact(dir.path(), "src.ts/00010_load.json");
+        write_dummy_artifact(dir.path(), "other.ts/00020_save.json"); // sibling
+        let summary = make_summary(
+            "src.ts",
+            vec![ExploreSummaryEntry::available(
+                "load".into(),
+                "completed".into(),
+                "src.ts/00010_load.json".into(),
+                None,
+                None,
+            )],
+        );
+        let mut report = ArtifactValidationReport::default();
+        check_summary_paths(dir.path(), std::slice::from_ref(&summary), &mut report);
+        assert!(
+            report.is_clean(),
+            "per-target check must ignore sibling artifacts, got {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validator_unavailable_entry_does_not_falsely_flag_referenced_files() {
+        // An entry that legitimately has no artifact (build failed) plus a
+        // sibling completed artifact: the validator must treat the sibling as
+        // referenced and not surface either as stale or missing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dummy_artifact(dir.path(), "src.ts/00010_load.json");
+        let entries = vec![
+            ExploreSummaryEntry::available(
+                "load".into(),
+                "completed".into(),
+                "src.ts/00010_load.json".into(),
+                None,
+                None,
+            ),
+            ExploreSummaryEntry::unavailable(
+                "save".into(),
+                "failed".into(),
+                UnavailableReason::BuildFailed,
+                Some("rustc exit 101".into()),
+                None,
+            ),
+        ];
+        let summary = make_summary("src.ts", entries);
+        let report = validate_artifact_references(dir.path(), &[summary]);
+        assert!(
+            report.is_clean(),
+            "mixed available+unavailable summary should validate clean, got {:?}",
+            report.issues
+        );
     }
 }
