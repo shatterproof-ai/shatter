@@ -1955,6 +1955,7 @@ dependencies = [
  "askama",
  "clap",
  "env_logger",
+ "globset",
  "log",
  "serde",
  "serde_json",
