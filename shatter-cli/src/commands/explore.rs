@@ -439,6 +439,16 @@ struct ExploreSummaryEntry {
     /// failing on a single category outweighs five 5-line stubs.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     line_count: u32,
+    /// Source lines actually exercised by exploration (str-jeen.41), sourced
+    /// from `ObservationOutput::lines_covered` and capped at `line_count` so
+    /// the `covered + uncovered = total` partition holds even if the
+    /// instrumenter's line-id space disagrees with the analyzer's source span.
+    /// Only populated for outcomes whose `OutcomeStatus` resolves to
+    /// `Completed` / `CompletedWithFindings`; `0` otherwise. Used by the
+    /// run-JSON line-weighted outcome buckets to split completed-function
+    /// lines into covered vs uncovered.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    covered_lines: u32,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -465,6 +475,7 @@ impl ExploreSummaryEntry {
             reason,
             deep_fingerprint,
             line_count: 0,
+            covered_lines: 0,
         }
     }
 
@@ -489,6 +500,7 @@ impl ExploreSummaryEntry {
             reason: Some(reason_text),
             deep_fingerprint,
             line_count: 0,
+            covered_lines: 0,
         }
     }
 
@@ -498,6 +510,16 @@ impl ExploreSummaryEntry {
     /// shared fields. See `line_count` doc on the struct (str-jeen.31).
     fn with_line_count(mut self, line_count: u32) -> Self {
         self.line_count = line_count;
+        self
+    }
+
+    /// Attach the executor's `lines_covered` count for a successfully
+    /// completed outcome (str-jeen.41). Capped at `line_count` so the
+    /// covered / uncovered partition surfaced in the run JSON cannot
+    /// exceed the function's analyzer span. Returns the entry by value
+    /// so the construction site can chain it after `with_line_count`.
+    fn with_covered_lines(mut self, covered_lines: u32) -> Self {
+        self.covered_lines = covered_lines.min(self.line_count);
         self
     }
 }
@@ -590,6 +612,36 @@ struct ExploreSummary {
     /// Outcome status ∈ {`completed`, `completed_with_findings`}.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     completed_function_span_lines: u32,
+    /// Sum of executor-reported covered lines across completed functions
+    /// (str-jeen.41). Each entry's contribution is capped at its `line_count`
+    /// so `covered_completed_lines + uncovered_completed_lines ==
+    /// completed_function_span_lines`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    covered_completed_lines: u32,
+    /// Completed-function span lines that were not exercised by any
+    /// observed execution (str-jeen.41). Computed as `line_count -
+    /// covered_lines` per completed entry, summed across the file.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    uncovered_completed_lines: u32,
+    /// Sum of `line_count` across functions whose final outcome was
+    /// `BuildFailed` (str-jeen.41). Line-weighted impact of build /
+    /// instrumentation failures so a failure on a 200-line function counts
+    /// for more than a failure on a 5-line stub.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    build_failed_function_lines: u32,
+    /// Sum of `line_count` across functions whose final outcome was
+    /// `RuntimeFailed` (str-jeen.41).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    runtime_failed_function_lines: u32,
+    /// Sum of `line_count` across functions whose final outcome was
+    /// `TimedOut` (str-jeen.41).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    timed_out_function_lines: u32,
+    /// Sum of `line_count` across functions whose final outcome was
+    /// `Unsupported` (str-jeen.41), i.e. pre-skipped because the analyzer
+    /// flagged unexecutable parameter types.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    unsupported_function_lines: u32,
     functions: Vec<ExploreSummaryEntry>,
 }
 
@@ -607,11 +659,38 @@ struct ExploreSummary {
 /// The same `outcome_status_from_entry` mapping that powers
 /// `bucket_counts_from_entries` is used here so the per-status counts and
 /// the per-status line spans cannot drift.
+///
+/// str-jeen.41 extended the struct with line-weighted outcome buckets so the
+/// run JSON can quote the same totals broken down by final status. The
+/// invariants are:
+/// * `covered_completed + uncovered_completed == completed`
+/// * `build_failed + runtime_failed + timed_out == attempted - completed`
+///   (skipped-by-policy contributes nothing to `attempted` or any failure
+///   bucket)
+/// * `unsupported + (skipped-by-policy lines, not surfaced) ==
+///   discovered - attempted`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct SpanLineDenominators {
     discovered: u32,
     attempted: u32,
     completed: u32,
+    /// str-jeen.41: covered lines from completed entries, capped at
+    /// `line_count` per entry by `with_covered_lines`.
+    covered_completed: u32,
+    /// str-jeen.41: `line_count - covered_lines` summed over completed
+    /// entries. Sums with `covered_completed` to `completed`.
+    uncovered_completed: u32,
+    /// str-jeen.41: line-weighted bucket for `BuildFailed` outcomes.
+    build_failed: u32,
+    /// str-jeen.41: line-weighted bucket for `RuntimeFailed` outcomes.
+    runtime_failed: u32,
+    /// str-jeen.41: line-weighted bucket for `TimedOut` outcomes.
+    timed_out: u32,
+    /// str-jeen.41: line-weighted bucket for `Unsupported` outcomes
+    /// (pre-skipped because the analyzer flagged unexecutable parameter
+    /// types). `SkippedByPolicy` is intentionally not surfaced here:
+    /// it represents user-driven exclusion, not a coverage gap.
+    unsupported: u32,
 }
 
 fn span_line_denominators_from_entries(entries: &[ExploreSummaryEntry]) -> SpanLineDenominators {
@@ -624,14 +703,35 @@ fn span_line_denominators_from_entries(entries: &[ExploreSummaryEntry]) -> SpanL
             OutcomeStatus::Completed | OutcomeStatus::CompletedWithFindings => {
                 totals.attempted = totals.attempted.saturating_add(lines);
                 totals.completed = totals.completed.saturating_add(lines);
+                // `with_covered_lines` already caps `covered_lines` at
+                // `line_count`, but defend against artifact entries that
+                // pre-date the cap by re-applying it here. This keeps the
+                // covered + uncovered = completed invariant unconditional.
+                let covered = entry.covered_lines.min(lines);
+                let uncovered = lines.saturating_sub(covered);
+                totals.covered_completed = totals.covered_completed.saturating_add(covered);
+                totals.uncovered_completed = totals.uncovered_completed.saturating_add(uncovered);
             }
-            OutcomeStatus::BuildFailed
-            | OutcomeStatus::RuntimeFailed
-            | OutcomeStatus::TimedOut => {
+            OutcomeStatus::BuildFailed => {
                 totals.attempted = totals.attempted.saturating_add(lines);
+                totals.build_failed = totals.build_failed.saturating_add(lines);
             }
-            OutcomeStatus::Unsupported | OutcomeStatus::SkippedByPolicy => {
-                // Pre-skipped: counted only in `discovered`.
+            OutcomeStatus::RuntimeFailed => {
+                totals.attempted = totals.attempted.saturating_add(lines);
+                totals.runtime_failed = totals.runtime_failed.saturating_add(lines);
+            }
+            OutcomeStatus::TimedOut => {
+                totals.attempted = totals.attempted.saturating_add(lines);
+                totals.timed_out = totals.timed_out.saturating_add(lines);
+            }
+            OutcomeStatus::Unsupported => {
+                // Pre-skipped: counted in `discovered` and surfaced as a
+                // dedicated outcome bucket (str-jeen.41).
+                totals.unsupported = totals.unsupported.saturating_add(lines);
+            }
+            OutcomeStatus::SkippedByPolicy => {
+                // Pre-skipped: counted only in `discovered`. No outcome
+                // bucket — policy exclusion is user-driven, not a gap.
             }
         }
     }
@@ -3735,6 +3835,15 @@ pub(crate) async fn run_explore(
             discovered_function_span_lines: 0,
             attempted_function_span_lines: 0,
             completed_function_span_lines: 0,
+            // str-jeen.41: filled in alongside the .18 denominators. Pre-skipped
+            // entries seeded above carry their `line_count` into the
+            // `unsupported_function_lines` bucket on the next recompute.
+            covered_completed_lines: 0,
+            uncovered_completed_lines: 0,
+            build_failed_function_lines: 0,
+            runtime_failed_function_lines: 0,
+            timed_out_function_lines: 0,
+            unsupported_function_lines: 0,
         };
         // str-jeen.18: seed the discovered denominator with pre-skipped
         // entries' spans so the crash-recovery JSON written before any
@@ -3744,6 +3853,15 @@ pub(crate) async fn run_explore(
         explore_summary.discovered_function_span_lines = initial_spans.discovered;
         explore_summary.attempted_function_span_lines = initial_spans.attempted;
         explore_summary.completed_function_span_lines = initial_spans.completed;
+        // str-jeen.41: seed the per-outcome line buckets so the crash-recovery
+        // JSON written before any outcomes land already reports pre-skipped
+        // entries in `unsupported_function_lines`.
+        explore_summary.covered_completed_lines = initial_spans.covered_completed;
+        explore_summary.uncovered_completed_lines = initial_spans.uncovered_completed;
+        explore_summary.build_failed_function_lines = initial_spans.build_failed;
+        explore_summary.runtime_failed_function_lines = initial_spans.runtime_failed;
+        explore_summary.timed_out_function_lines = initial_spans.timed_out;
+        explore_summary.unsupported_function_lines = initial_spans.unsupported;
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to write initial explore summary: {e}");
         }
@@ -4333,6 +4451,16 @@ pub(crate) async fn run_explore(
                 .end_line
                 .saturating_sub(outcome.func.start_line)
                 .saturating_add(1);
+            // str-jeen.41: capture executor-reported covered lines for
+            // completed outcomes only. Pre-skipped, build / runtime /
+            // timeout outcomes contribute their full `line_count` to their
+            // outcome bucket rather than splitting into covered/uncovered.
+            // `lines_covered` is `usize`; saturate at `u32::MAX` and let
+            // `with_covered_lines` cap at `entry_line_count`.
+            let entry_covered_lines: u32 = match (&outcome.result, summary_status) {
+                (Ok(obs), "completed") => u32::try_from(obs.lines_covered).unwrap_or(u32::MAX),
+                _ => 0,
+            };
             let bucket_entry = match artifact_relpath.clone() {
                 Some(path) => ExploreSummaryEntry::available(
                     outcome.func.name.clone(),
@@ -4341,7 +4469,8 @@ pub(crate) async fn run_explore(
                     summary_reason.clone(),
                     entry_fingerprint,
                 )
-                .with_line_count(entry_line_count),
+                .with_line_count(entry_line_count)
+                .with_covered_lines(entry_covered_lines),
                 None => {
                     let inferred = match (&outcome.result, summary_status) {
                         (Ok(_), _) => UnavailableReason::WriteFailed,
@@ -4368,6 +4497,7 @@ pub(crate) async fn run_explore(
                         entry_fingerprint,
                     )
                     .with_line_count(entry_line_count)
+                    .with_covered_lines(entry_covered_lines)
                 }
             };
             match outcome_status_from_entry(&bucket_entry) {
@@ -4409,6 +4539,15 @@ pub(crate) async fn run_explore(
         explore_summary.discovered_function_span_lines = span_lines.discovered;
         explore_summary.attempted_function_span_lines = span_lines.attempted;
         explore_summary.completed_function_span_lines = span_lines.completed;
+        // str-jeen.41: line-weighted outcome buckets, recomputed from the
+        // final entry set so the serialized values match (covered/uncovered
+        // for completed entries; full span for build/runtime/timeout/unsupported).
+        explore_summary.covered_completed_lines = span_lines.covered_completed;
+        explore_summary.uncovered_completed_lines = span_lines.uncovered_completed;
+        explore_summary.build_failed_function_lines = span_lines.build_failed;
+        explore_summary.runtime_failed_function_lines = span_lines.runtime_failed;
+        explore_summary.timed_out_function_lines = span_lines.timed_out;
+        explore_summary.unsupported_function_lines = span_lines.unsupported;
         // str-jeen.31: attach the Go root-cause breakdown for this file when
         // the target is Go and at least one build_failed outcome was seen.
         // Computed once at finalization rather than incrementally so the
@@ -6037,6 +6176,7 @@ mod tests {
                     reason: None,
                     deep_fingerprint: None,
                     line_count: 0,
+                    covered_lines: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save".to_string(),
@@ -6045,6 +6185,7 @@ mod tests {
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
                     line_count: 0,
+                    covered_lines: 0,
                 },
             ],
             ..Default::default()
@@ -6119,6 +6260,7 @@ mod tests {
                     reason: None,
                     deep_fingerprint: None,
                     line_count: 0,
+                    covered_lines: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save/user".to_string(),
@@ -6127,6 +6269,7 @@ mod tests {
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
                     line_count: 0,
+                    covered_lines: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "skip/user".to_string(),
@@ -6135,6 +6278,7 @@ mod tests {
                     reason: Some("unexecutable parameter types".to_string()),
                     deep_fingerprint: None,
                     line_count: 0,
+                    covered_lines: 0,
                 },
             ],
             ..Default::default()
@@ -6204,6 +6348,7 @@ mod tests {
                 reason: Some("unexecutable parameter types".to_string()),
                 deep_fingerprint: None,
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6429,6 +6574,7 @@ mod tests {
                     reason: None,
                     deep_fingerprint: Some("abc123".to_string()),
                     line_count: 0,
+                    covered_lines: 0,
                 },
                 ExploreSummaryEntry {
                     function_name: "save".to_string(),
@@ -6437,6 +6583,7 @@ mod tests {
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: Some("def456".to_string()),
                     line_count: 0,
+                    covered_lines: 0,
                 },
             ],
             ..Default::default()
@@ -6520,6 +6667,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6555,6 +6703,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-old".to_string()),
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6587,6 +6736,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: None, // legacy summary
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6621,6 +6771,7 @@ mod tests {
                 reason: Some("timeout".to_string()),
                 deep_fingerprint: Some("fp-abc".to_string()),
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6652,6 +6803,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
                 line_count: 0,
+                covered_lines: 0,
             }],
             ..Default::default()
         };
@@ -6782,6 +6934,7 @@ mod tests {
             reason: reason.map(|s| s.to_string()),
             deep_fingerprint: None,
             line_count: 0,
+            covered_lines: 0,
         }
     }
 
@@ -6793,6 +6946,18 @@ mod tests {
     ) -> ExploreSummaryEntry {
         let mut e = entry(name, status, reason);
         e.line_count = line_count;
+        e
+    }
+
+    /// str-jeen.41: completed-entry builder with both `line_count` and
+    /// `covered_lines` set so tests can pin the covered/uncovered split.
+    fn completed_entry_with_coverage(
+        name: &str,
+        line_count: u32,
+        covered_lines: u32,
+    ) -> ExploreSummaryEntry {
+        let mut e = entry_with_lines(name, "completed", None, line_count);
+        e.covered_lines = covered_lines.min(line_count);
         e
     }
 
@@ -6894,6 +7059,118 @@ mod tests {
         assert_eq!(totals.discovered, 9 + 4);
         assert_eq!(totals.attempted, 9);
         assert_eq!(totals.completed, 9);
+    }
+
+    // ── str-jeen.41: line-weighted outcome buckets ──
+
+    #[test]
+    fn span_line_outcome_buckets_partition_mixed_file_by_final_status() {
+        // Mixed-file fixture: one of every outcome status the run JSON's
+        // line-weighted buckets must distinguish — completed (with a
+        // covered/uncovered split), build_failed, runtime_failed, timed_out,
+        // and unsupported. The acceptance criterion for str-jeen.41 is that
+        // every one of these contributes to its dedicated bucket without
+        // any line vanishing from accounting.
+        const COMPLETED_LINES: u32 = 20;
+        const COMPLETED_COVERED: u32 = 13;
+        const BUILD_FAILED_LINES: u32 = 7;
+        const RUNTIME_FAILED_LINES: u32 = 11;
+        const TIMED_OUT_LINES: u32 = 5;
+        const UNSUPPORTED_LINES: u32 = 4;
+
+        let entries = vec![
+            completed_entry_with_coverage("ok", COMPLETED_LINES, COMPLETED_COVERED),
+            entry_with_lines(
+                "build",
+                "failed",
+                Some("execute error (InstrumentationFailed): build failed: exit 1"),
+                BUILD_FAILED_LINES,
+            ),
+            entry_with_lines(
+                "runtime",
+                "failed",
+                Some("panic: nil pointer"),
+                RUNTIME_FAILED_LINES,
+            ),
+            entry_with_lines(
+                "timed",
+                "failed",
+                Some("function timed out after 30s"),
+                TIMED_OUT_LINES,
+            ),
+            entry_with_lines(
+                "unsup",
+                "skipped",
+                Some("unexecutable parameter types"),
+                UNSUPPORTED_LINES,
+            ),
+        ];
+        let totals = span_line_denominators_from_entries(&entries);
+
+        // Per-outcome line buckets land in their own bins.
+        assert_eq!(totals.covered_completed, COMPLETED_COVERED);
+        assert_eq!(totals.uncovered_completed, COMPLETED_LINES - COMPLETED_COVERED);
+        assert_eq!(totals.build_failed, BUILD_FAILED_LINES);
+        assert_eq!(totals.runtime_failed, RUNTIME_FAILED_LINES);
+        assert_eq!(totals.timed_out, TIMED_OUT_LINES);
+        assert_eq!(totals.unsupported, UNSUPPORTED_LINES);
+
+        // Invariant: covered + uncovered for completed entries equals the
+        // .18 `completed` denominator. No completed lines may leak into a
+        // failure bucket.
+        assert_eq!(
+            totals.covered_completed + totals.uncovered_completed,
+            totals.completed,
+        );
+
+        // Invariant: every discovered line is accounted for in exactly one
+        // outcome bucket (since this fixture has no skipped_by_policy entries,
+        // the six surfaced buckets must sum to `discovered`).
+        let bucket_sum = totals.covered_completed
+            + totals.uncovered_completed
+            + totals.build_failed
+            + totals.runtime_failed
+            + totals.timed_out
+            + totals.unsupported;
+        assert_eq!(bucket_sum, totals.discovered);
+    }
+
+    #[test]
+    fn span_line_outcome_buckets_skipped_by_policy_is_in_discovered_only() {
+        // SkippedByPolicy entries count toward `discovered` (and nothing else
+        // surfaced in str-jeen.41): user-driven exclusion is not a coverage
+        // gap, so it gets no dedicated outcome bucket.
+        let entries = vec![entry_with_lines(
+            "policy",
+            "skipped",
+            Some("explicitly excluded by user"),
+            6,
+        )];
+        let totals = span_line_denominators_from_entries(&entries);
+        assert_eq!(totals.discovered, 6);
+        assert_eq!(totals.attempted, 0);
+        assert_eq!(totals.completed, 0);
+        assert_eq!(totals.covered_completed, 0);
+        assert_eq!(totals.uncovered_completed, 0);
+        assert_eq!(totals.build_failed, 0);
+        assert_eq!(totals.runtime_failed, 0);
+        assert_eq!(totals.timed_out, 0);
+        assert_eq!(totals.unsupported, 0);
+    }
+
+    #[test]
+    fn span_line_outcome_buckets_cap_covered_at_line_count() {
+        // Defensive cap: an artifact written before the cap landed could
+        // carry `covered_lines > line_count` (instrumenter line-id space
+        // disagreeing with the analyzer's source span). The aggregator must
+        // re-cap so the partition invariant
+        // `covered + uncovered == completed` always holds.
+        let mut e = completed_entry_with_coverage("clamp", 10, 10);
+        e.covered_lines = 25; // bypass `with_covered_lines` cap to simulate stale artifact
+        let totals = span_line_denominators_from_entries(&[e]);
+        assert_eq!(totals.completed, 10);
+        assert_eq!(totals.covered_completed, 10);
+        assert_eq!(totals.uncovered_completed, 0);
     }
 
     // ── str-jeen.31: Go broad-run root-cause aggregation ──
@@ -7260,6 +7537,7 @@ mod tests {
             reason: Some(reason_str),
             deep_fingerprint: None,
             line_count: 0,
+            covered_lines: 0,
         };
         assert_eq!(
             outcome_status_from_entry(&entry),
@@ -7437,6 +7715,7 @@ mod tests {
             reason: None,
             deep_fingerprint: None,
             line_count: 0,
+            covered_lines: 0,
         };
         let summary = make_summary("src.ts", vec![entry]);
         let report = validate_artifact_references(dir.path(), &[summary]);
