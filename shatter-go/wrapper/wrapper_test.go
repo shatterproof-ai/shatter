@@ -330,6 +330,106 @@ func Identity[T any](v T) T {
 	}
 }
 
+// TestGenerateWrapperEmitsTargetImports is the str-jeen.33 unit-level
+// regression: when a target declares Imports, GenerateWrapper must emit one
+// `import "..."` line per distinct path in the union across all targets, in
+// addition to the always-present core imports (encoding/json, fmt). Without
+// this, qualified parameter or result types like context.Context, *pgx.Conn,
+// slog.Logger reference undefined package short names in the generated file.
+func TestGenerateWrapperEmitsTargetImports(t *testing.T) {
+	// Distinct paths spread across two targets, with a deliberate duplicate
+	// (`context`) appearing on both — the union must dedupe it.
+	targetsWithImports := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/multi:Handle",
+			SymbolName: "Handle",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context"},
+				{Name: "conn", GoType: "*pgx.Conn"},
+			},
+			Imports:      []string{"context", "example.com/stub/pgx"},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+		{
+			ID:         "example.com/multi:Notify",
+			SymbolName: "Notify",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context"},
+				{Name: "logger", GoType: "*slog.Logger"},
+			},
+			Imports:      []string{"context", "log/slog"},
+			HasResult:    false,
+			ResultCount:  0,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("targets", targetsWithImports, nil)
+
+	mustContain := []string{
+		`"context"`,
+		`"log/slog"`,
+		`"example.com/stub/pgx"`,
+		`"encoding/json"`,
+		`"fmt"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated wrapper missing import line %s\nfull source:\n%s", want, src)
+		}
+	}
+
+	// Dedup invariant: each distinct import path appears at most once in the
+	// generated source. This is the proptest-shaped invariant team-lead
+	// requested — for every external pkg path declared in any target's
+	// Imports, exactly one `"<path>"` literal appears.
+	allPaths := []string{
+		"context", "log/slog", "example.com/stub/pgx",
+		"encoding/json", "fmt",
+	}
+	for _, importPath := range allPaths {
+		quoted := `"` + importPath + `"`
+		if got := strings.Count(src, quoted); got != 1 {
+			t.Errorf("import %s appears %d times in generated source, want 1\nsource:\n%s",
+				quoted, got, src)
+		}
+	}
+}
+
+// TestGenerateWrapperOmitsCoreImportsFromTargetImports guards against
+// double-emitting `encoding/json`, `fmt`, or `strings` when a target's
+// Imports list happens to include them — collectExtraImports filters them.
+func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/dup:F",
+			SymbolName: "F",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "x", GoType: "int"}},
+			// Deliberately include the always-emitted core imports.
+			Imports:      []string{"encoding/json", "fmt", "strings", "context"},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("dup", targets, nil)
+
+	for _, core := range []string{"encoding/json", "fmt"} {
+		quoted := `"` + core + `"`
+		if got := strings.Count(src, quoted); got != 1 {
+			t.Errorf("core import %s appears %d times, want exactly 1", quoted, got)
+		}
+	}
+	if !strings.Contains(src, `"context"`) {
+		t.Error("non-core import context missing from generated source")
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 

@@ -49,6 +49,15 @@ type WrapperTarget struct {
 	HasResult     bool
 	ResultGoType  string // Go type string for the first return value
 	ResultCount   int    // total number of return values (0 when HasResult is false)
+	// Imports lists the import paths required by the qualified type names that
+	// appear in Parameters[i].GoType and ResultGoType. GenerateWrapper unions
+	// the Imports of all targets and emits an `import` block in the generated
+	// wrapper file. When a target's parameter or result type uses a qualified
+	// name like `context.Context`, `*pgx.Conn`, or `gqlerror.Error`, the
+	// corresponding import path (`context`, `example.com/.../pgx`,
+	// `example.com/.../gqlerror`) must appear here for the generated wrapper
+	// to compile. Cross-ref: str-jeen.33.
+	Imports []string
 }
 
 const (
@@ -122,6 +131,13 @@ func GenerateWrapper(
 	b.WriteString("\t\"fmt\"\n")
 	if hasGenericTargets(sorted) {
 		b.WriteString("\t\"strings\"\n")
+	}
+	// str-jeen.33: union the per-target Imports lists and emit one entry per
+	// distinct import path. Without this, qualified parameter or return types
+	// like context.Context, *pgx.Conn, slog.Logger would leave the generated
+	// wrapper file referencing undefined package short names.
+	for _, importPath := range collectExtraImports(sorted) {
+		fmt.Fprintf(&b, "\t%q\n", importPath)
 	}
 	b.WriteString(")\n\n")
 
@@ -294,7 +310,11 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		}
 	}
 
-	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name)
+	// importSet accumulates every import path referenced by parameter or
+	// result type expressions on this function so wrapper-gen can emit
+	// matching import statements (str-jeen.33).
+	importSet := make(map[string]struct{})
+	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, importSet)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -302,8 +322,12 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
-		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name)
+		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, importSet)
 		for _, field := range fn.Type.Results.List {
+			// Walk every result type so multi-return signatures contribute
+			// their imports too (e.g. (User, error) where User is in another
+			// package). Discard the string; we only need the side effect.
+			_ = wrapperGoType(field.Type, pkg.TypesInfo, pkg.Name, importSet)
 			if len(field.Names) == 0 {
 				resultCount++
 			} else {
@@ -311,6 +335,12 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 			}
 		}
 	}
+
+	imports := make([]string, 0, len(importSet))
+	for importPath := range importSet {
+		imports = append(imports, importPath)
+	}
+	sort.Strings(imports)
 
 	return &WrapperTarget{
 		ID:            id,
@@ -323,6 +353,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		HasResult:     hasResult,
 		ResultGoType:  resultGoType,
 		ResultCount:   resultCount,
+		Imports:       imports,
 	}
 }
 
@@ -342,13 +373,13 @@ func wrapperQualifiedName(fn *ast.FuncDecl) string {
 	return fn.Name.Name
 }
 
-func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string) []WrapperParam {
+func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, importSet map[string]struct{}) []WrapperParam {
 	if fn.Type.Params == nil {
 		return nil
 	}
 	var params []WrapperParam
 	for _, field := range fn.Type.Params.List {
-		goType := wrapperGoType(field.Type, info, pkgName)
+		goType := wrapperGoType(field.Type, info, pkgName, importSet)
 		for _, name := range field.Names {
 			params = append(params, WrapperParam{Name: name.Name, GoType: goType})
 		}
@@ -376,13 +407,21 @@ func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
 	return params
 }
 
-// wrapperGoType returns the Go type string for use in the target package.
-func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string) string {
+// wrapperGoType returns the Go type string for use in the target package and,
+// as a side effect, records every external package referenced by the type
+// into importSet (keyed by import path). importSet may be nil. Cross-ref:
+// str-jeen.33 — without this, the generated wrapper file declares variables
+// of qualified types (`context.Context`, `*pgx.Conn`) without ever importing
+// the corresponding packages.
+func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string, importSet map[string]struct{}) string {
 	if info != nil {
 		if tv, ok := info.Types[expr]; ok {
 			qualifier := func(p *types.Package) string {
 				if p == nil || p.Name() == pkgName {
 					return ""
+				}
+				if importSet != nil {
+					importSet[p.Path()] = struct{}{}
 				}
 				return p.Name()
 			}
@@ -420,6 +459,38 @@ func wrapperASTTypeString(expr ast.Expr) string {
 	default:
 		return "any"
 	}
+}
+
+// collectExtraImports returns the sorted union of all targets' Imports lists,
+// excluding the always-emitted core imports (encoding/json, fmt, strings) so
+// they are never duplicated. The output is deterministic so GenerateWrapper
+// remains byte-stable across calls. See str-jeen.33.
+func collectExtraImports(targets []WrapperTarget) []string {
+	const (
+		coreImportJSON    = "encoding/json"
+		coreImportFmt     = "fmt"
+		coreImportStrings = "strings"
+	)
+	seen := make(map[string]struct{})
+	for _, t := range targets {
+		for _, importPath := range t.Imports {
+			trimmed := strings.TrimSpace(importPath)
+			if trimmed == "" {
+				continue
+			}
+			switch trimmed {
+			case coreImportJSON, coreImportFmt, coreImportStrings:
+				continue
+			}
+			seen[trimmed] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for importPath := range seen {
+		result = append(result, importPath)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func hasGenericTargets(targets []WrapperTarget) bool {

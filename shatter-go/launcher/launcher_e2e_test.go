@@ -368,3 +368,110 @@ func TestLauncherBuildsForInternalFixture(t *testing.T) {
 		t.Fatalf("Classify(%d) = %d, want %d", positiveInput, got, expectedPositive)
 	}
 }
+
+// TestLauncherBuildsForMultiImportWrapper is the str-jeen.33 acceptance test.
+//
+// It exercises the wrapper+launcher build pipeline against the checked-in
+// `examples/go/multi-import-wrapper/` fixture, whose single target `Handle`
+// has a parameter list that pulls in ten distinct packages — five stdlib
+// (context, log/slog, os, io, go/ast) and five non-stdlib local stubs that
+// mimic third-party / application packages (pgx, gqlerror, model, search,
+// config).
+//
+// Contract under regression: shatter-go/wrapper.GenerateWrapper must emit
+// imports for every package referenced by a target's parameter or result
+// type. Without that, the generated wrapper file declares
+// `var ctx context.Context`, `var conn *pgx.Conn`, etc. while only importing
+// encoding/json + fmt, and `go build` fails with `undefined: context`,
+// `undefined: pgx`, and so on. With imports emitted, the launcher binary
+// builds cleanly.
+//
+// Cross-ref: str-jeen.33. The deliberate non-stdlib stubs (pgx, gqlerror,
+// model, search, config) are local subpackages of the fixture module
+// (`example.com/multiimport/{pgx,gqlerror,...}`). Each WrapperParam below
+// uses the package's *short* name in `GoType` (matching what
+// wrapperGoType would produce in real wrapper-gen) while also declaring
+// the resolved import path via the new `Imports` channel on WrapperTarget.
+func TestLauncherBuildsForMultiImportWrapper(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	fixtureDir := filepath.Join(repoRoot, "examples", "go", "multi-import-wrapper")
+	fixtureGoMod := filepath.Join(fixtureDir, "go.mod")
+	if _, err := os.Stat(fixtureGoMod); err != nil {
+		t.Skipf("multi-import-wrapper fixture not present: %v", err)
+	}
+
+	const (
+		targetModulePath = "example.com/multiimport"
+		targetImportPath = "example.com/multiimport"
+		targetID         = "example.com/multiimport:Handle"
+	)
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         targetID,
+			SymbolName: "Handle",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context"},
+				{Name: "logger", GoType: "*slog.Logger"},
+				{Name: "user", GoType: "model.User"},
+				{Name: "query", GoType: "search.Query"},
+				{Name: "file", GoType: "*os.File"},
+				{Name: "conn", GoType: "*pgx.Conn"},
+				{Name: "reader", GoType: "io.Reader"},
+				{Name: "ident", GoType: "*ast.Ident"},
+				{Name: "gqlErr", GoType: "*gqlerror.Error"},
+				{Name: "cfg", GoType: "config.Config"},
+			},
+			Imports: []string{
+				"context",
+				"log/slog",
+				"example.com/multiimport/model",
+				"example.com/multiimport/search",
+				"os",
+				"example.com/multiimport/pgx",
+				"io",
+				"go/ast",
+				"example.com/multiimport/gqlerror",
+				"example.com/multiimport/config",
+			},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	wrapperDir := t.TempDir()
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "targets", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	// Overlay the wrapper into the fixture's target package directory so the
+	// fixture stays read-only at run time (same pattern as str-jeen.32).
+	wrapperInTree := filepath.Join(fixtureDir, wrapper.WrapperFilename(hash))
+
+	workDir := t.TempDir()
+	binaryPath, _, err := launcher.BuildLauncher(launcher.BuildOptions{
+		TargetModulePath:  targetModulePath,
+		TargetModuleDir:   fixtureDir,
+		TargetImportPath:  targetImportPath,
+		DiscoveryHash:     hash,
+		WrapperRealPath:   wrapperPath,
+		WrapperInTreePath: wrapperInTree,
+		GeneratedDir:      filepath.Join(workDir, "generated"),
+		BinariesDir:       filepath.Join(workDir, "binaries"),
+		GoEnv:             append(os.Environ(), "GOFLAGS="),
+	})
+	if err != nil {
+		t.Fatalf("BuildLauncher (str-jeen.33 multi-import): %v", err)
+	}
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		t.Fatalf("launcher binary missing at %s: %v", binaryPath, statErr)
+	}
+}
