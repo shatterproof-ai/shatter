@@ -1500,6 +1500,11 @@ fn classify_no_target_reason(
     {
         return Some(reason);
     }
+    if language == crate::args::Language::Go
+        && let Some(reason) = go_classify_no_target_reason(file)
+    {
+        return Some(reason);
+    }
     Some(shatter_core::protocol::NoTargetReason::Unclassified)
 }
 
@@ -1987,6 +1992,154 @@ fn ts_line_is_pure_declaration(line: &str) -> bool {
 /// declaration-only status on its own.
 fn ts_line_is_pure_brace_close(line: &str) -> bool {
     matches!(line, "}" | "};" | "},")
+}
+
+// ── Go no-target reason classifier (str-jeen.23) ──────────────────────────
+//
+// Mirrors the TS and Rust classifiers above. Hosted CLI-side per the
+// str-jeen.25 frontend-agnostic precedent — see `parity-matrix.yaml`
+// `shared_wire_types.no_target_reason`. Refines zero-target Go files into
+// one of the three Go-relevant taxonomy variants from str-jeen.21:
+// `test_file`, `generated`, `receiver_method_gap`. Anything that fails
+// every Go-specific signal returns `None` so the caller emits
+// `Unclassified`.
+
+/// Filename suffix that marks Go test files. Go's testing convention is
+/// unambiguous: `go test` only runs files matching this suffix.
+const GO_TEST_FILE_SUFFIX: &str = "_test.go";
+
+/// Canonical "Code generated ... DO NOT EDIT." marker recognized by
+/// `go generate`, gofmt, and the go/ast generated-file detection (see
+/// <https://pkg.go.dev/cmd/go#hdr-Generate_Go_files>). The marker must
+/// appear on its own line as a `//`-style comment before the package
+/// clause for the file to be treated as machine-generated.
+const GO_GENERATED_MARKER_PREFIX: &str = "// Code generated ";
+const GO_GENERATED_MARKER_SUFFIX: &str = " DO NOT EDIT.";
+
+/// Maximum bytes of source we read when running Go content heuristics.
+/// Same rationale as the TS and Rust classifiers: the file already
+/// returned zero analyzer targets, so a coarse line scan is sufficient
+/// and a hard cap protects against oversized fixtures.
+const GO_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
+
+/// Per-Go no-target reason classifier (str-jeen.23). Returns the
+/// taxonomy variant a Go file matches, or `None` if no Go-specific signal
+/// applies (caller falls back to `Unclassified`). Hosted CLI-side per the
+/// str-jeen.25 precedent — see `parity-matrix.yaml`
+/// `shared_wire_types.no_target_reason`.
+///
+/// Order of checks (first match wins):
+///   1. `test_file` (path) — basename ends in `_test.go`. Go's testing
+///      convention is unambiguous regardless of file body.
+///   2. `generated` (content) — file's pre-package-clause prologue
+///      contains a line matching the canonical Go generated-file marker
+///      (`// Code generated ... DO NOT EDIT.`).
+///   3. `receiver_method_gap` (content) — file declares one or more
+///      methods (`func (recv Recv) Name(...)`) and zero free top-level
+///      functions (`func Name(...)`). Conservative: if any free function
+///      is present, the file should have produced a target and we fall
+///      through to `None` so the caller emits `Unclassified`.
+///
+/// Anything else returns `None` so the caller emits `Unclassified`.
+fn go_classify_no_target_reason(
+    file: &Path,
+) -> Option<shatter_core::protocol::NoTargetReason> {
+    use shatter_core::protocol::NoTargetReason;
+
+    if go_is_test_file_by_path(file) {
+        return Some(NoTargetReason::TestFile);
+    }
+
+    let source = go_read_capped_source(file)?;
+    if go_is_generated_by_content(&source) {
+        return Some(NoTargetReason::Generated);
+    }
+    if go_is_receiver_method_gap_by_content(&source) {
+        return Some(NoTargetReason::ReceiverMethodGap);
+    }
+
+    None
+}
+
+/// True when the basename ends in `_test.go` — Go's unambiguous testing
+/// suffix consumed by `go test`.
+fn go_is_test_file_by_path(file: &Path) -> bool {
+    file.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name.ends_with(GO_TEST_FILE_SUFFIX))
+}
+
+/// Read up to `GO_CONTENT_SCAN_BYTE_CAP` bytes of the file as UTF-8.
+/// Returns `None` on IO error or non-UTF-8 prefix; the caller treats that
+/// as "no Go-specific content signal".
+fn go_read_capped_source(file: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut handle = std::fs::File::open(file).ok()?;
+    let mut buf = vec![0u8; GO_CONTENT_SCAN_BYTE_CAP];
+    let n = handle.read(&mut buf).ok()?;
+    buf.truncate(n);
+    String::from_utf8(buf).ok()
+}
+
+/// True when the file's pre-`package` prologue contains the canonical Go
+/// generated-file marker `// Code generated ... DO NOT EDIT.` on a line
+/// by itself. Per the Go convention, the marker must appear before the
+/// `package` clause; markers buried inside function bodies or after the
+/// package clause are not recognized.
+fn go_is_generated_by_content(source: &str) -> bool {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("package ") || trimmed == "package" {
+            return false;
+        }
+        if trimmed.starts_with(GO_GENERATED_MARKER_PREFIX)
+            && trimmed.ends_with(GO_GENERATED_MARKER_SUFFIX)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when the file declares at least one method (a `func` whose name
+/// is preceded by a parenthesized receiver) and zero free top-level
+/// functions (a `func` whose name follows the `func` keyword directly).
+/// Coarse line scan: only depth-zero `func ` opens count, so a `func`
+/// nested inside a struct literal or a string body cannot trigger a
+/// false positive. Conservative: if any free function is present the
+/// file should have produced a target, so we return `false` and the
+/// caller falls through to `Unclassified`.
+fn go_is_receiver_method_gap_by_content(source: &str) -> bool {
+    let mut saw_method = false;
+    let mut depth: usize = 0;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if depth == 0 && trimmed.starts_with("func ") {
+            if go_func_line_has_receiver(trimmed) {
+                saw_method = true;
+            } else {
+                // Free top-level function — file is not a pure
+                // receiver-method-gap candidate.
+                return false;
+            }
+        }
+        for ch in line.chars() {
+            match ch {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    saw_method
+}
+
+/// True when a `func ` line opens a method declaration: the token after
+/// `func` is a parenthesized receiver list (`func (r Recv) Name(...)`).
+/// Free functions (`func Name(...)`) have a non-`(` token after `func`.
+fn go_func_line_has_receiver(line: &str) -> bool {
+    let after_func = line.strip_prefix("func ").unwrap_or("").trim_start();
+    after_func.starts_with('(')
 }
 
 /// Format a one-line breakdown of non-completed buckets and the
@@ -5573,6 +5726,8 @@ mod tests {
         ts_classify_no_target_reason, ts_contains_jsx_component,
         ts_is_declaration_file_by_path, ts_is_declaration_only,
         ts_is_test_or_spec_by_path,
+        go_classify_no_target_reason, go_is_generated_by_content,
+        go_is_receiver_method_gap_by_content, go_is_test_file_by_path,
         span_line_denominators_from_entries, stage_persistence_dir,
         validate_artifact_references, write_explore_artifact, write_explore_summary,
     };
@@ -8955,6 +9110,253 @@ mod tests {
         ) {
             let source = format!("{keyword} placeholder{tail} = 1;\n");
             proptest::prop_assert!(!ts_is_declaration_only(&source));
+        }
+    }
+
+    // ── Go no-target classifier (str-jeen.23) ────────────────────────────
+
+    /// Helper: write `contents` to `dir/relative` and return the
+    /// absolute path. Mirrors `write_ts_fixture` for symmetry.
+    fn write_go_fixture(
+        dir: &std::path::Path,
+        relative: &str,
+        contents: &str,
+    ) -> std::path::PathBuf {
+        let path = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        std::fs::write(&path, contents).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn go_classifier_recognizes_test_file_by_suffix() {
+        // `_test.go` is Go's unambiguous testing suffix consumed by `go
+        // test`. The classifier must accept the path-based signal
+        // regardless of body contents.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_go_fixture(
+            dir.path(),
+            "pkg/widget_test.go",
+            "package widget\n\
+             import \"testing\"\n\
+             func TestThing(t *testing.T) { _ = t }\n",
+        );
+        assert!(go_is_test_file_by_path(&path));
+        assert_eq!(
+            go_classify_no_target_reason(&path),
+            Some(NoTargetReason::TestFile),
+        );
+    }
+
+    #[test]
+    fn go_classifier_recognizes_generated_marker() {
+        // The canonical `// Code generated ... DO NOT EDIT.` marker on
+        // its own line before the package clause classifies the file
+        // as `generated`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = "// Code generated by protoc-gen-go. DO NOT EDIT.\n\
+                      // versions: protoc-gen-go v1.28.0\n\
+                      \n\
+                      package fixturepb\n\
+                      \n\
+                      type Empty struct{}\n";
+        let path = write_go_fixture(dir.path(), "pkg/fixture.pb.go", source);
+        assert!(go_is_generated_by_content(source));
+        assert_eq!(
+            go_classify_no_target_reason(&path),
+            Some(NoTargetReason::Generated),
+        );
+    }
+
+    #[test]
+    fn go_classifier_ignores_generated_marker_after_package_clause() {
+        // The marker must appear before the `package` clause. A line
+        // matching the marker text inside a function body or a comment
+        // after the package clause must NOT classify the file as
+        // generated.
+        let source = "package widget\n\
+                      \n\
+                      // Code generated by hand. DO NOT EDIT.\n\
+                      func F() {}\n";
+        assert!(!go_is_generated_by_content(source));
+    }
+
+    #[test]
+    fn go_classifier_recognizes_receiver_method_gap() {
+        // A file with one or more methods (`func (r Recv) M()`) and zero
+        // free top-level functions classifies as `receiver_method_gap`
+        // — the analyzer cannot synthesize an executable target without
+        // a constructor for the receiver type.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = "package widget\n\
+                      \n\
+                      type Counter struct{ n int }\n\
+                      \n\
+                      func (c *Counter) Inc() { c.n++ }\n\
+                      func (c Counter) Value() int { return c.n }\n";
+        let path = write_go_fixture(dir.path(), "pkg/counter.go", source);
+        assert!(go_is_receiver_method_gap_by_content(source));
+        assert_eq!(
+            go_classify_no_target_reason(&path),
+            Some(NoTargetReason::ReceiverMethodGap),
+        );
+    }
+
+    #[test]
+    fn go_classifier_rejects_receiver_gap_when_free_function_present() {
+        // A file with even one free top-level `func Name(...)` MUST NOT
+        // classify as `receiver_method_gap` — the analyzer should have
+        // discovered a target. Conservative: return None so the caller
+        // emits Unclassified rather than a wrong taxonomy slot.
+        let source = "package widget\n\
+                      \n\
+                      type Counter struct{}\n\
+                      \n\
+                      func (c *Counter) Inc() {}\n\
+                      func Helper() int { return 1 }\n";
+        assert!(!go_is_receiver_method_gap_by_content(source));
+    }
+
+    #[test]
+    fn go_classifier_check_order_path_wins_over_content() {
+        // A `_test.go` file whose body is also receiver-method-gap-like
+        // still classifies as `test_file` via the path check —
+        // path-based signals are checked before any content scan.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_go_fixture(
+            dir.path(),
+            "pkg/counter_test.go",
+            "package widget\n\
+             type Counter struct{}\n\
+             func (c *Counter) Inc() {}\n",
+        );
+        assert_eq!(
+            go_classify_no_target_reason(&path),
+            Some(NoTargetReason::TestFile),
+        );
+
+        // A `_test.go` file containing the generated marker still
+        // classifies as `test_file`, not `generated`.
+        let gen_test = write_go_fixture(
+            dir.path(),
+            "pkg/codegen_test.go",
+            "// Code generated by tool. DO NOT EDIT.\n\
+             package widget\n\
+             import \"testing\"\n\
+             func TestX(t *testing.T) {}\n",
+        );
+        assert_eq!(
+            go_classify_no_target_reason(&gen_test),
+            Some(NoTargetReason::TestFile),
+        );
+    }
+
+    #[test]
+    fn go_classifier_returns_none_for_unclassifiable_files() {
+        // An empty `.go` file matches no signal — the classifier
+        // returns None and the caller emits Unclassified (str-jeen.21
+        // default).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty = write_go_fixture(dir.path(), "pkg/empty.go", "");
+        assert_eq!(go_classify_no_target_reason(&empty), None);
+
+        // A file with only declarations (no methods, no free funcs)
+        // also returns None.
+        let decls_only = write_go_fixture(
+            dir.path(),
+            "pkg/decls.go",
+            "package widget\n\
+             type T struct{ x int }\n\
+             const K = 1\n",
+        );
+        assert_eq!(go_classify_no_target_reason(&decls_only), None);
+    }
+
+    #[test]
+    fn go_classifier_returns_none_on_io_error() {
+        // Nonexistent path with no path-based signal: the source read
+        // fails and the function returns None.
+        let path = std::path::PathBuf::from("/nonexistent/dir/random.go");
+        assert_eq!(go_classify_no_target_reason(&path), None);
+    }
+
+    #[test]
+    fn go_classifier_routed_through_classify_no_target_reason() {
+        // Integration with the public dispatcher: a Go path with zero
+        // targets and a Go-specific signal must yield the refined
+        // variant, not the plain Unclassified fallback.
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let test_path = write_go_fixture(
+            dir.path(),
+            "pkg/foo_test.go",
+            "package foo\nimport \"testing\"\nfunc TestA(t *testing.T) {}\n",
+        );
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::Go, &test_path),
+            Some(NoTargetReason::TestFile),
+        );
+
+        let generated = write_go_fixture(
+            dir.path(),
+            "pkg/api.pb.go",
+            "// Code generated by protoc-gen-go. DO NOT EDIT.\npackage api\n",
+        );
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::Go, &generated),
+            Some(NoTargetReason::Generated),
+        );
+
+        let methods = write_go_fixture(
+            dir.path(),
+            "pkg/methods.go",
+            "package m\n\
+             type S struct{}\n\
+             func (s *S) M() {}\n",
+        );
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::Go, &methods),
+            Some(NoTargetReason::ReceiverMethodGap),
+        );
+    }
+
+    proptest::proptest! {
+        /// Go Invariant 1: a basename ending in `_test.go` under any
+        /// directory layout always classifies as `test_file`,
+        /// regardless of body. Path-based signal wins over content.
+        #[test]
+        fn go_test_suffix_always_classifies_as_test_file(
+            ref dirseg in proptest::sample::select(vec![
+                "pkg", "internal", "cmd/svc", "vendor/x", "a/b/c",
+            ]),
+            ref stem in "[a-z][a-z0-9_]{0,20}",
+            ref body in "[a-zA-Z0-9 \\n_(){};:=]{0,200}",
+        ) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let relative = format!("{dirseg}/{stem}_test.go");
+            let path = write_go_fixture(dir.path(), &relative, body);
+            proptest::prop_assert_eq!(
+                go_classify_no_target_reason(&path),
+                Some(NoTargetReason::TestFile),
+            );
+        }
+
+        /// Go Invariant 2: a file containing any free top-level `func
+        /// Name(...)` declaration (at depth 0) never classifies as
+        /// `receiver_method_gap` — the heuristic is conservative.
+        #[test]
+        fn go_free_function_source_never_classifies_as_receiver_gap(
+            ref name in "[A-Z][a-zA-Z0-9]{0,12}",
+        ) {
+            let source = format!(
+                "package x\n\
+                 type T struct{{}}\n\
+                 func (t *T) M() {{}}\n\
+                 func {name}() int {{ return 1 }}\n",
+            );
+            proptest::prop_assert!(!go_is_receiver_method_gap_by_content(&source));
         }
     }
 }

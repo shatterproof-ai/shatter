@@ -101,6 +101,43 @@ TS and Rust currently declare `outcome` only; conformance tests
 clean "capability not supported" response from TS/Rust rather than
 crashing or returning malformed data.
 
+## No-Target-Reason Classifier Contract
+
+The Go per-language no-target-reason classifier (str-jeen.23) refines
+zero-target Go files into one of `test_file`, `generated`, or
+`receiver_method_gap`. Files that don't match any Go-specific signal
+fall through to `unclassified` (the str-jeen.21 default).
+
+**The classifier lives CLI-side**, not in this crate. It is hosted in
+`shatter-cli/src/commands/explore.rs` (`go_classify_no_target_reason`
+and helpers) following the str-jeen.25 frontend-agnostic pre-classifier
+pattern and the str-jeen.22 / str-jeen.24 TS / Rust precedents. The
+frontend Analyze response wire shape is unchanged — the protocol does
+not yet carry `no_target_reason` from frontend → CLI, so emitting
+per-language classifications would require a protocol surface change.
+When that field is added, the classifier can move into this frontend
+without behavioral change for callers.
+
+Order of checks (first match wins):
+
+1. `test_file` (path) — basename ends in `_test.go`. Go's testing
+   convention is unambiguous regardless of file body.
+2. `generated` (content) — file's pre-`package`-clause prologue
+   contains a line matching the canonical Go marker
+   `// Code generated ... DO NOT EDIT.` (per
+   <https://pkg.go.dev/cmd/go#hdr-Generate_Go_files>). Markers buried
+   inside function bodies or after the package clause are ignored.
+3. `receiver_method_gap` (content) — file declares one or more
+   methods (`func (recv Recv) Name(...)`) and zero free top-level
+   functions (`func Name(...)`). Conservative: any free function
+   present at depth zero rejects this classification — the analyzer
+   should have produced a target — and the caller falls through to
+   `unclassified`.
+
+Authoritative matrix entry: `protocol/parity-matrix.yaml`
+`shared_wire_types.no_target_reason.frontends.go:
+implemented_via_cli_classifier`.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.

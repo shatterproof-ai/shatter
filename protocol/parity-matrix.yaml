@@ -46,7 +46,7 @@ shared_wire_types:
       cleanly when frontends start emitting the field on responses.
     frontends:
       typescript: implemented_via_cli_classifier
-      go: not_implemented
+      go: implemented_via_cli_classifier
       rust: implemented_via_cli_classifier
   invocation_outcome:
     notes: >
