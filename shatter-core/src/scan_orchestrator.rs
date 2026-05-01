@@ -630,6 +630,10 @@ pub enum ScanRunStatus {
     Completed,
     Failed,
     Interrupted,
+    /// The source set changed during the run (paths added, removed, or
+    /// modified between manifest capture and end-of-run validation).
+    /// The summary's `source_diff` lists which paths drifted (str-jeen.3).
+    StaleSourceSet,
 }
 
 /// Per-function entry in the scan summary.
@@ -659,6 +663,12 @@ pub struct ScanSummary {
     pub skipped: usize,
     pub elapsed_secs: f64,
     pub functions: Vec<ScanSummaryEntry>,
+    /// End-of-run source-set drift. `Some` when the scan finalizer ran
+    /// the run-manifest validation step; `None` when validation was
+    /// skipped (e.g. interrupted scan, no manifest captured). See
+    /// `crate::run_manifest` (str-jeen.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_diff: Option<crate::run_manifest::ManifestDiff>,
 }
 
 const SCAN_SUMMARY_VERSION: u32 = 1;
@@ -700,6 +710,7 @@ fn new_scan_summary(scan_id: &str, total_functions: usize) -> ScanSummary {
         skipped: 0,
         elapsed_secs: 0.0,
         functions: Vec::new(),
+        source_diff: None,
     }
 }
 
@@ -786,6 +797,43 @@ fn summary_finalize(summary: &mut ScanSummary, elapsed: Duration) {
     } else {
         ScanRunStatus::Completed
     };
+}
+
+/// Finalize the summary and run end-of-run source-set validation.
+///
+/// `current_paths` is the deduplicated set of source paths the scan
+/// actually used — typically the values of `ScanConfig::file_map`. When
+/// the diff against `manifest` shows any drift, the summary status is
+/// promoted to [`ScanRunStatus::StaleSourceSet`] so a long run that
+/// silently raced concurrent edits is no longer reported as a clean
+/// completion (str-jeen.3).
+fn summary_finalize_with_manifest_check(
+    summary: &mut ScanSummary,
+    elapsed: Duration,
+    manifest: &crate::run_manifest::RunManifest,
+    current_paths: &[String],
+) {
+    summary_finalize(summary, elapsed);
+    let diff = crate::run_manifest::diff_against(manifest, current_paths);
+    if diff.is_stale() {
+        log::warn!(
+            "scan {} ended with stale source set: +{} added, -{} removed, ~{} changed",
+            summary.scan_id,
+            diff.added.len(),
+            diff.removed.len(),
+            diff.changed.len(),
+        );
+        summary.status = ScanRunStatus::StaleSourceSet;
+    }
+    summary.source_diff = Some(diff);
+}
+
+/// Build the deduplicated, sorted set of source paths from a `file_map`.
+fn dedup_source_paths(file_map: &HashMap<String, String>) -> Vec<String> {
+    let mut paths: Vec<String> = file_map.values().cloned().collect();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// Build a `ScanSummary` retroactively from a finished [`ScanResult`].
@@ -1108,6 +1156,18 @@ pub async fn scan(
 
     let scan_start = Instant::now();
 
+    // str-jeen.3: capture run-start manifest for end-of-run drift check.
+    let manifest_source_paths = dedup_source_paths(&config.file_map);
+    let project_root_path = config.project_root.as_deref().map(Path::new);
+    let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
+    let run_manifest = crate::run_manifest::capture(
+        &scan_id,
+        &cfg_hash,
+        &manifest_source_paths,
+        project_root_path,
+    );
+    crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
             Some(a) => *a,
@@ -1416,9 +1476,23 @@ pub async fn scan(
         sampling: None,
     };
 
-    // Write the scan summary artifact.
-    let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
-    let summary = build_summary_from_scan_result(&scan_id, &result, scan_start.elapsed());
+    // Write the scan summary artifact, with end-of-run source-set
+    // validation (str-jeen.3).
+    let mut summary = build_summary_from_scan_result(&scan_id, &result, scan_start.elapsed());
+    // build_summary_from_scan_result already calls summary_finalize
+    // internally; layer the manifest diff on top.
+    let diff = crate::run_manifest::diff_against(&run_manifest, &manifest_source_paths);
+    if diff.is_stale() {
+        log::warn!(
+            "scan {} ended with stale source set: +{} added, -{} removed, ~{} changed",
+            summary.scan_id,
+            diff.added.len(),
+            diff.removed.len(),
+            diff.changed.len(),
+        );
+        summary.status = ScanRunStatus::StaleSourceSet;
+    }
+    summary.source_diff = Some(diff);
     write_scan_summary(&scan_root_dir, &summary);
 
     Ok(result)
@@ -2717,6 +2791,19 @@ pub async fn parallel_scan_with_progress(
     let mut summary = new_scan_summary(&scan_id, total_functions);
     write_scan_summary(&scan_root_dir, &summary);
 
+    // str-jeen.3: capture run-start source snapshot for end-of-run drift
+    // detection. The manifest lives next to the summary so external tooling
+    // can audit which source set produced the report.
+    let manifest_source_paths = dedup_source_paths(&config.file_map);
+    let project_root_path = config.project_root.as_deref().map(Path::new);
+    let run_manifest = crate::run_manifest::capture(
+        &scan_id,
+        &cfg_hash,
+        &manifest_source_paths,
+        project_root_path,
+    );
+    crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
         if let Some(total) = config.timeout_total
@@ -3590,8 +3677,15 @@ pub async fn parallel_scan_with_progress(
         }
     }
 
-    // Finalize the scan summary.
-    summary_finalize(&mut summary, scan_start.elapsed());
+    // Finalize the scan summary with end-of-run source-set validation
+    // (str-jeen.3). If files drifted during the run, the status is
+    // promoted to `StaleSourceSet` rather than `Completed`.
+    summary_finalize_with_manifest_check(
+        &mut summary,
+        scan_start.elapsed(),
+        &run_manifest,
+        &manifest_source_paths,
+    );
     write_scan_summary(&scan_root_dir, &summary);
 
     Ok(ParallelScanResult {
@@ -9392,6 +9486,228 @@ mod tests {
         // but reached). The filter on TargetReason::Uncovered excludes
         // OpaqueConstraint targets.
         assert_eq!(uncovered, vec!["2:15"]);
+    }
+
+    // ── str-jeen.3: run-manifest validation integration tests ──────────
+
+    #[test]
+    fn finalize_with_unchanged_manifest_completes_normally() {
+        use std::fs::{File, write as write_file};
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("a.rs");
+        File::create(&path).unwrap().write_all(b"x").unwrap();
+        let _ = write_file(&path, b"x");
+
+        let paths = vec!["a.rs".to_string()];
+        let manifest = crate::run_manifest::capture("scan-1", "cfg", &paths, Some(tmp.path()));
+        let mut summary = new_scan_summary("scan-1", 1);
+        summary.completed = 1;
+        summary_finalize_with_manifest_check(
+            &mut summary,
+            Duration::from_millis(10),
+            &manifest,
+            &paths,
+        );
+        assert_eq!(summary.status, ScanRunStatus::Completed);
+        let diff = summary.source_diff.expect("source_diff present");
+        assert!(!diff.is_stale());
+    }
+
+    #[test]
+    fn finalize_with_modified_source_promotes_to_stale() {
+        use std::fs::{File, write as write_file};
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("a.rs");
+        File::create(&path).unwrap().write_all(b"original").unwrap();
+
+        let paths = vec!["a.rs".to_string()];
+        let manifest = crate::run_manifest::capture("scan-2", "cfg", &paths, Some(tmp.path()));
+
+        // Simulate a concurrent edit during the run.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_file(&path, b"mutated").unwrap();
+
+        let mut summary = new_scan_summary("scan-2", 1);
+        summary.completed = 1;
+        summary_finalize_with_manifest_check(
+            &mut summary,
+            Duration::from_millis(10),
+            &manifest,
+            &paths,
+        );
+        assert_eq!(summary.status, ScanRunStatus::StaleSourceSet);
+        let diff = summary.source_diff.expect("source_diff present");
+        assert_eq!(diff.changed, vec!["a.rs".to_string()]);
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn finalize_with_removed_source_promotes_to_stale() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("a.rs");
+        File::create(&path).unwrap().write_all(b"x").unwrap();
+
+        let paths = vec!["a.rs".to_string()];
+        let manifest = crate::run_manifest::capture("scan-3", "cfg", &paths, Some(tmp.path()));
+        std::fs::remove_file(&path).unwrap();
+
+        let mut summary = new_scan_summary("scan-3", 1);
+        summary.completed = 1;
+        summary_finalize_with_manifest_check(
+            &mut summary,
+            Duration::from_millis(10),
+            &manifest,
+            &paths,
+        );
+        assert_eq!(summary.status, ScanRunStatus::StaleSourceSet);
+        let diff = summary.source_diff.expect("source_diff present");
+        assert_eq!(diff.removed, vec!["a.rs".to_string()]);
+    }
+
+    #[test]
+    fn finalize_with_added_source_promotes_to_stale() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("tempdir");
+        File::create(tmp.path().join("a.rs"))
+            .unwrap()
+            .write_all(b"x")
+            .unwrap();
+        let original_paths = vec!["a.rs".to_string()];
+        let manifest =
+            crate::run_manifest::capture("scan-4", "cfg", &original_paths, Some(tmp.path()));
+
+        // A new file appears mid-run and is in the end-of-run path set.
+        File::create(tmp.path().join("b.rs"))
+            .unwrap()
+            .write_all(b"y")
+            .unwrap();
+        let current_paths = vec!["a.rs".to_string(), "b.rs".to_string()];
+
+        let mut summary = new_scan_summary("scan-4", 2);
+        summary.completed = 2;
+        summary_finalize_with_manifest_check(
+            &mut summary,
+            Duration::from_millis(10),
+            &manifest,
+            &current_paths,
+        );
+        assert_eq!(summary.status, ScanRunStatus::StaleSourceSet);
+        let diff = summary.source_diff.expect("source_diff present");
+        assert_eq!(diff.added, vec!["b.rs".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_writes_run_manifest() {
+        use crate::frontend::FrontendConfig;
+        use std::fs::File;
+        use std::io::Write;
+        use std::path::{Path, PathBuf};
+        use tempfile::TempDir;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        // Create a tempdir with real source files at the paths the
+        // file_map references.
+        let tmp = TempDir::new().expect("tempdir");
+        let src_path = tmp.path().join("test.ts");
+        File::create(&src_path).unwrap().write_all(b"// stub").unwrap();
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        let analyses = vec![FunctionAnalysis {
+            name: "solo".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+            source_file: None,
+            adapter_hints: vec![],
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("solo".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(7),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: Some(tmp.path().to_string_lossy().into_owned()),
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed");
+        assert!(!result.function_results.is_empty());
+
+        // Manifest must exist next to summary.json.
+        let scan_id = compute_scan_id(&config);
+        let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
+        let manifest = crate::run_manifest::read_manifest(&scan_root_dir)
+            .expect("manifest.json should be written");
+        assert_eq!(manifest.scan_id, scan_id);
+        assert_eq!(manifest.source_files.len(), 1);
+        assert_eq!(manifest.source_files[0].path, "test.ts");
+        assert_eq!(manifest.source_files[0].size, b"// stub".len() as u64);
+        assert!(manifest.source_files[0].content_hash.is_some());
+
+        // Summary should be Completed (no drift) and the source_diff
+        // should be present and clean.
+        let summary_path = scan_root_dir.join("summary.json");
+        let summary_bytes = std::fs::read(&summary_path).expect("summary.json read");
+        let summary: ScanSummary =
+            serde_json::from_slice(&summary_bytes).expect("summary.json parse");
+        assert_eq!(summary.status, ScanRunStatus::Completed);
+        let diff = summary.source_diff.expect("source_diff written");
+        assert!(!diff.is_stale());
     }
 }
 
