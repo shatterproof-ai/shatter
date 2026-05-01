@@ -33,15 +33,21 @@ shared_wire_types:
       test_file, test_module, build_script, policy_excluded,
       parser_failure, generated_schema. Default is `unclassified`; the
       field is omitted (or null) for files that produced at least one
-      target. Defined by str-jeen.21 (schema-only); per-language and
-      cross-cutting classifiers in str-jeen.22–.25 will populate the
-      more specific variants on the wire. No frontend emits this field
-      on a response yet — the type is shared so siblings can adopt it
-      without further protocol change.
+      target. Defined by str-jeen.21 (schema-only); the
+      frontend-agnostic pre-classifier (str-jeen.25) populates
+      policy_excluded / generated_schema / parser_failure CLI-side
+      before/after analyze. Per-language refinements (str-jeen.22 TS,
+      str-jeen.23 Go, str-jeen.24 Rust) are also CLI-hosted: the
+      classifiers live in `shatter-cli/src/commands/explore.rs` and key
+      on file path + capped source read. The Response wire shape is
+      unchanged — the protocol does not yet carry no_target_reason from
+      frontend → CLI, and the CLI annotates per-file ExploreSummary
+      records directly. A future protocol change can flip these entries
+      cleanly when frontends start emitting the field on responses.
     frontends:
       typescript: not_implemented
       go: not_implemented
-      rust: not_implemented
+      rust: implemented_via_cli_classifier
   invocation_outcome:
     notes: >
       Reusable object with fields status, short_reason, return_value,

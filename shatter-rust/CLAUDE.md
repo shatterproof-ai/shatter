@@ -94,6 +94,41 @@ TS and Go frontends — see `protocol/parity-matrix.yaml`
 `protocol/conformance/conformance_cases.yaml`
 (`execute_outcome_shape_rust`).
 
+## No-Target-Reason Classifier Contract
+
+The Rust per-language no-target-reason classifier (str-jeen.24) refines
+zero-target Rust files into one of `build_script`, `test_module`, or
+`declaration_only`. Files that don't match any Rust-specific signal fall
+through to `unclassified`.
+
+**The classifier lives CLI-side**, not in this crate. It is hosted in
+`shatter-cli/src/commands/explore.rs` (`rust_classify_no_target_reason`
+and helpers) following the str-jeen.25 frontend-agnostic pre-classifier
+pattern. The frontend Analyze response wire shape is unchanged — the
+protocol does not yet carry `no_target_reason` from frontend → CLI, so
+emitting per-language classifications would require a protocol surface
+change. When that protocol field is added, the classifier can move into
+this crate without behavioral change for callers.
+
+Order of checks (first match wins):
+
+1. `build_script` — basename is exactly `build.rs` AND a sibling
+   `Cargo.toml` exists. A `build.rs` deep in a fixtures tree without a
+   sibling manifest does NOT classify.
+2. `test_module` (path) — file under any `tests/` directory segment, or
+   basename ending in `_test.rs` / `_tests.rs`.
+3. `declaration_only` — content scan finds only `mod` / `use` /
+   `pub use` / `pub mod` / `extern crate` declarations plus attributes
+   and comments. Conservative: macro-heavy files (`include!`, inline
+   `mod x { ... }`, `macro_rules!`) return `None` and the caller emits
+   `unclassified` rather than risk mislabeling.
+4. `test_module` (content fallback) — every non-attribute item sits
+   under `#[cfg(test)]` or carries `#[test]`.
+
+Authoritative matrix entry: `protocol/parity-matrix.yaml`
+`shared_wire_types.no_target_reason.frontends.rust:
+implemented_via_cli_classifier`.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
