@@ -2,6 +2,9 @@ import * as ts from "typescript";
 import {
   recognizeBrowserGlobals,
   BROWSER_GLOBALS_ADAPTER_ID,
+  classifyMissingBrowserGlobal,
+  formatMissingBrowserGlobalMessage,
+  UNSUPPORTED_MISSING_GLOBAL_PREFIX,
 } from "./browser-globals-recognizer.js";
 import type { FunctionAnalysis } from "./protocol.js";
 
@@ -291,5 +294,95 @@ export function browserFn() {
 
     // `config.window` — window is a property name, not the global
     expect(hints[0]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyMissingBrowserGlobal (str-jeen.30)
+// ---------------------------------------------------------------------------
+
+describe("classifyMissingBrowserGlobal", () => {
+  it("identifies window as a missing browser global", () => {
+    const name = classifyMissingBrowserGlobal({
+      error_type: "ReferenceError",
+      message: "window is not defined",
+    });
+    expect(name).toBe("window");
+  });
+
+  it("identifies document as a missing browser global", () => {
+    const name = classifyMissingBrowserGlobal({
+      error_type: "ReferenceError",
+      message: "document is not defined",
+    });
+    expect(name).toBe("document");
+  });
+
+  it("identifies localStorage as a missing browser global", () => {
+    const name = classifyMissingBrowserGlobal({
+      error_type: "ReferenceError",
+      message: "localStorage is not defined",
+    });
+    expect(name).toBe("localStorage");
+  });
+
+  it("returns null for non-ReferenceError thrown errors", () => {
+    expect(
+      classifyMissingBrowserGlobal({
+        error_type: "TypeError",
+        message: "window is not defined",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for unknown identifiers (not browser globals)", () => {
+    expect(
+      classifyMissingBrowserGlobal({
+        error_type: "ReferenceError",
+        message: "myUndefinedVariable is not defined",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for ambiguous globals like fetch (Node provides fetch in modern versions)", () => {
+    // `fetch` is in AMBIGUOUS_GLOBALS but should not classify as a missing
+    // browser global because it exists in Node 18+. A `fetch is not defined`
+    // ReferenceError signals a different problem and should not be hidden.
+    expect(
+      classifyMissingBrowserGlobal({
+        error_type: "ReferenceError",
+        message: "fetch is not defined",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for messages that don't match the not-defined pattern", () => {
+    expect(
+      classifyMissingBrowserGlobal({
+        error_type: "ReferenceError",
+        message: "Cannot access 'window' before initialization",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for null/undefined input", () => {
+    expect(classifyMissingBrowserGlobal(null)).toBeNull();
+    expect(classifyMissingBrowserGlobal(undefined)).toBeNull();
+  });
+});
+
+describe("formatMissingBrowserGlobalMessage", () => {
+  it("includes the structured prefix, the global name, and the adapter id", () => {
+    const msg = formatMissingBrowserGlobalMessage("window");
+    expect(msg.startsWith(UNSUPPORTED_MISSING_GLOBAL_PREFIX + ":")).toBe(true);
+    expect(msg).toContain("window");
+    expect(msg).toContain("DOM");
+    expect(msg).toContain(BROWSER_GLOBALS_ADAPTER_ID);
+  });
+
+  it("falls back to a generic category for unknown globals", () => {
+    const msg = formatMissingBrowserGlobalMessage("unknownGlobal");
+    expect(msg).toContain("unknownGlobal");
+    expect(msg).toContain("Browser API");
   });
 });

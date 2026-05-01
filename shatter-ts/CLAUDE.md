@@ -160,6 +160,42 @@ implemented_via_cli_classifier`.
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
 
+## Browser-Global Missing-Adapter Classification Contract (str-jeen.30)
+
+When a TS execute target references a browser global (`window`, `document`,
+`navigator`, `location`, `history`, `localStorage`, `sessionStorage`,
+`matchMedia`, `XMLHttpRequest`, the observer constructors, animation-frame
+helpers, or browser dialog functions) and no `browser-globals` adapter is
+applied, the VM throws a `ReferenceError`. The execute handler converts
+that into a first-class `error` response rather than letting it bucket as a
+generic `runtime_failed` outcome:
+
+| Field | Value |
+|---|---|
+| `code` | `not_supported` |
+| `message` | `unsupported_missing_global: <name> (<category>) - enable the 'browser-globals' adapter to execute targets that depend on browser globals` |
+
+The wire-level error code stays `not_supported` (no new variant — the same
+stopgap str-jeen.26 used for missing `node_modules` preflight). The
+structured `unsupported_missing_global:` prefix lets log scrapers and the
+run report distinguish missing-browser-global outcomes from other
+`not_supported` errors. str-jeen.40 will refine bucketing once a dedicated
+status / code is introduced.
+
+Implementation: `classifyMissingBrowserGlobal` and
+`formatMissingBrowserGlobalMessage` in `src/browser-globals-recognizer.js`,
+called from the execute case in `src/handlers.js` after `rawResult` is
+obtained and before the standard execute response is built. The
+classification is conservative: only ReferenceErrors whose message matches
+`<identifier> is not defined` for an identifier listed in `BROWSER_GLOBALS`
+are converted. Ambiguous globals (e.g. `fetch`, which Node 18+ provides)
+are intentionally NOT classified, because their absence signals a
+different misconfiguration.
+
+The fixture `src/__fixtures__/adapter-browser-globals.ts` exercises this
+path; regression tests live in the `"missing browser global classification
+(str-jeen.30)"` describe block in `src/handlers.test.ts`.
+
 ## TS Transform Failure Classification (str-jeen.11)
 
 TS-to-JS transformation failures during `execute` and `prepare` surface as

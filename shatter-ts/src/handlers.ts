@@ -40,6 +40,10 @@ import {
   DEFAULT_RUNTIME_HOOK_FACTORIES,
   type RuntimeHookFactory,
 } from "./runtime-hooks.js";
+import {
+  classifyMissingBrowserGlobal,
+  formatMissingBrowserGlobalMessage,
+} from "./browser-globals-recognizer.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
 
@@ -735,6 +739,26 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               resolverAdapters,
               sandboxProviders,
             );
+        }
+
+        // Missing-browser-global classification (str-jeen.30):
+        // When user code references `window`, `document`, etc. and no
+        // `browser-globals` adapter was applied, the VM throws a
+        // ReferenceError. Surface that as a first-class `not_supported`
+        // error response with the structured `unsupported_missing_global:`
+        // prefix instead of letting it bucket as a generic
+        // `runtime_failed` outcome. Mirrors the str-jeen.26 preflight
+        // stopgap; str-jeen.40 will refine outcome bucketing.
+        const missingGlobal = classifyMissingBrowserGlobal(rawResult.thrown_error);
+        if (missingGlobal !== null) {
+          return {
+            response: errorResponse(
+              request.id,
+              "not_supported",
+              formatMissingBrowserGlobalMessage(missingGlobal),
+            ),
+            shutdown: false,
+          };
         }
 
         return {

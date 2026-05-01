@@ -1871,6 +1871,81 @@ export function usesAlias(): number {
       }
     });
   });
+
+  describe("missing browser global classification (str-jeen.30)", () => {
+    // When user code references browser globals (window, document, etc.)
+    // and no `browser-globals` adapter is enabled, the executor catches
+    // a ReferenceError. The execute handler converts it into a
+    // first-class `not_supported` error response with the structured
+    // `unsupported_missing_global:` prefix instead of a generic
+    // `runtime_failed` outcome.
+    const browserFixture = path.resolve(
+      __dirname,
+      "__fixtures__",
+      "adapter-browser-globals.ts",
+    );
+
+    it("returns not_supported with unsupported_missing_global prefix when window is referenced", async () => {
+      await handleRequest(
+        makeRequest({ command: "analyze", file: browserFixture }),
+      );
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${browserFixture}:getViewportWidth`,
+          inputs: [],
+          mocks: [],
+        }),
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("unsupported_missing_global");
+        expect(response.message).toContain("window");
+        expect(response.message).toContain("browser-globals");
+      }
+    });
+
+    it("returns not_supported when document is referenced", async () => {
+      await handleRequest(
+        makeRequest({ command: "analyze", file: browserFixture }),
+      );
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${browserFixture}:getTitle`,
+          inputs: [],
+          mocks: [],
+        }),
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("unsupported_missing_global");
+        expect(response.message).toContain("document");
+      }
+    });
+
+    it("returns not_supported when localStorage is referenced", async () => {
+      await handleRequest(
+        makeRequest({ command: "analyze", file: browserFixture }),
+      );
+      const { response } = await handleRequest(
+        makeRequest({
+          command: "execute",
+          function: `${browserFixture}:readSetting`,
+          inputs: ["theme", "light"],
+          mocks: [],
+        }),
+      );
+      expect(response.status).toBe("error");
+      if (response.status === "error") {
+        expect(response.code).toBe("not_supported");
+        expect(response.message).toContain("unsupported_missing_global");
+        expect(response.message).toContain("localStorage");
+      }
+    });
+  });
 });
 
 describe("protocol round-trip", () => {

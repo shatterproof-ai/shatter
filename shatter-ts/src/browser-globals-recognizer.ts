@@ -16,6 +16,20 @@ import type { AdapterHint, FunctionAnalysis } from "./protocol.js";
 export const BROWSER_GLOBALS_ADAPTER_ID = "browser-globals";
 
 /**
+ * Sentinel prefix embedded in `error` response messages when a TS execute
+ * fails because a browser global is unavailable in the Node sandbox and no
+ * `browser-globals` adapter was enabled.
+ *
+ * Mirrors the str-jeen.26 `preflight_failed:` stopgap: the wire-level error
+ * code stays `not_supported` (no new variant; str-jeen.40 will refine
+ * bucketing) and the structured prefix lets log scrapers and the run report
+ * distinguish missing-browser-global outcomes from other `not_supported`
+ * errors. See "Browser-Global Missing-Adapter Classification Contract" in
+ * `shatter-ts/CLAUDE.md`.
+ */
+export const UNSUPPORTED_MISSING_GLOBAL_PREFIX = "unsupported_missing_global";
+
+/**
  * Well-known browser globals grouped by category.
  * Each entry maps a global identifier to a human-readable category label
  * used in hint reasons.
@@ -174,6 +188,54 @@ function scanForBrowserGlobals(body: ts.Node): BrowserGlobalScan {
 
   visit(body);
   return { globals, hasAmbiguous };
+}
+
+// ---------------------------------------------------------------------------
+// Runtime classification: convert a captured ReferenceError into a missing
+// browser-global signal. Pure string matching, no ts dependency.
+// ---------------------------------------------------------------------------
+
+const REFERENCE_ERROR_TYPE = "ReferenceError";
+const NOT_DEFINED_PATTERN = /^([A-Za-z_$][\w$]*) is not defined$/;
+
+interface ThrownErrorShape {
+  error_type?: string | null;
+  message?: string | null;
+}
+
+/**
+ * If `thrown` is a `ReferenceError` for a known (non-ambiguous) browser
+ * global, return that global's name. Otherwise return null.
+ *
+ * Ambiguous globals (e.g. `fetch`, which exists in modern Node) are NOT
+ * classified as missing browser globals.
+ */
+export function classifyMissingBrowserGlobal(
+  thrown: ThrownErrorShape | null | undefined,
+): string | null {
+  if (!thrown) return null;
+  if (thrown.error_type !== REFERENCE_ERROR_TYPE) return null;
+  const message = thrown.message ?? "";
+  const match = NOT_DEFINED_PATTERN.exec(message);
+  if (!match) return null;
+  const name = match[1]!;
+  if (BROWSER_GLOBALS.has(name)) {
+    return name;
+  }
+  return null;
+}
+
+/**
+ * Format the structured `not_supported` error message used by the execute
+ * handler when classifyMissingBrowserGlobal matches.
+ */
+export function formatMissingBrowserGlobalMessage(name: string): string {
+  const category = BROWSER_GLOBALS.get(name) ?? "Browser API";
+  return (
+    UNSUPPORTED_MISSING_GLOBAL_PREFIX + ": " + name + " (" + category + ") - " +
+    "enable the '" + BROWSER_GLOBALS_ADAPTER_ID + "' adapter to execute " +
+    "targets that depend on browser globals"
+  );
 }
 
 /**
