@@ -14,7 +14,8 @@ use shatter_core::frontend::{DEFAULT_REQUEST_TIMEOUT, Frontend, FrontendConfig};
 use shatter_core::genetic_explorer;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
 use shatter_core::protocol::{
-    Command as ProtoCommand, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
+    Command as ProtoCommand, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
+    ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
 };
 use shatter_core::setup_manager::SetupManager;
 
@@ -2136,6 +2137,216 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
             );
         }
     }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// str-jeen.28: TS path alias resolution via the tsconfig-paths adapter.
+//
+// The TS frontend already implements `ts/module-resolution/tsconfig-paths` as
+// a runtime hook factory that rewrites bare aliases through
+// `ts.resolveModuleName`. The resolver is gated on the request's
+// `execution_profile`: every prior e2e_concolic case here passed
+// `execution_profile: None`, so the alias path was never proven end-to-end.
+// This case closes that gap with a fixture using the literal `@/` alias.
+// ---------------------------------------------------------------------------
+
+/// Adapter id for the TS tsconfig-paths runtime hook (mirrors
+/// `ADAPTER_ID_TSCONFIG_PATHS` in shatter-ts/src/runtime-hints.ts).
+const TSCONFIG_PATHS_ADAPTER_ID: &str = "ts/module-resolution/tsconfig-paths";
+
+/// Build an ExecutionProfile that requires the tsconfig-paths adapter. Used by
+/// future profile-driven E2E cases (str-jeen.29 JSX, .30 browser globals) by
+/// extending `adapters` with the additional adapter id.
+fn tsconfig_paths_profile() -> ExecutionProfile {
+    ExecutionProfile {
+        adapters: vec![ExecutionAdapter {
+            id: TSCONFIG_PATHS_ADAPTER_ID.to_string(),
+            apply: Some(ExecutionAdapterApply::Required),
+            options: None,
+        }],
+    }
+}
+
+/// Path to the TS workspace root, used to resolve in-tree fixtures from the
+/// shatter-core tests crate.
+fn ts_workspace_dir() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("../shatter-ts")
+}
+
+/// Analyze a function with an explicit ExecutionProfile and project_root.
+///
+/// Wrapper around the bare-bones `analyze_function` so existing tests that pass
+/// `execution_profile: None` are untouched. Future adapter-aware E2E cases
+/// (str-jeen.29 / .30) can reuse this same shape.
+async fn analyze_function_with_profile(
+    frontend: &mut Frontend,
+    file: &str,
+    function_name: &str,
+    project_root: Option<&str>,
+    execution_profile: Option<ExecutionProfile>,
+) -> shatter_core::protocol::FunctionAnalysis {
+    let response = frontend
+        .send(ProtoCommand::Analyze {
+            file: file.to_string(),
+            function: Some(function_name.to_string()),
+            project_root: project_root.map(|s| s.to_string()),
+            execution_profile,
+        })
+        .await
+        .expect("analyze command failed");
+
+    match response.result {
+        ResponseResult::Analyze { functions } => functions
+            .into_iter()
+            .find(|f| f.name == function_name)
+            .unwrap_or_else(|| panic!("function '{function_name}' not found in analysis results")),
+        other => panic!("expected Analyze response, got: {other:?}"),
+    }
+}
+
+/// Instrument a function with an explicit ExecutionProfile and project_root.
+///
+/// See `analyze_function_with_profile` rationale.
+async fn instrument_function_with_profile(
+    frontend: &mut Frontend,
+    file: &str,
+    function_name: &str,
+    project_root: Option<&str>,
+    execution_profile: Option<ExecutionProfile>,
+) {
+    let response = frontend
+        .send(ProtoCommand::Instrument {
+            file: file.to_string(),
+            function: function_name.to_string(),
+            mocks: vec![],
+            project_root: project_root.map(|s| s.to_string()),
+            execution_profile,
+        })
+        .await
+        .expect("instrument command failed");
+
+    match response.result {
+        ResponseResult::Instrument { instrumented, .. } => {
+            assert!(instrumented, "instrumentation returned false");
+        }
+        ResponseResult::Error { code, message, .. } => {
+            panic!("instrument error ({code:?}): {message}");
+        }
+        other => panic!("expected Instrument response, got: {other:?}"),
+    }
+}
+
+/// E2E proof for str-jeen.28: a fixture importing through the literal `@/`
+/// tsconfig path alias executes through the full analyze → instrument →
+/// concolic-explore → Z3 pipeline without producing the
+/// unresolvable-module-stub fallback that signals an unresolved alias.
+///
+/// `describeNumber(value: number)` in the fixture has three branch outcomes
+/// driven by the value sign. The aliased helper `classifySign` is interpolated
+/// into the return string; when the alias is unresolved, the stub returns ""
+/// and the asserted strings ("pos:positive", "neg:negative", "pos:zero")
+/// cannot appear. Asserting their presence proves the alias resolved on every
+/// concrete execution that produced them.
+#[tokio::test]
+async fn concolic_tsconfig_at_alias_executes() {
+    let fixture_dir = ts_workspace_dir().join("src/__fixtures__/adapter-tsconfig-at-alias");
+    let entry_file = fixture_dir.join("src/entry.ts");
+    let entry_str = entry_file.to_string_lossy().to_string();
+
+    assert!(
+        entry_file.exists(),
+        "fixture entry not found: {}",
+        entry_file.display()
+    );
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let profile = tsconfig_paths_profile();
+
+    // Intentionally omit project_root: the fixture is a checked-in sample
+    // without `node_modules/` (gitignored), so passing project_root would
+    // trigger the handler's missing-node-modules preflight and short-circuit
+    // every command. The tsconfig-paths runtime hook falls back to walking up
+    // from the entry file's directory to discover tsconfig.json
+    // (`findTsconfigPath` in shatter-ts/src/runtime-hooks.ts), which is the
+    // path exercised here.
+    let analysis = analyze_function_with_profile(
+        &mut frontend,
+        &entry_str,
+        "describeNumber",
+        None,
+        Some(profile.clone()),
+    )
+    .await;
+    assert_eq!(analysis.params.len(), 1, "describeNumber takes 1 param");
+
+    instrument_function_with_profile(
+        &mut frontend,
+        &entry_str,
+        "describeNumber",
+        None,
+        Some(profile.clone()),
+    )
+    .await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(15),
+        max_executions: Some(60),
+        plateau_threshold: 10,
+        execution_profile: Some(profile),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!(7)],
+        vec![serde_json::json!(-3)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "describeNumber",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+
+    // No execution should have surfaced a MODULE_NOT_FOUND for the alias —
+    // that would indicate the tsconfig-paths adapter failed to resolve `@/`.
+    for execution in &result.executions {
+        if let Some(err) = &execution.thrown_error {
+            assert!(
+                !err.message.contains("@/lib/sign"),
+                "tsconfig-paths adapter failed to resolve `@/lib/sign`; \
+                 thrown_error: {} (full set: {return_values:?})",
+                err.message
+            );
+        }
+    }
+
+    // The aliased helper must have been the real `classifySign`, not the
+    // unresolvable-module stub. The stub returns "" for primitive coercion,
+    // which would yield "pos:" / "neg:" return strings; asserting the suffixed
+    // strings appear proves the import resolved at execute-time.
+    assert!(
+        return_values.contains("\"pos:positive\"")
+            || return_values.contains("\"neg:negative\"")
+            || return_values.contains("\"pos:zero\""),
+        "expected at least one alias-resolved return value among the executions; \
+         got: {return_values:?}"
+    );
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
