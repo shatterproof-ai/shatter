@@ -185,6 +185,7 @@ async fn main() -> ExitCode {
             from_artifacts,
             parallelism_min,
             parallelism_max,
+            require_rust,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
@@ -289,6 +290,7 @@ async fn main() -> ExitCode {
                 max_executions,
                 planner.as_deref(),
                 parallelism_bounds,
+                require_rust,
             )
             .await
         }
@@ -415,6 +417,7 @@ async fn main() -> ExitCode {
             workers_per_fn,
             parallelism_min,
             parallelism_max,
+            require_rust,
         } => {
             maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
@@ -483,10 +486,10 @@ async fn main() -> ExitCode {
             // Resolve parallelism bound overrides (str-v01r): CLI flag wins
             // over config; either side may be unset and falls back to the
             // built-in default in `ParallelismBounds::from_overrides`.
-            let effective_parallelism_min = parallelism_min
-                .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_min));
-            let effective_parallelism_max = parallelism_max
-                .or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_max));
+            let effective_parallelism_min =
+                parallelism_min.or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_min));
+            let effective_parallelism_max =
+                parallelism_max.or_else(|| project_cfg.as_ref().and_then(|c| c.parallelism_max));
             let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
                 effective_parallelism_min,
                 effective_parallelism_max,
@@ -586,6 +589,7 @@ async fn main() -> ExitCode {
                 workers_per_fn,
                 &genetic_config,
                 parallelism_bounds,
+                require_rust,
             )
             .await
         }
