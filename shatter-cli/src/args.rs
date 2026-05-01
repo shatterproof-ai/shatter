@@ -542,6 +542,14 @@ pub(crate) enum CliCommand {
         /// final assembly.
         #[arg(long)]
         from_artifacts: Option<PathBuf>,
+
+        /// Treat an unavailable Rust frontend as a hard failure even when
+        /// other-language targets remain runnable. Without this flag, Rust
+        /// targets are skipped with a `skipped_by_unavailable_frontend` status
+        /// when shatter-rust is missing from the host so mixed-language
+        /// broad runs continue with available languages (str-jeen.13).
+        #[arg(long)]
+        require_rust: bool,
     },
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
@@ -935,6 +943,14 @@ pub(crate) enum CliCommand {
         /// allowing idle workers to contribute to the same function. Default: 1.
         #[arg(long, default_value_t = 1)]
         workers_per_fn: usize,
+
+        /// Treat an unavailable Rust frontend as a hard failure even when
+        /// other-language sources remain runnable. Without this flag, Rust
+        /// files are skipped with a `skipped_by_unavailable_frontend` status
+        /// when shatter-rust is missing from the host so mixed-language scans
+        /// continue with available languages (str-jeen.13).
+        #[arg(long)]
+        require_rust: bool,
     },
 
     /// Discover and export behavioral properties and invariants as a YAML spec.
@@ -3146,7 +3162,8 @@ mod output_format_tests {
         ]);
         match cli.command {
             CliCommand::Explore {
-                per_function_timeout, ..
+                per_function_timeout,
+                ..
             } => {
                 assert_eq!(per_function_timeout, Some(75));
             }
@@ -3156,13 +3173,8 @@ mod output_format_tests {
 
     #[test]
     fn cli_explore_rejects_removed_timeout_alias() {
-        let result = Cli::try_parse_from([
-            "shatter",
-            "explore",
-            "--timeout",
-            "60",
-            "test.ts:myFunc",
-        ]);
+        let result =
+            Cli::try_parse_from(["shatter", "explore", "--timeout", "60", "test.ts:myFunc"]);
         assert!(
             result.is_err(),
             "--timeout alias was removed; clap must reject it"

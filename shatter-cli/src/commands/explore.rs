@@ -309,7 +309,7 @@ impl ExploreResultAccumulator {
             abandoned_frontiers: self.abandoned_frontiers,
             opaque_suggestions: self.opaque_suggestions,
             stubbed_modules: stubbed,
-                    ..Default::default()
+            ..Default::default()
         })
     }
 }
@@ -516,7 +516,10 @@ async fn fetch_planner_extra_seeds(
     func: &shatter_core::protocol::FunctionAnalysis,
     file_str: &str,
     project_root: Option<&str>,
-) -> (Vec<Vec<serde_json::Value>>, Option<shatter_core::protocol::InvocationPlan>) {
+) -> (
+    Vec<Vec<serde_json::Value>>,
+    Option<shatter_core::protocol::InvocationPlan>,
+) {
     let Some(_planner_name) = explore_config.planner.as_deref() else {
         return (Vec::new(), None);
     };
@@ -532,10 +535,7 @@ async fn fetch_planner_extra_seeds(
         })
         .await;
     if let Err(e) = analyze_result {
-        tracing::warn!(
-            "planner: analyze priming failed for {}: {e}",
-            func.name
-        );
+        tracing::warn!("planner: analyze priming failed for {}: {e}", func.name);
         return (Vec::new(), None);
     }
 
@@ -1720,14 +1720,12 @@ pub(crate) async fn run_explore(
     max_executions: Option<u64>,
     planner: Option<&str>,
     parallelism_bounds: crate::helpers::ParallelismBounds,
+    require_rust: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(name) = planner
         && name != "go"
     {
-        return Err(format!(
-            "--planner={name}: only `go` is currently supported."
-        )
-        .into());
+        return Err(format!("--planner={name}: only `go` is currently supported.").into());
     }
 
     // Early return: finalize from saved artifacts instead of running exploration.
@@ -1794,7 +1792,7 @@ pub(crate) async fn run_explore(
             .ok()
     };
 
-    let parsed: Vec<Target> = targets
+    let mut parsed: Vec<Target> = targets
         .iter()
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
@@ -1833,23 +1831,93 @@ pub(crate) async fn run_explore(
     // (analysis is fast and doesn't benefit from parallelism).
     let mut frontends: HashMap<crate::args::Language, Frontend> = HashMap::new();
     let mut fe_configs: HashMap<crate::args::Language, FrontendConfig> = HashMap::new();
-    let unique_langs: HashSet<crate::args::Language> = parsed.iter().map(|t| t.language).collect();
+    let mut unique_langs: HashSet<crate::args::Language> =
+        parsed.iter().map(|t| t.language).collect();
 
-    // str-bnsw: precheck frontend availability for every requested language
-    // BEFORE walking targets / spawning processes. Surfaces the install hint
-    // up front instead of as a per-target spawn failure.
+    // str-bnsw / str-jeen.13: precheck frontend availability for every
+    // requested language BEFORE walking targets / spawning processes.
+    //
+    // Default policy (str-jeen.13): unavailable language frontends are NOT
+    // treated as hard target failures when other targets remain runnable.
+    // For each unavailable language we emit one structured
+    // `skipped_by_unavailable_frontend` STATUS line per skipped target so
+    // broad-run wrappers (e.g. Kapow re-runs) can classify the row as
+    // environmental rather than as a generic spawn failure, then drop those
+    // targets from the run and proceed with the rest.
+    //
+    // We still hard-fail when:
+    //   - every requested target lives in an unavailable language (nothing to
+    //     run), or
+    //   - the user explicitly demanded the language with `--require-rust`.
+    let mut unavailable_langs: HashMap<crate::args::Language, &'static str> = HashMap::new();
     for lang in &unique_langs {
         let availability = crate::helpers::check_frontend_availability(*lang, None);
-        if let Some(msg) = availability.unavailable_message() {
-            let target_count = parsed.iter().filter(|t| t.language == *lang).count();
-            return Err(format!(
-                "{} frontend unavailable for {} target(s): {}",
-                lang.label(),
-                target_count,
-                msg
-            )
-            .into());
+        if let crate::helpers::FrontendAvailability::Unavailable { install_hint, .. } = availability
+        {
+            unavailable_langs.insert(*lang, install_hint);
         }
+    }
+    if !unavailable_langs.is_empty() {
+        let total_targets = parsed.len();
+        let unavailable_target_count = parsed
+            .iter()
+            .filter(|t| unavailable_langs.contains_key(&t.language))
+            .count();
+        let all_unavailable = unavailable_target_count == total_targets;
+        let require_rust_violated =
+            require_rust && unavailable_langs.contains_key(&crate::args::Language::Rust);
+
+        if all_unavailable || require_rust_violated {
+            // Hard failure: nothing else to do, or user demanded the language.
+            // Emit per-target status lines first so wrappers still see the
+            // structured classification before exit.
+            for t in parsed
+                .iter()
+                .filter(|t| unavailable_langs.contains_key(&t.language))
+            {
+                let hint = unavailable_langs[&t.language];
+                crate::helpers::emit_skipped_unavailable_frontend(&t.file, t.language, hint);
+            }
+            let detail: Vec<String> = unavailable_langs
+                .iter()
+                .map(|(lang, hint)| {
+                    let count = parsed.iter().filter(|t| t.language == *lang).count();
+                    format!(
+                        "{} frontend unavailable for {} target(s): shatter-{} frontend not found: {}",
+                        lang.label(),
+                        count,
+                        lang.label(),
+                        hint
+                    )
+                })
+                .collect();
+            let prefix = if require_rust_violated {
+                "rust frontend unavailable and --require-rust is set"
+            } else {
+                "no available frontends for requested targets"
+            };
+            return Err(format!("{prefix}: {}", detail.join("; ")).into());
+        }
+
+        // Mixed run: warn, emit structured status per skipped target, drop
+        // them from the run, continue with the available subset.
+        for (lang, hint) in &unavailable_langs {
+            let skipped: Vec<&Target> = parsed.iter().filter(|t| t.language == *lang).collect();
+            log::warn!(
+                "skipping {} {} target(s): shatter-{} frontend not found: {} \
+                 (run will continue with available languages; \
+                 pass --require-rust to fail instead)",
+                skipped.len(),
+                lang.label(),
+                lang.label(),
+                hint,
+            );
+            for t in skipped {
+                crate::helpers::emit_skipped_unavailable_frontend(&t.file, *lang, hint);
+            }
+        }
+        parsed.retain(|t| !unavailable_langs.contains_key(&t.language));
+        unique_langs = parsed.iter().map(|t| t.language).collect();
     }
 
     for lang in unique_langs {
@@ -2773,15 +2841,14 @@ pub(crate) async fn run_explore(
                 // `extra_seeds` channel on ObserveStageOptions, preserving
                 // the single-source-of-truth rule for parallel explorer and
                 // orchestrator paths.
-                let (planner_extra_seeds, planner_default_plan) =
-                    fetch_planner_extra_seeds(
-                        &mut task_frontend,
-                        &item.explore_config,
-                        &item.func,
-                        &file_str_owned,
-                        project_root_owned.as_deref(),
-                    )
-                    .await;
+                let (planner_extra_seeds, planner_default_plan) = fetch_planner_extra_seeds(
+                    &mut task_frontend,
+                    &item.explore_config,
+                    &item.func,
+                    &file_str_owned,
+                    project_root_owned.as_deref(),
+                )
+                .await;
 
                 let instrument_mocks = item
                     .concolic_config
@@ -3780,10 +3847,10 @@ mod tests {
         EXPLORE_ARTIFACT_VERSION, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
         FuncExploreOutcome, batch_is_exhausted, bucket_counts_from_entries,
         classify_no_target_reason, classify_outcome_status, emit_explore_progress,
-        explore_summary_path, finalize_explore, format_outcome_breakdown,
-        format_progress_snapshot, load_explore_artifacts, outcome_status_from_entry,
-        persist_stage_outputs, read_explore_artifact, sanitize_artifact_component,
-        stage_persistence_dir, write_explore_artifact, write_explore_summary,
+        explore_summary_path, finalize_explore, format_outcome_breakdown, format_progress_snapshot,
+        load_explore_artifacts, outcome_status_from_entry, persist_stage_outputs,
+        read_explore_artifact, sanitize_artifact_component, stage_persistence_dir,
+        write_explore_artifact, write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -4650,7 +4717,7 @@ mod tests {
                     deep_fingerprint: None,
                 },
             ],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let json = serde_json::to_string_pretty(&summary).expect("serialize");
@@ -4679,7 +4746,7 @@ mod tests {
             skipped: 0,
             elapsed_secs: 0.0,
             functions: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
@@ -4737,7 +4804,7 @@ mod tests {
                     deep_fingerprint: None,
                 },
             ],
-                    ..Default::default()
+            ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
 
@@ -4804,7 +4871,7 @@ mod tests {
                 reason: Some("unexecutable parameter types".to_string()),
                 deep_fingerprint: None,
             }],
-                    ..Default::default()
+            ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write summary");
 
@@ -5036,7 +5103,7 @@ mod tests {
                     deep_fingerprint: Some("def456".to_string()),
                 },
             ],
-                    ..Default::default()
+            ..Default::default()
         };
         write_explore_summary(dir.path(), "src/user.ts", &summary).expect("write");
         let loaded = read_explore_summary(dir.path(), "src/user.ts");
@@ -5117,7 +5184,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let mut deep_fps = std::collections::HashMap::new();
@@ -5151,7 +5218,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-old".to_string()),
             }],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let mut deep_fps = std::collections::HashMap::new();
@@ -5182,7 +5249,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: None, // legacy summary
             }],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let func = sample_func_analysis();
@@ -5215,7 +5282,7 @@ mod tests {
                 reason: Some("timeout".to_string()),
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let func = sample_func_analysis();
@@ -5245,7 +5312,7 @@ mod tests {
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
             }],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let func = sample_func_analysis();

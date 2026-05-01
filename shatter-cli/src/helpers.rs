@@ -268,6 +268,34 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 pub(crate) const RUST_FRONTEND_INSTALL_HINT: &str =
     "install it on PATH or build with `cargo build --manifest-path shatter-rust/Cargo.toml`";
 
+/// Per-target status code emitted when a target file is skipped because its
+/// language frontend is unavailable on this host (str-jeen.13).
+///
+/// Surfaced as a `STATUS skipped_by_unavailable_frontend ...` stderr line so
+/// broad-run wrappers (Kapow re-run, etc.) can classify the row as
+/// environmental rather than as a hard target failure. The line shape is
+/// intentionally machine-parseable: space-separated `key=value` pairs with no
+/// quoting. Values do not contain spaces (paths are absolutized; the install
+/// hint is collapsed into a quote-free phrase).
+pub(crate) const STATUS_SKIPPED_BY_UNAVAILABLE_FRONTEND: &str = "skipped_by_unavailable_frontend";
+
+/// Emit one structured per-target status line for a target that was skipped
+/// because its language frontend is unavailable. Goes to stderr so that piped
+/// stdout reports remain clean.
+pub(crate) fn emit_skipped_unavailable_frontend(
+    file: &Path,
+    language: Language,
+    install_hint: &str,
+) {
+    eprintln!(
+        "STATUS {status} language={lang} file={file} hint={hint}",
+        status = STATUS_SKIPPED_BY_UNAVAILABLE_FRONTEND,
+        lang = language.label(),
+        file = file.display(),
+        hint = install_hint,
+    );
+}
+
 /// Whether a language frontend can be located on this host.
 ///
 /// Computed during target discovery (str-bnsw) so that mixed-language scans
@@ -424,10 +452,9 @@ pub(crate) fn frontend_config(
     // Cap the inner `go build` toolchain's parallelism so N concurrent Go
     // frontends don't fork-bomb large hosts. See str-ovs6.
     if language == Language::Go {
-        config.env_vars.push((
-            "GOMAXPROCS".to_string(),
-            GO_FRONTEND_GOMAXPROCS.to_string(),
-        ));
+        config
+            .env_vars
+            .push(("GOMAXPROCS".to_string(), GO_FRONTEND_GOMAXPROCS.to_string()));
     }
 
     Ok(config)
@@ -977,13 +1004,19 @@ mod tests {
     #[test]
     fn resolve_parallelism_clamps_explicit_above_ceiling() {
         assert_eq!(resolve_parallelism(32), PARALLELISM_CEILING);
-        assert_eq!(resolve_parallelism(PARALLELISM_CEILING + 1), PARALLELISM_CEILING);
+        assert_eq!(
+            resolve_parallelism(PARALLELISM_CEILING + 1),
+            PARALLELISM_CEILING
+        );
     }
 
     #[test]
     fn resolve_parallelism_clamps_explicit_below_floor() {
         assert_eq!(resolve_parallelism(1), PARALLELISM_FLOOR);
-        assert_eq!(resolve_parallelism(PARALLELISM_FLOOR - 1), PARALLELISM_FLOOR);
+        assert_eq!(
+            resolve_parallelism(PARALLELISM_FLOOR - 1),
+            PARALLELISM_FLOOR
+        );
     }
 
     #[test]
@@ -991,14 +1024,19 @@ mod tests {
         let mid = (PARALLELISM_FLOOR + PARALLELISM_CEILING) / 2;
         assert_eq!(resolve_parallelism(mid), mid);
         assert_eq!(resolve_parallelism(PARALLELISM_FLOOR), PARALLELISM_FLOOR);
-        assert_eq!(resolve_parallelism(PARALLELISM_CEILING), PARALLELISM_CEILING);
+        assert_eq!(
+            resolve_parallelism(PARALLELISM_CEILING),
+            PARALLELISM_CEILING
+        );
     }
 
     #[test]
     fn resolve_parallelism_autodetect_is_in_range() {
         let v = resolve_parallelism(0);
-        assert!((PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
-            "auto-detected parallelism {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]");
+        assert!(
+            (PARALLELISM_FLOOR..=PARALLELISM_CEILING).contains(&v),
+            "auto-detected parallelism {v} outside [{PARALLELISM_FLOOR}, {PARALLELISM_CEILING}]"
+        );
     }
 
     // ---- str-qp31: per-language parallelism defaults ----
@@ -1176,8 +1214,8 @@ mod tests {
 
     #[test]
     fn parallelism_bounds_from_overrides_min_greater_than_max_errors() {
-        let err = ParallelismBounds::from_overrides(Some(10), Some(5))
-            .expect_err("min > max must error");
+        let err =
+            ParallelismBounds::from_overrides(Some(10), Some(5)).expect_err("min > max must error");
         assert!(
             err.contains("floor (10)") && err.contains("ceiling (5)"),
             "error should name both bounds: {err}"
@@ -1186,15 +1224,15 @@ mod tests {
 
     #[test]
     fn parallelism_bounds_from_overrides_zero_min_errors() {
-        let err = ParallelismBounds::from_overrides(Some(0), None)
-            .expect_err("min == 0 must error");
+        let err =
+            ParallelismBounds::from_overrides(Some(0), None).expect_err("min == 0 must error");
         assert!(err.contains("at least 1"), "error should say >= 1: {err}");
     }
 
     #[test]
     fn parallelism_bounds_from_overrides_zero_max_errors() {
-        let err = ParallelismBounds::from_overrides(None, Some(0))
-            .expect_err("max == 0 must error");
+        let err =
+            ParallelismBounds::from_overrides(None, Some(0)).expect_err("max == 0 must error");
         assert!(err.contains("at least 1"), "error should say >= 1: {err}");
     }
 

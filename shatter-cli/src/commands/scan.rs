@@ -66,6 +66,7 @@ pub(crate) async fn run_scan(
     workers_per_fn: usize,
     genetic_config: &shatter_core::config::GeneticConfig,
     parallelism_bounds: crate::helpers::ParallelismBounds,
+    require_rust: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -282,22 +283,45 @@ pub(crate) async fn run_scan(
             }
         }
         if !unavailable.is_empty() {
+            // str-jeen.13: emit one structured `skipped_by_unavailable_frontend`
+            // STATUS line per blocked file so broad-run wrappers (Kapow re-runs,
+            // etc.) can classify the row as environmental rather than as a hard
+            // target failure. Then warn (one line per language) and either
+            // hard-fail (no available frontend / --require-rust set) or
+            // continue with the available subset.
             for (lang, msg) in &unavailable {
-                let skipped = analyzable_files.iter().filter(|(_, l)| l == lang).count();
+                let cli_lang = discovery_lang_to_cli_lang(*lang)
+                    .expect("discovery_lang_to_cli_lang already filtered above");
+                let skipped: Vec<&PathBuf> = analyzable_files
+                    .iter()
+                    .filter(|(_, l)| l == lang)
+                    .map(|(p, _)| p)
+                    .collect();
                 log::warn!(
-                    "skipping {} {:?} file(s): {} (run will continue with available languages)",
-                    skipped,
+                    "skipping {} {:?} file(s): {} (run will continue with available languages; \
+                     pass --require-rust to fail instead)",
+                    skipped.len(),
                     lang,
-                    msg
+                    msg,
                 );
+                let install_hint = match cli_lang {
+                    crate::args::Language::Rust => crate::helpers::RUST_FRONTEND_INSTALL_HINT,
+                    _ => msg.as_str(),
+                };
+                for p in skipped {
+                    crate::helpers::emit_skipped_unavailable_frontend(p, cli_lang, install_hint);
+                }
             }
-            if langs_in_scan.is_empty() {
+            let require_rust_violated =
+                require_rust && unavailable.contains_key(&DiscoveryLanguage::Rust);
+            if langs_in_scan.is_empty() || require_rust_violated {
                 let combined: Vec<String> = unavailable.values().cloned().collect();
-                return Err(format!(
-                    "no available frontends for discovered files: {}",
-                    combined.join("; ")
-                )
-                .into());
+                let prefix = if require_rust_violated {
+                    "rust frontend unavailable and --require-rust is set"
+                } else {
+                    "no available frontends for discovered files"
+                };
+                return Err(format!("{prefix}: {}", combined.join("; ")).into());
             }
             analyzable_files
                 .into_iter()
