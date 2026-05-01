@@ -1495,6 +1495,11 @@ fn classify_no_target_reason(
     {
         return Some(reason);
     }
+    if language == crate::args::Language::TypeScript
+        && let Some(reason) = ts_classify_no_target_reason(file)
+    {
+        return Some(reason);
+    }
     Some(shatter_core::protocol::NoTargetReason::Unclassified)
 }
 
@@ -1733,6 +1738,255 @@ fn rust_is_test_module_by_content(source: &str) -> bool {
         return false;
     }
     saw_gated_item
+}
+
+// ── TypeScript no-target reason classifier (str-jeen.22) ──────────────────
+//
+// Mirrors the Rust classifier above. Hosted CLI-side per the str-jeen.25
+// frontend-agnostic precedent — see `parity-matrix.yaml`
+// `shared_wire_types.no_target_reason`. Refines zero-target TS files into
+// one of the three TS-specific taxonomy variants declared in str-jeen.21:
+// `declaration_only`, `jsx_component_only`, `test_or_spec`. Anything that
+// fails every TS-specific signal returns `None` so the caller emits
+// `Unclassified`.
+
+/// Filename suffixes that mark TS ambient declaration files. `.d.cts` and
+/// `.d.mts` are the CommonJS / ESM module-flavored declaration variants.
+const TS_DECLARATION_FILE_SUFFIXES: &[&str] = &[".d.ts", ".d.cts", ".d.mts"];
+
+/// Filename infixes that mark TS test, spec, story, or demo files. The
+/// dotted form (`*.test.ts`, `*.spec.tsx`, `*.stories.tsx`) is the
+/// dominant convention across Jest, Vitest, and Storybook.
+const TS_TEST_FILE_INFIXES: &[&str] = &[".test.", ".spec.", ".stories."];
+
+/// Path segments that indicate a test or fixture directory. Files under
+/// any of these segments classify as `test_or_spec` regardless of
+/// filename.
+const TS_TEST_DIR_SEGMENTS: &[&str] = &["__tests__", "__mocks__", "tests"];
+
+/// JSX/TSX file extensions. Only files with these extensions are eligible
+/// for the `jsx_component_only` content check — a `.ts` file containing
+/// `<` for unrelated reasons must not be classified as a component file.
+const TS_JSX_FILE_EXTENSIONS: &[&str] = &[".tsx", ".jsx"];
+
+/// Maximum bytes of source we read when running TS content heuristics.
+/// Same rationale as the Rust classifier: the file already returned zero
+/// analyzer targets, so a coarse line scan is sufficient and a hard cap
+/// protects against oversized fixtures.
+const TS_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
+
+/// Per-TypeScript no-target reason classifier (str-jeen.22). Returns the
+/// taxonomy variant a TS file matches, or `None` if no TS-specific signal
+/// applies (caller falls back to `Unclassified`).
+///
+/// Order of checks (first match wins):
+///   1. `declaration_only` (path) — basename ends in `.d.ts`, `.d.cts`,
+///      or `.d.mts`. Ambient-declaration files are unambiguous regardless
+///      of contents.
+///   2. `test_or_spec` (path) — file under any `__tests__`, `__mocks__`,
+///      or `tests` directory segment, OR basename contains a `.test.` /
+///      `.spec.` / `.stories.` infix.
+///   3. `jsx_component_only` (content) — file extension is `.tsx` /
+///      `.jsx` AND the source contains a JSX closing-tag form (`</`),
+///      which is uniquely JSX (TS generics use `<T>` but never `</T>`).
+///   4. `declaration_only` (content) — every depth-zero, non-blank,
+///      non-comment line is one of: `import` / `export type` /
+///      `export interface` / `export *` / `export {` / `export default
+///      type` / `type ` / `interface ` / `declare ` / `export declare`.
+///      Conservative: if any line looks like a value-level definition
+///      (`function`, `const`, `let`, `var`, `class`, `enum`,
+///      `export function`, etc.) the function returns `false` and the
+///      caller falls through to `Unclassified`.
+fn ts_classify_no_target_reason(
+    file: &Path,
+) -> Option<shatter_core::protocol::NoTargetReason> {
+    use shatter_core::protocol::NoTargetReason;
+
+    if ts_is_declaration_file_by_path(file) {
+        return Some(NoTargetReason::DeclarationOnly);
+    }
+    if ts_is_test_or_spec_by_path(file) {
+        return Some(NoTargetReason::TestOrSpec);
+    }
+
+    let source = ts_read_capped_source(file)?;
+    if ts_is_jsx_extension(file) && ts_contains_jsx_component(&source) {
+        return Some(NoTargetReason::JsxComponentOnly);
+    }
+    if ts_is_declaration_only(&source) {
+        return Some(NoTargetReason::DeclarationOnly);
+    }
+
+    None
+}
+
+/// True when the basename ends in one of the ambient-declaration
+/// extensions. The longest-suffix list contains `.d.ts`, `.d.cts`, and
+/// `.d.mts`.
+fn ts_is_declaration_file_by_path(file: &Path) -> bool {
+    let Some(basename) = file.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    TS_DECLARATION_FILE_SUFFIXES
+        .iter()
+        .any(|suffix| basename.ends_with(suffix))
+}
+
+/// True when `file` lives under a recognized test directory segment OR
+/// its basename contains a recognized test/spec/story infix.
+fn ts_is_test_or_spec_by_path(file: &Path) -> bool {
+    let in_test_segment = file
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|seg| TS_TEST_DIR_SEGMENTS.contains(&seg));
+    if in_test_segment {
+        return true;
+    }
+    let Some(basename) = file.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    TS_TEST_FILE_INFIXES
+        .iter()
+        .any(|infix| basename.contains(infix))
+}
+
+/// True when the file extension is `.tsx` or `.jsx`.
+fn ts_is_jsx_extension(file: &Path) -> bool {
+    let Some(basename) = file.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    TS_JSX_FILE_EXTENSIONS
+        .iter()
+        .any(|suffix| basename.ends_with(suffix))
+}
+
+/// Read up to `TS_CONTENT_SCAN_BYTE_CAP` bytes of the file as UTF-8.
+/// Returns `None` on IO error or non-UTF-8 prefix; the caller treats that
+/// as "no TS-specific content signal".
+fn ts_read_capped_source(file: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut handle = std::fs::File::open(file).ok()?;
+    let mut buf = vec![0u8; TS_CONTENT_SCAN_BYTE_CAP];
+    let n = handle.read(&mut buf).ok()?;
+    buf.truncate(n);
+    String::from_utf8(buf).ok()
+}
+
+/// True when the source contains a JSX closing-tag form (`</`). TS
+/// generics use `<T>` but never `</T>`, so the closing-tag form is a
+/// reliable JSX signal that doesn't mistake `Array<number>` for a
+/// component. Conservative against the empty file: a `.tsx` with no
+/// `</` returns false and the caller falls through.
+fn ts_contains_jsx_component(source: &str) -> bool {
+    source.contains("</")
+}
+
+/// True when every depth-zero, non-blank, non-comment line is a pure
+/// type-level declaration (import, type alias, interface, ambient
+/// declaration). Tracks brace depth so multi-line `interface Foo { ... }`
+/// bodies are accepted; when at depth 0 a non-declaration line appears,
+/// returns false and the caller falls through.
+fn ts_is_declaration_only(source: &str) -> bool {
+    let mut depth: usize = 0;
+    let mut saw_declaration = false;
+    let mut in_block_comment = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Multi-line block-comment tracking: skip any line entirely
+        // contained inside an unterminated `/* ... */` region.
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("/*") && !trimmed.contains("*/") {
+            in_block_comment = true;
+            continue;
+        }
+        if trimmed.is_empty() || ts_line_is_pure_comment(trimmed) {
+            continue;
+        }
+        if depth == 0 {
+            if ts_line_is_pure_declaration(trimmed) {
+                saw_declaration = true;
+            } else if !ts_line_is_pure_brace_close(trimmed) {
+                return false;
+            }
+        }
+        // Track brace depth from the raw line (string literals in TS
+        // declaration files are rare enough that a line-level scan is
+        // adequate; we deliberately stay coarse to avoid mislabeling).
+        for ch in line.chars() {
+            match ch {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    saw_declaration && depth == 0
+}
+
+/// True for `// ...` line comments and trivial single-line block
+/// comments. Multi-line block comments are handled by the caller's
+/// in-block-comment state machine.
+fn ts_line_is_pure_comment(line: &str) -> bool {
+    if line.starts_with("//") {
+        return true;
+    }
+    if line.starts_with("/*") && line.ends_with("*/") {
+        return true;
+    }
+    false
+}
+
+/// True for a depth-zero line that opens a pure type-level declaration:
+/// `import ...`, `export type ...`, `export interface ...`, `export *
+/// from ...`, `export { ... } from ...`, `export declare ...`, `type X =
+/// ...`, `interface X { ... }`, `declare ...`. Anything else (including
+/// `export function`, `export const`, `function`, `class`, `enum`) is
+/// rejected so value-level definitions do not slip through.
+fn ts_line_is_pure_declaration(line: &str) -> bool {
+    // Order matters: longer prefixes first so `export type` is matched
+    // before the bare-`export` rejection path could fire.
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "import ",
+        "import\t",
+        "import{",
+        "import\"",
+        "import'",
+        "export type ",
+        "export interface ",
+        "export declare ",
+        "export default type ",
+        "export default interface ",
+        "export * ",
+        "export *\t",
+        "export *;",
+        "export {",
+        "type ",
+        "interface ",
+        "declare ",
+    ];
+    for prefix in ALLOWED_PREFIXES {
+        if line.starts_with(prefix) {
+            return true;
+        }
+    }
+    // Bare `import;` / `import "side-effect";` style with no space.
+    if line == "import;" {
+        return true;
+    }
+    false
+}
+
+/// True for a depth-zero closing brace (with optional trailing
+/// semicolon/comma) — the line that terminates a multi-line `interface`
+/// or `type` body. Treated as neutral: it neither asserts nor refutes
+/// declaration-only status on its own.
+fn ts_line_is_pure_brace_close(line: &str) -> bool {
+    matches!(line, "}" | "};" | "},")
 }
 
 /// Format a one-line breakdown of non-completed buckets and the
@@ -5316,6 +5570,9 @@ mod tests {
         pre_classify_no_target_reason, read_explore_artifact, rust_classify_no_target_reason,
         rust_is_build_script, rust_is_declaration_only, rust_is_test_module_by_content,
         rust_is_test_module_by_path, sanitize_artifact_component,
+        ts_classify_no_target_reason, ts_contains_jsx_component,
+        ts_is_declaration_file_by_path, ts_is_declaration_only,
+        ts_is_test_or_spec_by_path,
         span_line_denominators_from_entries, stage_persistence_dir,
         validate_artifact_references, write_explore_artifact, write_explore_summary,
     };
@@ -8366,6 +8623,338 @@ mod tests {
                 rust_classify_no_target_reason(&path),
                 Some(NoTargetReason::BuildScript),
             );
+        }
+    }
+
+    // ── TypeScript no-target classifier (str-jeen.22) ────────────────────
+
+    /// Helper: write `contents` to `dir/relative` and return the
+    /// absolute path. Mirrors `write_rust_fixture` for symmetry.
+    fn write_ts_fixture(
+        dir: &std::path::Path,
+        relative: &str,
+        contents: &str,
+    ) -> std::path::PathBuf {
+        let path = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        std::fs::write(&path, contents).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_declaration_file_by_extension() {
+        // `.d.ts` is the canonical TS ambient declaration extension.
+        // The classifier must accept the path-based signal regardless
+        // of contents — ambient files often contain only types.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_ts_fixture(
+            dir.path(),
+            "src/types.d.ts",
+            "export interface User { id: string; name: string; }\n",
+        );
+        assert!(ts_is_declaration_file_by_path(&path));
+        assert_eq!(
+            ts_classify_no_target_reason(&path),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_module_flavored_declaration_extensions() {
+        // `.d.cts` and `.d.mts` are CommonJS / ESM declaration variants.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cts = write_ts_fixture(dir.path(), "src/cjs-types.d.cts", "export {};\n");
+        let mts = write_ts_fixture(dir.path(), "src/esm-types.d.mts", "export {};\n");
+        assert!(ts_is_declaration_file_by_path(&cts));
+        assert!(ts_is_declaration_file_by_path(&mts));
+        assert_eq!(
+            ts_classify_no_target_reason(&cts),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+        assert_eq!(
+            ts_classify_no_target_reason(&mts),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_test_filename_infixes() {
+        // `.test.`, `.spec.`, and `.stories.` infixes mark Jest/Vitest/
+        // Storybook files. All three classify as test_or_spec.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let test_path = write_ts_fixture(
+            dir.path(),
+            "src/foo.test.ts",
+            "describe('foo', () => { it('bar', () => {}); });\n",
+        );
+        let spec_path = write_ts_fixture(
+            dir.path(),
+            "src/foo.spec.tsx",
+            "describe('foo', () => {});\n",
+        );
+        let story_path = write_ts_fixture(
+            dir.path(),
+            "src/Button.stories.tsx",
+            "export default { component: Button };\n",
+        );
+        for path in [&test_path, &spec_path, &story_path] {
+            assert!(
+                ts_is_test_or_spec_by_path(path),
+                "expected test_or_spec by path: {path:?}",
+            );
+            assert_eq!(
+                ts_classify_no_target_reason(path),
+                Some(NoTargetReason::TestOrSpec),
+            );
+        }
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_test_directory_segments() {
+        // Files under `__tests__`, `__mocks__`, or `tests` segments
+        // classify regardless of basename.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for relative in [
+            "src/__tests__/helper.ts",
+            "src/__mocks__/api.ts",
+            "tests/integration.ts",
+        ] {
+            let path = write_ts_fixture(dir.path(), relative, "export const x = 1;\n");
+            assert!(
+                ts_is_test_or_spec_by_path(&path),
+                "expected test segment match: {relative}",
+            );
+            assert_eq!(
+                ts_classify_no_target_reason(&path),
+                Some(NoTargetReason::TestOrSpec),
+            );
+        }
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_jsx_component_only_tsx_file() {
+        // A `.tsx` file with a JSX closing tag classifies as
+        // jsx_component_only — the analyzer found zero callable targets
+        // but the file is clearly a component module.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = "import React from 'react';\n\
+            export const Badge = ({ label }: { label: string }) => (\n\
+            \x20 <span className=\"badge\">{label}</span>\n\
+            );\n";
+        let path = write_ts_fixture(dir.path(), "src/Badge.tsx", source);
+        assert!(ts_contains_jsx_component(source));
+        assert_eq!(
+            ts_classify_no_target_reason(&path),
+            Some(NoTargetReason::JsxComponentOnly),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_does_not_misclassify_ts_generics_as_jsx() {
+        // A plain `.ts` file using TS generics like `Array<number>` must
+        // NOT classify as jsx_component_only — only `.tsx` / `.jsx`
+        // files are eligible. Closing-tag form `</` also never appears
+        // in TS generics, so the content check stays safe even on a
+        // pathological `.tsx`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source =
+            "export type Pair<T> = readonly [T, T];\n\
+             export type Numbers = Array<number>;\n";
+        let path = write_ts_fixture(dir.path(), "src/generics.ts", source);
+        assert!(!ts_contains_jsx_component(source));
+        // Pure type-level declarations: declaration_only by content.
+        assert_eq!(
+            ts_classify_no_target_reason(&path),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_recognizes_declaration_only_by_content() {
+        // A plain `.ts` file with only types/interfaces/imports
+        // classifies as declaration_only via the content fallback even
+        // without the `.d.ts` extension.
+        let source = "// barrel of public types\n\
+            import { Brand } from './brand';\n\
+            export type UserId = Brand<string, 'UserId'>;\n\
+            export interface User {\n\
+            \x20 id: UserId;\n\
+            \x20 name: string;\n\
+            }\n\
+            export type { Brand };\n";
+        assert!(ts_is_declaration_only(source));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_ts_fixture(dir.path(), "src/user.ts", source);
+        assert_eq!(
+            ts_classify_no_target_reason(&path),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_rejects_value_definitions_as_declaration_only() {
+        // `export const`, `export function`, and `class` are all
+        // value-level definitions. Even when the analyzer found zero
+        // targets, these files MUST NOT classify as declaration_only —
+        // the classifier returns None and the caller emits Unclassified.
+        for source in [
+            "export const x = 1;\n",
+            "export function f() { return 1; }\n",
+            "export class C { m() {} }\n",
+            "function bare() {}\n",
+        ] {
+            assert!(
+                !ts_is_declaration_only(source),
+                "value-level source must not classify as declaration_only: {source}",
+            );
+        }
+    }
+
+    #[test]
+    fn ts_classifier_check_order_path_wins_over_content() {
+        // A `.d.ts` file whose contents accidentally look value-level
+        // still classifies as declaration_only via the path check —
+        // path-based signals are checked before any content scan.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_ts_fixture(
+            dir.path(),
+            "src/weird.d.ts",
+            "// pathological body\nexport const sneaky = 1;\n",
+        );
+        assert_eq!(
+            ts_classify_no_target_reason(&path),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+
+        // Test path wins over JSX content: a `.test.tsx` inside
+        // src/__tests__ with JSX must classify as test_or_spec, not
+        // jsx_component_only.
+        let test_jsx = write_ts_fixture(
+            dir.path(),
+            "src/__tests__/Badge.test.tsx",
+            "describe('Badge', () => { it('renders', () => { <Badge /> }); });\n",
+        );
+        assert_eq!(
+            ts_classify_no_target_reason(&test_jsx),
+            Some(NoTargetReason::TestOrSpec),
+        );
+    }
+
+    #[test]
+    fn ts_classifier_returns_none_for_empty_or_unclassifiable_files() {
+        // An empty `.ts` file matches no signal — the classifier returns
+        // None and the caller emits Unclassified (the str-jeen.21
+        // default).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty = write_ts_fixture(dir.path(), "src/empty.ts", "");
+        assert_eq!(ts_classify_no_target_reason(&empty), None);
+
+        // A `.ts` file with both value-level definitions and types
+        // is intentionally unclassifiable — the analyzer should have
+        // discovered the value targets, so a zero-target outcome here
+        // means something else went wrong; caller's Unclassified
+        // fallback surfaces it for follow-up.
+        let mixed = write_ts_fixture(
+            dir.path(),
+            "src/mixed.ts",
+            "export const x = 1;\nexport type Y = number;\n",
+        );
+        assert_eq!(ts_classify_no_target_reason(&mixed), None);
+
+        // A `.tsx` file with no JSX closing tag and no declarations
+        // (e.g. just a value-level const) also returns None.
+        let tsx_no_jsx = write_ts_fixture(
+            dir.path(),
+            "src/tsx_no_jsx.tsx",
+            "export const value = 42;\n",
+        );
+        assert_eq!(ts_classify_no_target_reason(&tsx_no_jsx), None);
+    }
+
+    #[test]
+    fn ts_classifier_returns_none_on_io_error() {
+        // Nonexistent path with no path-based signal: the source read
+        // fails and the function returns None.
+        let path = std::path::PathBuf::from("/nonexistent/dir/random.ts");
+        assert_eq!(ts_classify_no_target_reason(&path), None);
+    }
+
+    #[test]
+    fn ts_classifier_routed_through_classify_no_target_reason() {
+        // Integration with the public dispatcher: a TS path with zero
+        // targets and a TS-specific signal must yield the refined
+        // variant, not the plain Unclassified fallback.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dts = write_ts_fixture(dir.path(), "src/api.d.ts", "export {};\n");
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &dts),
+            Some(NoTargetReason::DeclarationOnly),
+        );
+        let test_path = write_ts_fixture(
+            dir.path(),
+            "src/foo.spec.ts",
+            "describe('x', () => {});\n",
+        );
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &test_path),
+            Some(NoTargetReason::TestOrSpec),
+        );
+        let badge = write_ts_fixture(
+            dir.path(),
+            "src/Badge.tsx",
+            "export const Badge = () => <span>hi</span>;\n",
+        );
+        assert_eq!(
+            classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &badge),
+            Some(NoTargetReason::JsxComponentOnly),
+        );
+    }
+
+    proptest::proptest! {
+        /// TS Invariant 1: `.d.ts` (and module-flavored variants) under
+        /// any directory layout always classify as declaration_only,
+        /// regardless of file body. Path-based signal wins over content.
+        #[test]
+        fn ts_dts_extension_always_classifies_as_declaration_only(
+            ref dirseg in proptest::sample::select(vec![
+                "src", "lib", "types", "packages/api/src", "vendor",
+            ]),
+            ref ext in proptest::sample::select(vec![
+                ".d.ts", ".d.cts", ".d.mts",
+            ]),
+            ref body in "[a-zA-Z0-9 \\n_(){};:=]{0,200}",
+        ) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let relative = format!("{dirseg}/types{ext}");
+            let path = write_ts_fixture(dir.path(), &relative, body);
+            proptest::prop_assert_eq!(
+                ts_classify_no_target_reason(&path),
+                Some(NoTargetReason::DeclarationOnly),
+            );
+        }
+
+        /// TS Invariant 2: a value-level top-level definition never
+        /// classifies as declaration_only via the content scan — the
+        /// heuristic is conservative.
+        #[test]
+        fn ts_value_level_source_never_classifies_as_declaration_only(
+            ref keyword in proptest::sample::select(vec![
+                "export const",
+                "export function",
+                "export class",
+                "export enum",
+                "function",
+                "class",
+                "const",
+                "let",
+                "var",
+            ]),
+            ref tail in "[a-zA-Z0-9 ]{0,40}",
+        ) {
+            let source = format!("{keyword} placeholder{tail} = 1;\n");
+            proptest::prop_assert!(!ts_is_declaration_only(&source));
         }
     }
 }

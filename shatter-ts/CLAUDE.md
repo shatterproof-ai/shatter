@@ -113,6 +113,49 @@ The wire shape is identical to Rust and Go (str-hy9b.A5,
 parity-matrix.yaml `feature_capabilities.outcome`). Conformance lock:
 `protocol/conformance/conformance_cases.yaml` `execute_outcome_shape_ts`.
 
+## No-Target-Reason Classifier Contract
+
+The TS per-language no-target-reason classifier (str-jeen.22) refines
+zero-target TS files into one of `declaration_only`, `jsx_component_only`,
+or `test_or_spec`. Files that don't match any TS-specific signal fall
+through to `unclassified` (the str-jeen.21 default).
+
+**The classifier lives CLI-side**, not in this crate. It is hosted in
+`shatter-cli/src/commands/explore.rs` (`ts_classify_no_target_reason` and
+helpers) following the str-jeen.25 frontend-agnostic pre-classifier pattern
+and the str-jeen.24 Rust precedent. The frontend Analyze response wire
+shape is unchanged — the protocol does not yet carry `no_target_reason`
+from frontend → CLI, so emitting per-language classifications would
+require a protocol surface change. When that field is added, the
+classifier can move into this frontend without behavioral change for
+callers.
+
+Order of checks (first match wins):
+
+1. `declaration_only` (path) — basename ends in `.d.ts`, `.d.cts`, or
+   `.d.mts`. Ambient-declaration files are unambiguous regardless of
+   contents.
+2. `test_or_spec` (path) — file under any `__tests__`, `__mocks__`, or
+   `tests` directory segment, OR basename contains a `.test.` /
+   `.spec.` / `.stories.` infix (Jest / Vitest / Storybook
+   conventions).
+3. `jsx_component_only` (content) — file extension is `.tsx` / `.jsx`
+   AND the source contains a JSX closing-tag form (`</`). TS generics
+   use `<T>` but never `</T>`, so closing-tag form is a reliable JSX
+   signal that doesn't mistake `Array<number>` for a component.
+4. `declaration_only` (content) — every depth-zero, non-blank,
+   non-comment line is a pure type-level declaration: `import …`,
+   `export type …`, `export interface …`, `export *`, `export { … }`,
+   `type X = …`, `interface X { … }`, `declare …`, or
+   `export declare …`. Conservative: any value-level definition
+   (`function`, `const`, `let`, `var`, `class`, `enum`, or their
+   `export` variants) returns `false` and the caller falls through to
+   `unclassified`.
+
+Authoritative matrix entry: `protocol/parity-matrix.yaml`
+`shared_wire_types.no_target_reason.frontends.typescript:
+implemented_via_cli_classifier`.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
