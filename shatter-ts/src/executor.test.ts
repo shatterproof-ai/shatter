@@ -169,6 +169,71 @@ describe("buildExecuteResponse", () => {
   });
 });
 
+// str-jeen.9 regression: private (non-exported) top-level helpers must be
+// runnable through the instrumented module. Discovery (analyzer) reports
+// them as targets, so execution must agree on target identity.
+describe("executeInstrumented private top-level targets (str-jeen.9)", () => {
+  const PRIVATE_TS = path.join(FIXTURES_DIR, "private-helpers.ts");
+  const PRIVATE_TSX = path.join(FIXTURES_DIR, "private-helpers.tsx");
+
+  it("executes a private TS function declaration without error", async () => {
+    const source = fs.readFileSync(PRIVATE_TS, "utf-8");
+    const instr = instrumentFunction(source, "toggleValue", PRIVATE_TS);
+    if ("error" in instr) {
+      throw new Error(`Instrumentation failed: ${instr.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instr.instrumentedSource,
+      "toggleValue",
+      [true],
+      [],
+      PRIVATE_TS,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("on");
+  });
+
+  it("executes a private TS arrow-const helper", async () => {
+    const source = fs.readFileSync(PRIVATE_TS, "utf-8");
+    const instr = instrumentFunction(source, "classifyMagnitude", PRIVATE_TS);
+    if ("error" in instr) {
+      throw new Error(`Instrumentation failed: ${instr.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instr.instrumentedSource,
+      "classifyMagnitude",
+      [42],
+      [],
+      PRIVATE_TS,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("large");
+  });
+
+  it("executes a private TSX helper that lives alongside an exported component", async () => {
+    const source = fs.readFileSync(PRIVATE_TSX, "utf-8");
+    const instr = instrumentFunction(source, "formatGreeting", PRIVATE_TSX);
+    if ("error" in instr) {
+      throw new Error(`Instrumentation failed: ${instr.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instr.instrumentedSource,
+      "formatGreeting",
+      ["Alice"],
+      [],
+      PRIVATE_TSX,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("<span>Hello, Alice!</span>");
+  });
+});
+
 const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
 
 describe("executeFunction side effect capture", () => {
