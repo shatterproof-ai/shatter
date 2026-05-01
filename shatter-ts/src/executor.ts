@@ -57,6 +57,11 @@ import {
 } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
+import {
+  DEFAULT_JSX_RUNTIME_OPTIONS,
+  loadJsxRuntimeOptions,
+  type JsxRuntimeOptions,
+} from "./analyzer.js";
 import logger from "./logger.js";
 import type { TimingCollector } from "./timing.js";
 
@@ -483,7 +488,10 @@ function transpileAndCompile(
         module: ts.ModuleKind.CommonJS,
         esModuleInterop: true,
         strict: true,
-        jsx: ts.JsxEmit.ReactJSX,
+        jsx: currentJsxRuntimeOptions.jsx,
+        ...(currentJsxRuntimeOptions.jsxImportSource
+          ? { jsxImportSource: currentJsxRuntimeOptions.jsxImportSource }
+          : {}),
       },
       ...(fileName ? { fileName } : {}),
     });
@@ -612,18 +620,55 @@ export function setProjectRoot(projectRoot: string | null | undefined): void {
       require("module").Module._initPaths();
     }
   }
+  // Resolve and cache the project's JSX runtime configuration so subsequent
+  // transpiles honor `jsx` / `jsxImportSource`. Falls back to the default
+  // automatic-React runtime when no project root or no tsconfig is present.
+  currentJsxRuntimeOptions = loadJsxRuntimeOptions(projectRoot);
+}
+
+/**
+ * JSX runtime options applied to TypeScript transpiles. Updated whenever
+ * `setProjectRoot` is called; defaults to the bundled React shim's
+ * automatic runtime.
+ */
+let currentJsxRuntimeOptions: JsxRuntimeOptions = DEFAULT_JSX_RUNTIME_OPTIONS;
+
+/** Test-only accessor. */
+export function getCurrentJsxRuntimeOptions(): JsxRuntimeOptions {
+  return currentJsxRuntimeOptions;
 }
 
 function getDefaultResolverAdapters(
   filePath: string | undefined,
 ): ResolverAdapter[] {
   if (!filePath || !filePath.endsWith(".tsx")) return [];
+  // When the project configures a non-default `jsxImportSource` (e.g.
+  // "preact"), the automatic JSX transform emits
+  // `require("<source>/jsx-runtime")` and `require("<source>/jsx-dev-runtime")`.
+  // The bundled React shim returns plain element-like objects that the
+  // concolic engine can introspect regardless of the declared source, so we
+  // route those module ids to the shim too. This lets a project's
+  // `jsxImportSource` flow through transpile while keeping execution
+  // hermetic — no real React or Preact runtime needs to be installed in
+  // the project under test.
+  const importSource = currentJsxRuntimeOptions.jsxImportSource;
   return [
     {
       id: "ts/react-shim",
       resolveModule({ module_id }) {
         if (REACT_MODULE_NAMES.has(module_id)) {
           return { kind: "resolved", value: getReactShim(module_id) };
+        }
+        if (importSource && importSource !== "react") {
+          if (module_id === `${importSource}/jsx-runtime`) {
+            return { kind: "resolved", value: getReactShim("react/jsx-runtime") };
+          }
+          if (module_id === `${importSource}/jsx-dev-runtime`) {
+            return { kind: "resolved", value: getReactShim("react/jsx-dev-runtime") };
+          }
+          if (module_id === importSource) {
+            return { kind: "resolved", value: getReactShim("react") };
+          }
         }
         return { kind: "continue" };
       },
@@ -752,7 +797,10 @@ function loadModule(
         module: ts.ModuleKind.CommonJS,
         esModuleInterop: true,
         strict: true,
-        jsx: ts.JsxEmit.ReactJSX,
+        jsx: currentJsxRuntimeOptions.jsx,
+        ...(currentJsxRuntimeOptions.jsxImportSource
+          ? { jsxImportSource: currentJsxRuntimeOptions.jsxImportSource }
+          : {}),
       },
       fileName: absolutePath,
     });

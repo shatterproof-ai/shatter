@@ -170,6 +170,46 @@ export function loadProjectCompilerOptions(projectRoot: string): ts.CompilerOpti
 }
 
 /**
+ * JSX runtime options resolved from a project's tsconfig.json.
+ *
+ * `jsx` selects the transform mode (classic `react`, automatic `react-jsx`,
+ * automatic-dev `react-jsxdev`, preserve, etc.). `jsxImportSource` selects
+ * the package that supplies `<source>/jsx-runtime` for the automatic
+ * transforms (default: "react"). Both are honored by `ts.transpileModule`
+ * when forwarded to the executor.
+ */
+export interface JsxRuntimeOptions {
+  jsx: ts.JsxEmit;
+  jsxImportSource?: string;
+}
+
+/** Default automatic JSX runtime targeting the bundled React shim. */
+export const DEFAULT_JSX_RUNTIME_OPTIONS: JsxRuntimeOptions = {
+  jsx: ts.JsxEmit.ReactJSX,
+};
+
+/**
+ * Resolve the JSX runtime options for a project root. Returns the default
+ * automatic-React runtime when no project root is given, when the tsconfig
+ * is missing, or when the tsconfig parses without specifying `jsx`.
+ *
+ * `jsxImportSource` is preserved as-declared so the executor can wire the
+ * matching `<source>/jsx-runtime` shim.
+ */
+export function loadJsxRuntimeOptions(projectRoot: string | null | undefined): JsxRuntimeOptions {
+  if (!projectRoot) {
+    return DEFAULT_JSX_RUNTIME_OPTIONS;
+  }
+  const options = loadCompilerOptions(projectRoot, projectRoot);
+  const jsx = options.jsx ?? DEFAULT_JSX_RUNTIME_OPTIONS.jsx;
+  const result: JsxRuntimeOptions = { jsx };
+  if (typeof options.jsxImportSource === "string" && options.jsxImportSource.length > 0) {
+    result.jsxImportSource = options.jsxImportSource;
+  }
+  return result;
+}
+
+/**
  * Analyze functions in a TypeScript file.
  *
  * If `functionName` is provided, only that function is returned.

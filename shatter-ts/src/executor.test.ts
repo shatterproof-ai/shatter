@@ -24,6 +24,8 @@ import {
   createUnresolvableModuleStub,
   transformDynamicImports,
   createShatterImport,
+  setProjectRoot,
+  getCurrentJsxRuntimeOptions,
 } from "./executor.js";
 import type { ResolverAdapter } from "./executor.js";
 import type {
@@ -34,6 +36,7 @@ import type {
 } from "./runtime-hooks.js";
 import { instrumentFunction } from "./instrumentor.js";
 import { analyzeFile } from "./analyzer.js";
+import * as ts from "typescript";
 import * as fs from "node:fs";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import type { SideEffect, TraceEvent } from "./protocol.js";
@@ -952,6 +955,67 @@ describe("React component execution", () => {
     const result = await executeFunction(tsFixture, "add", [3, 4]);
     expect(result.return_value).toBe(7);
     expect(result.thrown_error).toBeNull();
+  });
+});
+
+describe("JSX runtime configuration (str-jeen.29)", () => {
+  const JSX_IMPORT_SOURCE_DIR = path.join(FIXTURES_DIR, "jsx-import-source");
+  const BADGE_FIXTURE = path.join(JSX_IMPORT_SOURCE_DIR, "badge.tsx");
+
+  // Each test re-applies the project root because other tests reset state.
+  // The default fallback test runs setProjectRoot(undefined) explicitly to
+  // confirm the executor reverts to the bundled React-shim defaults.
+  afterEach(() => {
+    setProjectRoot(undefined);
+  });
+
+  it("loads `jsx` and `jsxImportSource` from a project's tsconfig", () => {
+    setProjectRoot(JSX_IMPORT_SOURCE_DIR);
+    const opts = getCurrentJsxRuntimeOptions();
+    // Compare against the live ts enum to avoid hardcoding the numeric value
+    // that `"react-jsx"` parses to.
+    expect(opts.jsx).toBe(ts.JsxEmit.ReactJSX);
+    expect(opts.jsxImportSource).toBe("preact");
+  });
+
+  it("executes a TSX function whose project declares jsxImportSource: preact", async () => {
+    setProjectRoot(JSX_IMPORT_SOURCE_DIR);
+    const high = await executeFunction(BADGE_FIXTURE, "Badge", [
+      { severity: "high", count: 3 },
+    ]);
+    expect(high.thrown_error).toBeNull();
+    const elHigh = high.return_value as Record<string, unknown>;
+    expect(elHigh.$$typeof).toBe(Symbol.for("react.element"));
+    expect(elHigh.type).toBe("span");
+    const propsHigh = elHigh.props as Record<string, unknown>;
+    expect(propsHigh.className).toBe("badge-high");
+
+    const low = await executeFunction(BADGE_FIXTURE, "Badge", [
+      { severity: "low", count: 0 },
+    ]);
+    expect(low.thrown_error).toBeNull();
+    const elLow = low.return_value as Record<string, unknown>;
+    const propsLow = elLow.props as Record<string, unknown>;
+    expect(propsLow.className).toBe("badge-low");
+  });
+
+  it("falls back to the default automatic-React runtime when no project root is set", async () => {
+    setProjectRoot(undefined);
+    const opts = getCurrentJsxRuntimeOptions();
+    expect(opts.jsx).toBe(ts.JsxEmit.ReactJSX);
+    expect(opts.jsxImportSource).toBeUndefined();
+
+    // The pre-existing React fixture must keep executing exactly as before
+    // without any project_root: this is the "default jsx-runtime fallback
+    // unchanged" half of the str-jeen.29 acceptance criterion.
+    clearModuleCache();
+    const result = await executeFunction(REACT_FIXTURE, "StatusCard", [
+      { status: "active", count: 15 },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.$$typeof).toBe(Symbol.for("react.element"));
+    expect(el.type).toBe("div");
   });
 });
 
