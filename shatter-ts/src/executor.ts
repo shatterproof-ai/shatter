@@ -411,6 +411,124 @@ function isEsmLoadingError(err: unknown): boolean {
   );
 }
 
+/**
+ * Error thrown when TypeScript-to-JavaScript transformation fails for an
+ * instrumented or directly-loaded module. Carries a `category` so handlers
+ * can map it to a `compilation_error` response with a precise root-cause
+ * label, instead of letting it bubble up as opaque `internal_error` /
+ * `runtime_failed` (str-jeen.11).
+ *
+ * Categories:
+ * - `transpile_failed` — `ts.transpileModule` produced fatal diagnostics
+ *   (unrecoverable TS parse errors).
+ * - `compile_failed` — `ts.transpileModule` succeeded but `new vm.Script(...)`
+ *   threw a SyntaxError parsing the emitted JS. This typically means TS type
+ *   syntax (interface refs, type-only identifiers in value position, generic
+ *   parameters, JSX in a misclassified file) survived transpile and reached
+ *   V8.
+ */
+export class TranspileError extends Error {
+  readonly category: "transpile_failed" | "compile_failed";
+  readonly fileName: string | undefined;
+  readonly diagnostics: string[];
+  constructor(args: {
+    category: "transpile_failed" | "compile_failed";
+    fileName?: string;
+    diagnostics?: string[];
+    cause?: unknown;
+    message: string;
+  }) {
+    super(args.message);
+    this.name = "TranspileError";
+    this.category = args.category;
+    this.fileName = args.fileName;
+    this.diagnostics = args.diagnostics ?? [];
+    if (args.cause !== undefined) {
+      (this as { cause?: unknown }).cause = args.cause;
+    }
+  }
+}
+
+/**
+ * Format ts.Diagnostic[] into human-readable strings, defensively flattening
+ * the messageText chain.
+ */
+function formatTsDiagnostics(diagnostics: readonly ts.Diagnostic[]): string[] {
+  return diagnostics.map((d) => {
+    const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+    if (d.file && typeof d.start === "number") {
+      const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
+      return `${d.file.fileName}(${line + 1},${character + 1}): ${msg}`;
+    }
+    return msg;
+  });
+}
+
+/**
+ * Run `ts.transpileModule` and surface fatal diagnostics as a `TranspileError`.
+ * Then wrap the emitted JS in `new vm.Script(...)`; if V8 rejects the JS
+ * (typically because TS type syntax survived), surface that as a
+ * `compile_failed` `TranspileError` carrying the underlying message.
+ */
+function transpileAndCompile(
+  instrumentedSource: string,
+  fileName: string | undefined,
+  vmFilename: string,
+): vm.Script {
+  let jsResult: ts.TranspileOutput;
+  try {
+    jsResult = ts.transpileModule(instrumentedSource, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+        esModuleInterop: true,
+        strict: true,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+      ...(fileName ? { fileName } : {}),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new TranspileError({
+      category: "transpile_failed",
+      fileName,
+      message: `TypeScript transpile threw for ${fileName ?? "<inline>"}: ${message}`,
+      cause: err,
+    });
+  }
+
+  // ts.transpileModule reports fatal parse errors via `diagnostics` rather
+  // than throwing. Surface them so the caller can classify cleanly.
+  const diagnostics = jsResult.diagnostics ?? [];
+  const fatalDiagnostics = diagnostics.filter(
+    (d) => d.category === ts.DiagnosticCategory.Error,
+  );
+  if (fatalDiagnostics.length > 0) {
+    const formatted = formatTsDiagnostics(fatalDiagnostics);
+    throw new TranspileError({
+      category: "transpile_failed",
+      fileName,
+      diagnostics: formatted,
+      message: `TypeScript transpile failed for ${fileName ?? "<inline>"}: ${formatted[0]}`,
+    });
+  }
+
+  try {
+    return new vm.Script(transformDynamicImports(jsResult.outputText), {
+      filename: vmFilename,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new TranspileError({
+      category: "compile_failed",
+      fileName,
+      message: `JavaScript compile failed for ${fileName ?? vmFilename} after TS transpile: ${message}. ` +
+        `This usually means TypeScript type syntax survived transpile (for example, JSX in a file the transpiler treated as plain TS, or an unsupported TS construct).`,
+      cause: err,
+    });
+  }
+}
+
 /** Cache of compiled modules to avoid re-transpiling on every execute call. */
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
@@ -441,19 +559,7 @@ export function warmCompiledScriptCache(
   cacheKey: string,
 ): void {
   if (compiledScriptCache.has(cacheKey)) return;
-  const jsResult = ts.transpileModule(instrumentedSource, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-      esModuleInterop: true,
-      strict: true,
-      jsx: ts.JsxEmit.ReactJSX,
-    },
-    fileName: cacheKey,
-  });
-  const compiled = new vm.Script(transformDynamicImports(jsResult.outputText), {
-    filename: cacheKey,
-  });
+  const compiled = transpileAndCompile(instrumentedSource, cacheKey, cacheKey);
   compiledScriptCache.set(cacheKey, compiled);
 }
 
@@ -634,16 +740,43 @@ function loadModule(
   if (cached) return cached;
 
   const source = fs.readFileSync(absolutePath, "utf-8");
-  const result = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-      esModuleInterop: true,
-      strict: true,
-      jsx: ts.JsxEmit.ReactJSX,
-    },
-    fileName: absolutePath,
-  });
+  // We still call ts.transpileModule directly here (rather than reusing
+  // transpileAndCompile) because we need the JS *text* — the script is
+  // executed via vm.runInContext below, not via vm.Script. Wrap the call so
+  // fatal TS diagnostics surface as a typed TranspileError.
+  let result: ts.TranspileOutput;
+  try {
+    result = ts.transpileModule(source, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+        esModuleInterop: true,
+        strict: true,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+      fileName: absolutePath,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new TranspileError({
+      category: "transpile_failed",
+      fileName: absolutePath,
+      message: `TypeScript transpile threw for ${absolutePath}: ${message}`,
+      cause: err,
+    });
+  }
+  const fatalDiagnostics = (result.diagnostics ?? []).filter(
+    (d) => d.category === ts.DiagnosticCategory.Error,
+  );
+  if (fatalDiagnostics.length > 0) {
+    const formatted = formatTsDiagnostics(fatalDiagnostics);
+    throw new TranspileError({
+      category: "transpile_failed",
+      fileName: absolutePath,
+      diagnostics: formatted,
+      message: `TypeScript transpile failed for ${absolutePath}: ${formatted[0]}`,
+    });
+  }
 
   const targetRequire = createAdapterAwareRequire(
     createRequire(absolutePath),
@@ -678,10 +811,23 @@ function loadModule(
     }
   }
 
-  vm.runInContext(transformDynamicImports(result.outputText), sandbox, {
-    filename: absolutePath,
-    timeout: getExecTimeoutMs(),
-  });
+  try {
+    vm.runInContext(transformDynamicImports(result.outputText), sandbox, {
+      filename: absolutePath,
+      timeout: getExecTimeoutMs(),
+    });
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new TranspileError({
+        category: "compile_failed",
+        fileName: absolutePath,
+        message: `JavaScript compile failed for ${absolutePath} after TS transpile: ${err.message}. ` +
+          `This usually means TypeScript type syntax survived transpile (for example, JSX in a file the transpiler treated as plain TS, or an unsupported TS construct).`,
+        cause: err,
+      });
+    }
+    throw err;
+  }
 
   // After CommonJS execution, module.exports may have been reassigned
   const finalExports = (sandbox as Record<string, unknown>)["module"] as {
@@ -1930,24 +2076,15 @@ export async function executeInstrumented(
     compiledScript = cachedScript;
     // execute.transpile is intentionally absent from timing on cache hits
   } else {
-    const transpile = () =>
-      ts.transpileModule(instrumentedSource, {
-        compilerOptions: {
-          target: ts.ScriptTarget.ES2022,
-          module: ts.ModuleKind.CommonJS,
-          esModuleInterop: true,
-          strict: true,
-          jsx: ts.JsxEmit.ReactJSX,
-        },
-        ...(sourceFilePath ? { fileName: sourceFilePath } : {}),
-      });
-    const jsResult = timing
-      ? timing.sync("execute.transpile", transpile)
-      : transpile();
-    compiledScript = new vm.Script(
-      transformDynamicImports(jsResult.outputText),
-      { filename: sourceFilePath ?? "instrumented.js" },
-    );
+    const compile = () =>
+      transpileAndCompile(
+        instrumentedSource,
+        sourceFilePath,
+        sourceFilePath ?? "instrumented.js",
+      );
+    compiledScript = timing
+      ? timing.sync("execute.transpile", compile)
+      : compile();
     if (cacheKey) {
       compiledScriptCache.set(cacheKey, compiledScript);
     }

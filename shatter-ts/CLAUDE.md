@@ -116,3 +116,23 @@ parity-matrix.yaml `feature_capabilities.outcome`). Conformance lock:
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
+
+## TS Transform Failure Classification (str-jeen.11)
+
+TS-to-JS transformation failures during `execute` and `prepare` surface as
+`error` responses with `code: "compilation_error"` rather than the generic
+`internal_error`/`runtime_failed` they used to take. The executor throws
+`TranspileError` (in `src/executor.ts`) carrying `category`:
+
+| `category` | Triggered when |
+|---|---|
+| `transpile_failed` | `ts.transpileModule` throws or emits fatal `ts.DiagnosticCategory.Error` diagnostics |
+| `compile_failed` | `new vm.Script(...)` rejects the emitted JS (typically because TS type syntax — interface refs, type-only identifiers in value position, JSX in a misclassified file — survived transpile) |
+
+Handlers (`src/handlers.ts` `case "execute"` and `case "prepare"`) translate
+`TranspileError` into a `compilation_error` response with the category and
+diagnostic text in the message. This avoids opaque `runtime_failed` outcomes
+on TS/TSX runtime failures observed in Kapow validation. Regression
+fixtures live in `src/__fixtures__/type-syntax-coverage.tsx` and the
+`"TS type syntax pipeline coverage (str-jeen.11)"` describe block in
+`src/executor.test.ts`.
