@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "Node16",
+    "strict": true,
+    "noEmit": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/lib" },
+    { "path": "./packages/ui" }
+  ]
+}
