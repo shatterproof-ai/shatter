@@ -378,6 +378,7 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 		constructors[i] = wrapper.ConstructorCandidate{
 			FuncName:   candidate.FuncName,
 			TargetType: candidate.TargetType,
+			HasParams:  len(candidate.Parameters) > 0,
 		}
 	}
 	return constructors

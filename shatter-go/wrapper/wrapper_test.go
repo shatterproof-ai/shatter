@@ -430,6 +430,116 @@ func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 	}
 }
 
+// TestGeneratedWrapperBlastRadiusIsolation is the str-qo1.14 regression:
+// when a package contains a pure function plus an unrelated type whose
+// constructor requires an interface argument (e.g. *SSEWriter built from
+// http.ResponseWriter), the wrapper generated for the package must still
+// compile so the pure function is explorable. Concretely: the wrapper must
+// NOT emit `_recv := NewSSEWriter()` for a constructor that takes parameters,
+// because it has no way to synthesise the interface argument.
+func TestGeneratedWrapperBlastRadiusIsolation(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	// Pure target plus an unrelated method whose only constructor needs
+	// an http.ResponseWriter — exactly the failing fixture from the bug.
+	const targetSrc = `package blastradius
+
+import (
+	"net/http"
+	"strings"
+)
+
+// TokenizeWords is the pure focused target.
+func TokenizeWords(text string) []string {
+	return strings.Fields(text)
+}
+
+// SSEWriter is the unrelated symbol that should not poison the wrapper.
+type SSEWriter struct{ w http.ResponseWriter }
+
+// NewSSEWriter requires an http.ResponseWriter — a constructor with
+// parameters. The wrapper cannot synthesise this argument and must omit
+// the constructor case rather than emit uncompilable code.
+func NewSSEWriter(w http.ResponseWriter) *SSEWriter { return &SSEWriter{w: w} }
+
+// Flush is the unrelated method whose receiver type SSEWriter has no
+// no-arg constructor.
+func (s *SSEWriter) Flush() { /* no-op */ }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "blastradius.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write blastradius.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/blastradius\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/blastradius:TokenizeWords",
+			SymbolName: "TokenizeWords",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "text", GoType: "string"}},
+			HasResult:  true, ResultGoType: "[]string", ResultCount: 1,
+		},
+		{
+			ID:            "example.com/blastradius:(*SSEWriter).Flush",
+			SymbolName:    "Flush",
+			Kind:          wrapper.TargetKindMethod,
+			ReceiverType:  "SSEWriter",
+			IsPointerRecv: true,
+			HasResult:     false,
+		},
+	}
+	// NewSSEWriter requires *http.Request via http.ResponseWriter — i.e.
+	// HasParams is true. Pre-fix this leaked into the wrapper.
+	ctors := []wrapper.ConstructorCandidate{
+		{FuncName: "NewSSEWriter", TargetType: "SSEWriter", HasParams: true},
+	}
+
+	src := wrapper.GenerateWrapper("blastradius", targets, ctors)
+
+	// Invariant: the wrapper must not contain a parameterless call to
+	// NewSSEWriter.
+	if strings.Contains(src, "NewSSEWriter()") {
+		t.Errorf("generated wrapper contains uncompilable parameterless call to NewSSEWriter; source:\n%s", src)
+	}
+	if strings.Contains(src, "constructor:NewSSEWriter") {
+		t.Errorf("generated wrapper emitted a constructor case for a constructor that takes parameters; source:\n%s", src)
+	}
+
+	// And the wrapper must compile against the package — proving the pure
+	// target is reachable.
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "blastradius", targets, ctors)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, ctors)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), got)
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 

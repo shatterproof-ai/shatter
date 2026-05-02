@@ -81,7 +81,11 @@ func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate)
 
 	ctors := make([]string, len(constructors))
 	for i, c := range constructors {
-		ctors[i] = c.FuncName + ":" + c.TargetType
+		hasParams := "0"
+		if c.HasParams {
+			hasParams = "1"
+		}
+		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams
 	}
 	sort.Strings(ctors)
 
@@ -117,8 +121,16 @@ func GenerateWrapper(
 	sort.Slice(sortedCtors, func(i, j int) bool { return sortedCtors[i].FuncName < sortedCtors[j].FuncName })
 
 	// Index constructors by target type for receiver-kind enumeration.
+	// Skip constructors whose real signature takes parameters: the wrapper
+	// has no way to synthesise the arguments, and emitting `_recv :=
+	// NewFoo()` against a constructor that requires (e.g.) an
+	// http.ResponseWriter produces a package-wide build error that
+	// silently poisons every other target's wrapper case (str-qo1.14).
 	ctorsByType := make(map[string][]ConstructorCandidate)
 	for _, c := range sortedCtors {
+		if c.HasParams {
+			continue
+		}
 		ctorsByType[c.TargetType] = append(ctorsByType[c.TargetType], c)
 	}
 
