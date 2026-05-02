@@ -550,6 +550,50 @@ func TestAnalyzeFormatNameTrimSpaceHasMultipleCallSites(t *testing.T) {
 	t.Fatal("strings.TrimSpace not found in dependencies")
 }
 
+// TestAnalyzeCallerCapturesLocalFunctionCalls asserts that intra-package,
+// bare-identifier function calls (e.g. Helper(x) where Helper is defined in the
+// same package) are reported as dependencies. Without this, the run/analyze
+// call graph cannot construct edges for projects whose calls are mostly
+// intra-package — see str-ic3b.
+func TestAnalyzeCallerCapturesLocalFunctionCalls(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("local_calls.go"), "Caller")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no functions returned")
+	}
+	fn := results[0]
+	symbols := make(map[string]ExternalDependency)
+	for _, d := range fn.Dependencies {
+		symbols[d.Symbol] = d
+	}
+	for _, want := range []string{"Helper", "Annotate"} {
+		dep, ok := symbols[want]
+		if !ok {
+			t.Errorf("missing intra-package dependency %q, got %v", want, keysOfDeps(symbols))
+			continue
+		}
+		if dep.Kind != "function_call" {
+			t.Errorf("dep %q kind = %q, want function_call", want, dep.Kind)
+		}
+		if dep.SourceModule == "" {
+			t.Errorf("dep %q source_module is empty", want)
+		}
+		if len(dep.CallSites) == 0 {
+			t.Errorf("dep %q has no call sites", want)
+		}
+	}
+}
+
+func keysOfDeps(m map[string]ExternalDependency) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // --- File-level analysis ---
 
 func TestAnalyzeFileWithoutFunctionReturnsAll(t *testing.T) {

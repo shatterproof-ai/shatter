@@ -1575,6 +1575,43 @@ func extractDependencies(fset *token.FileSet, body *ast.BlockStmt, info *types.I
 			return true
 		}
 
+		// Bare-identifier calls — e.g. Helper(x) where Helper is declared in
+		// the current package. The call graph builder needs these to construct
+		// intra-package edges (str-ic3b). Builtins (len, append, ...) resolve
+		// to *types.Builtin and are skipped.
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			fnObj, isFunc := info.Uses[ident].(*types.Func)
+			if !isFunc {
+				return true
+			}
+			pkg := fnObj.Pkg()
+			if pkg == nil {
+				return true
+			}
+			symbol := ident.Name
+			line := fset.Position(call.Pos()).Line
+
+			if existing, found := deps[symbol]; found {
+				existing.CallSites = append(existing.CallSites, line)
+				return true
+			}
+
+			dep := &ExternalDependency{
+				Kind:         "function_call",
+				Symbol:       symbol,
+				SourceModule: pkg.Path(),
+				ReturnType:   TypeInfo{Kind: "unknown"},
+				ParamTypes:   []TypeInfo{},
+				CallSites:    []int{line},
+			}
+			if sig, ok := fnObj.Type().(*types.Signature); ok {
+				dep.ReturnType = sigReturnType(sig)
+				dep.ParamTypes = sigParamTypes(sig)
+			}
+			deps[symbol] = dep
+			return true
+		}
+
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
 			return true
