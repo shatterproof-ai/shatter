@@ -58,8 +58,31 @@ func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string
 	if block == nil {
 		return
 	}
+	block.List = transformStmtList(fset, block.List, params, branchID, loopID, callSiteID, block)
+}
+
+// transformStmtList applies the same line/branch/scope instrumentation
+// transformBlock applies to a *ast.BlockStmt, but operates on a raw
+// []ast.Stmt — the shape carried by *ast.CaseClause.Body and
+// *ast.CommClause.Body. Sharing this helper guarantees that statements
+// inside switch case bodies receive the same line records as statements
+// inside ordinary block bodies. Without this sharing, return statements
+// (and other statements) inside switch cases never appeared in
+// lines_executed, which is the root cause of str-qo1.12.
+//
+// enclosingBlock may be nil when the statements are not lexically inside a
+// *ast.BlockStmt (e.g. switch case bodies). In that case, the
+// reassignment-after-closure analysis used by instrumentFuncLits is
+// skipped, but call_enter/call_exit recording is still emitted.
+func transformStmtList(
+	fset *token.FileSet,
+	stmts []ast.Stmt,
+	params map[string]bool,
+	branchID, loopID, callSiteID *int,
+	enclosingBlock *ast.BlockStmt,
+) []ast.Stmt {
 	var newList []ast.Stmt
-	for _, stmt := range block.List {
+	for _, stmt := range stmts {
 		line := fset.Position(stmt.Pos()).Line
 		newList = append(newList, makeLineRecordCall(line))
 		switch s := stmt.(type) {
@@ -73,10 +96,10 @@ func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string
 			transformRangeStmt(fset, s, params, branchID, loopID, callSiteID)
 		}
 		// Instrument function literals in expressions (callbacks).
-		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, block)
+		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, enclosingBlock)
 		newList = append(newList, stmt)
 	}
-	block.List = newList
+	return newList
 }
 
 func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
@@ -95,7 +118,7 @@ func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool,
 	}
 }
 
-func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, _ /*loopID*/, _ /*callSiteID*/ *int) {
+func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
 	for _, stmt := range s.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
@@ -106,7 +129,14 @@ func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[stri
 		id := *branchID
 		*branchID++
 		recordCall := makeBranchRecordStmt(id, line, constraint)
-		cc.Body = append([]ast.Stmt{recordCall}, cc.Body...)
+		// Instrument the statements inside the case body so each one
+		// emits a line record (and any nested control flow recurses).
+		// Without this, return statements like `return "go"` in a switch
+		// case body never appeared in lines_executed — the root cause of
+		// str-qo1.12. The branch record stays first so the case-entry
+		// signal precedes any per-statement line record.
+		instrumented := transformStmtList(fset, cc.Body, params, branchID, loopID, callSiteID, nil)
+		cc.Body = append([]ast.Stmt{recordCall}, instrumented...)
 	}
 }
 

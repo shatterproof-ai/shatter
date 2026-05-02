@@ -1,6 +1,7 @@
 package instrument
 
 import (
+	"fmt"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -99,6 +100,71 @@ func F(x int) {
 		t.Errorf("expected 3 branch record calls, got %d\noutput:\n%s", branchCalls, out)
 	}
 }
+
+// TestSwitchCaseBodyStatementsLineRecorded is the str-qo1.12 regression:
+// statements inside switch case bodies (especially return statements) must
+// receive __shatter_record_line calls, not just the case-entry branch
+// record. Pre-fix, the switch-case-return lines never appeared in
+// lines_executed and Go line coverage stayed near-zero on switch/return-
+// heavy functions like Refute's detectServerKey.
+func TestSwitchCaseBodyStatementsLineRecorded(t *testing.T) {
+	// detectServerKey-shaped fixture: switch on a string with multiple
+	// case bodies, each returning a different literal. The returns live
+	// at predictable lines so we can assert the line-record arguments
+	// directly.
+	src := `package main
+
+func F(ext string) string {
+	switch ext {
+	case ".go":
+		return "go"
+	case ".ts":
+		return "ts"
+	default:
+		return ""
+	}
+}
+`
+	out, _ := transformSource(t, src, nil)
+
+	// Each case-body return statement must have a line record. The
+	// returns sit at lines 6, 8, and 10 of the fixture above (case
+	// keyword on the odd line, return on the even line).
+	for _, line := range []int{6, 8, 10} {
+		want := fmt.Sprintf("__shatter_record_line(%d)", line)
+		if !strings.Contains(out, want) {
+			t.Errorf("expected line record for case-body return at line %d, want %q in:\n%s",
+				line, want, out)
+		}
+	}
+}
+
+// TestNestedSwitchCaseInstrumented verifies that a switch nested inside a
+// switch case body is recursively instrumented (control-flow recursion
+// reaches case bodies, not just block bodies). (str-qo1.12)
+func TestNestedSwitchCaseInstrumented(t *testing.T) {
+	src := `package main
+
+func F(a, b string) string {
+	switch a {
+	case "x":
+		switch b {
+		case "y":
+			return "xy"
+		}
+	}
+	return ""
+}
+`
+	_, branchCount := transformSource(t, src, nil)
+	// Outer switch: 1 case → 1 branch record. Inner switch: 1 case → 1
+	// more branch record. If the inner switch body were skipped, only
+	// the outer case would be counted (branchCount == 1).
+	if branchCount != 2 {
+		t.Errorf("branchCount = %d, want 2 (outer + inner case)", branchCount)
+	}
+}
+
 
 func TestForLoopConditionWrapped(t *testing.T) {
 	src := `package main
