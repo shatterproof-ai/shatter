@@ -4147,7 +4147,12 @@ pub(crate) async fn run_explore(
 
                 let cc = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations.map(|n| n as usize),
-                    max_executions: explore_config.max_iterations.map(|n| (n as usize) * 5),
+                    // str-nqrz: `--max-iterations N` is a hard cap on total
+                    // executions; the concolic orchestrator's `max_iterations`
+                    // bounds unique-path discovery, while `max_executions`
+                    // bounds total execute calls. Setting both to the same
+                    // value keeps the user-visible iteration cap honored.
+                    max_executions: explore_config.max_iterations.map(|n| n as usize),
                     plateau_threshold: if mcdc { 60 } else { 20 },
                     mocks: explore_config.mocks.clone(),
                     mock_params: explore_config.mock_params.clone(),
@@ -4417,7 +4422,10 @@ pub(crate) async fn run_explore(
             item.explore_config.max_iterations = Some(batch_iters);
             if let Some(ref mut cc) = item.concolic_config {
                 cc.max_iterations = Some(batch_iters as usize);
-                cc.max_executions = Some((batch_iters as usize) * 5);
+                // str-nqrz: keep the per-batch execution cap aligned with
+                // the user-visible iteration cap. Granting 5x headroom let
+                // single batches blow past `--max-iterations`.
+                cc.max_executions = Some(batch_iters as usize);
             }
 
             batches_launched += 1;
