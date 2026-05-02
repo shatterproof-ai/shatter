@@ -1009,6 +1009,12 @@ pub(crate) enum CliCommand {
     /// Accepts a local directory path, discovers all supported source files,
     /// analyzes them, builds a call graph, and explores functions in dependency
     /// order (leaves first). Outputs a markdown summary report.
+    ///
+    /// Scope: `run` honors the same `shatter.config.json` `include`,
+    /// `exclude`, `language`, and `max_depth` settings as `scan`, plus
+    /// `.gitignore` and `.shatterignore`. Unlike `scan`, `run` exposes no
+    /// CLI flags for scope filters — the project config is the sole source
+    /// of scope.
     Run {
         /// Path to the repository root (local directory).
         #[arg(required = true)]

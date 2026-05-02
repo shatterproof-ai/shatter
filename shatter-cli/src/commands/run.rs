@@ -4,11 +4,82 @@ use std::time::{Duration, Instant};
 
 use shatter_core::batch_analyze;
 use shatter_core::call_graph::CallGraph;
+use shatter_core::config as shatter_config;
 use shatter_core::discovery::{self, DiscoveryOptions, Language as DiscoveryLanguage};
 use shatter_core::explorer::{self, ExploreConfig};
 use shatter_core::frontend::Frontend;
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+
+/// Resolved scope settings from `shatter.config.json` for the `run` command.
+///
+/// The `run` command intentionally has no CLI flags for include/exclude or
+/// language; it discovers source files from the project root and is meant to
+/// honor whatever scope the project author has declared in
+/// `shatter.config.json` (parity with `scan` — see str-mg2d).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RunScope {
+    pub(crate) options: DiscoveryOptions,
+    pub(crate) language_filter: Option<String>,
+}
+
+/// Build a [`RunScope`] from the project config in `root` (if any).
+///
+/// Falls back to defaults when `shatter.config.json` is absent or unreadable.
+/// On parse failure, logs a warning and returns defaults so `run` still
+/// proceeds — a malformed config should not silently expand scope, but the
+/// existing `scan` wiring also degrades to defaults on parse error and we
+/// keep parity with that behavior.
+pub(crate) fn run_scope_from_project_config(root: &Path) -> RunScope {
+    let project_cfg = match shatter_config::load_project_config(root) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            log::warn!("Failed to load project config from {}: {e}", root.display());
+            None
+        }
+    };
+
+    let Some(cfg) = project_cfg else {
+        return RunScope::default();
+    };
+
+    RunScope {
+        options: DiscoveryOptions {
+            include_patterns: cfg.include.clone(),
+            exclude_patterns: cfg.exclude.clone(),
+            respect_gitignore: true,
+            max_depth: cfg.max_depth,
+        },
+        language_filter: cfg.language.clone(),
+    }
+}
+
+/// Filter discovered files by the project-configured language, if any.
+///
+/// Unknown language strings are ignored (no filter applied); the project
+/// config schema does not validate the language string, and `run` should not
+/// panic on bad config — it should still produce a usable report. A warning
+/// is emitted so the misconfiguration is visible.
+pub(crate) fn apply_language_filter(
+    files: Vec<(PathBuf, DiscoveryLanguage)>,
+    language_filter: Option<&str>,
+) -> Vec<(PathBuf, DiscoveryLanguage)> {
+    let Some(lang) = language_filter else {
+        return files;
+    };
+    let target = match lang {
+        "typescript" => DiscoveryLanguage::TypeScript,
+        "go" => DiscoveryLanguage::Go,
+        "rust" => DiscoveryLanguage::Rust,
+        other => {
+            log::warn!(
+                "shatter.config.json language='{other}' is not a recognized language; ignoring filter"
+            );
+            return files;
+        }
+    };
+    files.into_iter().filter(|(_, l)| *l == target).collect()
+}
 
 use crate::commands::scan::{print_summary_report, write_analysis_report};
 use crate::helpers::*;
@@ -57,10 +128,30 @@ pub(crate) async fn run_run(
     log::debug!("Shatter run: {}", root.display());
 
     // Step 1: Discover files
+    //
+    // str-mg2d: honor `shatter.config.json` scope (include/exclude/max_depth/
+    // language) so `run` analyzes the same file set as `scan`. The `run`
+    // command exposes no CLI scope flags, so the project config is the sole
+    // source of scope filtering; without this, fixture trees excluded by the
+    // project author leak into discovery and produce noisy preflight warnings.
     log::debug!("Discovering source files...");
-    let options = DiscoveryOptions::default();
-    let files = discovery::discover_files(&root, &options)
+    let scope = run_scope_from_project_config(&root);
+    if !scope.options.include_patterns.is_empty()
+        || !scope.options.exclude_patterns.is_empty()
+        || scope.options.max_depth.is_some()
+        || scope.language_filter.is_some()
+    {
+        log::debug!(
+            "Applying project scope: include={:?} exclude={:?} max_depth={:?} language={:?}",
+            scope.options.include_patterns,
+            scope.options.exclude_patterns,
+            scope.options.max_depth,
+            scope.language_filter,
+        );
+    }
+    let files = discovery::discover_files(&root, &scope.options)
         .map_err(|e| format!("file discovery failed: {e}"))?;
+    let files = apply_language_filter(files, scope.language_filter.as_deref());
 
     if files.is_empty() {
         log::info!("No supported source files found in {}", root.display());
@@ -407,4 +498,113 @@ fn write_run_report(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! str-mg2d: regression tests for `run` honoring `shatter.config.json` scope.
+    //!
+    //! These tests exercise the helpers that translate project config into the
+    //! discovery filters used by `run_run`. They cover the wiring fix
+    //! (previously `run_run` used `DiscoveryOptions::default()` and ignored
+    //! the project config entirely) by asserting that, on a tree containing
+    //! files the project author has excluded, discovery + language filtering
+    //! using the helper produces only the included file set.
+    use super::*;
+    use shatter_core::discovery;
+    use std::fs;
+
+    /// Files outside `include`/excluded by `exclude` must not appear in the
+    /// discovered set when the project config is loaded by `run`.
+    #[test]
+    fn run_scope_honors_project_config_excludes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Project author wants Go only and explicitly excludes a TS fixture
+        // tree. Mirrors the Refute audit case from str-mg2d.
+        fs::write(
+            root.join("shatter.config.json"),
+            r#"{
+                "include": ["**/*.go"],
+                "exclude": ["testdata/fixtures/typescript/**", "testdata/fixtures/rust/**"]
+            }"#,
+        )
+        .expect("write config");
+
+        fs::create_dir_all(root.join("src")).expect("mkdir src");
+        fs::write(root.join("src/main.go"), "package main\nfunc main() {}\n").expect("write go");
+
+        let ts_dir = root.join("testdata/fixtures/typescript");
+        fs::create_dir_all(&ts_dir).expect("mkdir ts");
+        fs::write(ts_dir.join("noisy.ts"), "export const x = 1;\n").expect("write ts");
+
+        let rs_dir = root.join("testdata/fixtures/rust");
+        fs::create_dir_all(&rs_dir).expect("mkdir rs");
+        fs::write(rs_dir.join("noisy.rs"), "fn main() {}\n").expect("write rs");
+
+        let scope = run_scope_from_project_config(root);
+        assert_eq!(scope.options.include_patterns, vec!["**/*.go".to_string()]);
+        assert_eq!(
+            scope.options.exclude_patterns,
+            vec![
+                "testdata/fixtures/typescript/**".to_string(),
+                "testdata/fixtures/rust/**".to_string(),
+            ]
+        );
+
+        let files = discovery::discover_files(root, &scope.options).expect("discover");
+        let files = apply_language_filter(files, scope.language_filter.as_deref());
+
+        let paths: Vec<String> = files
+            .iter()
+            .map(|(p, _)| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.ends_with("main.go")),
+            "expected main.go in discovered files, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("noisy.ts")),
+            "excluded TS fixture leaked into run scope: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("noisy.rs")),
+            "excluded Rust fixture leaked into run scope: {paths:?}"
+        );
+    }
+
+    /// Without a project config, `run` falls back to default discovery
+    /// (no include/exclude filters, gitignore respected). This pins the
+    /// no-config baseline so the fix does not silently change behavior for
+    /// repos without `shatter.config.json`.
+    #[test]
+    fn run_scope_defaults_without_project_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scope = run_scope_from_project_config(dir.path());
+        assert!(scope.options.include_patterns.is_empty());
+        assert!(scope.options.exclude_patterns.is_empty());
+        assert!(scope.options.max_depth.is_none());
+        assert!(scope.language_filter.is_none());
+        assert!(scope.options.respect_gitignore);
+    }
+
+    /// `language` in project config restricts discovered files to the matching
+    /// language only — covers the case where the project author scopes
+    /// shatter to a single language.
+    #[test]
+    fn run_scope_language_filter_drops_other_languages() {
+        let mixed = vec![
+            (PathBuf::from("a.ts"), DiscoveryLanguage::TypeScript),
+            (PathBuf::from("b.go"), DiscoveryLanguage::Go),
+            (PathBuf::from("c.rs"), DiscoveryLanguage::Rust),
+        ];
+        let go_only = apply_language_filter(mixed.clone(), Some("go"));
+        assert_eq!(go_only.len(), 1);
+        assert_eq!(go_only[0].0, PathBuf::from("b.go"));
+
+        // Unknown language string is a no-op (warning logged), not a filter.
+        let unfiltered = apply_language_filter(mixed.clone(), Some("cobol"));
+        assert_eq!(unfiltered.len(), 3);
+    }
 }
