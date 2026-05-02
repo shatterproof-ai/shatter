@@ -690,13 +690,26 @@ pub fn read_file_spec_bundle(path: &Path) -> Result<FileSpecBundle, SpecIoError>
 /// Result of comparing current function analyses against an existing spec bundle.
 ///
 /// Used by `--output` incremental mode to decide which functions need re-exploration
-/// vs which can be carried over from the previous spec.
+/// vs which can be carried over from the previous spec, and by `shatter stale` to
+/// classify functions for reporting and exit-code purposes.
+///
+/// The four buckets are mutually exclusive:
+/// - `fresh` — present in both spec and current analysis with matching fingerprint.
+/// - `stale` — present in both, but fingerprint differs (or spec lacks fingerprint).
+/// - `untracked` — present in current analysis, *not* present in the spec at all
+///   (a sibling function the spec was never meant to cover, or a newly added
+///   function). Distinguished from `stale` so `shatter stale` does not falsely
+///   accuse functions that the spec never claimed to track.
+/// - `removed` — present in the spec but absent from current analysis (deleted).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncrementalPlan {
-    /// Functions whose fingerprints changed or are new (need re-exploration).
+    /// Tracked functions whose fingerprints changed (need re-exploration).
     pub stale: Vec<String>,
-    /// Functions whose fingerprints match the existing spec (reuse old spec).
+    /// Tracked functions whose fingerprints match the existing spec (reuse old spec).
     pub fresh: Vec<String>,
+    /// Functions present in current analysis but not in the existing spec.
+    /// These are *not* stale — the spec never tracked them.
+    pub untracked: Vec<String>,
     /// Functions present in old spec but absent from current analysis (deleted).
     pub removed: Vec<String>,
 }
@@ -728,6 +741,7 @@ pub fn compute_incremental_plan(
 
     let mut stale = Vec::new();
     let mut fresh = Vec::new();
+    let mut untracked = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
 
     for func in current_analyses {
@@ -736,11 +750,21 @@ pub fn compute_incremental_plan(
         let current_fp = deep_fps.get(&func.name);
 
         match (existing_by_name.get(func.name.as_str()), current_fp) {
+            // Tracked and fingerprint matches — reuse cached spec.
             (Some(spec), Some(fp)) if spec.fingerprint.as_deref() == Some(fp.as_str()) => {
                 fresh.push(func.name.clone());
             }
-            _ => {
+            // Tracked but fingerprint differs (or spec has no fingerprint, or
+            // the current fingerprint could not be computed) — needs re-exploration.
+            (Some(_), _) => {
                 stale.push(func.name.clone());
+            }
+            // Not tracked by this spec at all. Distinguishing untracked from
+            // stale is the whole point of str-d6hj: a spec generated for one
+            // targeted function in a multi-function file must not flag the
+            // unchanged siblings as stale.
+            (None, _) => {
+                untracked.push(func.name.clone());
             }
         }
     }
@@ -755,6 +779,7 @@ pub fn compute_incremental_plan(
     Ok(IncrementalPlan {
         stale,
         fresh,
+        untracked,
         removed,
     })
 }
@@ -1897,7 +1922,10 @@ mod tests {
     }
 
     #[test]
-    fn incremental_plan_new_function() {
+    fn incremental_plan_new_function_is_untracked() {
+        // A function present in current analysis but absent from the existing
+        // spec is *untracked*, not stale. The spec never claimed to track it,
+        // so we must not flag it as stale (str-d6hj).
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.ts");
         std::fs::write(
@@ -1919,9 +1947,84 @@ mod tests {
             &std::collections::HashMap::new(),
         )
         .unwrap();
-        assert_eq!(plan.stale, vec!["add"]);
+        assert!(
+            plan.stale.is_empty(),
+            "untracked function must not be classified as stale, got: {:?}",
+            plan.stale,
+        );
+        assert_eq!(plan.untracked, vec!["add"]);
         assert!(plan.fresh.is_empty());
         assert!(plan.removed.is_empty());
+    }
+
+    /// Regression for str-d6hj: a spec generated for one targeted function in
+    /// a multi-function file must not cause sibling functions to be flagged as
+    /// stale. The siblings were never tracked; they belong in `untracked`.
+    #[test]
+    fn incremental_plan_targeted_spec_does_not_flag_siblings_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("selector.go");
+        // Multi-function source mirroring the bead's selector.go shape.
+        let source = "\
+function detectServerKey(x) {\n  if (x > 0) return 1;\n  return 0;\n}\n\
+function ForFile(x) {\n  if (x > 0) return 2;\n  return 0;\n}\n\
+function prefersTSMorph(x) {\n  if (x > 0) return 3;\n  return 0;\n}\n\
+function prefersOpenRewrite(x) {\n  if (x > 0) return 4;\n  return 0;\n}\n\
+function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
+        std::fs::write(&file, source).unwrap();
+
+        let analyses = vec![
+            make_analysis("detectServerKey", 1, 3),
+            make_analysis("ForFile", 4, 6),
+            make_analysis("prefersTSMorph", 7, 9),
+            make_analysis("prefersOpenRewrite", 10, 12),
+            make_analysis("detectLanguageID", 13, 15),
+        ];
+
+        let deep_fps = crate::fingerprint::compute_deep_fingerprints(
+            &file,
+            &analyses,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        // Spec only tracks one targeted function — and its fingerprint matches
+        // the current analysis, so it's fresh.
+        let existing = FileSpecBundle {
+            file: "selector.go".to_string(),
+            functions: vec![make_spec_with_fingerprint(
+                "detectServerKey",
+                Some(&deep_fps["detectServerKey"]),
+            )],
+        };
+
+        let plan = compute_incremental_plan(
+            &file,
+            &analyses,
+            &existing,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.fresh, vec!["detectServerKey"]);
+        assert!(
+            plan.stale.is_empty(),
+            "siblings absent from the spec must not be stale, got: {:?}",
+            plan.stale,
+        );
+        assert!(plan.removed.is_empty());
+
+        let expected_untracked: HashSet<String> = [
+            "ForFile",
+            "prefersTSMorph",
+            "prefersOpenRewrite",
+            "detectLanguageID",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let actual_untracked: HashSet<String> = plan.untracked.iter().cloned().collect();
+        assert_eq!(actual_untracked, expected_untracked);
     }
 
     #[test]
