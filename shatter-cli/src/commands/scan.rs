@@ -91,6 +91,30 @@ pub(crate) async fn run_scan(
         .into());
     }
 
+    // str-tzbr: reject `scan --dry-run --stdout --format json` (and the
+    // equivalent default-stdout case where `outputs` is empty) before any
+    // work. The dry-run plan is currently markdown-only — emitting it to
+    // a JSON-tagged stdout would silently ship Markdown to a caller that
+    // asked for JSON. Non-dry-run `scan --stdout --format json` continues
+    // to work (it serializes the documented `scan_report` shape).
+    // For `-o <file>.json` users, `--dry-run --format json` is also not
+    // wired; the dry-run path bypasses `outputs`. Reject that combo
+    // explicitly so the failure is visible rather than silently writing
+    // nothing.
+    let json_stdout_requested = format == crate::args::StdoutFormat::Json
+        && (stdout || outputs.is_empty());
+    let json_output_file_requested = outputs
+        .iter()
+        .any(|p| matches!(crate::args::infer_output_format(p), Ok(crate::args::StdoutFormat::Json)));
+    if dry_run && (json_stdout_requested || json_output_file_requested) {
+        return Err(
+            "scan --dry-run does not support --format json (and writes no JSON \
+             to -o files). Re-run without --dry-run for the JSON scan report, \
+             or drop --format json / the .json -o file to keep the dry-run plan."
+                .into(),
+        );
+    }
+
     // Resolve directory.
     let root = PathBuf::from(directory);
     if !root.is_dir() {
@@ -843,14 +867,22 @@ pub(crate) async fn run_scan(
                 }
             }
 
-            if output_format == crate::args::OutputFormat::Md {
-                let view = crate::render::scan_view(&result);
-                print_markdown(&crate::render::render_scan(&view), use_color);
-            } else {
-                print_markdown(
-                    &scan_orchestrator::format_parallel_scan_report(&result),
-                    use_color,
-                );
+            // str-tzbr: when stdout is the JSON target, skip the
+            // preliminary Markdown dump — the JSON write below is the
+            // authoritative stdout content. Logs/progress already go to
+            // stderr.
+            let json_to_stdout = (outputs.is_empty() || stdout)
+                && format == crate::args::StdoutFormat::Json;
+            if !json_to_stdout {
+                if output_format == crate::args::OutputFormat::Md {
+                    let view = crate::render::scan_view(&result);
+                    print_markdown(&crate::render::render_scan(&view), use_color);
+                } else {
+                    print_markdown(
+                        &scan_orchestrator::format_parallel_scan_report(&result),
+                        use_color,
+                    );
+                }
             }
 
             // Record batch state and print cumulative progress.
@@ -891,10 +923,12 @@ pub(crate) async fn run_scan(
                     log::warn!("failed to save batch state: {e}");
                 }
 
-                print_markdown(
-                    &shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx),
-                    use_color,
-                );
+                if !json_to_stdout {
+                    print_markdown(
+                        &shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx),
+                        use_color,
+                    );
+                }
 
                 Some(state)
             } else {
@@ -958,7 +992,20 @@ pub(crate) async fn run_scan(
                     ),
                     crate::args::StdoutFormat::Text => report::format_text_report(&scan_report),
                 };
-                print_markdown(&content, use_color);
+                // str-tzbr: when emitting JSON or plain text, write raw
+                // bytes — termimad-rendered Markdown would corrupt JSON
+                // and add ANSI noise to text consumers.
+                match format {
+                    crate::args::StdoutFormat::Json => {
+                        println!("{content}");
+                    }
+                    crate::args::StdoutFormat::Text => {
+                        print!("{content}");
+                    }
+                    _ => {
+                        print_markdown(&content, use_color);
+                    }
+                }
             }
 
             if result.has_scan_failure() {
