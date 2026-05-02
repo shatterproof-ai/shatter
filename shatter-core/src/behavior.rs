@@ -446,30 +446,154 @@ struct TarjanState<'a> {
     result: Vec<Vec<String>>,
 }
 
+/// Compute the qualified node ID for a [`FunctionAnalysis`] in
+/// [`CallGraph::from_analyses`]. Returns `"<source_file>::<name>"` when the
+/// analysis carries a `source_file`, falling back to the bare `name` for
+/// records built without one (str-fuhw).
+///
+/// Public so the scan orchestrator can key `analysis_map`, `file_map`,
+/// `behavior_maps`, etc. with the exact same identifier the call graph
+/// emits as `function_id` in `TestOrderEntry`. Without identical formatting
+/// on both sides the orchestrator's maps would miss every entry the call
+/// graph produced.
+pub fn node_id_for_analysis(analysis: &crate::protocol::FunctionAnalysis) -> String {
+    match &analysis.source_file {
+        Some(sf) if !sf.is_empty() => format!("{}::{}", sf, analysis.name),
+        _ => analysis.name.clone(),
+    }
+}
+
+/// Split a qualified function ID of the form `"<file_path>::<bare_name>"`
+/// into `(file_path, bare_name)`. When the input does not contain `"::"`
+/// (back-compat fallback for tests with `source_file: None`), returns
+/// `("", input)` so callers can use the input verbatim as a display name.
+///
+/// Uses `rsplit_once` so that file paths containing `::` themselves still
+/// split at the LAST occurrence, treating only the trailing segment as
+/// the bare function name. Public so report.rs and the scan orchestrator
+/// can recover the bare display name for wire output without changing
+/// the JSON `function_name` field's contract (str-fuhw, str-fuhw.1).
+pub fn split_qualified_id(qid: &str) -> (&str, &str) {
+    match qid.rsplit_once("::") {
+        Some((file, name)) => (file, name),
+        None => ("", qid),
+    }
+}
+
+/// Resolve a dependency symbol against the set of known node IDs.
+///
+/// Returns the index into `analyses` of the matched callee, or `None` if no
+/// candidate is known. When multiple analyses share the same bare name,
+/// `source_module` is matched against each candidate's `source_file` (when
+/// populated) using the same substring + package-directory heuristic as
+/// [`crate::call_graph::resolve_dependency`]. Ambiguous resolutions return
+/// the first candidate so behavior stays deterministic.
+fn resolve_dep_to_node(
+    symbol: &str,
+    source_module: &str,
+    bare_to_qualified: &HashMap<&str, Vec<usize>>,
+    analyses: &[crate::protocol::FunctionAnalysis],
+) -> Option<usize> {
+    let bare_symbol = symbol.rsplit('.').next().unwrap_or(symbol);
+    let candidates = bare_to_qualified.get(symbol).or_else(|| {
+        if bare_symbol == symbol {
+            None
+        } else {
+            bare_to_qualified.get(bare_symbol)
+        }
+    })?;
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
+    if !source_module.is_empty() {
+        for &idx in candidates {
+            if let Some(sf) = analyses[idx].source_file.as_deref()
+                && sf.contains(source_module)
+            {
+                return Some(idx);
+            }
+        }
+        if let Some(pkg_dir) = source_module.rsplit('/').next()
+            && !pkg_dir.is_empty()
+        {
+            for &idx in candidates {
+                if let Some(sf) = analyses[idx].source_file.as_deref() {
+                    let parent = std::path::Path::new(sf)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if parent == pkg_dir {
+                        return Some(idx);
+                    }
+                }
+            }
+        }
+    }
+
+    Some(candidates[0])
+}
+
 impl CallGraph {
     /// Build a call graph from function analyses.
     ///
-    /// Matches each function's `ExternalDependency.symbol` against the set of
-    /// known function names to build edges. Self-calls are detected and stored
+    /// Each analysis becomes a node identified by its [qualified ID]: when
+    /// `analysis.source_file` is `Some(path)` the node ID is `"<path>::<name>"`,
+    /// matching the format produced by
+    /// [`crate::batch_analyze::FunctionRegistry::qualified_name`]. When
+    /// `source_file` is `None` the node ID falls back to the bare `name`,
+    /// preserving back-compat for tests and unit-level callers that build
+    /// `FunctionAnalysis` records without a source file (str-fuhw).
+    ///
+    /// Edges are constructed by matching each analysis's
+    /// `ExternalDependency.symbol` (a bare name) against the set of known
+    /// node IDs. When the bare name maps to a unique node, the edge is
+    /// added directly. When multiple nodes share the same bare name (e.g.
+    /// two Go files each defining `Write`), `dep.source_module` is consulted
+    /// to disambiguate via a substring match against the candidate's
+    /// `source_file`, mirroring the resolution logic in
+    /// [`crate::call_graph::resolve_dependency`]. Ambiguous cases fall back
+    /// to the first candidate.
+    ///
+    /// Self-calls are detected by comparing qualified IDs and stored
     /// separately rather than as regular edges.
     pub fn from_analyses(analyses: &[crate::protocol::FunctionAnalysis]) -> Self {
-        let known_names: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
+        // Build node IDs and a bare-name → list-of-node-IDs index for
+        // dependency resolution. The index preserves insertion order so
+        // ambiguous resolutions are deterministic across runs.
+        let node_ids: Vec<String> = analyses.iter().map(node_id_for_analysis).collect();
+        let mut bare_to_qualified: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (idx, analysis) in analyses.iter().enumerate() {
+            bare_to_qualified
+                .entry(analysis.name.as_str())
+                .or_default()
+                .push(idx);
+        }
+
         let mut edges = HashMap::new();
         let mut self_recursive = HashSet::new();
 
-        for analysis in analyses {
+        for (idx, analysis) in analyses.iter().enumerate() {
+            let caller_qid = &node_ids[idx];
             let mut callees: HashSet<String> = HashSet::new();
             for dep in &analysis.dependencies {
-                if !known_names.contains(dep.symbol.as_str()) {
+                let Some(callee_idx) = resolve_dep_to_node(
+                    &dep.symbol,
+                    &dep.source_module,
+                    &bare_to_qualified,
+                    analyses,
+                ) else {
                     continue;
-                }
-                if dep.symbol == analysis.name {
-                    self_recursive.insert(analysis.name.clone());
+                };
+                let callee_qid = &node_ids[callee_idx];
+                if callee_qid == caller_qid {
+                    self_recursive.insert(caller_qid.clone());
                 } else {
-                    callees.insert(dep.symbol.clone());
+                    callees.insert(callee_qid.clone());
                 }
             }
-            edges.insert(analysis.name.clone(), callees);
+            edges.insert(caller_qid.clone(), callees);
         }
 
         Self {
@@ -867,6 +991,110 @@ mod tests {
 
         assert!(graph.callees("a").contains("b"));
         assert!(graph.callees("b").is_empty());
+    }
+
+    /// Helper: build a `FunctionAnalysis` with a populated `source_file`.
+    /// Mirrors [`make_analysis`] but sets the source file so the call graph
+    /// produces qualified node IDs of the form `"<source_file>::<name>"`.
+    fn make_analysis_in(
+        source_file: &str,
+        name: &str,
+        deps: Vec<&str>,
+    ) -> FunctionAnalysis {
+        let mut analysis = make_analysis(name, deps);
+        analysis.source_file = Some(source_file.to_string());
+        analysis
+    }
+
+    /// str-fuhw regression: two analyses sharing a bare function name but
+    /// living in different source files must produce two distinct nodes,
+    /// not collapse into one. Before the fix, `from_analyses` keyed
+    /// `edges` by bare name and the second insert silently dropped the
+    /// first analysis's edges, causing the orchestrator to skip one of
+    /// the duplicate-named functions entirely.
+    #[test]
+    fn call_graph_from_analyses_preserves_duplicate_bare_names_across_files() {
+        const FILE_A: &str = "src/a/io.go";
+        const FILE_B: &str = "src/b/io.go";
+        const FUNC_NAME: &str = "Write";
+        const HELPER_A: &str = "helperA";
+        const HELPER_B: &str = "helperB";
+
+        let analyses = vec![
+            make_analysis_in(FILE_A, FUNC_NAME, vec![HELPER_A]),
+            make_analysis_in(FILE_B, FUNC_NAME, vec![HELPER_B]),
+            make_analysis_in(FILE_A, HELPER_A, vec![]),
+            make_analysis_in(FILE_B, HELPER_B, vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+
+        let qid_a = format!("{FILE_A}::{FUNC_NAME}");
+        let qid_b = format!("{FILE_B}::{FUNC_NAME}");
+        let qid_helper_a = format!("{FILE_A}::{HELPER_A}");
+        let qid_helper_b = format!("{FILE_B}::{HELPER_B}");
+
+        // Both Write nodes must exist independently.
+        let nodes = graph.nodes();
+        assert!(
+            nodes.contains(qid_a.as_str()),
+            "Write in {FILE_A} should be present as a distinct node; nodes={nodes:?}",
+        );
+        assert!(
+            nodes.contains(qid_b.as_str()),
+            "Write in {FILE_B} should be present as a distinct node; nodes={nodes:?}",
+        );
+
+        // Each Write keeps its own callee, not the other's.
+        let callees_a = graph.callees(&qid_a);
+        let callees_b = graph.callees(&qid_b);
+        assert!(
+            callees_a.contains(&qid_helper_a),
+            "Write in {FILE_A} should call {qid_helper_a}; callees={callees_a:?}",
+        );
+        assert!(
+            callees_b.contains(&qid_helper_b),
+            "Write in {FILE_B} should call {qid_helper_b}; callees={callees_b:?}",
+        );
+        assert!(!callees_a.contains(&qid_helper_b));
+        assert!(!callees_b.contains(&qid_helper_a));
+
+        // test_order must surface BOTH Write functions, not collapse them.
+        let order = graph.test_order().expect("no cycle");
+        let ids = entry_ids(&order);
+        let write_count = ids.iter().filter(|id| id.ends_with("::Write")).count();
+        assert_eq!(
+            write_count, 2,
+            "test_order must contain both Write entries; got {ids:?}",
+        );
+    }
+
+    /// str-fuhw: when two duplicate-named callees exist, dependency
+    /// resolution uses `source_module` to pick the correct one rather
+    /// than always returning the first candidate.
+    #[test]
+    fn call_graph_from_analyses_uses_source_module_to_disambiguate() {
+        const FILE_A: &str = "pkg/a/util.go";
+        const FILE_B: &str = "pkg/b/util.go";
+
+        // Caller in pkg/a/main.go calls "Write" with source_module pointing at pkg/a.
+        let mut caller = make_analysis_in("pkg/a/main.go", "Caller", vec!["Write"]);
+        caller.dependencies[0].source_module = "pkg/a".into();
+
+        let analyses = vec![
+            caller,
+            make_analysis_in(FILE_A, "Write", vec![]),
+            make_analysis_in(FILE_B, "Write", vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+
+        let caller_qid = "pkg/a/main.go::Caller";
+        let callees = graph.callees(caller_qid);
+        let expected = format!("{FILE_A}::Write");
+        assert!(
+            callees.contains(&expected),
+            "caller's source_module pkg/a should resolve Write to {expected}; \
+             got callees={callees:?}",
+        );
     }
 
     /// Helper: extract function IDs from test order entries (flattening groups).

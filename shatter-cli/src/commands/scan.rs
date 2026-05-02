@@ -546,13 +546,17 @@ pub(crate) async fn run_scan(
         let included = result.all_included();
         let before = all_analyses.len();
         total_scope_functions = before;
-        // included contains qualified names (file_path::name); match using file_map.
+        // `included` contains qualified names (file_path::name) emitted by
+        // core_sample. After str-fuhw, file_map is also keyed by qualified
+        // ID, so look up via the analysis's `source_file` (populated in
+        // `rebuild_analyses_from_registry`) rather than its bare name.
         all_analyses.retain(|a| {
-            if let Some(file) = file_map.get(&a.name) {
+            if let Some(file) = a.source_file.as_deref() {
                 let qn = format!("{}::{}", file, a.name);
                 included.contains(&qn)
             } else {
-                // No file mapping — fall back to bare name match.
+                // No source file — fall back to bare-name match for tests
+                // and synthesized records.
                 included.contains(&a.name)
             }
         });
@@ -1007,17 +1011,21 @@ pub(crate) fn rebuild_analyses_from_registry(
             continue;
         }
 
-        file_map.insert(
-            entry.name.clone(),
-            entry.file_path.to_string_lossy().into_owned(),
-        );
-
+        let file_path_string = entry.file_path.to_string_lossy().into_owned();
         let qualified =
             shatter_core::batch_analyze::FunctionRegistry::qualified_name(
                 &entry.file_path,
                 &entry.name,
             );
-        let analysis = match registry.analysis(&qualified) {
+
+        // str-fuhw: file_map is keyed by qualified ID `"<file>::<name>"`
+        // rather than bare name so two functions sharing a name across
+        // files (Write, Generate, ServeHTTP, ...) do not overwrite each
+        // other's file path. Downstream lookups in the orchestrator and
+        // report are migrated to use qualified IDs.
+        file_map.insert(qualified.clone(), file_path_string.clone());
+
+        let mut analysis = match registry.analysis(&qualified) {
             Some(a) => a.clone(),
             None => shatter_core::protocol::FunctionAnalysis {
                 name: entry.name.clone(),
@@ -1036,6 +1044,14 @@ pub(crate) fn rebuild_analyses_from_registry(
                 invocation_model: shatter_core::protocol::InvocationModel::Direct,
             },
         };
+        // str-fuhw: ensure `source_file` reflects the analysis's true on-disk
+        // location so `behavior::CallGraph::from_analyses` can produce
+        // qualified node IDs and disambiguate duplicate bare names. If a
+        // frontend already populated `source_file` (re-export indirection),
+        // preserve that value.
+        if analysis.source_file.is_none() {
+            analysis.source_file = Some(file_path_string);
+        }
         all_analyses.push(analysis);
     }
 
@@ -1290,8 +1306,17 @@ mod tests {
         );
         assert!(matches!(rebuilt[0].branches[0].branch_type, BranchType::For));
         assert!(matches!(rebuilt[0].branches[1].branch_type, BranchType::If));
+        // str-fuhw: file_map is keyed by qualified ID, not bare name.
+        let qualified_key = format!("{GO_FILE_PATH}::{FUNCTION_NAME}");
         assert_eq!(
-            file_map.get(FUNCTION_NAME).map(String::as_str),
+            file_map.get(&qualified_key).map(String::as_str),
+            Some(GO_FILE_PATH),
+        );
+        // The rehydrated analysis carries its source_file so the call
+        // graph in `behavior::CallGraph::from_analyses` can produce
+        // qualified node IDs.
+        assert_eq!(
+            rebuilt[0].source_file.as_deref(),
             Some(GO_FILE_PATH),
         );
     }

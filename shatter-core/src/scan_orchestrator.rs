@@ -1146,8 +1146,19 @@ pub async fn scan(
         .flat_map(|layer| layer.into_iter())
         .collect();
 
-    let analysis_map: HashMap<&str, &FunctionAnalysis> =
-        analyses.iter().map(|a| (a.name.as_str(), a)).collect();
+    // str-fuhw: key analysis lookups by the same qualified ID that
+    // `behavior::CallGraph::from_analyses` uses as `function_id`. Without
+    // matching key formats every test_order entry would miss the map for
+    // analyses with `source_file` populated (the production path).
+    let analysis_qids: Vec<String> = analyses
+        .iter()
+        .map(crate::behavior::node_id_for_analysis)
+        .collect();
+    let analysis_map: HashMap<&str, &FunctionAnalysis> = analysis_qids
+        .iter()
+        .zip(analyses.iter())
+        .map(|(qid, a)| (qid.as_str(), a))
+        .collect();
 
     let mut behavior_maps: HashMap<String, BehaviorMap> = HashMap::new();
     let mut function_results: Vec<FunctionResult> = Vec::new();
@@ -1226,12 +1237,18 @@ pub async fn scan(
         }
 
         // Try loading a cached behavior map for callees that aren't yet in memory.
+        // str-fuhw: iterate over `callees` (qualified IDs from the call graph)
+        // rather than `analysis.dependencies` (bare `dep.symbol`) so the
+        // prefetch stores entries under the same key the mocking step
+        // looks up at line 1255 below. Cache lookups continue to use the
+        // qualified ID; on-disk cache layout invalidates on first run
+        // after the str-fuhw upgrade (intentional).
         if let Some(ref cache) = config.cache {
-            for dep in &analysis.dependencies {
-                if !behavior_maps.contains_key(&dep.symbol)
-                    && let Ok(Some(cached)) = cache.load(&dep.symbol)
+            for callee in &callees {
+                if !behavior_maps.contains_key(callee)
+                    && let Ok(Some(cached)) = cache.load(callee)
                 {
-                    behavior_maps.insert(dep.symbol.clone(), cached);
+                    behavior_maps.insert(callee.clone(), cached);
                 }
             }
         }
@@ -2755,8 +2772,17 @@ pub async fn parallel_scan_with_progress(
         (all_layers, HashSet::new())
     };
 
-    let analysis_map: HashMap<&str, &FunctionAnalysis> =
-        analyses.iter().map(|a| (a.name.as_str(), a)).collect();
+    // str-fuhw: key by qualified ID so dup-named analyses across files
+    // don't collide. See identical site in `scan` for rationale.
+    let analysis_qids: Vec<String> = analyses
+        .iter()
+        .map(crate::behavior::node_id_for_analysis)
+        .collect();
+    let analysis_map: HashMap<&str, &FunctionAnalysis> = analysis_qids
+        .iter()
+        .zip(analyses.iter())
+        .map(|(qid, a)| (qid.as_str(), a))
+        .collect();
 
     let effective_parallelism = config.policy.effective_workers(config.parallelism).max(1);
     // Persistent pool reused across layers; track peak count and total idle reaps.
@@ -3107,13 +3133,19 @@ pub async fn parallel_scan_with_progress(
             );
 
             // Try loading cached behavior maps for callees not yet in memory.
+            // str-fuhw: iterate over `callees` (qualified IDs from the
+            // call graph) instead of `analysis.dependencies` (bare
+            // `dep.symbol`) so prefetched entries land under the same
+            // key the mocking step looks up later. Cache hits are
+            // best-effort; on-disk layout invalidates on first run after
+            // the str-fuhw upgrade.
             if let Some(ref cache) = config.cache {
                 let mut maps = behavior_maps.lock().await;
-                for dep in &analysis.dependencies {
-                    if !maps.contains_key(&dep.symbol)
-                        && let Ok(Some(cached)) = cache.load(&dep.symbol)
+                for callee in &callees {
+                    if !maps.contains_key(callee)
+                        && let Ok(Some(cached)) = cache.load(callee)
                     {
-                        maps.insert(dep.symbol.clone(), cached);
+                        maps.insert(callee.clone(), cached);
                     }
                 }
                 drop(maps);
@@ -4317,12 +4349,22 @@ pub fn format_dry_run_plan(
         "Estimated time: <={total_estimate_secs}s ({selected_layer_count} layer(s) x {timeout_secs}s timeout)\n",
     ));
 
-    // Build analysis lookup.
-    let analysis_map: HashMap<&str, &FunctionAnalysis> =
-        analyses.iter().map(|a| (a.name.as_str(), a)).collect();
+    // str-fuhw: key by qualified ID so dup-named analyses across files
+    // don't collide. See identical site in `scan` for rationale.
+    let analysis_qids: Vec<String> = analyses
+        .iter()
+        .map(crate::behavior::node_id_for_analysis)
+        .collect();
+    let analysis_map: HashMap<&str, &FunctionAnalysis> = analysis_qids
+        .iter()
+        .zip(analyses.iter())
+        .map(|(qid, a)| (qid.as_str(), a))
+        .collect();
 
-    // All function names in the scan set.
-    let scan_set: HashSet<&str> = analyses.iter().map(|a| a.name.as_str()).collect();
+    // str-fuhw: scan_set tracks qualified IDs as well so dependency
+    // labelling and cross-stratum mock attribution don't conflate
+    // duplicate-named functions across files.
+    let scan_set: HashSet<&str> = analysis_qids.iter().map(String::as_str).collect();
 
     // Functions in selected layers (for cross-stratum mock labelling).
     let selected_set: HashSet<&str> = selected_layers
@@ -4349,6 +4391,18 @@ pub fn format_dry_run_plan(
                 None => continue,
             };
 
+            // str-fuhw: `func_name` is a qualified ID on production paths.
+            // Show the bare name in the signature line and append the file
+            // path so dry-run output stays compact while still
+            // disambiguating duplicate-named functions across files.
+            let (func_file, display_name) =
+                crate::behavior::split_qualified_id(func_name);
+            let location_suffix = if func_file.is_empty() {
+                String::new()
+            } else {
+                format!("  [{func_file}]")
+            };
+
             // Format function signature.
             let params_str: Vec<String> = analysis
                 .params
@@ -4357,10 +4411,11 @@ pub fn format_dry_run_plan(
                 .collect();
             let ret_str = format_type(&analysis.return_type);
             out.push_str(&format!(
-                "  {}({}) -> {}\n",
-                func_name,
+                "  {}({}) -> {}{}\n",
+                display_name,
                 params_str.join(", "),
                 ret_str,
+                location_suffix,
             ));
 
             // Branch count.
@@ -4374,16 +4429,20 @@ pub fn format_dry_run_plan(
                 .map(|c| c.as_str())
                 .collect();
 
+            // Show callees by bare name so the dependency line stays
+            // readable; full qualified IDs already appear in each
+            // function's location suffix above.
             let deps_str = if internal_deps.is_empty() {
                 "none".to_string()
             } else {
                 internal_deps
                     .iter()
                     .map(|d| {
+                        let (_, dep_display) = crate::behavior::split_qualified_id(d);
                         if selected_set.contains(d) {
-                            format!("{d} (behavior-mock)")
+                            format!("{dep_display} (behavior-mock)")
                         } else {
-                            format!("{d} (outside stratum — auto-mock)")
+                            format!("{dep_display} (outside stratum — auto-mock)")
                         }
                     })
                     .collect::<Vec<_>>()
@@ -5974,6 +6033,98 @@ mod tests {
         assert!(plan.contains("Layer 1"));
         assert!(plan.contains("leaf"));
         assert!(plan.contains("leaf (behavior-mock)"));
+    }
+
+    /// str-fuhw regression: two Go files each defining `Write` must
+    /// surface as two distinct targets with their own file paths in the
+    /// dry-run plan. Before the fix, scan internal maps (`file_map`,
+    /// `analysis_map`) and `behavior::CallGraph::from_analyses` keyed on
+    /// the bare function name; the second `Write` overwrote the first,
+    /// so only one of the two ever appeared in `test_order` and the
+    /// dry-run plan reported a single function with one file path.
+    ///
+    /// This test exercises the qualified-ID flow through:
+    /// - `behavior::CallGraph::from_analyses` (must produce two nodes)
+    /// - `format_dry_run_plan` (must list both `Write` entries with
+    ///   distinct file location suffixes)
+    /// - `analysis_map` keyed by qualified ID (must lookup both)
+    /// - `scan_set` keyed by qualified ID (no collapse).
+    #[test]
+    fn dry_run_plan_distinguishes_duplicate_bare_names_across_go_files() {
+        const FILE_A: &str = "src/pkg/a/io.go";
+        const FILE_B: &str = "src/pkg/b/io.go";
+        const FUNC_NAME: &str = "Write";
+
+        // Two analyses sharing the bare name `Write`, each carrying its
+        // own `source_file` so the qualified node ID becomes
+        // `"<file>::Write"` and the call graph keeps them distinct.
+        let mut write_a = make_analysis(FUNC_NAME, vec![]);
+        write_a.source_file = Some(FILE_A.to_string());
+        let mut write_b = make_analysis(FUNC_NAME, vec![]);
+        write_b.source_file = Some(FILE_B.to_string());
+        let analyses = vec![write_a, write_b];
+
+        // file_map is keyed by qualified ID, mirroring the production
+        // wiring in `rebuild_analyses_from_registry` (str-fuhw).
+        let mut file_map = HashMap::new();
+        file_map.insert(format!("{FILE_A}::{FUNC_NAME}"), FILE_A.to_string());
+        file_map.insert(format!("{FILE_B}::{FUNC_NAME}"), FILE_B.to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 100,
+            seed: None,
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+        };
+
+        let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
+
+        // Both functions must be listed.
+        let write_count = plan.matches("Write(").count();
+        assert_eq!(
+            write_count, 2,
+            "two Write functions in different files should appear as two \
+             dry-run plan entries; got plan:\n{plan}",
+        );
+
+        // Each must carry its own file location suffix.
+        assert!(
+            plan.contains(&format!("[{FILE_A}]")),
+            "plan should disambiguate the {FILE_A} Write via location suffix; \
+             got plan:\n{plan}",
+        );
+        assert!(
+            plan.contains(&format!("[{FILE_B}]")),
+            "plan should disambiguate the {FILE_B} Write via location suffix; \
+             got plan:\n{plan}",
+        );
+
+        // Plan summary must count two functions across two files.
+        assert!(
+            plan.contains("2 function(s) across 2 file(s)"),
+            "plan summary should report 2 functions, 2 files; got plan:\n{plan}",
+        );
     }
 
     #[test]
