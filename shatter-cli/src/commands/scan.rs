@@ -404,37 +404,11 @@ pub(crate) async fn run_scan(
         analyzable_files.len(),
     );
 
-    // Collect analyses and file map from the registry.
-    let mut all_analyses = Vec::new();
-    let mut file_map: HashMap<String, String> = HashMap::new();
-
-    for entry in registry.entries() {
-        // Skip non-exported functions unless --all is specified.
-        if !all_functions && !entry.exported {
-            continue;
-        }
-
-        file_map.insert(
-            entry.name.clone(),
-            entry.file_path.to_string_lossy().into_owned(),
-        );
-        all_analyses.push(shatter_core::protocol::FunctionAnalysis {
-            name: entry.name.clone(),
-            params: entry.params.clone(),
-            return_type: entry.return_type.clone(),
-            branches: vec![],
-            dependencies: entry.dependencies.clone(),
-            exported: entry.exported,
-            start_line: entry.start_line,
-            end_line: entry.end_line,
-            literals: vec![],
-            crypto_boundaries: vec![],
-            loops: vec![],
-            source_file: None,
-            adapter_hints: vec![],
-            invocation_model: shatter_core::protocol::InvocationModel::Direct,
-        });
-    }
+    // Collect analyses and file map from the registry. Pulls full analyses
+    // (branches/literals/loops/source_file/adapter_hints/invocation_model)
+    // from the registry rather than rebuilding empty placeholders — see
+    // str-jeen.45.
+    let (mut all_analyses, file_map) = rebuild_analyses_from_registry(&registry, all_functions);
 
     // Filter out functions with unexecutable parameter types.
     let mut skipped_for_executability: Vec<SkippedFunction> = Vec::new();
@@ -996,6 +970,71 @@ pub(crate) async fn run_scan(
     Ok(())
 }
 
+/// Rebuild full `FunctionAnalysis` records from a [`FunctionRegistry`] for
+/// scan-orchestrator consumption.
+///
+/// `FunctionEntry` is a summary view: it stores `branch_count` but discards
+/// the underlying `branches`, `literals`, `loops`, `source_file`,
+/// `adapter_hints`, and `invocation_model` from the original
+/// `FunctionAnalysis`. The scan orchestrator and downstream dry-run report
+/// require the full record. We rehydrate from the registry's preserved
+/// analyses (`registry.analysis(qn)`); registries built without analyses
+/// (e.g. `FunctionRegistry::from_raw` in tests) fall back to a synthesized
+/// analysis that mirrors the prior, lossy behavior — preserving test
+/// compatibility while fixing real-world scans (str-jeen.45).
+///
+/// Returns `(analyses, file_map)` where `file_map` maps function name →
+/// source file path.
+pub(crate) fn rebuild_analyses_from_registry(
+    registry: &shatter_core::batch_analyze::FunctionRegistry,
+    all_functions: bool,
+) -> (
+    Vec<shatter_core::protocol::FunctionAnalysis>,
+    HashMap<String, String>,
+) {
+    let mut all_analyses = Vec::new();
+    let mut file_map: HashMap<String, String> = HashMap::new();
+
+    for entry in registry.entries() {
+        if !all_functions && !entry.exported {
+            continue;
+        }
+
+        file_map.insert(
+            entry.name.clone(),
+            entry.file_path.to_string_lossy().into_owned(),
+        );
+
+        let qualified =
+            shatter_core::batch_analyze::FunctionRegistry::qualified_name(
+                &entry.file_path,
+                &entry.name,
+            );
+        let analysis = match registry.analysis(&qualified) {
+            Some(a) => a.clone(),
+            None => shatter_core::protocol::FunctionAnalysis {
+                name: entry.name.clone(),
+                params: entry.params.clone(),
+                return_type: entry.return_type.clone(),
+                branches: vec![],
+                dependencies: entry.dependencies.clone(),
+                exported: entry.exported,
+                start_line: entry.start_line,
+                end_line: entry.end_line,
+                literals: vec![],
+                crypto_boundaries: entry.crypto_boundaries.clone(),
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: shatter_core::protocol::InvocationModel::Direct,
+            },
+        };
+        all_analyses.push(analysis);
+    }
+
+    (all_analyses, file_map)
+}
+
 /// Print a markdown-style summary report to stdout, rendered with termimad when `use_color` is true.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_summary_report(
@@ -1145,4 +1184,137 @@ pub(crate) fn write_analysis_report(
     log::info!("Wrote analysis report to {}", summary_path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shatter_core::batch_analyze::{FunctionEntry, FunctionRegistry};
+    use shatter_core::protocol::{
+        BranchInfo, BranchType, FunctionAnalysis, InvocationModel,
+    };
+    use shatter_core::types::{ParamInfo, TypeInfo};
+
+    /// str-jeen.45 regression: a Go function with a `range` loop + an `if`
+    /// branch must report two branches in the dry-run plan, not zero. The
+    /// fix lives in `rebuild_analyses_from_registry`, which now reads the
+    /// preserved `FunctionAnalysis` from the registry instead of
+    /// synthesizing a stripped-down record with `branches: vec![]`.
+    #[test]
+    fn rebuild_analyses_preserves_go_range_and_if_branches() {
+        const GO_FILE_PATH: &str = "/src/loop_with_branch.go";
+        const FUNCTION_NAME: &str = "ScanItems";
+        const RANGE_LOOP_LINE: u32 = 3;
+        const IF_BRANCH_LINE: u32 = 4;
+        const EXPECTED_BRANCH_COUNT: usize = 2;
+
+        let analysis = FunctionAnalysis {
+            name: FUNCTION_NAME.into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "items".into(),
+                typ: TypeInfo::Array {
+                    element: Box::new(TypeInfo::Int),
+                },
+                type_name: None,
+            }],
+            branches: vec![
+                BranchInfo {
+                    id: 0,
+                    line: RANGE_LOOP_LINE,
+                    condition_text: "for _, v := range items".into(),
+                    condition: None,
+                    branch_type: BranchType::For,
+                },
+                BranchInfo {
+                    id: 1,
+                    line: IF_BRANCH_LINE,
+                    condition_text: "v > 0".into(),
+                    condition: None,
+                    branch_type: BranchType::If,
+                },
+            ],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 8,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        };
+
+        let entry = FunctionEntry {
+            file_path: PathBuf::from(GO_FILE_PATH),
+            name: FUNCTION_NAME.into(),
+            exported: true,
+            params: analysis.params.clone(),
+            return_type: analysis.return_type.clone(),
+            dependencies: vec![],
+            crypto_boundaries: vec![],
+            branch_count: EXPECTED_BRANCH_COUNT,
+            start_line: analysis.start_line,
+            end_line: analysis.end_line,
+        };
+
+        let qualified = FunctionRegistry::qualified_name(
+            &PathBuf::from(GO_FILE_PATH),
+            FUNCTION_NAME,
+        );
+        let mut index = HashMap::new();
+        index.insert(qualified.clone(), 0);
+        let mut analyses = HashMap::new();
+        analyses.insert(qualified, analysis);
+        let registry = FunctionRegistry::from_raw_with_analyses(
+            vec![entry],
+            index,
+            analyses,
+        );
+
+        let (rebuilt, file_map) = rebuild_analyses_from_registry(&registry, false);
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(
+            rebuilt[0].branches.len(),
+            EXPECTED_BRANCH_COUNT,
+            "branches must survive registry round-trip; \
+             scan dry-run reported `Branches: 0` before str-jeen.45 fix",
+        );
+        assert!(matches!(rebuilt[0].branches[0].branch_type, BranchType::For));
+        assert!(matches!(rebuilt[0].branches[1].branch_type, BranchType::If));
+        assert_eq!(
+            file_map.get(FUNCTION_NAME).map(String::as_str),
+            Some(GO_FILE_PATH),
+        );
+    }
+
+    /// Registries built without analyses (e.g. via `FunctionRegistry::from_raw`)
+    /// fall back to a synthesized analysis. The synthesized record has
+    /// `branches: vec![]`, matching the prior behavior — this preserves
+    /// compatibility with tests in `shatter-core` that build registries by
+    /// hand.
+    #[test]
+    fn rebuild_analyses_falls_back_when_registry_lacks_analyses() {
+        let entry = FunctionEntry {
+            file_path: PathBuf::from("/src/a.ts"),
+            name: "raw".into(),
+            exported: true,
+            params: vec![],
+            return_type: TypeInfo::Int,
+            dependencies: vec![],
+            crypto_boundaries: vec![],
+            branch_count: 7,
+            start_line: 1,
+            end_line: 10,
+        };
+        let mut index = HashMap::new();
+        index.insert("/src/a.ts::raw".to_string(), 0);
+        let registry = FunctionRegistry::from_raw(vec![entry], index);
+
+        let (rebuilt, _) = rebuild_analyses_from_registry(&registry, false);
+        assert_eq!(rebuilt.len(), 1);
+        assert!(rebuilt[0].branches.is_empty());
+        assert_eq!(rebuilt[0].name, "raw");
+    }
 }

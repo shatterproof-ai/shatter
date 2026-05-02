@@ -48,6 +48,15 @@ pub struct FunctionRegistry {
     entries: Vec<FunctionEntry>,
     /// Index from qualified name to position in entries vec.
     index: HashMap<String, usize>,
+    /// Original `FunctionAnalysis` per qualified name. `FunctionEntry` is a
+    /// summary view (branch_count, crypto_boundaries) used by the call graph
+    /// and core-sample paths; richer fields needed downstream by the scan
+    /// orchestrator (branches, literals, loops, source_file, adapter_hints,
+    /// invocation_model) are preserved here so that callers can rehydrate a
+    /// full `FunctionAnalysis` instead of synthesizing one with empty
+    /// metadata. May be empty for registries built via [`from_raw`] in
+    /// tests; consumers must tolerate a missing entry.
+    analyses: HashMap<String, FunctionAnalysis>,
 }
 
 impl FunctionRegistry {
@@ -56,7 +65,34 @@ impl FunctionRegistry {
     /// This is primarily useful in tests that need to build a registry without
     /// going through the async `batch_analyze` pipeline.
     pub fn from_raw(entries: Vec<FunctionEntry>, index: HashMap<String, usize>) -> Self {
-        Self { entries, index }
+        Self {
+            entries,
+            index,
+            analyses: HashMap::new(),
+        }
+    }
+
+    /// Construct a registry from pre-built entries, index, and an analyses
+    /// map keyed by qualified name. Allows tests that exercise the
+    /// rehydration path to seed full `FunctionAnalysis` records.
+    pub fn from_raw_with_analyses(
+        entries: Vec<FunctionEntry>,
+        index: HashMap<String, usize>,
+        analyses: HashMap<String, FunctionAnalysis>,
+    ) -> Self {
+        Self {
+            entries,
+            index,
+            analyses,
+        }
+    }
+
+    /// Look up the original `FunctionAnalysis` produced by the frontend for
+    /// the entry with the given qualified name (`file_path::function_name`).
+    /// Returns `None` for registries built without analyses (e.g. `from_raw`
+    /// in tests) or for entries that lack a recorded analysis.
+    pub fn analysis(&self, qualified_name: &str) -> Option<&FunctionAnalysis> {
+        self.analyses.get(qualified_name)
     }
 
     /// Number of functions in the registry.
@@ -122,6 +158,7 @@ pub async fn batch_analyze(
 ) -> Result<FunctionRegistry, BatchAnalyzeError> {
     let mut entries = Vec::new();
     let mut index = HashMap::new();
+    let mut analyses_by_qn: HashMap<String, FunctionAnalysis> = HashMap::new();
 
     // Load crypto registry once for classifying dependencies across all files.
     let crypto_registry = match CryptoRegistry::load() {
@@ -138,6 +175,7 @@ pub async fn batch_analyze(
             && let Ok(Some(cached_functions)) = cache.lookup(file_path)
         {
             for func in cached_functions {
+                let analysis_for_storage = func.clone();
                 let entry = function_entry_from_analysis(
                     file_path.clone(),
                     func,
@@ -146,7 +184,8 @@ pub async fn batch_analyze(
                 );
                 let qualified = FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
                 let idx = entries.len();
-                index.insert(qualified, idx);
+                index.insert(qualified.clone(), idx);
+                analyses_by_qn.insert(qualified, analysis_for_storage);
                 entries.push(entry);
             }
             continue;
@@ -212,6 +251,7 @@ pub async fn batch_analyze(
         }
 
         for func in functions {
+            let analysis_for_storage = func.clone();
             let entry = function_entry_from_analysis(
                 file_path.clone(),
                 func,
@@ -220,12 +260,17 @@ pub async fn batch_analyze(
             );
             let qualified = FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
             let idx = entries.len();
-            index.insert(qualified, idx);
+            index.insert(qualified.clone(), idx);
+            analyses_by_qn.insert(qualified, analysis_for_storage);
             entries.push(entry);
         }
     }
 
-    Ok(FunctionRegistry { entries, index })
+    Ok(FunctionRegistry {
+        entries,
+        index,
+        analyses: analyses_by_qn,
+    })
 }
 
 /// Convert a protocol [`FunctionAnalysis`] into a [`FunctionEntry`],
@@ -499,7 +544,7 @@ mod tests {
         );
         entries.push(e3);
 
-        let registry = FunctionRegistry { entries, index };
+        let registry = FunctionRegistry::from_raw(entries, index);
 
         assert_eq!(registry.len(), 3);
         assert!(!registry.is_empty());
@@ -525,7 +570,7 @@ mod tests {
         index.insert("src/app.ts::funcA".to_string(), 0);
         entries.push(entry);
 
-        let registry = FunctionRegistry { entries, index };
+        let registry = FunctionRegistry::from_raw(entries, index);
 
         let found = registry.get("src/app.ts::funcA");
         assert!(found.is_some());
@@ -559,7 +604,7 @@ mod tests {
             });
         }
 
-        let registry = FunctionRegistry { entries, index };
+        let registry = FunctionRegistry::from_raw(entries, index);
 
         let a_funcs = registry.functions_in_file(Path::new("src/a.ts"));
         assert_eq!(a_funcs.len(), 2);
@@ -596,7 +641,7 @@ mod tests {
             });
         }
 
-        let registry = FunctionRegistry { entries, index };
+        let registry = FunctionRegistry::from_raw(entries, index);
         let exported = registry.exported_functions();
         assert_eq!(exported.len(), 2);
         assert!(exported.iter().all(|e| e.exported));
@@ -604,10 +649,7 @@ mod tests {
 
     #[test]
     fn empty_function_registry() {
-        let registry = FunctionRegistry {
-            entries: vec![],
-            index: HashMap::new(),
-        };
+        let registry = FunctionRegistry::from_raw(vec![], HashMap::new());
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
         assert!(registry.entries().is_empty());
