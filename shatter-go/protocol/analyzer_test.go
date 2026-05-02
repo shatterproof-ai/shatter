@@ -1508,3 +1508,32 @@ func NewService(name string) Service {
 		t.Errorf("ReturnType.Kind empty — sibling types did not resolve")
 	}
 }
+
+// TestAnalyzeFile_ExcludesSyntheticPackageInit (str-qo1.8) verifies that
+// `func init()` declarations are not surfaced as executable targets, while
+// regular free functions in the same file still are. Multiple init
+// declarations across the package must all be filtered.
+func TestAnalyzeFile_ExcludesSyntheticPackageInit(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("init_funcs.go"), "")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	for _, fa := range results {
+		if fa.Name == "init" {
+			t.Errorf("AnalyzeFile surfaced synthetic package init as a target")
+		}
+	}
+	var sawPostInit bool
+	for _, fa := range results {
+		if fa.Name == "PostInit" {
+			sawPostInit = true
+		}
+	}
+	if !sawPostInit {
+		names := make([]string, 0, len(results))
+		for _, r := range results {
+			names = append(names, r.Name)
+		}
+		t.Errorf("AnalyzeFile dropped PostInit; got names: %s", strings.Join(names, ","))
+	}
+}

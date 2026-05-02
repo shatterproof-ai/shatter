@@ -166,3 +166,120 @@ func keysOf(m map[string]struct{}) []string {
 	}
 	return out
 }
+
+// TestBuildWrapperTargets_ExcludesSyntheticInit (str-qo1.8) verifies that
+// `func init()` declarations across multiple files in the same package are
+// excluded from the wrapper target list. Without the fix, a package with N
+// init functions produced N WrapperTargets all sharing the ID
+// "<pkgPath>:init", which generated a wrapper file with duplicate switch
+// cases that calls init() directly — both Go-illegal.
+func TestBuildWrapperTargets_ExcludesSyntheticInit(t *testing.T) {
+	const fileA = `package multinit
+
+var seedA int
+
+func init() { seedA = 1 }
+
+func Hello() string { return "hi" }
+`
+	const fileB = `package multinit
+
+var seedB int
+
+func init() { seedB = 2 }
+
+func init() { seedB += 10 }
+`
+	const fileC = `package multinit
+
+func init() { seedA += seedB }
+`
+	fset := token.NewFileSet()
+	parsed := make([]*ast.File, 0, 3)
+	for _, src := range []string{fileA, fileB, fileC} {
+		file, err := parser.ParseFile(fset, "", src, 0)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		parsed = append(parsed, file)
+	}
+	info := &types.Info{
+		Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("multinit", fset, parsed, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "multinit",
+		PkgPath:   "example.com/multinit",
+		Syntax:    parsed,
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+
+	// No init targets and no duplicate IDs.
+	seen := make(map[string]int)
+	for _, target := range targets {
+		if strings.HasSuffix(target.ID, ":init") {
+			t.Errorf("BuildWrapperTargets surfaced synthetic init target: %q", target.ID)
+		}
+		seen[target.ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate WrapperTarget ID %q (count=%d)", id, n)
+		}
+	}
+	if len(targets) != 1 || targets[0].SymbolName != "Hello" {
+		t.Errorf("expected single Hello target, got: %+v", targets)
+	}
+}
+
+// TestGenerateWrapper_NoInitSwitchCaseFromAST (str-qo1.8) closes the loop
+// at the source-generation level: the wrapper produced from a package with
+// multiple init declarations must not contain a `case "...:init":` line and
+// must not call init() directly.
+func TestGenerateWrapper_NoInitSwitchCaseFromAST(t *testing.T) {
+	const src = `package multinit
+
+func init() {}
+func init() {}
+func Hello() string { return "" }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("multinit", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "multinit",
+		PkgPath:   "example.com/multinit",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	out := GenerateWrapper("multinit", targets, nil)
+
+	if strings.Contains(out, ":init\"") {
+		t.Errorf("generated wrapper contains an init switch case:\n%s", out)
+	}
+	if strings.Contains(out, "init()") {
+		t.Errorf("generated wrapper calls init() directly:\n%s", out)
+	}
+}

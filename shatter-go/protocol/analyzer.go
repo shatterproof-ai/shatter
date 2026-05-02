@@ -278,6 +278,15 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		if !declarationBelongsToTargetFile(fset, fn, absoluteFilePath) {
 			continue
 		}
+		// Skip synthetic package-init functions. Go forbids invoking `init`
+		// directly, and a package may declare multiple `init` functions
+		// across files; surfacing them as targets produces uncompilable
+		// wrappers with duplicate switch cases (str-qo1.8). The analyzer
+		// is the upstream gate so init never reaches scan/explore as an
+		// executable target — only as an internal/unsupported file fact.
+		if isSyntheticPackageInitDecl(fn) {
+			continue
+		}
 		if functionName != "" && fn.Name.Name != functionName {
 			continue
 		}
@@ -391,6 +400,21 @@ func findGoModuleRoot(startDir string) (string, bool) {
 		}
 		current = parent
 	}
+}
+
+// isSyntheticPackageInitDecl reports whether fn is a Go package-init
+// function (`func init()` at package scope with no receiver). These
+// declarations cannot be invoked directly as targets (str-qo1.8). The
+// wrapper layer carries an identical predicate; both gates exist
+// because callers can reach either layer independently.
+func isSyntheticPackageInitDecl(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		return false
+	}
+	return fn.Name.Name == "init"
 }
 
 // declarationBelongsToTargetFile reports whether the function declaration's
