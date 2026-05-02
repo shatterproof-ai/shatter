@@ -540,6 +540,123 @@ func (s *SSEWriter) Flush() { /* no-op */ }
 	}
 }
 
+// TestGeneratedWrapperCompilesUnnamedAndBlankParams is the str-qo1.7
+// regression: targets whose source signature uses unnamed parameters
+// (`func F(int, string)`) or the blank identifier
+// (`func (r *R) F(_ int, _ string)`) must produce a wrapper file that
+// compiles. Pre-fix the wrapper emitted `var _ int`, `json.Unmarshal(_)`
+// and `_recv.F(_, _)` — all rejected with "cannot use _ as value or
+// type". Post-fix the wrapper-local names are stable `_p<index>`
+// identifiers.
+func TestGeneratedWrapperCompilesUnnamedAndBlankParams(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package blank
+
+type Extractor struct{}
+
+// ExtractFunction uses the blank identifier for both parameters; the
+// wrapper must not reference _ on the call site.
+func (e *Extractor) ExtractFunction(_ int, _ string) string { return "ok" }
+
+// AddUnnamed declares two truly unnamed parameters.
+func AddUnnamed(int, int) int { return 0 }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "blank.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write blank.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/blank\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	// Names supplied here mirror what extractWrapperParams now produces
+	// for unnamed/blank parameters. Hard-coding _p0/_p1 here also locks
+	// the contract: any change to the synthetic-name shape will break
+	// this test along with the internal-test invariant.
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:            "example.com/blank:(*Extractor).ExtractFunction",
+			SymbolName:    "ExtractFunction",
+			Kind:          wrapper.TargetKindMethod,
+			ReceiverType:  "Extractor",
+			IsPointerRecv: true,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "_p0", GoType: "int"},
+				{Name: "_p1", GoType: "string"},
+			},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+		{
+			ID:         "example.com/blank:AddUnnamed",
+			SymbolName: "AddUnnamed",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "_p0", GoType: "int"},
+				{Name: "_p1", GoType: "int"},
+			},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "blank", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	src, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+	// Static guard: the generated file must contain no reference to the
+	// blank identifier as a value (parameter local, address-of, or call
+	// argument). The patterns below cover the three failure shapes from
+	// the bug report.
+	bannedPatterns := []string{
+		"var _ ",
+		"&_)",
+		"(_, _)",
+	}
+	for _, banned := range bannedPatterns {
+		if strings.Contains(string(src), banned) {
+			t.Errorf("generated wrapper contains banned pattern %q; source:\n%s", banned, src)
+		}
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), src)
+	}
+	if strings.Contains(stderr.String(), "cannot use _ as value or type") {
+		t.Errorf("build emitted blank-identifier diagnostic:\nstderr: %s", stderr.String())
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 
