@@ -413,9 +413,18 @@ func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
 // str-jeen.33 — without this, the generated wrapper file declares variables
 // of qualified types (`context.Context`, `*pgx.Conn`) without ever importing
 // the corresponding packages.
+//
+// str-qo1.13: when info.Types lacks an entry for expr (e.g. because the
+// caller initialized only Defs/Uses, or because the type checker did not
+// record this particular type expression), the function still walks the AST
+// for *ast.SelectorExpr nodes and consults info.Uses to recover package
+// imports. Without this, selector type expressions (e.g. http.ResponseWriter)
+// would be printed by wrapperASTTypeString verbatim while the corresponding
+// package import (`net/http`) was silently dropped, producing a wrapper that
+// references an undefined package short name and fails to compile.
 func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string, importSet map[string]struct{}) string {
 	if info != nil {
-		if tv, ok := info.Types[expr]; ok {
+		if tv, ok := info.Types[expr]; ok && tv.Type != nil {
 			qualifier := func(p *types.Package) string {
 				if p == nil || p.Name() == pkgName {
 					return ""
@@ -428,7 +437,45 @@ func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string, importSet ma
 			return types.TypeString(tv.Type, qualifier)
 		}
 	}
+	if info != nil && importSet != nil {
+		collectSelectorImports(expr, info, importSet)
+	}
 	return wrapperASTTypeString(expr)
+}
+
+// collectSelectorImports walks expr looking for selector-type expressions
+// (`pkg.Type`) and, for each one, records the import path of the imported
+// package into importSet via info.Uses. It is the AST-fallback complement to
+// the qualifier-driven import collection performed when info.Types is
+// populated. Cross-ref: str-qo1.13.
+func collectSelectorImports(expr ast.Expr, info *types.Info, importSet map[string]struct{}) {
+	if expr == nil || info == nil || importSet == nil {
+		return
+	}
+	ast.Inspect(expr, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		obj := info.Uses[ident]
+		if obj == nil {
+			obj = info.Defs[ident]
+		}
+		pkgName, ok := obj.(*types.PkgName)
+		if !ok || pkgName == nil {
+			return true
+		}
+		imported := pkgName.Imported()
+		if imported == nil {
+			return true
+		}
+		importSet[imported.Path()] = struct{}{}
+		return true
+	})
 }
 
 func wrapperASTExprString(expr ast.Expr) string {
