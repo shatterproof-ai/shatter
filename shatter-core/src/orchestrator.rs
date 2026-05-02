@@ -295,6 +295,32 @@ pub enum TerminationReason {
     McdcComplete,
 }
 
+/// str-nqrz: Compute the per-fuzz-phase execution cap clamped by the
+/// remaining global execution budget.
+///
+/// The orchestrator fires a fuzz phase on coverage plateau and previously
+/// granted it up to `DEFAULT_FUZZ_MAX_EXECUTIONS` executions, ignoring the
+/// caller's `max_executions` (the user's `--max-iterations` cap once the CLI
+/// stopped multiplying it by 5). With a small user cap (e.g. 5), a single
+/// fuzz phase could add up to a thousand additional executions on top.
+///
+/// This helper returns the smaller of the configured per-fuzz-phase cap and
+/// the remaining global budget. When `global_cap` is `None`, the configured
+/// cap is returned unchanged (unbounded global budget).
+pub(crate) fn clamp_fuzz_budget(
+    fuzz_max_executions_raw: u32,
+    global_cap: Option<usize>,
+    total_executions: usize,
+) -> u32 {
+    match global_cap {
+        Some(cap) => {
+            let remaining = (cap as u32).saturating_sub(total_executions as u32);
+            fuzz_max_executions_raw.min(remaining)
+        }
+        None => fuzz_max_executions_raw,
+    }
+}
+
 /// Summary of a concolic exploration session.
 #[derive(Debug)]
 pub struct ExploreResult {
@@ -2052,10 +2078,21 @@ pub async fn explore(
                             .fuzz
                             .plateau_threshold
                             .unwrap_or(crate::config::DEFAULT_FUZZ_PLATEAU_THRESHOLD);
-                        let fuzz_max_executions = config
+                        let fuzz_max_executions_raw = config
                             .fuzz
                             .max_executions
                             .unwrap_or(crate::config::DEFAULT_FUZZ_MAX_EXECUTIONS);
+                        // str-nqrz: clamp the per-fuzz-phase execution cap by
+                        // the remaining global execution budget so a fuzz
+                        // phase entered late cannot blow past
+                        // `--max-iterations`. Without this, a plateau-induced
+                        // fuzz phase could add hundreds of executions on top
+                        // of a small user cap.
+                        let fuzz_max_executions = clamp_fuzz_budget(
+                            fuzz_max_executions_raw,
+                            config.max_executions,
+                            total_executions,
+                        );
                         let fuzz_timeout = std::time::Duration::from_secs(
                             config
                                 .fuzz
@@ -4119,6 +4156,90 @@ mod tests {
 
         assert_eq!(result.total_executions, 3);
         assert_eq!(result.termination_reason, TerminationReason::MaxExecutions);
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-nqrz regression: a small `--max-iterations`-style user cap must
+    /// be respected even when the orchestrator could otherwise enter a fuzz
+    /// phase on coverage plateau. Pre-fix, the CLI multiplied
+    /// `max_executions` by 5 and the fuzz phase drew from the full
+    /// `DEFAULT_FUZZ_MAX_EXECUTIONS=1000` budget on plateau, so a focused
+    /// run with `--max-iterations 5` reported >250 iterations.
+    #[test]
+    fn clamp_fuzz_budget_respects_global_cap() {
+        // Global cap 5, none used yet → fuzz can use at most 5.
+        assert_eq!(clamp_fuzz_budget(1000, Some(5), 0), 5);
+        // Global cap 5, 3 used → fuzz can use at most 2.
+        assert_eq!(clamp_fuzz_budget(1000, Some(5), 3), 2);
+        // Global cap reached → fuzz can use 0 (will terminate immediately).
+        assert_eq!(clamp_fuzz_budget(1000, Some(5), 5), 0);
+        // Global cap exceeded (defensive) → still 0 via saturating_sub.
+        assert_eq!(clamp_fuzz_budget(1000, Some(5), 7), 0);
+        // Configured fuzz cap below remaining budget → keep configured cap.
+        assert_eq!(clamp_fuzz_budget(10, Some(100), 0), 10);
+        // No global cap → keep configured cap.
+        assert_eq!(clamp_fuzz_budget(1000, None, 7), 1000);
+    }
+
+    /// str-nqrz regression: a focused concolic explore with a small user
+    /// cap (here `max_executions=5`) must never run more than 5 executions,
+    /// regardless of how many seeds are queued or whether plateau-driven
+    /// fuzz phases would otherwise extend the run. Pre-fix, the CLI granted
+    /// the orchestrator 5x headroom on `max_executions` and an
+    /// uncapped per-fuzz-phase budget of 1000, so a `--max-iterations 5`
+    /// run could report hundreds of iterations.
+    #[tokio::test]
+    async fn explore_honors_small_user_cap_with_many_seeds() {
+        let config = config_for_script("fixed-branch-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let user_cap: usize = 5;
+        let explore_config = ExploreConfig {
+            // Mirror the CLI configuration after str-nqrz: `max_executions`
+            // tracks the user iteration cap with no multiplier, and
+            // refinement / shrinking are disabled.
+            max_iterations: Some(user_cap),
+            max_executions: Some(user_cap),
+            plateau_threshold: 20,
+            refine_budget: None,
+            shrink_budget: 0,
+            ..Default::default()
+        };
+
+        // Many more seeds than the cap allows — the cap, not seed exhaustion,
+        // must determine when exploration stops.
+        let seed_count = 250;
+        let seeds: Vec<Vec<serde_json::Value>> = (0..seed_count)
+            .map(|i| vec![serde_json::json!(i)])
+            .collect();
+
+        let (result, _) = explore(
+            &mut frontend,
+            "f",
+            seeds,
+            vec![],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            &explore_config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("explore failed");
+
+        assert!(
+            result.total_executions <= user_cap,
+            "expected total_executions <= {user_cap}; got {} (termination={:?})",
+            result.total_executions,
+            result.termination_reason,
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }
