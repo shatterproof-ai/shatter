@@ -279,6 +279,12 @@ func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, typeArgs []
 
 // BuildWrapperTargets extracts a WrapperTarget for every function in pkg
 // (both free functions and methods).
+//
+// Synthetic package init functions are excluded (str-qo1.8). Go forbids
+// calling `init` directly, and a package may declare multiple `init`
+// functions across files; emitting them would both produce uncompilable
+// `init()` call sites and collide on a single switch case for
+// "<pkg>:init", making the wrapper file uncompilable.
 func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
 	if pkg == nil || pkg.TypesInfo == nil {
 		return nil
@@ -293,12 +299,28 @@ func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
 			if !ok || fn.Body == nil {
 				continue
 			}
+			if isSyntheticPackageInit(fn) {
+				continue
+			}
 			if t := buildWrapperTarget(fn, pkg); t != nil {
 				targets = append(targets, *t)
 			}
 		}
 	}
 	return targets
+}
+
+// isSyntheticPackageInit reports whether fn is a Go package-init function
+// (`func init()` at package scope with no receiver). These cannot be invoked
+// directly as targets — see BuildWrapperTargets and AnalyzeFile (str-qo1.8).
+func isSyntheticPackageInit(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		return false
+	}
+	return fn.Name.Name == "init"
 }
 
 func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget {
