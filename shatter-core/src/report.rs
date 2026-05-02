@@ -79,27 +79,42 @@ fn split_skipped_into_failed(
     let mut skipped_out = Vec::new();
     let mut failed_out = Vec::new();
     for s in skipped {
+        // str-fuhw: `s.function_name` is now a qualified ID
+        // (`"<file>::<name>"`) on production paths so duplicate-named
+        // functions across files don't collide. Strip the prefix here so
+        // the wire `function_name` field stays bare (str-tzbr contract);
+        // file_map lookups go through the qualified ID directly.
+        let (parsed_file, display_name) =
+            crate::behavior::split_qualified_id(&s.function_name);
+        let file_path = file_map
+            .get(&s.function_name)
+            .cloned()
+            .or_else(|| {
+                if parsed_file.is_empty() {
+                    None
+                } else {
+                    Some(parsed_file.to_string())
+                }
+            })
+            .unwrap_or_default();
         match s.category {
             SkipCategory::Error => {
                 failed_out.push(FailedFunctionReport {
-                    function_name: s.function_name.clone(),
-                    file_path: file_map
-                        .get(&s.function_name)
-                        .cloned()
-                        .unwrap_or_default(),
+                    function_name: display_name.to_string(),
+                    file_path,
                     reason: s.reason.clone(),
                 });
             }
             SkipCategory::Expected => {
                 skipped_out.push(SkippedFunctionReport {
-                    function_name: s.function_name.clone(),
+                    function_name: display_name.to_string(),
                     reason: s.reason.clone(),
                     category: "expected".into(),
                 });
             }
             SkipCategory::Unsupported => {
                 skipped_out.push(SkippedFunctionReport {
-                    function_name: s.function_name.clone(),
+                    function_name: display_name.to_string(),
                     reason: s.reason.clone(),
                     category: "unsupported".into(),
                 });
@@ -376,8 +391,15 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         0.0
     };
 
+    // str-fuhw: `result.function_name` may be a qualified ID
+    // (`"<file>::<name>"`) on production paths. Strip to the bare display
+    // name so the wire `function_name` field stays unchanged
+    // (str-tzbr contract). file_path is supplied by the caller via the
+    // qualified-ID-keyed file_map.
+    let (_qid_file, display_name) =
+        crate::behavior::split_qualified_id(&result.function_name);
     FunctionReport {
-        function_name: result.function_name.clone(),
+        function_name: display_name.to_string(),
         file_path: file_path.to_string(),
         branch_count: exploration.unique_paths,
         branches_covered: exploration.unique_paths,
