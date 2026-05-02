@@ -406,7 +406,12 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         memory_limit: Option<u64>,
 
-        /// Ignore existing spec file and force full re-exploration (no incremental reuse).
+        /// Force full re-exploration. Ignores any existing spec file (no
+        /// incremental reuse) and discards prior explore artifacts (per-target
+        /// `summary.json` and per-function JSON / resume-state sidecars under
+        /// `shatter-artifacts/explore-results/`) for the targets being explored
+        /// so resume detection cannot reuse stale results. Artifacts for other
+        /// targets are untouched.
         #[arg(long)]
         clean: bool,
 

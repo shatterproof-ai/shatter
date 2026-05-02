@@ -1075,6 +1075,34 @@ fn read_explore_summary(root: &Path, file: &str) -> Option<ExploreSummary> {
     parse_explore_summary(&path)
 }
 
+/// Path to the per-target artifact subdirectory (the directory containing
+/// `summary.json` plus per-function artifact JSON and resume-state sidecars
+/// for `file`).
+fn target_artifact_dir(root: &Path, file: &str) -> PathBuf {
+    root.join(sanitize_artifact_component(file))
+}
+
+/// Remove all explore artifacts associated with `file` under `root`. Used to
+/// implement `--clean` semantics for `shatter explore`: after this call,
+/// resume detection cannot find a prior summary, per-function artifact, or
+/// resume-state sidecar for the target.
+///
+/// Missing directories are not an error (idempotent). I/O failures are logged
+/// at debug level and otherwise ignored — `--clean` is best-effort cleanup
+/// and the subsequent run will overwrite or skip any leftover files anyway.
+fn clean_target_artifacts(root: &Path, file: &str) {
+    let dir = target_artifact_dir(root, file);
+    if !dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        log::debug!(
+            "Failed to remove explore artifacts at {} for --clean: {e}",
+            dir.display(),
+        );
+    }
+}
+
 /// Try to resume a completed function from a prior explore run.
 ///
 /// Returns the loaded `ObservationOutput` and wall time if **all** of the
@@ -4213,7 +4241,17 @@ pub(crate) async fn run_explore(
 
         // --- Resume detection (str-b2my.15): load prior summary and skip
         // functions that completed in an earlier run with a fresh fingerprint.
-        let prior_summary = read_explore_summary(&artifact_root, &file_str);
+        // str-060a: `--clean` forces fresh exploration. Discard prior artifacts
+        // for this target before resume detection so neither the summary nor
+        // any per-function artifact / resume-state sidecar can be reused.
+        if clean {
+            clean_target_artifacts(&artifact_root, &file_str);
+        }
+        let prior_summary = if clean {
+            None
+        } else {
+            read_explore_summary(&artifact_root, &file_str)
+        };
         let mut target_resumed_count: usize = 0;
 
         if let Some(ref prior) = prior_summary {
@@ -4251,7 +4289,12 @@ pub(crate) async fn run_explore(
             }
 
             // Check for partial resume state (ExploreState sidecar).
-            if let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func) {
+            // str-060a: `--clean` already removed the target artifact directory
+            // above, but keep the explicit gate so future code paths that add
+            // new resume sources can't silently bypass `--clean`.
+            if !clean
+                && let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func)
+            {
                 let paths_count = state.covered_paths.len();
                 explore_states.insert(work_index, state);
                 log::info!(
@@ -7493,6 +7536,142 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.covered_paths, state.covered_paths);
         assert_eq!(loaded.discovery_inputs, state.discovery_inputs);
+    }
+
+    // --- str-060a: --clean must wipe prior explore artifacts ---
+
+    use super::{clean_target_artifacts, target_artifact_dir};
+
+    #[test]
+    fn clean_target_artifacts_removes_summary_and_per_function_artifacts() {
+        // Regression for str-060a: a stale-artifact-then-clean-rerun must not
+        // leave any prior summary, per-function artifact, or resume-state
+        // sidecar on disk for the cleaned target. If any of these survive, the
+        // resume detection block at the top of the per-target explore loop
+        // would log "Found prior explore summary" and reuse stale results
+        // even when the user explicitly passed `--clean`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let file = "src/user.ts";
+
+        // Pre-populate a prior summary as a previous run would have written.
+        let summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: file.to_string(),
+            total_functions: 1,
+            completed: 1,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 1.0,
+            functions: vec![ExploreSummaryEntry {
+                function_name: "load".to_string(),
+                status: "completed".to_string(),
+                artifact: Some("src_user.ts/00012_load.json".to_string()),
+                reason: None,
+                deep_fingerprint: Some("fp-abc".to_string()),
+                line_count: 0,
+                covered_lines: 0,
+            }],
+            ..Default::default()
+        };
+        write_explore_summary(root, file, &summary).expect("write summary");
+
+        // Pre-populate a per-function resume-state sidecar.
+        let func = sample_func_analysis();
+        let state = shatter_core::orchestrator::ExploreState::default();
+        write_resume_state(root, file, &func, &state).expect("write resume state");
+
+        // Sanity: prior artifacts visible before clean.
+        let target_dir = target_artifact_dir(root, file);
+        assert!(target_dir.exists(), "target artifact dir should exist");
+        assert!(
+            read_explore_summary(root, file).is_some(),
+            "prior summary must be loadable before --clean",
+        );
+        assert!(
+            read_resume_state(root, file, &func).is_some(),
+            "resume state must be loadable before --clean",
+        );
+
+        // Apply --clean semantics for this target.
+        clean_target_artifacts(root, file);
+
+        // Both the summary and the resume-state sidecar must be gone.
+        assert!(
+            !target_dir.exists(),
+            "target artifact dir must be removed by --clean",
+        );
+        assert!(
+            read_explore_summary(root, file).is_none(),
+            "prior summary must not survive --clean",
+        );
+        assert!(
+            read_resume_state(root, file, &func).is_none(),
+            "resume-state sidecar must not survive --clean",
+        );
+    }
+
+    #[test]
+    fn clean_target_artifacts_is_idempotent_when_no_prior_run() {
+        // First-ever explore: no artifacts yet. --clean must be a no-op
+        // (no panic, no error, no spurious directory creation).
+        let dir = tempfile::tempdir().expect("tempdir");
+        clean_target_artifacts(dir.path(), "src/never-explored.ts");
+        let target_dir = target_artifact_dir(dir.path(), "src/never-explored.ts");
+        assert!(
+            !target_dir.exists(),
+            "clean must not create the target artifact dir when none existed",
+        );
+    }
+
+    #[test]
+    fn clean_target_artifacts_does_not_touch_other_targets() {
+        // --clean must scope its deletion to the named target only. Artifacts
+        // for sibling targets (a different source file under the same project)
+        // must survive so a focused `--clean` rerun on one file does not wipe
+        // the rest of the project's explore cache.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        let other_summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/other.ts".to_string(),
+            total_functions: 0,
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 0.0,
+            functions: vec![],
+            ..Default::default()
+        };
+        write_explore_summary(root, "src/other.ts", &other_summary).expect("write other");
+
+        let target_summary = ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 0,
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            elapsed_secs: 0.0,
+            functions: vec![],
+            ..Default::default()
+        };
+        write_explore_summary(root, "src/user.ts", &target_summary).expect("write target");
+
+        clean_target_artifacts(root, "src/user.ts");
+
+        assert!(
+            read_explore_summary(root, "src/user.ts").is_none(),
+            "cleaned target's summary must be gone",
+        );
+        assert!(
+            read_explore_summary(root, "src/other.ts").is_some(),
+            "sibling target's summary must survive a scoped --clean",
+        );
     }
 
     #[test]
