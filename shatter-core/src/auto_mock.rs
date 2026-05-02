@@ -44,13 +44,27 @@ const FS_MODULES: &[&str] = &[
     "node:fs",
     "fs/promises",
     "node:fs/promises",
-    "path",
-    "node:path",
     // Go stdlib
     "os",
     "io",
     "io/ioutil",
     "bufio",
+];
+
+/// Symbols on otherwise-pure path modules that DO touch the filesystem.
+///
+/// `path/filepath` is overwhelmingly pure string manipulation (Ext, Base,
+/// Dir, Join, Clean, Rel, IsAbs, FromSlash, ToSlash, Split, etc.), but a
+/// handful of symbols walk or stat the filesystem. Those need FileSystem
+/// classification so they are auto-mocked rather than passthrough.
+///
+/// Mirrors the Go-side policy classifier in
+/// `shatter-go/protocol/policy.go` (`moduleClass`).
+const FS_PATH_FILEPATH_SYMBOLS: &[&str] = &[
+    "filepath.Walk",
+    "filepath.WalkDir",
+    "filepath.Glob",
+    "filepath.EvalSymlinks",
 ];
 const NETWORK_MODULES: &[&str] = &[
     "http",
@@ -100,6 +114,13 @@ const PURE_UTILITY_MODULES: &[&str] = &[
     "chalk",
     "debug",
     "ms",
+    // Path manipulation: pure string helpers in Node (`path`, `node:path`)
+    // and Go (`path`, `path/filepath`). `path/filepath` has a handful of
+    // FS-touching symbols (Walk, WalkDir, Glob, EvalSymlinks) handled
+    // explicitly via FS_PATH_FILEPATH_SYMBOLS in classify_dependency.
+    "path",
+    "node:path",
+    "path/filepath",
     "strings",
     "strconv",
     "fmt",
@@ -110,6 +131,13 @@ const PURE_UTILITY_MODULES: &[&str] = &[
 /// Classify an external dependency into an [`IoCategory`].
 pub fn classify_dependency(dep: &ExternalDependency) -> IoCategory {
     let module = dep.source_module.as_str();
+
+    // Override: a small set of path/filepath symbols touch the filesystem
+    // even though the module itself is overwhelmingly pure. Check this
+    // before the pure-utility module table so the FS classification wins.
+    if module == "path/filepath" && FS_PATH_FILEPATH_SYMBOLS.contains(&dep.symbol.as_str()) {
+        return IoCategory::FileSystem;
+    }
 
     if FS_MODULES
         .iter()
@@ -537,9 +565,80 @@ mod tests {
 
         let dep2 = make_dep("readFile", "node:fs/promises", TypeInfo::Str);
         assert_eq!(classify_dependency(&dep2), IoCategory::FileSystem);
+    }
 
-        let dep3 = make_dep("join", "path", TypeInfo::Str);
-        assert_eq!(classify_dependency(&dep3), IoCategory::FileSystem);
+    /// `path`, `node:path`, and `path/filepath` are pure string-manipulation
+    /// helpers — they must NOT be auto-mocked as filesystem externals
+    /// (str-qo1.10). Mocking `filepath.Ext` to "" hides every non-default
+    /// branch of switches like `switch filepath.Ext(p)`.
+    #[test]
+    fn classify_path_filepath_pure_helpers_as_pure_utility() {
+        // Go path/filepath pure helpers
+        for sym in [
+            "filepath.Ext",
+            "filepath.Base",
+            "filepath.Dir",
+            "filepath.Join",
+            "filepath.Clean",
+            "filepath.Rel",
+            "filepath.IsAbs",
+            "filepath.FromSlash",
+            "filepath.ToSlash",
+            "filepath.Split",
+        ] {
+            let dep = make_dep(sym, "path/filepath", TypeInfo::Str);
+            assert_eq!(
+                classify_dependency(&dep),
+                IoCategory::PureUtility,
+                "{sym} on path/filepath should classify as PureUtility",
+            );
+        }
+
+        // Go `path` (separate from `path/filepath`) is also pure.
+        let dep = make_dep("path.Join", "path", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep), IoCategory::PureUtility);
+
+        // Node `path` / `node:path` are pure.
+        let dep = make_dep("join", "path", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep), IoCategory::PureUtility);
+        let dep = make_dep("extname", "node:path", TypeInfo::Str);
+        assert_eq!(classify_dependency(&dep), IoCategory::PureUtility);
+    }
+
+    /// FS-touching symbols on `path/filepath` (Walk, WalkDir, Glob,
+    /// EvalSymlinks) keep FileSystem classification so they continue to
+    /// be auto-mocked.
+    #[test]
+    fn classify_path_filepath_fs_symbols_as_filesystem() {
+        for sym in [
+            "filepath.Walk",
+            "filepath.WalkDir",
+            "filepath.Glob",
+            "filepath.EvalSymlinks",
+        ] {
+            let dep = make_dep(sym, "path/filepath", TypeInfo::Unknown);
+            assert_eq!(
+                classify_dependency(&dep),
+                IoCategory::FileSystem,
+                "{sym} on path/filepath touches FS — should classify as FileSystem",
+            );
+        }
+    }
+
+    /// Auto-mocks for pure path/filepath helpers must be passthrough so
+    /// the real string-manipulation behavior runs and switch branches
+    /// over `filepath.Ext` stay reachable.
+    #[test]
+    fn auto_mock_passthrough_for_path_filepath_helpers() {
+        let deps = vec![
+            make_dep("filepath.Ext", "path/filepath", TypeInfo::Str),
+            make_dep("filepath.Base", "path/filepath", TypeInfo::Str),
+            make_dep("filepath.Walk", "path/filepath", TypeInfo::Unknown),
+        ];
+        let mocks = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
+        // Pure helpers (Ext, Base) are skipped; Walk is auto-mocked.
+        assert_eq!(mocks.len(), 1, "only filepath.Walk should be mocked");
+        assert_eq!(mocks[0].symbol, "filepath.Walk");
     }
 
     #[test]

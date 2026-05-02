@@ -534,6 +534,77 @@ func TestAnalyzeFormatNameDetectsDependencies(t *testing.T) {
 	}
 }
 
+// TestAnalyzeFilepathSwitchReportsPathFilepathSourceModule is the
+// frontend-side regression for str-qo1.10 (filepath mock purity). The
+// analyzer must surface pure helpers like filepath.Ext with
+// SourceModule="path/filepath" so the auto-mock classifier in
+// shatter-core can recognize them as PureUtility and skip mocking
+// (which would otherwise reduce filepath.Ext to "" and hide every
+// non-default branch of the switch in DetectServerKey).
+func TestAnalyzeFilepathSwitchReportsPathFilepathSourceModule(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("filepath_switch.go"), "DetectServerKey")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no functions returned")
+	}
+	var extDep *ExternalDependency
+	for i := range results[0].Dependencies {
+		d := &results[0].Dependencies[i]
+		if d.Symbol == "filepath.Ext" {
+			extDep = d
+			break
+		}
+	}
+	if extDep == nil {
+		t.Fatalf("filepath.Ext not found in dependencies; got %+v", results[0].Dependencies)
+	}
+	if extDep.SourceModule != "path/filepath" {
+		t.Errorf("filepath.Ext SourceModule = %q, want %q",
+			extDep.SourceModule, "path/filepath")
+	}
+	if extDep.Kind != "function_call" {
+		t.Errorf("filepath.Ext Kind = %q, want function_call", extDep.Kind)
+	}
+}
+
+// TestAnalyzeJoinAndCheckReportsPurePathFilepathHelpers asserts that the
+// other pure path/filepath helpers (Join, Clean, IsAbs, Base, Dir) all
+// report SourceModule="path/filepath" so the cross-language auto-mock
+// classifier can classify them uniformly as PureUtility (str-qo1.10).
+func TestAnalyzeJoinAndCheckReportsPurePathFilepathHelpers(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("filepath_switch.go"), "JoinAndCheck")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no functions returned")
+	}
+	want := map[string]bool{
+		"filepath.Join":  false,
+		"filepath.Clean": false,
+		"filepath.IsAbs": false,
+		"filepath.Base":  false,
+		"filepath.Dir":   false,
+	}
+	for _, d := range results[0].Dependencies {
+		if _, expected := want[d.Symbol]; !expected {
+			continue
+		}
+		if d.SourceModule != "path/filepath" {
+			t.Errorf("%s SourceModule = %q, want %q",
+				d.Symbol, d.SourceModule, "path/filepath")
+		}
+		want[d.Symbol] = true
+	}
+	for sym, found := range want {
+		if !found {
+			t.Errorf("missing dependency %s in JoinAndCheck", sym)
+		}
+	}
+}
+
 func TestAnalyzeFormatNameTrimSpaceHasMultipleCallSites(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("deps.go"), "FormatName")
 	if err != nil {
