@@ -3312,6 +3312,23 @@ pub(crate) async fn run_explore(
         return Err(format!("--planner={name}: only `go` is currently supported.").into());
     }
 
+    // str-tzbr: reject `explore --stdout --format json` (and the equivalent
+    // default-stdout case where `report_outputs` is empty) before any work.
+    // The live and finalize-from-artifacts paths both render Markdown to
+    // stdout and do not have a stable JSON-on-stdout shape; before this
+    // gate they silently shipped Markdown to a caller that asked for JSON.
+    // JSON output remains available via `-o <file>.json` (writes a spec
+    // bundle for the live path / finalize path) — only the stdout combo
+    // is rejected.
+    if format == crate::args::StdoutFormat::Json && (stdout || report_outputs.is_empty()) {
+        return Err(
+            "explore --format json is not supported on stdout. Use \
+             `-o <file>.json` to write a spec bundle, or drop --format json \
+             to render Markdown on stdout."
+                .into(),
+        );
+    }
+
     // Early return: finalize from saved artifacts instead of running exploration.
     if let Some(artifact_dir) = from_artifacts {
         return finalize_explore(
