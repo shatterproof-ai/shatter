@@ -342,25 +342,70 @@ impl CallGraph {
 
 /// Resolve a dependency symbol to a node index in the registry.
 ///
-/// If only one function matches `symbol`, return it directly.
-/// If multiple match, try to disambiguate using `source_module` against file paths.
+/// Frontends emit `symbol` in different shapes:
+///
+/// - The Go analyzer reports cross-package calls as `pkg.Func` (e.g.
+///   `config.Initialize`) where `pkg` is the imported package alias and
+///   `source_module` is the full import path. Same-package calls are not
+///   emitted at all (str-ic3b).
+/// - The TypeScript analyzer reports identifier calls as the bare name
+///   (e.g. `foo`) and method/property calls as the full text (e.g.
+///   `obj.method`).
+///
+/// Function entries in the registry are keyed by the bare function name only.
+/// Resolution therefore tries: (1) exact match on the full symbol, (2) the
+/// trailing segment after the last `.` as a bare name, (3) `source_module`
+/// disambiguation when multiple candidates share the bare name. Without (2),
+/// every Go cross-package edge dropped on the floor — see str-ic3b for the
+/// Refute audit case where 149 nodes produced 0 edges.
 fn resolve_dependency(
     symbol: &str,
     source_module: &str,
     name_to_indices: &HashMap<&str, Vec<usize>>,
     entries: &[crate::batch_analyze::FunctionEntry],
 ) -> Option<usize> {
-    let candidates = name_to_indices.get(symbol)?;
+    let bare_symbol = symbol.rsplit('.').next().unwrap_or(symbol);
+    let candidates = name_to_indices
+        .get(symbol)
+        .or_else(|| {
+            if bare_symbol == symbol {
+                None
+            } else {
+                name_to_indices.get(bare_symbol)
+            }
+        })?;
     if candidates.len() == 1 {
         return Some(candidates[0]);
     }
 
     // Multiple candidates — try to match source_module against file paths.
+    // For Go, source_module is the full import path; for TS it's a relative
+    // path. A substring match works for both shapes.
     if !source_module.is_empty() {
         for &idx in candidates {
             let path_str = entries[idx].file_path.to_string_lossy();
             if path_str.contains(source_module) {
                 return Some(idx);
+            }
+        }
+
+        // Go import paths usually don't appear verbatim in on-disk paths, but
+        // the trailing segment names the package directory (e.g.
+        // `github.com/foo/bar/config` → `config/`). Match that against the
+        // immediate parent directory of each candidate.
+        if let Some(pkg_dir) = source_module.rsplit('/').next()
+            && !pkg_dir.is_empty()
+        {
+            for &idx in candidates {
+                let parent_name = entries[idx]
+                    .file_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if parent_name == pkg_dir {
+                    return Some(idx);
+                }
             }
         }
     }
@@ -1105,6 +1150,91 @@ mod tests {
 
         let callers = graph.transitive_callers_of(&["src/a.ts::B", "src/a.ts::D"]);
         assert_eq!(callers.len(), 4);
+    }
+
+    /// str-ic3b regression: the Go analyzer emits cross-package call symbols
+    /// in `pkg.Func` form (e.g. `config.Initialize`) with `source_module` set
+    /// to the import path. Before the fix, `resolve_dependency` looked up
+    /// `name_to_indices["config.Initialize"]` — which never matched, since
+    /// entries are keyed by the bare function name "Initialize" — and every
+    /// such edge dropped on the floor. The Refute audit observed 149 nodes
+    /// and 0 edges as a result. Edges must now resolve via the bare-name
+    /// fallback.
+    #[test]
+    fn go_cross_package_calls_produce_edges() {
+        let registry = make_registry_with_modules(&[
+            (
+                "src/cmd/main.go",
+                "main",
+                vec![("config.Initialize", "github.com/refute/config")],
+            ),
+            (
+                "src/config/config.go",
+                "Initialize",
+                vec![
+                    ("loader.Read", "github.com/refute/loader"),
+                    ("loader.Apply", "github.com/refute/loader"),
+                ],
+            ),
+            ("src/loader/loader.go", "Read", vec![]),
+            ("src/loader/loader.go", "Apply", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        assert_eq!(graph.node_count(), 4);
+        assert_eq!(
+            graph.edge_count(),
+            3,
+            "expected main→Initialize and Initialize→{{Read,Apply}} (3 edges); got {} — \
+             pkg.Func symbols are not resolving to bare-named entries",
+            graph.edge_count()
+        );
+
+        let main_callees = graph.callees_of("src/cmd/main.go::main");
+        assert_eq!(main_callees, vec!["src/config/config.go::Initialize"]);
+
+        let init_callees = graph.callees_of("src/config/config.go::Initialize");
+        assert_eq!(init_callees.len(), 2);
+        assert!(init_callees.contains(&"src/loader/loader.go::Read"));
+        assert!(init_callees.contains(&"src/loader/loader.go::Apply"));
+
+        // Topological layers must reflect the dependency order: leaves
+        // (Read, Apply) first, then Initialize, then main.
+        let layers = graph.topological_layers();
+        assert!(layers.len() >= 2, "expected layered ordering, got {layers:?}");
+        let leaf_layer = &layers[0];
+        assert!(leaf_layer.contains(&"src/loader/loader.go::Read".to_string()));
+        assert!(leaf_layer.contains(&"src/loader/loader.go::Apply".to_string()));
+        let last_layer = layers.last().expect("at least one layer");
+        assert!(last_layer.contains(&"src/cmd/main.go::main".to_string()));
+    }
+
+    /// When two functions share a bare name across packages, `source_module`
+    /// must disambiguate via the package-directory name so an edge lands on
+    /// the correct callee. Prior code only matched `source_module` as a
+    /// substring of the file path; Go import paths don't appear verbatim on
+    /// disk, so we fall back to the trailing path segment as the package
+    /// directory.
+    #[test]
+    fn go_pkg_dir_disambiguates_overloaded_bare_names() {
+        let registry = make_registry_with_modules(&[
+            (
+                "src/cmd/main.go",
+                "main",
+                vec![("config.Load", "github.com/refute/config")],
+            ),
+            ("src/config/config.go", "Load", vec![]),
+            ("src/cache/cache.go", "Load", vec![]),
+        ]);
+        let graph = CallGraph::from_registry(&registry);
+
+        assert_eq!(graph.edge_count(), 1);
+        let main_callees = graph.callees_of("src/cmd/main.go::main");
+        assert_eq!(
+            main_callees,
+            vec!["src/config/config.go::Load"],
+            "edge resolved to wrong package — source_module pkg-dir fallback failed"
+        );
     }
 
     #[test]
