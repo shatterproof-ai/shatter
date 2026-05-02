@@ -407,15 +407,50 @@ func wrapperQualifiedName(fn *ast.FuncDecl) string {
 	return fn.Name.Name
 }
 
+// syntheticParamPrefix is the prefix used for generated parameter local
+// names when the source signature does not provide a usable identifier
+// (either no name at all, e.g. `func F(int, string)`, or the blank
+// identifier `_`, e.g. `func F(_ int, _ string)`). The wrapper later
+// references each parameter local in `json.Unmarshal(&p)` and in the
+// call expression, so emitting `_` would produce uncompilable code
+// ("cannot use _ as value or type"). See str-qo1.7.
+const syntheticParamPrefix = "_p"
+
+// syntheticParamName returns the stable wrapper-local name for the
+// parameter at position index. The index is the parameter's position in
+// the flattened list (each name in a `(a, b int)` field counts as one
+// position). The prefix is fixed by syntheticParamPrefix so generated
+// names are byte-stable across calls and never collide with idiomatic
+// Go identifiers.
+func syntheticParamName(index int) string {
+	return fmt.Sprintf("%s%d", syntheticParamPrefix, index)
+}
+
 func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, importSet map[string]struct{}) []WrapperParam {
 	if fn.Type.Params == nil {
 		return nil
 	}
 	var params []WrapperParam
+	index := 0
 	for _, field := range fn.Type.Params.List {
 		goType := wrapperGoType(field.Type, info, pkgName, importSet)
+		if len(field.Names) == 0 {
+			// Unnamed parameter (e.g. `func F(int, string)`): a single
+			// field with no names represents one positional parameter.
+			params = append(params, WrapperParam{Name: syntheticParamName(index), GoType: goType})
+			index++
+			continue
+		}
 		for _, name := range field.Names {
-			params = append(params, WrapperParam{Name: name.Name, GoType: goType})
+			localName := name.Name
+			if localName == "" || localName == "_" {
+				// Blank-identifier parameter (e.g. `func F(_ int)`):
+				// the source name is unusable as a wrapper local, so
+				// substitute a stable synthetic name.
+				localName = syntheticParamName(index)
+			}
+			params = append(params, WrapperParam{Name: localName, GoType: goType})
+			index++
 		}
 	}
 	return params
