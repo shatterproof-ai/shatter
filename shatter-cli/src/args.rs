@@ -1172,7 +1172,13 @@ pub(crate) enum CliCommand {
     /// Check which functions in a source file are stale relative to a spec file.
     ///
     /// Analyzes the source file, computes fingerprints, and compares against the
-    /// spec. Exit code: 0 = all fresh, 1 = some stale or removed.
+    /// spec. Functions classify as fresh (tracked, fingerprint matches), stale
+    /// (tracked, fingerprint differs), removed (in spec, gone from source), or
+    /// untracked (in source, never tracked by this spec).
+    ///
+    /// Exit code: 0 when no *tracked* function is stale or removed; 1 otherwise.
+    /// Untracked functions are reported but do not affect the exit code unless
+    /// `--strict` is passed (full-file coverage mode).
     Stale {
         /// Source file to analyze (e.g., "src/math.ts").
         #[arg(required = true)]
@@ -1214,6 +1220,13 @@ pub(crate) enum CliCommand {
         /// Disable cache (skip cross-file dependency tracking).
         #[arg(long)]
         no_cache: bool,
+
+        /// Treat untracked functions (present in source, absent from spec) as
+        /// failures. Default behavior reports them but exits 0 if no tracked
+        /// function is stale or removed (str-d6hj). Use this when the spec is
+        /// expected to cover the entire file.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Re-execute cached behaviors to detect regressions or drift.
@@ -2847,6 +2860,24 @@ mod tests {
                 assert_eq!(output_format, "text");
                 assert_eq!(request_timeout, 30);
             }
+            _ => panic!("expected Stale command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_stale_strict_flag_default_off() {
+        let cli = Cli::parse_from(["shatter", "stale", "src/math.ts", "spec.json"]);
+        match cli.command {
+            CliCommand::Stale { strict, .. } => assert!(!strict),
+            _ => panic!("expected Stale command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_stale_strict_flag_set() {
+        let cli = Cli::parse_from(["shatter", "stale", "--strict", "src/math.ts", "spec.json"]);
+        match cli.command {
+            CliCommand::Stale { strict, .. } => assert!(strict),
             _ => panic!("expected Stale command"),
         }
     }

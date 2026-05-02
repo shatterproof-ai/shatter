@@ -9,8 +9,12 @@ use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use crate::args::*;
 use crate::helpers::*;
 
+/// Returns `Ok(true)` if no tracked functions are stale or removed, `Ok(false)` otherwise.
 ///
-/// Returns `Ok(true)` if all functions are fresh, `Ok(false)` if any are stale or removed.
+/// Functions present in the source but absent from the spec are reported as
+/// `untracked` and do **not** affect the success result by default (str-d6hj).
+/// When `strict` is set, untracked functions also flip the result to `Ok(false)`,
+/// which is the legacy behavior for callers that want full-file coverage.
 // Each argument corresponds to a CLI flag; this is only called from one callsite.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_stale(
@@ -26,6 +30,7 @@ pub(crate) async fn run_stale(
     project_dir: Option<&Path>,
     cache_dir: Option<&Path>,
     no_cache: bool,
+    strict: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let target = parse_target(source)?;
     let file_str = target.file.to_string_lossy();
@@ -94,14 +99,25 @@ pub(crate) async fn run_stale(
     )
     .map_err(|e| format!("failed to compute incremental plan: {e}"))?;
 
-    let all_fresh = plan.stale.is_empty() && plan.removed.is_empty();
+    // Exit-code semantics (str-d6hj):
+    //   - stale or removed *tracked* functions → failure (real spec drift).
+    //   - untracked functions → not failure by default (the spec never claimed
+    //     to cover them). With --strict, untracked also flips to failure.
+    let tracked_drift = !plan.stale.is_empty() || !plan.removed.is_empty();
+    let success = if strict {
+        !tracked_drift && plan.untracked.is_empty()
+    } else {
+        !tracked_drift
+    };
 
     if format == "json" {
         let output = serde_json::json!({
             "stale": plan.stale,
             "fresh": plan.fresh,
+            "untracked": plan.untracked,
             "removed": plan.removed,
-            "all_fresh": all_fresh,
+            "all_fresh": success,
+            "strict": strict,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -117,16 +133,33 @@ pub(crate) async fn run_stale(
                 println!("  {name}");
             }
         }
+        if !plan.untracked.is_empty() {
+            println!(
+                "Untracked ({}, not in spec{}):",
+                plan.untracked.len(),
+                if strict { ", --strict counts as failure" } else { "" },
+            );
+            for name in &plan.untracked {
+                println!("  {name}");
+            }
+        }
         if !plan.removed.is_empty() {
             println!("Removed ({}):", plan.removed.len());
             for name in &plan.removed {
                 println!("  {name}");
             }
         }
-        if all_fresh {
-            println!("All functions are fresh.");
+        if success {
+            if plan.untracked.is_empty() {
+                println!("All tracked functions are fresh.");
+            } else {
+                println!(
+                    "All tracked functions are fresh ({} untracked function(s) ignored; pass --strict to fail on untracked).",
+                    plan.untracked.len(),
+                );
+            }
         }
     }
 
-    Ok(all_fresh)
+    Ok(success)
 }

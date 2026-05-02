@@ -801,6 +801,7 @@ async fn main() -> ExitCode {
             memory_limit,
             cache_dir,
             no_cache,
+            strict,
         } => {
             match commands::stale::run_stale(
                 &source,
@@ -815,6 +816,7 @@ async fn main() -> ExitCode {
                 cli.project_dir.as_deref(),
                 cache_dir.as_deref(),
                 no_cache,
+                strict,
             )
             .await
             {
