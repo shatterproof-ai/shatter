@@ -367,7 +367,11 @@ fn format_discovered_input(inp: &DiscoveredInput) -> PathEntry {
 /// This is the Askama-backed implementation called by
 /// `report::generate_html_scan_report`.
 pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> String {
-    let total_fn = report.codebase.total_functions;
+    // str-jeen.46: render shows completed exploration count. Use
+    // `completed_functions` (the v1 `total_functions` was renamed when
+    // the schema gained explicit attempted/failed/skipped/unsupported
+    // counts).
+    let total_fn = report.codebase.completed_functions;
     let total_paths: usize = report.functions.iter().map(|f| f.branches_covered).sum();
     let skipped_count = report.codebase.skipped_functions.len();
     let overall_cov_bar_html = render_cov_bar(report.codebase.overall_coverage);

@@ -453,12 +453,24 @@ fn emit_progress(
     }
 }
 
-/// Whether a skip is benign (expected) or an actual error.
+/// Whether a skip is benign (expected), an unsupported target type, or an
+/// actual error.
+///
+/// `Unsupported` is split out from `Expected` (str-jeen.46) so the scan
+/// report can count attempted, skipped, and unsupported targets separately.
+/// Examples: a function whose parameter list cannot be expressed in the
+/// executability model is `Unsupported`; a checkpoint-resume skip or a
+/// cache hit that we deliberately bypass is `Expected`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipCategory {
-    /// Benign: opaque types, cache hits, checkpoint resumes.
+    /// Benign: cache hits, checkpoint resumes, intentional bypasses.
     Expected,
-    /// Problematic: timeouts, exploration errors, crashes.
+    /// Target's shape (parameter types, invocation model, etc.) is not
+    /// supported by the analyzer or executor. Discovered but never
+    /// attempted.
+    Unsupported,
+    /// Problematic: timeouts, exploration errors, crashes. The function was
+    /// attempted but failed.
     Error,
 }
 
@@ -591,6 +603,7 @@ fn write_skipped_scan_artifact(
         "reason": reason,
         "category": match category {
             SkipCategory::Expected => "expected",
+            SkipCategory::Unsupported => "unsupported",
             SkipCategory::Error => "error",
         },
     });
@@ -748,8 +761,9 @@ fn summary_record_skipped(
 ) {
     summary.elapsed_secs = elapsed.as_secs_f64();
     match category {
-        SkipCategory::Expected => summary.skipped += 1,
-        SkipCategory::Error => summary.skipped += 1,
+        SkipCategory::Expected | SkipCategory::Unsupported | SkipCategory::Error => {
+            summary.skipped += 1
+        }
     }
     let artifact_filename = format!(
         "{:05}_{}.json",

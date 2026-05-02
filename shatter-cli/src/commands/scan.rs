@@ -425,7 +425,7 @@ pub(crate) async fn run_scan(
             skipped_for_executability.push(SkippedFunction {
                 function_name: func.name.clone(),
                 reason,
-                category: shatter_core::scan_orchestrator::SkipCategory::Expected,
+                category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
             });
             false
         }
@@ -822,6 +822,13 @@ pub(crate) async fn run_scan(
     {
         Ok(mut result) => {
             result.sampling = sampling_context;
+            // str-jeen.46: surface unsupported targets (filtered out
+            // pre-attempt for unexecutable parameter types) in the scan
+            // result so the report's `unsupported_functions` count and
+            // skipped table reflect them. They are NOT counted as
+            // attempted — the report builder discriminates by
+            // SkipCategory::Unsupported.
+            result.skipped.append(&mut skipped_for_executability);
             let elapsed = scan_start.elapsed();
 
             if !progress {

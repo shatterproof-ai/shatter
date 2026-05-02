@@ -20,6 +20,95 @@ use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, S
 /// report. Functions with more clusters show a "... and N more" summary line.
 const MAX_DISPLAY_CLUSTERS: usize = 5;
 
+/// JSON schema version emitted in [`ScanReport::version`]. Bumped from 1 to
+/// 2 in str-jeen.46 when the codebase aggregate gained
+/// `attempted_functions`, `completed_functions`, `failed_functions`,
+/// `skipped_functions_count`, `unsupported_functions`,
+/// `total_discovered_functions`, and the structured `failed` array.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 2;
+
+/// Aggregated counts derived from a scan's outcome list.
+struct ScanOutcomeCounts {
+    completed: usize,
+    failed: usize,
+    expected_skipped: usize,
+    unsupported: usize,
+    attempted: usize,
+    discovered: usize,
+}
+
+impl ScanOutcomeCounts {
+    fn from_split(
+        completed: usize,
+        skipped: &[crate::scan_orchestrator::SkippedFunction],
+    ) -> Self {
+        use crate::scan_orchestrator::SkipCategory;
+        let mut failed = 0usize;
+        let mut expected_skipped = 0usize;
+        let mut unsupported = 0usize;
+        for s in skipped {
+            match s.category {
+                SkipCategory::Error => failed += 1,
+                SkipCategory::Expected => expected_skipped += 1,
+                SkipCategory::Unsupported => unsupported += 1,
+            }
+        }
+        let attempted = completed + failed + expected_skipped;
+        let discovered = attempted + unsupported;
+        Self {
+            completed,
+            failed,
+            expected_skipped,
+            unsupported,
+            attempted,
+            discovered,
+        }
+    }
+}
+
+/// Partition a flat skipped-function list into the structured `failed`
+/// array (entries with `SkipCategory::Error`) and the remaining
+/// `skipped_functions` entries (Expected + Unsupported). See str-jeen.46
+/// for context on the split: failure rows used to be co-located with
+/// benign skips, hiding the denominator of attempted-but-failed runs.
+fn split_skipped_into_failed(
+    skipped: &[crate::scan_orchestrator::SkippedFunction],
+    file_map: &std::collections::HashMap<String, String>,
+) -> (Vec<SkippedFunctionReport>, Vec<FailedFunctionReport>) {
+    use crate::scan_orchestrator::SkipCategory;
+    let mut skipped_out = Vec::new();
+    let mut failed_out = Vec::new();
+    for s in skipped {
+        match s.category {
+            SkipCategory::Error => {
+                failed_out.push(FailedFunctionReport {
+                    function_name: s.function_name.clone(),
+                    file_path: file_map
+                        .get(&s.function_name)
+                        .cloned()
+                        .unwrap_or_default(),
+                    reason: s.reason.clone(),
+                });
+            }
+            SkipCategory::Expected => {
+                skipped_out.push(SkippedFunctionReport {
+                    function_name: s.function_name.clone(),
+                    reason: s.reason.clone(),
+                    category: "expected".into(),
+                });
+            }
+            SkipCategory::Unsupported => {
+                skipped_out.push(SkippedFunctionReport {
+                    function_name: s.function_name.clone(),
+                    reason: s.reason.clone(),
+                    category: "unsupported".into(),
+                });
+            }
+        }
+    }
+    (skipped_out, failed_out)
+}
+
 // ---------------------------------------------------------------------------
 // Per-function report
 // ---------------------------------------------------------------------------
@@ -120,26 +209,87 @@ pub struct DependencyEdge {
 }
 
 /// Codebase-level aggregate statistics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The count fields disambiguate scan outcomes that previously collapsed
+/// into `total_functions` and `skipped_functions` (str-jeen.46). For a
+/// scan that attempted 159 functions and all failed, the legacy
+/// `total_functions` reads `0`; the new `attempted_functions` reads
+/// `159`, `failed_functions` reads `159`, and the structured `failed`
+/// array carries one entry per failure.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CodebaseReport {
-    /// Total functions explored.
-    pub total_functions: usize,
+    /// Number of functions the scan actually attempted to explore. Equals
+    /// `completed + failed + skipped` (does not include unsupported
+    /// targets, which were filtered out before attempt).
+    pub attempted_functions: usize,
+    /// Number of functions that completed exploration successfully.
+    /// Equivalent to `function_results.len()`.
+    ///
+    /// Replaces the v1 `total_functions` field — that name was misleading
+    /// when most attempts failed (a 159-attempted, 0-completed run read
+    /// as `total_functions: 0`), so v2 drops it entirely. Consumers
+    /// reading v2 reports should use `completed_functions` and switch on
+    /// `version >= 2`. See str-jeen.46.
+    pub completed_functions: usize,
+    /// Number of functions that were attempted and failed (timeouts,
+    /// runtime errors, build failures). Each entry has a corresponding
+    /// row in [`Self::failed`].
+    pub failed_functions: usize,
+    /// Number of functions skipped for benign reasons (cache hits,
+    /// checkpoint resumes, intentional bypasses). Distinct from
+    /// `unsupported_functions`.
+    pub skipped_functions_count: usize,
+    /// Number of functions filtered out before any exploration because
+    /// the analyzer or executor cannot model the target's shape (for
+    /// example, unexecutable parameter types).
+    pub unsupported_functions: usize,
+    /// Total functions surfaced by analysis before any filtering. Equals
+    /// `attempted + unsupported`.
+    pub total_discovered_functions: usize,
     /// Total branch points across all functions.
     pub total_branches: usize,
     /// Overall branch coverage percentage (0.0-100.0).
     pub overall_coverage: f64,
-    /// Functions that were skipped (timeout, error, etc.).
+    /// Structured records for each function the scan attempted but failed
+    /// to explore. Replaces the prior pattern of stuffing build/runtime
+    /// failures into `skipped_functions` as opaque error strings
+    /// (str-jeen.46).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<FailedFunctionReport>,
+    /// Functions that were skipped without being attempted. Includes
+    /// both `Expected` skips (cache hits, checkpoint resumes) and
+    /// `Unsupported` skips (unexecutable parameter types). Functions
+    /// that were attempted and failed live in [`Self::failed`] instead.
     pub skipped_functions: Vec<SkippedFunctionReport>,
     /// Dependency graph edges.
     pub dependency_graph: Vec<DependencyEdge>,
 }
 
-/// A function that was skipped during the scan.
+/// A function that was skipped during the scan (not attempted).
+///
+/// `category` is one of `"expected"` (benign skip), `"unsupported"`
+/// (target shape not representable), or — for backward compatibility
+/// with v1 readers — historically `"error"`. Post-str-jeen.46 reports
+/// no longer emit `"error"` here; failed targets appear in
+/// [`CodebaseReport::failed`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkippedFunctionReport {
     pub function_name: String,
     pub reason: String,
     pub category: String,
+}
+
+/// A function the scan attempted to explore but did not complete.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailedFunctionReport {
+    /// Name of the failed function.
+    pub function_name: String,
+    /// Source file, when known. Empty when the orchestrator's file_map
+    /// has no entry for this name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_path: String,
+    /// Human-readable failure reason as reported by the orchestrator.
+    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -340,30 +490,29 @@ pub fn generate_report(
         0.0
     };
 
-    let skipped_functions: Vec<SkippedFunctionReport> = result
-        .skipped
-        .iter()
-        .map(|s| SkippedFunctionReport {
-            function_name: s.function_name.clone(),
-            reason: s.reason.clone(),
-            category: match s.category {
-                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
-                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
-            },
-        })
-        .collect();
+    let (skipped_functions, failed) = split_skipped_into_failed(&result.skipped, file_map);
+    let counts = ScanOutcomeCounts::from_split(
+        result.function_results.len(),
+        &result.skipped,
+    );
 
     let dependency_graph = build_dependency_edges(&result.function_results);
 
     let cumulative = batch_state.map(build_cumulative_report);
 
     ScanReport {
-        version: 1,
+        version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
         codebase: CodebaseReport {
-            total_functions: result.function_results.len(),
+            attempted_functions: counts.attempted,
+            completed_functions: counts.completed,
+            failed_functions: counts.failed,
+            skipped_functions_count: counts.expected_skipped,
+            unsupported_functions: counts.unsupported,
+            total_discovered_functions: counts.discovered,
             total_branches,
             overall_coverage,
+            failed,
             skipped_functions,
             dependency_graph,
         },
@@ -401,26 +550,26 @@ pub fn generate_report_from_scan(
 
     let dependency_graph = build_dependency_edges(&result.function_results);
 
-    let skipped_functions: Vec<SkippedFunctionReport> = result
-        .skipped_functions
-        .iter()
-        .map(|s| SkippedFunctionReport {
-            function_name: s.function_name.clone(),
-            reason: s.reason.clone(),
-            category: match s.category {
-                crate::scan_orchestrator::SkipCategory::Expected => "expected".into(),
-                crate::scan_orchestrator::SkipCategory::Error => "error".into(),
-            },
-        })
-        .collect();
+    let (skipped_functions, failed) =
+        split_skipped_into_failed(&result.skipped_functions, file_map);
+    let counts = ScanOutcomeCounts::from_split(
+        result.function_results.len(),
+        &result.skipped_functions,
+    );
 
     ScanReport {
-        version: 1,
+        version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
         codebase: CodebaseReport {
-            total_functions: result.function_results.len(),
+            attempted_functions: counts.attempted,
+            completed_functions: counts.completed,
+            failed_functions: counts.failed,
+            skipped_functions_count: counts.expected_skipped,
+            unsupported_functions: counts.unsupported,
+            total_discovered_functions: counts.discovered,
             total_branches,
             overall_coverage,
+            failed,
             skipped_functions,
             dependency_graph,
         },
@@ -562,6 +711,7 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
     write_md_function_details(&mut out, &report.functions);
     write_md_uncovered_branches(&mut out, &report.functions);
     write_md_interesting_inputs(&mut out, &report.functions);
+    write_md_failed_functions(&mut out, &report.codebase.failed);
     write_md_skipped_functions(&mut out, &report.codebase.skipped_functions);
 
     out
@@ -614,23 +764,45 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     let total_branches = report.codebase.total_branches;
     let coverage = report.codebase.overall_coverage;
 
-    let _ = writeln!(
-        out,
-        "- **Functions explored:** {}",
-        report.codebase.total_functions
-    );
+    let cb = &report.codebase;
+    let _ = writeln!(out, "- **Functions discovered:** {}", cb.total_discovered_functions);
+    let _ = writeln!(out, "- **Functions attempted:** {}", cb.attempted_functions);
+    let _ = writeln!(out, "- **Functions completed:** {}", cb.completed_functions);
+    if cb.failed_functions > 0 {
+        let _ = writeln!(out, "- **Functions failed:** {}", cb.failed_functions);
+    }
+    if cb.skipped_functions_count > 0 {
+        let _ = writeln!(out, "- **Functions skipped:** {}", cb.skipped_functions_count);
+    }
+    if cb.unsupported_functions > 0 {
+        let _ = writeln!(out, "- **Functions unsupported:** {}", cb.unsupported_functions);
+    }
     let _ = writeln!(out, "- **Total branches:** {total_branches}");
     let _ = writeln!(out, "- **Branches covered:** {total_covered}");
     let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
 
-    if !report.codebase.skipped_functions.is_empty() {
-        let _ = writeln!(
-            out,
-            "- **Skipped functions:** {}",
-            report.codebase.skipped_functions.len()
-        );
-    }
+    out.push('\n');
+}
 
+/// Emit a "Failed Functions" section listing each attempted-but-failed
+/// target. Distinct from the Skipped section, which covers expected and
+/// unsupported skips that were never attempted (str-jeen.46).
+fn write_md_failed_functions(out: &mut String, failed: &[FailedFunctionReport]) {
+    if failed.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Failed Functions\n");
+    for f in failed {
+        if f.file_path.is_empty() {
+            let _ = writeln!(out, "- `{}`: {}", f.function_name, f.reason);
+        } else {
+            let _ = writeln!(
+                out,
+                "- `{}` ({}): {}",
+                f.function_name, f.file_path, f.reason,
+            );
+        }
+    }
     out.push('\n');
 }
 
@@ -874,11 +1046,28 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
         .iter()
         .filter(|s| s.category == "expected")
         .collect();
+    let unsupported: Vec<_> = skipped
+        .iter()
+        .filter(|s| s.category == "unsupported")
+        .collect();
+    // Backward-compat: legacy reports lumped failures in here under
+    // "error". Post-str-jeen.46 those entries live in the structured
+    // `failed` array and are rendered by `write_md_failed_functions`.
+    // Surface any stragglers under their own heading rather than
+    // dropping them.
     let errors: Vec<_> = skipped.iter().filter(|s| s.category == "error").collect();
 
     if !expected.is_empty() {
         let _ = writeln!(out, "## Skipped (Expected)\n");
         for s in &expected {
+            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+        }
+        out.push('\n');
+    }
+
+    if !unsupported.is_empty() {
+        let _ = writeln!(out, "## Skipped (Unsupported)\n");
+        for s in &unsupported {
             let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
         }
         out.push('\n');
@@ -1180,7 +1369,7 @@ mod tests {
 
         let report = generate_report(&parallel_result, &file_map, None);
 
-        assert_eq!(report.version, 1);
+        assert_eq!(report.version, SCAN_REPORT_SCHEMA_VERSION);
         assert_eq!(report.functions.len(), 2);
         assert_eq!(report.test_order, vec!["leaf", "caller"]);
 
@@ -1208,7 +1397,8 @@ mod tests {
         assert_eq!(caller.mocks_used[0].mock_execution_count, Some(0));
 
         // Check codebase report
-        assert_eq!(report.codebase.total_functions, 2);
+        assert_eq!(report.codebase.completed_functions, 2);
+        assert_eq!(report.codebase.attempted_functions, 2);
         assert_eq!(report.codebase.total_branches, 5); // 2 + 3
         assert!(report.codebase.skipped_functions.is_empty());
 
@@ -1216,6 +1406,154 @@ mod tests {
         assert_eq!(report.codebase.dependency_graph.len(), 1);
         assert_eq!(report.codebase.dependency_graph[0].caller, "caller");
         assert_eq!(report.codebase.dependency_graph[0].callee, "leaf");
+    }
+
+    /// Sanity-check: print a sample v2 report JSON for documentation
+    /// purposes. Run with `cargo test -p shatter-core dump_v2_sample
+    /// -- --nocapture`. Marked `#[ignore]` so normal CI doesn't print it.
+    #[test]
+    #[ignore = "documentation helper; prints v2 sample to stdout"]
+    fn dump_v2_sample() {
+        let mut skipped = Vec::new();
+        for i in 0..3 {
+            skipped.push(SkippedFunction {
+                function_name: format!("processOrder_{i}"),
+                reason: "ts: build failed: cannot find module './db'".into(),
+                category: crate::scan_orchestrator::SkipCategory::Error,
+            });
+        }
+        skipped.push(SkippedFunction {
+            function_name: "withOpaqueParam".into(),
+            reason: "unexecutable param 'buf': opaque Buffer".into(),
+            category: crate::scan_orchestrator::SkipCategory::Unsupported,
+        });
+        let result = ParallelScanResult {
+            function_results: vec![],
+            test_order: (0..3).map(|i| format!("processOrder_{i}")).collect(),
+            skipped,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let mut file_map = HashMap::new();
+        for i in 0..3 {
+            file_map.insert(
+                format!("processOrder_{i}"),
+                format!("src/orders/p{i}.ts"),
+            );
+        }
+        let r = generate_report(&result, &file_map, None);
+        println!("{}", serde_json::to_string_pretty(&r).unwrap());
+    }
+
+    /// str-jeen.46 regression: when every attempted function fails, the
+    /// report must still surface the attempted denominator. Pre-fix,
+    /// `codebase.total_functions` reported 0, the structured `failed`
+    /// array did not exist, and failures were buried in
+    /// `skipped_functions` as opaque error rows — making automated
+    /// consumers under-count broad-run regressions.
+    #[test]
+    fn report_records_attempted_count_when_all_fail() {
+        const ATTEMPTED_FAILURES: usize = 3;
+        let mut skipped = Vec::with_capacity(ATTEMPTED_FAILURES);
+        for i in 0..ATTEMPTED_FAILURES {
+            skipped.push(SkippedFunction {
+                function_name: format!("fn_{i}"),
+                reason: format!("build failure {i}"),
+                category: crate::scan_orchestrator::SkipCategory::Error,
+            });
+        }
+        let parallel_result = ParallelScanResult {
+            function_results: vec![],
+            test_order: (0..ATTEMPTED_FAILURES)
+                .map(|i| format!("fn_{i}"))
+                .collect(),
+            skipped,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+
+        let mut file_map = HashMap::new();
+        for i in 0..ATTEMPTED_FAILURES {
+            file_map.insert(format!("fn_{i}"), format!("/src/m{i}.ts"));
+        }
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        let cb = &report.codebase;
+        assert_eq!(cb.attempted_functions, ATTEMPTED_FAILURES);
+        assert_eq!(cb.failed_functions, ATTEMPTED_FAILURES);
+        assert_eq!(cb.completed_functions, 0);
+        assert_eq!(cb.skipped_functions_count, 0);
+        assert_eq!(cb.unsupported_functions, 0);
+        assert_eq!(cb.total_discovered_functions, ATTEMPTED_FAILURES);
+        assert_eq!(cb.failed.len(), ATTEMPTED_FAILURES);
+        assert!(
+            cb.skipped_functions.is_empty(),
+            "failures must not appear in skipped_functions: {:?}",
+            cb.skipped_functions,
+        );
+        // file_path threads through the file_map.
+        assert_eq!(cb.failed[0].file_path, "/src/m0.ts");
+    }
+
+    /// str-jeen.46: unsupported targets (`SkipCategory::Unsupported`,
+    /// e.g. unexecutable parameter types filtered before attempt) are
+    /// counted separately from the `attempted` total.
+    #[test]
+    fn report_separates_unsupported_from_attempted() {
+        const COMPLETED: usize = 1;
+        const UNSUPPORTED: usize = 2;
+        const EXPECTED_SKIP: usize = 1;
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("good", 5, 1, 3, 5, vec![])],
+            test_order: vec!["good".into()],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "opaque1".into(),
+                    reason: "unexecutable param: opaque type".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Unsupported,
+                },
+                SkippedFunction {
+                    function_name: "opaque2".into(),
+                    reason: "unexecutable param: opaque type".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Unsupported,
+                },
+                SkippedFunction {
+                    function_name: "cached".into(),
+                    reason: "checkpoint resume".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Expected,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        let cb = &report.codebase;
+        assert_eq!(cb.completed_functions, COMPLETED);
+        assert_eq!(cb.unsupported_functions, UNSUPPORTED);
+        assert_eq!(cb.skipped_functions_count, EXPECTED_SKIP);
+        assert_eq!(cb.failed_functions, 0);
+        // attempted counts attempt = completed + failed + expected_skipped;
+        // unsupported targets were never attempted.
+        assert_eq!(cb.attempted_functions, COMPLETED + EXPECTED_SKIP);
+        assert_eq!(
+            cb.total_discovered_functions,
+            COMPLETED + EXPECTED_SKIP + UNSUPPORTED,
+        );
+        // skipped_functions array carries both expected and unsupported,
+        // each with its own category string.
+        assert_eq!(cb.skipped_functions.len(), EXPECTED_SKIP + UNSUPPORTED);
+        let categories: Vec<&str> = cb
+            .skipped_functions
+            .iter()
+            .map(|s| s.category.as_str())
+            .collect();
+        assert!(categories.contains(&"unsupported"));
+        assert!(categories.contains(&"expected"));
     }
 
     #[test]
@@ -1236,12 +1574,15 @@ mod tests {
         let file_map = HashMap::new();
         let report = generate_report(&parallel_result, &file_map, None);
 
-        assert_eq!(report.codebase.skipped_functions.len(), 1);
-        assert_eq!(report.codebase.skipped_functions[0].function_name, "slow");
-        assert_eq!(
-            report.codebase.skipped_functions[0].reason,
-            "timed out after 30s"
-        );
+        // str-jeen.46: SkipCategory::Error rows are routed to the
+        // structured `failed` array, not `skipped_functions`.
+        assert!(report.codebase.skipped_functions.is_empty());
+        assert_eq!(report.codebase.failed.len(), 1);
+        assert_eq!(report.codebase.failed[0].function_name, "slow");
+        assert_eq!(report.codebase.failed[0].reason, "timed out after 30s");
+        assert_eq!(report.codebase.failed_functions, 1);
+        assert_eq!(report.codebase.attempted_functions, 2);
+        assert_eq!(report.codebase.completed_functions, 1);
     }
 
     #[test]
@@ -1258,9 +1599,10 @@ mod tests {
         let file_map = HashMap::new();
         let report = generate_report(&parallel_result, &file_map, None);
 
-        assert_eq!(report.version, 1);
+        assert_eq!(report.version, SCAN_REPORT_SCHEMA_VERSION);
         assert!(report.functions.is_empty());
-        assert_eq!(report.codebase.total_functions, 0);
+        assert_eq!(report.codebase.completed_functions, 0);
+        assert_eq!(report.codebase.attempted_functions, 0);
         assert_eq!(report.codebase.total_branches, 0);
         assert_eq!(report.codebase.overall_coverage, 0.0);
         assert!(report.codebase.skipped_functions.is_empty());
@@ -1366,26 +1708,29 @@ mod tests {
         assert!(json.contains("\"total_lines\""));
         assert!(json.contains("\"mocks_used\""));
 
-        // Codebase-level fields
-        assert!(json.contains("\"total_functions\""));
+        // Codebase-level fields (v2 schema, str-jeen.46).
+        assert!(json.contains("\"attempted_functions\""));
+        assert!(json.contains("\"completed_functions\""));
+        assert!(json.contains("\"failed_functions\""));
+        assert!(json.contains("\"skipped_functions_count\""));
+        assert!(json.contains("\"unsupported_functions\""));
+        assert!(json.contains("\"total_discovered_functions\""));
         assert!(json.contains("\"total_branches\""));
         assert!(json.contains("\"overall_coverage\""));
         assert!(json.contains("\"skipped_functions\""));
         assert!(json.contains("\"dependency_graph\""));
+        assert!(
+            !json.contains("\"total_functions\""),
+            "v2 drops total_functions; consumers must read completed_functions",
+        );
     }
 
     #[test]
     fn write_report_creates_directory_and_file() {
         let report = ScanReport {
-            version: 1,
+            version: SCAN_REPORT_SCHEMA_VERSION,
             functions: vec![],
-            codebase: CodebaseReport {
-                total_functions: 0,
-                total_branches: 0,
-                overall_coverage: 0.0,
-                skipped_functions: vec![],
-                dependency_graph: vec![],
-            },
+            codebase: CodebaseReport::default(),
             test_order: vec![],
             cumulative: None,
         };
@@ -1401,7 +1746,7 @@ mod tests {
         // Read back and verify
         let contents = std::fs::read_to_string(&path).expect("read file");
         let deserialized: ScanReport = serde_json::from_str(&contents).expect("parse json");
-        assert_eq!(deserialized.version, 1);
+        assert_eq!(deserialized.version, SCAN_REPORT_SCHEMA_VERSION);
 
         // Clean up
         let _ = std::fs::remove_dir_all(&dir);
@@ -1487,7 +1832,7 @@ mod tests {
 
         let report = generate_report_from_scan(&scan_result, &file_map);
 
-        assert_eq!(report.version, 1);
+        assert_eq!(report.version, SCAN_REPORT_SCHEMA_VERSION);
         assert_eq!(report.functions.len(), 2);
         assert_eq!(report.functions[0].file_path, "src/a.ts");
         assert_eq!(report.functions[1].file_path, ""); // not in file_map
@@ -1560,7 +1905,7 @@ mod tests {
         let md = format_markdown_report(&report);
 
         assert!(
-            md.contains("**Functions explored:** 2"),
+            md.contains("**Functions completed:** 2"),
             "bad function count: {md}"
         );
         assert!(
@@ -1607,15 +1952,9 @@ mod tests {
     #[test]
     fn markdown_empty_report_produces_sensible_output() {
         let report = ScanReport {
-            version: 1,
+            version: SCAN_REPORT_SCHEMA_VERSION,
             functions: vec![],
-            codebase: CodebaseReport {
-                total_functions: 0,
-                total_branches: 0,
-                overall_coverage: 0.0,
-                skipped_functions: vec![],
-                dependency_graph: vec![],
-            },
+            codebase: CodebaseReport::default(),
             test_order: vec![],
             cumulative: None,
         };
@@ -1624,8 +1963,12 @@ mod tests {
 
         assert!(md.contains("# Shatter Scan Report"), "missing heading");
         assert!(
-            md.contains("**Functions explored:** 0"),
-            "missing zero functions"
+            md.contains("**Functions completed:** 0"),
+            "missing zero completed functions count",
+        );
+        assert!(
+            md.contains("**Functions attempted:** 0"),
+            "missing zero attempted count",
         );
         assert!(
             md.contains("*No functions were explored.*"),
@@ -1644,18 +1987,15 @@ mod tests {
     #[test]
     fn markdown_report_with_skipped_functions() {
         let report = ScanReport {
-            version: 1,
+            version: SCAN_REPORT_SCHEMA_VERSION,
             functions: vec![],
             codebase: CodebaseReport {
-                total_functions: 0,
-                total_branches: 0,
-                overall_coverage: 0.0,
                 skipped_functions: vec![SkippedFunctionReport {
                     function_name: "slow".to_string(),
                     reason: "timed out after 30s".to_string(),
                     category: "error".to_string(),
                 }],
-                dependency_graph: vec![],
+                ..Default::default()
             },
             test_order: vec![],
             cumulative: None,
