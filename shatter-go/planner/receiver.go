@@ -27,6 +27,15 @@ const (
 	// ReceiverPlanKindUsefulZeroValue uses the zero value of a whitelisted
 	// type whose zero state is both valid and interesting to exercise.
 	ReceiverPlanKindUsefulZeroValue ReceiverPlanKind = "useful_zero_value"
+	// ReceiverPlanKindFallbackZeroValue uses a zero value as a last-resort
+	// fallback when no other strategy applies and the receiver type can be
+	// safely zero-initialised. Pointer receivers are dispatched as
+	// `&Type{}`; value receivers as the zero `Type{}` value. Emitted only
+	// when the receiver is a non-interface, non-generic-unconstrained type
+	// (the wrapper's `zero_value` switch case always compiles for these),
+	// so callers always see at least one executable plan instead of a
+	// `NoConstructor` unsatisfied requirement (str-qo1.9).
+	ReceiverPlanKindFallbackZeroValue ReceiverPlanKind = "fallback_zero_value"
 	// ReceiverPlanKindHint applies an operator-supplied override.
 	ReceiverPlanKindHint ReceiverPlanKind = "hint"
 )
@@ -167,6 +176,14 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		if len(plans) >= max {
 			break
 		}
+		// Skip constructors that take parameters: the wrapper has no way to
+		// synthesise their arguments and drops the matching switch case
+		// (str-qo1.14). Emitting a `constructor:NewFoo` plan that the
+		// wrapper cannot dispatch produces an "unknown receiver kind"
+		// runtime failure (str-qo1.9).
+		if isParameterful(c) {
+			continue
+		}
 		add(ReceiverPlan{
 			Kind:         ReceiverPlanKindSamePackageConstructor,
 			ReceiverKind: WrapperReceiverKindConstructorPrefix + c.FuncName,
@@ -177,6 +194,9 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 	for _, c := range opts.NearbyPackageConstructors {
 		if len(plans) >= max {
 			break
+		}
+		if isParameterful(c) {
+			continue
 		}
 		add(ReceiverPlan{
 			Kind:         ReceiverPlanKindNearbyPackageConstructor,
@@ -211,6 +231,20 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		})
 	}
 
+	// Last-resort fallback: when no strategy fired, but the receiver type
+	// is non-interface and non-generic-unconstrained, the wrapper's
+	// `zero_value` switch case always compiles. Emit a fallback zero-value
+	// plan so pointer receivers like `(*Config).Server` get an executable
+	// plan instead of a `NoConstructor` unsatisfied requirement
+	// (str-qo1.9).
+	if len(plans) == 0 && fallbackZeroValueIsSafe(t) {
+		add(ReceiverPlan{
+			Kind:         ReceiverPlanKindFallbackZeroValue,
+			ReceiverKind: WrapperReceiverKindZeroValue,
+			Label:        "fallback_zero_value_" + toSnakeCase(t.Receiver.TypeName),
+		})
+	}
+
 	if len(plans) == 0 {
 		return nil, &protocol.UnsatisfiedRequirement{
 			Kind:     protocol.UnsatisfiedRequirementKindNoConstructor,
@@ -219,6 +253,30 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		}
 	}
 	return plans, nil
+}
+
+// isParameterful reports whether c carries any function parameters. The
+// wrapper template can only dispatch parameterless constructors (str-qo1.14),
+// so the receiver planner mirrors that filter to keep its plan output and
+// the wrapper switch in sync.
+func isParameterful(c protocol.ConstructorCandidate) bool {
+	return len(c.Parameters) > 0
+}
+
+// fallbackZeroValueIsSafe reports whether a fallback zero-value receiver plan
+// can compile and dispatch through the wrapper. The wrapper's `zero_value`
+// case unconditionally writes `var _recv T` (or `&T{}` for pointer receivers)
+// — both compile for any concrete struct. Interface receivers are guarded
+// upstream and never reach this point. Generic targets without satisfiable
+// type-args would already have short-circuited via PlanGenericTypeArgSets.
+func fallbackZeroValueIsSafe(t protocol.DiscoveredTarget) bool {
+	if t.Receiver == nil || t.Receiver.TypeName == "" {
+		return false
+	}
+	if t.Receiver.IsInterface {
+		return false
+	}
+	return true
 }
 
 func labelForConstructor(c protocol.ConstructorCandidate) string {

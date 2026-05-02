@@ -56,24 +56,90 @@ func TestPlanReceivers_ServiceWithNewConstructor_TopIsNewService(t *testing.T) {
 	}
 }
 
-// AC2: Type with no constructor yields unsatisfied with explicit reason.
-func TestPlanReceivers_NoConstructor_UnsatisfiedNoConstructor(t *testing.T) {
+// str-qo1.9: pointer receiver with no usable constructor falls back to a
+// zero-value plan instead of producing a NoConstructor unsatisfied
+// requirement. The wrapper's `zero_value` switch case unconditionally
+// compiles for non-interface receivers (`var _recv T; _recv := &_recvVal`),
+// so the planner emits an executable last-resort plan.
+func TestPlanReceivers_NoConstructor_FallbackZeroValue(t *testing.T) {
 	target := methodTarget("Counter", true)
 	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{})
-	if plans != nil {
-		t.Fatalf("expected nil plans, got %+v", plans)
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
 	}
-	if unsat == nil {
-		t.Fatalf("expected unsatisfied requirement")
+	if len(plans) != 1 {
+		t.Fatalf("plans = %+v, want exactly one fallback plan", plans)
 	}
-	if unsat.Kind != protocol.UnsatisfiedRequirementKindNoConstructor {
-		t.Errorf("unsat.Kind = %v, want %v", unsat.Kind, protocol.UnsatisfiedRequirementKindNoConstructor)
+	top := plans[0]
+	if top.Kind != planner.ReceiverPlanKindFallbackZeroValue {
+		t.Errorf("top.Kind = %v, want %v", top.Kind, planner.ReceiverPlanKindFallbackZeroValue)
 	}
-	if unsat.TargetID != target.ID {
-		t.Errorf("unsat.TargetID = %q, want %q", unsat.TargetID, target.ID)
+	if top.ReceiverKind != planner.WrapperReceiverKindZeroValue {
+		t.Errorf("top.ReceiverKind = %q, want %q", top.ReceiverKind, planner.WrapperReceiverKindZeroValue)
 	}
-	if unsat.Detail == "" {
-		t.Error("unsat.Detail must be non-empty")
+	if top.Label != "fallback_zero_value_counter" {
+		t.Errorf("top.Label = %q, want %q", top.Label, "fallback_zero_value_counter")
+	}
+}
+
+// str-qo1.9: pointer receiver method whose only same-package constructor
+// requires arguments must NOT yield a `constructor:NewFoo` plan — the
+// wrapper template (str-qo1.14) drops parametric constructor switch cases,
+// so emitting that plan would surface as a runtime "unknown receiver kind"
+// failure. Instead the planner falls back to a zero-value plan.
+func TestPlanReceivers_ParameterfulConstructor_FallsBackToZeroValue(t *testing.T) {
+	target := methodTarget("Adapter", true)
+	parameterfulCtor := protocol.ConstructorCandidate{
+		FuncName:   "NewAdapter",
+		TargetType: "Adapter",
+		Parameters: []protocol.ParamInfo{{
+			Name: "cfg",
+			Type: protocol.TypeInfo{Kind: "struct"},
+		}},
+	}
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		SamePackageConstructors: []protocol.ConstructorCandidate{parameterfulCtor},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	for _, p := range plans {
+		if p.ReceiverKind == "constructor:NewAdapter" {
+			t.Fatalf("planner emitted constructor:NewAdapter for a parameterful constructor; the wrapper drops this case (str-qo1.14) and dispatch would fail with \"unknown receiver kind\"; plans=%+v", plans)
+		}
+		if p.Kind == planner.ReceiverPlanKindSamePackageConstructor {
+			t.Fatalf("planner emitted same-package constructor plan despite arity mismatch; plans=%+v", plans)
+		}
+	}
+	if len(plans) != 1 || plans[0].Kind != planner.ReceiverPlanKindFallbackZeroValue {
+		t.Fatalf("expected single fallback zero-value plan, got %+v", plans)
+	}
+}
+
+// str-qo1.9: parameterful constructor mixed with parameterless constructor —
+// only the parameterless one is plan-eligible.
+func TestPlanReceivers_MixedConstructors_KeepsOnlyParameterless(t *testing.T) {
+	target := methodTarget("Adapter", true)
+	withArgs := protocol.ConstructorCandidate{
+		FuncName:   "NewAdapter",
+		TargetType: "Adapter",
+		Parameters: []protocol.ParamInfo{{Name: "cfg", Type: protocol.TypeInfo{Kind: "struct"}}},
+	}
+	noArgs := protocol.ConstructorCandidate{
+		FuncName:   "DefaultAdapter",
+		TargetType: "Adapter",
+	}
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		SamePackageConstructors: []protocol.ConstructorCandidate{withArgs, noArgs},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("plans=%+v, want exactly one (only the parameterless ctor)", plans)
+	}
+	if plans[0].ReceiverKind != "constructor:DefaultAdapter" {
+		t.Errorf("plans[0].ReceiverKind=%q, want constructor:DefaultAdapter", plans[0].ReceiverKind)
 	}
 }
 
