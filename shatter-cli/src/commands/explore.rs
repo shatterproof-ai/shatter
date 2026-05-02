@@ -645,6 +645,93 @@ struct ExploreSummary {
     functions: Vec<ExploreSummaryEntry>,
 }
 
+/// Reason an explore run terminates with a nonzero process exit even though
+/// no internal `Err` propagated up to `main` (str-960w).
+///
+/// Before this type existed, `shatter explore` returned `Ok(())` whenever the
+/// pipeline completed end-to-end, regardless of whether any target produced
+/// usable output. Runs where every attempted target hit `build_failed`
+/// silently exited 0 and CI / agent workflows could not detect the failure.
+#[derive(Debug)]
+enum ExploreFailure {
+    /// At least one target was attempted (scheduled one or more functions)
+    /// and not a single attempted target produced a `completed` function.
+    AllAttemptedTargetsFailed {
+        attempted_targets: usize,
+        build_failed: usize,
+        runtime_failed: usize,
+        timed_out: usize,
+    },
+}
+
+impl std::fmt::Display for ExploreFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExploreFailure::AllAttemptedTargetsFailed {
+                attempted_targets,
+                build_failed,
+                runtime_failed,
+                timed_out,
+            } => write!(
+                f,
+                "explore: all {attempted_targets} attempted target(s) failed \
+                 (build_failed={build_failed}, runtime_failed={runtime_failed}, \
+                 timed_out={timed_out}); no completed functions"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExploreFailure {}
+
+/// Decide whether an explore run should exit nonzero based on its per-file
+/// `ExploreSummary` rows (str-960w).
+///
+/// A target is considered "attempted" when it scheduled at least one
+/// function for execution — i.e.
+/// `completed + build_failed + runtime_failed + timed_out > 0`. Targets
+/// that produced zero functions (e.g. test files, declaration-only modules,
+/// or any other `no_target_reason` row) are not "attempted" and do not by
+/// themselves flip the exit code.
+///
+/// Partial-success policy (machine-readable): the run exits 0 whenever at
+/// least one attempted target produced a `completed` function, even if
+/// other attempted targets failed. Per-target counters in each
+/// `summary.json` (`completed`, `build_failed`, `runtime_failed`,
+/// `timed_out`) remain the source of truth for callers wanting a stricter
+/// gate. Returns `Err(ExploreFailure)` only when every attempted target
+/// has zero `completed` outcomes.
+fn decide_explore_exit_status(summaries: &[ExploreSummary]) -> Result<(), ExploreFailure> {
+    let mut attempted_targets = 0usize;
+    let mut successful_targets = 0usize;
+    let mut total_build_failed = 0usize;
+    let mut total_runtime_failed = 0usize;
+    let mut total_timed_out = 0usize;
+    for summary in summaries {
+        let attempted_in_target =
+            summary.completed + summary.build_failed + summary.runtime_failed + summary.timed_out;
+        if attempted_in_target == 0 {
+            continue;
+        }
+        attempted_targets += 1;
+        if summary.completed > 0 {
+            successful_targets += 1;
+        }
+        total_build_failed += summary.build_failed;
+        total_runtime_failed += summary.runtime_failed;
+        total_timed_out += summary.timed_out;
+    }
+    if attempted_targets >= 1 && successful_targets == 0 {
+        return Err(ExploreFailure::AllAttemptedTargetsFailed {
+            attempted_targets,
+            build_failed: total_build_failed,
+            runtime_failed: total_runtime_failed,
+            timed_out: total_timed_out,
+        });
+    }
+    Ok(())
+}
+
 /// Sum of `ExploreSummaryEntry::line_count` partitioned by outcome status,
 /// producing the three named denominators surfaced in the run JSON
 /// (str-jeen.18). The split mirrors the discovery → attempt → completion
@@ -3118,6 +3205,9 @@ fn finalize_explore(
         log::info!("Wrote spec bundle to {}", out.display());
     }
 
+    // str-960w: surface a nonzero exit when every attempted target failed,
+    // even though reports/specs were written successfully above.
+    decide_explore_exit_status(&summaries)?;
     Ok(())
 }
 
@@ -5516,6 +5606,12 @@ pub(crate) async fn run_explore(
         );
     }
 
+    // str-960w: a run that completed the full pipeline but where every
+    // attempted target failed (e.g. all build_failed) must exit nonzero so
+    // CI and agent workflows can detect the failure. Reports and artifacts
+    // have already been written above, so callers still get machine-readable
+    // per-target status in `summary.json`.
+    decide_explore_exit_status(&report_summaries)?;
     Ok(())
 }
 
@@ -5711,7 +5807,8 @@ fn build_skip_summary(
 mod tests {
     use super::{
         ArtifactValidationIssue, ArtifactValidationReport, EXPLORE_ARTIFACT_VERSION,
-        ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry, FuncExploreOutcome,
+        ExploreFailure, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
+        FuncExploreOutcome, decide_explore_exit_status,
         GoRootCauseBreakdown, UnavailableReason, aggregate_go_root_causes,
         aggregate_go_root_causes_from_entries, batch_is_exhausted, build_skip_summary,
         bucket_counts_from_entries, check_summary_paths, classify_go_build_failure,
@@ -5737,6 +5834,129 @@ mod tests {
     use shatter_core::report::ProgressEvent;
     use shatter_core::types::TypeInfo;
     use std::time::Duration;
+
+    /// Helper to build a minimal `ExploreSummary` with the bucket counters
+    /// the str-960w exit-status decision actually reads.
+    fn summary_with_buckets(
+        file: &str,
+        completed: usize,
+        build_failed: usize,
+        runtime_failed: usize,
+        timed_out: usize,
+    ) -> ExploreSummary {
+        ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "x".to_string(),
+            file: file.to_string(),
+            completed,
+            failed: build_failed + runtime_failed + timed_out,
+            build_failed,
+            runtime_failed,
+            timed_out,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decide_exit_status_ok_when_no_summaries() {
+        assert!(decide_explore_exit_status(&[]).is_ok());
+    }
+
+    #[test]
+    fn decide_exit_status_ok_when_no_target_was_attempted() {
+        // A file with `no_target_reason` (e.g. test file, declaration-only)
+        // contributes zero attempted functions and must not flip the exit
+        // code on its own — the analyzer correctly determined there was
+        // nothing to run.
+        let summaries = vec![summary_with_buckets("declarations.d.ts", 0, 0, 0, 0)];
+        assert!(decide_explore_exit_status(&summaries).is_ok());
+    }
+
+    #[test]
+    fn decide_exit_status_ok_when_some_target_completed() {
+        let summaries = vec![summary_with_buckets("ok.ts", 3, 0, 0, 0)];
+        assert!(decide_explore_exit_status(&summaries).is_ok());
+    }
+
+    #[test]
+    fn decide_exit_status_err_when_single_target_all_build_failed() {
+        // Bug scenario: focused target produces only build_failed outcomes
+        // and zero completions. Previously exited 0; must now exit nonzero.
+        let summaries = vec![summary_with_buckets("broken.ts", 0, 4, 0, 0)];
+        let err = decide_explore_exit_status(&summaries).expect_err("should fail");
+        match err {
+            ExploreFailure::AllAttemptedTargetsFailed {
+                attempted_targets,
+                build_failed,
+                runtime_failed,
+                timed_out,
+            } => {
+                assert_eq!(attempted_targets, 1);
+                assert_eq!(build_failed, 4);
+                assert_eq!(runtime_failed, 0);
+                assert_eq!(timed_out, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn decide_exit_status_err_when_every_attempted_target_failed() {
+        // Multiple attempted targets, none completed — mix of failure modes.
+        let summaries = vec![
+            summary_with_buckets("a.ts", 0, 2, 0, 0),
+            summary_with_buckets("b.ts", 0, 0, 1, 0),
+            summary_with_buckets("c.ts", 0, 0, 0, 3),
+        ];
+        let err = decide_explore_exit_status(&summaries).expect_err("should fail");
+        let ExploreFailure::AllAttemptedTargetsFailed {
+            attempted_targets,
+            build_failed,
+            runtime_failed,
+            timed_out,
+        } = err;
+        assert_eq!(attempted_targets, 3);
+        assert_eq!(build_failed, 2);
+        assert_eq!(runtime_failed, 1);
+        assert_eq!(timed_out, 3);
+    }
+
+    #[test]
+    fn decide_exit_status_ok_partial_success_with_some_failed_targets() {
+        // Partial-success policy: at least one attempted target completed
+        // a function, so the run as a whole exits 0 even though another
+        // target is entirely build_failed.
+        let summaries = vec![
+            summary_with_buckets("good.ts", 2, 0, 0, 0),
+            summary_with_buckets("bad.ts", 0, 5, 0, 0),
+        ];
+        assert!(decide_explore_exit_status(&summaries).is_ok());
+    }
+
+    #[test]
+    fn decide_exit_status_skip_only_summaries_do_not_force_failure() {
+        // A run where nothing was attempted (every target was a no-target
+        // skip row) is not a failure even though no completion happened.
+        let summaries = vec![
+            summary_with_buckets("a.d.ts", 0, 0, 0, 0),
+            summary_with_buckets("b_test.ts", 0, 0, 0, 0),
+        ];
+        assert!(decide_explore_exit_status(&summaries).is_ok());
+    }
+
+    #[test]
+    fn explore_failure_display_includes_bucket_counts() {
+        let err = ExploreFailure::AllAttemptedTargetsFailed {
+            attempted_targets: 2,
+            build_failed: 3,
+            runtime_failed: 1,
+            timed_out: 0,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("all 2 attempted target"), "{msg}");
+        assert!(msg.contains("build_failed=3"), "{msg}");
+        assert!(msg.contains("runtime_failed=1"), "{msg}");
+        assert!(msg.contains("timed_out=0"), "{msg}");
+    }
 
     #[test]
     fn progress_event_with_status_serializes() {
