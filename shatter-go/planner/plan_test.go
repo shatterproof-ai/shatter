@@ -287,10 +287,15 @@ func TestPlanRequirements_MethodInterfaceReceiverShortCircuits(t *testing.T) {
 	}
 }
 
-// TestPlanRequirements_MethodNoCtorReturnsNoConstructor: a method target with
-// a known DiscoveredTarget but no matching constructor candidates produces a
-// NoConstructor unsatisfied requirement (AC #4 distinguishability).
-func TestPlanRequirements_MethodNoCtorReturnsNoConstructor(t *testing.T) {
+// TestPlanRequirements_MethodNoCtorFallsBackToZeroValue: a pointer-receiver
+// method target with a known DiscoveredTarget but no matching constructor
+// candidates produces a fallback zero-value plan (str-qo1.9). The wrapper's
+// `zero_value` switch case unconditionally compiles for non-interface
+// receivers, so the planner emits an executable last-resort plan rather
+// than a NoConstructor unsatisfied requirement. Callers that need to
+// distinguish "synthesized zero value" from "discovered constructor" can
+// inspect plan.ReceiverKind ("zero_value" vs "constructor:Name").
+func TestPlanRequirements_MethodNoCtorFallsBackToZeroValue(t *testing.T) {
 	t.Parallel()
 	const targetID = "example.com/pkg:(*Orphan).Run"
 	analysis := &protocol.FunctionAnalysis{
@@ -314,11 +319,16 @@ func TestPlanRequirements_MethodNoCtorReturnsNoConstructor(t *testing.T) {
 		lookup,
 		PlanRequirementsOptions{},
 	)
-	if len(plans) != 0 {
-		t.Fatalf("method without ctor should yield no plans, got %d", len(plans))
+	if len(unsat) != 0 {
+		t.Fatalf("expected no unsatisfied, got %+v", unsat)
 	}
-	if len(unsat) != 1 || unsat[0].Kind != protocol.UnsatisfiedRequirementKindNoConstructor {
-		t.Fatalf("expected NoConstructor unsatisfied, got %+v", unsat)
+	if len(plans) == 0 {
+		t.Fatalf("expected fallback zero-value plan for pointer receiver without ctor")
+	}
+	for _, p := range plans {
+		if p.ReceiverKind != "zero_value" {
+			t.Errorf("plan.ReceiverKind=%q, want zero_value (fallback)", p.ReceiverKind)
+		}
 	}
 }
 
