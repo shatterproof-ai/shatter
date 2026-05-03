@@ -786,6 +786,20 @@ pub async fn explore_function(
     mut setup_mgr: Option<&mut SetupManager>,
     progress_hints: Option<ProgressHints<'_>>,
 ) -> Result<ObservationOutput, ExploreError> {
+    if config.observer_pool > 1
+        && let Some(observer_frontend_config) = config.observer_frontend_config.clone()
+    {
+        return explore_function_with_observer_pool(
+            frontend,
+            analysis,
+            config,
+            setup_mgr,
+            progress_hints,
+            observer_frontend_config,
+        )
+        .await;
+    }
+
     let instrument_response = frontend
         .send(ProtoCommand::Instrument {
             file: config.file.clone(),
@@ -1558,6 +1572,507 @@ pub async fn explore_function(
         opaque_suggestions,
         stubbed_modules,
     ))
+}
+
+struct ObserverJob {
+    inputs: Vec<serde_json::Value>,
+    mocks: Vec<MockConfig>,
+    strategy_idx: Option<usize>,
+}
+
+struct ObserverObservation {
+    inputs: Vec<serde_json::Value>,
+    mocks: Vec<MockConfig>,
+    result: ExecuteResult,
+    strategy_idx: Option<usize>,
+}
+
+enum ObserverMessage {
+    Observed(Box<ObserverObservation>),
+    Failed(ExploreError),
+}
+
+#[derive(Clone, Copy)]
+struct ObserverWorkerOptions {
+    per_function_setup: bool,
+    per_execution_setup: bool,
+    skip_setup: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn explore_function_with_observer_pool(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    config: &ExploreConfig,
+    setup_mgr: Option<&mut SetupManager>,
+    progress_hints: Option<ProgressHints<'_>>,
+    observer_frontend_config: FrontendConfig,
+) -> Result<ObservationOutput, ExploreError> {
+    let instrument_response = frontend
+        .send(ProtoCommand::Instrument {
+            file: config.file.clone(),
+            function: analysis.name.clone(),
+            mocks: config.mocks.clone(),
+            project_root: config.project_root.clone(),
+            execution_profile: config.execution_profile.clone(),
+        })
+        .instrument(tracing::info_span!("explore.instrument"))
+        .await?;
+
+    let instrumentable_line_count = match instrument_response.result {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
+            if !instrumented {
+                return Err(ExploreError::UnexpectedResponse(
+                    "instrumentation returned instrumented=false".to_string(),
+                ));
+            }
+            instrumentable_line_count
+        }
+        ResponseResult::Error { code, message, .. } => {
+            return Err(ExploreError::UnexpectedResponse(format!(
+                "instrument error ({code:?}): {message}"
+            )));
+        }
+        other => {
+            return Err(ExploreError::UnexpectedResponse(format!(
+                "expected Instrument response, got {other:?}"
+            )));
+        }
+    };
+
+    let mut rng = match config.seed {
+        Some(seed) => StdRng::seed_from_u64(seed),
+        None => StdRng::from_os_rng(),
+    };
+
+    let has_setup = config.setup_file.is_some() && frontend_supports(&config.capabilities, "setup");
+    let per_function_setup = has_setup && config.setup_level == SetupLevel::Function;
+    let per_execution_setup = has_setup && config.setup_level == SetupLevel::Execution;
+    let skip_setup = setup_mgr
+        .as_ref()
+        .is_some_and(|m| m.should_skip(config.setup_level));
+
+    let has_generators = config
+        .value_sources
+        .iter()
+        .any(|s| matches!(s, ValueSource::CustomGenerator { .. }));
+    let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
+    let mut prefetched = if use_generators {
+        prefetch_custom_values(
+            &config.value_sources,
+            frontend,
+            config.max_iterations.unwrap_or(100) as usize,
+        )
+        .instrument(tracing::info_span!("input_gen.prefetch"))
+        .await
+        .unwrap_or_else(|e| {
+            log::debug!("prefetch failed, falling back to built-in: {e}");
+            PrefetchedValues::new()
+        })
+    } else {
+        PrefetchedValues::new()
+    };
+
+    let mut aggregator =
+        crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
+    let mut last_reported_branches: usize = 0;
+    let mut live_first_states: HashMap<String, LiveFirstState> = HashMap::new();
+    let mut meta_strategy = build_random_explorer_meta_strategy(
+        &analysis.params,
+        &analysis.literals,
+        config.user_seeds.clone(),
+        config.candidate_inputs.clone(),
+        config.pool_seeds.clone(),
+        use_generators,
+        config.meta_config.clone(),
+    );
+    let strategy_ctx = StrategyContext {
+        params: analysis.params.clone(),
+        literals: analysis.literals.clone(),
+        capabilities: config.capabilities.clone(),
+    };
+
+    let observer_pool = config.observer_pool.max(1);
+    let (job_tx, job_rx) = tokio::sync::mpsc::channel::<ObserverJob>(observer_pool * 2);
+    let job_rx = std::sync::Arc::new(tokio::sync::Mutex::new(job_rx));
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<ObserverMessage>();
+    let mut handles = Vec::with_capacity(observer_pool);
+
+    for _worker_id in 0..observer_pool {
+        let worker_rx = std::sync::Arc::clone(&job_rx);
+        let worker_tx = result_tx.clone();
+        let worker_config = observer_frontend_config.clone();
+        let worker_analysis = analysis.clone();
+        let worker_explore_config = config.clone();
+        let worker_options = ObserverWorkerOptions {
+            per_function_setup,
+            per_execution_setup,
+            skip_setup,
+        };
+        handles.push(tokio::spawn(async move {
+            run_observer_worker(
+                worker_config,
+                worker_analysis,
+                worker_explore_config,
+                worker_rx,
+                worker_tx,
+                worker_options,
+            )
+            .await;
+        }));
+    }
+    drop(result_tx);
+
+    let explore_start = Instant::now();
+    let mut timed_out_due_to_budget = false;
+    let mut last_summary_time = Instant::now();
+    let mut in_flight = 0usize;
+    let mut producer_done = false;
+
+    while !producer_done || in_flight > 0 {
+        while !producer_done && in_flight < observer_pool {
+            if let Some(budget) = config.max_iterations
+                && aggregator.iterations().saturating_add(in_flight as u32) >= budget
+            {
+                producer_done = true;
+                break;
+            }
+
+            if let Some(timeout) = config.timeout_explore
+                && explore_start.elapsed() >= timeout
+            {
+                timed_out_due_to_budget = true;
+                producer_done = true;
+                break;
+            }
+
+            let (inputs, strategy_idx) = {
+                let _input_gen_span = tracing::info_span!("input_gen").entered();
+                match meta_strategy.next(&strategy_ctx, &mut rng) {
+                    Some((v, idx)) => (v, Some(idx)),
+                    None if use_generators => {
+                        let v = generate_inputs_with_custom(
+                            &analysis.params,
+                            &config.value_sources,
+                            &mut prefetched,
+                            &mut rng,
+                            Some(&config.capabilities),
+                        );
+                        (v, None)
+                    }
+                    None => {
+                        producer_done = true;
+                        break;
+                    }
+                }
+            };
+
+            let mut iteration_mocks = if !config.mock_params.is_empty() {
+                generate_mock_values(&config.mock_params, &mut rng, Some(&config.capabilities))
+            } else {
+                config.mocks.clone()
+            };
+            apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
+
+            if job_tx
+                .send(ObserverJob {
+                    inputs,
+                    mocks: iteration_mocks,
+                    strategy_idx,
+                })
+                .await
+                .is_err()
+            {
+                return Err(ExploreError::UnexpectedResponse(
+                    "observer pool stopped accepting jobs".to_string(),
+                ));
+            }
+            in_flight += 1;
+        }
+
+        if in_flight == 0 {
+            break;
+        }
+
+        let message = result_rx.recv().await.ok_or_else(|| {
+            ExploreError::UnexpectedResponse("observer pool stopped before completing jobs".into())
+        })?;
+        in_flight -= 1;
+
+        match message {
+            ObserverMessage::Observed(observation) => {
+                if aggregator.discoveries_count() > last_reported_branches {
+                    last_reported_branches = aggregator.discoveries_count();
+                }
+                if let Some(hints) = progress_hints.as_ref() {
+                    let since_last = last_summary_time.elapsed();
+                    if since_last >= Duration::from_secs(PROGRESS_SUMMARY_INTERVAL_SECS) {
+                        let total_branches = hints.total_branches.or(Some(analysis.branches.len()));
+                        (hints.callback)(&ExploreProgressSnapshot {
+                            function_name: analysis.name.clone(),
+                            elapsed: explore_start.elapsed(),
+                            iterations: aggregator.iterations(),
+                            paths_found: aggregator.unique_paths_count(),
+                            total_branches,
+                            branches_covered: Some(aggregator.discoveries_count()),
+                            mcdc_summary: None,
+                            iters_since_new_discovery: aggregator.iters_since_new_discovery(),
+                        });
+                        last_summary_time = Instant::now();
+                    }
+                }
+
+                update_live_first_states(&observation.result, &mut live_first_states);
+                let discovery_method = observation
+                    .strategy_idx
+                    .map(|idx| meta_strategy.strategy_kind(idx).explorer_discovery_method())
+                    .unwrap_or(
+                        SpecialCandidatePath::ExplorerCustomGeneratorFallback
+                            .explorer_discovery_method(),
+                    );
+                let event = crate::observation_aggregator::ObservationEvent {
+                    inputs: observation.inputs,
+                    mocks: observation.mocks,
+                    result: observation.result,
+                    discovery_method,
+                };
+                let outcome = aggregator.aggregate(event.clone());
+                meta_strategy.feedback(&event.inputs, &event.result, outcome.is_new_path);
+                if let Some(idx) = observation.strategy_idx {
+                    meta_strategy.record_outcome(idx, outcome.is_new_path);
+                }
+            }
+            ObserverMessage::Failed(error) => {
+                drop(job_tx);
+                for handle in handles {
+                    let _ = handle.await;
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    drop(job_tx);
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    let total_lines = instrumentable_line_count
+        .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
+    let opaque_suggestions = crate::executability::build_opaque_suggestions(
+        &analysis.params,
+        &std::collections::HashMap::new(),
+    );
+    let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
+
+    Ok(aggregator.into_observation_output(
+        analysis.name.clone(),
+        total_lines,
+        timed_out_due_to_budget,
+        vec![],
+        vec![],
+        vec![],
+        std::collections::HashMap::new(),
+        None,
+        crate::shrink::ShrinkStats::default(),
+        vec![],
+        opaque_suggestions,
+        stubbed_modules,
+    ))
+}
+
+async fn run_observer_worker(
+    observer_frontend_config: FrontendConfig,
+    analysis: FunctionAnalysis,
+    config: ExploreConfig,
+    job_rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ObserverJob>>>,
+    result_tx: tokio::sync::mpsc::UnboundedSender<ObserverMessage>,
+    options: ObserverWorkerOptions,
+) {
+    if let Err(error) = run_observer_worker_inner(
+        observer_frontend_config,
+        analysis,
+        config,
+        job_rx,
+        result_tx.clone(),
+        options,
+    )
+    .await
+    {
+        let _ = result_tx.send(ObserverMessage::Failed(error));
+    }
+}
+
+async fn run_observer_worker_inner(
+    observer_frontend_config: FrontendConfig,
+    analysis: FunctionAnalysis,
+    config: ExploreConfig,
+    job_rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ObserverJob>>>,
+    result_tx: tokio::sync::mpsc::UnboundedSender<ObserverMessage>,
+    options: ObserverWorkerOptions,
+) -> Result<(), ExploreError> {
+    let mut frontend = Frontend::spawn(&observer_frontend_config).await?;
+
+    let response = frontend
+        .send(ProtoCommand::Instrument {
+            file: config.file.clone(),
+            function: analysis.name.clone(),
+            mocks: config.mocks.clone(),
+            project_root: config.project_root.clone(),
+            execution_profile: config.execution_profile.clone(),
+        })
+        .instrument(tracing::info_span!("observer.instrument"))
+        .await?;
+    match response.result {
+        ResponseResult::Instrument { instrumented, .. } if instrumented => {}
+        ResponseResult::Instrument { .. } => {
+            return Err(ExploreError::UnexpectedResponse(
+                "observer instrumentation returned instrumented=false".to_string(),
+            ));
+        }
+        other => {
+            return Err(ExploreError::UnexpectedResponse(format!(
+                "expected observer Instrument response, got {other:?}"
+            )));
+        }
+    }
+
+    let mut setup_context: Option<SetupContextStack> = None;
+    if options.per_function_setup
+        && !options.skip_setup
+        && let Some(ref setup_file) = config.setup_file
+    {
+        setup_context = send_setup(
+            &mut frontend,
+            setup_file,
+            &analysis.name,
+            config.setup_level,
+            config.project_root.clone(),
+            config.execution_profile.clone(),
+        )
+        .instrument(tracing::info_span!("observer.setup.function"))
+        .await?;
+    }
+
+    let prepare_id: Option<String> = if frontend_supports(&config.capabilities, "prepare") {
+        match frontend
+            .send(ProtoCommand::Prepare {
+                file: config.file.clone(),
+                function: analysis.name.clone(),
+                mocks: config.mocks.clone(),
+                project_root: config.project_root.clone(),
+                execution_profile: config.execution_profile.clone(),
+                plan: config.default_execute_plan.clone(),
+            })
+            .instrument(tracing::info_span!("observer.prepare"))
+            .await
+        {
+            Ok(resp) => match resp.result {
+                ResponseResult::Prepare { prepare_id } => Some(prepare_id),
+                other => {
+                    log::debug!("observer prepare returned unexpected response: {other:?}");
+                    None
+                }
+            },
+            Err(e) => {
+                log::debug!("observer prepare failed, falling back to per-execute build: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    loop {
+        let job = {
+            let mut receiver = job_rx.lock().await;
+            receiver.recv().await
+        };
+        let Some(job) = job else {
+            break;
+        };
+
+        if options.per_execution_setup
+            && !options.skip_setup
+            && let Some(ref setup_file) = config.setup_file
+        {
+            setup_context = send_setup(
+                &mut frontend,
+                setup_file,
+                &analysis.name,
+                config.setup_level,
+                config.project_root.clone(),
+                config.execution_profile.clone(),
+            )
+            .instrument(tracing::info_span!("observer.setup.execution"))
+            .await?;
+        }
+
+        let response = frontend
+            .send(ProtoCommand::Execute {
+                function: analysis.name.clone(),
+                inputs: job.inputs.clone(),
+                mocks: job.mocks.clone(),
+                setup_context: setup_context.clone(),
+                capture: config.capture_side_effects,
+                prepare_id: prepare_id.clone(),
+                execution_profile: config.execution_profile.clone(),
+                plan: config.default_execute_plan.clone(),
+            })
+            .instrument(tracing::info_span!("observer.execute_round_trip"))
+            .await?;
+        let exec_result = match response.result {
+            ResponseResult::Execute(result) => *result,
+            ResponseResult::Error { code, message, .. } => {
+                return Err(ExploreError::UnexpectedResponse(format!(
+                    "execute error ({code:?}): {message}"
+                )));
+            }
+            other => {
+                return Err(ExploreError::UnexpectedResponse(format!(
+                    "expected Execute response, got {other:?}"
+                )));
+            }
+        };
+
+        if options.per_execution_setup
+            && !options.skip_setup
+            && frontend_supports(&config.capabilities, "teardown")
+        {
+            send_teardown(&mut frontend, &analysis.name, config.setup_level)
+                .instrument(tracing::info_span!("observer.teardown.execution"))
+                .await?;
+            setup_context = None;
+        }
+
+        if result_tx
+            .send(ObserverMessage::Observed(Box::new(ObserverObservation {
+                inputs: job.inputs,
+                mocks: job.mocks,
+                result: exec_result,
+                strategy_idx: job.strategy_idx,
+            })))
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    if options.per_function_setup
+        && !options.skip_setup
+        && frontend_supports(&config.capabilities, "teardown")
+    {
+        send_teardown(&mut frontend, &analysis.name, config.setup_level)
+            .instrument(tracing::info_span!("observer.teardown.function"))
+            .await?;
+    }
+
+    frontend.shutdown().await?;
+    Ok(())
 }
 
 /// Extract deduplicated module names with `StubbedImport` kind from raw results.
@@ -2838,7 +3353,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("classify"));
@@ -2877,7 +3392,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -2917,7 +3432,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(report.contains("throws"));
@@ -2944,7 +3459,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -2979,7 +3494,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let metrics = crate::coverage_metrics::CoverageMetrics {
             total_branches: 4,
@@ -3032,7 +3547,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -3088,7 +3603,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report_verbose(&result);
         assert!(report.contains("10 iteration(s)"));
@@ -3117,7 +3632,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec!["pg".into(), "redis".into()],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(
@@ -3154,7 +3669,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(&result, &ReportOptions::default());
         assert!(
@@ -3375,9 +3890,10 @@ mod tests {
             "SHATTER_OBSERVER_LOG".to_string(),
             log_path.to_string_lossy().into_owned(),
         ));
-        config
-            .env_vars
-            .push(("SHATTER_OBSERVER_EXEC_SLEEP".to_string(), "0.05".to_string()));
+        config.env_vars.push((
+            "SHATTER_OBSERVER_EXEC_SLEEP".to_string(),
+            "0.05".to_string(),
+        ));
         config
     }
 
@@ -3474,6 +3990,141 @@ mod tests {
             execute_pids.len() >= 2,
             "observer_pool=2 should execute candidates on at least two frontend processes; \
              pids={execute_pids:?}, log={log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_observer_pool_runs_function_setup_per_observer() {
+        let log_path = std::env::temp_dir().join(format!(
+            "shatter-observer-setup-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+
+        let observer_frontend_config = recording_frontend_config(&log_path);
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["setup", "teardown"]));
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(4),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: Some("setup.ts".into()),
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: caps,
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert_eq!(result.iterations, 4);
+
+        let log = std::fs::read_to_string(&log_path).expect("observer log should exist");
+        let setup_pids: std::collections::BTreeSet<&str> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("setup:"))
+            .collect();
+        assert!(
+            setup_pids.len() >= 2,
+            "function setup should run once on each observer process; \
+             pids={setup_pids:?}, log={log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_observer_pool_drains_in_flight_on_timeout() {
+        let log_path = std::env::temp_dir().join(format!(
+            "shatter-observer-timeout-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+
+        let observer_frontend_config = recording_frontend_config(&log_path);
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(10_000),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: Some(std::time::Duration::from_millis(1)),
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool timeout should return a partial observation");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert!(
+            result.timed_out,
+            "observer-pool timeout should surface timed_out=true"
+        );
+        assert!(
+            result.iterations < 10_000,
+            "timeout should stop before max_iterations; iterations={}",
+            result.iterations
+        );
+        assert_eq!(
+            result.iterations as usize,
+            result.raw_results.len(),
+            "drained in-flight executions should be aggregated exactly once"
         );
     }
 
@@ -4067,7 +4718,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
         assert!(profile.is_empty());
@@ -4125,7 +4776,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
         assert_eq!(profile.len(), 2);
@@ -4190,7 +4841,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let profile = collect_branch_profile(&obs);
 
@@ -4410,7 +5061,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(
             &result,
@@ -4469,7 +5120,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let report = format_exploration_report(
             &result,
