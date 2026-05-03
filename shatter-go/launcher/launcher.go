@@ -152,7 +152,14 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, err
 	}
 
-	buildArgs := []string{"build", "-mod=mod", "-o", binaryPath}
+	// `-buildvcs=false` disables Go's VCS stamping for the launcher binary.
+	// The launcher is a disposable, generated artifact; stamping serves no
+	// purpose, and `-buildvcs=auto` (the default) causes builds to fail with
+	// `error obtaining VCS status: exit status 128` whenever the build dir
+	// or any ancestor contains a `.git` that the toolchain cannot probe
+	// (e.g. when shatter is run against a real module checkout from a
+	// generated workspace path). See str-qo1.15.
+	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false", "-o", binaryPath}
 	if opts.OverlayPath != "" {
 		buildArgs = append(buildArgs, "-overlay", opts.OverlayPath)
 	} else if opts.WrapperRealPath != "" && opts.WrapperInTreePath != "" {
