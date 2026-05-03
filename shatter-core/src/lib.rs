@@ -52,6 +52,7 @@ pub mod mock_fixture;
 pub mod mock_gen;
 pub mod mock_value_space;
 pub mod nondeterminism;
+pub mod observation_aggregator;
 pub mod observe;
 pub mod orchestrator;
 pub mod pipeline;
