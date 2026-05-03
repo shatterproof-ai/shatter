@@ -239,6 +239,16 @@ pub struct ScanConfig {
     /// for persisted scheduler state so branch-mode and MC/DC-mode runs
     /// maintain independent cooldown and attempt histories (str-bo4z.7).
     pub coverage_mode: crate::interesting_pool::CoverageMode,
+    /// When `false`, suppress all project-local artifact writes for this
+    /// scan run: per-function `<scan_root>/functions/*.json`,
+    /// `summary.json`, and `manifest.json`. Other persistence remains gated
+    /// by its own knobs (`cache`, `pool_path`, `resume_path`,
+    /// `stored_inputs_cache`, `scheduler_state_cache`). Default `true`
+    /// preserves existing library behavior; the CLI sets `false` when the
+    /// caller passes explicit external `-o` outputs together with
+    /// `--no-cache --no-seeds` so Shatter behaves as a clean external audit
+    /// tool (str-1wcl).
+    pub write_artifacts: bool,
 }
 
 /// Context about sampling mode, for report headers.
@@ -1191,7 +1201,9 @@ pub async fn scan(
         &manifest_source_paths,
         project_root_path,
     );
-    crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+    if config.write_artifacts {
+        crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+    }
 
     for func_name in &test_order {
         let analysis = match analysis_map.get(func_name.as_str()) {
@@ -1524,7 +1536,9 @@ pub async fn scan(
         summary.status = ScanRunStatus::StaleSourceSet;
     }
     summary.source_diff = Some(diff);
-    write_scan_summary(&scan_root_dir, &summary);
+    if config.write_artifacts {
+        write_scan_summary(&scan_root_dir, &summary);
+    }
 
     Ok(result)
 }
@@ -2700,7 +2714,7 @@ fn merge_replica_results(
         abandoned_frontiers: vec![],
         opaque_suggestions: vec![],
         stubbed_modules: merged_stubbed,
-            ..Default::default()
+        ..Default::default()
     };
 
     let analyze_out = analyze_exploration(&merged_exploration, analysis, fingerprint);
@@ -2826,10 +2840,25 @@ pub async fn parallel_scan_with_progress(
     let scan_start = Instant::now();
     let total_functions = analyses.len();
     let mut progress_index = 0usize;
-    let artifact_root = Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id));
+    // When `config.write_artifacts` is false, every project-local artifact
+    // path is suppressed: the per-function `Option<Arc<PathBuf>>` is `None`
+    // (which the per-function helpers treat as a no-op), and every
+    // `write_scan_summary`/`write_manifest` call is gated on the same flag
+    // (str-1wcl).
+    let write_artifacts = config.write_artifacts;
+    let artifact_root: Option<Arc<PathBuf>> = write_artifacts
+        .then(|| Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id)));
     let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
     let mut summary = new_scan_summary(&scan_id, total_functions);
-    write_scan_summary(&scan_root_dir, &summary);
+    // Gating closure used by every summary write in this function so that
+    // `--no-cache --no-seeds + -o <external>` runs leave nothing under
+    // `<project>/shatter-artifacts/` (str-1wcl).
+    let maybe_write_summary = |s: &ScanSummary| {
+        if write_artifacts {
+            write_scan_summary(&scan_root_dir, s);
+        }
+    };
+    maybe_write_summary(&summary);
 
     // str-jeen.3: capture run-start source snapshot for end-of-run drift
     // detection. The manifest lives next to the summary so external tooling
@@ -2842,7 +2871,9 @@ pub async fn parallel_scan_with_progress(
         &manifest_source_paths,
         project_root_path,
     );
-    crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+    if write_artifacts {
+        crate::run_manifest::write_manifest(&scan_root_dir, &run_manifest);
+    }
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
@@ -2859,7 +2890,7 @@ pub async fn parallel_scan_with_progress(
                         category: SkipCategory::Error,
                     });
                     write_skipped_scan_artifact(
-                        Some(&artifact_root),
+                        artifact_root.as_deref(),
                         progress_index,
                         total_functions,
                         func_name,
@@ -2885,7 +2916,7 @@ pub async fn parallel_scan_with_progress(
                 }
             }
             summary.status = ScanRunStatus::Interrupted;
-            write_scan_summary(&scan_root_dir, &summary);
+            maybe_write_summary(&summary);
             break;
         }
 
@@ -2924,7 +2955,7 @@ pub async fn parallel_scan_with_progress(
                         category: SkipCategory::Error,
                     });
                     write_skipped_scan_artifact(
-                        Some(&artifact_root),
+                        artifact_root.as_deref(),
                         current_progress,
                         total_functions,
                         func_name,
@@ -2939,7 +2970,7 @@ pub async fn parallel_scan_with_progress(
                         SkipCategory::Error,
                         scan_start.elapsed(),
                     );
-                    write_scan_summary(&scan_root_dir, &summary);
+                    maybe_write_summary(&summary);
                     emit_progress(
                         progress_handler.as_ref(),
                         func_name,
@@ -2975,7 +3006,7 @@ pub async fn parallel_scan_with_progress(
                     category: SkipCategory::Expected,
                 });
                 write_skipped_scan_artifact(
-                    Some(&artifact_root),
+                    artifact_root.as_deref(),
                     current_progress,
                     total_functions,
                     func_name,
@@ -2990,7 +3021,7 @@ pub async fn parallel_scan_with_progress(
                     SkipCategory::Expected,
                     scan_start.elapsed(),
                 );
-                write_scan_summary(&scan_root_dir, &summary);
+                maybe_write_summary(&summary);
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -3017,7 +3048,7 @@ pub async fn parallel_scan_with_progress(
                     category: SkipCategory::Expected,
                 });
                 write_skipped_scan_artifact(
-                    Some(&artifact_root),
+                    artifact_root.as_deref(),
                     current_progress,
                     total_functions,
                     func_name,
@@ -3032,7 +3063,7 @@ pub async fn parallel_scan_with_progress(
                     SkipCategory::Expected,
                     scan_start.elapsed(),
                 );
-                write_scan_summary(&scan_root_dir, &summary);
+                maybe_write_summary(&summary);
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -3094,7 +3125,7 @@ pub async fn parallel_scan_with_progress(
                     category: SkipCategory::Expected,
                 });
                 write_skipped_scan_artifact(
-                    Some(&artifact_root),
+                    artifact_root.as_deref(),
                     current_progress,
                     total_functions,
                     func_name,
@@ -3109,7 +3140,7 @@ pub async fn parallel_scan_with_progress(
                     SkipCategory::Expected,
                     scan_start.elapsed(),
                 );
-                write_scan_summary(&scan_root_dir, &summary);
+                maybe_write_summary(&summary);
                 emit_progress(
                     progress_handler.as_ref(),
                     func_name,
@@ -3302,7 +3333,7 @@ pub async fn parallel_scan_with_progress(
                     &input_pool,
                     &config.genetic_config,
                     progress_handler.clone(),
-                    Some(Arc::clone(&artifact_root)),
+                    artifact_root.as_ref().map(Arc::clone),
                     total_functions,
                     scan_start,
                     config.coverage_mode.as_str(),
@@ -3329,7 +3360,7 @@ pub async fn parallel_scan_with_progress(
                     &input_pool,
                     &config.genetic_config,
                     progress_handler.clone(),
-                    Some(Arc::clone(&artifact_root)),
+                    artifact_root.as_ref().map(Arc::clone),
                     total_functions,
                     scan_start,
                 )
@@ -3423,7 +3454,7 @@ pub async fn parallel_scan_with_progress(
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
-                    let artifact_root = Arc::clone(&artifact_root);
+                    let artifact_root = artifact_root.clone();
                     let handle = tokio::spawn(async move {
                         emit_progress(
                             progress_handler.as_ref(),
@@ -3492,7 +3523,7 @@ pub async fn parallel_scan_with_progress(
                             Ok(Ok(func_result)) => {
                                 if write_success_artifact {
                                     write_completed_scan_artifact(
-                                        Some(&artifact_root),
+                                        artifact_root.as_deref(),
                                         progress_index,
                                         total_functions,
                                         &file_path,
@@ -3512,7 +3543,7 @@ pub async fn parallel_scan_with_progress(
                             Ok(Err(e)) => {
                                 let reason = format!("error: {e}");
                                 write_failed_scan_artifact(
-                                    Some(&artifact_root),
+                                    artifact_root.as_deref(),
                                     progress_index,
                                     total_functions,
                                     &func_name,
@@ -3535,7 +3566,7 @@ pub async fn parallel_scan_with_progress(
                                 let reason =
                                     format!("timed out after {:.0}s", timeout.as_secs_f64());
                                 write_failed_scan_artifact(
-                                    Some(&artifact_root),
+                                    artifact_root.as_deref(),
                                     progress_index,
                                     total_functions,
                                     &func_name,
@@ -3681,7 +3712,7 @@ pub async fn parallel_scan_with_progress(
                 }
             }
             // Update the summary after each layer.
-            write_scan_summary(&scan_root_dir, &summary);
+            maybe_write_summary(&summary);
         } else {
             // No tasks in this layer (all cache hits). Shut down the speculative
             // pre-spawn if one was created (only on the first layer before the
@@ -3732,7 +3763,7 @@ pub async fn parallel_scan_with_progress(
         &run_manifest,
         &manifest_source_paths,
     );
-    write_scan_summary(&scan_root_dir, &summary);
+    maybe_write_summary(&summary);
 
     Ok(ParallelScanResult {
         function_results: all_results,
@@ -4395,8 +4426,7 @@ pub fn format_dry_run_plan(
             // Show the bare name in the signature line and append the file
             // path so dry-run output stays compact while still
             // disambiguating duplicate-named functions across files.
-            let (func_file, display_name) =
-                crate::behavior::split_qualified_id(func_name);
+            let (func_file, display_name) = crate::behavior::split_qualified_id(func_name);
             let location_suffix = if func_file.is_empty() {
                 String::new()
             } else {
@@ -4664,7 +4694,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
-                                            ..Default::default()
+                        ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -4698,7 +4728,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
-                                            ..Default::default()
+                        ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -4756,7 +4786,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "standalone".into(),
@@ -4911,7 +4941,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -4958,7 +4988,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -5012,7 +5042,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "func".into(),
@@ -5133,7 +5163,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -5192,7 +5222,7 @@ mod tests {
                     abandoned_frontiers: vec![],
                     opaque_suggestions: vec![],
                     stubbed_modules: vec![],
-                                    ..Default::default()
+                    ..Default::default()
                 },
                 behavior_map: BehaviorMap {
                     function_id: "f1".into(),
@@ -5314,6 +5344,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5401,6 +5432,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5481,6 +5513,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5581,6 +5614,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -5662,6 +5696,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let events = Arc::new(StdMutex::new(Vec::new()));
@@ -5747,6 +5782,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let skipped_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5805,6 +5841,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let failed_events = Arc::new(StdMutex::new(Vec::new()));
@@ -5930,6 +5967,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -6022,6 +6060,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -6096,6 +6135,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -6176,6 +6216,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let plan = format_dry_run_plan(&analyses, &[], &config).expect("should succeed");
@@ -6223,6 +6264,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let plan = format_dry_run_plan(&analyses, &skipped, &config).expect("should succeed");
@@ -6259,6 +6301,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let plan = format_dry_run_plan(&[], &[], &config).expect("should succeed");
@@ -6905,6 +6948,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &[analysis], &config)
@@ -7031,6 +7075,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let analyses = vec![warm_analysis, stale_analysis];
@@ -7120,6 +7165,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7208,6 +7254,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7313,6 +7360,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7429,6 +7477,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7561,6 +7610,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7693,6 +7743,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7811,6 +7862,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -7921,6 +7973,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)
@@ -8126,7 +8179,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let analysis = make_analysis(func_name, vec![]);
         let analyze_out = analyze_exploration(&exploration, &analysis, None);
@@ -8613,7 +8666,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
-                                            ..Default::default()
+                        ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "leaf".into(),
@@ -8647,7 +8700,7 @@ mod tests {
                         abandoned_frontiers: vec![],
                         opaque_suggestions: vec![],
                         stubbed_modules: vec![],
-                                            ..Default::default()
+                        ..Default::default()
                     },
                     behavior_map: BehaviorMap {
                         function_id: "caller".into(),
@@ -9790,7 +9843,10 @@ mod tests {
         // file_map references.
         let tmp = TempDir::new().expect("tempdir");
         let src_path = tmp.path().join("test.ts");
-        File::create(&src_path).unwrap().write_all(b"// stub").unwrap();
+        File::create(&src_path)
+            .unwrap()
+            .write_all(b"// stub")
+            .unwrap();
 
         let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
         fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
@@ -9846,6 +9902,7 @@ mod tests {
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
         };
 
         let result = parallel_scan(&fe_config, &analyses, &config)

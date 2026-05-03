@@ -79,6 +79,22 @@ pub(crate) async fn run_scan(
                 .join("pool.json"),
         )
     };
+
+    // str-1wcl: when the caller passes explicit external `-o` outputs AND
+    // disables both caches and the seed pool, treat this as a clean
+    // external-audit run: no project-local artifact directory, no
+    // `.shatter-cache/`, no `.shatter/` writes, and harness storage env
+    // vars point under the OS temp dir instead of `<project>/shatter-
+    // artifacts/`. The user already has their report at the explicit
+    // external path, so writing additional copies under the audited
+    // project tree just leaves litter behind.
+    let external_audit_mode = !outputs.is_empty() && no_cache && no_seeds;
+    if external_audit_mode {
+        log::debug!(
+            "scan: external audit mode active (-o + --no-cache + --no-seeds); \
+             suppressing project-local artifact and harness storage writes",
+        );
+    }
     // Validate --language if specified.
     if let Some(lang) = language_filter
         && lang != "typescript"
@@ -101,11 +117,14 @@ pub(crate) async fn run_scan(
     // wired; the dry-run path bypasses `outputs`. Reject that combo
     // explicitly so the failure is visible rather than silently writing
     // nothing.
-    let json_stdout_requested = format == crate::args::StdoutFormat::Json
-        && (stdout || outputs.is_empty());
-    let json_output_file_requested = outputs
-        .iter()
-        .any(|p| matches!(crate::args::infer_output_format(p), Ok(crate::args::StdoutFormat::Json)));
+    let json_stdout_requested =
+        format == crate::args::StdoutFormat::Json && (stdout || outputs.is_empty());
+    let json_output_file_requested = outputs.iter().any(|p| {
+        matches!(
+            crate::args::infer_output_format(p),
+            Ok(crate::args::StdoutFormat::Json)
+        )
+    });
     if dry_run && (json_stdout_requested || json_output_file_requested) {
         return Err(
             "scan --dry-run does not support --format json (and writes no JSON \
@@ -387,7 +406,14 @@ pub(crate) async fn run_scan(
             false,
             release,
         )?;
-        apply_project_storage(&mut config, project_root_str.as_deref());
+        if external_audit_mode {
+            apply_external_audit_storage(&mut config);
+        } else {
+            apply_project_storage(&mut config, project_root_str.as_deref());
+        }
+        if no_cache {
+            disable_frontend_analysis_cache(&mut config);
+        }
         let frontend = Frontend::spawn(&config)
             .await
             .map_err(|e| format!("failed to spawn {lang:?} frontend: {e}"))?;
@@ -666,6 +692,7 @@ pub(crate) async fn run_scan(
             scheduler_state_cache: None,
             stored_inputs_cache: None,
             coverage_mode: shatter_core::interesting_pool::CoverageMode::Branch,
+            write_artifacts: !external_audit_mode,
         };
         let plan = scan_orchestrator::format_dry_run_plan(
             &all_analyses,
@@ -729,7 +756,14 @@ pub(crate) async fn run_scan(
         false,
         release,
     )?;
-    apply_project_storage(&mut fe_config, project_root_str.as_deref());
+    if external_audit_mode {
+        apply_external_audit_storage(&mut fe_config);
+    } else {
+        apply_project_storage(&mut fe_config, project_root_str.as_deref());
+    }
+    if no_cache {
+        disable_frontend_analysis_cache(&mut fe_config);
+    }
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {
@@ -815,6 +849,7 @@ pub(crate) async fn run_scan(
         scheduler_state_cache: None,
         stored_inputs_cache,
         coverage_mode: shatter_core::interesting_pool::CoverageMode::Branch,
+        write_artifacts: !external_audit_mode,
     };
 
     let scan_start = Instant::now();
@@ -875,8 +910,8 @@ pub(crate) async fn run_scan(
             // preliminary Markdown dump — the JSON write below is the
             // authoritative stdout content. Logs/progress already go to
             // stderr.
-            let json_to_stdout = (outputs.is_empty() || stdout)
-                && format == crate::args::StdoutFormat::Json;
+            let json_to_stdout =
+                (outputs.is_empty() || stdout) && format == crate::args::StdoutFormat::Json;
             if !json_to_stdout {
                 if output_format == crate::args::OutputFormat::Md {
                     let view = crate::render::scan_view(&result);
@@ -929,7 +964,9 @@ pub(crate) async fn run_scan(
 
                 if !json_to_stdout {
                     print_markdown(
-                        &shatter_core::batch_state::format_cumulative_batch_section(&state, batch_idx),
+                        &shatter_core::batch_state::format_cumulative_batch_section(
+                            &state, batch_idx,
+                        ),
                         use_color,
                     );
                 }
@@ -1059,11 +1096,10 @@ pub(crate) fn rebuild_analyses_from_registry(
         }
 
         let file_path_string = entry.file_path.to_string_lossy().into_owned();
-        let qualified =
-            shatter_core::batch_analyze::FunctionRegistry::qualified_name(
-                &entry.file_path,
-                &entry.name,
-            );
+        let qualified = shatter_core::batch_analyze::FunctionRegistry::qualified_name(
+            &entry.file_path,
+            &entry.name,
+        );
 
         // str-fuhw: file_map is keyed by qualified ID `"<file>::<name>"`
         // rather than bare name so two functions sharing a name across
@@ -1260,9 +1296,7 @@ pub(crate) fn write_analysis_report(
 mod tests {
     use super::*;
     use shatter_core::batch_analyze::{FunctionEntry, FunctionRegistry};
-    use shatter_core::protocol::{
-        BranchInfo, BranchType, FunctionAnalysis, InvocationModel,
-    };
+    use shatter_core::protocol::{BranchInfo, BranchType, FunctionAnalysis, InvocationModel};
     use shatter_core::types::{ParamInfo, TypeInfo};
 
     /// str-jeen.45 regression: a Go function with a `range` loop + an `if`
@@ -1329,19 +1363,13 @@ mod tests {
             end_line: analysis.end_line,
         };
 
-        let qualified = FunctionRegistry::qualified_name(
-            &PathBuf::from(GO_FILE_PATH),
-            FUNCTION_NAME,
-        );
+        let qualified =
+            FunctionRegistry::qualified_name(&PathBuf::from(GO_FILE_PATH), FUNCTION_NAME);
         let mut index = HashMap::new();
         index.insert(qualified.clone(), 0);
         let mut analyses = HashMap::new();
         analyses.insert(qualified, analysis);
-        let registry = FunctionRegistry::from_raw_with_analyses(
-            vec![entry],
-            index,
-            analyses,
-        );
+        let registry = FunctionRegistry::from_raw_with_analyses(vec![entry], index, analyses);
 
         let (rebuilt, file_map) = rebuild_analyses_from_registry(&registry, false);
         assert_eq!(rebuilt.len(), 1);
@@ -1351,7 +1379,10 @@ mod tests {
             "branches must survive registry round-trip; \
              scan dry-run reported `Branches: 0` before str-jeen.45 fix",
         );
-        assert!(matches!(rebuilt[0].branches[0].branch_type, BranchType::For));
+        assert!(matches!(
+            rebuilt[0].branches[0].branch_type,
+            BranchType::For
+        ));
         assert!(matches!(rebuilt[0].branches[1].branch_type, BranchType::If));
         // str-fuhw: file_map is keyed by qualified ID, not bare name.
         let qualified_key = format!("{GO_FILE_PATH}::{FUNCTION_NAME}");
@@ -1362,10 +1393,7 @@ mod tests {
         // The rehydrated analysis carries its source_file so the call
         // graph in `behavior::CallGraph::from_analyses` can produce
         // qualified node IDs.
-        assert_eq!(
-            rebuilt[0].source_file.as_deref(),
-            Some(GO_FILE_PATH),
-        );
+        assert_eq!(rebuilt[0].source_file.as_deref(), Some(GO_FILE_PATH),);
     }
 
     /// Registries built without analyses (e.g. via `FunctionRegistry::from_raw`)
