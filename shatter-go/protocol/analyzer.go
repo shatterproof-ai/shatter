@@ -1297,8 +1297,7 @@ func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, nex
 // 1:1 alignment is what keeps `branches_covered` (unique runtime branch_ids
 // seen) from exceeding the analyzer-reported denominator (str-qo1.11). For a
 // multi-literal case clause (`case A, B:`) the analyzer surfaces the
-// disjunction in ConditionText and uses the first literal for the symbolic
-// equality — multi-literal symbolic disjunction is a separate latent gap.
+// disjunction in both ConditionText and the symbolic Condition (str-5jen).
 func switchBranches(fset *token.FileSet, stmt *ast.SwitchStmt, params map[string]bool, nextID *int) []BranchInfo {
 	var branches []BranchInfo
 	for _, clause := range stmt.Body.List {
@@ -1345,6 +1344,16 @@ func switchCaseConditionText(
 	}
 	condText := strings.Join(parts, conditionJoiner)
 	cond := buildSwitchCaseSymExpr(tag, cc.List[0], params)
+	for _, lit := range cc.List[1:] {
+		right := buildSwitchCaseSymExpr(tag, lit, params)
+		cond = &SymExpr{
+			Kind:  "bin_op",
+			Op:    "or",
+			Left:  cond,
+			Right: right,
+			Args:  []SymExpr{},
+		}
+	}
 	return condText, cond
 }
 

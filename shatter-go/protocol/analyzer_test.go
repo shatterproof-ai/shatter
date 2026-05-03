@@ -280,6 +280,58 @@ func TestAnalyzeSwitchOnStringExtractsCaseBranches(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMultiLiteralCaseEmitsDisjunction is the str-5jen analyzer
+// regression: a `case 2, 3:` clause must surface a disjunctive symbolic
+// Condition (op="or", both literals as constant operands) and a
+// disjunctive ConditionText. Pre-fix only the first literal reached the
+// SymExpr, leaving the second literal's path symbolically unreachable.
+func TestAnalyzeMultiLiteralCaseEmitsDisjunction(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("switches.go"), "MultiLiteralSwitch")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	fn := results[0]
+	const wantBranches = 3 // case 1, case 2|3, default
+	if len(fn.Branches) != wantBranches {
+		t.Fatalf("branches len = %d, want %d", len(fn.Branches), wantBranches)
+	}
+	multi := fn.Branches[1]
+	if got, want := multi.ConditionText, "x == 2 || x == 3"; got != want {
+		t.Errorf("ConditionText = %q, want %q", got, want)
+	}
+	if multi.Condition == nil {
+		t.Fatalf("Condition is nil for multi-literal clause")
+	}
+	if multi.Condition.Op != "or" {
+		t.Errorf("Condition.Op = %q, want %q", multi.Condition.Op, "or")
+	}
+	// Both literals must appear as `const` operands somewhere in the
+	// disjunction. Use a recursive walk so the test does not depend on
+	// left/right associativity of the chained `or`.
+	wantLiterals := map[int64]bool{2: false, 3: false}
+	var walk func(*SymExpr)
+	walk = func(e *SymExpr) {
+		if e == nil {
+			return
+		}
+		if e.Kind == "const" {
+			if v, ok := e.Value.(int64); ok {
+				if _, want := wantLiterals[v]; want {
+					wantLiterals[v] = true
+				}
+			}
+		}
+		walk(e.Left)
+		walk(e.Right)
+	}
+	walk(multi.Condition)
+	for lit, seen := range wantLiterals {
+		if !seen {
+			t.Errorf("literal %d missing from multi-literal disjunction: %+v", lit, multi.Condition)
+		}
+	}
+}
+
 func TestAnalyzeForLoopExtractsForBranch(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("switches.go"), "ForLoop")
 	if err != nil {
