@@ -426,6 +426,29 @@ tasks:
     cmds:
       - python3 scripts/perf_isolation_report.py --results-dir "{{.RESULTS_DIR}}" --markdown-out "{{.RESULTS_DIR}}/isolation-report.md" --json-out "{{.RESULTS_DIR}}/isolation-report.json"
 
+  broad-run-validation:
+    desc: "Broad-run validation corpus gate (str-jeen.14). Documented local check; not in CI."
+    deps: [cli:build, ts:build, go:build]
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - tests/broad-run-corpus/**/*
+      - scripts/broad_run_validation_gate.py
+      - examples/go/internal-method/**/*
+      - examples/go/mixed-package/**/*
+      - examples/go/multi-import-wrapper/**/*
+      - examples/go/rewrite-syntax/**/*
+    cmds:
+      - python3 scripts/broad_run_validation_gate.py --corpus tests/broad-run-corpus/manifest.yaml -v
+
+  broad-run-validation-tests:
+    desc: "Unit + property tests for the broad-run validation gate"
+    cmds:
+      - python3 -m unittest scripts.test_broad_run_validation_gate
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
