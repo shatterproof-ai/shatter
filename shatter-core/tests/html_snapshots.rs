@@ -195,7 +195,22 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
             behavior_coverage: vec![],
             mocks_used,
             mock_misses: vec![],
-            coverage_metrics: Default::default(),
+            // str-9q1z: branch_count/branches_covered now derive from
+            // coverage_metrics rather than exploration.unique_paths.
+            // Mirror the legacy semantics in this fixture so the snapshot
+            // stays meaningful: pretend every discovered path corresponds
+            // to an analyzer branch covered by Z3.
+            coverage_metrics: shatter_core::coverage_metrics::CoverageMetrics {
+                total_branches: unique_paths,
+                z3_solved: unique_paths,
+                random_found: 0,
+                user_provided: 0,
+                fuzz_found: 0,
+                uncovered: 0,
+                symexpr_count: 0,
+                unknown_count: 0,
+                mcdc_metrics: None,
+            },
             refactoring_recommendations: vec![],
         }
     };
