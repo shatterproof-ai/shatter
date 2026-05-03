@@ -266,8 +266,12 @@ func TestAnalyzeSwitchOnStringExtractsCaseBranches(t *testing.T) {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	if len(fn.Branches) != 3 {
-		t.Fatalf("branches len = %d, want 3", len(fn.Branches))
+	// 3 value cases + default = 4 branch obligations (str-qo1.11: each
+	// CaseClause is an independent obligation, including the default
+	// catch-all).
+	const wantBranches = 4
+	if len(fn.Branches) != wantBranches {
+		t.Fatalf("branches len = %d, want %d", len(fn.Branches), wantBranches)
 	}
 	for _, br := range fn.Branches {
 		if br.BranchType != "switch" {
@@ -531,6 +535,48 @@ func TestAnalyzeFormatNameDetectsDependencies(t *testing.T) {
 	}
 	if !symbols["fmt.Sprintf"] {
 		t.Errorf("missing dependency fmt.Sprintf, got %v", symbols)
+	}
+}
+
+// TestAnalyzeMultiCaseSwitchCountsClausesIncludingDefault is the str-qo1.11
+// regression: a switch with N case clauses + default must report N+1 branches,
+// matching the instrumentor's per-CaseClause branch_id assignment in
+// shatter-go/instrument/visitor.go transformSwitchStmt. Pre-fix, the
+// analyzer enumerated branches per case literal and skipped the default
+// clause, so focused exploration of an exhaustive switch reported >100%
+// coverage (e.g. "11/10 branches" for a 10-case fixture, because the
+// instrumentor recorded an 11th branch_id for the default body).
+func TestAnalyzeMultiCaseSwitchCountsClausesIncludingDefault(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("multi_case_switch.go"), "DetectLanguageID")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no functions returned")
+	}
+	const wantCaseClauses = 10
+	const wantBranches = wantCaseClauses + 1 // +1 for the default clause
+	got := len(results[0].Branches)
+	if got != wantBranches {
+		t.Fatalf("len(branches) = %d, want %d (one per CaseClause incl. default)", got, wantBranches)
+	}
+	// Every emitted branch must be tagged as a switch branch and carry a
+	// monotonically-increasing ID matching the instrumentor's clause-keyed
+	// numbering (0..N).
+	for i, b := range results[0].Branches {
+		if b.BranchType != "switch" {
+			t.Errorf("branches[%d].BranchType = %q, want \"switch\"", i, b.BranchType)
+		}
+		if int(b.ID) != i {
+			t.Errorf("branches[%d].ID = %d, want %d", i, b.ID, i)
+		}
+	}
+	// The last clause is the default — no concrete case literal to surface,
+	// so the analyzer must mark it explicitly so downstream callers can
+	// distinguish it from a value case.
+	last := results[0].Branches[len(results[0].Branches)-1]
+	if last.ConditionText != "default" {
+		t.Errorf("last branch ConditionText = %q, want \"default\"", last.ConditionText)
 	}
 }
 
