@@ -482,6 +482,58 @@ pub(crate) fn apply_project_storage(config: &mut FrontendConfig, project_root: O
     }
 }
 
+/// Apply harness storage env vars rooted under the OS temp dir, so a
+/// frontend session writes its harness cache, scratch, and artifact outputs
+/// outside the project tree.
+///
+/// Used by the scan command when the caller asked for clean external-audit
+/// behavior (explicit external `-o` outputs together with `--no-cache
+/// --no-seeds`, str-1wcl). The directories are created under
+/// `<tempdir>/shatter-audit-<pid>-<counter>/{harness,scratch,artifacts}` and
+/// inherit the OS tempdir's normal cleanup policy.
+///
+/// Also points the Go frontend's workspace root
+/// (`SHATTER_GO_WORKSPACE_ROOT`) at a sibling tempdir so the Go frontend's
+/// per-package analysis cache and generated harness outputs do not land in
+/// `<project>/.shatter-cache/go-workspace/`.
+pub(crate) fn apply_external_audit_storage(config: &mut FrontendConfig) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let session_id = format!(
+        "shatter-audit-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+    );
+    let base = std::env::temp_dir().join(session_id);
+    let cache_root = base.join("harness");
+    let scratch_root = base.join("scratch");
+    let artifact_root = base.join("artifacts");
+    let go_workspace_root = base.join("go-workspace");
+
+    let storage =
+        shatter_core::harness_storage::HarnessStorage::new(cache_root, scratch_root, artifact_root);
+    apply_storage_env(config, &storage);
+    config.env_vars.push((
+        "SHATTER_GO_WORKSPACE_ROOT".to_string(),
+        go_workspace_root.to_string_lossy().into_owned(),
+    ));
+}
+
+/// Disable the Go frontend's per-package discovery / analysis cache for
+/// this session.
+///
+/// Mirrored from `--no-cache`: the CLI's help text now claims that flag
+/// disables every on-disk cache the scan command touches, including the Go
+/// frontend's analysis cache. Setting `SHATTER_DISABLE_ANALYSIS_CACHE=1` on
+/// the spawned frontend is what makes that promise true (str-1wcl).
+pub(crate) fn disable_frontend_analysis_cache(config: &mut FrontendConfig) {
+    config.env_vars.push((
+        "SHATTER_DISABLE_ANALYSIS_CACHE".to_string(),
+        "1".to_string(),
+    ));
+}
+
 /// Apply standard environment variables to a frontend config.
 pub(crate) fn apply_frontend_env(
     config: &mut FrontendConfig,

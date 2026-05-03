@@ -823,7 +823,12 @@ pub(crate) enum CliCommand {
         #[arg(long, env = "SHATTER_CACHE_DIR")]
         cache_dir: Option<PathBuf>,
 
-        /// Disable behavior map caching entirely.
+        /// Disable all on-disk caches read or written by the scan command:
+        /// the behavior-map cache, the cross-file fingerprint analysis cache,
+        /// and the stored-inputs cache. Combined with explicit external `-o`
+        /// outputs and `--no-seeds`, this also suppresses project-local
+        /// `shatter-artifacts/` writes for clean external-audit runs
+        /// (str-1wcl).
         #[arg(long)]
         no_cache: bool,
 

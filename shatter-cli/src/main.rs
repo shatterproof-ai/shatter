@@ -419,7 +419,15 @@ async fn main() -> ExitCode {
             parallelism_max,
             require_rust,
         } => {
-            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            // str-1wcl: clean external-audit runs (`-o <external> --no-cache
+            // --no-seeds`) must not write `.shatter/` into the audited
+            // project. Skip the implicit init in that case; the scan
+            // command itself reaches the same default paths it would have
+            // initialized.
+            let scan_external_audit_mode = !outputs.is_empty() && no_cache && no_seeds;
+            if !scan_external_audit_mode {
+                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            }
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
                     Ok(p) => p,
