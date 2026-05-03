@@ -15,6 +15,7 @@ use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
 use crate::protocol::OutcomeStatus;
 use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, ScanResult};
+use crate::source_bucket::{classify_path, SourceBucket};
 
 /// Maximum number of behavior clusters displayed per function in the Markdown
 /// report. Functions with more clusters show a "... and N more" summary line.
@@ -187,6 +188,14 @@ pub struct FunctionReport {
     pub function_name: String,
     /// Source file path.
     pub file_path: String,
+    /// Path-based source-set classification of [`Self::file_path`]
+    /// (str-jeen.37). Six values: `production_ish`, `test_spec`,
+    /// `generated`, `declaration_only`, `fixture_sample`,
+    /// `policy_excluded`. Computed from the path string only — see
+    /// [`crate::source_bucket`] for precedence rules. Empty
+    /// `file_path` classifies as `production_ish`.
+    #[serde(default)]
+    pub source_bucket: SourceBucket,
     /// Total branch points in the function.
     pub branch_count: usize,
     /// Number of branches covered (unique paths discovered).
@@ -401,6 +410,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     FunctionReport {
         function_name: display_name.to_string(),
         file_path: file_path.to_string(),
+        source_bucket: classify_path(file_path),
         branch_count: exploration.unique_paths,
         branches_covered: exploration.unique_paths,
         coverage_pct,

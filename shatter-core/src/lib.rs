@@ -75,6 +75,7 @@ pub mod setup_manager;
 pub mod shrink;
 pub mod snapshot;
 pub mod solver;
+pub mod source_bucket;
 pub mod spec;
 pub mod spec_diff;
 pub mod strace_discovery;
