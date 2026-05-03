@@ -886,19 +886,21 @@ pub async fn explore_function(
         PrefetchedValues::new()
     };
 
-    let mut obs_state = crate::observe::ObserveState::new();
-    let mut new_path_executions: Vec<ExecutionSummary> = Vec::new();
-    let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
-    let mut iterations: u32 = 0;
-    let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+    // ObservationAggregator owns the per-execution merge state previously
+    // inlined in this function (paths, branches, lines, discoveries,
+    // raw_results, new_path_executions, iterations counter, last-discovery
+    // iteration). See `observation_aggregator.rs` and
+    // `docs/specs/concurrent-single-function-exploration.md` §6 for the
+    // out-of-order-safe aggregation contract that str-frc.3 (observer pool)
+    // will route through this same seam.
+    let mut aggregator =
+        crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
 
     // Tracked for progress reporting: number of branches observed at the last
-    // periodic snapshot, and the iteration index at which that observation was
-    // taken. Their difference feeds `iters_since_new_discovery` so the CLI can
-    // surface the "continuing without new discoveries" signal from the issue
-    // acceptance criteria.
+    // periodic snapshot. The aggregator owns the iteration index at which
+    // the most recent new path was aggregated, exposed via
+    // `iters_since_new_discovery()`.
     let mut last_reported_branches: usize = 0;
-    let mut last_discovery_iteration: u32 = 0;
 
     // --- Prepare lifecycle ---
     // When the frontend supports `prepare`, pre-build the harness once so all
@@ -997,6 +999,7 @@ pub async fn explore_function(
 
                     let fhash = path_hash(float_result, &config.loop_buckets);
                     let flhash = path_hash(floor_result, &config.loop_buckets);
+                    let obs_state = aggregator.observe_state_mut();
                     obs_state.seen_paths.insert(fhash);
                     obs_state.seen_paths.insert(flhash);
                     for &line in &float_result.lines_executed {
@@ -1012,11 +1015,11 @@ pub async fn explore_function(
                         divergent_values.push(v);
                     }
 
-                    raw_results.push((
+                    aggregator.push_raw_result(
                         float_inputs.clone(),
                         config.mocks.clone(),
                         (**float_result).clone(),
-                    ));
+                    );
                 }
             }
 
@@ -1075,7 +1078,7 @@ pub async fn explore_function(
 
     loop {
         if let Some(budget) = effective_budget
-            && iterations >= budget
+            && aggregator.iterations() >= budget
         {
             // Initial budget exhausted — try to claim surplus if still productive.
             if let Some(ref surplus) = config.budget_surplus {
@@ -1121,15 +1124,16 @@ pub async fn explore_function(
             break;
         }
 
-        iterations += 1;
-
-        // --- Periodic progress summary ---
-        // Track branch discovery growth even when no callback is registered so
-        // the "iters since new discovery" counter remains accurate across
-        // subsequent periodic emissions.
-        if discoveries.len() > last_reported_branches {
-            last_reported_branches = discoveries.len();
-            last_discovery_iteration = iterations;
+        // The aggregator's iteration counter advances inside
+        // `record_post_observe()` after the Execute round-trip below; the
+        // periodic progress summary reads its current snapshot pre-execute
+        // (one iteration behind) and the post-execute updates surface in
+        // the next emission. This matches the prior behavior where the
+        // progress summary was emitted at the top of the loop with the
+        // *previous* iteration's counters.
+        let pre_iteration_count = aggregator.iterations();
+        if aggregator.discoveries_count() > last_reported_branches {
+            last_reported_branches = aggregator.discoveries_count();
         }
         if let Some(hints) = progress_hints.as_ref() {
             let since_last = last_summary_time.elapsed();
@@ -1138,12 +1142,12 @@ pub async fn explore_function(
                 (hints.callback)(&ExploreProgressSnapshot {
                     function_name: analysis.name.clone(),
                     elapsed: explore_start.elapsed(),
-                    iterations,
-                    paths_found: obs_state.seen_paths.len(),
+                    iterations: pre_iteration_count,
+                    paths_found: aggregator.unique_paths_count(),
                     total_branches,
-                    branches_covered: Some(discoveries.len()),
+                    branches_covered: Some(aggregator.discoveries_count()),
                     mcdc_summary: None,
-                    iters_since_new_discovery: iterations.saturating_sub(last_discovery_iteration),
+                    iters_since_new_discovery: aggregator.iters_since_new_discovery(),
                 });
                 last_summary_time = Instant::now();
             }
@@ -1229,6 +1233,11 @@ pub async fn explore_function(
         apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
         // --- Execute + classify via canonical observe primitive ---
+        // observe_single mutates the aggregator's ObserveState in place;
+        // record_post_observe (below) folds the rest of the per-execution
+        // event (raw_results, discoveries, new_path_executions, iterations,
+        // last_discovery_iteration) without re-deriving what observe_single
+        // already computed.
         let obs = crate::observe::observe_single(
             frontend,
             &analysis.name,
@@ -1237,7 +1246,7 @@ pub async fn explore_function(
             setup_context.as_ref(),
             config.execution_profile.as_ref(),
             &config.loop_buckets,
-            &mut obs_state,
+            aggregator.observe_state_mut(),
             config.capture_side_effects,
             prepare_id.as_deref(),
         )
@@ -1297,12 +1306,6 @@ pub async fn explore_function(
             .unwrap_or(
                 SpecialCandidatePath::ExplorerCustomGeneratorFallback.explorer_discovery_method(),
             );
-        for branch_id in &obs.new_branch_ids {
-            discoveries.push((*branch_id, discovery_method));
-        }
-        if let Some(summary) = obs.execution_summary {
-            new_path_executions.push(summary);
-        }
 
         // Track recent path discovery rate for surplus claim decisions.
         if config.budget_surplus.is_some() {
@@ -1312,7 +1315,14 @@ pub async fn explore_function(
             recent_hits.push(obs.is_new_path);
         }
 
-        raw_results.push((inputs, iteration_mocks, obs.exec_result));
+        aggregator.record_post_observe(
+            inputs,
+            iteration_mocks,
+            obs.exec_result,
+            discovery_method,
+            obs.is_new_path,
+            &obs.new_branch_ids,
+        );
     }
 
     // --- Per-function teardown ---
@@ -1339,7 +1349,7 @@ pub async fn explore_function(
             u64,
             (Vec<serde_json::Value>, Vec<crate::protocol::MockConfig>),
         > = std::collections::HashMap::new();
-        for (inputs, mocks, result) in &raw_results {
+        for (inputs, mocks, result) in aggregator.raw_results() {
             let ph = crate::orchestrator::hash_branch_path(&result.branch_path);
             let complexity = crate::shrink::witness_complexity(inputs);
             let entry = path_witnesses
@@ -1523,27 +1533,21 @@ pub async fn explore_function(
         &analysis.params,
         &std::collections::HashMap::new(),
     );
-    let stubbed_modules = collect_stubbed_modules(&raw_results);
-    Ok(ObservationOutput {
-        function_name: analysis.name.clone(),
-        iterations,
-        unique_paths: obs_state.seen_paths.len(),
-        lines_covered: obs_state.all_lines.len(),
+    let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
+    Ok(aggregator.into_observation_output(
+        analysis.name.clone(),
         total_lines,
-        new_path_executions,
-        raw_results,
-        discoveries,
-        nondeterministic_fields: vec![],
+        timed_out_due_to_budget,
+        vec![],
         float_probe_results,
-        boundary_results: vec![],
+        vec![],
         shrunk_witnesses,
-        mcdc_summary: None,
+        None,
         shrink_stats,
-        timed_out: timed_out_due_to_budget,
-        abandoned_frontiers: vec![],
+        vec![],
         opaque_suggestions,
         stubbed_modules,
-    })
+    ))
 }
 
 /// Extract deduplicated module names with `StubbedImport` kind from raw results.
