@@ -1291,33 +1291,61 @@ func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, nex
 	}
 }
 
+// switchBranches emits one BranchInfo per *ast.CaseClause, including the
+// default clause. This mirrors the instrumentor's per-clause branch_id
+// assignment in shatter-go/instrument/visitor.go transformSwitchStmt; the
+// 1:1 alignment is what keeps `branches_covered` (unique runtime branch_ids
+// seen) from exceeding the analyzer-reported denominator (str-qo1.11). For a
+// multi-literal case clause (`case A, B:`) the analyzer surfaces the
+// disjunction in ConditionText and uses the first literal for the symbolic
+// equality — multi-literal symbolic disjunction is a separate latent gap.
 func switchBranches(fset *token.FileSet, stmt *ast.SwitchStmt, params map[string]bool, nextID *int) []BranchInfo {
 	var branches []BranchInfo
 	for _, clause := range stmt.Body.List {
 		cc, ok := clause.(*ast.CaseClause)
-		if !ok || cc.List == nil {
-			continue // default clause
+		if !ok {
+			continue
 		}
-		for _, expr := range cc.List {
-			id := *nextID
-			*nextID++
-			var condText string
-			if stmt.Tag != nil {
-				condText = exprText(fset, stmt.Tag) + " == " + exprText(fset, expr)
-			} else {
-				condText = exprText(fset, expr)
-			}
-			cond := buildSwitchCaseSymExpr(stmt.Tag, expr, params)
-			branches = append(branches, BranchInfo{
-				ID:            id,
-				Line:          fset.Position(cc.Pos()).Line,
-				ConditionText: condText,
-				Condition:     cond,
-				BranchType:    "switch",
-			})
-		}
+		id := *nextID
+		*nextID++
+		condText, cond := switchCaseConditionText(fset, stmt.Tag, cc, params)
+		branches = append(branches, BranchInfo{
+			ID:            id,
+			Line:          fset.Position(cc.Pos()).Line,
+			ConditionText: condText,
+			Condition:     cond,
+			BranchType:    "switch",
+		})
 	}
 	return branches
+}
+
+// switchCaseConditionText renders a human-readable condition for a switch
+// case clause and returns the symbolic condition (when expressible). The
+// default clause has no concrete case expressions and is rendered as
+// "default" with a nil symbolic condition; downstream consumers use this
+// marker to distinguish the catch-all branch from a value case.
+func switchCaseConditionText(
+	fset *token.FileSet,
+	tag ast.Expr,
+	cc *ast.CaseClause,
+	params map[string]bool,
+) (string, *SymExpr) {
+	if cc.List == nil {
+		return "default", nil
+	}
+	const conditionJoiner = " || "
+	parts := make([]string, 0, len(cc.List))
+	for _, expr := range cc.List {
+		if tag != nil {
+			parts = append(parts, exprText(fset, tag)+" == "+exprText(fset, expr))
+		} else {
+			parts = append(parts, exprText(fset, expr))
+		}
+	}
+	condText := strings.Join(parts, conditionJoiner)
+	cond := buildSwitchCaseSymExpr(tag, cc.List[0], params)
+	return condText, cond
 }
 
 func forBranch(fset *token.FileSet, stmt *ast.ForStmt, params map[string]bool, nextID *int) BranchInfo {
