@@ -1,0 +1,5 @@
+# shatter scan side-effects produced when the gate runs against
+# fixtures. The corpus must remain clean between runs.
+**/.shatter/
+**/shatter-artifacts/
+**/node_modules/

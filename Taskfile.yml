@@ -301,6 +301,20 @@ tasks:
     cmds:
       - bash demo/gauntlet.sh --auto --delay 0
 
+  broad-run-corpus:
+    desc: Run the broad-run validation corpus gate (Kapow failure-class fixtures)
+    deps: [cli:build]
+    preconditions:
+      - sh: command -v python3 >/dev/null 2>&1
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - tests/fixtures/broad-run-corpus/**/*
+      - tests/scripts/broad_run_validation.py
+    cmds:
+      - python3 tests/scripts/broad_run_validation.py
+
   perf-list:
     desc: List external profiling scenarios
     preconditions:
