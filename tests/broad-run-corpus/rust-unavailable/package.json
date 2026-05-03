@@ -1,0 +1,6 @@
+{
+  "name": "broad-run-rust-unavailable",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Broad-run corpus fixture (str-jeen.14). Mixed TS+Rust; gate strips PATH so the Rust frontend cannot be located."
+}

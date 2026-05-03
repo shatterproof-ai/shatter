@@ -1,0 +1,221 @@
+# Broad-run validation corpus manifest.
+#
+# Each entry declares one fixture and the thresholds the gate
+# (scripts/broad_run_validation_gate.py) checks against the JSON report
+# emitted by `shatter scan`. Thresholds reflect *current* (possibly buggy)
+# behavior so the gate flags regressions; rows that should tighten when a
+# specific bead lands are tagged in `tighten_when:`. See
+# docs/validation/broad-run-corpus.md for the running tighten log.
+#
+# Schema (per fixture):
+#   id:               required, unique slug
+#   path:             required, repo-relative path of the fixture root
+#                     (or external path under examples/...)
+#   language:         typescript | go | rust | mixed
+#   command:          scan (default) | scan_with_path_stripped | source_churn
+#   args:             extra CLI args appended to `shatter scan`
+#   expected:
+#     min_total_discovered_functions, max_total_discovered_functions
+#     min_completed_functions, max_completed_functions
+#     min_failed_functions, max_failed_functions
+#     min_skipped_functions, max_skipped_functions
+#     min_unsupported_functions, max_unsupported_functions
+#     no_target_reasons:    list of (file, reason) pairs that must appear
+#     artifact_paths_must_resolve: bool (default true)
+#     run_must_succeed:     bool (default true)
+#   tighten_when:     map of "field" -> "bead-id explanation"
+#
+# Per scope guardrails (see str-jeen.14 plan), no entry may require source
+# changes outside `tests/broad-run-corpus/` or modifications to
+# scan/reporting/protocol code.
+
+corpus_version: 1
+
+fixtures:
+  - id: go-internal-method
+    path: examples/go/internal-method
+    language: go
+    command: scan
+    args: ["--language", "go"]
+    expected:
+      min_total_discovered_functions: 3
+      max_total_discovered_functions: 6
+      min_completed_functions: 1
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+    tighten_when:
+      min_completed_functions: "str-jeen.32 — bump once internal-package launcher synthesis lands"
+
+  - id: go-mixed-package
+    path: examples/go/mixed-package
+    language: go
+    command: scan
+    args: ["--language", "go"]
+    expected:
+      min_total_discovered_functions: 1
+      max_total_discovered_functions: 6
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+
+  - id: go-multi-import-wrapper
+    path: examples/go/multi-import-wrapper
+    language: go
+    command: scan
+    args: ["--language", "go"]
+    # The fixture's only public function takes `os.File` / `io.Reader`,
+    # which the analyzer skips as unexecutable param types. The scan
+    # legitimately produces no JSON report ("No functions found to scan.")
+    # but exits 0. The fixture exercises the multi-import resolution path,
+    # not the explore path; today we only assert clean exit.
+    expected:
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+    tighten_when:
+      min_total_discovered_functions: "Once analyzer surfaces unexecutable-param skips in the JSON report (str-jeen.21–.25), assert min/max + reason classification here."
+
+  - id: go-rewrite-syntax
+    path: examples/go/rewrite-syntax
+    language: go
+    command: scan
+    args: ["--language", "go"]
+    expected:
+      min_total_discovered_functions: 1
+      # Fixture exists to surface a Go rewrite/launcher bug; the current
+      # build fails ("cannot use more (variable of type []int) as int value
+      # in argument to Variadic"). Keep the threshold permissive so the gate
+      # flags REGRESSIONS in either direction (no longer discovering the
+      # functions, OR discovering and *all* succeeding — meaning the
+      # rewrite-syntax bug latently regressed/reshipped).
+      run_must_succeed: false
+      min_failed_functions: 1
+      artifact_paths_must_resolve: true
+    tighten_when:
+      run_must_succeed: "Open Go rewrite/launcher bug — once the variadic launcher emission is fixed, flip to run_must_succeed: true."
+
+  - id: ts-private-helpers
+    path: tests/broad-run-corpus/ts/private-helpers
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      min_total_discovered_functions: 1
+      max_total_discovered_functions: 2  # roundDown should not be a target
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+    tighten_when:
+      max_total_discovered_functions: "str-jeen.9 — once private-helper exclusion is firm, drop max to 1"
+
+  - id: ts-tsx-type-only
+    path: tests/broad-run-corpus/ts/tsx-type-only
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      min_total_discovered_functions: 1
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+      # `no_target_reasons` for `types.d.ts` => declaration_only is the
+      # desired wire shape (str-jeen.21–.25). Today the JSON report does
+      # not surface a per-file reason field; skipped/non-target files are
+      # silently absent. The assertion lives in `tighten_when:` until the
+      # classifier emits structured reasons into the JSON report.
+    tighten_when:
+      no_target_reasons: "str-jeen.21–.25 — assert types.d.ts → declaration_only once the classifier wires reasons into the JSON report."
+
+  - id: ts-project-aliases
+    path: tests/broad-run-corpus/ts/project-aliases
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      min_total_discovered_functions: 1
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+
+  - id: ts-missing-dep-preflight
+    path: tests/broad-run-corpus/ts/missing-dep-preflight
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      run_must_succeed: true  # preflight reports, does not abort (str-jeen.26)
+      artifact_paths_must_resolve: true
+
+  - id: ts-browser-globals
+    path: tests/broad-run-corpus/ts/browser-globals
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      min_total_discovered_functions: 1
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+
+  - id: rust-unavailable
+    path: tests/broad-run-corpus/rust-unavailable
+    language: mixed
+    command: scan_with_path_stripped
+    # Mixed TS + Rust. With PATH stripped, only the Rust frontend is
+    # unavailable; TS still runs. The scan must complete with exit 0
+    # (str-jeen.13).
+    args: []
+    expected:
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+      min_total_discovered_functions: 1   # the TS sibling target
+    tighten_when:
+      no_target_reasons: "str-jeen.21–.25 — once the classifier wires reasons into the JSON report, assert lib.rs → skipped_by_unavailable_frontend."
+
+  - id: no-target-categories
+    path: tests/broad-run-corpus/no-target-categories
+    language: mixed
+    command: scan
+    args: ["--exclude", "**/policy_excluded.ts"]
+    # The corpus enumerates one file per `NoTargetReason` variant. The
+    # current JSON report does not surface per-file reasons; the structured
+    # assertions are aspirational (see `tighten_when:`). Today the gate
+    # only checks that the run succeeds and emits resolvable paths.
+    expected:
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+    tighten_when:
+      no_target_reasons: |
+        str-jeen.21–.25 — once the classifier wires per-file reasons into
+        the JSON report, restore the structured assertions (one per
+        NoTargetReason variant) listed in the README. Expected mapping:
+          declaration_only.d.ts        -> declaration_only
+          jsx_component_only.tsx       -> jsx_component_only
+          test_or_spec.test.ts         -> test_or_spec
+          test_file_test.go            -> test_file
+          test_module_lib.rs           -> test_module
+          build.rs                     -> build_script
+          generated_models_gen.go      -> generated
+          generated_schema.graphql.ts  -> generated_schema
+          parser_failure.ts            -> parser_failure
+          receiver_method_gap.go       -> receiver_method_gap
+          policy_excluded.ts           -> policy_excluded
+
+  - id: source-churn
+    path: tests/broad-run-corpus/source-churn
+    language: go
+    command: source_churn
+    args: ["--language", "go"]
+    expected:
+      run_must_succeed: true
+      artifact_paths_must_resolve: true
+      churn:
+        phase1_min_functions: 1
+        phase2_min_functions: 2
+        phase2_must_be_superset: true
+    tighten_when:
+      churn: "str-jeen.3 — switch to manifest source-snapshot diff once landed"
+
+  - id: dangling-artifacts
+    path: tests/broad-run-corpus/dangling-artifacts
+    language: typescript
+    command: scan
+    args: ["--language", "typescript"]
+    expected:
+      min_total_discovered_functions: 1
+      run_must_succeed: true
+      artifact_paths_must_resolve: true

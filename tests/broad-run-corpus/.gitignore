@@ -1,0 +1,7 @@
+# Fixture scans create runtime state inside each fixture dir. Keep the
+# repo clean — these artifacts are produced on every gate run and should
+# never be committed.
+**/.shatter/
+**/.shatter-cache/
+**/shatter-artifacts/
+**/node_modules/
