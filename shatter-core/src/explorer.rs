@@ -4129,6 +4129,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explore_function_observer_pool_suppresses_duplicate_candidates() {
+        let log_path = std::env::temp_dir().join(format!(
+            "shatter-observer-dedup-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+
+        let duplicate = vec![serde_json::json!(7)];
+        let observer_frontend_config = recording_frontend_config(&log_path);
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(8),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![
+                duplicate.clone(),
+                duplicate.clone(),
+                duplicate.clone(),
+                duplicate.clone(),
+            ],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        let duplicate_executions = result
+            .raw_results
+            .iter()
+            .filter(|(inputs, _, _)| *inputs == duplicate)
+            .count();
+        assert_eq!(
+            duplicate_executions, 1,
+            "duplicate candidate fingerprints should execute at most once; raw inputs={:?}",
+            result
+                .raw_results
+                .iter()
+                .map(|(inputs, _, _)| inputs)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_observer_pool_budget_counts_executed_not_enqueued() {
+        let log_path = std::env::temp_dir().join(format!(
+            "shatter-observer-budget-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+
+        let duplicate = vec![serde_json::json!(11)];
+        let unique = vec![serde_json::json!(12)];
+        let observer_frontend_config = recording_frontend_config(&log_path);
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(2),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![duplicate.clone(), duplicate, unique.clone()],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert_eq!(result.iterations, 2);
+        assert!(
+            result
+                .raw_results
+                .iter()
+                .any(|(inputs, _, _)| *inputs == unique),
+            "suppressed duplicates should not consume the execution budget"
+        );
+    }
+
+    #[tokio::test]
     async fn explore_function_instruments_before_executing() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
