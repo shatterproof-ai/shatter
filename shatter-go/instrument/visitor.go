@@ -147,16 +147,31 @@ func constraintForCase(fset *token.FileSet, tag ast.Expr, cc *ast.CaseClause, pa
 		data, _ := json.Marshal(c)
 		return string(data)
 	}
-	if len(cc.List) == 1 && tag != nil {
-		// single case value: create an equality constraint
-		eq := &ast.BinaryExpr{X: tag, Op: token.EQL, Y: cc.List[0]}
-		c := extractConstraint(fset, eq, params)
-		data, _ := json.Marshal(c)
-		return string(data)
+	// Build a disjunction over every case literal so the solver can target
+	// each alternative in a multi-literal clause (`case A, B:`). Without
+	// this, only the first literal's equality reaches the solver and any
+	// path that needs `tag == B` is unreachable. (str-5jen)
+	expr := caseClauseExpr(tag, cc.List[0])
+	for _, lit := range cc.List[1:] {
+		expr = &ast.BinaryExpr{
+			X:  expr,
+			Op: token.LOR,
+			Y:  caseClauseExpr(tag, lit),
+		}
 	}
-	c := extractConstraint(fset, cc.List[0], params)
+	c := extractConstraint(fset, expr, params)
 	data, _ := json.Marshal(c)
 	return string(data)
+}
+
+// caseClauseExpr returns the AST expression that must hold for a single
+// case-clause literal: `tag == lit` for value switches, or `lit` itself
+// for tagless boolean switches (`switch { case x > 0: }`).
+func caseClauseExpr(tag, lit ast.Expr) ast.Expr {
+	if tag == nil {
+		return lit
+	}
+	return &ast.BinaryExpr{X: tag, Op: token.EQL, Y: lit}
 }
 
 func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]bool, branchID, loopID, callSiteID *int) {

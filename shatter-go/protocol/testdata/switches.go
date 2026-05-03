@@ -14,6 +14,22 @@ func SwitchOnString(color string) int {
 	}
 }
 
+// MultiLiteralSwitch is the str-5jen regression fixture: a switch whose
+// middle clause carries two literals (`case 2, 3:`). Pre-fix the analyzer
+// emitted only `x == 2` as the symbolic condition for that clause and the
+// solver could never target `x == 3`. Post-fix the symbolic condition is
+// the disjunction `x == 2 || x == 3`.
+func MultiLiteralSwitch(x int) string {
+	switch x {
+	case 1:
+		return "one"
+	case 2, 3:
+		return "small"
+	default:
+		return "other"
+	}
+}
+
 // ForLoop uses a for loop with condition.
 func ForLoop(n int) int {
 	sum := 0

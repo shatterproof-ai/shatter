@@ -101,6 +101,40 @@ func F(x int) {
 	}
 }
 
+// TestMultiLiteralCaseEmitsDisjunction is the str-5jen regression: a
+// Go case clause with multiple literals (`case 2, 3:`) must emit a
+// disjunctive symbolic constraint covering every literal, not just the
+// first. Without the disjunction the solver can drive the clause via
+// `x == 2` but never `x == 3`, leaving that path unreachable.
+func TestMultiLiteralCaseEmitsDisjunction(t *testing.T) {
+	src := `package main
+
+func F(x int) string {
+	switch x {
+	case 2, 3:
+		return "small"
+	default:
+		return "other"
+	}
+}
+`
+	out, branchCount := transformSource(t, src, nil)
+	if branchCount != 2 {
+		t.Errorf("branchCount = %d, want 2 (multi-literal clause + default)", branchCount)
+	}
+	// The disjunction must reference both literals 2 and 3 in the
+	// symbolic JSON constraint blob, joined by an `or` bin_op. The JSON
+	// is embedded in a Go string literal so quotes appear escaped.
+	if !strings.Contains(out, `\"op\":\"or\"`) {
+		t.Errorf("expected disjunction (op=or) in multi-literal case constraint\noutput:\n%s", out)
+	}
+	for _, lit := range []string{`\"value\":2`, `\"value\":3`} {
+		if !strings.Contains(out, lit) {
+			t.Errorf("expected literal %q in multi-literal case constraint\noutput:\n%s", lit, out)
+		}
+	}
+}
+
 // TestSwitchCaseBodyStatementsLineRecorded is the str-qo1.12 regression:
 // statements inside switch case bodies (especially return statements) must
 // receive __shatter_record_line calls, not just the case-entry branch
