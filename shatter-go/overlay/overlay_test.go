@@ -224,7 +224,7 @@ func main() { fmt.Println(lib.Wrapped()) }
 	}
 
 	outBin := filepath.Join(workspace, "out")
-	cmd := exec.Command(goBin, "build", "-overlay", manifestPath, "-o", outBin, "./launcher")
+	cmd := exec.Command(goBin, "build", "-buildvcs=false", "-overlay", manifestPath, "-o", outBin, "./launcher")
 	cmd.Dir = fixture
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	output, err := cmd.CombinedOutput()
