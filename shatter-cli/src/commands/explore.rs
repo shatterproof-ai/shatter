@@ -4810,8 +4810,6 @@ pub(crate) async fn run_explore(
 
                 let cc = shatter_core::orchestrator::ExploreConfig {
                     max_iterations: explore_config.max_iterations.map(|n| n as usize),
-            observer_pool: 1,
-            observer_frontend_config: None,
                     // str-nqrz: `--max-iterations N` is a hard cap on total
                     // executions; the concolic orchestrator's `max_iterations`
                     // bounds unique-path discovery, while `max_executions`
