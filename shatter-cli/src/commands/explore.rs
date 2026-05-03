@@ -2678,19 +2678,28 @@ fn emit_explore_progress(
     status: &str,
     emit_json: bool,
 ) {
-    let line = match status {
-        "started" => format!("[progress] starting {current}/{total}: {function}"),
-        "completed" => format!(
-            "[progress] completed {current}/{total}: {function} ({:.1}s)",
-            elapsed.as_secs_f64()
-        ),
-        "failed" => format!(
-            "[progress] failed {current}/{total}: {function} ({:.1}s)",
-            elapsed.as_secs_f64()
-        ),
-        other => format!("[progress] {other} {current}/{total}: {function}"),
-    };
-    eprintln!("{line}");
+    // str-6c6p: human-readable progress lines are info-level chatter, not
+    // command result. `--quiet` lowers log level below Info to silence
+    // exactly this kind of noise — honor it here even though we bypass
+    // the `log` crate's macros (the `eprintln!` predates the log routing).
+    // The structured JSON event below is preserved unconditionally when
+    // `emit_json` is set: machine-consumed progress streams are an opt-in
+    // contract that should not be silenced by a verbosity knob.
+    if log::log_enabled!(log::Level::Info) {
+        let line = match status {
+            "started" => format!("[progress] starting {current}/{total}: {function}"),
+            "completed" => format!(
+                "[progress] completed {current}/{total}: {function} ({:.1}s)",
+                elapsed.as_secs_f64()
+            ),
+            "failed" => format!(
+                "[progress] failed {current}/{total}: {function} ({:.1}s)",
+                elapsed.as_secs_f64()
+            ),
+            other => format!("[progress] {other} {current}/{total}: {function}"),
+        };
+        eprintln!("{line}");
+    }
 
     if emit_json
         && let Some(json) =
@@ -2797,8 +2806,11 @@ fn assemble_function_result(
     }
 
     // Render report fragments for file output regardless of log level.
-    let should_print_report =
-        log::log_enabled!(log::Level::Info) && (opts.report_outputs_empty || opts.stdout);
+    // str-6c6p: the per-function report is the user-requested command result
+    // when stdout is the sink (no -o files, or `--stdout`). It must NOT be
+    // gated on the info log level — `--quiet` suppresses progress/info
+    // logging but must still emit the requested result.
+    let should_print_report = opts.report_outputs_empty || opts.stdout;
     if log::log_enabled!(log::Level::Trace) {
         let report = {
             let _report_span = tracing::info_span!("report.render").entered();
@@ -3032,7 +3044,9 @@ fn finalize_explore(
     };
 
     // Print header.
-    if log::log_enabled!(log::Level::Info) {
+    // str-6c6p: header is part of the requested report output. Do not gate
+    // on info log level — quiet suppresses info/progress logs, not results.
+    {
         if output_format == crate::args::OutputFormat::Md {
             print_markdown(
                 "# Shatter Explore (finalized from artifacts)\n\n",
@@ -3096,7 +3110,9 @@ fn finalize_explore(
     // duplicating them here would only repeat the information.
 
     // Print summary footer.
-    if log::log_enabled!(log::Level::Info) && (report_outputs.is_empty() || stdout) {
+    // str-6c6p: footer is part of the requested report output. Do not gate
+    // on info log level — quiet suppresses info/progress logs, not results.
+    if report_outputs.is_empty() || stdout {
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if acc.total_lines > 0 {
                 let pct = ((acc.total_covered as f64 / acc.total_lines as f64) * 100.0)
@@ -3862,7 +3878,9 @@ pub(crate) async fn run_explore(
         total_function_count += functions.len();
 
         // Print header on first non-analyze-only target.
-        if !analyze_only && !header_printed && log::log_enabled!(log::Level::Info) {
+        // str-6c6p: header is part of the report output, not an info log;
+        // emit regardless of log level so `--quiet` still prints the report.
+        if !analyze_only && !header_printed {
             if output_format == crate::args::OutputFormat::Md {
                 print_markdown("# Shatter Explore\n\n", use_color);
             } else {
@@ -5501,10 +5519,9 @@ pub(crate) async fn run_explore(
     // failed/skipped functions via per-function progress lines.
 
     // Print summary footer (only when streaming to stdout).
-    if header_printed
-        && log::log_enabled!(log::Level::Info)
-        && (report_outputs.is_empty() || stdout)
-    {
+    // str-6c6p: report content, not info logging — emit regardless of
+    // log level so `--quiet` still surfaces the requested result.
+    if header_printed && (report_outputs.is_empty() || stdout) {
         // str-oo31: aggregate per-OutcomeStatus buckets across every target
         // for the run-wide breakdown line. We bucket from each summary's
         // per-function entries via `bucket_counts_from_entries` rather than
