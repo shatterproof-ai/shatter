@@ -55,7 +55,11 @@ func (l *Loader) RunSetup(file, scope, level string, projectRoot *string, parent
 	defer os.RemoveAll(tmpDir)
 
 	binPath := filepath.Join(tmpDir, "setup")
-	buildCmd := exec.Command("go", "build", "-o", binPath, absFile)
+	// `-buildvcs=false` disables VCS stamping for the disposable setup
+	// binary. Without it, `-buildvcs=auto` fails with
+	// `error obtaining VCS status` when the setup file lives inside a
+	// module checkout the toolchain cannot probe. See str-qo1.15.
+	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-o", binPath, absFile)
 	buildCmd.Dir = filepath.Dir(absFile)
 	if env := instrument.WorkspaceGoEnv(); env != nil {
 		buildCmd.Env = env
