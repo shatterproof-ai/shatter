@@ -593,6 +593,12 @@ struct ExploreSummary {
     /// build failures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     go_root_causes: Option<GoRootCauseBreakdown>,
+    /// TS-only root-cause breakdown of `build_failed` / `runtime_failed`
+    /// outcomes for this file (str-jeen.6). Populated at finalization
+    /// time when the file extension is `.ts` / `.tsx` / `.js` / `.jsx`
+    /// and at least one matching outcome was recorded; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ts_root_causes: Option<TsRootCauseBreakdown>,
     /// Sum of `line_count` across every discovered function, regardless of
     /// outcome (str-jeen.18). Includes pre-skipped (unsupported) entries so
     /// downstream broad-run reports (str-jeen.19, str-jeen.20) can quote a
@@ -2315,6 +2321,17 @@ enum GoBuildFailureCategory {
     /// generator, surfaced through a build error rather than the analyzer's
     /// pre-skip path (e.g. unexported type referenced through a wrapper).
     UnsupportedParamType,
+    /// Receiver-plan / arity mismatch on a constructor or call site
+    /// (str-jeen.6): wrapper invokes a constructor with the wrong number of
+    /// arguments, or otherwise fails Go's call arity check. Distinguished
+    /// from generic `MissingImport` because the fix is a planner change,
+    /// not an import edit.
+    ConstructorArity,
+    /// `go build` refused because it could not stamp VCS metadata
+    /// (str-jeen.6, Zolem 2026-05-02 evidence): typically
+    /// `error obtaining VCS status` on a fresh / detached worktree. The fix
+    /// is `-buildvcs=false` in the wrapper invocation, not a code change.
+    BuildVcsStamping,
     /// `build_failed` reason text did not match any of the recognized
     /// patterns. Kept distinct so totals reconcile and so a future drift in
     /// frontend wording surfaces as a rising `other` bucket rather than
@@ -2330,6 +2347,8 @@ impl GoBuildFailureCategory {
             Self::RewriteSyntax => "rewrite_syntax",
             Self::MixedPackage => "mixed_package",
             Self::UnsupportedParamType => "unsupported_param_type",
+            Self::ConstructorArity => "constructor_arity",
+            Self::BuildVcsStamping => "build_vcs_stamping",
             Self::Other => "other",
         }
     }
@@ -2343,6 +2362,18 @@ impl GoBuildFailureCategory {
 /// degrading to `MissingImport`.
 fn classify_go_build_failure(reason: &str) -> GoBuildFailureCategory {
     let r = reason.to_lowercase();
+    // VCS-stamping refusal (str-jeen.6). `go build` emits
+    // "error obtaining VCS status" / "error obtaining vcs status" when it
+    // cannot read git metadata. Comes first because the message can also
+    // mention "not a git repository" which we do NOT want to misclassify as
+    // a missing import.
+    if r.contains("error obtaining vcs status")
+        || r.contains("error obtaining vcs information")
+        || r.contains("vcs stamp")
+        || r.contains("-buildvcs=false")
+    {
+        return GoBuildFailureCategory::BuildVcsStamping;
+    }
     // Internal-package visibility rule. Go's compiler and `go list` both
     // surface this as "use of internal package ... not allowed".
     if r.contains("internal package") || r.contains("use of internal") {
@@ -2362,6 +2393,21 @@ fn classify_go_build_failure(reason: &str) -> GoBuildFailureCategory {
         || r.contains("cannot synthesize value for")
     {
         return GoBuildFailureCategory::UnsupportedParamType;
+    }
+    // Constructor arity / receiver-plan mismatch (str-jeen.6). Go's
+    // type checker emits "not enough arguments in call to <fn>" or
+    // "too many arguments in call to <fn>" when the wrapper invokes a
+    // constructor with the wrong arity; "cannot use ... as ... value
+    // in argument" surfaces a related receiver-plan miss. These are
+    // distinct from `MissingImport` because the fix is in the
+    // invocation planner, not the import set. Match before
+    // `MissingImport` so the more specific arity hint wins over the
+    // generic "undefined:" fallback when both phrases appear.
+    if r.contains("not enough arguments in call to")
+        || r.contains("too many arguments in call to")
+        || r.contains("cannot use ") && r.contains(" as ") && r.contains(" value in argument")
+    {
+        return GoBuildFailureCategory::ConstructorArity;
     }
     // Missing or undeclared imports. `go build` emits "imported and not
     // used", `go list` emits "no required module provides package", and the
@@ -2409,6 +2455,13 @@ struct GoRootCauseBreakdown {
     /// Build-time unsupported parameter type (residual to the analyzer's
     /// pre-skip path).
     unsupported_param_type: GoRootCauseBucket,
+    /// Constructor arity / receiver-plan mismatch (str-jeen.6).
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    constructor_arity: GoRootCauseBucket,
+    /// `go build` could not stamp VCS metadata (str-jeen.6). Fix is
+    /// `-buildvcs=false` in the wrapper invocation.
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    build_vcs_stamping: GoRootCauseBucket,
     /// `build_failed` reasons that didn't match any heuristic. Surfaces
     /// drift in frontend wording as a rising bucket instead of silently
     /// reweighting an existing category.
@@ -2421,6 +2474,12 @@ struct GoRootCauseBucket {
     line_weight: u32,
 }
 
+impl GoRootCauseBucket {
+    fn is_zero(&self) -> bool {
+        self.count == 0 && self.line_weight == 0
+    }
+}
+
 impl GoRootCauseBreakdown {
     fn record(&mut self, category: GoBuildFailureCategory, line_count: u32) {
         let bucket = match category {
@@ -2429,6 +2488,8 @@ impl GoRootCauseBreakdown {
             GoBuildFailureCategory::RewriteSyntax => &mut self.rewrite_syntax,
             GoBuildFailureCategory::MixedPackage => &mut self.mixed_package,
             GoBuildFailureCategory::UnsupportedParamType => &mut self.unsupported_param_type,
+            GoBuildFailureCategory::ConstructorArity => &mut self.constructor_arity,
+            GoBuildFailureCategory::BuildVcsStamping => &mut self.build_vcs_stamping,
             GoBuildFailureCategory::Other => &mut self.other,
         };
         bucket.count = bucket.count.saturating_add(1);
@@ -2445,6 +2506,8 @@ impl GoRootCauseBreakdown {
                 &mut self.unsupported_param_type,
                 &other.unsupported_param_type,
             ),
+            (&mut self.constructor_arity, &other.constructor_arity),
+            (&mut self.build_vcs_stamping, &other.build_vcs_stamping),
             (&mut self.other, &other.other),
         ] {
             dst.count = dst.count.saturating_add(src.count);
@@ -2458,13 +2521,15 @@ impl GoRootCauseBreakdown {
             && self.rewrite_syntax.count == 0
             && self.mixed_package.count == 0
             && self.unsupported_param_type.count == 0
+            && self.constructor_arity.count == 0
+            && self.build_vcs_stamping.count == 0
             && self.other.count == 0
     }
 
     /// Iterate categories in a stable display order. The non-`Other`
     /// categories come first so the markdown table reads down the
     /// well-known buckets before the catch-all.
-    fn iter_buckets(&self) -> [(GoBuildFailureCategory, &GoRootCauseBucket); 6] {
+    fn iter_buckets(&self) -> [(GoBuildFailureCategory, &GoRootCauseBucket); 8] {
         [
             (
                 GoBuildFailureCategory::InternalPackage,
@@ -2476,6 +2541,14 @@ impl GoRootCauseBreakdown {
             (
                 GoBuildFailureCategory::UnsupportedParamType,
                 &self.unsupported_param_type,
+            ),
+            (
+                GoBuildFailureCategory::ConstructorArity,
+                &self.constructor_arity,
+            ),
+            (
+                GoBuildFailureCategory::BuildVcsStamping,
+                &self.build_vcs_stamping,
             ),
             (GoBuildFailureCategory::Other, &self.other),
         ]
@@ -2537,6 +2610,491 @@ fn format_go_root_causes_md(breakdown: &GoRootCauseBreakdown) -> Option<String> 
             category.as_str(),
             bucket.count,
             bucket.line_weight,
+        ));
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
+// str-jeen.6: TypeScript root-cause classifier (parallel to Go above).
+// ---------------------------------------------------------------------------
+
+/// Coarse-grained category of a TypeScript-side `build_failed` /
+/// `runtime_failed` reason text. Bucket boundaries match the issue body's
+/// first-class TS root-cause groups so a maintainer can answer
+/// "which TS root cause blocks the most code" from the markdown footer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TsBuildFailureCategory {
+    /// Target name not exported from the module — Shatter discovered the
+    /// symbol but the runtime harness could not import it (private helper,
+    /// `export`-less function, or shaken-out tree node).
+    PrivateFunctionNotFound,
+    /// Module resolver failed: missing dependency, missing path alias, or
+    /// `tsconfig` paths/baseUrl mismatch.
+    MissingDependencyOrAlias,
+    /// Parse / JSX / type-runtime failure: the harness or transpiler
+    /// rejected the source before the function ran.
+    ParseJsxOrTypeRuntime,
+    /// Reference to a browser-only or DOM global that's absent in the
+    /// Shatter executor sandbox (`window`, `document`, `localStorage`).
+    MissingBrowserApi,
+    /// Runtime refused a parameter type for which no value generator
+    /// exists. Mirrors the Go `UnsupportedParamType` bucket — kept under
+    /// the same name so cross-language rollups can collapse it cleanly.
+    UnsupportedParamType,
+    /// Reason text did not match any heuristic. Drift in frontend wording
+    /// surfaces here rather than silently distorting an existing bucket.
+    Other,
+}
+
+impl TsBuildFailureCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivateFunctionNotFound => "private_function_not_found",
+            Self::MissingDependencyOrAlias => "missing_dependency_or_alias",
+            Self::ParseJsxOrTypeRuntime => "parse_jsx_or_type_runtime",
+            Self::MissingBrowserApi => "missing_browser_api",
+            Self::UnsupportedParamType => "unsupported_param_type",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify a TS `build_failed` / `runtime_failed` reason into a
+/// root-cause bucket. Heuristics match against the lowercased reason
+/// text. Order matters: more specific patterns come first so a reason
+/// mentioning both "cannot find" and "window" does not misclassify.
+fn classify_ts_build_failure(reason: &str) -> TsBuildFailureCategory {
+    let r = reason.to_lowercase();
+    // Browser-only globals leak into the executor sandbox as
+    // ReferenceError. Match first because the same trace can include
+    // a "module not found" follow-on.
+    if r.contains("window is not defined")
+        || r.contains("document is not defined")
+        || r.contains("localstorage is not defined")
+        || r.contains("sessionstorage is not defined")
+        || r.contains("navigator is not defined")
+        || r.contains("xmlhttprequest is not defined")
+        || r.contains("requestanimationframe is not defined")
+    {
+        return TsBuildFailureCategory::MissingBrowserApi;
+    }
+    // Private / non-exported target. Shatter's TS frontend reports a
+    // distinct "is not exported" / "is not a function" trace when the
+    // discovered symbol is module-private.
+    if r.contains("is not exported")
+        || r.contains("not exported from")
+        || r.contains("export not found")
+        || r.contains("private function not found")
+        || (r.contains("is not a function") && r.contains("import"))
+    {
+        return TsBuildFailureCategory::PrivateFunctionNotFound;
+    }
+    // Module resolver / alias failures. Match before the generic parse
+    // bucket because a "Cannot find module" message can also include
+    // "SyntaxError" follow-ons from downstream loaders.
+    if r.contains("cannot find module")
+        || r.contains("module not found")
+        || r.contains("cannot resolve module")
+        || r.contains("err_module_not_found")
+        || r.contains("path alias")
+        || r.contains("tsconfig paths")
+        || r.contains("baseurl")
+    {
+        return TsBuildFailureCategory::MissingDependencyOrAlias;
+    }
+    // Unsupported parameter shape — runtime-side rejection. Distinct
+    // from the analyzer's pre-skip path which lands on
+    // `OutcomeStatus::Unsupported`.
+    if r.contains("unsupported parameter type")
+        || r.contains("no value generator")
+        || r.contains("cannot synthesize value for")
+    {
+        return TsBuildFailureCategory::UnsupportedParamType;
+    }
+    // Parse / JSX / TypeScript runtime errors. Catches both the loader's
+    // SyntaxError and the type-checker's TSxxxx diagnostic prefix.
+    if r.contains("syntaxerror")
+        || r.contains("unexpected token")
+        || r.contains("unterminated")
+        || r.contains("jsx")
+        || r.contains("expected ")
+        || r.contains("ts1") // diagnostic codes TS1xxx (parse)
+        || r.contains("ts2") // TS2xxx (semantic)
+        || r.contains("parse error")
+    {
+        return TsBuildFailureCategory::ParseJsxOrTypeRuntime;
+    }
+    TsBuildFailureCategory::Other
+}
+
+/// Per-category breakdown of TS `build_failed` / `runtime_failed`
+/// outcomes (str-jeen.6). Mirrors `GoRootCauseBreakdown` so a future
+/// cross-language rollup can stitch the two without bespoke field
+/// mapping.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct TsRootCauseBreakdown {
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    private_function_not_found: GoRootCauseBucket,
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    missing_dependency_or_alias: GoRootCauseBucket,
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    parse_jsx_or_type_runtime: GoRootCauseBucket,
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    missing_browser_api: GoRootCauseBucket,
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    unsupported_param_type: GoRootCauseBucket,
+    #[serde(default, skip_serializing_if = "GoRootCauseBucket::is_zero")]
+    other: GoRootCauseBucket,
+}
+
+impl TsRootCauseBreakdown {
+    fn record(&mut self, category: TsBuildFailureCategory, line_count: u32) {
+        let bucket = match category {
+            TsBuildFailureCategory::PrivateFunctionNotFound => &mut self.private_function_not_found,
+            TsBuildFailureCategory::MissingDependencyOrAlias => {
+                &mut self.missing_dependency_or_alias
+            }
+            TsBuildFailureCategory::ParseJsxOrTypeRuntime => &mut self.parse_jsx_or_type_runtime,
+            TsBuildFailureCategory::MissingBrowserApi => &mut self.missing_browser_api,
+            TsBuildFailureCategory::UnsupportedParamType => &mut self.unsupported_param_type,
+            TsBuildFailureCategory::Other => &mut self.other,
+        };
+        bucket.count = bucket.count.saturating_add(1);
+        bucket.line_weight = bucket.line_weight.saturating_add(line_count);
+    }
+
+    fn merge(&mut self, other: &TsRootCauseBreakdown) {
+        for (dst, src) in [
+            (
+                &mut self.private_function_not_found,
+                &other.private_function_not_found,
+            ),
+            (
+                &mut self.missing_dependency_or_alias,
+                &other.missing_dependency_or_alias,
+            ),
+            (
+                &mut self.parse_jsx_or_type_runtime,
+                &other.parse_jsx_or_type_runtime,
+            ),
+            (&mut self.missing_browser_api, &other.missing_browser_api),
+            (
+                &mut self.unsupported_param_type,
+                &other.unsupported_param_type,
+            ),
+            (&mut self.other, &other.other),
+        ] {
+            dst.count = dst.count.saturating_add(src.count);
+            dst.line_weight = dst.line_weight.saturating_add(src.line_weight);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.private_function_not_found.count == 0
+            && self.missing_dependency_or_alias.count == 0
+            && self.parse_jsx_or_type_runtime.count == 0
+            && self.missing_browser_api.count == 0
+            && self.unsupported_param_type.count == 0
+            && self.other.count == 0
+    }
+
+    fn iter_buckets(&self) -> [(TsBuildFailureCategory, &GoRootCauseBucket); 6] {
+        [
+            (
+                TsBuildFailureCategory::PrivateFunctionNotFound,
+                &self.private_function_not_found,
+            ),
+            (
+                TsBuildFailureCategory::MissingDependencyOrAlias,
+                &self.missing_dependency_or_alias,
+            ),
+            (
+                TsBuildFailureCategory::ParseJsxOrTypeRuntime,
+                &self.parse_jsx_or_type_runtime,
+            ),
+            (
+                TsBuildFailureCategory::MissingBrowserApi,
+                &self.missing_browser_api,
+            ),
+            (
+                TsBuildFailureCategory::UnsupportedParamType,
+                &self.unsupported_param_type,
+            ),
+            (TsBuildFailureCategory::Other, &self.other),
+        ]
+    }
+}
+
+/// Aggregate TS failure outcomes across `entries` into a per-category
+/// breakdown. Includes both `BuildFailed` and `RuntimeFailed` entries —
+/// TS module-load and JSX errors arrive on the runtime path on Node, but
+/// represent the same maintainer-facing root causes as Go's build-time
+/// errors. Caller is responsible for filtering to entries from TS
+/// targets.
+fn aggregate_ts_root_causes_from_entries(entries: &[ExploreSummaryEntry]) -> TsRootCauseBreakdown {
+    use shatter_core::protocol::OutcomeStatus;
+    let mut breakdown = TsRootCauseBreakdown::default();
+    for entry in entries {
+        let status = outcome_status_from_entry(entry);
+        if !matches!(
+            status,
+            OutcomeStatus::BuildFailed | OutcomeStatus::RuntimeFailed
+        ) {
+            continue;
+        }
+        let reason = entry.reason.as_deref().unwrap_or("");
+        let category = classify_ts_build_failure(reason);
+        breakdown.record(category, entry.line_count);
+    }
+    breakdown
+}
+
+/// Aggregate TS failure outcomes across all per-file summaries in a
+/// broad run. Filters by `.ts` / `.tsx` / `.js` / `.jsx` file extension
+/// so a mixed-language run only reports TS rows here.
+fn aggregate_ts_root_causes(summaries: &[ExploreSummary]) -> TsRootCauseBreakdown {
+    let mut total = TsRootCauseBreakdown::default();
+    for summary in summaries {
+        let lower = summary.file.to_lowercase();
+        let is_ts = lower.ends_with(".ts")
+            || lower.ends_with(".tsx")
+            || lower.ends_with(".js")
+            || lower.ends_with(".jsx")
+            || lower.ends_with(".mjs")
+            || lower.ends_with(".cjs");
+        if !is_ts {
+            continue;
+        }
+        let per_file = aggregate_ts_root_causes_from_entries(&summary.functions);
+        total.merge(&per_file);
+    }
+    total
+}
+
+/// Render the TS root-cause breakdown as a markdown subsection. Returns
+/// `None` when no TS failures were recorded so a Go-only run does not
+/// get an empty TS header.
+fn format_ts_root_causes_md(breakdown: &TsRootCauseBreakdown) -> Option<String> {
+    if breakdown.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "**TypeScript failure root causes** (line-weighted)\n\n\
+         | Category | Count | Lines |\n\
+         | --- | ---: | ---: |\n",
+    );
+    for (category, bucket) in breakdown.iter_buckets() {
+        if bucket.count == 0 {
+            continue;
+        }
+        out.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            category.as_str(),
+            bucket.count,
+            bucket.line_weight,
+        ));
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
+// str-jeen.6: cross-language failure-impact rollup. Answers "which root
+// cause blocks the most code", with affected-file and affected-function
+// counts alongside the line-weighted span impact and a denominator
+// percentage against attempted span lines.
+// ---------------------------------------------------------------------------
+
+/// One row of the run-wide failure-impact rollup. Serialized into the
+/// run-level markdown footer and (when the per-file
+/// `summary.json` is rolled up) into the run-level JSON.
+///
+/// The three line counters answer different questions:
+/// * `affected_function_span_lines` — sum of `line_count` across the
+///   functions that hit this root cause. The "blast radius" of the
+///   failure inside discovered function bodies.
+/// * `selected_source_lines` — sum of `discovered_function_span_lines`
+///   across the distinct files that contain at least one
+///   affected-by-this-cause function. Tracks "how much of the
+///   selected-by-shatter code lived in the same files." A high ratio
+///   here means the failure concentrates in files where most of the
+///   selected code is at risk; a low ratio means the failure landed in
+///   files that also contain a lot of unaffected code.
+/// * `percent_attempted_span_lines` — `affected_function_span_lines`
+///   divided by the run's total `attempted_function_span_lines` (the
+///   str-jeen.41 contract). The headline ratio: "what fraction of code
+///   we even tried to explore is blocked by this cause".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct FailureImpactRow {
+    /// Stable wire token (e.g. `internal_package`,
+    /// `private_function_not_found`, or the generic outcome buckets
+    /// `build_failed` / `runtime_failed` / `timed_out` / `unsupported`).
+    category: &'static str,
+    /// Originating language scope: `go`, `ts`, or `any` for outcome-only
+    /// rollups that don't pin a language.
+    language: &'static str,
+    /// Number of affected functions == affected_functions. Kept as a
+    /// distinct field so downstream automation does not have to know
+    /// the equality.
+    count: u32,
+    /// Distinct files containing at least one affected function.
+    affected_files: u32,
+    /// Affected function count. Equal to `count`; explicit per the
+    /// str-jeen.6 acceptance criteria.
+    affected_functions: u32,
+    /// Sum of `line_count` across affected functions.
+    affected_function_span_lines: u32,
+    /// Sum of `discovered_function_span_lines` across distinct affected
+    /// files. Computed from the str-jeen.18 per-file counter, not from
+    /// the path-only str-jeen.37 source-set classifier — see struct
+    /// docstring for the rationale.
+    selected_source_lines: u32,
+    /// `affected_function_span_lines * 100 /
+    /// attempted_function_span_lines`, clamped to `[0.0, 100.0]`. Zero
+    /// when the run attempted no span lines.
+    percent_attempted_span_lines: f64,
+}
+
+/// Compute the run-wide failure-impact rollup.
+///
+/// Iterates every entry across every per-file summary, classifies each
+/// failure into a root cause (per-language Go / TS classifiers, plus
+/// generic outcome-only rows), and produces one row per non-empty
+/// category sorted by `affected_function_span_lines` descending so the
+/// markdown footer reads top-down by blast radius. Ties break on
+/// (language, category) for deterministic output.
+fn aggregate_failure_impact(summaries: &[ExploreSummary]) -> Vec<FailureImpactRow> {
+    use shatter_core::protocol::OutcomeStatus;
+
+    // Total attempted span lines across the run, used as the denominator
+    // for `percent_attempted_span_lines`. Pull from the persisted field
+    // rather than recomputing so the rollup matches the str-jeen.41
+    // contract surfaced in the per-file JSON.
+    let total_attempted: u32 = summaries
+        .iter()
+        .map(|s| s.attempted_function_span_lines)
+        .sum();
+
+    // (language, category) -> (affected_functions, span_lines, set of file paths)
+    let mut acc: std::collections::BTreeMap<
+        (&'static str, &'static str),
+        (u32, u32, std::collections::BTreeSet<String>),
+    > = std::collections::BTreeMap::new();
+    // file -> selected source lines (discovered_function_span_lines).
+    let mut file_selected: HashMap<&str, u32> = HashMap::new();
+    for summary in summaries {
+        file_selected.insert(
+            summary.file.as_str(),
+            summary.discovered_function_span_lines,
+        );
+    }
+
+    for summary in summaries {
+        let lower = summary.file.to_lowercase();
+        let is_go = lower.ends_with(".go");
+        let is_ts = lower.ends_with(".ts")
+            || lower.ends_with(".tsx")
+            || lower.ends_with(".js")
+            || lower.ends_with(".jsx")
+            || lower.ends_with(".mjs")
+            || lower.ends_with(".cjs");
+        for entry in &summary.functions {
+            let status = outcome_status_from_entry(entry);
+            let reason = entry.reason.as_deref().unwrap_or("");
+
+            // Per-language root-cause row (Go BuildFailed / TS Build|Runtime).
+            let lang_row: Option<(&'static str, &'static str)> = match (status, is_go, is_ts) {
+                (OutcomeStatus::BuildFailed, true, _) => {
+                    Some(("go", classify_go_build_failure(reason).as_str()))
+                }
+                (OutcomeStatus::BuildFailed, _, true) | (OutcomeStatus::RuntimeFailed, _, true) => {
+                    Some(("ts", classify_ts_build_failure(reason).as_str()))
+                }
+                _ => None,
+            };
+            if let Some(key) = lang_row {
+                let slot = acc.entry(key).or_default();
+                slot.0 = slot.0.saturating_add(1);
+                slot.1 = slot.1.saturating_add(entry.line_count);
+                slot.2.insert(summary.file.clone());
+            }
+
+            // Outcome-only "any"-language row so the rollup also reflects
+            // failures from frontends without a dedicated classifier
+            // (e.g. Rust runtime failures or Go runtime failures that
+            // don't have a Go-specific bucket).
+            let outcome_token: Option<&'static str> = match status {
+                OutcomeStatus::BuildFailed => Some("build_failed"),
+                OutcomeStatus::RuntimeFailed => Some("runtime_failed"),
+                OutcomeStatus::TimedOut => Some("timed_out"),
+                OutcomeStatus::Unsupported => Some("unsupported"),
+                _ => None,
+            };
+            if let Some(tok) = outcome_token {
+                let slot = acc.entry(("any", tok)).or_default();
+                slot.0 = slot.0.saturating_add(1);
+                slot.1 = slot.1.saturating_add(entry.line_count);
+                slot.2.insert(summary.file.clone());
+            }
+        }
+    }
+
+    let mut rows: Vec<FailureImpactRow> = acc
+        .into_iter()
+        .map(|((language, category), (count, span_lines, files))| {
+            let selected: u32 = files
+                .iter()
+                .map(|f| file_selected.get(f.as_str()).copied().unwrap_or(0))
+                .sum();
+            let percent = if total_attempted > 0 {
+                ((span_lines as f64 / total_attempted as f64) * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            FailureImpactRow {
+                category,
+                language,
+                count,
+                affected_files: files.len() as u32,
+                affected_functions: count,
+                affected_function_span_lines: span_lines,
+                selected_source_lines: selected,
+                percent_attempted_span_lines: percent,
+            }
+        })
+        .collect();
+    // Sort by span_lines descending, then by (language, category) for a
+    // deterministic tiebreak.
+    rows.sort_by(|a, b| {
+        b.affected_function_span_lines
+            .cmp(&a.affected_function_span_lines)
+            .then(a.language.cmp(b.language))
+            .then(a.category.cmp(b.category))
+    });
+    rows
+}
+
+/// Render the failure-impact rollup as a markdown subsection. Returns
+/// `None` when no rows were produced so a clean run stays clean.
+fn format_failure_impact_md(rows: &[FailureImpactRow]) -> Option<String> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "**Failure impact** (line-weighted, sorted by span lines)\n\n\
+         | Category | Lang | Functions | Files | Span lines | Selected lines | % attempted |\n\
+         | --- | --- | ---: | ---: | ---: | ---: | ---: |\n",
+    );
+    for row in rows {
+        out.push_str(&format!(
+            "| `{}` | `{}` | {} | {} | {} | {} | {:.1}% |\n",
+            row.category,
+            row.language,
+            row.affected_functions,
+            row.affected_files,
+            row.affected_function_span_lines,
+            row.selected_source_lines,
+            row.percent_attempted_span_lines,
         ));
     }
     Some(out)
@@ -4394,6 +4952,7 @@ pub(crate) async fn run_explore(
                 &target.file,
             ),
             go_root_causes: None,
+            ts_root_causes: None,
             functions: skipped_unexecutable
                 .iter()
                 .map(|(name, span_lines, _)| {
@@ -5141,6 +5700,14 @@ pub(crate) async fn run_explore(
                 explore_summary.go_root_causes = Some(breakdown);
             }
         }
+        // str-jeen.6: parallel TS root-cause breakdown attached when the
+        // target is TS and at least one build/runtime failure was seen.
+        if matches!(target_language, crate::args::Language::TypeScript) {
+            let breakdown = aggregate_ts_root_causes_from_entries(&explore_summary.functions);
+            if !breakdown.is_empty() {
+                explore_summary.ts_root_causes = Some(breakdown);
+            }
+        }
         if let Err(e) = write_explore_summary(&artifact_root, &file_str, &explore_summary) {
             log::warn!("Failed to update explore summary: {e}");
         }
@@ -5547,6 +6114,12 @@ pub(crate) async fn run_explore(
         // and line weights alongside the existing outcome breakdown.
         let go_breakdown = aggregate_go_root_causes(&report_summaries);
         let go_md = format_go_root_causes_md(&go_breakdown);
+        // str-jeen.6: TS root-cause breakdown + cross-language failure-
+        // impact rollup. Both are `None` on a clean run.
+        let ts_breakdown = aggregate_ts_root_causes(&report_summaries);
+        let ts_md = format_ts_root_causes_md(&ts_breakdown);
+        let failure_impact_rows = aggregate_failure_impact(&report_summaries);
+        let failure_impact_md = format_failure_impact_md(&failure_impact_rows);
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if total_lines > 0 {
                 let pct = ((total_covered as f64 / total_lines as f64) * 100.0)
@@ -5564,10 +6137,18 @@ pub(crate) async fn run_explore(
                 .as_deref()
                 .map(|s| format!("\n\n{s}"))
                 .unwrap_or_default();
+            let ts_suffix = ts_md
+                .as_deref()
+                .map(|s| format!("\n\n{s}"))
+                .unwrap_or_default();
+            let impact_suffix = failure_impact_md
+                .as_deref()
+                .map(|s| format!("\n\n{s}"))
+                .unwrap_or_default();
             print_markdown(
                 &format!(
                     "\n---\n\n**Summary:** {total_paths} path(s) across \
-                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}{go_suffix}\n"
+                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}{go_suffix}{ts_suffix}{impact_suffix}\n"
                 ),
                 use_color,
             );
@@ -5586,6 +6167,12 @@ pub(crate) async fn run_explore(
                 println!("{line}");
             }
             if let Some(s) = go_md.as_deref() {
+                println!("\n{s}");
+            }
+            if let Some(s) = ts_md.as_deref() {
+                println!("\n{s}");
+            }
+            if let Some(s) = failure_impact_md.as_deref() {
                 println!("\n{s}");
             }
         }
@@ -5893,25 +6480,25 @@ mod tests {
     use super::{
         ArtifactValidationIssue, ArtifactValidationReport, EXPLORE_ARTIFACT_VERSION,
         ExploreFailure, ExploreResultAccumulator, ExploreSummary, ExploreSummaryEntry,
-        FuncExploreOutcome, decide_explore_exit_status,
-        GoRootCauseBreakdown, UnavailableReason, aggregate_go_root_causes,
-        aggregate_go_root_causes_from_entries, batch_is_exhausted, build_skip_summary,
-        bucket_counts_from_entries, check_summary_paths, classify_go_build_failure,
-        classify_no_target_reason, classify_outcome_status, emit_explore_progress,
-        explore_summary_path, finalize_explore, format_go_root_causes_md,
+        FuncExploreOutcome, GoBuildFailureCategory, GoRootCauseBreakdown, TsBuildFailureCategory,
+        TsRootCauseBreakdown, UnavailableReason, aggregate_failure_impact,
+        aggregate_go_root_causes, aggregate_go_root_causes_from_entries, aggregate_ts_root_causes,
+        batch_is_exhausted, bucket_counts_from_entries, build_skip_summary, check_summary_paths,
+        classify_go_build_failure, classify_no_target_reason, classify_outcome_status,
+        classify_ts_build_failure, decide_explore_exit_status, emit_explore_progress,
+        explore_summary_path, finalize_explore, format_failure_impact_md, format_go_root_causes_md,
         format_no_target_reason_table, format_outcome_breakdown, format_progress_snapshot,
+        format_ts_root_causes_md, go_classify_no_target_reason, go_is_generated_by_content,
+        go_is_receiver_method_gap_by_content, go_is_test_file_by_path,
         leading_bytes_match_generated_marker, load_explore_artifacts, matches_generated_schema,
         matches_policy_exclude, outcome_status_from_entry, persist_stage_outputs,
         pre_classify_no_target_reason, read_explore_artifact, rust_classify_no_target_reason,
         rust_is_build_script, rust_is_declaration_only, rust_is_test_module_by_content,
         rust_is_test_module_by_path, sanitize_artifact_component,
-        ts_classify_no_target_reason, ts_contains_jsx_component,
-        ts_is_declaration_file_by_path, ts_is_declaration_only,
-        ts_is_test_or_spec_by_path,
-        go_classify_no_target_reason, go_is_generated_by_content,
-        go_is_receiver_method_gap_by_content, go_is_test_file_by_path,
-        span_line_denominators_from_entries, stage_persistence_dir,
-        validate_artifact_references, write_explore_artifact, write_explore_summary,
+        span_line_denominators_from_entries, stage_persistence_dir, ts_classify_no_target_reason,
+        ts_contains_jsx_component, ts_is_declaration_file_by_path, ts_is_declaration_only,
+        ts_is_test_or_spec_by_path, validate_artifact_references, write_explore_artifact,
+        write_explore_summary,
     };
     use shatter_core::config::GeneticConfig;
     use shatter_core::explorer::ExploreProgressSnapshot;
@@ -9798,6 +10385,341 @@ mod tests {
                  func {name}() int {{ return 1 }}\n",
             );
             proptest::prop_assert!(!go_is_receiver_method_gap_by_content(&source));
+        }
+
+        // ----- str-jeen.6 classifier proptests -----
+
+        /// str-jeen.6: every Go reason string maps to some category.
+        /// Classification is total; classifier never panics.
+        #[test]
+        fn classify_go_build_failure_is_total(ref reason in ".{0,200}") {
+            let _ = classify_go_build_failure(reason);
+        }
+
+        /// str-jeen.6: classification is stable — same input twice
+        /// yields the same category.
+        #[test]
+        fn classify_go_build_failure_is_stable(ref reason in ".{0,200}") {
+            let a = classify_go_build_failure(reason);
+            let b = classify_go_build_failure(reason);
+            proptest::prop_assert_eq!(a as u8, b as u8);
+        }
+
+        /// str-jeen.6: every TS reason string maps to some category.
+        #[test]
+        fn classify_ts_build_failure_is_total(ref reason in ".{0,200}") {
+            let _ = classify_ts_build_failure(reason);
+        }
+
+        /// str-jeen.6: TS classifier is stable.
+        #[test]
+        fn classify_ts_build_failure_is_stable(ref reason in ".{0,200}") {
+            let a = classify_ts_build_failure(reason);
+            let b = classify_ts_build_failure(reason);
+            proptest::prop_assert_eq!(a as u8, b as u8);
+        }
+    }
+
+    // ----- str-jeen.6: new Go categories + TS classifier + rollup -----
+
+    #[test]
+    fn classify_go_constructor_arity_distinct_from_missing_import() {
+        // Real wording from the Zolem audit: arity miss must NOT collapse
+        // into MissingImport, even though both involve "undefined" / call
+        // sites. Pin the bucket boundary.
+        assert_eq!(
+            classify_go_build_failure(
+                "execute error: build failed: not enough arguments in call to NewSSEWriter"
+            ),
+            GoBuildFailureCategory::ConstructorArity,
+        );
+        assert_eq!(
+            classify_go_build_failure("too many arguments in call to MakeThing"),
+            GoBuildFailureCategory::ConstructorArity,
+        );
+        assert_eq!(
+            classify_go_build_failure(
+                "cannot use ctx (variable of type context.Context) as int value in argument to f"
+            ),
+            GoBuildFailureCategory::ConstructorArity,
+        );
+        // A pure "undefined:" with no arity hint stays in MissingImport.
+        assert_eq!(
+            classify_go_build_failure("undefined: pkg.X"),
+            GoBuildFailureCategory::MissingImport,
+        );
+    }
+
+    #[test]
+    fn classify_go_build_vcs_stamping_is_distinct() {
+        // Fresh-workspace failure from the Zolem 2026-05-02 evidence.
+        assert_eq!(
+            classify_go_build_failure("error obtaining VCS status: exit status 128"),
+            GoBuildFailureCategory::BuildVcsStamping,
+        );
+        assert_eq!(
+            classify_go_build_failure("error obtaining vcs status: not a git repository"),
+            GoBuildFailureCategory::BuildVcsStamping,
+        );
+        // VCS message that mentions "internal" must still land in
+        // BuildVcsStamping because the VCS check fires before package
+        // resolution.
+        assert_eq!(
+            classify_go_build_failure(
+                "error obtaining VCS status for internal/foo: not a git repository"
+            ),
+            GoBuildFailureCategory::BuildVcsStamping,
+        );
+    }
+
+    #[test]
+    fn aggregate_go_root_causes_includes_new_categories() {
+        let entries = vec![
+            entry_with_lines(
+                "Ctor",
+                "failed",
+                Some(
+                    "execute error (InstrumentationFailed): build failed: not enough arguments in call to NewSSEWriter",
+                ),
+                40,
+            ),
+            entry_with_lines(
+                "Vcs",
+                "failed",
+                Some(
+                    "execute error (InstrumentationFailed): build failed: error obtaining VCS status: exit 128",
+                ),
+                15,
+            ),
+        ];
+        let breakdown = aggregate_go_root_causes_from_entries(&entries);
+        assert_eq!(breakdown.constructor_arity.count, 1);
+        assert_eq!(breakdown.constructor_arity.line_weight, 40);
+        assert_eq!(breakdown.build_vcs_stamping.count, 1);
+        assert_eq!(breakdown.build_vcs_stamping.line_weight, 15);
+        let md = format_go_root_causes_md(&breakdown).expect("renders");
+        assert!(md.contains("`constructor_arity`"));
+        assert!(md.contains("`build_vcs_stamping`"));
+        assert!(md.contains("40"));
+    }
+
+    #[test]
+    fn classify_ts_build_failure_buckets_match_issue_taxonomy() {
+        assert_eq!(
+            classify_ts_build_failure("ReferenceError: window is not defined"),
+            TsBuildFailureCategory::MissingBrowserApi,
+        );
+        assert_eq!(
+            classify_ts_build_failure("Function `tokenizeWords` is not exported from module"),
+            TsBuildFailureCategory::PrivateFunctionNotFound,
+        );
+        assert_eq!(
+            classify_ts_build_failure("Error: Cannot find module '@app/foo'"),
+            TsBuildFailureCategory::MissingDependencyOrAlias,
+        );
+        assert_eq!(
+            classify_ts_build_failure("SyntaxError: Unexpected token '<'"),
+            TsBuildFailureCategory::ParseJsxOrTypeRuntime,
+        );
+        assert_eq!(
+            classify_ts_build_failure("unsupported parameter type: Buffer"),
+            TsBuildFailureCategory::UnsupportedParamType,
+        );
+        // Unrecognized text drops into Other rather than misclassifying.
+        assert_eq!(
+            classify_ts_build_failure("kernel panic: filesystem corrupt"),
+            TsBuildFailureCategory::Other,
+        );
+    }
+
+    #[test]
+    fn aggregate_ts_root_causes_filters_to_ts_files_and_runtime_outcomes() {
+        // .ts file with one runtime failure (window) and one build failure
+        // (Cannot find module). Both must contribute. A non-TS file with
+        // matching reason must NOT contribute.
+        let ts_summary = make_summary(
+            "src/foo.ts",
+            vec![
+                entry_with_lines(
+                    "OnClick",
+                    "failed",
+                    Some("ReferenceError: window is not defined"),
+                    25,
+                ),
+                entry_with_lines(
+                    "DepX",
+                    "failed",
+                    Some(
+                        "execute error (InstrumentationFailed): build failed: Cannot find module 'lodash'",
+                    ),
+                    10,
+                ),
+            ],
+        );
+        let go_summary = make_summary(
+            "src/bar.go",
+            vec![entry_with_lines(
+                "WinFn",
+                "failed",
+                Some("ReferenceError: window is not defined"),
+                999,
+            )],
+        );
+        let breakdown = aggregate_ts_root_causes(&[ts_summary, go_summary]);
+        assert_eq!(breakdown.missing_browser_api.count, 1);
+        assert_eq!(breakdown.missing_browser_api.line_weight, 25);
+        assert_eq!(breakdown.missing_dependency_or_alias.count, 1);
+        assert_eq!(breakdown.missing_dependency_or_alias.line_weight, 10);
+        let md = format_ts_root_causes_md(&breakdown).expect("renders");
+        assert!(md.contains("`missing_browser_api`"));
+        assert!(md.contains("`missing_dependency_or_alias`"));
+        // Empty breakdown returns None.
+        assert!(format_ts_root_causes_md(&TsRootCauseBreakdown::default()).is_none());
+    }
+
+    #[test]
+    fn failure_impact_rollup_carries_affected_files_and_percent() {
+        // Two Go files and one TS file with mixed outcomes. Rollup must:
+        // - Emit a row per non-empty (language, category) and per outcome
+        //   bucket.
+        // - Sort by affected_function_span_lines desc.
+        // - Compute affected_files distinctly per row.
+        // - Compute selected_source_lines from
+        //   discovered_function_span_lines on the affected files.
+        // - Compute percent_attempted_span_lines against the run-wide
+        //   attempted_function_span_lines sum.
+        let mut go1 = make_summary(
+            "src/a.go",
+            vec![
+                entry_with_lines(
+                    "ArityA",
+                    "failed",
+                    Some(
+                        "execute error (InstrumentationFailed): build failed: not enough arguments in call to NewX",
+                    ),
+                    50,
+                ),
+                entry_with_lines(
+                    "ArityB",
+                    "failed",
+                    Some(
+                        "execute error (InstrumentationFailed): build failed: not enough arguments in call to NewY",
+                    ),
+                    30,
+                ),
+            ],
+        );
+        // discovered_function_span_lines for the file (used as
+        // selected_source_lines denominator). 80 from arity functions
+        // plus 20 imaginary "other discovered" lines so the file's
+        // selected count exceeds the affected count.
+        go1.discovered_function_span_lines = 100;
+        go1.attempted_function_span_lines = 80;
+
+        let mut go2 = make_summary(
+            "src/b.go",
+            vec![entry_with_lines(
+                "VcsB",
+                "failed",
+                Some(
+                    "execute error (InstrumentationFailed): build failed: error obtaining VCS status",
+                ),
+                15,
+            )],
+        );
+        go2.discovered_function_span_lines = 60;
+        go2.attempted_function_span_lines = 15;
+
+        let mut ts1 = make_summary(
+            "src/c.ts",
+            vec![entry_with_lines(
+                "WinC",
+                "failed",
+                Some("ReferenceError: window is not defined"),
+                5,
+            )],
+        );
+        ts1.discovered_function_span_lines = 40;
+        ts1.attempted_function_span_lines = 5;
+
+        let rows = aggregate_failure_impact(&[go1, go2, ts1]);
+
+        // Must contain the per-language root-cause rows.
+        let arity = rows
+            .iter()
+            .find(|r| r.language == "go" && r.category == "constructor_arity")
+            .expect("constructor_arity row");
+        assert_eq!(arity.affected_functions, 2);
+        assert_eq!(arity.affected_files, 1);
+        assert_eq!(arity.affected_function_span_lines, 80);
+        assert_eq!(arity.selected_source_lines, 100);
+        // 80 / (80 + 15 + 5) = 80%
+        assert!((arity.percent_attempted_span_lines - 80.0).abs() < 0.01);
+
+        let vcs = rows
+            .iter()
+            .find(|r| r.language == "go" && r.category == "build_vcs_stamping")
+            .expect("vcs row");
+        assert_eq!(vcs.affected_functions, 1);
+        assert_eq!(vcs.affected_files, 1);
+        assert_eq!(vcs.affected_function_span_lines, 15);
+        assert_eq!(vcs.selected_source_lines, 60);
+
+        let win = rows
+            .iter()
+            .find(|r| r.language == "ts" && r.category == "missing_browser_api")
+            .expect("ts row");
+        assert_eq!(win.affected_function_span_lines, 5);
+        assert_eq!(win.selected_source_lines, 40);
+
+        // Outcome-only rows for "any" language: a `build_failed` rollup
+        // covers all three Go arity entries + the Go VCS entry + the TS
+        // window entry (window is RuntimeFailed, so it lands in the
+        // runtime_failed bucket, not build_failed).
+        let any_build = rows
+            .iter()
+            .find(|r| r.language == "any" && r.category == "build_failed")
+            .expect("any/build_failed row");
+        // Three build failures across two files (a.go arity x2, b.go vcs).
+        assert_eq!(any_build.affected_functions, 3);
+        assert_eq!(any_build.affected_files, 2);
+        assert_eq!(any_build.affected_function_span_lines, 95);
+        // selected_source_lines == sum of discovered span lines on
+        // distinct affected files: 100 (a.go) + 60 (b.go) = 160.
+        assert_eq!(any_build.selected_source_lines, 160);
+
+        // Sort: the largest span row comes first.
+        assert!(
+            rows[0].affected_function_span_lines
+                >= rows[rows.len() - 1].affected_function_span_lines
+        );
+
+        // Markdown render.
+        let md = format_failure_impact_md(&rows).expect("non-empty rollup renders");
+        assert!(md.contains("Failure impact"));
+        assert!(md.contains("`constructor_arity`"));
+        assert!(md.contains("`missing_browser_api`"));
+        assert!(md.contains("80.0%"));
+
+        // Empty rollup returns None.
+        assert!(format_failure_impact_md(&[]).is_none());
+    }
+
+    #[test]
+    fn failure_impact_rollup_handles_zero_attempted_span_lines() {
+        // Edge case: if no run attempted any span lines, the percent
+        // denominator is undefined. Output must be 0.0, not NaN, so
+        // downstream JSON consumers don't choke.
+        let summary = make_summary(
+            "src/empty.go",
+            vec![entry_with_lines("Stub", "skipped", Some("policy"), 0)],
+        );
+        let rows = aggregate_failure_impact(&[summary]);
+        for row in &rows {
+            assert!(
+                row.percent_attempted_span_lines.is_finite(),
+                "percent must be finite for {row:?}"
+            );
         }
     }
 }
