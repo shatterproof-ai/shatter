@@ -1259,6 +1259,8 @@ mod tests {
         let mut explore_config = crate::explorer::ExploreConfig {
             file: "test.go".into(),
             max_iterations: Some(5),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: None,
             mocks: vec![],
             mock_params: vec![],

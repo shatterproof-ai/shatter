@@ -247,6 +247,8 @@ async fn run_single_exploration(
         file: target.file.clone(),
         execution_profile: None,
         max_iterations: Some(config.max_iterations),
+            observer_pool: 1,
+            observer_frontend_config: None,
         seed: None,
         mocks: vec![],
         mock_params: vec![],

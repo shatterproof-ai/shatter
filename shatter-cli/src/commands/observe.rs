@@ -198,6 +198,8 @@ pub(crate) async fn run_observe(
             file: file_str.clone(),
             execution_profile: None,
             max_iterations: Some(max_iterations),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: None,
             mocks: vec![],
             mock_params: vec![],

@@ -635,6 +635,8 @@ mod tests {
             file: "test.ts".to_string(),
             execution_profile: None,
             max_iterations: Some(100),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],

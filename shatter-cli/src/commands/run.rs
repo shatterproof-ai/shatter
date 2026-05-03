@@ -346,6 +346,8 @@ pub(crate) async fn run_run(
                 file: entry.file_path.to_string_lossy().into_owned(),
                 execution_profile: None,
                 max_iterations: Some(max_iterations),
+            observer_pool: 1,
+            observer_frontend_config: None,
                 seed: None,
                 mocks: vec![],
                 mock_params: vec![],

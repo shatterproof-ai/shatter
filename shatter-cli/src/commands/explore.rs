@@ -4713,6 +4713,8 @@ pub(crate) async fn run_explore(
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
+            observer_pool: 1,
+            observer_frontend_config: None,
                 seed: None,
                 mocks: auto_mocks,
                 mock_params,

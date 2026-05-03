@@ -1332,6 +1332,8 @@ pub async fn scan(
         let explore_config = ExploreConfig {
             file,
             max_iterations: Some(config.max_iterations_per_function),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: config.seed,
             mocks,
             mock_params: vec![],
@@ -3253,6 +3255,8 @@ pub async fn parallel_scan_with_progress(
             let explore_config = ExploreConfig {
                 file: file.clone(),
                 max_iterations: Some(config.max_iterations_per_function),
+            observer_pool: 1,
+            observer_frontend_config: None,
                 seed: config.seed,
                 mocks,
                 mock_params: vec![],

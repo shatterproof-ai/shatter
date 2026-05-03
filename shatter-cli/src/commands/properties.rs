@@ -109,6 +109,8 @@ pub(crate) async fn run_properties(
             file: file_str.to_string(),
             execution_profile: None,
             max_iterations: Some(max_iterations),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: None,
             mocks: vec![],
             mock_params: vec![],
