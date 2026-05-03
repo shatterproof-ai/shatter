@@ -1,12 +1,23 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The Go frontend binary, embedded at compile time.
 const BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shatter-go"));
 
 /// SHA-256 hash of the binary, used for cache-busting.
 const BINARY_HASH: &str = env!("GO_FRONTEND_HASH");
+
+/// Permission bits applied to the extracted Go frontend binary so it is
+/// executable by user/group/other.
+const EXECUTABLE_PERMISSIONS: u32 = 0o755;
+
+/// Per-process counter used to mint unique tmp file names so concurrent
+/// extractors never race on a shared `.tmp` path. Combined with the process
+/// id, this gives every extraction attempt within a process its own staging
+/// file even when many threads are extracting at once.
+static EXTRACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Ensure the embedded Go frontend binary is extracted to disk, returning its path.
 ///
@@ -31,6 +42,10 @@ fn ensure_extracted_with_fallback(primary_cache: &Path) -> Result<PathBuf, Strin
 }
 
 /// Extract the binary to a specific cache directory. Returns the path to the binary.
+///
+/// Mirrors `embedded_frontend::extract_to` — keep the two extraction paths in
+/// sync (parallel parity). Changes to the staging/rename strategy here should
+/// be reflected in the TS twin and vice versa.
 fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     let binary_path = cache_dir.join(format!("go-frontend-{BINARY_HASH}"));
 
@@ -45,26 +60,64 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
         )
     })?;
 
-    // Write atomically: write to a temp file then rename to avoid partial reads
-    let tmp_path = cache_dir.join(format!("go-frontend-{BINARY_HASH}.tmp"));
-    fs::write(&tmp_path, BINARY).map_err(|e| format!("failed to write go frontend binary: {e}"))?;
-
-    // Make executable
-    fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("failed to set permissions on go frontend binary: {e}"))?;
-
-    fs::rename(&tmp_path, &binary_path).map_err(|e| {
-        format!(
-            "failed to rename {} -> {}: {e}",
-            tmp_path.display(),
-            binary_path.display()
-        )
-    })?;
+    // Write atomically using a per-call unique tmp path so concurrent
+    // extractors do not race on the same staging file. A shared `.tmp` path
+    // is what produced `Text file busy (os error 26)` in str-6p7b: one
+    // process renamed the staged inode into place and exec'd it while a
+    // peer still held it open for writing.
+    write_executable_atomic(cache_dir, &binary_path)?;
 
     // Clean up old binaries (different hash)
     cleanup_old_binaries(cache_dir, &binary_path);
 
     Ok(binary_path)
+}
+
+/// Stage `BINARY` into `cache_dir` under a unique tmp name, mark it
+/// executable, then atomically rename it to `destination`. If a concurrent
+/// caller wins the race to `destination` first, treat that as success and
+/// drop the local staging file.
+fn write_executable_atomic(cache_dir: &Path, destination: &Path) -> Result<(), String> {
+    let tmp_path = unique_tmp_path(cache_dir, destination);
+
+    fs::write(&tmp_path, BINARY).map_err(|e| format!("failed to write go frontend binary: {e}"))?;
+
+    fs::set_permissions(
+        &tmp_path,
+        fs::Permissions::from_mode(EXECUTABLE_PERMISSIONS),
+    )
+    .map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("failed to set permissions on go frontend binary: {e}")
+    })?;
+
+    match fs::rename(&tmp_path, destination) {
+        Ok(()) => Ok(()),
+        Err(_) if destination.exists() => {
+            let _ = fs::remove_file(&tmp_path);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(format!(
+                "failed to rename {} -> {}: {e}",
+                tmp_path.display(),
+                destination.display()
+            ))
+        }
+    }
+}
+
+/// Build a per-process, per-call tmp path for staging an extraction. The PID
+/// disambiguates concurrent OS processes; the atomic counter disambiguates
+/// concurrent threads within a process.
+fn unique_tmp_path(cache_dir: &Path, destination: &Path) -> PathBuf {
+    let suffix = EXTRACT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("extraction destination must have a UTF-8 file name");
+    cache_dir.join(format!("{file_name}.{}.{}.tmp", std::process::id(), suffix))
 }
 
 /// Return the shatter cache directory (`~/.cache/shatter/`).
@@ -107,6 +160,13 @@ fn cleanup_old_binaries(cache_dir: &Path, current: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    /// Number of concurrent extractors used in the race regression test.
+    /// Eight matches the parallel test in `embedded_frontend.rs` and is
+    /// enough threads to reliably interleave the write/rename steps.
+    const CONCURRENT_EXTRACT_THREADS: usize = 8;
 
     #[test]
     fn binary_is_embedded() {
@@ -227,5 +287,48 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression for str-6p7b: concurrent `extract_to` calls must not race on
+    /// a shared `.tmp` path. The pre-fix code wrote every caller's payload to
+    /// the same `go-frontend-<hash>.tmp` file then renamed it onto the final
+    /// binary path; on a real system that produced `Text file busy (os error
+    /// 26)` when one process tried to exec the binary while another still had
+    /// the underlying inode open for write. In-process the same race shows up
+    /// as `set_permissions` or `rename` returning ENOENT after a peer renamed
+    /// the shared tmp out from under us.
+    #[test]
+    fn extract_to_is_safe_under_concurrent_calls() {
+        let tmp = std::env::temp_dir().join("shatter-test-go-concurrent-extract");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let dir = Arc::new(tmp);
+        let barrier = Arc::new(Barrier::new(CONCURRENT_EXTRACT_THREADS));
+        let mut handles = Vec::new();
+
+        for _ in 0..CONCURRENT_EXTRACT_THREADS {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                extract_to(dir.as_path())
+            }));
+        }
+
+        for handle in handles {
+            let path = handle
+                .join()
+                .expect("thread panicked")
+                .expect("concurrent extraction must not error");
+            assert!(path.exists(), "binary path should exist after extraction");
+            let perms = fs::metadata(&path).unwrap().permissions();
+            assert!(
+                perms.mode() & 0o111 != 0,
+                "binary should remain executable across concurrent extracts"
+            );
+        }
+
+        let _ = fs::remove_dir_all(dir.as_path());
     }
 }
