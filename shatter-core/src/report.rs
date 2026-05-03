@@ -400,6 +400,16 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         0.0
     };
 
+    // str-9q1z: `branch_count` is the analyzer-derived total number of
+    // branch points in the function (from `coverage_metrics`), and
+    // `branches_covered` is how many of those points were reached
+    // (`total_branches - uncovered`). These must be distinct, accurate
+    // values — the previous implementation set both to
+    // `exploration.unique_paths`, which is the count of distinct execution
+    // paths through the function and is unrelated to per-branch coverage.
+    let total_branches = result.coverage_metrics.total_branches;
+    let branches_covered = total_branches.saturating_sub(result.coverage_metrics.uncovered);
+
     // str-fuhw: `result.function_name` may be a qualified ID
     // (`"<file>::<name>"`) on production paths. Strip to the bare display
     // name so the wire `function_name` field stays unchanged
@@ -411,8 +421,8 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         function_name: display_name.to_string(),
         file_path: file_path.to_string(),
         source_bucket: classify_path(file_path),
-        branch_count: exploration.unique_paths,
-        branches_covered: exploration.unique_paths,
+        branch_count: total_branches,
+        branches_covered,
         coverage_pct,
         discovered_inputs,
         behavior_clusters,
@@ -1376,9 +1386,82 @@ mod tests {
             behavior_coverage: vec![],
             mocks_used: mocks,
             mock_misses: vec![],
-            coverage_metrics: Default::default(),
+            // Default helper sets total_branches == unique_paths and
+            // uncovered == 0 so existing assertions on
+            // `branch_count`/`branches_covered` (which previously read
+            // `unique_paths`) keep their numeric values. Regression
+            // coverage for the str-9q1z bug — distinct branch_count vs
+            // branches_covered — lives in
+            // `branch_count_distinct_from_unique_paths`.
+            coverage_metrics: crate::coverage_metrics::CoverageMetrics {
+                total_branches: unique_paths,
+                z3_solved: unique_paths,
+                random_found: 0,
+                user_provided: 0,
+                fuzz_found: 0,
+                uncovered: 0,
+                symexpr_count: 0,
+                unknown_count: 0,
+                mcdc_metrics: None,
+            },
             refactoring_recommendations: vec![],
         }
+    }
+
+    /// str-9q1z regression: the standalone explore CLI report previously
+    /// set both `branch_count` and `branches_covered` from
+    /// `exploration.unique_paths`, conflating two unrelated metrics:
+    ///
+    /// * `branch_count` is the analyzer-derived total branch points in
+    ///   the function.
+    /// * `branches_covered` is how many of those branch points were
+    ///   reached during exploration.
+    /// * `exploration.unique_paths` is the count of distinct execution
+    ///   paths discovered, which is neither of the above.
+    ///
+    /// This test exercises a function whose branch count, covered branch
+    /// count, and unique path count are three distinct numbers and
+    /// asserts that the report distinguishes them correctly.
+    #[test]
+    fn branch_count_distinct_from_unique_paths() {
+        const TOTAL_BRANCHES: usize = 8;
+        const UNCOVERED_BRANCHES: usize = 3;
+        const UNIQUE_PATHS: usize = 11;
+        const EXPECTED_BRANCHES_COVERED: usize = TOTAL_BRANCHES - UNCOVERED_BRANCHES;
+        // Deliberately pick UNIQUE_PATHS so it equals neither
+        // TOTAL_BRANCHES nor EXPECTED_BRANCHES_COVERED — this is what
+        // exposes the str-9q1z conflation.
+        assert_ne!(UNIQUE_PATHS, TOTAL_BRANCHES);
+        assert_ne!(UNIQUE_PATHS, EXPECTED_BRANCHES_COVERED);
+
+        let mut func_result =
+            make_function_result("explore_target", 12, UNIQUE_PATHS, 7, 12, vec![]);
+        func_result.coverage_metrics = crate::coverage_metrics::CoverageMetrics {
+            total_branches: TOTAL_BRANCHES,
+            z3_solved: EXPECTED_BRANCHES_COVERED,
+            random_found: 0,
+            user_provided: 0,
+            fuzz_found: 0,
+            uncovered: UNCOVERED_BRANCHES,
+            symexpr_count: 0,
+            unknown_count: 0,
+            mcdc_metrics: None,
+        };
+
+        let report = build_function_report(&func_result, "src/explore_target.ts");
+
+        assert_eq!(
+            report.branch_count, TOTAL_BRANCHES,
+            "branch_count must come from analyzer-derived total_branches, not unique_paths"
+        );
+        assert_eq!(
+            report.branches_covered, EXPECTED_BRANCHES_COVERED,
+            "branches_covered must be total_branches - uncovered, not unique_paths"
+        );
+        assert_ne!(
+            report.branch_count, report.branches_covered,
+            "branch_count and branches_covered must be reported as distinct values"
+        );
     }
 
     #[test]
