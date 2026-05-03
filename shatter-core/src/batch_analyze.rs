@@ -222,6 +222,18 @@ pub async fn batch_analyze(
                     );
                     continue;
                 }
+                // str-jeen.40: a preflight failure is sticky across the run
+                // (env-level fault, e.g. missing node_modules). Skip the file
+                // so we don't surface N runtime_failed rows for one env miss.
+                // The frontend short-circuits subsequent requests with the
+                // same code, so the run still terminates cleanly.
+                if code == crate::protocol::ErrorCode::PreflightFailed {
+                    log::warn!(
+                        "skipping file during batch analyze due to preflight failure: {} ({message})",
+                        file_path.display()
+                    );
+                    continue;
+                }
                 return Err(BatchAnalyzeError::Frontend {
                     file: file_path.to_string_lossy().into_owned(),
                     source: FrontendError::Protocol {

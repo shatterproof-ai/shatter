@@ -186,6 +186,7 @@ pub fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::CompilationError),
         Just(ErrorCode::InternalError),
         Just(ErrorCode::NotSupported),
+        Just(ErrorCode::PreflightFailed),
     ]
 }
 

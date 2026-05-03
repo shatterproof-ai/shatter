@@ -20,7 +20,8 @@ shared_wire_types:
     notes: >
       Reusable enum for invocation results. The canonical values are
       completed, completed_with_findings, unsupported, build_failed,
-      runtime_failed, timed_out, and skipped_by_policy.
+      runtime_failed, timed_out, skipped_by_policy, and preflight_failed
+      (str-jeen.40 — env-preflight failures distinct from unsupported).
     frontends:
       typescript: implemented
       go: implemented
@@ -856,6 +857,28 @@ allowed_divergences:
     resolution: >
       Add data flow tracking to Go frontend (separate issue). Rust frontend
       deferred until full analyze implementation lands.
+
+  - id: error-code-preflight-failed-typescript-only
+    description: >
+      The `preflight_failed` error code and matching `OutcomeStatus`
+      variant are declared in all three frontend bindings (TS, Go,
+      Rust) for wire compatibility, but only the TypeScript frontend
+      currently runs an environment preflight that emits the code
+      (str-jeen.26 → str-jeen.40 — node_modules / install check before
+      analyze/instrument/prepare/execute/setup). Go and Rust have no
+      equivalent preflight emitter today; both accept and round-trip
+      the code on the wire but never produce it. The CLI's
+      batch_analyze and explore bucket logic treat `preflight_failed`
+      from any frontend identically, so adding emitters in Go/Rust
+      later requires no core-side change.
+    affected_frontends: [go, rust]
+    affected_commands: [analyze, instrument, prepare, execute, setup]
+    status: tracked
+    resolution: >
+      Add an environment preflight in the Go and Rust frontends that
+      emits `preflight_failed` for the equivalent missing-dependency or
+      missing-toolchain conditions (e.g. missing `go.sum` / module
+      cache for Go, missing toolchain or target dir for Rust).
 
   - id: loop-body-states-typescript-only
     description: >

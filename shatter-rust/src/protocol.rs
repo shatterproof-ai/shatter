@@ -460,6 +460,10 @@ pub enum OutcomeStatus {
     RuntimeFailed,
     TimedOut,
     SkippedByPolicy,
+    /// Environment preflight check failed for this run (str-jeen.40).
+    /// Wire-compatible variant; the Rust frontend does not yet emit it
+    /// (see parity-matrix divergence error-code-preflight-failed-typescript-only).
+    PreflightFailed,
 }
 
 /// Reusable protocol contract for one invocation result.
@@ -488,9 +492,13 @@ pub const ERR_INVALID_REQUEST: &str = "invalid_request";
 pub const ERR_COMPILATION_ERROR: &str = "compilation_error";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 pub const ERR_NOT_SUPPORTED: &str = "not_supported";
+/// str-jeen.40: env-preflight failure. Wire-compatible declaration; the
+/// Rust frontend does not yet emit it (see parity-matrix divergence
+/// `error-code-preflight-failed-typescript-only`).
+pub const ERR_PREFLIGHT_FAILED: &str = "preflight_failed";
 
 /// All valid error codes for parity testing.
-pub const ALL_ERROR_CODES: [&str; 11] = [
+pub const ALL_ERROR_CODES: [&str; 12] = [
     ERR_FILE_NOT_FOUND,
     ERR_FUNCTION_NOT_FOUND,
     ERR_PARSE_ERROR,
@@ -502,6 +510,7 @@ pub const ALL_ERROR_CODES: [&str; 11] = [
     ERR_COMPILATION_ERROR,
     ERR_INTERNAL_ERROR,
     ERR_NOT_SUPPORTED,
+    ERR_PREFLIGHT_FAILED,
 ];
 
 /// Granularity level for setup/teardown lifecycle management.
@@ -1604,6 +1613,7 @@ mod tests {
         round_trip(&OutcomeStatus::RuntimeFailed);
         round_trip(&OutcomeStatus::TimedOut);
         round_trip(&OutcomeStatus::SkippedByPolicy);
+        round_trip(&OutcomeStatus::PreflightFailed);
     }
 
     #[test]

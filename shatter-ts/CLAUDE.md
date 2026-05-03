@@ -113,6 +113,25 @@ The wire shape is identical to Rust and Go (str-hy9b.A5,
 parity-matrix.yaml `feature_capabilities.outcome`). Conformance lock:
 `protocol/conformance/conformance_cases.yaml` `execute_outcome_shape_ts`.
 
+## Environment Preflight Contract (str-jeen.26 → str-jeen.40)
+
+The TS frontend runs a one-shot environment preflight on the first
+request that carries a `project_root`: if `node_modules/` is absent the
+failure is cached and every subsequent `analyze` / `instrument` /
+`prepare` / `execute` / `setup` short-circuits with the cached error.
+The wire-level error code is **`preflight_failed`** (a first-class
+variant added by str-jeen.40, replacing the str-jeen.26 stopgap that
+reused `not_supported`); the message keeps the structured prefix
+`preflight_failed: <reason>: <detail>` so log scrapers written against
+the stopgap remain compatible. The Rust core's `batch_analyze` skips
+both `not_supported` and `preflight_failed` files so the run still
+terminates cleanly without per-target `runtime_failed` noise.
+
+Go and Rust frontends declare the wire code and the
+`OutcomeStatus::PreflightFailed` variant for compatibility but do not
+emit them yet — see `parity-matrix.yaml` allowed_divergence
+`error-code-preflight-failed-typescript-only`.
+
 ## No-Target-Reason Classifier Contract
 
 The TS per-language no-target-reason classifier (str-jeen.22) refines

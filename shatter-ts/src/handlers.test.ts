@@ -1719,9 +1719,10 @@ export function usesAlias(): number {
     // Cover the env-preflight short-circuit: a TS project missing
     // `node_modules/` should produce one preflight failure per command,
     // never a per-target runtime_failed cascade. The wire code is
-    // `not_supported` (stopgap; str-jeen.40 will introduce a dedicated
-    // `preflight_failed` code) and the message embeds the structured
-    // `preflight_failed: missing_node_modules: <path>` prefix.
+    // `preflight_failed` (str-jeen.40 — first-class code added after the
+    // str-jeen.26 stopgap that reused `not_supported`); the message
+    // embeds the structured `preflight_failed: missing_node_modules:
+    // <path>` prefix kept for log-scraper compatibility.
     let preflightProjectRoot: string;
     let preflightFile: string;
 
@@ -1752,7 +1753,7 @@ export function usesAlias(): number {
       );
       expect(response.status).toBe("error");
       if (response.status === "error") {
-        expect(response.code).toBe("not_supported");
+        expect(response.code).toBe("preflight_failed");
         expect(response.message).toContain("preflight_failed");
         expect(response.message).toContain("missing_node_modules");
         expect(response.message).toContain(
@@ -1780,7 +1781,7 @@ export function usesAlias(): number {
       );
       expect(second.response.status).toBe("error");
       if (second.response.status === "error") {
-        expect(second.response.code).toBe("not_supported");
+        expect(second.response.code).toBe("preflight_failed");
         expect(second.response.message).toContain("missing_node_modules");
       }
 

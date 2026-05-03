@@ -185,7 +185,7 @@ export type ResponseStatus =
   | "shutdown_ack"
   | "error";
 
-/** Canonical error codes matching protocol/registry.yaml (11 codes). */
+/** Canonical error codes matching protocol/registry.yaml (12 codes). */
 export const ALL_ERROR_CODES = [
   "file_not_found",
   "function_not_found",
@@ -198,6 +198,11 @@ export const ALL_ERROR_CODES = [
   "compilation_error",
   "internal_error",
   "not_supported",
+  // str-jeen.40: env-preflight failure (e.g. missing node_modules).
+  // Distinct from `not_supported` so env faults bucket separately from
+  // frontend-capability gaps. Replaces the str-jeen.26 stopgap that
+  // reused `not_supported` for this case.
+  "preflight_failed",
 ] as const;
 
 export type ErrorCode = (typeof ALL_ERROR_CODES)[number];
@@ -665,7 +670,9 @@ export type OutcomeStatus =
   | "build_failed"
   | "runtime_failed"
   | "timed_out"
-  | "skipped_by_policy";
+  | "skipped_by_policy"
+  // str-jeen.40: env-preflight failure (e.g. missing node_modules).
+  | "preflight_failed";
 
 /** Reusable protocol contract for one invocation result. */
 export interface InvocationOutcome {

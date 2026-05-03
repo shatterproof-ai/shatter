@@ -383,6 +383,10 @@ enum UnavailableReason {
     Unsupported,
     SkippedByPolicy,
     WriteFailed,
+    /// Environment preflight failed — env fault outside the function under
+    /// test (str-jeen.40). Distinct from `Unsupported`, which is a
+    /// frontend-capability gap.
+    PreflightFailed,
 }
 
 impl UnavailableReason {
@@ -399,6 +403,7 @@ impl UnavailableReason {
             UnavailableReason::Unsupported => "spec_not_produced_due_to_unsupported",
             UnavailableReason::SkippedByPolicy => "spec_not_produced_due_to_skipped_by_policy",
             UnavailableReason::WriteFailed => "artifact_write_failed",
+            UnavailableReason::PreflightFailed => "spec_not_produced_due_to_preflight_failed",
         }
     }
 }
@@ -452,6 +457,14 @@ struct ExploreSummaryEntry {
 }
 
 fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// `skip_serializing_if` predicate for `usize` fields — used by additive
+/// `ExploreSummary` counters (e.g. `preflight_failed`, str-jeen.40) so that
+/// runs which never hit the new outcome bucket continue to serialize the
+/// pre-existing JSON shape.
+fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
 
@@ -570,6 +583,13 @@ struct ExploreSummary {
     /// unsupported signature. Subset of the legacy `skipped` count.
     #[serde(default)]
     skipped_by_policy: usize,
+    /// Functions whose run was skipped because the frontend's environment
+    /// preflight failed (str-jeen.40). Distinct from `unsupported` so
+    /// env-level faults bucket separately from frontend-capability gaps.
+    /// Field is omitted from JSON when zero so existing snapshots remain
+    /// stable for runs that never hit a preflight failure.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    preflight_failed: usize,
     /// Functions that produced at least one explored path. The
     /// "produced-coverage denominator" — distinct from `total_functions`
     /// (discovered) and from `completed` (no exception, but possibly zero
@@ -826,6 +846,12 @@ fn span_line_denominators_from_entries(entries: &[ExploreSummaryEntry]) -> SpanL
                 // Pre-skipped: counted only in `discovered`. No outcome
                 // bucket — policy exclusion is user-driven, not a gap.
             }
+            OutcomeStatus::PreflightFailed => {
+                // Env-preflight failure (str-jeen.40): the fault is outside
+                // the function under test, so the lines are not "attempted"
+                // and there is no per-function gap to surface. Counted only
+                // in `discovered`.
+            }
         }
     }
     totals
@@ -845,6 +871,9 @@ struct OutcomeBuckets {
     timed_out: usize,
     unsupported: usize,
     skipped_by_policy: usize,
+    /// Env-preflight failure bucket (str-jeen.40). Distinct from
+    /// `unsupported` so the run-JSON can reflect env faults separately.
+    preflight_failed: usize,
 }
 
 /// One function ready to be scheduled for exploration. Cloned per batch because
@@ -1479,6 +1508,14 @@ fn outcome_status_from_entry(entry: &ExploreSummaryEntry) -> shatter_core::proto
     // str-jeen.4: prefer the typed UnavailableReason token when present so a
     // build_failed or timed_out classification doesn't silently regress to
     // RuntimeFailed because the new token uses underscores instead of spaces.
+    // Preflight check first: a preflight-failure reason can also contain the
+    // substring "unsupported" via the legacy stopgap message; matching the
+    // dedicated preflight token before unsupported keeps the bucket honest.
+    if reason_lower.contains(UnavailableReason::PreflightFailed.as_token())
+        || reason_lower.contains("preflight_failed")
+    {
+        return OutcomeStatus::PreflightFailed;
+    }
     if reason_lower.contains(UnavailableReason::TimedOut.as_token()) {
         return OutcomeStatus::TimedOut;
     }
@@ -1544,6 +1581,7 @@ fn bucket_counts_from_entries(entries: &[ExploreSummaryEntry]) -> OutcomeBuckets
             OutcomeStatus::TimedOut => buckets.timed_out += 1,
             OutcomeStatus::Unsupported => buckets.unsupported += 1,
             OutcomeStatus::SkippedByPolicy => buckets.skipped_by_policy += 1,
+            OutcomeStatus::PreflightFailed => buckets.preflight_failed += 1,
         }
     }
     buckets
@@ -2273,6 +2311,7 @@ fn format_outcome_breakdown(buckets: &OutcomeBuckets, produced_coverage: usize) 
         + buckets.timed_out
         + buckets.unsupported
         + buckets.skipped_by_policy
+        + buckets.preflight_failed
         > 0;
     if !any_non_completed {
         return None;
@@ -2289,6 +2328,7 @@ fn format_outcome_breakdown(buckets: &OutcomeBuckets, produced_coverage: usize) 
     push("timed_out", buckets.timed_out);
     push("unsupported", buckets.unsupported);
     push("skipped_by_policy", buckets.skipped_by_policy);
+    push("preflight_failed", buckets.preflight_failed);
     Some(format!(
         "Outcome breakdown: produced coverage: {produced_coverage} · {}",
         parts.join(" · ")
@@ -4944,6 +4984,7 @@ pub(crate) async fn run_explore(
             timed_out: 0,
             unsupported: pre_skipped,
             skipped_by_policy: 0,
+            preflight_failed: 0,
             produced_coverage: 0,
             no_target_reason: classify_no_target_reason(
                 attempted,
@@ -5654,6 +5695,13 @@ pub(crate) async fn run_explore(
                 shatter_core::protocol::OutcomeStatus::TimedOut => {
                     explore_summary.timed_out += 1;
                 }
+                // str-jeen.40: env-preflight failure observed mid-batch.
+                // Surface in the dedicated bucket so the run JSON can show
+                // a single `preflight_failed` row instead of N noisy
+                // runtime_failed entries.
+                shatter_core::protocol::OutcomeStatus::PreflightFailed => {
+                    explore_summary.preflight_failed += 1;
+                }
                 // Skipped variants don't appear here: this branch only runs
                 // for scheduled work items (completed | failed). Pre-skipped
                 // functions are seeded into `unsupported` at summary init.
@@ -6106,6 +6154,7 @@ pub(crate) async fn run_explore(
             run_buckets.timed_out += b.timed_out;
             run_buckets.unsupported += b.unsupported;
             run_buckets.skipped_by_policy += b.skipped_by_policy;
+            run_buckets.preflight_failed += b.preflight_failed;
             run_produced_coverage += summary.produced_coverage;
         }
         let breakdown = format_outcome_breakdown(&run_buckets, run_produced_coverage);
@@ -8895,6 +8944,7 @@ mod tests {
             timed_out: 5,
             unsupported: 0,
             skipped_by_policy: 0,
+            preflight_failed: 0,
         };
         let line = format_outcome_breakdown(&buckets, 31)
             .expect("breakdown line should be Some when failures exist");

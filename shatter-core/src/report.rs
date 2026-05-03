@@ -2677,6 +2677,7 @@ fn outcome_status_label(status: OutcomeStatus) -> &'static str {
         OutcomeStatus::RuntimeFailed => "runtime_failed",
         OutcomeStatus::TimedOut => "timed_out",
         OutcomeStatus::SkippedByPolicy => "skipped_by_policy",
+        OutcomeStatus::PreflightFailed => "preflight_failed",
     }
 }
 

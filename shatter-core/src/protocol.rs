@@ -1039,6 +1039,11 @@ pub enum OutcomeStatus {
     RuntimeFailed,
     TimedOut,
     SkippedByPolicy,
+    /// Environment preflight check failed for this run (str-jeen.40).
+    /// Distinct from `Unsupported`: a preflight failure is an env fault
+    /// outside the function under test (e.g. missing `node_modules`),
+    /// not a frontend capability gap.
+    PreflightFailed,
 }
 
 /// Structured outcome produced by one invocation attempt.
@@ -1194,6 +1199,10 @@ pub enum ErrorCode {
     InternalError,
     /// Command or operation not supported by this frontend.
     NotSupported,
+    /// Environment preflight check failed for this run (str-jeen.40).
+    /// Distinct from `NotSupported`: indicates an environmental fault
+    /// outside the function under test (e.g. missing `node_modules`).
+    PreflightFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -1960,7 +1969,7 @@ mod tests {
     /// Canonical error code list (11 codes) matching protocol/registry.yaml.
     /// This match is exhaustive — adding a variant to ErrorCode without
     /// updating this list causes a compiler error.
-    const ALL_ERROR_CODES: [(ErrorCode, &str); 11] = [
+    const ALL_ERROR_CODES: [(ErrorCode, &str); 12] = [
         (ErrorCode::FileNotFound, "file_not_found"),
         (ErrorCode::FunctionNotFound, "function_not_found"),
         (ErrorCode::ParseError, "parse_error"),
@@ -1972,6 +1981,7 @@ mod tests {
         (ErrorCode::CompilationError, "compilation_error"),
         (ErrorCode::InternalError, "internal_error"),
         (ErrorCode::NotSupported, "not_supported"),
+        (ErrorCode::PreflightFailed, "preflight_failed"),
     ];
 
     #[test]
@@ -2009,6 +2019,7 @@ mod tests {
                 ErrorCode::CompilationError => "compilation_error",
                 ErrorCode::InternalError => "internal_error",
                 ErrorCode::NotSupported => "not_supported",
+                ErrorCode::PreflightFailed => "preflight_failed",
             }
         }
         for (code, expected) in ALL_ERROR_CODES {
@@ -3375,6 +3386,7 @@ mod tests {
             OutcomeStatus::RuntimeFailed,
             OutcomeStatus::TimedOut,
             OutcomeStatus::SkippedByPolicy,
+            OutcomeStatus::PreflightFailed,
         ] {
             let json = serde_json::to_string(&status).expect("serialize");
             let decoded: OutcomeStatus = serde_json::from_str(&json).expect("deserialize");

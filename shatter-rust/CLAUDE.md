@@ -94,6 +94,18 @@ TS and Go frontends — see `protocol/parity-matrix.yaml`
 `protocol/conformance/conformance_cases.yaml`
 (`execute_outcome_shape_rust`).
 
+### Environment Preflight Contract (str-jeen.40)
+
+The `preflight_failed` error code (`ERR_PREFLIGHT_FAILED`) and the
+matching `OutcomeStatus::PreflightFailed` variant are declared in
+`src/protocol.rs` for wire compatibility with the TS frontend's
+env-preflight short-circuit. **The Rust frontend does not currently emit
+either** — Rust has no equivalent missing-toolchain / missing-target-dir
+preflight pass yet. See `parity-matrix.yaml` allowed_divergence
+`error-code-preflight-failed-typescript-only`. Adding a Rust preflight
+emitter requires no core-side change because `batch_analyze` already
+treats `preflight_failed` the same as `not_supported`.
+
 ## No-Target-Reason Classifier Contract
 
 The Rust per-language no-target-reason classifier (str-jeen.24) refines

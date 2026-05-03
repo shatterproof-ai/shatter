@@ -458,6 +458,7 @@ func TestOutcomeStatusRoundTrip(t *testing.T) {
 		OutcomeStatusRuntimeFailed,
 		OutcomeStatusTimedOut,
 		OutcomeStatusSkippedByPolicy,
+		OutcomeStatusPreflightFailed,
 	}
 	for _, status := range statuses {
 		data, err := json.Marshal(status)

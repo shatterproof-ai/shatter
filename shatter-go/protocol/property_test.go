@@ -936,9 +936,9 @@ func TestPropertyPrepareIDOmittedWhenNil(t *testing.T) {
 }
 
 func TestErrorCodeParityWithRegistry(t *testing.T) {
-	// AllErrorCodes must have exactly 11 entries matching protocol/registry.yaml.
-	if len(AllErrorCodes) != 11 {
-		t.Fatalf("AllErrorCodes has %d entries, want 11", len(AllErrorCodes))
+	// AllErrorCodes must have exactly 12 entries matching protocol/registry.yaml.
+	if len(AllErrorCodes) != 12 {
+		t.Fatalf("AllErrorCodes has %d entries, want 12", len(AllErrorCodes))
 	}
 
 	// Every constant must appear in the slice.
@@ -946,7 +946,7 @@ func TestErrorCodeParityWithRegistry(t *testing.T) {
 		ErrFileNotFound, ErrFunctionNotFound, ErrParseError,
 		ErrInstrumentationFailed, ErrExecutionTimeout, ErrExecutionCrash,
 		ErrVersionMismatch, ErrInvalidRequest, ErrCompilationError,
-		ErrInternalError, ErrNotSupported,
+		ErrInternalError, ErrNotSupported, ErrPreflightFailed,
 	}
 	seen := make(map[string]bool)
 	for _, code := range AllErrorCodes {
