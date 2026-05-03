@@ -1,0 +1,6 @@
+{
+  "name": "broad-run-browser-globals",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Broad-run corpus fixture (str-jeen.14). No runtime deps."
+}

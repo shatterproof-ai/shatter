@@ -1,0 +1,6 @@
+{
+  "name": "broad-run-no-target-categories",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Broad-run corpus fixture (str-jeen.14). No runtime deps. Holds one file per NoTargetReason variant; gate auto-creates an empty node_modules so TS preflight succeeds and per-file classification can proceed."
+}

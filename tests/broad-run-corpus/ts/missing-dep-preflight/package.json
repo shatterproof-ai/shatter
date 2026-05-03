@@ -1,0 +1,9 @@
+{
+  "name": "broad-run-missing-dep",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fixture: package.json declares a runtime dep that is intentionally NOT installed in node_modules. The TS preflight (str-jeen.26) should classify the file as preflight_failed rather than aborting the scan.",
+  "dependencies": {
+    "definitely-not-installed-pkg": "^99.0.0"
+  }
+}
