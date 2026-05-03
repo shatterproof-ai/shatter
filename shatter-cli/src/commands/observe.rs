@@ -105,6 +105,8 @@ pub(crate) async fn run_observe(
         let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
         let concolic_config = shatter_core::orchestrator::ExploreConfig {
             max_iterations: Some(max_iterations as usize),
+            observer_pool: 1,
+            observer_frontend_config: None,
             max_executions: Some((max_iterations as usize) * 5),
             plateau_threshold: 20,
             mocks: vec![],
@@ -198,6 +200,8 @@ pub(crate) async fn run_observe(
             file: file_str.clone(),
             execution_profile: None,
             max_iterations: Some(max_iterations),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: None,
             mocks: vec![],
             mock_params: vec![],

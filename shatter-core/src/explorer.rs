@@ -16,7 +16,7 @@ use tracing::Instrument;
 
 use crate::auto_mock::MockParam;
 use crate::coverage_metrics::DiscoveryMethod;
-use crate::frontend::{Frontend, FrontendError};
+use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::input_gen::{
     PrefetchedValues, ValueSource, generate_inputs_with_custom, generate_mock_values,
     prefetch_custom_values,
@@ -104,6 +104,16 @@ pub struct ExploreConfig {
     /// Maximum number of iterations (execute calls) per function.
     /// `None` means unbounded — explore runs until timeout or interruption.
     pub max_iterations: Option<u32>,
+    /// Number of observer frontend subprocesses to use for random exploration.
+    ///
+    /// `1` preserves the serial path. Values above 1 require
+    /// `observer_frontend_config` so the explorer can spawn independent
+    /// frontend subprocesses; the public CLI/config knob is intentionally
+    /// deferred to str-frc.6.
+    pub observer_pool: usize,
+    /// Frontend spawn template for observer subprocesses when
+    /// `observer_pool > 1`.
+    pub observer_frontend_config: Option<FrontendConfig>,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
     /// Mock configurations to pass to Execute commands.
@@ -3351,6 +3361,32 @@ mod tests {
         Frontend::spawn(&config).await.expect("spawn noop frontend")
     }
 
+    fn recording_frontend_config(log_path: &std::path::Path) -> crate::frontend::FrontendConfig {
+        use crate::frontend::FrontendConfig;
+        use std::path::{Path, PathBuf};
+        use std::time::Duration;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let frontend_path = manifest_dir.join("../protocol/observer-recording-frontend.sh");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![frontend_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        config.env_vars.push((
+            "SHATTER_OBSERVER_LOG".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ));
+        config
+            .env_vars
+            .push(("SHATTER_OBSERVER_EXEC_SLEEP".to_string(), "0.05".to_string()));
+        config
+    }
+
+    async fn spawn_recording_frontend(log_path: &std::path::Path) -> Frontend {
+        Frontend::spawn(&recording_frontend_config(log_path))
+            .await
+            .expect("spawn recording frontend")
+    }
+
     fn stub_analysis() -> FunctionAnalysis {
         use crate::types::{ParamInfo, TypeInfo};
         FunctionAnalysis {
@@ -3376,12 +3412,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explore_function_observer_pool_uses_multiple_frontend_processes() {
+        let log_path = std::env::temp_dir().join(format!(
+            "shatter-observer-pool-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+
+        let observer_frontend_config = recording_frontend_config(&log_path);
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(6),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert_eq!(result.iterations, 6);
+
+        let log = std::fs::read_to_string(&log_path).expect("observer log should exist");
+        let execute_pids: std::collections::BTreeSet<&str> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("execute:"))
+            .collect();
+        assert!(
+            execute_pids.len() >= 2,
+            "observer_pool=2 should execute candidates on at least two frontend processes; \
+             pids={execute_pids:?}, log={log}"
+        );
+    }
+
+    #[tokio::test]
     async fn explore_function_instruments_before_executing() {
         let mut frontend = spawn_noop_frontend().await;
         let analysis = stub_analysis();
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(3),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3432,6 +3536,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(10_000),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3483,6 +3589,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3523,6 +3631,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3562,6 +3672,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3600,6 +3712,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3644,6 +3758,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(3),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3682,6 +3798,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(5),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3738,6 +3856,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(10),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -3794,6 +3914,8 @@ mod tests {
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
             seed: Some(99),
             mocks: vec![],
             mock_params: vec![],
