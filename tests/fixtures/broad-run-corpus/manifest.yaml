@@ -1,0 +1,125 @@
+# Broad-run validation corpus expectations.
+#
+# Each entry pins, for one synthetic sub-fixture:
+#   path:           directory under tests/fixtures/broad-run-corpus
+#   language:       --language flag passed to `shatter scan`
+#   mode:           "full_scan" — expects valid JSON; gate validates
+#                                 denominator, artifacts, optional reason.
+#                   "preflight_failure" — expects empty stdout JSON;
+#                                 gate validates a stderr pattern (the
+#                                 preflight failure IS the failure class).
+#   min_attempted:  for full_scan, lower bound on attempted_functions.
+#   stderr_pattern: for preflight_failure, regex that must match stderr.
+#                   Counts as a failure-class match for the global floor.
+#   require_failure_reason: full_scan-only optional regex; at least one
+#                           failed[].reason must match.
+#   notes:          human-readable description of the failure class
+
+fixtures:
+  - path: go-large-set
+    language: go
+    mode: full_scan
+    min_attempted: 8
+    notes: |
+      Many sibling packages with multiple exported functions each. The
+      total denominator must reflect every discovered function. A
+      classifier that drops failed spans would collapse this to a tiny
+      number and the gate would catch it.
+
+  - path: go-internal-pkg
+    language: go
+    mode: full_scan
+    min_attempted: 2
+    notes: |
+      Public api package importing example.com/<mod>/internal/svc.
+      Validates that scan does not crash on internal/ imports and the
+      harness rewrite either succeeds or fails with an honest reason.
+
+  - path: go-mixed-test-pkg
+    language: go
+    mode: full_scan
+    min_attempted: 1
+    notes: |
+      _test.go siblings using both the in-package and `_test` package
+      forms. Validates that scan does not select test files as targets
+      and does not fail discovery on the mixed package layout.
+
+  - path: ts-private-helpers
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      Module mixing exported entry points and file-local private
+      helpers. Without a populated node_modules the TS preflight
+      surfaces missing_node_modules — exactly the failure class
+      Kapow exposed when scanning ad-hoc TS roots.
+
+  - path: ts-tsx-typeonly
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      .tsx + type-only module. Same preflight class; also documents
+      that the discovery walker accepts .tsx and that type-only files
+      do not crash preflight.
+
+  - path: ts-browser-globals
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      Functions referencing window/document/localStorage. Documents
+      preflight outcome for DOM-dependent code; once node_modules is
+      populated the runner can be extended to assert the runtime
+      failure class instead.
+
+  - path: ts-missing-dep
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      Imports a package not declared in package.json. Currently the
+      missing_node_modules class fires before missing-package preflight;
+      that ordering is itself the failure class to pin.
+
+  - path: mixed-rust-frontend
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      TS + Rust mixed tree. With --language typescript .rs files must
+      be ignored; preflight on the .ts file then fires. A future
+      auto-detect run would surface the rust-frontend-unavailable
+      class.
+
+  - path: no-target-opaque
+    language: typescript
+    mode: preflight_failure
+    stderr_pattern: "preflight_failed: missing_node_modules"
+    notes: |
+      Every exported function takes only opaque parameters. Once
+      node_modules is populated, the gate should be tightened to
+      assert codebase.unsupported_functions > 0.
+
+# Stale-source detection: handled by a dedicated phase in the runner
+# (Go-based to avoid the TS preflight gating). The runner copies
+# pkg/transient.go.template -> pkg/transient.go, scans, deletes
+# transient.go, rescans, and asserts no artifact references the
+# deleted path.
+stale_source:
+  path: stale-source-go
+  language: go
+  transient_template: pkg/transient.go.template
+  transient_target: pkg/transient.go
+
+# Global thresholds applied across all sub-fixtures.
+global:
+  # Total failure-class representatives matched. Each preflight_failure
+  # whose stderr pattern fires, and each full_scan whose
+  # require_failure_reason fires, contributes one match.
+  min_failure_class_count: 6
+
+  # Per-scan budget. Kept small so the gate runs in seconds in CI.
+  max_iterations: 1
+  timeout_per_fn_seconds: 5
+  timeout_total_seconds: 60

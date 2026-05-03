@@ -1,0 +1,11 @@
+package pkg
+
+// Transient is copied to transient.go before the first scan and removed
+// before the second scan. The runner asserts that no scan artifact in
+// the second pass references the deleted file.
+func Transient(n int) string {
+	if n%2 == 0 {
+		return "even"
+	}
+	return "odd"
+}
