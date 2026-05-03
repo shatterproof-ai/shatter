@@ -2034,8 +2034,8 @@ mod tests {
         use crate::protocol::ALL_ERROR_CODES;
         assert_eq!(
             ALL_ERROR_CODES.len(),
-            11,
-            "ALL_ERROR_CODES must have 11 entries matching registry.yaml"
+            12,
+            "ALL_ERROR_CODES must have 12 entries matching registry.yaml"
         );
         // Each code must be a non-empty snake_case string.
         for code in ALL_ERROR_CODES {

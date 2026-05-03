@@ -523,6 +523,14 @@ const (
 	OutcomeStatusRuntimeFailed         OutcomeStatus = "runtime_failed"
 	OutcomeStatusTimedOut              OutcomeStatus = "timed_out"
 	OutcomeStatusSkippedByPolicy       OutcomeStatus = "skipped_by_policy"
+	// OutcomeStatusPreflightFailed marks a run that failed an environment
+	// preflight check (str-jeen.40). Distinct from
+	// OutcomeStatusUnsupported: a preflight failure is an env fault
+	// outside the function under test, not a frontend-capability gap.
+	// Wire-compatible declaration; the Go frontend does not yet emit
+	// it (see parity-matrix divergence
+	// error-code-preflight-failed-typescript-only).
+	OutcomeStatusPreflightFailed OutcomeStatus = "preflight_failed"
 )
 
 // InvocationOutcome is the reusable protocol contract for one invocation result.

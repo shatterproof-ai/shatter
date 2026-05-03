@@ -157,11 +157,10 @@ let lastProjectRoot: string | undefined;
 // same error response — analyze short-circuits prevent target discovery, so
 // no execute calls happen and no `runtime_failed` rows are produced.
 //
-// Error code: `not_supported` is reused (no new wire-level code) and the
-// message embeds the structured `preflight_failed: <reason>: <path>` so log
-// scrapers and the run report can distinguish env-preflight failures.
-// Followup str-jeen.40 will lift this into a dedicated `preflight_failed`
-// status in the protocol/registry and OutcomeStatus enum.
+// Error code: `preflight_failed` (str-jeen.40 — first-class wire code added
+// after the str-jeen.26 stopgap that reused `not_supported`). The message
+// continues to embed the structured `preflight_failed: <reason>: <path>`
+// prefix so log scrapers written against the stopgap remain compatible.
 // ---------------------------------------------------------------------------
 
 const PREFLIGHT_REASON_MISSING_NODE_MODULES = "missing_node_modules";
@@ -209,16 +208,16 @@ function runPreflight(projectRoot: string | null | undefined): void {
 /**
  * Build the canonical error response for a cached preflight failure.
  *
- * The wire-level code is `not_supported` (str-jeen.40 will replace this
- * with a first-class `preflight_failed` code). The message embeds the
- * structured prefix `preflight_failed: <reason>: <detail>` so the run
- * report and log scrapers can identify env-preflight failures by string
- * match until the dedicated code lands.
+ * The wire-level code is `preflight_failed` (str-jeen.40 — first-class
+ * code added after the str-jeen.26 stopgap that reused `not_supported`).
+ * The message keeps the structured prefix `preflight_failed: <reason>:
+ * <detail>` so log scrapers and run reports written against the stopgap
+ * still match.
  */
 function preflightErrorResponse(id: number): ErrorResponse {
   const failure = preflightFailure!;
   const message = `preflight_failed: ${failure.reason}: ${failure.detail}`;
-  return errorResponse(id, "not_supported", message);
+  return errorResponse(id, "preflight_failed", message);
 }
 
 /**
@@ -380,19 +379,24 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
 
     case "analyze": {
       const timing = maybeTimingCollector();
-      // Env preflight runs once per process before any target discovery.
-      // A cached failure short-circuits every subsequent analyze so the run
-      // produces a single env-preflight error instead of N runtime_failed
-      // rows from per-target execute calls (str-jeen.26).
-      runPreflight(request.project_root);
-      if (preflightFailure) {
-        return { response: preflightErrorResponse(request.id), shutdown: false };
-      }
+      // file_not_found takes priority over the env preflight: a typo'd
+      // path is more specific (and more actionable) than a stale env
+      // warning, and cross-frontend parity (rust returns file_not_found
+      // for the same case) requires the same ordering. After the
+      // file-existence check, env preflight runs once per process before
+      // any target discovery — a cached failure short-circuits every
+      // subsequent analyze so the run produces a single env-preflight
+      // error instead of N runtime_failed rows from per-target execute
+      // calls (str-jeen.26 → str-jeen.40).
       if (!fs.existsSync(request.file)) {
         return {
           response: errorResponse(request.id, "file_not_found", `File not found: ${request.file}`),
           shutdown: false,
         };
+      }
+      runPreflight(request.project_root);
+      if (preflightFailure) {
+        return { response: preflightErrorResponse(request.id), shutdown: false };
       }
 
       lastAnalyzedFile = path.resolve(request.file);

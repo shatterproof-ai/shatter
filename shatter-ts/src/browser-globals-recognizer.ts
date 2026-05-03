@@ -20,12 +20,12 @@ export const BROWSER_GLOBALS_ADAPTER_ID = "browser-globals";
  * fails because a browser global is unavailable in the Node sandbox and no
  * `browser-globals` adapter was enabled.
  *
- * Mirrors the str-jeen.26 `preflight_failed:` stopgap: the wire-level error
- * code stays `not_supported` (no new variant; str-jeen.40 will refine
- * bucketing) and the structured prefix lets log scrapers and the run report
- * distinguish missing-browser-global outcomes from other `not_supported`
- * errors. See "Browser-Global Missing-Adapter Classification Contract" in
- * `shatter-ts/CLAUDE.md`.
+ * Distinct from the env-preflight failure path (str-jeen.40), which now
+ * emits its own first-class `preflight_failed` wire code. Browser-global
+ * misses keep the `not_supported` wire code and use the structured prefix
+ * here so log scrapers and the run report can distinguish missing-browser-
+ * global outcomes from other `not_supported` errors. See "Browser-Global
+ * Missing-Adapter Classification Contract" in `shatter-ts/CLAUDE.md`.
  */
 export const UNSUPPORTED_MISSING_GLOBAL_PREFIX = "unsupported_missing_global";
 

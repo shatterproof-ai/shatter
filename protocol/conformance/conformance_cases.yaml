@@ -226,10 +226,14 @@ cases:
   #   outcome               → driven against all three frontends (Go, TS,
   #                           Rust). Each frontend emits an `outcome` on
   #                           successful execute with status one of the
-  #                           declared OutcomeStatus enum values. Per
-  #                           str-hy9b.A5 the wire shape is identical
-  #                           across frontends; the per-frontend cases
-  #                           assert the same enum and field structure.
+  #                           declared OutcomeStatus enum values
+  #                           (completed, completed_with_findings,
+  #                           unsupported, build_failed, runtime_failed,
+  #                           timed_out, skipped_by_policy,
+  #                           preflight_failed). Per str-hy9b.A5 the
+  #                           wire shape is identical across frontends;
+  #                           the per-frontend cases assert the same
+  #                           enum and field structure.
   #   adapter_http_nethttp  → analyze a Go http handler fixture. Go must
   #                           surface functions[0].invocation_model with
   #                           adapter_id "go/http-handler". TS and Rust

@@ -126,6 +126,15 @@ error_codes:
   not_supported:
     description: Command not supported by this frontend.
     category: validation
+  preflight_failed:
+    description: >
+      Environment preflight check failed for this run; the failure is
+      sticky and applies to every subsequent request. Distinct from
+      `not_supported` (which classifies a command the frontend cannot
+      handle) — `preflight_failed` is an environmental fault outside
+      the function under test. Introduced by str-jeen.40 to replace the
+      `not_supported` stopgap from str-jeen.26.
+    category: validation
 
 # --- Capabilities ---
 #

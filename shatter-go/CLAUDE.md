@@ -142,6 +142,10 @@ implemented_via_cli_classifier`.
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `execTimeout()` in `instrument/executor.go`.
 
+## Environment Preflight Contract (str-jeen.40)
+
+The `preflight_failed` error code (`ErrPreflightFailed`) and the matching `OutcomeStatusPreflightFailed` value are declared in `protocol/constants.go` / `protocol/types.go` for wire compatibility with the TS frontend's env-preflight short-circuit. **The Go frontend does not currently emit either** — Go has no equivalent missing-toolchain or missing-module-cache preflight pass yet. See `parity-matrix.yaml` allowed_divergence `error-code-preflight-failed-typescript-only`. Adding a Go preflight emitter (e.g. for missing `go.sum` / module cache) requires no core-side change because `batch_analyze` already treats `preflight_failed` the same as `not_supported`.
+
 ## Invocation Outcome Contract (str-hy9b.A2)
 
 Every execute response carries an `InvocationOutcome` under `response.outcome`. The status is one of `completed`, `build_failed`, `runtime_failed`, `timed_out`, or `unsupported` (the last for a function not present in the source). Non-completed statuses always carry a non-empty one-sentence `short_reason`; `build_failed` and `runtime_failed` also carry a `thrown_error` with compiler diagnostics or a panic trace. Classification lives in `failureOutcome()` (host-level errors) and `outcomeFromResult()` (harness-captured runtime state) in `protocol/handler.go`. Legacy `response.code` / `response.message` fields are preserved on error paths for backwards compatibility.

@@ -648,8 +648,8 @@ const arbResponse: fc.Arbitrary<Response> = fc.oneof(
 // ---------------------------------------------------------------------------
 
 describe("error code parity", () => {
-  it("ALL_ERROR_CODES has exactly 11 entries matching registry.yaml", () => {
-    expect(ALL_ERROR_CODES.length).toBe(11);
+  it("ALL_ERROR_CODES has exactly 12 entries matching registry.yaml", () => {
+    expect(ALL_ERROR_CODES.length).toBe(12);
   });
 
   it("arbErrorCode covers every code in ALL_ERROR_CODES", () => {
