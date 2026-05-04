@@ -6,7 +6,7 @@
 //! (no symbolic solving).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -1580,6 +1580,69 @@ struct ObserverJob {
     strategy_idx: Option<usize>,
 }
 
+struct CandidateQueuePolicy {
+    capacity: usize,
+    fingerprint_lru_capacity: usize,
+    fingerprints: VecDeque<u64>,
+    fingerprint_set: HashSet<u64>,
+    duplicates_suppressed: u64,
+}
+
+impl CandidateQueuePolicy {
+    fn new(observer_pool: usize, max_iterations: Option<u32>) -> Self {
+        let capacity = default_candidate_queue_capacity(observer_pool, max_iterations);
+        Self {
+            capacity,
+            fingerprint_lru_capacity: capacity.saturating_mul(4).max(1),
+            fingerprints: VecDeque::new(),
+            fingerprint_set: HashSet::new(),
+            duplicates_suppressed: 0,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn duplicates_suppressed(&self) -> u64 {
+        self.duplicates_suppressed
+    }
+
+    fn should_enqueue(&mut self, inputs: &[serde_json::Value], mocks: &[MockConfig]) -> bool {
+        let fingerprint = candidate_fingerprint(inputs, mocks);
+        if self.fingerprint_set.contains(&fingerprint) {
+            self.duplicates_suppressed = self.duplicates_suppressed.saturating_add(1);
+            return false;
+        }
+
+        self.fingerprints.push_back(fingerprint);
+        self.fingerprint_set.insert(fingerprint);
+        while self.fingerprints.len() > self.fingerprint_lru_capacity {
+            if let Some(evicted) = self.fingerprints.pop_front() {
+                self.fingerprint_set.remove(&evicted);
+            }
+        }
+        true
+    }
+}
+
+fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option<u32>) -> usize {
+    let pool = observer_pool.max(1);
+    let budget_cap = max_iterations.unwrap_or(256).max(1) as usize;
+    (pool * 4).min(budget_cap).max(1)
+}
+
+fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> u64 {
+    let payload = serde_json::json!({
+        "inputs": inputs,
+        "mocks": mocks,
+    });
+    let canonical = crate::canonical_json::canonicalize_json(&payload);
+    let mut hasher = DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    hasher.finish()
+}
+
 struct ObserverObservation {
     inputs: Vec<serde_json::Value>,
     mocks: Vec<MockConfig>,
@@ -1697,7 +1760,8 @@ async fn explore_function_with_observer_pool(
     };
 
     let observer_pool = config.observer_pool.max(1);
-    let (job_tx, job_rx) = tokio::sync::mpsc::channel::<ObserverJob>(observer_pool * 2);
+    let mut queue_policy = CandidateQueuePolicy::new(observer_pool, config.max_iterations);
+    let (job_tx, job_rx) = tokio::sync::mpsc::channel::<ObserverJob>(queue_policy.capacity());
     let job_rx = std::sync::Arc::new(tokio::sync::Mutex::new(job_rx));
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<ObserverMessage>();
     let mut handles = Vec::with_capacity(observer_pool);
@@ -1778,20 +1842,28 @@ async fn explore_function_with_observer_pool(
             };
             apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
-            if job_tx
-                .send(ObserverJob {
-                    inputs,
-                    mocks: iteration_mocks,
-                    strategy_idx,
-                })
-                .await
-                .is_err()
-            {
-                return Err(ExploreError::UnexpectedResponse(
-                    "observer pool stopped accepting jobs".to_string(),
-                ));
+            if queue_policy.should_enqueue(&inputs, &iteration_mocks) {
+                if job_tx
+                    .send(ObserverJob {
+                        inputs,
+                        mocks: iteration_mocks,
+                        strategy_idx,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return Err(ExploreError::UnexpectedResponse(
+                        "observer pool stopped accepting jobs".to_string(),
+                    ));
+                }
+                in_flight += 1;
+            } else if queue_policy.duplicates_suppressed().is_multiple_of(256) {
+                log::debug!(
+                    "suppressed {} duplicate candidate(s) for {}",
+                    queue_policy.duplicates_suppressed(),
+                    analysis.name
+                );
             }
-            in_flight += 1;
         }
 
         if in_flight == 0 {
@@ -3993,6 +4065,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn candidate_queue_capacity_uses_spec_default() {
+        assert_eq!(default_candidate_queue_capacity(4, None), 16);
+        assert_eq!(default_candidate_queue_capacity(4, Some(3)), 3);
+        assert_eq!(default_candidate_queue_capacity(0, None), 4);
+        assert_eq!(default_candidate_queue_capacity(2, Some(0)), 1);
+    }
+
+    #[test]
+    fn candidate_queue_policy_suppresses_duplicate_fingerprints() {
+        let mut policy = CandidateQueuePolicy::new(2, Some(8));
+        let inputs = vec![serde_json::json!(7)];
+        let mocks = Vec::new();
+
+        assert!(policy.should_enqueue(&inputs, &mocks));
+        assert!(!policy.should_enqueue(&inputs, &mocks));
+        assert_eq!(policy.duplicates_suppressed(), 1);
+
+        let other = vec![serde_json::json!(8)];
+        assert!(policy.should_enqueue(&other, &mocks));
+    }
+
     #[tokio::test]
     async fn explore_function_observer_pool_runs_function_setup_per_observer() {
         let log_path = std::env::temp_dir().join(format!(
@@ -4192,7 +4286,8 @@ mod tests {
             .filter(|(inputs, _, _)| *inputs == duplicate)
             .count();
         assert_eq!(
-            duplicate_executions, 1,
+            duplicate_executions,
+            1,
             "duplicate candidate fingerprints should execute at most once; raw inputs={:?}",
             result
                 .raw_results
@@ -4221,7 +4316,7 @@ mod tests {
         let analysis = stub_analysis();
         let config = ExploreConfig {
             file: "test.ts".into(),
-            max_iterations: Some(2),
+            max_iterations: Some(6),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             seed: Some(42),
@@ -4256,7 +4351,7 @@ mod tests {
             .expect("observer-pool exploration should succeed");
         frontend.shutdown().await.expect("shutdown failed");
 
-        assert_eq!(result.iterations, 2);
+        assert_eq!(result.iterations, 6);
         assert!(
             result
                 .raw_results
