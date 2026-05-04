@@ -17,14 +17,16 @@
 //!
 //! ## Config files
 //!
-//! The classifier has no dedicated `Config` bucket today. Manifest and
-//! configuration files (`Cargo.toml`, `package.json`, `tsconfig.json`,
-//! `go.mod`, `.eslintrc.js`, etc.) fall through to
-//! [`SourceBucket::ProductionIsh`]. The fixtures below lock in that behavior
-//! so any future bucket split shows up as a deliberate test update rather
-//! than a silent classification change.
+//! Manifest and build-metadata files whose extensions are outside the
+//! frontend allowlist (`Cargo.toml`, `package.json`, `tsconfig.json`,
+//! `go.mod`, `Makefile`, etc.) classify as
+//! [`SourceBucket::Unsupported`] (str-jeen.47) — they are excluded from
+//! the coverage denominator because Shatter has no frontend that can
+//! analyze them. Config files written in supported languages
+//! (`vite.config.ts`, `.eslintrc.js`) keep their natural extension
+//! classification (`ProductionIsh`) because they ARE analyzable.
 
-use shatter_core::source_bucket::{SourceBucket, classify_path};
+use shatter_core::source_bucket::{classify_path, SourceBucket};
 
 /// One classifier fixture: a realistic source path and the bucket the
 /// classifier is contracted to assign to it.
@@ -424,65 +426,161 @@ fn policy_excluded_fixtures_classify_correctly() {
 }
 
 #[test]
-fn config_file_fixtures_classify_as_production_ish() {
-    // The classifier has no dedicated `Config` bucket. Manifest and
-    // configuration files currently fall through to `ProductionIsh`. This
-    // group locks in that contract: a future bucket split will need to
-    // update these expectations explicitly rather than silently
-    // reclassifying every project's config files.
+fn config_and_build_metadata_classify_as_unsupported() {
+    // str-jeen.47: manifest and build-metadata files whose extensions
+    // aren't in the frontend allowlist classify as `Unsupported` so they
+    // don't deflate the "% attempted" denominator. This was previously
+    // `config_file_fixtures_classify_as_production_ish` (str-jeen.38);
+    // the rename and reclassification are deliberate.
     let fixtures = [
         Fixture {
             path: "Cargo.toml",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "rust workspace manifest",
         },
         Fixture {
             path: "crates/core/Cargo.toml",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "rust crate manifest",
         },
         Fixture {
             path: "package.json",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "npm manifest",
         },
         Fixture {
             path: "tsconfig.json",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "ts compiler config",
         },
         Fixture {
             path: "go.mod",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "go module manifest",
         },
         Fixture {
             path: "go.sum",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "go module checksum file",
         },
         Fixture {
-            path: ".eslintrc.js",
-            expected: SourceBucket::ProductionIsh,
-            label: "eslint config",
-        },
-        Fixture {
-            path: "vite.config.ts",
-            expected: SourceBucket::ProductionIsh,
-            label: "vite config (ts)",
-        },
-        Fixture {
             path: ".github/workflows/ci.yml",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "github actions workflow",
         },
         Fixture {
             path: "Taskfile.yml",
-            expected: SourceBucket::ProductionIsh,
+            expected: SourceBucket::Unsupported,
             label: "taskfile",
+        },
+        Fixture {
+            path: "Makefile",
+            expected: SourceBucket::Unsupported,
+            label: "make build manifest",
+        },
+        Fixture {
+            path: "Dockerfile",
+            expected: SourceBucket::Unsupported,
+            label: "dockerfile",
+        },
+        Fixture {
+            path: "BUILD.bazel",
+            expected: SourceBucket::Unsupported,
+            label: "bazel build target",
         },
     ];
     check_fixtures("config_files", &fixtures);
+}
+
+#[test]
+fn config_files_in_supported_languages_classify_as_production_ish() {
+    // Config files written in languages a frontend can analyze keep
+    // their natural extension classification — they aren't `Unsupported`
+    // because Shatter CAN run analysis on them.
+    let fixtures = [
+        Fixture {
+            path: ".eslintrc.js",
+            expected: SourceBucket::ProductionIsh,
+            label: "eslint config in javascript",
+        },
+        Fixture {
+            path: "vite.config.ts",
+            expected: SourceBucket::ProductionIsh,
+            label: "vite config in typescript",
+        },
+    ];
+    check_fixtures("config_files_supported_lang", &fixtures);
+}
+
+#[test]
+fn unsupported_source_fixtures_classify_correctly() {
+    // str-jeen.47: explicit allowlist boundary. Files in non-frontend
+    // languages or with non-source extensions classify as `Unsupported`
+    // so the coverage denominator only counts files Shatter can
+    // structurally analyze.
+    let fixtures = [
+        Fixture {
+            path: "scripts/build.sh",
+            expected: SourceBucket::Unsupported,
+            label: "shell script extension",
+        },
+        Fixture {
+            path: "scripts/run.bash",
+            expected: SourceBucket::Unsupported,
+            label: "bash script extension",
+        },
+        Fixture {
+            path: "scripts/build.py",
+            expected: SourceBucket::Unsupported,
+            label: "python source",
+        },
+        Fixture {
+            path: "scripts/lint.rb",
+            expected: SourceBucket::Unsupported,
+            label: "ruby source",
+        },
+        Fixture {
+            path: "config/values.yaml",
+            expected: SourceBucket::Unsupported,
+            label: "yaml config",
+        },
+        Fixture {
+            path: "README.md",
+            expected: SourceBucket::Unsupported,
+            label: "markdown documentation",
+        },
+        Fixture {
+            path: "proto/api.proto",
+            expected: SourceBucket::Unsupported,
+            label: "protobuf schema",
+        },
+        Fixture {
+            path: "db/schema.sql",
+            expected: SourceBucket::Unsupported,
+            label: "sql schema",
+        },
+        Fixture {
+            path: "src/app.css",
+            expected: SourceBucket::Unsupported,
+            label: "css stylesheet",
+        },
+        Fixture {
+            path: "public/index.html",
+            expected: SourceBucket::Unsupported,
+            label: "html document",
+        },
+        Fixture {
+            path: "Containerfile",
+            expected: SourceBucket::Unsupported,
+            label: "container build manifest",
+        },
+        Fixture {
+            path: "Justfile",
+            expected: SourceBucket::Unsupported,
+            label: "just task runner manifest",
+        },
+    ];
+    check_fixtures("unsupported", &fixtures);
 }
 
 #[test]

@@ -189,11 +189,13 @@ pub struct FunctionReport {
     /// Source file path.
     pub file_path: String,
     /// Path-based source-set classification of [`Self::file_path`]
-    /// (str-jeen.37). Six values: `production_ish`, `test_spec`,
-    /// `generated`, `declaration_only`, `fixture_sample`,
-    /// `policy_excluded`. Computed from the path string only — see
-    /// [`crate::source_bucket`] for precedence rules. Empty
-    /// `file_path` classifies as `production_ish`.
+    /// (str-jeen.37, extended in str-jeen.47). Seven values:
+    /// `production_ish`, `test_spec`, `generated`, `declaration_only`,
+    /// `fixture_sample`, `policy_excluded`, `unsupported`. Computed
+    /// from the path string only — see [`crate::source_bucket`] for
+    /// precedence rules. Paths whose extension is not in the
+    /// frontend allowlist classify as `unsupported`; this includes
+    /// the empty string.
     #[serde(default)]
     pub source_bucket: SourceBucket,
     /// Total branch points in the function.
