@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use shatter_core::batch_analyze;
 use shatter_core::call_graph::CallGraph;
 use shatter_core::config as shatter_config;
@@ -10,6 +11,7 @@ use shatter_core::explorer::{self, ExploreConfig};
 use shatter_core::frontend::Frontend;
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::run_manifest::{self, RunManifest};
 
 /// Resolved scope settings from `shatter.config.json` for the `run` command.
 ///
@@ -120,6 +122,18 @@ pub(crate) async fn run_run(
         .canonicalize()
         .map_err(|e| format!("failed to resolve path '{}': {e}", path))?;
 
+    // Per-run scan id used when writing the run-level JSON summary and any
+    // manifest artifact alongside it. Time-based + nanosecond counter is
+    // enough resolution for "two `run` invocations don't collide" without
+    // pulling in a uuid dependency.
+    let scan_id = format!(
+        "run-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+
     let project_root_str = resolve_project_root(project_dir, &root);
 
     if let Some(ref pr) = project_root_str {
@@ -155,7 +169,38 @@ pub(crate) async fn run_run(
 
     if files.is_empty() {
         log::info!("No supported source files found in {}", root.display());
+        // Even an empty discovery is a valid run — write a JSON summary
+        // (str-jeen.17) so the denominator (zero) is on disk for tooling.
+        if let Some(dir) = output_dir {
+            let manifest = run_manifest::capture(&scan_id, &scope_hash(&scope), &[], Some(&root));
+            write_run_summary_json(dir, &build_run_summary(&scan_id, &manifest, 0, 0, 0))?;
+        }
         return Ok(());
+    }
+
+    // str-jeen.17: capture a run-start manifest snapshot of the discovered
+    // source set *before* any analyze/explore work runs. The
+    // `selected_source_files` / `selected_source_lines` denominators in
+    // the run JSON come from this snapshot, so they reflect the whole
+    // source set independent of how many functions later get discovered,
+    // attempted, or completed.
+    let manifest_paths: Vec<String> = files
+        .iter()
+        .map(|(p, _)| {
+            p.strip_prefix(&root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let run_manifest = run_manifest::capture(
+        &scan_id,
+        &scope_hash(&scope),
+        &manifest_paths,
+        Some(&root),
+    );
+    if let Some(dir) = output_dir {
+        run_manifest::write_manifest(dir, &run_manifest);
     }
 
     // Group by language for reporting
@@ -246,6 +291,12 @@ pub(crate) async fn run_run(
 
     if total_functions == 0 {
         log::info!("No functions found to explore.");
+        // Honest denominator (str-jeen.17): even when discovery returns
+        // zero functions, the source-set denominators must reflect the
+        // selected files in the manifest snapshot, not collapse to zero.
+        if let Some(dir) = output_dir {
+            write_run_summary_json(dir, &build_run_summary(&scan_id, &run_manifest, 0, 0, 0))?;
+        }
         shutdown_all_frontends(frontends).await;
         return Ok(());
     }
@@ -281,6 +332,10 @@ pub(crate) async fn run_run(
 
         if let Some(dir) = output_dir {
             write_analysis_report(dir, &registry, &call_graph, &root)?;
+            // analyze-only still produces a JSON summary so the
+            // selected-source denominator is recorded even without
+            // exploration outcomes.
+            write_run_summary_json(dir, &build_run_summary(&scan_id, &run_manifest, 0, 0, 0))?;
         }
 
         shutdown_all_frontends(frontends).await;
@@ -422,6 +477,20 @@ pub(crate) async fn run_run(
     // Step 7: Write output files if requested
     if let Some(dir) = output_dir {
         write_run_report(dir, &call_graph, &exploration_results)?;
+        // str-jeen.17: emit run-level JSON with manifest-driven
+        // selected-source denominators alongside per-function reports.
+        let completed = exploration_results.len();
+        // The run command surfaces only "completed" outcomes (errors are
+        // logged but not pushed). Until the run command tracks per-target
+        // failure / skip outcomes, derive failed = attempted - completed
+        // from the discovery total so the summary still reflects the
+        // ratio of completed to attempted.
+        let attempted = total_functions;
+        let failed = attempted.saturating_sub(completed);
+        write_run_summary_json(
+            dir,
+            &build_run_summary(&scan_id, &run_manifest, completed, failed, 0),
+        )?;
     }
 
     shutdown_all_frontends(frontends).await;
@@ -500,6 +569,103 @@ fn write_run_report(
         dir.display()
     );
 
+    Ok(())
+}
+
+/// Filename of the run-level JSON summary written under `output_dir`.
+pub(crate) const RUN_SUMMARY_FILENAME: &str = "run.json";
+
+/// On-disk schema version for [`RunSummary`]. Bumped when fields are
+/// removed or change meaning (additive fields use `#[serde(default)]`
+/// and don't require a bump).
+pub(crate) const RUN_SUMMARY_VERSION: u32 = 1;
+
+/// Run-level JSON summary written by `shatter run` to
+/// `<output_dir>/run.json` (str-jeen.17).
+///
+/// `selected_source_files` and `selected_source_lines` come from the
+/// run-start manifest snapshot, **not** from completed-function span
+/// totals. That's the whole point of this struct: the denominator must
+/// reflect the source set the run selected, even when most targets
+/// fail or skip during exploration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct RunSummary {
+    /// Schema version. See [`RUN_SUMMARY_VERSION`].
+    pub version: u32,
+    /// Run identifier; matches the captured manifest's `scan_id`.
+    pub scan_id: String,
+    /// Number of files in the manifest source set
+    /// ([`RunManifest::selected_source_files`]).
+    pub selected_source_files: usize,
+    /// Sum of per-file line counts across the manifest source set
+    /// ([`RunManifest::selected_source_lines`]).
+    pub selected_source_lines: u64,
+    /// Functions that finished exploration without a recorded error.
+    pub completed_functions: usize,
+    /// Functions whose exploration failed (recorded error) or were not
+    /// completed for any other non-skip reason.
+    pub failed_functions: usize,
+    /// Functions whose exploration was intentionally skipped before
+    /// attempt. The `run` command does not currently surface skips
+    /// distinctly from "not completed"; the field is reserved so adding
+    /// skip tracking later is a non-breaking change.
+    #[serde(default)]
+    pub skipped_functions: usize,
+}
+
+/// Derive a stable hash of the discovery scope so the manifest's
+/// `scope_hash` field changes when include/exclude/language/max_depth
+/// change. Uses the std hasher for portability — collision resistance
+/// is not required, only reproducibility within a single Shatter
+/// version.
+pub(crate) fn scope_hash(scope: &RunScope) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    scope.options.include_patterns.hash(&mut hasher);
+    scope.options.exclude_patterns.hash(&mut hasher);
+    scope.options.respect_gitignore.hash(&mut hasher);
+    scope.options.max_depth.hash(&mut hasher);
+    scope.language_filter.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Build a [`RunSummary`] from a captured manifest and the run's
+/// outcome counters. Pure function — easy to unit-test without
+/// spinning up frontends.
+pub(crate) fn build_run_summary(
+    scan_id: &str,
+    manifest: &RunManifest,
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+) -> RunSummary {
+    RunSummary {
+        version: RUN_SUMMARY_VERSION,
+        scan_id: scan_id.to_string(),
+        selected_source_files: manifest.selected_source_files(),
+        selected_source_lines: manifest.selected_source_lines(),
+        completed_functions: completed,
+        failed_functions: failed,
+        skipped_functions: skipped,
+    }
+}
+
+/// Write `run.json` under `output_dir` using atomic rename.
+pub(crate) fn write_run_summary_json(
+    output_dir: &Path,
+    summary: &RunSummary,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| format!("failed to create output dir '{}': {e}", output_dir.display()))?;
+    let path = output_dir.join(RUN_SUMMARY_FILENAME);
+    let json = serde_json::to_string_pretty(summary)
+        .map_err(|e| format!("failed to serialize run summary: {e}"))?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &json)
+        .map_err(|e| format!("failed to write run summary temp file: {e}"))?;
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("failed to finalize run summary: {e}"))?;
+    log::info!("Wrote run summary to {}", path.display());
     Ok(())
 }
 
@@ -609,5 +775,103 @@ mod tests {
         // Unknown language string is a no-op (warning logged), not a filter.
         let unfiltered = apply_language_filter(mixed.clone(), Some("cobol"));
         assert_eq!(unfiltered.len(), 3);
+    }
+
+    // -------------------------------------------------------------------
+    // str-jeen.17: whole-source denominator regression tests.
+    //
+    // The bug: prior to this fix, the run produced no JSON summary and
+    // no manifest-driven `selected_source_files` / `selected_source_lines`
+    // fields existed. Coverage tooling could only read per-discovered-
+    // function span totals, which collapse to small numbers when most
+    // exploration fails — a dishonest denominator (parent epic str-jeen).
+    //
+    // The fix: capture a run-start [`RunManifest`] of the discovered
+    // source set and emit `selected_source_files` / `selected_source_lines`
+    // from it, independent of exploration outcome.
+    // -------------------------------------------------------------------
+
+    /// Whole-source denominators must equal the manifest source-set
+    /// totals even when zero functions completed (i.e. every attempted
+    /// target failed). This is the failing-test-first regression for
+    /// str-jeen.17: before the fix, no `RunSummary` existed and
+    /// coverage tooling collapsed the denominator to the (empty)
+    /// completed-function tally.
+    #[test]
+    fn run_summary_denominator_holds_when_all_targets_fail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // Three Go files with known line counts: 4, 6, and 0.
+        fs::write(root.join("a.go"), "package a\n\nfunc A() {}\n").expect("write a.go"); // 3 lines
+        fs::write(
+            root.join("b.go"),
+            "package b\n\nfunc B() int {\n    return 1\n}\n",
+        )
+        .expect("write b.go"); // 5 lines
+        fs::write(root.join("c.go"), "").expect("write c.go"); // 0 lines
+
+        let scope = RunScope::default();
+        let paths = vec![
+            "a.go".to_string(),
+            "b.go".to_string(),
+            "c.go".to_string(),
+        ];
+        let manifest =
+            shatter_core::run_manifest::capture("scan-1", &scope_hash(&scope), &paths, Some(root));
+
+        // Simulate the worst case: a discovered set of 10 functions but
+        // every attempted target failed (completed=0, failed=10).
+        let summary = build_run_summary("scan-1", &manifest, 0, 10, 0);
+
+        // The denominators must equal the manifest source-set totals,
+        // not collapse to zero just because nothing completed.
+        assert_eq!(
+            summary.selected_source_files, 3,
+            "selected_source_files must equal manifest file count, not completed-function file count"
+        );
+        assert_eq!(
+            summary.selected_source_lines, 8,
+            "selected_source_lines must equal sum of manifest per-file line counts (3+5+0)"
+        );
+        assert_eq!(summary.completed_functions, 0);
+        assert_eq!(summary.failed_functions, 10);
+    }
+
+    /// `write_run_summary_json` round-trips through `run.json` so
+    /// downstream tooling can deserialize the artifact unchanged.
+    #[test]
+    fn run_summary_json_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("only.go"), "package main\nfunc M() {}\n").expect("write");
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-rt",
+            "cfg-h",
+            &["only.go".to_string()],
+            Some(root),
+        );
+        let summary = build_run_summary("scan-rt", &manifest, 1, 0, 0);
+
+        let out_dir = dir.path().join("out");
+        write_run_summary_json(&out_dir, &summary).expect("write summary");
+
+        let bytes = fs::read(out_dir.join(RUN_SUMMARY_FILENAME)).expect("read summary");
+        let parsed: RunSummary = serde_json::from_slice(&bytes).expect("parse summary");
+        assert_eq!(parsed, summary);
+        assert_eq!(parsed.selected_source_files, 1);
+        assert_eq!(parsed.selected_source_lines, 2);
+    }
+
+    /// Scope hash is deterministic for the same scope and changes when
+    /// any scope field changes — so a `run` whose include/exclude/
+    /// language/max_depth differs gets a distinct manifest fingerprint.
+    #[test]
+    fn scope_hash_is_stable_and_change_sensitive() {
+        let mut a = RunScope::default();
+        a.options.include_patterns = vec!["**/*.go".to_string()];
+        let mut b = a.clone();
+        assert_eq!(scope_hash(&a), scope_hash(&b));
+        b.options.exclude_patterns.push("vendor/**".to_string());
+        assert_ne!(scope_hash(&a), scope_hash(&b));
     }
 }

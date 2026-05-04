@@ -49,6 +49,17 @@ pub struct SourceFileSnapshot {
     /// SHA-256 of file contents, lowercase hex. `None` if the file could
     /// not be read.
     pub content_hash: Option<String>,
+    /// Whole-file physical line count at capture time, derived from the
+    /// same read used for `content_hash`. `None` when the file could not
+    /// be read. Counted as `lines().count()` so an empty file is `0`, a
+    /// single line without a trailing newline is `1`, and a final
+    /// newline does not add a phantom empty line.
+    ///
+    /// Feeds `selected_source_lines` (str-jeen.17) — the run-JSON
+    /// denominator that must reflect the manifest source set, not the
+    /// per-discovered-function line tally.
+    #[serde(default)]
+    pub line_count: Option<u32>,
 }
 
 /// Run-start manifest. Captured once before the first function explores,
@@ -103,6 +114,28 @@ pub struct ManifestDiff {
     pub changed: Vec<String>,
 }
 
+impl RunManifest {
+    /// Number of files captured in this manifest. Used as the
+    /// `selected_source_files` denominator in the run JSON
+    /// (str-jeen.17) — independent of how many functions were later
+    /// discovered, attempted, or completed.
+    pub fn selected_source_files(&self) -> usize {
+        self.source_files.len()
+    }
+
+    /// Sum of [`SourceFileSnapshot::line_count`] across the manifest's
+    /// source files. Files whose `line_count` is `None` (unreadable or
+    /// from a legacy manifest written before str-jeen.17) contribute
+    /// zero. Used as the `selected_source_lines` denominator in the
+    /// run JSON.
+    pub fn selected_source_lines(&self) -> u64 {
+        self.source_files
+            .iter()
+            .map(|s| s.line_count.unwrap_or(0) as u64)
+            .sum()
+    }
+}
+
 impl ManifestDiff {
     /// True when the source set or contents changed during the run.
     pub fn is_stale(&self) -> bool {
@@ -123,6 +156,7 @@ pub fn snapshot_file(path: &Path) -> SourceFileSnapshot {
                 size: 0,
                 mtime_ns: None,
                 content_hash: None,
+                line_count: None,
             };
         }
     };
@@ -132,19 +166,30 @@ pub fn snapshot_file(path: &Path) -> SourceFileSnapshot {
         .ok()
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos());
-    let content_hash = match fs::read(path) {
+    let (content_hash, line_count) = match fs::read(path) {
         Ok(bytes) => {
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            Some(format!("{:x}", hasher.finalize()))
+            let hash = format!("{:x}", hasher.finalize());
+            // Count physical lines via std lines() so the count matches
+            // what a downstream "wc -l on text files" intuition would
+            // report: empty file = 0, "a\nb\n" = 2, "a\nb" = 2. Lossy
+            // UTF-8 conversion is fine — any binary noise still yields a
+            // well-defined line count and the manifest does not
+            // round-trip the lines themselves.
+            let text = String::from_utf8_lossy(&bytes);
+            let count = text.lines().count();
+            let count_u32 = u32::try_from(count).unwrap_or(u32::MAX);
+            (Some(hash), Some(count_u32))
         }
-        Err(_) => None,
+        Err(_) => (None, None),
     };
     SourceFileSnapshot {
         path: path_str,
         size,
         mtime_ns,
         content_hash,
+        line_count,
     }
 }
 
@@ -336,6 +381,43 @@ mod tests {
         assert_eq!(snap.size, 0);
         assert!(snap.mtime_ns.is_none());
         assert!(snap.content_hash.is_none());
+        assert!(snap.line_count.is_none());
+    }
+
+    #[test]
+    fn snapshot_records_line_count() {
+        let tmp = TempDir::new().unwrap();
+        // Empty file -> 0 lines, no phantom line for missing trailing newline.
+        let empty = write_file(tmp.path(), "empty.rs", b"");
+        assert_eq!(snapshot_file(&empty).line_count, Some(0));
+        // Single line without trailing newline -> 1.
+        let one_no_nl = write_file(tmp.path(), "one.rs", b"fn a() {}");
+        assert_eq!(snapshot_file(&one_no_nl).line_count, Some(1));
+        // Two lines with trailing newline -> 2 (no phantom empty line).
+        let two = write_file(tmp.path(), "two.rs", b"a\nb\n");
+        assert_eq!(snapshot_file(&two).line_count, Some(2));
+        // Two lines without trailing newline -> 2.
+        let two_no_nl = write_file(tmp.path(), "two_no_nl.rs", b"a\nb");
+        assert_eq!(snapshot_file(&two_no_nl).line_count, Some(2));
+    }
+
+    #[test]
+    fn manifest_aggregates_selected_source_totals() {
+        let tmp = TempDir::new().unwrap();
+        // Three files with known line counts: 3, 5, and 0.
+        write_file(tmp.path(), "a.rs", b"l1\nl2\nl3\n");
+        write_file(tmp.path(), "b.rs", b"l1\nl2\nl3\nl4\nl5");
+        write_file(tmp.path(), "c.rs", b"");
+        let paths = vec![
+            "a.rs".to_string(),
+            "b.rs".to_string(),
+            "c.rs".to_string(),
+        ];
+        let m = capture("scan-1", "cfg-h", &paths, Some(tmp.path()));
+        // Whole-source totals come from the manifest snapshot, not from
+        // per-discovered-function spans (str-jeen.17).
+        assert_eq!(m.selected_source_files(), 3);
+        assert_eq!(m.selected_source_lines(), 8);
     }
 
     #[test]
