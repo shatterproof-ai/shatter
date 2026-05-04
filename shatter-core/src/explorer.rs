@@ -114,6 +114,11 @@ pub struct ExploreConfig {
     /// Frontend spawn template for observer subprocesses when
     /// `observer_pool > 1`.
     pub observer_frontend_config: Option<FrontendConfig>,
+    /// Override the bounded candidate queue capacity used between the
+    /// candidate generator and the observer pool. `None` keeps the auto-derived
+    /// default (`observer_pool * 4`, capped by `max_iterations`). Values are
+    /// clamped to at least `1`. Has no effect when `observer_pool <= 1`.
+    pub candidate_queue_capacity: Option<usize>,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
     /// Mock configurations to pass to Execute commands.
@@ -1589,8 +1594,20 @@ struct CandidateQueuePolicy {
 }
 
 impl CandidateQueuePolicy {
+    #[cfg(test)]
     fn new(observer_pool: usize, max_iterations: Option<u32>) -> Self {
-        let capacity = default_candidate_queue_capacity(observer_pool, max_iterations);
+        Self::with_capacity_override(observer_pool, max_iterations, None)
+    }
+
+    fn with_capacity_override(
+        observer_pool: usize,
+        max_iterations: Option<u32>,
+        capacity_override: Option<usize>,
+    ) -> Self {
+        let capacity = match capacity_override {
+            Some(explicit) => explicit.max(1),
+            None => default_candidate_queue_capacity(observer_pool, max_iterations),
+        };
         Self {
             capacity,
             fingerprint_lru_capacity: capacity.saturating_mul(4).max(1),
@@ -1760,7 +1777,11 @@ async fn explore_function_with_observer_pool(
     };
 
     let observer_pool = config.observer_pool.max(1);
-    let mut queue_policy = CandidateQueuePolicy::new(observer_pool, config.max_iterations);
+    let mut queue_policy = CandidateQueuePolicy::with_capacity_override(
+        observer_pool,
+        config.max_iterations,
+        config.candidate_queue_capacity,
+    );
     let (job_tx, job_rx) = tokio::sync::mpsc::channel::<ObserverJob>(queue_policy.capacity());
     let job_rx = std::sync::Arc::new(tokio::sync::Mutex::new(job_rx));
     let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<ObserverMessage>();
@@ -4019,6 +4040,7 @@ mod tests {
             max_iterations: Some(6),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4074,6 +4096,21 @@ mod tests {
     }
 
     #[test]
+    fn candidate_queue_policy_honors_explicit_capacity_override() {
+        // str-frc.6: explicit override wins over the auto-derived default.
+        let policy = CandidateQueuePolicy::with_capacity_override(4, None, Some(7));
+        assert_eq!(policy.capacity(), 7);
+
+        // Zero is clamped to one so the bounded channel can be constructed.
+        let clamped = CandidateQueuePolicy::with_capacity_override(2, Some(8), Some(0));
+        assert_eq!(clamped.capacity(), 1);
+
+        // None preserves the auto-derived capacity (default behavior).
+        let auto = CandidateQueuePolicy::with_capacity_override(4, None, None);
+        assert_eq!(auto.capacity(), default_candidate_queue_capacity(4, None));
+    }
+
+    #[test]
     fn candidate_queue_policy_suppresses_duplicate_fingerprints() {
         let mut policy = CandidateQueuePolicy::new(2, Some(8));
         let inputs = vec![serde_json::json!(7)];
@@ -4108,6 +4145,7 @@ mod tests {
             max_iterations: Some(4),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4174,6 +4212,7 @@ mod tests {
             max_iterations: Some(10_000),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4243,6 +4282,7 @@ mod tests {
             max_iterations: Some(8),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4319,6 +4359,7 @@ mod tests {
             max_iterations: Some(6),
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4370,6 +4411,7 @@ mod tests {
             max_iterations: Some(3),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4422,6 +4464,7 @@ mod tests {
             max_iterations: Some(10_000),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4475,6 +4518,7 @@ mod tests {
             max_iterations: Some(2),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4517,6 +4561,7 @@ mod tests {
             max_iterations: Some(2),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4558,6 +4603,7 @@ mod tests {
             max_iterations: Some(2),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4598,6 +4644,7 @@ mod tests {
             max_iterations: Some(2),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4644,6 +4691,7 @@ mod tests {
             max_iterations: Some(3),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4684,6 +4732,7 @@ mod tests {
             max_iterations: Some(5),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4742,6 +4791,7 @@ mod tests {
             max_iterations: Some(10),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],
@@ -4800,6 +4850,7 @@ mod tests {
             max_iterations: Some(2),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(99),
             mocks: vec![],
             mock_params: vec![],

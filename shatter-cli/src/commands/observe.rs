@@ -205,6 +205,7 @@ pub(crate) async fn run_observe(
             max_iterations: Some(max_iterations),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: None,
             mocks: vec![],
             mock_params: vec![],

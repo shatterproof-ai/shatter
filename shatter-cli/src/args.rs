@@ -530,6 +530,24 @@ pub(crate) enum CliCommand {
         #[arg(long, short = 'w', default_value_t = 0, alias = "jobs")]
         workers: usize,
 
+        /// Number of observer subprocesses the random explorer uses to fan
+        /// candidate executions out *within a single function*. Each slot is
+        /// an independent frontend subprocess (frontends remain serial per
+        /// process). `1` (default) preserves the legacy single-process
+        /// exploration path. Distinct from `--workers`, which controls
+        /// across-function parallelism. Overrides `observer_pool` from
+        /// `shatter.config.json`. See str-frc.3 / str-frc.6.
+        #[arg(long)]
+        observer_pool: Option<usize>,
+
+        /// Override the bounded candidate queue capacity that sits between
+        /// the candidate generator and the observer pool (str-frc.5). When
+        /// unset, the capacity is auto-derived from `--observer-pool` and
+        /// `--max-iterations`. Has no effect when `--observer-pool` is `1`.
+        /// Overrides `candidate_queue_capacity` from `shatter.config.json`.
+        #[arg(long)]
+        candidate_queue_capacity: Option<usize>,
+
         /// Override the lower bound of the parallelism clamp (built-in
         /// default: 4). Useful on tiny CI runners. See str-v01r.
         #[arg(long)]
@@ -1750,6 +1768,52 @@ mod tests {
                 assert_eq!(request_timeout, 30);
                 assert!(inputs.is_none());
                 assert!(config_path.is_none());
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    /// str-frc.6: --observer-pool / --candidate-queue-capacity default to None
+    /// so callers can distinguish "user did not set this" from any explicit
+    /// numeric value, including future overrides set in shatter.config.json.
+    #[test]
+    fn cli_explore_concurrency_knobs_default_to_none() {
+        let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
+        match cli.command {
+            CliCommand::Explore {
+                observer_pool,
+                candidate_queue_capacity,
+                ..
+            } => {
+                assert_eq!(observer_pool, None);
+                assert_eq!(candidate_queue_capacity, None);
+            }
+            _ => panic!("expected Explore command"),
+        }
+    }
+
+    /// str-frc.6: explicit --observer-pool / --candidate-queue-capacity values
+    /// land in the parsed struct so the precedence resolver in main.rs can
+    /// pick them ahead of any project-config values.
+    #[test]
+    fn cli_explore_parses_concurrency_knobs() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "explore",
+            "--observer-pool",
+            "4",
+            "--candidate-queue-capacity",
+            "32",
+            "test.ts:myFunc",
+        ]);
+        match cli.command {
+            CliCommand::Explore {
+                observer_pool,
+                candidate_queue_capacity,
+                ..
+            } => {
+                assert_eq!(observer_pool, Some(4));
+                assert_eq!(candidate_queue_capacity, Some(32));
             }
             _ => panic!("expected Explore command"),
         }

@@ -18,6 +18,35 @@ pub(crate) const PARALLELISM_FLOOR: usize = 4;
 /// ceiling, large hosts fork-bomb themselves into OOM. See str-eam2.
 pub(crate) const PARALLELISM_CEILING: usize = 16;
 
+/// Default observer-pool size when neither the CLI nor `shatter.config.json`
+/// supplies a value (str-frc.6). `1` keeps the legacy single-process random
+/// exploration path so behavior is identical to pre-str-frc.3 runs.
+pub(crate) const DEFAULT_OBSERVER_POOL_SIZE: usize = 1;
+
+/// Resolve the observer-pool size for an explore run with CLI > config >
+/// built-in default precedence. Returns at least `1` so the random explorer
+/// never sees a zero-sized pool. Matches the resolution pattern used for
+/// `parallelism` / `parallelism_min` / `parallelism_max` in the scan command.
+pub(crate) fn resolve_observer_pool(
+    cli_value: Option<usize>,
+    config_value: Option<usize>,
+) -> usize {
+    cli_value
+        .or(config_value)
+        .unwrap_or(DEFAULT_OBSERVER_POOL_SIZE)
+        .max(1)
+}
+
+/// Resolve the candidate-queue capacity override with CLI > config >
+/// built-in default precedence. Returns `None` when neither side supplies a
+/// value so the explorer falls back to its auto-derived default (str-frc.5).
+pub(crate) fn resolve_candidate_queue_capacity(
+    cli_value: Option<usize>,
+    config_value: Option<usize>,
+) -> Option<usize> {
+    cli_value.or(config_value)
+}
+
 /// Cap injected as `GOMAXPROCS` into the Go frontend's environment. The Go
 /// frontend invokes `go build` to compile the wrapper; that toolchain run
 /// defaults to `GOMAXPROCS=nproc`, so N concurrent Go frontends each spawn
@@ -1052,6 +1081,32 @@ mod cli_parity_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// str-frc.6: the resolver picks the CLI value when set, falls back to
+    /// the project-config value, and lands on the built-in default when both
+    /// sides are unset. Default is `1` so behavior is identical to a run
+    /// without these knobs.
+    #[test]
+    fn resolve_observer_pool_precedence_cli_over_config_over_default() {
+        assert_eq!(
+            resolve_observer_pool(None, None),
+            DEFAULT_OBSERVER_POOL_SIZE
+        );
+        assert_eq!(resolve_observer_pool(None, Some(6)), 6);
+        assert_eq!(resolve_observer_pool(Some(3), Some(6)), 3);
+        // Zero is clamped up so the explorer never sees an empty pool.
+        assert_eq!(resolve_observer_pool(Some(0), None), 1);
+    }
+
+    /// str-frc.6: the queue-capacity resolver mirrors the precedence chain.
+    /// The default is `None` (auto-derive) so default-preserving behavior
+    /// matches pre-str-frc.5 runs.
+    #[test]
+    fn resolve_candidate_queue_capacity_precedence_cli_over_config_over_default() {
+        assert_eq!(resolve_candidate_queue_capacity(None, None), None);
+        assert_eq!(resolve_candidate_queue_capacity(None, Some(16)), Some(16));
+        assert_eq!(resolve_candidate_queue_capacity(Some(8), Some(16)), Some(8));
+    }
 
     #[test]
     fn resolve_parallelism_clamps_explicit_above_ceiling() {

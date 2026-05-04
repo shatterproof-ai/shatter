@@ -987,6 +987,7 @@ async fn explorer_explore_function_with_setup() {
         max_iterations: Some(10),
         observer_pool: 1,
         observer_frontend_config: None,
+        candidate_queue_capacity: None,
         seed: Some(42),
         mocks: vec![],
         mock_params: vec![],
@@ -1217,6 +1218,7 @@ async fn concolic_mock_status_branches_discovered() {
         max_iterations: Some(30),
         observer_pool: 1,
         observer_frontend_config: None,
+        candidate_queue_capacity: None,
         seed: None,
         mocks,
         mock_params,
@@ -1308,6 +1310,7 @@ async fn concolic_mock_result_branches_discovered() {
         max_iterations: Some(30),
         observer_pool: 1,
         observer_frontend_config: None,
+        candidate_queue_capacity: None,
         seed: None,
         mocks,
         mock_params,
@@ -1402,6 +1405,7 @@ async fn concolic_mock_loop_branches_discovered() {
         max_iterations: Some(30),
         observer_pool: 1,
         observer_frontend_config: None,
+        candidate_queue_capacity: None,
         seed: None,
         mocks,
         mock_params,
@@ -1814,8 +1818,7 @@ async fn go_method_planner_driven_e2e() {
             )
         });
     assert!(
-        plan.receiver_kind.starts_with("constructor:")
-            || plan.receiver_kind == "zero_value",
+        plan.receiver_kind.starts_with("constructor:") || plan.receiver_kind == "zero_value",
         "PLANNER GAP: plan.receiver_kind = {:?}, expected `constructor:<Name>` \
          or `zero_value` (the strategies PlanReceivers emits for a same-package \
          non-interface receiver).",
@@ -1986,7 +1989,10 @@ async fn go_method_planner_driven_via_orchestrator() {
         result
             .executions
             .iter()
-            .map(|e| e.outcome.as_ref().map(|o| (&o.status, o.short_reason.as_deref())))
+            .map(|e| e
+                .outcome
+                .as_ref()
+                .map(|o| (&o.status, o.short_reason.as_deref())))
             .collect::<Vec<_>>(),
     );
 
@@ -2308,10 +2314,7 @@ async fn concolic_tsconfig_at_alias_executes() {
         ..Default::default()
     };
 
-    let seed_inputs = vec![
-        vec![serde_json::json!(7)],
-        vec![serde_json::json!(-3)],
-    ];
+    let seed_inputs = vec![vec![serde_json::json!(7)], vec![serde_json::json!(-3)]];
 
     let (result, _) = orchestrator::explore(
         &mut frontend,

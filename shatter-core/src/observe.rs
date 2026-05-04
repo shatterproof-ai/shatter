@@ -442,7 +442,7 @@ pub async fn observe_function(
         abandoned_frontiers: vec![],
         opaque_suggestions: vec![],
         stubbed_modules,
-            ..Default::default()
+        ..Default::default()
     })
 }
 
@@ -637,6 +637,7 @@ mod tests {
             max_iterations: Some(100),
             observer_pool: 1,
             observer_frontend_config: None,
+            candidate_queue_capacity: None,
             seed: Some(42),
             mocks: vec![],
             mock_params: vec![],

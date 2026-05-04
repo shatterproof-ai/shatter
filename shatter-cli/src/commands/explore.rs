@@ -1428,11 +1428,13 @@ fn check_summary_paths(
                 Some(relpath) if !relpath.is_empty() => {
                     let abs = artifact_root.join(relpath);
                     if !abs.is_file() {
-                        report.issues.push(ArtifactValidationIssue::MissingArtifact {
-                            file: summary.file.clone(),
-                            function_name: entry.function_name.clone(),
-                            artifact_relpath: relpath.clone(),
-                        });
+                        report
+                            .issues
+                            .push(ArtifactValidationIssue::MissingArtifact {
+                                file: summary.file.clone(),
+                                function_name: entry.function_name.clone(),
+                                artifact_relpath: relpath.clone(),
+                            });
                     } else {
                         referenced.insert(abs);
                     }
@@ -1484,9 +1486,9 @@ fn scan_stale_extras(
                 continue;
             }
             if !referenced.contains(&path) {
-                report
-                    .issues
-                    .push(ArtifactValidationIssue::StaleExtra { absolute_path: path });
+                report.issues.push(ArtifactValidationIssue::StaleExtra {
+                    absolute_path: path,
+                });
             }
         }
     }
@@ -1712,9 +1714,7 @@ const RUST_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
 ///      sits under a `#[cfg(test)]` gate or carries `#[test]`.
 ///
 /// Anything else returns `None` so the caller emits `Unclassified`.
-fn rust_classify_no_target_reason(
-    file: &Path,
-) -> Option<shatter_core::protocol::NoTargetReason> {
+fn rust_classify_no_target_reason(file: &Path) -> Option<shatter_core::protocol::NoTargetReason> {
     use shatter_core::protocol::NoTargetReason;
 
     if rust_is_build_script(file) {
@@ -1843,10 +1843,7 @@ fn rust_line_is_pure_declaration(line: &str) -> bool {
         return false;
     }
     let stripped = line.trim_end_matches(';').trim();
-    let head = stripped
-        .split_whitespace()
-        .next()
-        .unwrap_or("");
+    let head = stripped.split_whitespace().next().unwrap_or("");
     match head {
         "mod" | "use" | "extern" => true,
         "pub" => {
@@ -1961,9 +1958,7 @@ const TS_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
 ///      (`function`, `const`, `let`, `var`, `class`, `enum`,
 ///      `export function`, etc.) the function returns `false` and the
 ///      caller falls through to `Unclassified`.
-fn ts_classify_no_target_reason(
-    file: &Path,
-) -> Option<shatter_core::protocol::NoTargetReason> {
+fn ts_classify_no_target_reason(file: &Path) -> Option<shatter_core::protocol::NoTargetReason> {
     use shatter_core::protocol::NoTargetReason;
 
     if ts_is_declaration_file_by_path(file) {
@@ -2200,9 +2195,7 @@ const GO_CONTENT_SCAN_BYTE_CAP: usize = 64 * 1024;
 ///      through to `None` so the caller emits `Unclassified`.
 ///
 /// Anything else returns `None` so the caller emits `Unclassified`.
-fn go_classify_no_target_reason(
-    file: &Path,
-) -> Option<shatter_core::protocol::NoTargetReason> {
+fn go_classify_no_target_reason(file: &Path) -> Option<shatter_core::protocol::NoTargetReason> {
     use shatter_core::protocol::NoTargetReason;
 
     if go_is_test_file_by_path(file) {
@@ -2598,9 +2591,7 @@ impl GoRootCauseBreakdown {
 /// Aggregate Go `build_failed` outcomes across `entries` into a
 /// per-category breakdown. Caller is responsible for filtering to entries
 /// from Go targets (typically by file extension on the owning summary).
-fn aggregate_go_root_causes_from_entries(
-    entries: &[ExploreSummaryEntry],
-) -> GoRootCauseBreakdown {
+fn aggregate_go_root_causes_from_entries(entries: &[ExploreSummaryEntry]) -> GoRootCauseBreakdown {
     use shatter_core::protocol::OutcomeStatus;
     let mut breakdown = GoRootCauseBreakdown::default();
     for entry in entries {
@@ -3919,6 +3910,8 @@ pub(crate) async fn run_explore(
     planner: Option<&str>,
     parallelism_bounds: crate::helpers::ParallelismBounds,
     require_rust: bool,
+    observer_pool: usize,
+    candidate_queue_capacity: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(name) = planner
         && name != "go"
@@ -3935,12 +3928,10 @@ pub(crate) async fn run_explore(
     // bundle for the live path / finalize path) — only the stdout combo
     // is rejected.
     if format == crate::args::StdoutFormat::Json && (stdout || report_outputs.is_empty()) {
-        return Err(
-            "explore --format json is not supported on stdout. Use \
+        return Err("explore --format json is not supported on stdout. Use \
              `-o <file>.json` to write a spec bundle, or drop --format json \
              to render Markdown on stdout."
-                .into(),
-        );
+            .into());
     }
 
     // Early return: finalize from saved artifacts instead of running exploration.
@@ -4253,7 +4244,9 @@ pub(crate) async fn run_explore(
         // `parser_failure` arm below tags files whose Analyze fails.
         let project_root_path = project_root_str.as_deref().map(Path::new);
         let project_cfg_for_target = project_root_path.and_then(|root| {
-            shatter_core::config::load_project_config(root).ok().flatten()
+            shatter_core::config::load_project_config(root)
+                .ok()
+                .flatten()
         });
         if let Some(reason) = pre_classify_no_target_reason(
             &target.file,
@@ -4310,9 +4303,7 @@ pub(crate) async fn run_explore(
                 );
                 summary.status = format!("parser_failure: {code:?}");
                 if let Err(e) = write_explore_summary(&artifact_root, &file_str, &summary) {
-                    log::warn!(
-                        "Failed to write parser-failure summary for {file_str}: {e}"
-                    );
+                    log::warn!("Failed to write parser-failure summary for {file_str}: {e}");
                 }
                 report_summaries.push(summary);
                 continue;
@@ -4710,11 +4701,23 @@ pub(crate) async fn run_explore(
                 }
             }
 
+            // str-frc.6: surface the observer-pool/queue-capacity knobs.
+            // observer_frontend_config is populated from the per-language
+            // FrontendConfig template so each pool slot can spawn its own
+            // independent subprocess. Pool size <= 1 keeps the legacy single
+            // -process path (default-preserving).
+            let resolved_observer_pool = observer_pool.max(1);
+            let observer_frontend_config = if resolved_observer_pool > 1 {
+                fe_configs.get(&target.language).cloned()
+            } else {
+                None
+            };
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
-            observer_pool: 1,
-            observer_frontend_config: None,
+                observer_pool: resolved_observer_pool,
+                observer_frontend_config,
+                candidate_queue_capacity,
                 seed: None,
                 mocks: auto_mocks,
                 mock_params,
@@ -4934,8 +4937,7 @@ pub(crate) async fn run_explore(
             // str-060a: `--clean` already removed the target artifact directory
             // above, but keep the explicit gate so future code paths that add
             // new resume sources can't silently bypass `--clean`.
-            if !clean
-                && let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func)
+            if !clean && let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func)
             {
                 let paths_count = state.covered_paths.len();
                 explore_states.insert(work_index, state);
@@ -6364,13 +6366,8 @@ pub(crate) async fn run_explore(
 /// Filename infixes that mark a file as generated-schema output. Each
 /// pattern carries explicit dot/underscore boundaries to avoid matching
 /// hand-written files like `generator.ts` or `gen.ts`.
-const GENERATED_FILENAME_INFIXES: &[&str] = &[
-    ".gen.",
-    ".pb.",
-    "_pb.",
-    "_generated.",
-    ".generated.",
-];
+const GENERATED_FILENAME_INFIXES: &[&str] =
+    &[".gen.", ".pb.", "_pb.", "_generated.", ".generated."];
 
 /// Path components (segment-equal match) that mark a directory as a
 /// generated-code dump. Matching is exact: `gen` matches `src/gen/foo.ts`
@@ -6448,9 +6445,7 @@ fn matches_policy_exclude(
     false
 }
 
-fn build_policy_globset(
-    patterns: &[String],
-) -> Result<Option<globset::GlobSet>, globset::Error> {
+fn build_policy_globset(patterns: &[String]) -> Result<Option<globset::GlobSet>, globset::Error> {
     if patterns.is_empty() {
         return Ok(None);
     }
@@ -8541,12 +8536,7 @@ mod tests {
         // lines stop at `discovered`.
         let entries = vec![
             entry_with_lines("ok", "completed", None, 9),
-            entry_with_lines(
-                "unsup",
-                "skipped",
-                Some("unexecutable parameter types"),
-                4,
-            ),
+            entry_with_lines("unsup", "skipped", Some("unexecutable parameter types"), 4),
         ];
         let totals = span_line_denominators_from_entries(&entries);
         assert_eq!(totals.discovered, 9 + 4);
@@ -8602,7 +8592,10 @@ mod tests {
 
         // Per-outcome line buckets land in their own bins.
         assert_eq!(totals.covered_completed, COMPLETED_COVERED);
-        assert_eq!(totals.uncovered_completed, COMPLETED_LINES - COMPLETED_COVERED);
+        assert_eq!(
+            totals.uncovered_completed,
+            COMPLETED_LINES - COMPLETED_COVERED
+        );
         assert_eq!(totals.build_failed, BUILD_FAILED_LINES);
         assert_eq!(totals.runtime_failed, RUNTIME_FAILED_LINES);
         assert_eq!(totals.timed_out, TIMED_OUT_LINES);
@@ -8712,9 +8705,7 @@ mod tests {
         // Internal-package + missing-import collision: the more specific
         // bucket wins so a single reason can't be double-counted.
         assert_eq!(
-            classify_go_build_failure(
-                "use of internal package x not allowed; undefined: x.Do"
-            ),
+            classify_go_build_failure("use of internal package x not allowed; undefined: x.Do"),
             G::InternalPackage,
         );
     }
@@ -8731,13 +8722,17 @@ mod tests {
             entry_with_lines(
                 "InternalA",
                 "failed",
-                Some("execute error (InstrumentationFailed): build failed: use of internal package x not allowed"),
+                Some(
+                    "execute error (InstrumentationFailed): build failed: use of internal package x not allowed",
+                ),
                 10,
             ),
             entry_with_lines(
                 "InternalB",
                 "failed",
-                Some("execute error (InstrumentationFailed): build failed: use of internal package y not allowed"),
+                Some(
+                    "execute error (InstrumentationFailed): build failed: use of internal package y not allowed",
+                ),
                 20,
             ),
             // One missing-import failure of 5 lines.
@@ -8751,21 +8746,27 @@ mod tests {
             entry_with_lines(
                 "Syntax",
                 "failed",
-                Some("execute error (InstrumentationFailed): build failed: syntax error: unexpected '}'"),
+                Some(
+                    "execute error (InstrumentationFailed): build failed: syntax error: unexpected '}'",
+                ),
                 100,
             ),
             // One mixed-package failure of 7 lines.
             entry_with_lines(
                 "MixedPkg",
                 "failed",
-                Some("execute error (InstrumentationFailed): build failed: found packages foo and bar in /tmp"),
+                Some(
+                    "execute error (InstrumentationFailed): build failed: found packages foo and bar in /tmp",
+                ),
                 7,
             ),
             // One unsupported-param-type build failure of 3 lines.
             entry_with_lines(
                 "BadParam",
                 "failed",
-                Some("execute error (InstrumentationFailed): build failed: unsupported parameter type chan int"),
+                Some(
+                    "execute error (InstrumentationFailed): build failed: unsupported parameter type chan int",
+                ),
                 3,
             ),
             // One unmatched build_failed reason of 1 line lands in Other.
@@ -8915,9 +8916,18 @@ mod tests {
             ("src/empty.ts", NoTargetReason::Unclassified),
         ];
         let table = format_no_target_reason_table("intro line", &rows);
-        assert!(table.contains("| File | Reason |"), "table header missing: {table}");
-        assert!(table.contains("| src/types.d.ts | `declaration_only` |"), "missing row: {table}");
-        assert!(table.contains("| src/empty.ts | `unclassified` |"), "missing row: {table}");
+        assert!(
+            table.contains("| File | Reason |"),
+            "table header missing: {table}"
+        );
+        assert!(
+            table.contains("| src/types.d.ts | `declaration_only` |"),
+            "missing row: {table}"
+        );
+        assert!(
+            table.contains("| src/empty.ts | `unclassified` |"),
+            "missing row: {table}"
+        );
 
         // None roundtrips as a missing field (skip_serializing_if).
         summary.no_target_reason = None;
@@ -9214,10 +9224,10 @@ mod tests {
         let summary = make_summary("src.ts", vec![entry]);
         let report = validate_artifact_references(dir.path(), &[summary]);
         assert!(
-            report.issues.iter().any(|i| matches!(
-                i,
-                ArtifactValidationIssue::MissingUnavailableReason { .. }
-            )),
+            report
+                .issues
+                .iter()
+                .any(|i| matches!(i, ArtifactValidationIssue::MissingUnavailableReason { .. })),
             "entry with neither artifact nor reason must be reported, got {:?}",
             report.issues
         );
@@ -9536,7 +9546,10 @@ mod tests {
         // the markdown renderer treats it as a no-target row.
         let summary = build_skip_summary("src/empty.ts", NoTargetReason::PolicyExcluded);
         assert_eq!(summary.file, "src/empty.ts");
-        assert_eq!(summary.no_target_reason, Some(NoTargetReason::PolicyExcluded));
+        assert_eq!(
+            summary.no_target_reason,
+            Some(NoTargetReason::PolicyExcluded)
+        );
         assert_eq!(summary.total_functions, 0);
         assert_eq!(summary.completed, 0);
         assert_eq!(summary.failed, 0);
@@ -9559,10 +9572,8 @@ mod tests {
         // `read_explore_summary` so a re-run sees the prior state.
         let dir = tempfile::tempdir().expect("tempdir");
         let summary = build_skip_summary("src/x.ts", NoTargetReason::ParserFailure);
-        super::write_explore_summary(dir.path(), "src/x.ts", &summary)
-            .expect("write summary");
-        let loaded = super::read_explore_summary(dir.path(), "src/x.ts")
-            .expect("loaded summary");
+        super::write_explore_summary(dir.path(), "src/x.ts", &summary).expect("write summary");
+        let loaded = super::read_explore_summary(dir.path(), "src/x.ts").expect("loaded summary");
         assert_eq!(loaded.no_target_reason, Some(NoTargetReason::ParserFailure));
         assert_eq!(loaded.file, "src/x.ts");
     }
@@ -9605,11 +9616,7 @@ mod tests {
         // Cargo.toml must NOT classify as build_script — the planning
         // notes explicitly call this out.
         let dir = tempfile::tempdir().expect("tempdir");
-        let stray = write_rust_fixture(
-            dir.path(),
-            "fixtures/nested/build.rs",
-            "fn main() {}\n",
-        );
+        let stray = write_rust_fixture(dir.path(), "fixtures/nested/build.rs", "fn main() {}\n");
         assert!(!rust_is_build_script(&stray));
         // The content scan sees a fn body, so it falls all the way
         // through to None (caller emits Unclassified).
@@ -9638,16 +9645,9 @@ mod tests {
         // `_test.rs` and `_tests.rs` suffixes are conventional Rust
         // test-module names even outside the integration-tests dir.
         let dir = tempfile::tempdir().expect("tempdir");
-        let path_singular = write_rust_fixture(
-            dir.path(),
-            "src/foo_test.rs",
-            "#[test] fn t() {}\n",
-        );
-        let path_plural = write_rust_fixture(
-            dir.path(),
-            "src/foo_tests.rs",
-            "#[test] fn t() {}\n",
-        );
+        let path_singular =
+            write_rust_fixture(dir.path(), "src/foo_test.rs", "#[test] fn t() {}\n");
+        let path_plural = write_rust_fixture(dir.path(), "src/foo_tests.rs", "#[test] fn t() {}\n");
         assert!(rust_is_test_module_by_path(&path_singular));
         assert!(rust_is_test_module_by_path(&path_plural));
         assert_eq!(
@@ -9742,11 +9742,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // No Cargo.toml sibling -> build_script check fails ->
         // test_module by path wins because the file sits in tests/.
-        let path = write_rust_fixture(
-            dir.path(),
-            "tests/build.rs",
-            "fn main() {}\n",
-        );
+        let path = write_rust_fixture(dir.path(), "tests/build.rs", "fn main() {}\n");
         assert_eq!(
             rust_classify_no_target_reason(&path),
             Some(NoTargetReason::TestModule),
@@ -9755,16 +9751,8 @@ mod tests {
         // With a sibling Cargo.toml, build_script wins (still under
         // tests/). The order of checks ensures build_script precedence.
         let dir2 = tempfile::tempdir().expect("tempdir");
-        write_rust_fixture(
-            dir2.path(),
-            "tests/Cargo.toml",
-            "[package]\nname = \"x\"\n",
-        );
-        let p2 = write_rust_fixture(
-            dir2.path(),
-            "tests/build.rs",
-            "fn main() {}\n",
-        );
+        write_rust_fixture(dir2.path(), "tests/Cargo.toml", "[package]\nname = \"x\"\n");
+        let p2 = write_rust_fixture(dir2.path(), "tests/build.rs", "fn main() {}\n");
         assert_eq!(
             rust_classify_no_target_reason(&p2),
             Some(NoTargetReason::BuildScript),
@@ -9996,8 +9984,7 @@ mod tests {
         // in TS generics, so the content check stays safe even on a
         // pathological `.tsx`.
         let dir = tempfile::tempdir().expect("tempdir");
-        let source =
-            "export type Pair<T> = readonly [T, T];\n\
+        let source = "export type Pair<T> = readonly [T, T];\n\
              export type Numbers = Array<number>;\n";
         let path = write_ts_fixture(dir.path(), "src/generics.ts", source);
         assert!(!ts_contains_jsx_component(source));
@@ -10129,11 +10116,8 @@ mod tests {
             classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &dts),
             Some(NoTargetReason::DeclarationOnly),
         );
-        let test_path = write_ts_fixture(
-            dir.path(),
-            "src/foo.spec.ts",
-            "describe('x', () => {});\n",
-        );
+        let test_path =
+            write_ts_fixture(dir.path(), "src/foo.spec.ts", "describe('x', () => {});\n");
         assert_eq!(
             classify_no_target_reason(0, 0, crate::args::Language::TypeScript, &test_path),
             Some(NoTargetReason::TestOrSpec),
