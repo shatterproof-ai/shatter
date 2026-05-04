@@ -17,15 +17,22 @@
 //!    `*_pb.ts`, `*.gen.*`, `**/generated/**`). Filtered out before
 //!    grading because exercising generated code yields no signal about
 //!    human-authored behavior.
-//! 3. [`SourceBucket::DeclarationOnly`] — type-only files (`*.d.ts`)
+//! 3. [`SourceBucket::Unsupported`] — files Shatter has no frontend for
+//!    (str-jeen.47): the path's extension is not in the supported
+//!    allowlist (TS/Go/Rust frontends accept `.ts`, `.tsx`, `.js`,
+//!    `.jsx`, `.mjs`, `.cjs`, `.d.ts`, `.go`, `.rs`), or the basename
+//!    is a known build/config artifact (`Makefile`, `Dockerfile`,
+//!    `Cargo.toml`, `package.json`, etc.). Excluded from the coverage
+//!    denominator so unanalyzable file types don't deflate "% attempted".
+//! 4. [`SourceBucket::DeclarationOnly`] — type-only files (`*.d.ts`)
 //!    with no executable bodies.
-//! 4. [`SourceBucket::FixtureSample`] — corpora the project ships as
+//! 5. [`SourceBucket::FixtureSample`] — corpora the project ships as
 //!    test inputs or reference samples (`testdata/`, `fixtures/`,
 //!    `examples/`, `samples/`). They live alongside source but are
 //!    consumed by tests, not exercised directly.
-//! 5. [`SourceBucket::TestSpec`] — test files (`*_test.go`,
+//! 6. [`SourceBucket::TestSpec`] — test files (`*_test.go`,
 //!    `*.test.ts`, `*.spec.ts`, `tests/`, `__tests__/`).
-//! 6. [`SourceBucket::ProductionIsh`] — the default for human-authored
+//! 7. [`SourceBucket::ProductionIsh`] — the default for human-authored
 //!    source that doesn't match a more specific bucket.
 //!
 //! Higher-precedence buckets shadow lower ones on conflict — e.g. a
@@ -61,6 +68,18 @@ pub enum SourceBucket {
     /// from reporting (`vendor/`, `node_modules/`, `target/`, `dist/`,
     /// `build/`, `.git/`).
     PolicyExcluded,
+    /// Files Shatter has no frontend for (str-jeen.47): shell scripts,
+    /// Python/Ruby sources, YAML/TOML/JSON configs, Markdown, `.proto`,
+    /// `.sql`, `.css`, `.html`, and well-known build/config filenames
+    /// like `Makefile`, `Dockerfile`, `Cargo.toml`, `package.json`,
+    /// `go.mod`. Excluded from the coverage denominator so the
+    /// "% attempted" number reflects only files Shatter could
+    /// structurally analyze.
+    //
+    // TODO(str-jeen.39): the markdown source-set summary should read this
+    // bucket count and surface it separately so the gap between "all
+    // files" and "denominator" is visible.
+    Unsupported,
 }
 
 impl SourceBucket {
@@ -74,6 +93,7 @@ impl SourceBucket {
             Self::DeclarationOnly => "declaration_only",
             Self::FixtureSample => "fixture_sample",
             Self::PolicyExcluded => "policy_excluded",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -81,8 +101,11 @@ impl SourceBucket {
 /// Classify a source-file path into a [`SourceBucket`]. Path-only —
 /// never reads file contents. See module docs for precedence rules.
 ///
-/// Empty paths and paths with no recognizable signals fall through to
-/// [`SourceBucket::ProductionIsh`].
+/// Paths whose extension is not in the supported allowlist (TS/Go/Rust
+/// frontends) or whose basename is a known build/config filename
+/// classify as [`SourceBucket::Unsupported`]. Empty paths classify as
+/// [`SourceBucket::Unsupported`] as well — there is no recognizable
+/// frontend signal in an empty path.
 pub fn classify_path(path: &str) -> SourceBucket {
     let normalized = normalize_path(path);
     let lower = normalized.to_ascii_lowercase();
@@ -95,6 +118,9 @@ pub fn classify_path(path: &str) -> SourceBucket {
     if is_generated(basename, &segments) {
         return SourceBucket::Generated;
     }
+    if !is_supported_extension(basename) {
+        return SourceBucket::Unsupported;
+    }
     if is_declaration_only(basename) {
         return SourceBucket::DeclarationOnly;
     }
@@ -105,6 +131,26 @@ pub fn classify_path(path: &str) -> SourceBucket {
         return SourceBucket::TestSpec;
     }
     SourceBucket::ProductionIsh
+}
+
+/// File extensions Shatter's frontends actually accept. Anything else
+/// classifies as [`SourceBucket::Unsupported`] — see str-jeen.47. The
+/// list intentionally tracks the union of every frontend's accepted
+/// extension set; adding a new frontend means adding here.
+///
+/// `.d.ts` is matched implicitly because every supported `.d.ts` path
+/// also ends with `.ts`.
+const SUPPORTED_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs"];
+
+/// Return whether `basename` ends in one of [`SUPPORTED_EXTENSIONS`].
+/// A basename with no recognized extension (including extensionless
+/// build-system filenames like `Makefile` and the empty string) returns
+/// `false` and is classified as [`SourceBucket::Unsupported`] by
+/// [`classify_path`].
+fn is_supported_extension(basename: &str) -> bool {
+    SUPPORTED_EXTENSIONS
+        .iter()
+        .any(|ext| basename.ends_with(ext))
 }
 
 /// Replace backslashes with forward slashes so Windows-style paths in
@@ -231,12 +277,17 @@ mod tests {
             classify_path("src/app/handler.ts"),
             SourceBucket::ProductionIsh
         );
-        assert_eq!(classify_path("pkg/server/server.go"), SourceBucket::ProductionIsh);
+        assert_eq!(
+            classify_path("pkg/server/server.go"),
+            SourceBucket::ProductionIsh
+        );
         assert_eq!(
             classify_path("crates/core/src/lib.rs"),
             SourceBucket::ProductionIsh
         );
-        assert_eq!(classify_path(""), SourceBucket::ProductionIsh);
+        // Empty paths have no extension signal — they classify as
+        // Unsupported (str-jeen.47), not ProductionIsh.
+        assert_eq!(classify_path(""), SourceBucket::Unsupported);
     }
 
     #[test]
@@ -257,7 +308,10 @@ mod tests {
             classify_path("src/__tests__/util.ts"),
             SourceBucket::TestSpec
         );
-        assert_eq!(classify_path("tests/integration/run.go"), SourceBucket::TestSpec);
+        assert_eq!(
+            classify_path("tests/integration/run.go"),
+            SourceBucket::TestSpec
+        );
     }
 
     #[test]
@@ -267,10 +321,7 @@ mod tests {
             SourceBucket::Generated
         );
         assert_eq!(classify_path("proto/foo_pb.ts"), SourceBucket::Generated);
-        assert_eq!(
-            classify_path("src/schema.gen.ts"),
-            SourceBucket::Generated
-        );
+        assert_eq!(classify_path("src/schema.gen.ts"), SourceBucket::Generated);
         assert_eq!(
             classify_path("internal/generated/wire.go"),
             SourceBucket::Generated
@@ -377,6 +428,112 @@ mod tests {
     }
 
     #[test]
+    fn classifies_unsupported_extensions_and_filenames() {
+        // Unsupported extensions enumerated in str-jeen.47 acceptance
+        // criteria.
+        let unsupported_extension_paths = [
+            "scripts/build.sh",
+            "scripts/run.bash",
+            "scripts/build.py",
+            "scripts/lint.rb",
+            ".github/workflows/ci.yaml",
+            ".github/workflows/ci.yml",
+            "pyproject.toml",
+            "package.json",
+            "README.md",
+            "proto/api.proto",
+            "db/schema.sql",
+            "src/app.css",
+            "src/index.html",
+            "deploy/web.dockerfile",
+        ];
+        for path in unsupported_extension_paths {
+            assert_eq!(
+                classify_path(path),
+                SourceBucket::Unsupported,
+                "expected Unsupported for {path}",
+            );
+        }
+
+        // Build/config filenames without supported extensions also
+        // classify as Unsupported.
+        let unsupported_filename_paths = [
+            "Makefile",
+            "Dockerfile",
+            "Containerfile",
+            "Justfile",
+            "BUILD.bazel",
+        ];
+        for path in unsupported_filename_paths {
+            assert_eq!(
+                classify_path(path),
+                SourceBucket::Unsupported,
+                "expected Unsupported for {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn supported_extension_allowlist_boundary() {
+        // Every extension a frontend accepts must classify out of
+        // Unsupported (the file may still be Test/Fixture/etc; the
+        // boundary check is "not Unsupported").
+        let supported_paths = [
+            "src/app.ts",
+            "src/Card.tsx",
+            "src/util.js",
+            "src/Card.jsx",
+            "src/loader.mjs",
+            "src/loader.cjs",
+            "types/global.d.ts",
+            "pkg/server.go",
+            "crates/core/src/lib.rs",
+        ];
+        for path in supported_paths {
+            assert_ne!(
+                classify_path(path),
+                SourceBucket::Unsupported,
+                "supported extension misclassified as Unsupported: {path}",
+            );
+        }
+
+        // Unsupported neighbors of the allowlist boundary.
+        let just_outside = ["src/app.zig", "src/lib.kt", "src/main.swift"];
+        for path in just_outside {
+            assert_eq!(
+                classify_path(path),
+                SourceBucket::Unsupported,
+                "expected Unsupported for {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_precedence() {
+        // policy_excluded wins over Unsupported.
+        assert_eq!(
+            classify_path("node_modules/foo/package.json"),
+            SourceBucket::PolicyExcluded,
+        );
+        // Generated wins over Unsupported (a file under generated/ with
+        // an unsupported extension is still Generated).
+        assert_eq!(
+            classify_path("internal/generated/schema.json"),
+            SourceBucket::Generated,
+        );
+        // Unsupported wins over fixture/test directory hints when the
+        // file's own extension is not analyzable.
+        assert_eq!(
+            classify_path("examples/python/demo.py"),
+            SourceBucket::Unsupported,
+        );
+        assert_eq!(
+            classify_path("tests/integration/run.py"),
+            SourceBucket::Unsupported,
+        );
+    }
+
+    #[test]
     fn wire_strings_match_serde_output() {
         let pairs = [
             (SourceBucket::ProductionIsh, "production_ish"),
@@ -385,6 +542,7 @@ mod tests {
             (SourceBucket::DeclarationOnly, "declaration_only"),
             (SourceBucket::FixtureSample, "fixture_sample"),
             (SourceBucket::PolicyExcluded, "policy_excluded"),
+            (SourceBucket::Unsupported, "unsupported"),
         ];
         for (bucket, wire) in pairs {
             assert_eq!(bucket.as_wire_str(), wire);
