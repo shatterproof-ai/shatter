@@ -15,7 +15,7 @@ use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
 use crate::protocol::OutcomeStatus;
 use crate::scan_orchestrator::{FunctionResult, MockSource, ParallelScanResult, ScanResult};
-use crate::source_bucket::{classify_path, SourceBucket};
+use crate::source_bucket::{SourceBucket, classify_path};
 
 /// Maximum number of behavior clusters displayed per function in the Markdown
 /// report. Functions with more clusters show a "... and N more" summary line.
@@ -26,7 +26,10 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// `attempted_functions`, `completed_functions`, `failed_functions`,
 /// `skipped_functions_count`, `unsupported_functions`,
 /// `total_discovered_functions`, and the structured `failed` array.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 2;
+/// Bumped from 2 to 3 in str-jeen.39 with the addition of
+/// `source_set` (per-bucket file/line counts) and
+/// `productionish_source_lines` on the codebase aggregate.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -39,10 +42,7 @@ struct ScanOutcomeCounts {
 }
 
 impl ScanOutcomeCounts {
-    fn from_split(
-        completed: usize,
-        skipped: &[crate::scan_orchestrator::SkippedFunction],
-    ) -> Self {
+    fn from_split(completed: usize, skipped: &[crate::scan_orchestrator::SkippedFunction]) -> Self {
         use crate::scan_orchestrator::SkipCategory;
         let mut failed = 0usize;
         let mut expected_skipped = 0usize;
@@ -85,8 +85,7 @@ fn split_skipped_into_failed(
         // functions across files don't collide. Strip the prefix here so
         // the wire `function_name` field stays bare (str-tzbr contract);
         // file_map lookups go through the qualified ID directly.
-        let (parsed_file, display_name) =
-            crate::behavior::split_qualified_id(&s.function_name);
+        let (parsed_file, display_name) = crate::behavior::split_qualified_id(&s.function_name);
         let file_path = file_map
             .get(&s.function_name)
             .cloned()
@@ -276,6 +275,22 @@ pub struct CodebaseReport {
     pub total_branches: usize,
     /// Overall branch coverage percentage (0.0-100.0).
     pub overall_coverage: f64,
+    /// Sum of in-function source lines across every reported function
+    /// whose file classifies as [`SourceBucket::ProductionIsh`]
+    /// (str-jeen.39). This is the denominator the coverage story should
+    /// quote when comparing "lines exercised" against "lines worth
+    /// exercising" — it deliberately excludes test, fixture, generated,
+    /// declaration-only, policy-excluded, and unsupported files. The
+    /// gap between this number and the sum across all buckets is what
+    /// the markdown source-set summary table makes visible.
+    #[serde(default)]
+    pub productionish_source_lines: u64,
+    /// Per-bucket file and line counts derived from
+    /// [`FunctionReport::source_bucket`] and [`FunctionReport::total_lines`]
+    /// (str-jeen.39). Always carries one entry per [`SourceBucket`]
+    /// variant; absent buckets read as zero.
+    #[serde(default)]
+    pub source_set: SourceSetSummary,
     /// Structured records for each function the scan attempted but failed
     /// to explore. Replaces the prior pattern of stuffing build/runtime
     /// failures into `skipped_functions` as opaque error strings
@@ -303,6 +318,97 @@ pub struct SkippedFunctionReport {
     pub function_name: String,
     pub reason: String,
     pub category: String,
+}
+
+/// File and line totals for one [`SourceBucket`] in the source-set summary.
+///
+/// `file_count` counts distinct file paths classified into the bucket.
+/// `line_count` is the sum of [`FunctionReport::total_lines`] across every
+/// function whose file falls in the bucket — i.e. an in-function line tally,
+/// not whole-file line counts. Whole-source line counting lands separately
+/// in str-jeen.17.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSetBucketStats {
+    /// Number of distinct file paths classified into this bucket.
+    pub file_count: usize,
+    /// Sum of [`FunctionReport::total_lines`] across functions in this
+    /// bucket. See struct-level docs for what this measures.
+    pub line_count: u64,
+}
+
+/// Per-bucket source-set rollup for the markdown summary table
+/// (str-jeen.39). One field per [`SourceBucket`] variant — flat rather
+/// than a map so the JSON schema enumerates every bucket explicitly and
+/// missing buckets read as zeros via [`Default`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSetSummary {
+    pub production_ish: SourceSetBucketStats,
+    pub test_spec: SourceSetBucketStats,
+    pub generated: SourceSetBucketStats,
+    pub declaration_only: SourceSetBucketStats,
+    pub fixture_sample: SourceSetBucketStats,
+    pub policy_excluded: SourceSetBucketStats,
+    pub unsupported: SourceSetBucketStats,
+}
+
+impl SourceSetSummary {
+    /// Mutable access to the stats slot for `bucket`. Used by the
+    /// aggregator to fold one (file, bucket, line_count) sample into the
+    /// running totals.
+    fn slot_mut(&mut self, bucket: SourceBucket) -> &mut SourceSetBucketStats {
+        match bucket {
+            SourceBucket::ProductionIsh => &mut self.production_ish,
+            SourceBucket::TestSpec => &mut self.test_spec,
+            SourceBucket::Generated => &mut self.generated,
+            SourceBucket::DeclarationOnly => &mut self.declaration_only,
+            SourceBucket::FixtureSample => &mut self.fixture_sample,
+            SourceBucket::PolicyExcluded => &mut self.policy_excluded,
+            SourceBucket::Unsupported => &mut self.unsupported,
+        }
+    }
+
+    /// Iterate buckets in the precedence order documented on
+    /// [`SourceBucket`]. Used by the markdown renderer so the table rows
+    /// always appear in the same, meaningful order.
+    fn rows(&self) -> [(SourceBucket, SourceSetBucketStats); 7] {
+        [
+            (SourceBucket::ProductionIsh, self.production_ish),
+            (SourceBucket::TestSpec, self.test_spec),
+            (SourceBucket::Generated, self.generated),
+            (SourceBucket::DeclarationOnly, self.declaration_only),
+            (SourceBucket::FixtureSample, self.fixture_sample),
+            (SourceBucket::PolicyExcluded, self.policy_excluded),
+            (SourceBucket::Unsupported, self.unsupported),
+        ]
+    }
+}
+
+/// Build a [`SourceSetSummary`] by aggregating over the per-function
+/// reports. Files are deduplicated by `file_path` so each path
+/// contributes exactly one to its bucket's `file_count`. `line_count`
+/// sums [`FunctionReport::total_lines`] across functions; the same file
+/// appearing under multiple functions accumulates each function's
+/// in-function lines, matching the per-function granularity of the
+/// underlying data.
+fn build_source_set_summary(functions: &[FunctionReport]) -> SourceSetSummary {
+    let mut summary = SourceSetSummary::default();
+    let mut seen_files: std::collections::HashSet<(SourceBucket, String)> =
+        std::collections::HashSet::new();
+
+    for func in functions {
+        let bucket = func.source_bucket;
+        let slot = summary.slot_mut(bucket);
+        slot.line_count = slot.line_count.saturating_add(u64::from(func.total_lines));
+        // file_count tracks distinct paths per bucket. Empty `file_path`
+        // means the orchestrator's file_map had no entry — count those
+        // as a single sentinel "" file rather than skipping or
+        // multi-counting.
+        if seen_files.insert((bucket, func.file_path.clone())) {
+            slot.file_count = slot.file_count.saturating_add(1);
+        }
+    }
+
+    summary
 }
 
 /// A function the scan attempted to explore but did not complete.
@@ -417,8 +523,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     // name so the wire `function_name` field stays unchanged
     // (str-tzbr contract). file_path is supplied by the caller via the
     // qualified-ID-keyed file_map.
-    let (_qid_file, display_name) =
-        crate::behavior::split_qualified_id(&result.function_name);
+    let (_qid_file, display_name) = crate::behavior::split_qualified_id(&result.function_name);
     FunctionReport {
         function_name: display_name.to_string(),
         file_path: file_path.to_string(),
@@ -535,14 +640,14 @@ pub fn generate_report(
     };
 
     let (skipped_functions, failed) = split_skipped_into_failed(&result.skipped, file_map);
-    let counts = ScanOutcomeCounts::from_split(
-        result.function_results.len(),
-        &result.skipped,
-    );
+    let counts = ScanOutcomeCounts::from_split(result.function_results.len(), &result.skipped);
 
     let dependency_graph = build_dependency_edges(&result.function_results);
 
     let cumulative = batch_state.map(build_cumulative_report);
+
+    let source_set = build_source_set_summary(&functions);
+    let productionish_source_lines = source_set.production_ish.line_count;
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -556,6 +661,8 @@ pub fn generate_report(
             total_discovered_functions: counts.discovered,
             total_branches,
             overall_coverage,
+            productionish_source_lines,
+            source_set,
             failed,
             skipped_functions,
             dependency_graph,
@@ -596,10 +703,11 @@ pub fn generate_report_from_scan(
 
     let (skipped_functions, failed) =
         split_skipped_into_failed(&result.skipped_functions, file_map);
-    let counts = ScanOutcomeCounts::from_split(
-        result.function_results.len(),
-        &result.skipped_functions,
-    );
+    let counts =
+        ScanOutcomeCounts::from_split(result.function_results.len(), &result.skipped_functions);
+
+    let source_set = build_source_set_summary(&functions);
+    let productionish_source_lines = source_set.production_ish.line_count;
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -613,6 +721,8 @@ pub fn generate_report_from_scan(
             total_discovered_functions: counts.discovered,
             total_branches,
             overall_coverage,
+            productionish_source_lines,
+            source_set,
             failed,
             skipped_functions,
             dependency_graph,
@@ -751,6 +861,7 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
 
     write_md_header(&mut out, report);
     write_md_cumulative(&mut out, &report.cumulative);
+    write_md_source_set_summary(&mut out, &report.codebase.source_set);
     write_md_summary_table(&mut out, report);
     write_md_function_details(&mut out, &report.functions);
     write_md_uncovered_branches(&mut out, &report.functions);
@@ -809,22 +920,62 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     let coverage = report.codebase.overall_coverage;
 
     let cb = &report.codebase;
-    let _ = writeln!(out, "- **Functions discovered:** {}", cb.total_discovered_functions);
+    let _ = writeln!(
+        out,
+        "- **Functions discovered:** {}",
+        cb.total_discovered_functions
+    );
     let _ = writeln!(out, "- **Functions attempted:** {}", cb.attempted_functions);
     let _ = writeln!(out, "- **Functions completed:** {}", cb.completed_functions);
     if cb.failed_functions > 0 {
         let _ = writeln!(out, "- **Functions failed:** {}", cb.failed_functions);
     }
     if cb.skipped_functions_count > 0 {
-        let _ = writeln!(out, "- **Functions skipped:** {}", cb.skipped_functions_count);
+        let _ = writeln!(
+            out,
+            "- **Functions skipped:** {}",
+            cb.skipped_functions_count
+        );
     }
     if cb.unsupported_functions > 0 {
-        let _ = writeln!(out, "- **Functions unsupported:** {}", cb.unsupported_functions);
+        let _ = writeln!(
+            out,
+            "- **Functions unsupported:** {}",
+            cb.unsupported_functions
+        );
     }
     let _ = writeln!(out, "- **Total branches:** {total_branches}");
     let _ = writeln!(out, "- **Branches covered:** {total_covered}");
     let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
+    // str-jeen.39: surface the production-ish line denominator alongside
+    // branch totals so the gap to "all source lines" is visible in the
+    // narrative, not just the per-bucket table further down.
+    let _ = writeln!(
+        out,
+        "- **Production-ish source lines:** {} (denominator for coverage; see Source Set Summary)",
+        cb.productionish_source_lines,
+    );
 
+    out.push('\n');
+}
+
+/// Emit a Markdown table summarising file and line counts per
+/// [`SourceBucket`] (str-jeen.39). Always renders all seven buckets so a
+/// reader can see at a glance how much of the codebase is excluded from
+/// the production-ish denominator and why.
+fn write_md_source_set_summary(out: &mut String, summary: &SourceSetSummary) {
+    let _ = writeln!(out, "## Source Set Summary\n");
+    let _ = writeln!(out, "| Bucket | Files | Lines |");
+    let _ = writeln!(out, "|--------|-------|-------|");
+    for (bucket, stats) in summary.rows() {
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} |",
+            bucket.as_wire_str(),
+            stats.file_count,
+            stats.line_count,
+        );
+    }
     out.push('\n');
 }
 
@@ -1377,7 +1528,7 @@ mod tests {
                 abandoned_frontiers: vec![],
                 opaque_suggestions: vec![],
                 stubbed_modules: vec![],
-                            ..Default::default()
+                ..Default::default()
             },
             behavior_map: BehaviorMap {
                 function_id: name.to_string(),
@@ -1554,10 +1705,7 @@ mod tests {
         };
         let mut file_map = HashMap::new();
         for i in 0..3 {
-            file_map.insert(
-                format!("processOrder_{i}"),
-                format!("src/orders/p{i}.ts"),
-            );
+            file_map.insert(format!("processOrder_{i}"), format!("src/orders/p{i}.ts"));
         }
         let r = generate_report(&result, &file_map, None);
         println!("{}", serde_json::to_string_pretty(&r).unwrap());
@@ -1582,9 +1730,7 @@ mod tests {
         }
         let parallel_result = ParallelScanResult {
             function_results: vec![],
-            test_order: (0..ATTEMPTED_FAILURES)
-                .map(|i| format!("fn_{i}"))
-                .collect(),
+            test_order: (0..ATTEMPTED_FAILURES).map(|i| format!("fn_{i}")).collect(),
             skipped,
             workers_used: 1,
             workers_reaped: 0,
@@ -2002,6 +2148,100 @@ mod tests {
         file_map.insert("caller".to_string(), "src/app.ts".to_string());
 
         generate_report(&parallel_result, &file_map, None)
+    }
+
+    // -----------------------------------------------------------------------
+    // Source-set summary aggregation (str-jeen.39)
+    // -----------------------------------------------------------------------
+
+    fn fr(file: &str, bucket: SourceBucket, total_lines: u32) -> FunctionReport {
+        FunctionReport {
+            function_name: format!("fn_in_{file}"),
+            file_path: file.to_string(),
+            source_bucket: bucket,
+            branch_count: 0,
+            branches_covered: 0,
+            coverage_pct: 0.0,
+            discovered_inputs: vec![],
+            behavior_clusters: vec![],
+            constraint_stats: ConstraintStats {
+                total_constraints: 0,
+                solver_guided_inputs: 0,
+            },
+            iterations: 0,
+            lines_covered: 0,
+            total_lines,
+            mocks_used: vec![],
+            refactoring_recommendations: vec![],
+        }
+    }
+
+    #[test]
+    fn source_set_summary_dedupes_files_and_sums_lines() {
+        // Two production_ish functions in the same file → file_count
+        // counted once, line_counts summed. A third production_ish
+        // function in a different file → file_count = 2.
+        let functions = vec![
+            fr("src/a.ts", SourceBucket::ProductionIsh, 10),
+            fr("src/a.ts", SourceBucket::ProductionIsh, 20),
+            fr("src/b.ts", SourceBucket::ProductionIsh, 30),
+            fr("src/a.test.ts", SourceBucket::TestSpec, 5),
+        ];
+
+        let summary = build_source_set_summary(&functions);
+
+        assert_eq!(summary.production_ish.file_count, 2);
+        assert_eq!(summary.production_ish.line_count, 60);
+        assert_eq!(summary.test_spec.file_count, 1);
+        assert_eq!(summary.test_spec.line_count, 5);
+    }
+
+    #[test]
+    fn source_set_summary_covers_all_seven_buckets() {
+        let functions = vec![
+            fr("src/p.ts", SourceBucket::ProductionIsh, 1),
+            fr("src/p.test.ts", SourceBucket::TestSpec, 2),
+            fr("api/p.pb.go", SourceBucket::Generated, 4),
+            fr("types/g.d.ts", SourceBucket::DeclarationOnly, 8),
+            fr("testdata/x.go", SourceBucket::FixtureSample, 16),
+            fr("vendor/x.go", SourceBucket::PolicyExcluded, 32),
+            fr("scripts/x.sh", SourceBucket::Unsupported, 64),
+        ];
+        let summary = build_source_set_summary(&functions);
+        let rows = summary.rows();
+        // Every bucket lands one file + its line count.
+        for (bucket, stats) in rows {
+            assert_eq!(stats.file_count, 1, "bucket {bucket:?}");
+            assert!(stats.line_count > 0, "bucket {bucket:?}");
+        }
+    }
+
+    #[test]
+    fn productionish_source_lines_mirrors_bucket_total() {
+        let mut file_map = HashMap::new();
+        file_map.insert("a".to_string(), "src/a.ts".to_string());
+        file_map.insert("b".to_string(), "src/b.ts".to_string());
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![
+                make_function_result("a", 10, 1, 5, 30, vec![]),
+                make_function_result("b", 10, 1, 5, 70, vec![]),
+            ],
+            test_order: vec!["a".into(), "b".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+
+        let report = generate_report(&parallel_result, &file_map, None);
+        // Both functions land in production_ish (.ts, no test/fixture
+        // marker) so productionish_source_lines == 30 + 70.
+        assert_eq!(report.codebase.productionish_source_lines, 100);
+        assert_eq!(
+            report.codebase.source_set.production_ish.line_count,
+            report.codebase.productionish_source_lines,
+        );
     }
 
     #[test]
@@ -2497,7 +2737,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let fragment = render_explore_fn_html(&result, "src/foo.ts:1-10", None);
         assert!(fragment.contains("myFunc"), "must contain function name");

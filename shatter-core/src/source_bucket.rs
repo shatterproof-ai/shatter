@@ -74,11 +74,9 @@ pub enum SourceBucket {
     /// like `Makefile`, `Dockerfile`, `Cargo.toml`, `package.json`,
     /// `go.mod`. Excluded from the coverage denominator so the
     /// "% attempted" number reflects only files Shatter could
-    /// structurally analyze.
-    //
-    // TODO(str-jeen.39): the markdown source-set summary should read this
-    // bucket count and surface it separately so the gap between "all
-    // files" and "denominator" is visible.
+    /// structurally analyze. Surfaced as its own row in the markdown
+    /// source-set summary table (str-jeen.39) so the gap between "all
+    /// files" and "denominator" is visible.
     Unsupported,
 }
 
