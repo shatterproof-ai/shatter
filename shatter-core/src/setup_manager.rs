@@ -59,8 +59,18 @@ impl SetupTimeouts {
     /// If `SHATTER_SETUP_TIMEOUT` is set to a valid positive integer, all
     /// levels use that value. Invalid or non-positive values are silently ignored.
     pub fn from_env() -> Self {
-        match std::env::var(SETUP_TIMEOUT_ENV_VAR) {
-            Ok(val) => match val.parse::<u64>() {
+        // Hazard: process env is shared mutable state across parallel tests.
+        // Tests must call `from_raw_value` with an explicit string instead of
+        // mutating SETUP_TIMEOUT_ENV_VAR — see `tests` module below.
+        Self::from_raw_value(std::env::var(SETUP_TIMEOUT_ENV_VAR).ok().as_deref())
+    }
+
+    /// Pure parser used by `from_env`. Decouples the env read from the parsing
+    /// logic so tests can exercise every branch without touching the process
+    /// environment (which races under `cargo test`'s parallel runner).
+    pub fn from_raw_value(raw: Option<&str>) -> Self {
+        match raw {
+            Some(val) => match val.parse::<u64>() {
                 Ok(secs) if secs > 0 => {
                     let d = Duration::from_secs(secs);
                     Self {
@@ -72,7 +82,7 @@ impl SetupTimeouts {
                 }
                 _ => Self::default(),
             },
-            Err(_) => Self::default(),
+            None => Self::default(),
         }
     }
 
@@ -324,12 +334,15 @@ mod tests {
         );
     }
 
+    // The three tests below exercise the env-override parsing via the pure
+    // `from_raw_value` entry point rather than mutating SETUP_TIMEOUT_ENV_VAR.
+    // The process environment is shared mutable state across parallel tests,
+    // so set_var/remove_var here would race with any other test (or any
+    // `from_env` caller) running concurrently — see str-k2i3.
+
     #[test]
     fn env_override_applies_to_all_levels() {
-        // Use a unique env var value to avoid test interference
-        unsafe { std::env::set_var(SETUP_TIMEOUT_ENV_VAR, "42") };
-        let t = SetupTimeouts::from_env();
-        unsafe { std::env::remove_var(SETUP_TIMEOUT_ENV_VAR) };
+        let t = SetupTimeouts::from_raw_value(Some("42"));
 
         let expected = Duration::from_secs(42);
         assert_eq!(t.session, expected);
@@ -340,17 +353,19 @@ mod tests {
 
     #[test]
     fn env_invalid_falls_back_to_defaults() {
-        unsafe { std::env::set_var(SETUP_TIMEOUT_ENV_VAR, "not-a-number") };
-        let t = SetupTimeouts::from_env();
-        unsafe { std::env::remove_var(SETUP_TIMEOUT_ENV_VAR) };
+        let t = SetupTimeouts::from_raw_value(Some("not-a-number"));
         assert_eq!(t, SetupTimeouts::default());
     }
 
     #[test]
     fn env_zero_falls_back_to_defaults() {
-        unsafe { std::env::set_var(SETUP_TIMEOUT_ENV_VAR, "0") };
-        let t = SetupTimeouts::from_env();
-        unsafe { std::env::remove_var(SETUP_TIMEOUT_ENV_VAR) };
+        let t = SetupTimeouts::from_raw_value(Some("0"));
+        assert_eq!(t, SetupTimeouts::default());
+    }
+
+    #[test]
+    fn env_unset_uses_defaults() {
+        let t = SetupTimeouts::from_raw_value(None);
         assert_eq!(t, SetupTimeouts::default());
     }
 
