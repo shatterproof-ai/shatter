@@ -565,10 +565,36 @@ impl CallGraph {
         let node_ids: Vec<String> = analyses.iter().map(node_id_for_analysis).collect();
         let mut bare_to_qualified: HashMap<&str, Vec<usize>> = HashMap::new();
         for (idx, analysis) in analyses.iter().enumerate() {
+            // Index by the analysis name as the frontend reported it.
+            // For free functions this is the bare AST name (e.g. "Write");
+            // for Go methods (str-fuhw.1.1) this is the receiver-decorated
+            // qualified name (e.g. "(*Foo).Write").
             bare_to_qualified
                 .entry(analysis.name.as_str())
                 .or_default()
                 .push(idx);
+            // Also index by the bare suffix after the last '.' so a
+            // caller's `dep.symbol = "Write"` still resolves to a method
+            // analysis whose name is "(*Foo).Write". Inserting a duplicate
+            // when the suffix equals the full name is a no-op for callers
+            // that look up by bare name; the dedup below collapses it.
+            let bare = analysis
+                .name
+                .rsplit('.')
+                .next()
+                .unwrap_or(analysis.name.as_str());
+            if bare != analysis.name {
+                bare_to_qualified.entry(bare).or_default().push(idx);
+            }
+        }
+        // Dedup any suffix collisions to keep ambiguous-resolution counts
+        // honest (resolve_dep_to_node treats a single-candidate hit as
+        // unambiguous). Without dedup, indexing both "(*Foo).Write" and
+        // its "Write" suffix could double-count when the dep symbol
+        // happens to match the full qualified name.
+        for candidates in bare_to_qualified.values_mut() {
+            candidates.sort_unstable();
+            candidates.dedup();
         }
 
         let mut edges = HashMap::new();
@@ -1065,6 +1091,48 @@ mod tests {
         assert_eq!(
             write_count, 2,
             "test_order must contain both Write entries; got {ids:?}",
+        );
+    }
+
+    /// str-fuhw.1.1 regression: two Go methods named Write on different
+    /// receivers in the same source file must surface as two distinct
+    /// nodes. The frontend (shatter-go) emits receiver-decorated names
+    /// like "(*FileWriter).Write" and "(*BufferWriter).Write", so the
+    /// qualified node IDs become "<file>::(*FileWriter).Write" and
+    /// "<file>::(*BufferWriter).Write" — distinct keys in the call graph.
+    /// A caller whose `dep.symbol` is the bare "Write" still resolves
+    /// against either candidate because the bare suffix is also indexed
+    /// (resolution disambiguates via source_module when present).
+    #[test]
+    fn call_graph_from_analyses_distinguishes_same_file_receiver_methods() {
+        const FILE: &str = "src/io/writers.go";
+        const FILE_WRITER_WRITE: &str = "(*FileWriter).Write";
+        const BUFFER_WRITER_WRITE: &str = "(*BufferWriter).Write";
+
+        let analyses = vec![
+            make_analysis_in(FILE, FILE_WRITER_WRITE, vec![]),
+            make_analysis_in(FILE, BUFFER_WRITER_WRITE, vec![]),
+        ];
+        let graph = CallGraph::from_analyses(&analyses);
+
+        let qid_file = format!("{FILE}::{FILE_WRITER_WRITE}");
+        let qid_buf = format!("{FILE}::{BUFFER_WRITER_WRITE}");
+        let nodes = graph.nodes();
+        assert!(
+            nodes.contains(qid_file.as_str()),
+            "FileWriter.Write should be present as a distinct node; nodes={nodes:?}",
+        );
+        assert!(
+            nodes.contains(qid_buf.as_str()),
+            "BufferWriter.Write should be present as a distinct node; nodes={nodes:?}",
+        );
+
+        let order = graph.test_order().expect("no cycle");
+        let ids = entry_ids(&order);
+        let write_count = ids.iter().filter(|id| id.ends_with(".Write")).count();
+        assert_eq!(
+            write_count, 2,
+            "test_order must contain both same-file receiver-method Write entries; got {ids:?}",
         );
     }
 

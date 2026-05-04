@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,9 +96,12 @@ func TestRecognizeNetHTTP_ServeHTTPMethod(t *testing.T) {
 
 	hints := RecognizeNetHTTPHandlers(fset, file, info, functions)
 
+	// str-fuhw.1.1: methods now surface with receiver-decorated names
+	// (e.g. "(*myHandler).ServeHTTP"). Match by suffix so the recognizer
+	// fixture stays receiver-agnostic.
 	idx := -1
 	for i, f := range functions {
-		if f.Name == "ServeHTTP" {
+		if f.Name == "ServeHTTP" || strings.HasSuffix(f.Name, ".ServeHTTP") {
 			idx = i
 			break
 		}

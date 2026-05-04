@@ -1762,15 +1762,16 @@ async fn go_method_planner_driven_e2e() {
         .await
         .expect("analyze command transport failed");
 
-    // The Go analyzer emits the bare `fn.Name.Name` for both free functions
-    // and methods (the qualified-name distinction is recovered later via
-    // BuildDiscoveredTarget in the handler's TargetContext builder). Match
-    // by bare name here; method-vs-function discrimination flows through
-    // the planner's TargetContext path on the handler side.
+    // str-fuhw.1.1: the Go analyzer now emits receiver-decorated names for
+    // methods (e.g. "(*Service).Compute") so two methods sharing a bare
+    // name in the same file produce distinct FunctionAnalysis entries.
+    // Free functions still surface as the bare name. Match by bare suffix
+    // so the test stays receiver-agnostic and fails only on a real frontend
+    // gap.
     let analysis = match analyze_resp.result {
         ResponseResult::Analyze { functions } => functions
             .into_iter()
-            .find(|f| f.name == "Compute")
+            .find(|f| f.name == "Compute" || f.name.ends_with(".Compute"))
             .expect("FRONTEND GAP: analyze did not return a `Compute` entry"),
         other => panic!("FRONTEND GAP: expected Analyze response, got {other:?}"),
     };
@@ -1905,7 +1906,9 @@ async fn go_method_planner_driven_via_orchestrator() {
     );
     let file_str = fixture.to_string_lossy().into_owned();
 
-    // Analyze: the Go frontend emits a FunctionAnalysis with name "Compute".
+    // Analyze: the Go frontend emits a FunctionAnalysis whose name is the
+    // receiver-decorated qualified form for methods (str-fuhw.1.1), e.g.
+    // "(*Service).Compute". Match by bare suffix.
     let analyze_resp = frontend
         .send(Command::Analyze {
             file: file_str.clone(),
@@ -1919,7 +1922,7 @@ async fn go_method_planner_driven_via_orchestrator() {
     let analysis = match analyze_resp.result {
         ResponseResult::Analyze { functions } => functions
             .into_iter()
-            .find(|f| f.name == "Compute")
+            .find(|f| f.name == "Compute" || f.name.ends_with(".Compute"))
             .expect("FRONTEND GAP: analyze did not return a `Compute` entry"),
         other => panic!("FRONTEND GAP: expected Analyze response, got {other:?}"),
     };

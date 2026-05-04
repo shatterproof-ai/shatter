@@ -1706,3 +1706,46 @@ func TestAnalyzeFile_ExcludesSyntheticPackageInit(t *testing.T) {
 		t.Errorf("AnalyzeFile dropped PostInit; got names: %s", strings.Join(names, ","))
 	}
 }
+
+// TestAnalyzeFile_DistinguishesSameNameMethodsAcrossReceivers is the
+// str-fuhw.1.1 regression: two methods named Write on different receivers
+// in the same file must surface as two distinct FunctionAnalysis entries
+// with distinct Name values, so scan internals keyed on
+// "<source_file>::<name>" do not collapse them. Before str-fuhw.1.1 the
+// analyzer set Name = fn.Name.Name (bare), so both methods carried Name
+// = "Write" and downstream call-graph and orchestrator maps overwrote
+// one with the other.
+//
+// The fix is approach (a) from the issue: shatter-go emits the
+// receiver-decorated qualified name (e.g. "(*FileWriter).Write") for
+// methods, leaving free functions on the bare name. The qualified form
+// matches what BuildDiscoveredTarget already publishes via
+// DiscoveredTarget.QualifiedName, and matches Go's own method-value
+// notation.
+func TestAnalyzeFile_DistinguishesSameNameMethodsAcrossReceivers(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("duplicate_method_names.go"), "")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+
+	const wantFileWriterWrite = "(*FileWriter).Write"
+	const wantBufferWriterWrite = "(*BufferWriter).Write"
+
+	names := make(map[string]int, len(results))
+	for _, r := range results {
+		names[r.Name]++
+	}
+
+	if names[wantFileWriterWrite] != 1 {
+		t.Errorf("expected exactly one analysis named %q; got names: %v",
+			wantFileWriterWrite, names)
+	}
+	if names[wantBufferWriterWrite] != 1 {
+		t.Errorf("expected exactly one analysis named %q; got names: %v",
+			wantBufferWriterWrite, names)
+	}
+	if names["Write"] != 0 {
+		t.Errorf("methods must not surface as bare %q (str-fuhw.1.1 ambiguity); got names: %v",
+			"Write", names)
+	}
+}

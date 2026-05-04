@@ -287,7 +287,12 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		if isSyntheticPackageInitDecl(fn) {
 			continue
 		}
-		if functionName != "" && fn.Name.Name != functionName {
+		// str-fuhw.1.1: callers may filter by either the bare AST name
+		// ("Compute") or the receiver-decorated qualified name shatter-go
+		// emits in FunctionAnalysis.Name ("(*Service).Compute"). Match
+		// both so analyze/execute round-trips that reuse the analysis
+		// `Name` as their `function` argument resolve correctly.
+		if functionName != "" && fn.Name.Name != functionName && qualifiedNameOf(fn) != functionName {
 			continue
 		}
 		analysis := analyzeFuncWithContext(fset, fn, info, file, fc)
@@ -532,8 +537,18 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
 
+	// str-fuhw.1.1: emit the receiver-decorated qualified name for methods
+	// (e.g. "(*Foo).Write") so two methods named Write on different
+	// receivers in the same file produce distinct FunctionAnalysis.Name
+	// values. Scan internals derive the qualified ID
+	// "<source_file>::<name>" (str-fuhw); without receiver decoration,
+	// same-file same-name methods collapse to one key. Free functions
+	// keep the bare AST name (qualifiedNameOf returns fn.Name.Name when
+	// fn.Recv is nil).
+	qualName := qualifiedNameOf(fn)
+
 	analysis := FunctionAnalysis{
-		Name:         fn.Name.Name,
+		Name:         qualName,
 		Exported:     ast.IsExported(fn.Name.Name),
 		Params:       params,
 		Branches:     branches,
