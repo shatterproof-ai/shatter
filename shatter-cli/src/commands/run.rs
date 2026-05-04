@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -173,7 +173,7 @@ pub(crate) async fn run_run(
         // (str-jeen.17) so the denominator (zero) is on disk for tooling.
         if let Some(dir) = output_dir {
             let manifest = run_manifest::capture(&scan_id, &scope_hash(&scope), &[], Some(&root));
-            write_run_summary_json(dir, &build_run_summary(&scan_id, &manifest, 0, 0, 0))?;
+            write_run_summary_json(dir, &build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]))?;
         }
         return Ok(());
     }
@@ -193,12 +193,8 @@ pub(crate) async fn run_run(
                 .into_owned()
         })
         .collect();
-    let run_manifest = run_manifest::capture(
-        &scan_id,
-        &scope_hash(&scope),
-        &manifest_paths,
-        Some(&root),
-    );
+    let run_manifest =
+        run_manifest::capture(&scan_id, &scope_hash(&scope), &manifest_paths, Some(&root));
     if let Some(dir) = output_dir {
         run_manifest::write_manifest(dir, &run_manifest);
     }
@@ -295,7 +291,10 @@ pub(crate) async fn run_run(
         // zero functions, the source-set denominators must reflect the
         // selected files in the manifest snapshot, not collapse to zero.
         if let Some(dir) = output_dir {
-            write_run_summary_json(dir, &build_run_summary(&scan_id, &run_manifest, 0, 0, 0))?;
+            write_run_summary_json(
+                dir,
+                &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &[]),
+            )?;
         }
         shutdown_all_frontends(frontends).await;
         return Ok(());
@@ -335,7 +334,11 @@ pub(crate) async fn run_run(
             // analyze-only still produces a JSON summary so the
             // selected-source denominator is recorded even without
             // exploration outcomes.
-            write_run_summary_json(dir, &build_run_summary(&scan_id, &run_manifest, 0, 0, 0))?;
+            let spans = registry_spans(&registry, &root);
+            write_run_summary_json(
+                dir,
+                &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &spans),
+            )?;
         }
 
         shutdown_all_frontends(frontends).await;
@@ -487,9 +490,10 @@ pub(crate) async fn run_run(
         // ratio of completed to attempted.
         let attempted = total_functions;
         let failed = attempted.saturating_sub(completed);
+        let spans = registry_spans(&registry, &root);
         write_run_summary_json(
             dir,
-            &build_run_summary(&scan_id, &run_manifest, completed, failed, 0),
+            &build_run_summary(&scan_id, &run_manifest, completed, failed, 0, &spans),
         )?;
     }
 
@@ -611,6 +615,24 @@ pub(crate) struct RunSummary {
     /// skip tracking later is a non-breaking change.
     #[serde(default)]
     pub skipped_functions: usize,
+    /// Sum of per-file line counts for selected source files where no
+    /// exploration target was discovered (str-jeen.43). A file
+    /// contributes its full line count when the registry holds zero
+    /// `FunctionEntry` records pointing at it. Source of truth is the
+    /// run-start manifest snapshot + source-set classification, NOT
+    /// completed-function spans, so the bucket survives runs where
+    /// every attempted target later fails or is skipped.
+    #[serde(default)]
+    pub no_target_file_lines: u64,
+    /// Sum of selected source lines that fall outside any discovered
+    /// function span (str-jeen.43). For files that do contain at least
+    /// one discovered function, this is `line_count - covered`, where
+    /// `covered` is the line count of the union of discovered
+    /// `[start_line, end_line]` spans intersected with `[1, line_count]`.
+    /// Files with zero discovered targets contribute nothing here —
+    /// their lines are already attributed to `no_target_file_lines`.
+    #[serde(default)]
+    pub undiscovered_source_lines: u64,
 }
 
 /// Derive a stable hash of the discovery scope so the manifest's
@@ -629,16 +651,162 @@ pub(crate) fn scope_hash(scope: &RunScope) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// Build a [`RunSummary`] from a captured manifest and the run's
-/// outcome counters. Pure function — easy to unit-test without
-/// spinning up frontends.
+/// Build the `DiscoveredSpan` list passed to [`build_run_summary`]
+/// from the analyzed function registry, using the same path
+/// normalization the run-start manifest used (relative to `root` when
+/// possible). Keeping path normalization in lock-step with
+/// `manifest_paths` is what makes the line-bucket classification
+/// match by manifest path.
+pub(crate) fn registry_spans(
+    registry: &batch_analyze::FunctionRegistry,
+    root: &Path,
+) -> Vec<DiscoveredSpan> {
+    registry
+        .entries()
+        .iter()
+        .map(|e| {
+            let path = e
+                .file_path
+                .strip_prefix(root)
+                .unwrap_or(&e.file_path)
+                .to_string_lossy()
+                .into_owned();
+            DiscoveredSpan {
+                path,
+                start_line: e.start_line,
+                end_line: e.end_line,
+            }
+        })
+        .collect()
+}
+
+/// A discovered function span anchored to a manifest source path.
+///
+/// `path` is matched verbatim against [`SourceFileSnapshot::path`] in
+/// the run manifest, so callers must pre-normalize registry file paths
+/// (typically by stripping the project root prefix the same way the
+/// manifest captured them).
+#[derive(Debug, Clone)]
+pub(crate) struct DiscoveredSpan {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// Two manifest-driven line buckets reported alongside the
+/// `selected_source_lines` denominator (str-jeen.43).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LineBuckets {
+    pub no_target_file_lines: u64,
+    pub undiscovered_source_lines: u64,
+}
+
+/// Compute the `no_target_file_lines` and `undiscovered_source_lines`
+/// buckets from a manifest snapshot and the set of discovered function
+/// spans (str-jeen.43).
+///
+/// The classification is purely manifest-driven: a selected file with
+/// zero matching spans contributes its whole `line_count` to
+/// `no_target_file_lines`; a selected file with at least one matching
+/// span contributes `line_count - covered` to
+/// `undiscovered_source_lines`, where `covered` is the line count of
+/// the union of `[start_line, end_line]` spans clamped to
+/// `[1, line_count]`. Files whose manifest snapshot has no
+/// `line_count` (unreadable at capture time) contribute zero.
+pub(crate) fn compute_line_buckets(
+    manifest: &RunManifest,
+    spans: &[DiscoveredSpan],
+) -> LineBuckets {
+    // Group spans by manifest path.
+    let mut spans_by_path: BTreeMap<&str, Vec<(u32, u32)>> = BTreeMap::new();
+    for s in spans {
+        spans_by_path
+            .entry(s.path.as_str())
+            .or_default()
+            .push((s.start_line, s.end_line));
+    }
+
+    let mut buckets = LineBuckets::default();
+    for snap in &manifest.source_files {
+        let Some(line_count) = snap.line_count else {
+            continue;
+        };
+        let line_count_u64 = u64::from(line_count);
+        match spans_by_path.get(snap.path.as_str()) {
+            None => {
+                // No discovered targets in this file at all — every
+                // selected line is in the "no target file" bucket.
+                buckets.no_target_file_lines =
+                    buckets.no_target_file_lines.saturating_add(line_count_u64);
+            }
+            Some(file_spans) => {
+                let covered = covered_lines(file_spans, line_count);
+                let undiscovered = line_count_u64.saturating_sub(covered);
+                buckets.undiscovered_source_lines = buckets
+                    .undiscovered_source_lines
+                    .saturating_add(undiscovered);
+            }
+        }
+    }
+    buckets
+}
+
+/// Count the lines covered by the union of `spans`, clamped to
+/// `[1, line_count]`. Spans are merged so overlapping ranges aren't
+/// double-counted; degenerate spans (`start > end`, `start == 0`,
+/// `start > line_count`) are skipped rather than treated as errors —
+/// frontends emit a wide range of span shapes and this bucket should
+/// not panic on edge cases.
+fn covered_lines(spans: &[(u32, u32)], line_count: u32) -> u64 {
+    if line_count == 0 {
+        return 0;
+    }
+    let mut clamped: Vec<(u32, u32)> = spans
+        .iter()
+        .filter_map(|&(start, end)| {
+            if start == 0 || start > line_count {
+                return None;
+            }
+            let s = start;
+            let e = end.min(line_count).max(s);
+            Some((s, e))
+        })
+        .collect();
+    clamped.sort_by_key(|&(s, _)| s);
+    let mut total: u64 = 0;
+    let mut cursor: Option<(u32, u32)> = None;
+    for (s, e) in clamped {
+        match cursor {
+            None => cursor = Some((s, e)),
+            Some((cs, ce)) => {
+                if s <= ce.saturating_add(1) {
+                    cursor = Some((cs, ce.max(e)));
+                } else {
+                    total += u64::from(ce - cs + 1);
+                    cursor = Some((s, e));
+                }
+            }
+        }
+    }
+    if let Some((cs, ce)) = cursor {
+        total += u64::from(ce - cs + 1);
+    }
+    total
+}
+
+/// Build a [`RunSummary`] from a captured manifest, the run's outcome
+/// counters, and the discovered function spans used to bucket
+/// no-target / undiscovered source lines (str-jeen.43). Pure function
+/// — easy to unit-test without spinning up frontends.
 pub(crate) fn build_run_summary(
     scan_id: &str,
     manifest: &RunManifest,
     completed: usize,
     failed: usize,
     skipped: usize,
+    spans: &[DiscoveredSpan],
 ) -> RunSummary {
+    let buckets = compute_line_buckets(manifest, spans);
     RunSummary {
         version: RUN_SUMMARY_VERSION,
         scan_id: scan_id.to_string(),
@@ -647,6 +815,8 @@ pub(crate) fn build_run_summary(
         completed_functions: completed,
         failed_functions: failed,
         skipped_functions: skipped,
+        no_target_file_lines: buckets.no_target_file_lines,
+        undiscovered_source_lines: buckets.undiscovered_source_lines,
     }
 }
 
@@ -655,8 +825,12 @@ pub(crate) fn write_run_summary_json(
     output_dir: &Path,
     summary: &RunSummary,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("failed to create output dir '{}': {e}", output_dir.display()))?;
+    std::fs::create_dir_all(output_dir).map_err(|e| {
+        format!(
+            "failed to create output dir '{}': {e}",
+            output_dir.display()
+        )
+    })?;
     let path = output_dir.join(RUN_SUMMARY_FILENAME);
     let json = serde_json::to_string_pretty(summary)
         .map_err(|e| format!("failed to serialize run summary: {e}"))?;
@@ -680,8 +854,9 @@ mod tests {
     //! files the project author has excluded, discovery + language filtering
     //! using the helper produces only the included file set.
     use super::*;
+    use proptest::prelude::*;
     use shatter_core::discovery;
-    use std::fs;
+    use std::{collections::HashMap, fs};
 
     /// Files outside `include`/excluded by `exclude` must not appear in the
     /// discovered set when the project config is loaded by `run`.
@@ -811,17 +986,13 @@ mod tests {
         fs::write(root.join("c.go"), "").expect("write c.go"); // 0 lines
 
         let scope = RunScope::default();
-        let paths = vec![
-            "a.go".to_string(),
-            "b.go".to_string(),
-            "c.go".to_string(),
-        ];
+        let paths = vec!["a.go".to_string(), "b.go".to_string(), "c.go".to_string()];
         let manifest =
             shatter_core::run_manifest::capture("scan-1", &scope_hash(&scope), &paths, Some(root));
 
         // Simulate the worst case: a discovered set of 10 functions but
         // every attempted target failed (completed=0, failed=10).
-        let summary = build_run_summary("scan-1", &manifest, 0, 10, 0);
+        let summary = build_run_summary("scan-1", &manifest, 0, 10, 0, &[]);
 
         // The denominators must equal the manifest source-set totals,
         // not collapse to zero just because nothing completed.
@@ -850,7 +1021,7 @@ mod tests {
             &["only.go".to_string()],
             Some(root),
         );
-        let summary = build_run_summary("scan-rt", &manifest, 1, 0, 0);
+        let summary = build_run_summary("scan-rt", &manifest, 1, 0, 0, &[]);
 
         let out_dir = dir.path().join("out");
         write_run_summary_json(&out_dir, &summary).expect("write summary");
@@ -860,6 +1031,357 @@ mod tests {
         assert_eq!(parsed, summary);
         assert_eq!(parsed.selected_source_files, 1);
         assert_eq!(parsed.selected_source_lines, 2);
+    }
+
+    // -------------------------------------------------------------------
+    // str-jeen.43: no-target / undiscovered line bucket regression tests.
+    //
+    // The honest-denominator story (str-jeen) needs the run JSON to
+    // attribute selected source lines to *why* they aren't covered:
+    //   - selected file with zero discovered targets -> no_target_file_lines
+    //   - line outside any discovered span in a file with targets ->
+    //     undiscovered_source_lines
+    // Source of truth is the run-start manifest snapshot + discovered
+    // function spans, NOT completed-function outcomes.
+    // -------------------------------------------------------------------
+
+    /// A selected file with no matching discovered span contributes its
+    /// whole `line_count` to `no_target_file_lines`. This is the
+    /// "frontend chose not to / could not extract any target from this
+    /// file" case — exactly the case the markdown denominator was
+    /// silently dropping before str-jeen.
+    #[test]
+    fn no_target_file_lines_counts_files_without_any_span() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // Two selected files; only `b.go` has a discovered function.
+        fs::write(root.join("a.go"), "package a\nfunc A() {}\nfunc B() {}\n").expect("write a.go"); // 3 lines, NO discovered targets
+        fs::write(
+            root.join("b.go"),
+            "package b\n\nfunc B() int {\n    return 1\n}\n",
+        )
+        .expect("write b.go"); // 5 lines, one full-span target
+
+        let scope = RunScope::default();
+        let paths = vec!["a.go".to_string(), "b.go".to_string()];
+        let manifest =
+            shatter_core::run_manifest::capture("scan-1", &scope_hash(&scope), &paths, Some(root));
+
+        // Only `b.go` has a discovered span and it covers every line.
+        let spans = vec![DiscoveredSpan {
+            path: "b.go".to_string(),
+            start_line: 1,
+            end_line: 5,
+        }];
+        let summary = build_run_summary("scan-1", &manifest, 1, 0, 0, &spans);
+
+        assert_eq!(
+            summary.no_target_file_lines, 3,
+            "a.go (3 lines) has no discovered target, so all of its lines \
+             must be in no_target_file_lines"
+        );
+        assert_eq!(
+            summary.undiscovered_source_lines, 0,
+            "b.go is fully covered by its discovered span; no gap lines"
+        );
+        // Sanity: the new buckets do not change the denominator.
+        assert_eq!(summary.selected_source_lines, 8);
+    }
+
+    /// A file with discovered spans contributes only its *gap* lines —
+    /// `line_count - covered` — to `undiscovered_source_lines`.
+    /// Overlapping and adjacent spans must be merged so they aren't
+    /// double-counted.
+    #[test]
+    fn undiscovered_source_lines_counts_gap_outside_discovered_spans() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // 10 lines total. Two functions cover lines 2-4 and 6-7
+        // (5 covered lines), leaving 5 lines outside any discovered span.
+        let body: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        fs::write(root.join("only.rs"), &body).expect("write only.rs");
+
+        let scope = RunScope::default();
+        let paths = vec!["only.rs".to_string()];
+        let manifest =
+            shatter_core::run_manifest::capture("scan-1", &scope_hash(&scope), &paths, Some(root));
+
+        let spans = vec![
+            DiscoveredSpan {
+                path: "only.rs".to_string(),
+                start_line: 2,
+                end_line: 4,
+            },
+            DiscoveredSpan {
+                path: "only.rs".to_string(),
+                start_line: 6,
+                end_line: 7,
+            },
+        ];
+        let summary = build_run_summary("scan-1", &manifest, 0, 2, 0, &spans);
+
+        assert_eq!(
+            summary.no_target_file_lines, 0,
+            "only.rs has discovered targets, so it contributes nothing to \
+             no_target_file_lines"
+        );
+        assert_eq!(
+            summary.undiscovered_source_lines, 5,
+            "10-line file with spans 2-4 + 6-7 leaves 5 gap lines (1, 5, 8, 9, 10)"
+        );
+        assert_eq!(summary.selected_source_lines, 10);
+    }
+
+    /// `compute_line_buckets` must merge overlapping / adjacent spans
+    /// rather than double-counting their union. Regression for the
+    /// trivial `sum(end-start+1)` mistake.
+    #[test]
+    fn compute_line_buckets_merges_overlapping_and_adjacent_spans() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        fs::write(root.join("f.rs"), &body).expect("write f.rs");
+
+        let manifest =
+            shatter_core::run_manifest::capture("s", "h", &["f.rs".to_string()], Some(root));
+
+        // Spans 1-3, 3-5 (overlap), 6-7 (adjacent to 3-5 → merge to 1-7),
+        // and a redundant 2-4. Naive sum would say 3+3+2+3=11; the
+        // correct union covers lines 1..=7 (7 lines), gap = 3 (8,9,10).
+        let spans = vec![
+            DiscoveredSpan {
+                path: "f.rs".to_string(),
+                start_line: 1,
+                end_line: 3,
+            },
+            DiscoveredSpan {
+                path: "f.rs".to_string(),
+                start_line: 3,
+                end_line: 5,
+            },
+            DiscoveredSpan {
+                path: "f.rs".to_string(),
+                start_line: 6,
+                end_line: 7,
+            },
+            DiscoveredSpan {
+                path: "f.rs".to_string(),
+                start_line: 2,
+                end_line: 4,
+            },
+        ];
+        let buckets = compute_line_buckets(&manifest, &spans);
+        assert_eq!(buckets.no_target_file_lines, 0);
+        assert_eq!(buckets.undiscovered_source_lines, 3);
+    }
+
+    /// Spans that extend past the file's `line_count` are clamped, and
+    /// degenerate spans (start = 0 or start > line_count) are skipped
+    /// rather than panicking — frontends emit a wide range of span
+    /// shapes and the bucket must be defensive.
+    #[test]
+    fn compute_line_buckets_clamps_and_skips_degenerate_spans() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body: String = (1..=5).map(|i| format!("line{i}\n")).collect();
+        fs::write(root.join("g.rs"), &body).expect("write g.rs");
+
+        let manifest =
+            shatter_core::run_manifest::capture("s", "h", &["g.rs".to_string()], Some(root));
+        let spans = vec![
+            // Clamps to 3..=5 (covers 3 lines).
+            DiscoveredSpan {
+                path: "g.rs".to_string(),
+                start_line: 3,
+                end_line: 99,
+            },
+            // start = 0 is skipped.
+            DiscoveredSpan {
+                path: "g.rs".to_string(),
+                start_line: 0,
+                end_line: 2,
+            },
+            // start > line_count is skipped.
+            DiscoveredSpan {
+                path: "g.rs".to_string(),
+                start_line: 100,
+                end_line: 200,
+            },
+        ];
+        let buckets = compute_line_buckets(&manifest, &spans);
+        // Lines 1 and 2 are the gap.
+        assert_eq!(buckets.undiscovered_source_lines, 2);
+        // g.rs has at least one valid discovered span, so no_target_file_lines = 0.
+        assert_eq!(buckets.no_target_file_lines, 0);
+    }
+
+    /// Spans whose `path` does not match any manifest entry are
+    /// ignored — they cannot magically register the file as having a
+    /// target. This catches path-normalization mismatches between
+    /// discovery and the manifest snapshot.
+    #[test]
+    fn compute_line_buckets_ignores_spans_pointing_outside_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("in.rs"), "a\nb\nc\n").expect("write in.rs"); // 3 lines
+
+        let manifest =
+            shatter_core::run_manifest::capture("s", "h", &["in.rs".to_string()], Some(root));
+        let spans = vec![DiscoveredSpan {
+            // Wrong path — does not match the manifest entry.
+            path: "out.rs".to_string(),
+            start_line: 1,
+            end_line: 3,
+        }];
+        let buckets = compute_line_buckets(&manifest, &spans);
+        assert_eq!(
+            buckets.no_target_file_lines, 3,
+            "in.rs has no matching span, so all 3 lines go to no_target_file_lines"
+        );
+        assert_eq!(buckets.undiscovered_source_lines, 0);
+    }
+
+    /// The real run path builds spans from `FunctionRegistry`, whose
+    /// paths can be absolute even though manifest paths are stored
+    /// relative to the run root. If this normalization drifts, a file
+    /// with discovered functions looks like a no-target file.
+    #[test]
+    fn registry_spans_normalizes_paths_to_manifest_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("create src");
+        let file_path = src_dir.join("a.rs");
+        fs::write(&file_path, "line1\nline2\nline3\nline4\n").expect("write a.rs");
+
+        let entry = batch_analyze::FunctionEntry {
+            file_path: file_path.clone(),
+            name: "a".to_string(),
+            exported: true,
+            params: vec![],
+            return_type: shatter_core::types::TypeInfo::Unknown,
+            dependencies: vec![],
+            crypto_boundaries: vec![],
+            branch_count: 0,
+            start_line: 2,
+            end_line: 3,
+        };
+        let qualified =
+            batch_analyze::FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+        let mut index = HashMap::new();
+        index.insert(qualified, 0);
+        let registry = batch_analyze::FunctionRegistry::from_raw(vec![entry], index);
+
+        let spans = registry_spans(&registry, root);
+        assert_eq!(spans[0].path, "src/a.rs");
+
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-1",
+            "cfg",
+            &["src/a.rs".to_string()],
+            Some(root),
+        );
+        let summary = build_run_summary("scan-1", &manifest, 1, 0, 0, &spans);
+        assert_eq!(summary.no_target_file_lines, 0);
+        assert_eq!(summary.undiscovered_source_lines, 2);
+    }
+
+    proptest! {
+        #[test]
+        fn line_buckets_never_exceed_selected_source_lines(
+            line_count in 0u32..200,
+            raw_spans in proptest::collection::vec((0u32..250, 0u32..250), 0..50),
+        ) {
+            let manifest = RunManifest {
+                version: shatter_core::run_manifest::RUN_MANIFEST_VERSION,
+                scan_id: "prop".to_string(),
+                project_root: None,
+                repo_root: None,
+                cwd: String::new(),
+                git_commit: None,
+                git_dirty: None,
+                scope_hash: "scope".to_string(),
+                source_files: vec![shatter_core::run_manifest::SourceFileSnapshot {
+                    path: "f.rs".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: Some(line_count),
+                }],
+                captured_at_ns: 0,
+            };
+            let spans: Vec<DiscoveredSpan> = raw_spans
+                .into_iter()
+                .map(|(start_line, end_line)| DiscoveredSpan {
+                    path: "f.rs".to_string(),
+                    start_line,
+                    end_line,
+                })
+                .collect();
+
+            let buckets = compute_line_buckets(&manifest, &spans);
+            let attributed = buckets
+                .no_target_file_lines
+                .saturating_add(buckets.undiscovered_source_lines);
+
+            prop_assert!(
+                attributed <= u64::from(line_count),
+                "line buckets must not exceed selected source lines"
+            );
+            if spans.is_empty() {
+                prop_assert_eq!(buckets.no_target_file_lines, u64::from(line_count));
+                prop_assert_eq!(buckets.undiscovered_source_lines, 0);
+            } else {
+                prop_assert_eq!(buckets.no_target_file_lines, 0);
+            }
+        }
+    }
+
+    /// `RunSummary` round-trips the new bucket fields through `run.json`
+    /// — protects the JSON schema additivity contract (str-jeen.43).
+    #[test]
+    fn run_summary_round_trips_line_buckets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "1\n2\n3\n").expect("write a.rs"); // 3 lines, no targets
+        fs::write(root.join("b.rs"), "1\n2\n3\n4\n5\n").expect("write b.rs"); // 5 lines, span 1-2
+
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-rt",
+            "cfg",
+            &["a.rs".to_string(), "b.rs".to_string()],
+            Some(root),
+        );
+        let spans = vec![DiscoveredSpan {
+            path: "b.rs".to_string(),
+            start_line: 1,
+            end_line: 2,
+        }];
+        let summary = build_run_summary("scan-rt", &manifest, 1, 0, 0, &spans);
+        assert_eq!(summary.no_target_file_lines, 3);
+        assert_eq!(summary.undiscovered_source_lines, 3);
+
+        let out_dir = dir.path().join("out");
+        write_run_summary_json(&out_dir, &summary).expect("write summary");
+        let bytes = fs::read(out_dir.join(RUN_SUMMARY_FILENAME)).expect("read summary");
+        let parsed: RunSummary = serde_json::from_slice(&bytes).expect("parse summary");
+        assert_eq!(parsed, summary);
+
+        // Backward-compat: a JSON missing the new fields must still
+        // parse (additive fields use #[serde(default)]).
+        let legacy = serde_json::json!({
+            "version": RUN_SUMMARY_VERSION,
+            "scan_id": "legacy",
+            "selected_source_files": 2,
+            "selected_source_lines": 8,
+            "completed_functions": 0,
+            "failed_functions": 0,
+        });
+        let parsed_legacy: RunSummary =
+            serde_json::from_value(legacy).expect("parse legacy summary");
+        assert_eq!(parsed_legacy.no_target_file_lines, 0);
+        assert_eq!(parsed_legacy.undiscovered_source_lines, 0);
+        assert_eq!(parsed_legacy.skipped_functions, 0);
     }
 
     /// Scope hash is deterministic for the same scope and changes when
