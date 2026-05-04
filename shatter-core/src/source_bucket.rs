@@ -39,6 +39,37 @@
 //! `_test.go` file inside `testdata/` is `FixtureSample`, not
 //! `TestSpec`, because `testdata/` is the more meaningful classification
 //! for that path.
+//!
+//! # Why no shebang detection (str-f3fd)
+//!
+//! The original str-jeen.47 spec listed shebang inspection
+//! (`#!/bin/bash`, `#!/usr/bin/env python`) as a third detection signal
+//! for routing extensionless executables. str-f3fd revisited that and
+//! decided **not** to add shebang detection. The path-only contract
+//! ("never opens the file") is intentional, not a TODO.
+//!
+//! The reasoning: an extensionless executable like `tools/release-cut`
+//! already classifies as [`SourceBucket::Unsupported`] today, because
+//! [`is_supported_extension`] returns `false` for any basename that
+//! doesn't end in one of [`SUPPORTED_EXTENSIONS`], and the
+//! `Unsupported` check sits above `ProductionIsh` in the precedence
+//! order. Reading the file's first line to discover a `#!python` or
+//! `#!bash` shebang would not change the bucket: Shatter has no Python,
+//! Bash, or Ruby frontend, so any script the shebang identifies is
+//! still unanalyzable and still belongs in `Unsupported`. The only
+//! information shebang detection would add is a finer-grained label
+//! ("python script" vs "unknown extensionless blob") that nothing in
+//! the coverage denominator or the markdown source-set summary
+//! consumes.
+//!
+//! Adding a content-read budget to the classifier would also break the
+//! "path-only, no I/O" property the rest of the codebase relies on
+//! (cheap to call, deterministic from the path string, safe to fold
+//! over a file list without touching the filesystem). If a future
+//! frontend covers a language whose source files are conventionally
+//! extensionless and shebang-tagged, revisit this decision then —
+//! introduce the shebang signal alongside the new frontend in the same
+//! change so the I/O cost buys an actual bucket movement.
 
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +135,13 @@ impl SourceBucket {
 /// classify as [`SourceBucket::Unsupported`]. Empty paths classify as
 /// [`SourceBucket::Unsupported`] as well — there is no recognizable
 /// frontend signal in an empty path.
+///
+/// Extensionless executables follow the same rule: a path like
+/// `tools/release-cut` or `bin/deploy` returns [`SourceBucket::Unsupported`]
+/// because its basename ends in no recognized extension. The classifier
+/// does not inspect the file's first line for a shebang (`#!/bin/bash`,
+/// `#!/usr/bin/env python`) — see the module-level "Why no shebang
+/// detection" section for the rationale.
 pub fn classify_path(path: &str) -> SourceBucket {
     let normalized = normalize_path(path);
     let lower = normalized.to_ascii_lowercase();
@@ -529,6 +567,36 @@ mod tests {
             classify_path("tests/integration/run.py"),
             SourceBucket::Unsupported,
         );
+    }
+
+    #[test]
+    fn extensionless_executables_classify_as_unsupported() {
+        // str-f3fd: extensionless interpreted scripts (typically
+        // shebang-tagged: `#!/bin/bash`, `#!/usr/bin/env python`)
+        // classify as `Unsupported` via the supported-extension gate
+        // alone, without the classifier ever reading file contents.
+        // Locking this in as a regression test so a future change that
+        // accidentally promotes extensionless paths to `ProductionIsh`
+        // (e.g. moving the `is_supported_extension` check below the
+        // default) fails loudly.
+        // Avoid basenames that collide with `POLICY_EXCLUDED_DIRS`
+        // (`build`, `dist`, `out`, ...) — those would classify as
+        // `PolicyExcluded` by the directory-name rule, not by the
+        // supported-extension gate, and would mask the property under
+        // test.
+        let extensionless_executable_paths = [
+            "tools/release-cut",
+            "bin/deploy",
+            "scripts/bootstrap",
+            "hooks/pre-commit",
+        ];
+        for path in extensionless_executable_paths {
+            assert_eq!(
+                classify_path(path),
+                SourceBucket::Unsupported,
+                "expected Unsupported for extensionless executable {path}",
+            );
+        }
     }
 
     #[test]
