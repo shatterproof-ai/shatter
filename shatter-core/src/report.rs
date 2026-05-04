@@ -29,7 +29,15 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// Bumped from 2 to 3 in str-jeen.39 with the addition of
 /// `source_set` (per-bucket file/line counts) and
 /// `productionish_source_lines` on the codebase aggregate.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 3;
+/// Bumped from 3 to 4 in str-fuhw.1.2 with the addition of
+/// `qualified_id` to per-function records (`FunctionReport`,
+/// `SkippedFunctionReport`, `FailedFunctionReport`). The new field
+/// exposes the internal `<file>::<bare_name>` qualified ID so
+/// downstream consumers can distinguish duplicate-named functions
+/// across files and receivers without parsing display-oriented fields.
+/// `function_name` continues to carry the bare display name
+/// (str-tzbr contract) for backward compatibility.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -101,6 +109,7 @@ fn split_skipped_into_failed(
             SkipCategory::Error => {
                 failed_out.push(FailedFunctionReport {
                     function_name: display_name.to_string(),
+                    qualified_id: s.function_name.clone(),
                     file_path,
                     reason: s.reason.clone(),
                 });
@@ -108,6 +117,7 @@ fn split_skipped_into_failed(
             SkipCategory::Expected => {
                 skipped_out.push(SkippedFunctionReport {
                     function_name: display_name.to_string(),
+                    qualified_id: s.function_name.clone(),
                     reason: s.reason.clone(),
                     category: "expected".into(),
                 });
@@ -115,6 +125,7 @@ fn split_skipped_into_failed(
             SkipCategory::Unsupported => {
                 skipped_out.push(SkippedFunctionReport {
                     function_name: display_name.to_string(),
+                    qualified_id: s.function_name.clone(),
                     reason: s.reason.clone(),
                     category: "unsupported".into(),
                 });
@@ -184,7 +195,28 @@ pub struct MockUsageReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionReport {
     /// Name of the function.
+    ///
+    /// This is the bare display name (e.g. `processOrder` or
+    /// `(*Server).Handle` for Go receiver methods) — see the
+    /// str-tzbr contract. For a stable identifier that distinguishes
+    /// duplicate-named functions across files, use
+    /// [`Self::qualified_id`].
     pub function_name: String,
+    /// Stable, distinct identifier for this function across the scan
+    /// (str-fuhw.1.2). Format: `"<source_file>::<bare_name>"` when
+    /// the upstream analysis carried a `source_file`, otherwise the
+    /// bare name verbatim (back-compat fallback). This is the same ID
+    /// the call graph emits as `function_id` and the scan
+    /// orchestrator uses internally to key its `analysis_map`,
+    /// `file_map`, and `behavior_maps`. Downstream consumers should
+    /// prefer `qualified_id` over `function_name` whenever they need
+    /// to distinguish duplicate names across files or receivers.
+    ///
+    /// `#[serde(default)]` keeps pre-v4 readers and pre-v4 reports
+    /// (which lack this field) compatible — they decode an empty
+    /// string and code paths can fall back to `function_name`.
+    #[serde(default)]
+    pub qualified_id: String,
     /// Source file path.
     pub file_path: String,
     /// Path-based source-set classification of [`Self::file_path`]
@@ -316,6 +348,11 @@ pub struct CodebaseReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkippedFunctionReport {
     pub function_name: String,
+    /// Stable qualified identifier for the skipped function
+    /// (str-fuhw.1.2). See [`FunctionReport::qualified_id`] for the
+    /// format and back-compat semantics.
+    #[serde(default)]
+    pub qualified_id: String,
     pub reason: String,
     pub category: String,
 }
@@ -416,6 +453,11 @@ fn build_source_set_summary(functions: &[FunctionReport]) -> SourceSetSummary {
 pub struct FailedFunctionReport {
     /// Name of the failed function.
     pub function_name: String,
+    /// Stable qualified identifier for the failed function
+    /// (str-fuhw.1.2). See [`FunctionReport::qualified_id`] for the
+    /// format and back-compat semantics.
+    #[serde(default)]
+    pub qualified_id: String,
     /// Source file, when known. Empty when the orchestrator's file_map
     /// has no entry for this name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -526,6 +568,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     let (_qid_file, display_name) = crate::behavior::split_qualified_id(&result.function_name);
     FunctionReport {
         function_name: display_name.to_string(),
+        qualified_id: result.function_name.clone(),
         file_path: file_path.to_string(),
         source_bucket: classify_path(file_path),
         branch_count: total_branches,
@@ -1676,6 +1719,184 @@ mod tests {
         assert_eq!(report.codebase.dependency_graph[0].callee, "leaf");
     }
 
+    /// str-fuhw.1.2 contract: per-function records must carry a stable,
+    /// distinct `qualified_id` for every duplicate-named function across
+    /// files, while `function_name` continues to carry the bare display
+    /// name. Exercises both completed (`FunctionReport`) and failed
+    /// (`FailedFunctionReport`) paths plus an expected-skip
+    /// (`SkippedFunctionReport`) so all three structs are covered.
+    ///
+    /// The fixture has two functions named `process` in different files
+    /// (mirroring the real-world driver for str-fuhw — duplicate bare
+    /// names that previously collided in the orchestrator's per-name
+    /// maps), one failed function also named `process` in a third
+    /// file, and one expected-skip cache hit.
+    #[test]
+    fn qualified_id_is_stable_and_distinct_for_duplicate_function_names() {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![
+                make_function_result("src/orders.ts::process", 5, 1, 3, 5, vec![]),
+                make_function_result("src/users.ts::process", 5, 1, 3, 5, vec![]),
+            ],
+            test_order: vec![
+                "src/orders.ts::process".into(),
+                "src/users.ts::process".into(),
+            ],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "src/billing.ts::process".to_string(),
+                    reason: "build failed: cannot find module './db'".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Error,
+                },
+                SkippedFunction {
+                    function_name: "src/cache.ts::process".to_string(),
+                    reason: "cache hit: behavior map up-to-date".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Expected,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            "src/orders.ts::process".to_string(),
+            "src/orders.ts".to_string(),
+        );
+        file_map.insert(
+            "src/users.ts::process".to_string(),
+            "src/users.ts".to_string(),
+        );
+        file_map.insert(
+            "src/billing.ts::process".to_string(),
+            "src/billing.ts".to_string(),
+        );
+        file_map.insert(
+            "src/cache.ts::process".to_string(),
+            "src/cache.ts".to_string(),
+        );
+
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        // Both completed functions retain the bare display name on
+        // `function_name` (str-tzbr contract) but expose distinct
+        // qualified IDs.
+        assert_eq!(report.functions.len(), 2);
+        for func in &report.functions {
+            assert_eq!(
+                func.function_name, "process",
+                "function_name must remain the bare display name for back-compat",
+            );
+        }
+        let qualified_ids: Vec<&str> = report
+            .functions
+            .iter()
+            .map(|f| f.qualified_id.as_str())
+            .collect();
+        assert!(qualified_ids.contains(&"src/orders.ts::process"));
+        assert!(qualified_ids.contains(&"src/users.ts::process"));
+        assert_ne!(
+            report.functions[0].qualified_id, report.functions[1].qualified_id,
+            "duplicate-named functions must have distinct qualified_id",
+        );
+
+        // Failed (Error) entry routes to `failed[]` and carries
+        // qualified_id even when display name collides.
+        assert_eq!(report.codebase.failed.len(), 1);
+        let failed = &report.codebase.failed[0];
+        assert_eq!(failed.function_name, "process");
+        assert_eq!(failed.qualified_id, "src/billing.ts::process");
+
+        // Expected-skip entry routes to `skipped_functions[]` and also
+        // carries qualified_id.
+        assert_eq!(report.codebase.skipped_functions.len(), 1);
+        let skipped = &report.codebase.skipped_functions[0];
+        assert_eq!(skipped.function_name, "process");
+        assert_eq!(skipped.qualified_id, "src/cache.ts::process");
+        assert_eq!(skipped.category, "expected");
+
+        // Stability: regenerating the report from the same inputs
+        // produces byte-identical qualified_id values (no hashing,
+        // no run-dependent suffixes).
+        let report2 = generate_report(&parallel_result, &file_map, None);
+        assert_eq!(report.functions, report2.functions);
+        assert_eq!(report.codebase.failed, report2.codebase.failed);
+        assert_eq!(
+            report.codebase.skipped_functions,
+            report2.codebase.skipped_functions,
+        );
+
+        // Cross-collection distinctness: qualified_id values across
+        // completed, failed, and skipped lists are all distinct, even
+        // though every record shares `function_name == "process"`.
+        let mut all_qids: Vec<&str> = Vec::new();
+        all_qids.extend(report.functions.iter().map(|f| f.qualified_id.as_str()));
+        all_qids.extend(report.codebase.failed.iter().map(|f| f.qualified_id.as_str()));
+        all_qids.extend(
+            report
+                .codebase
+                .skipped_functions
+                .iter()
+                .map(|s| s.qualified_id.as_str()),
+        );
+        let unique_count = all_qids.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(unique_count, all_qids.len(), "qualified_ids: {all_qids:?}");
+    }
+
+    /// str-fuhw.1.2 back-compat: pre-v4 scan reports do not carry
+    /// `qualified_id`. A current-binary deserializer must accept those
+    /// reports without error and surface an empty `qualified_id` so
+    /// consumers can fall back to `function_name` (the prior contract).
+    #[test]
+    fn pre_v4_report_without_qualified_id_deserializes_with_empty_default() {
+        let pre_v4_json = r#"{
+            "version": 3,
+            "functions": [{
+                "function_name": "process",
+                "file_path": "src/orders.ts",
+                "source_bucket": "production_ish",
+                "branch_count": 0,
+                "branches_covered": 0,
+                "coverage_pct": 0.0,
+                "discovered_inputs": [],
+                "behavior_clusters": [],
+                "constraint_stats": { "total_constraints": 0, "solver_guided_inputs": 0 },
+                "iterations": 0,
+                "lines_covered": 0,
+                "total_lines": 0,
+                "mocks_used": []
+            }],
+            "codebase": {
+                "attempted_functions": 1,
+                "completed_functions": 1,
+                "failed_functions": 0,
+                "skipped_functions_count": 0,
+                "unsupported_functions": 0,
+                "total_discovered_functions": 1,
+                "total_branches": 0,
+                "overall_coverage": 0.0,
+                "skipped_functions": [{
+                    "function_name": "old_skip",
+                    "reason": "cache hit",
+                    "category": "expected"
+                }],
+                "dependency_graph": []
+            },
+            "test_order": ["process"]
+        }"#;
+        let parsed: ScanReport =
+            serde_json::from_str(pre_v4_json).expect("pre-v4 report must still deserialize");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].function_name, "process");
+        assert!(
+            parsed.functions[0].qualified_id.is_empty(),
+            "missing qualified_id must default to empty for back-compat",
+        );
+        assert_eq!(parsed.codebase.skipped_functions.len(), 1);
+        assert!(parsed.codebase.skipped_functions[0].qualified_id.is_empty());
+    }
+
     /// Sanity-check: print a sample v2 report JSON for documentation
     /// purposes. Run with `cargo test -p shatter-core dump_v2_sample
     /// -- --nocapture`. Marked `#[ignore]` so normal CI doesn't print it.
@@ -2155,8 +2376,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn fr(file: &str, bucket: SourceBucket, total_lines: u32) -> FunctionReport {
+        let function_name = format!("fn_in_{file}");
         FunctionReport {
-            function_name: format!("fn_in_{file}"),
+            qualified_id: format!("{file}::{function_name}"),
+            function_name,
             file_path: file.to_string(),
             source_bucket: bucket,
             branch_count: 0,
@@ -2349,6 +2572,7 @@ mod tests {
             codebase: CodebaseReport {
                 skipped_functions: vec![SkippedFunctionReport {
                     function_name: "slow".to_string(),
+                    qualified_id: "src/slow.ts::slow".to_string(),
                     reason: "timed out after 30s".to_string(),
                     category: "error".to_string(),
                 }],

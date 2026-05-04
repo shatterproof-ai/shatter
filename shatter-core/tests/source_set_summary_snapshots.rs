@@ -84,6 +84,7 @@ fn make_function_report(
 ) -> FunctionReport {
     FunctionReport {
         function_name: name.to_string(),
+        qualified_id: format!("{file_path}::{name}"),
         file_path: file_path.to_string(),
         source_bucket: bucket,
         branch_count: 0,
