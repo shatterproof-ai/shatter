@@ -413,8 +413,10 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
                 render_source_block(&f.file_path, project_root, start_line, end_line, &covered)
             });
 
+            let function_display_name = report_display_name(&f.display_name, &f.function_name);
+
             ScanFnView {
-                fn_name: html_escape(&f.function_name),
+                fn_name: html_escape(function_display_name),
                 file_path: html_escape(&f.file_path),
                 paths_count: f.branches_covered,
                 cov_bar_html: render_cov_bar(f.coverage_pct),
@@ -432,9 +434,13 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
         .codebase
         .skipped_functions
         .iter()
-        .map(|s| SkippedView {
-            fn_name: html_escape(&s.function_name),
-            reason: html_escape(&s.reason),
+        .map(|s| {
+            let function_display_name = report_display_name(&s.display_name, &s.function_name);
+
+            SkippedView {
+                fn_name: html_escape(function_display_name),
+                reason: html_escape(&s.reason),
+            }
         })
         .collect();
 
@@ -448,4 +454,12 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
     };
 
     tmpl.render().expect("ScanReportTemplate rendering failed")
+}
+
+fn report_display_name<'a>(display_name: &'a str, function_name: &'a str) -> &'a str {
+    if display_name.is_empty() {
+        function_name
+    } else {
+        display_name
+    }
 }

@@ -31,8 +31,12 @@ pub enum BatchStateError {
 pub struct BatchSummary {
     /// Batch index (e.g. 0, 1, 2).
     pub batch_index: usize,
-    /// Functions explored in this batch.
+    /// Qualified function IDs explored in this batch.
     pub functions_explored: Vec<String>,
+    /// Human-facing function names corresponding 1:1 with
+    /// [`Self::functions_explored`].
+    #[serde(default)]
+    pub functions_explored_display_names: Vec<String>,
     /// Aggregated coverage metrics for this batch.
     pub metrics: CoverageMetrics,
     /// Number of functions skipped in this batch.
@@ -49,6 +53,14 @@ impl BatchSummary {
             .iter()
             .map(|fr| fr.function_name.clone())
             .collect();
+        let functions_explored_display_names: Vec<String> = result
+            .function_results
+            .iter()
+            .map(|fr| {
+                let (_, display_name) = crate::behavior::split_qualified_id(&fr.function_name);
+                display_name.to_string()
+            })
+            .collect();
 
         let mut metrics = CoverageMetrics::default();
         for fr in &result.function_results {
@@ -63,6 +75,7 @@ impl BatchSummary {
         BatchSummary {
             batch_index,
             functions_explored,
+            functions_explored_display_names,
             metrics,
             skipped_count: result.skipped.len(),
             timestamp,
@@ -219,6 +232,13 @@ mod tests {
         BatchSummary {
             batch_index: index,
             functions_explored: functions.iter().map(|s| s.to_string()).collect(),
+            functions_explored_display_names: functions
+                .iter()
+                .map(|s| {
+                    let (_, display_name) = crate::behavior::split_qualified_id(s);
+                    display_name.to_string()
+                })
+                .collect(),
             metrics: CoverageMetrics {
                 total_branches: branches,
                 z3_solved: z3,

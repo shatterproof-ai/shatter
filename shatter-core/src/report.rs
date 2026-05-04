@@ -21,23 +21,13 @@ use crate::source_bucket::{SourceBucket, classify_path};
 /// report. Functions with more clusters show a "... and N more" summary line.
 const MAX_DISPLAY_CLUSTERS: usize = 5;
 
-/// JSON schema version emitted in [`ScanReport::version`]. Bumped from 1 to
-/// 2 in str-jeen.46 when the codebase aggregate gained
-/// `attempted_functions`, `completed_functions`, `failed_functions`,
-/// `skipped_functions_count`, `unsupported_functions`,
-/// `total_discovered_functions`, and the structured `failed` array.
-/// Bumped from 2 to 3 in str-jeen.39 with the addition of
-/// `source_set` (per-bucket file/line counts) and
-/// `productionish_source_lines` on the codebase aggregate.
-/// Bumped from 3 to 4 in str-fuhw.1.2 with the addition of
-/// `qualified_id` to per-function records (`FunctionReport`,
-/// `SkippedFunctionReport`, `FailedFunctionReport`). The new field
-/// exposes the internal `<file>::<bare_name>` qualified ID so
-/// downstream consumers can distinguish duplicate-named functions
-/// across files and receivers without parsing display-oriented fields.
-/// `function_name` continues to carry the bare display name
-/// (str-tzbr contract) for backward compatibility.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 4;
+/// JSON schema version emitted in [`ScanReport::version`].
+///
+/// v4 added `qualified_id` to per-function records. v5 adds explicit
+/// `display_name` companions plus qualified/display variants for test-order,
+/// mock usage, and dependency graph fields so consumers no longer infer
+/// whether a field is identity-bearing or human-facing.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 5;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -109,6 +99,7 @@ fn split_skipped_into_failed(
             SkipCategory::Error => {
                 failed_out.push(FailedFunctionReport {
                     function_name: display_name.to_string(),
+                    display_name: display_name.to_string(),
                     qualified_id: s.function_name.clone(),
                     file_path,
                     reason: s.reason.clone(),
@@ -117,6 +108,7 @@ fn split_skipped_into_failed(
             SkipCategory::Expected => {
                 skipped_out.push(SkippedFunctionReport {
                     function_name: display_name.to_string(),
+                    display_name: display_name.to_string(),
                     qualified_id: s.function_name.clone(),
                     reason: s.reason.clone(),
                     category: "expected".into(),
@@ -125,6 +117,7 @@ fn split_skipped_into_failed(
             SkipCategory::Unsupported => {
                 skipped_out.push(SkippedFunctionReport {
                     function_name: display_name.to_string(),
+                    display_name: display_name.to_string(),
                     qualified_id: s.function_name.clone(),
                     reason: s.reason.clone(),
                     category: "unsupported".into(),
@@ -177,8 +170,17 @@ pub struct BehaviorClusterSummary {
 /// Mock usage details for a single mocked dependency in the scan report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MockUsageReport {
-    /// Symbol name of the mocked dependency.
+    /// Legacy symbol name of the mocked dependency.
+    ///
+    /// This remains the human-facing display name for compatibility. Use
+    /// [`Self::qualified_id`] when a stable identity is needed.
     pub name: String,
+    /// Explicit human-facing display name.
+    #[serde(default)]
+    pub display_name: String,
+    /// Stable qualified identifier for the mocked dependency.
+    #[serde(default)]
+    pub qualified_id: String,
     /// How the mock was sourced: "behavior_map", "type_stub", or "stratum_excluded".
     pub source: String,
     /// Fraction of the callee's behaviors exercised by the caller (0.0-1.0).
@@ -202,6 +204,13 @@ pub struct FunctionReport {
     /// duplicate-named functions across files, use
     /// [`Self::qualified_id`].
     pub function_name: String,
+    /// Explicit human-facing display name.
+    ///
+    /// This duplicates [`Self::function_name`] for v5+ reports so new
+    /// consumers can use a semantically named field while old consumers keep
+    /// reading `function_name` unchanged.
+    #[serde(default)]
+    pub display_name: String,
     /// Stable, distinct identifier for this function across the scan
     /// (str-fuhw.1.2). Format: `"<source_file>::<bare_name>"` when
     /// the upstream analysis carried a `source_file`, otherwise the
@@ -261,8 +270,22 @@ pub struct FunctionReport {
 /// A dependency edge in the codebase-level summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DependencyEdge {
+    /// Legacy caller field. Preserved as the same identifier emitted before
+    /// v5; consumers that need explicit semantics should use
+    /// `caller_qualified_id` or `caller_display_name`.
     pub caller: String,
+    #[serde(default)]
+    pub caller_display_name: String,
+    #[serde(default)]
+    pub caller_qualified_id: String,
+    /// Legacy callee field. Preserved as the same identifier emitted before
+    /// v5; consumers that need explicit semantics should use
+    /// `callee_qualified_id` or `callee_display_name`.
     pub callee: String,
+    #[serde(default)]
+    pub callee_display_name: String,
+    #[serde(default)]
+    pub callee_qualified_id: String,
 }
 
 /// Codebase-level aggregate statistics.
@@ -348,6 +371,10 @@ pub struct CodebaseReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkippedFunctionReport {
     pub function_name: String,
+    /// Explicit human-facing display name. Duplicates `function_name` for v5+
+    /// compatibility and defaults empty for pre-v5 reports.
+    #[serde(default)]
+    pub display_name: String,
     /// Stable qualified identifier for the skipped function
     /// (str-fuhw.1.2). See [`FunctionReport::qualified_id`] for the
     /// format and back-compat semantics.
@@ -453,6 +480,10 @@ fn build_source_set_summary(functions: &[FunctionReport]) -> SourceSetSummary {
 pub struct FailedFunctionReport {
     /// Name of the failed function.
     pub function_name: String,
+    /// Explicit human-facing display name. Duplicates `function_name` for v5+
+    /// compatibility and defaults empty for pre-v5 reports.
+    #[serde(default)]
+    pub display_name: String,
     /// Stable qualified identifier for the failed function
     /// (str-fuhw.1.2). See [`FunctionReport::qualified_id`] for the
     /// format and back-compat semantics.
@@ -496,6 +527,13 @@ pub struct ScanReport {
     pub codebase: CodebaseReport,
     /// Test order used during the scan.
     pub test_order: Vec<String>,
+    /// Human-facing display names corresponding 1:1 with [`Self::test_order`].
+    ///
+    /// `test_order` is preserved unchanged for compatibility and may contain
+    /// qualified IDs. This field lets renderers display the order without
+    /// parsing identity strings.
+    #[serde(default)]
+    pub test_order_display_names: Vec<String>,
     /// Cumulative stats across all batches (present only in batch mode).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cumulative: Option<CumulativeReport>,
@@ -568,6 +606,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     let (_qid_file, display_name) = crate::behavior::split_qualified_id(&result.function_name);
     FunctionReport {
         function_name: display_name.to_string(),
+        display_name: display_name.to_string(),
         qualified_id: result.function_name.clone(),
         file_path: file_path.to_string(),
         source_bucket: classify_path(file_path),
@@ -611,8 +650,11 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
                     }
                     MockSource::TypeAwareStub | MockSource::StratumExcluded => (None, None),
                 };
+                let (_, mock_display_name) = crate::behavior::split_qualified_id(&m.name);
                 MockUsageReport {
-                    name: m.name.clone(),
+                    name: mock_display_name.to_string(),
+                    display_name: mock_display_name.to_string(),
+                    qualified_id: m.name.clone(),
                     source: match m.source {
                         MockSource::CachedBehaviorMap => "behavior_map".to_string(),
                         MockSource::TypeAwareStub => "type_stub".to_string(),
@@ -631,14 +673,30 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
 fn build_dependency_edges(function_results: &[FunctionResult]) -> Vec<DependencyEdge> {
     let mut edges = Vec::new();
     for result in function_results {
+        let (_, caller_display_name) = crate::behavior::split_qualified_id(&result.function_name);
         for mock in &result.mocks_used {
+            let (_, callee_display_name) = crate::behavior::split_qualified_id(&mock.name);
             edges.push(DependencyEdge {
                 caller: result.function_name.clone(),
+                caller_display_name: caller_display_name.to_string(),
+                caller_qualified_id: result.function_name.clone(),
                 callee: mock.name.clone(),
+                callee_display_name: callee_display_name.to_string(),
+                callee_qualified_id: mock.name.clone(),
             });
         }
     }
     edges
+}
+
+fn display_names_for_order(test_order: &[String]) -> Vec<String> {
+    test_order
+        .iter()
+        .map(|name| {
+            let (_, display_name) = crate::behavior::split_qualified_id(name);
+            display_name.to_string()
+        })
+        .collect()
 }
 
 /// Build a [`CumulativeReport`] from batch state.
@@ -711,6 +769,7 @@ pub fn generate_report(
             dependency_graph,
         },
         test_order: result.test_order.clone(),
+        test_order_display_names: display_names_for_order(&result.test_order),
         cumulative,
     }
 }
@@ -771,6 +830,7 @@ pub fn generate_report_from_scan(
             dependency_graph,
         },
         test_order: result.test_order.clone(),
+        test_order_display_names: display_names_for_order(&result.test_order),
         cumulative: None,
     }
 }
@@ -1365,6 +1425,15 @@ pub struct ProgressEvent {
     pub status: Option<String>,
     /// Name of the function currently being processed.
     pub function: String,
+    /// Stable qualified identifier for the function, when the producer has
+    /// one. Omitted for legacy/explore progress events that only know a
+    /// display target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_id: Option<String>,
+    /// Human-facing display name for the function, when the producer has a
+    /// qualified ID to split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// 1-based index of the current function.
     pub current: usize,
     /// Total number of functions to process.
@@ -1397,6 +1466,8 @@ impl ProgressEvent {
             event_type: "progress".to_string(),
             status: None,
             function: function.to_string(),
+            qualified_id: None,
+            display_name: None,
             current,
             total,
             elapsed_ms,
@@ -1420,6 +1491,27 @@ impl ProgressEvent {
         Self {
             status: Some(status.into()),
             ..Self::new(function, current, total, elapsed_ms)
+        }
+    }
+
+    /// Create a progress event from an internal qualified function ID.
+    ///
+    /// The legacy `function` field remains the same identifier existing scan
+    /// progress events emitted. New consumers can read `qualified_id` for
+    /// identity and `display_name` for UI text.
+    #[must_use]
+    pub fn with_qualified_status(
+        qualified_id: &str,
+        current: usize,
+        total: usize,
+        elapsed_ms: u64,
+        status: impl Into<String>,
+    ) -> Self {
+        let (_, display_name) = crate::behavior::split_qualified_id(qualified_id);
+        Self {
+            qualified_id: Some(qualified_id.to_string()),
+            display_name: Some(display_name.to_string()),
+            ..Self::with_status(qualified_id, current, total, elapsed_ms, status)
         }
     }
 
@@ -1702,6 +1794,8 @@ mod tests {
         assert_eq!(caller.file_path, "src/app.ts");
         assert_eq!(caller.mocks_used.len(), 1);
         assert_eq!(caller.mocks_used[0].name, "leaf");
+        assert_eq!(caller.mocks_used[0].display_name, "leaf");
+        assert_eq!(caller.mocks_used[0].qualified_id, "leaf");
         assert_eq!(caller.mocks_used[0].source, "behavior_map");
         // No behavior_coverage in make_function_result → fallback to 0.0/0
         assert_eq!(caller.mocks_used[0].mock_coverage_pct, Some(0.0));
@@ -1736,7 +1830,14 @@ mod tests {
         let parallel_result = ParallelScanResult {
             function_results: vec![
                 make_function_result("src/orders.ts::process", 5, 1, 3, 5, vec![]),
-                make_function_result("src/users.ts::process", 5, 1, 3, 5, vec![]),
+                make_function_result(
+                    "src/users.ts::process",
+                    5,
+                    1,
+                    3,
+                    5,
+                    vec!["src/orders.ts::process".to_string()],
+                ),
             ],
             test_order: vec![
                 "src/orders.ts::process".into(),
@@ -1788,6 +1889,10 @@ mod tests {
                 func.function_name, "process",
                 "function_name must remain the bare display name for back-compat",
             );
+            assert_eq!(
+                func.display_name, "process",
+                "display_name must make the human-facing name explicit",
+            );
         }
         let qualified_ids: Vec<&str> = report
             .functions
@@ -1806,6 +1911,7 @@ mod tests {
         assert_eq!(report.codebase.failed.len(), 1);
         let failed = &report.codebase.failed[0];
         assert_eq!(failed.function_name, "process");
+        assert_eq!(failed.display_name, "process");
         assert_eq!(failed.qualified_id, "src/billing.ts::process");
 
         // Expected-skip entry routes to `skipped_functions[]` and also
@@ -1813,8 +1919,46 @@ mod tests {
         assert_eq!(report.codebase.skipped_functions.len(), 1);
         let skipped = &report.codebase.skipped_functions[0];
         assert_eq!(skipped.function_name, "process");
+        assert_eq!(skipped.display_name, "process");
         assert_eq!(skipped.qualified_id, "src/cache.ts::process");
         assert_eq!(skipped.category, "expected");
+
+        // Test order and dependency edges keep their legacy fields while
+        // adding explicit display/qualified variants so consumers no longer
+        // have to infer field semantics.
+        assert_eq!(
+            report.test_order,
+            vec!["src/orders.ts::process", "src/users.ts::process"],
+        );
+        assert_eq!(report.test_order_display_names, vec!["process", "process"]);
+        assert_eq!(report.codebase.dependency_graph.len(), 1);
+        let edge = &report.codebase.dependency_graph[0];
+        assert_eq!(edge.caller, "src/users.ts::process");
+        assert_eq!(edge.caller_display_name, "process");
+        assert_eq!(edge.caller_qualified_id, "src/users.ts::process");
+        assert_eq!(edge.callee, "src/orders.ts::process");
+        assert_eq!(edge.callee_display_name, "process");
+        assert_eq!(edge.callee_qualified_id, "src/orders.ts::process");
+        let user_report = report
+            .functions
+            .iter()
+            .find(|func| func.qualified_id == "src/users.ts::process")
+            .expect("users report");
+        assert_eq!(user_report.mocks_used.len(), 1);
+        let mock = &user_report.mocks_used[0];
+        assert_eq!(mock.name, "process");
+        assert_eq!(mock.display_name, "process");
+        assert_eq!(mock.qualified_id, "src/orders.ts::process");
+
+        let html = generate_html_scan_report(&report, None);
+        assert!(
+            html.contains(">process &nbsp;"),
+            "duplicate-named functions should render display labels: {html}",
+        );
+        assert!(
+            !html.contains(">src/users.ts::process &nbsp;"),
+            "HTML function headings must not expose qualified IDs as display text: {html}",
+        );
 
         // Stability: regenerating the report from the same inputs
         // produces byte-identical qualified_id values (no hashing,
@@ -1832,7 +1976,13 @@ mod tests {
         // though every record shares `function_name == "process"`.
         let mut all_qids: Vec<&str> = Vec::new();
         all_qids.extend(report.functions.iter().map(|f| f.qualified_id.as_str()));
-        all_qids.extend(report.codebase.failed.iter().map(|f| f.qualified_id.as_str()));
+        all_qids.extend(
+            report
+                .codebase
+                .failed
+                .iter()
+                .map(|f| f.qualified_id.as_str()),
+        );
         all_qids.extend(
             report
                 .codebase
@@ -1840,7 +1990,10 @@ mod tests {
                 .iter()
                 .map(|s| s.qualified_id.as_str()),
         );
-        let unique_count = all_qids.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_count = all_qids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         assert_eq!(unique_count, all_qids.len(), "qualified_ids: {all_qids:?}");
     }
 
@@ -1893,8 +2046,13 @@ mod tests {
             parsed.functions[0].qualified_id.is_empty(),
             "missing qualified_id must default to empty for back-compat",
         );
+        assert!(
+            parsed.functions[0].display_name.is_empty(),
+            "missing display_name must default to empty for back-compat",
+        );
         assert_eq!(parsed.codebase.skipped_functions.len(), 1);
         assert!(parsed.codebase.skipped_functions[0].qualified_id.is_empty());
+        assert!(parsed.codebase.skipped_functions[0].display_name.is_empty());
     }
 
     /// Sanity-check: print a sample v2 report JSON for documentation
@@ -2216,6 +2374,7 @@ mod tests {
             functions: vec![],
             codebase: CodebaseReport::default(),
             test_order: vec![],
+            test_order_display_names: vec![],
             cumulative: None,
         };
 
@@ -2379,6 +2538,7 @@ mod tests {
         let function_name = format!("fn_in_{file}");
         FunctionReport {
             qualified_id: format!("{file}::{function_name}"),
+            display_name: function_name.clone(),
             function_name,
             file_path: file.to_string(),
             source_bucket: bucket,
@@ -2536,6 +2696,7 @@ mod tests {
             functions: vec![],
             codebase: CodebaseReport::default(),
             test_order: vec![],
+            test_order_display_names: vec![],
             cumulative: None,
         };
 
@@ -2572,6 +2733,7 @@ mod tests {
             codebase: CodebaseReport {
                 skipped_functions: vec![SkippedFunctionReport {
                     function_name: "slow".to_string(),
+                    display_name: "slow".to_string(),
                     qualified_id: "src/slow.ts::slow".to_string(),
                     reason: "timed out after 30s".to_string(),
                     category: "error".to_string(),
@@ -2579,6 +2741,7 @@ mod tests {
                 ..Default::default()
             },
             test_order: vec![],
+            test_order_display_names: vec![],
             cumulative: None,
         };
 
@@ -2760,6 +2923,25 @@ mod tests {
         let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.status.as_deref(), Some("skipped"));
         assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn progress_event_with_qualified_function_names_exposes_display_and_identity() {
+        let event =
+            ProgressEvent::with_qualified_status("src/users.ts::process", 2, 4, 1500, "completed");
+        let json = event.to_json().expect("serialize");
+
+        assert_eq!(event.function, "src/users.ts::process");
+        assert_eq!(event.qualified_id.as_deref(), Some("src/users.ts::process"));
+        assert_eq!(event.display_name.as_deref(), Some("process"));
+        assert!(
+            json.contains("\"qualified_id\":\"src/users.ts::process\""),
+            "missing qualified_id: {json}",
+        );
+        assert!(
+            json.contains("\"display_name\":\"process\""),
+            "missing display_name: {json}",
+        );
     }
 
     #[test]
@@ -2998,6 +3180,8 @@ mod tests {
         assert_eq!(report.mocks_used.len(), 1);
         let mock = &report.mocks_used[0];
         assert_eq!(mock.name, "dep");
+        assert_eq!(mock.display_name, "dep");
+        assert_eq!(mock.qualified_id, "dep");
         assert_eq!(mock.source, "behavior_map");
         assert!((mock.mock_coverage_pct.unwrap() - 0.4).abs() < f64::EPSILON);
         assert_eq!(mock.mock_execution_count, Some(5));
@@ -3018,6 +3202,8 @@ mod tests {
         assert_eq!(report.mocks_used.len(), 1);
         let mock = &report.mocks_used[0];
         assert_eq!(mock.name, "stub_dep");
+        assert_eq!(mock.display_name, "stub_dep");
+        assert_eq!(mock.qualified_id, "stub_dep");
         assert_eq!(mock.source, "type_stub");
         assert!(mock.mock_coverage_pct.is_none());
         assert!(mock.mock_execution_count.is_none());
@@ -3037,6 +3223,9 @@ mod tests {
 
         assert_eq!(report.mocks_used.len(), 1);
         let mock = &report.mocks_used[0];
+        assert_eq!(mock.name, "excluded_dep");
+        assert_eq!(mock.display_name, "excluded_dep");
+        assert_eq!(mock.qualified_id, "excluded_dep");
         assert_eq!(mock.source, "stratum_excluded");
         assert!(mock.mock_coverage_pct.is_none());
         assert!(mock.mock_execution_count.is_none());
@@ -3088,6 +3277,8 @@ mod tests {
     fn mock_usage_report_serialization_roundtrip() {
         let report = MockUsageReport {
             name: "dep".to_string(),
+            display_name: "dep".to_string(),
+            qualified_id: "dep".to_string(),
             source: "behavior_map".to_string(),
             mock_coverage_pct: Some(0.75),
             mock_execution_count: Some(12),
@@ -3101,6 +3292,8 @@ mod tests {
     fn mock_usage_report_none_fields_omitted_in_json() {
         let report = MockUsageReport {
             name: "dep".to_string(),
+            display_name: "dep".to_string(),
+            qualified_id: "dep".to_string(),
             source: "type_stub".to_string(),
             mock_coverage_pct: None,
             mock_execution_count: None,
@@ -3307,6 +3500,8 @@ mod proptests {
             })
             .prop_map(
                 |(name, source, mock_coverage_pct, mock_execution_count)| MockUsageReport {
+                    display_name: name.clone(),
+                    qualified_id: name.clone(),
                     name,
                     source,
                     mock_coverage_pct,
@@ -3322,6 +3517,8 @@ mod proptests {
             let deserialized: MockUsageReport = serde_json::from_str(&json).expect("deserialize");
             // Coverage pct needs approximate comparison for floats
             prop_assert_eq!(&deserialized.name, &report.name);
+            prop_assert_eq!(&deserialized.display_name, &report.display_name);
+            prop_assert_eq!(&deserialized.qualified_id, &report.qualified_id);
             prop_assert_eq!(&deserialized.source, &report.source);
             prop_assert_eq!(deserialized.mock_execution_count, report.mock_execution_count);
             match (deserialized.mock_coverage_pct, report.mock_coverage_pct) {
@@ -3338,6 +3535,8 @@ mod proptests {
         ) {
             let report = MockUsageReport {
                 name: "dep".to_string(),
+                display_name: "dep".to_string(),
+                qualified_id: "dep".to_string(),
                 source: "behavior_map".to_string(),
                 mock_coverage_pct: Some(coverage_pct),
                 mock_execution_count: Some(exec_count),
@@ -3354,6 +3553,8 @@ mod proptests {
         ) {
             let report = MockUsageReport {
                 name: "dep".to_string(),
+                display_name: "dep".to_string(),
+                qualified_id: "dep".to_string(),
                 source,
                 mock_coverage_pct: None,
                 mock_execution_count: None,
