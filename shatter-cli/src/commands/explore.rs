@@ -4820,6 +4820,8 @@ pub(crate) async fn run_explore(
                     mocks: explore_config.mocks.clone(),
                     mock_params: explore_config.mock_params.clone(),
                     solver_timeout_ms: solver_timeout.map(|s| s * 1000),
+                    seed: None,
+                    solver_offload: true,
                     timeout_explore: timeout_explore.map(Duration::from_secs_f64),
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),

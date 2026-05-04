@@ -110,6 +110,8 @@ pub(crate) async fn run_observe(
             mocks: vec![],
             mock_params: vec![],
             solver_timeout_ms: None,
+            seed: None,
+            solver_offload: true,
             timeout_explore: None,
             branch_profile: None,
             meta_config: shatter_core::strategy::MetaConfig::default(),
@@ -192,6 +194,9 @@ pub(crate) async fn run_observe(
             Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
                 Err(shatter_core::explorer::ExploreError::Frontend(fe))
             }
+            Err(shatter_core::orchestrator::ExploreError::SolverFeedback(message)) => Err(
+                shatter_core::explorer::ExploreError::UnexpectedResponse(message),
+            ),
         }
     } else {
         let explore_config = ExploreConfig {

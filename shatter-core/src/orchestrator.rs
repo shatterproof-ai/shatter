@@ -19,8 +19,10 @@ use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use tokio::task::JoinHandle;
 
 use std::collections::HashMap;
 
@@ -38,7 +40,9 @@ use crate::mcdc::McdcTable;
 use crate::mock_value_space::LiveFirstState;
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
-use crate::strategy::{SpecialCandidatePath, StrategyContext, build_concolic_meta_strategy};
+use crate::strategy::{
+    MetaStrategy, SpecialCandidatePath, StrategyContext, build_concolic_meta_strategy,
+};
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
 use crate::types::{ComplexKind, ParamInfo};
@@ -111,6 +115,14 @@ pub struct ExploreConfig {
     pub mock_params: Vec<crate::auto_mock::MockParam>,
     /// Z3 solver timeout in milliseconds per query. None means no limit.
     pub solver_timeout_ms: Option<u64>,
+    /// Random seed for reproducible concolic candidate generation.
+    pub seed: Option<u64>,
+    /// Run solver feedback on Tokio's blocking pool and prefetch one ready
+    /// meta-strategy candidate so observation can overlap with Z3 solving.
+    ///
+    /// Defaults to false to preserve the existing strict serial behavior until
+    /// callers opt into the internal async mode.
+    pub solver_offload: bool,
     /// Per-function exploration wall-clock timeout. Whichever of this or
     /// `max_iterations`/`max_executions` triggers first stops the loop.
     pub timeout_explore: Option<Duration>,
@@ -181,6 +193,8 @@ impl Default for ExploreConfig {
             mocks: vec![],
             mock_params: vec![],
             solver_timeout_ms: None,
+            seed: None,
+            solver_offload: false,
             timeout_explore: None,
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
@@ -376,6 +390,126 @@ pub struct ExploreResult {
     pub stubbed_modules: Vec<String>,
 }
 
+/// Solver feedback execution mode for the concolic loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConcolicFeedbackMode {
+    /// Preserve the existing candidate -> observe -> feedback ordering.
+    Sync,
+    /// Offload feedback to Tokio's blocking pool and allow one prefetched
+    /// candidate to execute while Z3 solving runs.
+    Async,
+}
+
+/// Coordinates `MetaStrategy` feedback so Z3 solving can overlap with the next
+/// concolic observation when a ready candidate exists.
+struct ConcolicFeedbackScheduler {
+    meta_strategy: Option<MetaStrategy>,
+    pending_feedback: Option<JoinHandle<MetaStrategy>>,
+    prefetched_candidate: Option<(
+        Vec<serde_json::Value>,
+        usize,
+        crate::strategy::RegisteredStrategyKind,
+    )>,
+    mode: ConcolicFeedbackMode,
+    pipeline_overlaps: usize,
+}
+
+impl ConcolicFeedbackScheduler {
+    fn new(meta_strategy: MetaStrategy, mode: ConcolicFeedbackMode) -> Self {
+        Self {
+            meta_strategy: Some(meta_strategy),
+            pending_feedback: None,
+            prefetched_candidate: None,
+            mode,
+            pipeline_overlaps: 0,
+        }
+    }
+
+    fn pipeline_overlaps(&self) -> usize {
+        self.pipeline_overlaps
+    }
+
+    async fn drain_pending_feedback(&mut self) -> Result<(), ExploreError> {
+        if let Some(handle) = self.pending_feedback.take() {
+            let meta_strategy = handle.await.map_err(|err| {
+                ExploreError::SolverFeedback(format!("solver feedback task failed: {err}"))
+            })?;
+            self.meta_strategy = Some(meta_strategy);
+        }
+        Ok(())
+    }
+
+    async fn next_meta_candidate(
+        &mut self,
+        ctx: &StrategyContext,
+        rng: &mut impl Rng,
+    ) -> Result<
+        Option<(
+            Vec<serde_json::Value>,
+            usize,
+            crate::strategy::RegisteredStrategyKind,
+        )>,
+        ExploreError,
+    > {
+        if let Some(candidate) = self.prefetched_candidate.take() {
+            if self.pending_feedback.is_some() {
+                self.pipeline_overlaps += 1;
+            }
+            return Ok(Some(candidate));
+        }
+
+        self.drain_pending_feedback().await?;
+        let Some(meta_strategy) = self.meta_strategy.as_mut() else {
+            return Ok(None);
+        };
+        Ok(meta_strategy.next(ctx, rng).map(|(inputs, idx)| {
+            let kind = meta_strategy.strategy_kind(idx);
+            (inputs, idx, kind)
+        }))
+    }
+
+    async fn submit_feedback(
+        &mut self,
+        inputs: Vec<serde_json::Value>,
+        result: ExecuteResult,
+        was_new_path: bool,
+        strategy_idx: Option<usize>,
+        ctx: &StrategyContext,
+        rng: &mut impl Rng,
+    ) -> Result<(), ExploreError> {
+        self.drain_pending_feedback().await?;
+
+        let Some(mut meta_strategy) = self.meta_strategy.take() else {
+            return Ok(());
+        };
+
+        if self.mode == ConcolicFeedbackMode::Sync {
+            meta_strategy.feedback(&inputs, &result, was_new_path);
+            if let Some(idx) = strategy_idx {
+                meta_strategy.record_outcome(idx, was_new_path);
+            }
+            self.meta_strategy = Some(meta_strategy);
+            return Ok(());
+        }
+
+        if self.prefetched_candidate.is_none()
+            && let Some((prefetched_inputs, idx)) = meta_strategy.next(ctx, rng)
+        {
+            let kind = meta_strategy.strategy_kind(idx);
+            self.prefetched_candidate = Some((prefetched_inputs, idx, kind));
+        }
+
+        self.pending_feedback = Some(tokio::task::spawn_blocking(move || {
+            meta_strategy.feedback(&inputs, &result, was_new_path);
+            if let Some(idx) = strategy_idx {
+                meta_strategy.record_outcome(idx, was_new_path);
+            }
+            meta_strategy
+        }));
+        Ok(())
+    }
+}
+
 /// Resumable state from a completed `explore()` call.
 ///
 /// Pass to the next batch of the same function to skip path rediscovery.
@@ -433,6 +567,8 @@ fn is_fuzz_eligible(
 pub enum ExploreError {
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error("solver feedback error: {0}")]
+    SolverFeedback(String),
 }
 
 /// A single execution observation: the inputs used, the result, and path classification.
@@ -1762,7 +1898,10 @@ pub async fn explore(
     let mut param_fail_counts: HashMap<String, usize> = HashMap::new();
     let mut seen_branch_sides: HashSet<(u32, bool)> = HashSet::new();
     let mut frontier_set = FrontierSet::new();
-    let mut rng = StdRng::from_os_rng();
+    let mut rng = match config.seed {
+        Some(seed) => StdRng::seed_from_u64(seed),
+        None => StdRng::from_os_rng(),
+    };
     let mut triage_state = TriageState::new(param_names.clone());
     let mut triage_skipped: usize = 0;
     let mut triage_mispredictions: usize = 0;
@@ -1796,7 +1935,7 @@ pub async fn explore(
     // BinaryHeap (checked before MetaStrategy) to preserve their InputSource
     // attribution and fitness-based priority ordering.
     let fallback_loops = loops.clone();
-    let mut meta_strategy = build_concolic_meta_strategy(
+    let meta_strategy = build_concolic_meta_strategy(
         user_inputs,
         seed_inputs,
         prior_discovery_inputs.clone(),
@@ -1810,6 +1949,12 @@ pub async fn explore(
         literals: vec![],
         capabilities: FrontendCapabilities::default(),
     };
+    let feedback_mode = if config.solver_offload {
+        ConcolicFeedbackMode::Async
+    } else {
+        ConcolicFeedbackMode::Sync
+    };
+    let mut feedback_scheduler = ConcolicFeedbackScheduler::new(meta_strategy, feedback_mode);
 
     // MC/DC tracking state: only allocated when MC/DC mode is enabled.
     let mut mcdc_table: Option<McdcTable> = if config.mcdc {
@@ -1904,8 +2049,6 @@ pub async fn explore(
 
     let explore_start = Instant::now();
     let mut plateau_counter: usize = 0;
-    let pipeline_overlaps: usize = 0; // pipelining removed; field kept for ExploreResult compat
-
     // Periodic progress reporting state (parity with explorer.rs random path).
     // Tracks the 15-second cadence for ExploreProgressSnapshot emission and the
     // iteration index of the most recent new-branch discovery so the snapshot
@@ -1920,8 +2063,8 @@ pub async fn explore(
     //   1. Pop from supplementary (drilling/boundary/MC-DC candidates) or call
     //      meta_strategy.next() for the next MetaStrategy-produced inputs.
     //   2. Observe — execute and classify the path.
-    //   3. Feed result to MetaStrategy (Z3SolverStrategy solves synchronously
-    //      inside feedback() and queues solutions for future next() calls).
+    //   3. Feed result to MetaStrategy. In async solver mode this can run on
+    //      Tokio's blocking pool while one ready candidate is observed.
     //   4. If new path, call solve_and_generate() for drilling/boundary candidates
     //      and push them to the supplementary queue.
     loop {
@@ -1957,8 +2100,11 @@ pub async fn explore(
         let (mut entry, strategy_idx) = if let Some(e) = supplementary.pop() {
             let _special_case = SpecialCandidatePath::OrchestratorSupplementaryQueue;
             (e, None)
-        } else if let Some((inputs, idx)) = meta_strategy.next(&strategy_ctx, &mut rng) {
-            let source = meta_strategy.strategy_kind(idx).orchestrator_input_source();
+        } else if let Some((inputs, idx, kind)) = feedback_scheduler
+            .next_meta_candidate(&strategy_ctx, &mut rng)
+            .await?
+        {
+            let source = kind.orchestrator_input_source();
             // Track generation counters for MetaStrategy-sourced inputs.
             match source {
                 InputSource::Z3Solved => z3_generated += 1,
@@ -2238,14 +2384,19 @@ pub async fn explore(
         };
         raw_results.push((obs.inputs.clone(), recorded_mocks, obs.result.clone()));
 
-        // Feed execution result to MetaStrategy for adaptive scoring.
-        // Z3SolverStrategy.feedback() runs Z3 synchronously on this thread; the
-        // tokio runtime uses a single thread (rt, not rt-multi-thread) so there
-        // is no thread pool to starve.
-        meta_strategy.feedback(&obs.inputs, &obs.result, obs.is_new_path);
-        if let Some(idx) = strategy_idx {
-            meta_strategy.record_outcome(idx, obs.is_new_path);
-        }
+        // Feed execution result to MetaStrategy for adaptive scoring. In async
+        // mode, Z3 feedback runs on the blocking pool and the scheduler may
+        // prefetch one candidate so observation can continue while solving.
+        feedback_scheduler
+            .submit_feedback(
+                obs.inputs.clone(),
+                obs.result.clone(),
+                obs.is_new_path,
+                strategy_idx,
+                &strategy_ctx,
+                &mut rng,
+            )
+            .await?;
 
         if !obs.is_new_path {
             plateau_counter += 1;
@@ -2695,6 +2846,8 @@ pub async fn explore(
         );
     }
 
+    feedback_scheduler.drain_pending_feedback().await?;
+    let pipeline_overlaps = feedback_scheduler.pipeline_overlaps();
     let unique_paths = covered_paths.len();
     let mcdc_summary = mcdc_table.map(|t| t.summary());
     let opaque_suggestions =
@@ -2935,6 +3088,7 @@ mod tests {
         let first = scheduler
             .next_meta_candidate(&ctx, &mut rng)
             .await
+            .expect("scheduler should not fail")
             .expect("first candidate should be available");
         assert_eq!(first.0, vec![serde_json::json!(1)]);
 
@@ -2957,6 +3111,7 @@ mod tests {
         let second = scheduler
             .next_meta_candidate(&ctx, &mut rng)
             .await
+            .expect("scheduler should not fail")
             .expect("prefetched candidate should be available while feedback is blocked");
         assert_eq!(second.0, vec![serde_json::json!(2)]);
         assert_eq!(scheduler.pipeline_overlaps(), 1);
@@ -2988,6 +3143,7 @@ mod tests {
         let first = scheduler
             .next_meta_candidate(&ctx, &mut rng)
             .await
+            .expect("scheduler should not fail")
             .expect("first candidate should be available");
         scheduler
             .submit_feedback(
@@ -3007,6 +3163,7 @@ mod tests {
         let second = scheduler
             .next_meta_candidate(&ctx, &mut rng)
             .await
+            .expect("scheduler should not fail")
             .expect("second candidate should be available after feedback");
         assert_eq!(second.0, vec![serde_json::json!(2)]);
         assert_eq!(scheduler.pipeline_overlaps(), 0);
@@ -4215,9 +4372,70 @@ mod tests {
         frontend.shutdown().await.expect("shutdown failed");
     }
 
-    /// `pipeline_overlaps` is always 0 after the pipelining optimization was replaced
-    /// by synchronous Z3SolverStrategy.feedback(). The field remains in ExploreResult
-    /// for backwards compatibility; this test confirms it compiles and is zero.
+    /// Async solver offload preserves Z3 attribution while allowing feedback to
+    /// overlap with a prefetched observation.
+    #[tokio::test]
+    async fn explore_async_solver_offload_preserves_z3_attribution() {
+        let config = config_for_script("concolic-test-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let explore_config = ExploreConfig {
+            max_iterations: Some(20),
+            max_executions: Some(100),
+            plateau_threshold: 10,
+            solver_offload: true,
+            seed: Some(7),
+            ..Default::default()
+        };
+
+        let seeds: Vec<Vec<serde_json::Value>> =
+            (0..5).map(|i| vec![serde_json::json!(i)]).collect();
+
+        let (result, _) = explore(
+            &mut frontend,
+            "f",
+            seeds,
+            vec![],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            &explore_config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("explore failed");
+
+        assert!(
+            result.unique_paths >= 2,
+            "expected at least 2 unique paths, got {}",
+            result.unique_paths
+        );
+        assert!(
+            result.z3_generated > 0,
+            "Z3 should have generated at least one input"
+        );
+        assert!(
+            result
+                .discoveries
+                .iter()
+                .any(|(_, method)| *method == DiscoveryMethod::Z3),
+            "async solver mode should preserve Z3 discovery attribution"
+        );
+        assert!(
+            result.pipeline_overlaps > 0,
+            "async solver mode should overlap feedback with prefetched observations"
+        );
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// Synchronous mode keeps `pipeline_overlaps` at zero for compatibility.
     #[tokio::test]
     async fn explore_pipeline_overlaps_is_zero() {
         let config = config_for_script("concolic-test-frontend.sh");
