@@ -84,6 +84,7 @@ fn make_function_report(
 ) -> FunctionReport {
     FunctionReport {
         function_name: name.to_string(),
+        display_name: name.to_string(),
         qualified_id: format!("{file_path}::{name}"),
         file_path: file_path.to_string(),
         source_bucket: bucket,
@@ -205,6 +206,7 @@ fn build_fixture_report() -> ScanReport {
             ..Default::default()
         },
         test_order: vec![],
+        test_order_display_names: vec![],
         cumulative: None,
     }
 }
@@ -260,6 +262,7 @@ fn empty_report_emits_zeroed_source_set_table() {
         functions: vec![],
         codebase: CodebaseReport::default(),
         test_order: vec![],
+        test_order_display_names: vec![],
         cumulative: None,
     };
 

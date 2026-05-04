@@ -869,7 +869,7 @@ pub(crate) async fn run_scan(
 
     let progress_handler = progress.then(|| {
         Arc::new(|update: scan_orchestrator::ScanProgressUpdate| {
-            let event = report::ProgressEvent::with_status(
+            let event = report::ProgressEvent::with_qualified_status(
                 &update.function_name,
                 update.current,
                 update.total,

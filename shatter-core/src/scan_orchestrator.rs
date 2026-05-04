@@ -309,7 +309,11 @@ pub struct MockMiss {
 /// Result of exploring a single function during a scan.
 #[derive(Debug)]
 pub struct FunctionResult {
-    /// Name of the explored function.
+    /// Qualified ID of the explored function.
+    ///
+    /// This is scan-internal identity-bearing text, not necessarily the
+    /// human-facing display name. Report builders split it into
+    /// `qualified_id` and `display_name` fields for wire output.
     pub function_name: String,
     /// The exploration result (paths, coverage, etc.).
     pub exploration: ObservationOutput,
@@ -346,7 +350,7 @@ fn analyze_exploration(
 pub struct ScanResult {
     /// Per-function results in test order.
     pub function_results: Vec<FunctionResult>,
-    /// The order in which functions were tested.
+    /// Qualified function IDs in the order they were tested.
     pub test_order: Vec<String>,
     /// Functions that were skipped before exploration (e.g. unexecutable parameter types).
     pub skipped_functions: Vec<SkippedFunction>,
@@ -408,6 +412,7 @@ impl ScanProgressStatus {
 /// A live progress update emitted during scan execution.
 #[derive(Debug, Clone)]
 pub struct ScanProgressUpdate {
+    /// Qualified function ID for the in-flight scan target.
     pub function_name: String,
     pub current: usize,
     pub total: usize,
@@ -487,7 +492,7 @@ pub enum SkipCategory {
 /// Summary of a function that was skipped during a scan.
 #[derive(Debug)]
 pub struct SkippedFunction {
-    /// Name of the function that was skipped.
+    /// Qualified ID of the function that was skipped.
     pub function_name: String,
     /// Reason the function was skipped.
     pub reason: String,
