@@ -18,6 +18,14 @@ use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
 
 use crate::helpers::*;
 
+fn compute_scan_id_from_file_map(file_map: &HashMap<String, String>) -> String {
+    let targets: Vec<(&str, &str)> = file_map
+        .iter()
+        .map(|(qualified_id, file_path)| (qualified_id.as_str(), file_path.as_str()))
+        .collect();
+    shatter_core::checkpoint::ScanCheckpoint::compute_scan_id_for_targets(&targets)
+}
+
 /// Run the scan command: explore multiple functions in dependency order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan(
@@ -788,8 +796,7 @@ pub(crate) async fn run_scan(
     // Resolve --resume: "auto" discovers from artifact dir, otherwise treat as path.
     let resolved_resume_path: Option<std::path::PathBuf> = match resume {
         Some("auto") => {
-            let file_paths: Vec<&str> = file_map.values().map(|s| s.as_str()).collect();
-            let sid = shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
+            let sid = compute_scan_id_from_file_map(&file_map);
             match shatter_core::checkpoint::ScanCheckpoint::auto_discover(
                 project_root_str.as_deref(),
                 &sid,
@@ -930,10 +937,7 @@ pub(crate) async fn run_scan(
                     .join(".shatter-cache")
                     .join("batch-state.json");
 
-                let file_paths: Vec<&str> =
-                    scan_config.file_map.values().map(|s| s.as_str()).collect();
-                let scan_id =
-                    shatter_core::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths);
+                let scan_id = compute_scan_id_from_file_map(&scan_config.file_map);
 
                 let mut state = match shatter_core::batch_state::BatchState::load(&batch_state_path)
                 {

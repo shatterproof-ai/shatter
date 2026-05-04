@@ -151,7 +151,7 @@ pub struct ScanConfig {
     pub max_iterations_per_function: u32,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
-    /// Map from function name to source file path (needed for instrumentation).
+    /// Map from qualified function ID to source file path (needed for instrumentation).
     pub file_map: HashMap<String, String>,
     /// Number of parallel frontend subprocesses (default: 1).
     pub parallelism: usize,
@@ -1062,10 +1062,14 @@ fn scan_config_hash(config: &ScanConfig) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Compute scan ID from the file paths in a ScanConfig.
+/// Compute scan ID from the qualified target set in a ScanConfig.
 fn compute_scan_id(config: &ScanConfig) -> String {
-    let file_paths: Vec<&str> = config.file_map.values().map(|s| s.as_str()).collect();
-    crate::checkpoint::ScanCheckpoint::compute_scan_id(&file_paths)
+    let targets: Vec<(&str, &str)> = config
+        .file_map
+        .iter()
+        .map(|(qualified_id, file_path)| (qualified_id.as_str(), file_path.as_str()))
+        .collect();
+    crate::checkpoint::ScanCheckpoint::compute_scan_id_for_targets(&targets)
 }
 
 /// Load an existing checkpoint or create a fresh one. Checks compatibility
@@ -4614,6 +4618,66 @@ mod tests {
             heap_used_bytes: 0,
             heap_allocated_bytes: 0,
         }
+    }
+
+    fn minimal_scan_config(file_map: HashMap<String, String>) -> ScanConfig {
+        ScanConfig {
+            max_iterations_per_function: 1,
+            seed: None,
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: false,
+        }
+    }
+
+    #[test]
+    fn scan_id_includes_qualified_function_targets() {
+        let mut first_targets = HashMap::new();
+        first_targets.insert(
+            "src/service.go::(*Reader).Write".to_string(),
+            "src/service.go".to_string(),
+        );
+        first_targets.insert(
+            "src/service.go::(*Writer).Write".to_string(),
+            "src/service.go".to_string(),
+        );
+
+        let mut second_targets = HashMap::new();
+        second_targets.insert(
+            "src/service.go::(*Reader).Write".to_string(),
+            "src/service.go".to_string(),
+        );
+        second_targets.insert(
+            "src/service.go::(*Buffer).Write".to_string(),
+            "src/service.go".to_string(),
+        );
+
+        assert_ne!(
+            compute_scan_id(&minimal_scan_config(first_targets)),
+            compute_scan_id(&minimal_scan_config(second_targets)),
+            "scan IDs should not collide when same-file qualified targets change",
+        );
     }
 
     #[test]

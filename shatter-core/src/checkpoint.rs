@@ -29,10 +29,10 @@ pub enum CheckpointError {
 pub struct ScanCheckpoint {
     /// Format version (currently "1").
     pub version: String,
-    /// Stable hash of the scan's input set (sorted file paths).
+    /// Stable hash of the scan's target set.
     /// Used to detect stale checkpoints from a different scan scope.
     pub scan_id: String,
-    /// Map of function name → deep fingerprint for completed functions.
+    /// Map of qualified function ID → deep fingerprint for completed functions.
     pub completed: HashMap<String, String>,
     /// Index of the last fully completed layer.
     pub layer_index: usize,
@@ -104,6 +104,11 @@ impl ScanCheckpoint {
     ///
     /// Sorts paths for determinism, so the same set of files always
     /// produces the same ID regardless of iteration order.
+    ///
+    /// This v1 helper is retained for compatibility with older checkpoint
+    /// callers and tests. New scan/checkpoint code should prefer
+    /// [`Self::compute_scan_id_for_targets`] so same-file target changes are
+    /// reflected in the scan identity.
     pub fn compute_scan_id(file_paths: &[&str]) -> String {
         let mut sorted: Vec<&str> = file_paths.to_vec();
         sorted.sort();
@@ -112,6 +117,30 @@ impl ScanCheckpoint {
         hasher.update(b"scan_id_v1:");
         for p in &sorted {
             hasher.update(p.as_bytes());
+            hasher.update(b"\n");
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Compute a stable scan ID from qualified scan targets.
+    ///
+    /// Each target is `(qualified_id, source_file)`. Including both fields
+    /// keeps checkpoint and batch-state identity aligned with the scan's
+    /// public `qualified_id` contract: two scans over the same file path set
+    /// but different target functions no longer share a scan ID. Sorting makes
+    /// the result deterministic regardless of discovery order.
+    pub fn compute_scan_id_for_targets(targets: &[(&str, &str)]) -> String {
+        let mut sorted: Vec<(&str, &str)> = targets.to_vec();
+        sorted.sort_by(|(a_id, a_file), (b_id, b_file)| {
+            a_id.cmp(b_id).then_with(|| a_file.cmp(b_file))
+        });
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"scan_id_v2:");
+        for (qualified_id, source_file) in &sorted {
+            hasher.update(qualified_id.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(source_file.as_bytes());
             hasher.update(b"\n");
         }
         format!("{:x}", hasher.finalize())
@@ -321,6 +350,40 @@ mod tests {
         let id1 = ScanCheckpoint::compute_scan_id(&["src/a.ts"]);
         let id2 = ScanCheckpoint::compute_scan_id(&["src/b.ts"]);
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn compute_scan_id_for_targets_distinguishes_same_file_function_sets() {
+        let before = ScanCheckpoint::compute_scan_id_for_targets(&[
+            ("src/service.go::(*Reader).Write", "src/service.go"),
+            ("src/service.go::(*Writer).Write", "src/service.go"),
+        ]);
+        let after = ScanCheckpoint::compute_scan_id_for_targets(&[
+            ("src/service.go::(*Reader).Write", "src/service.go"),
+            ("src/service.go::(*Buffer).Write", "src/service.go"),
+        ]);
+
+        assert_ne!(
+            before, after,
+            "same-file scans with different qualified targets need distinct scan IDs",
+        );
+    }
+
+    #[test]
+    fn compute_scan_id_for_targets_is_order_independent() {
+        let id1 = ScanCheckpoint::compute_scan_id_for_targets(&[
+            ("src/a.ts::alpha", "src/a.ts"),
+            ("src/b.ts::beta", "src/b.ts"),
+            ("src/c.ts::gamma", "src/c.ts"),
+        ]);
+        let id2 = ScanCheckpoint::compute_scan_id_for_targets(&[
+            ("src/c.ts::gamma", "src/c.ts"),
+            ("src/a.ts::alpha", "src/a.ts"),
+            ("src/b.ts::beta", "src/b.ts"),
+        ]);
+
+        assert_eq!(id1, id2);
+        assert_eq!(id1.len(), 64);
     }
 
     #[test]
