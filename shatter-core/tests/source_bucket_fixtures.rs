@@ -24,7 +24,7 @@
 //! so any future bucket split shows up as a deliberate test update rather
 //! than a silent classification change.
 
-use shatter_core::source_bucket::{classify_path, SourceBucket};
+use shatter_core::source_bucket::{SourceBucket, classify_path};
 
 /// One classifier fixture: a realistic source path and the bucket the
 /// classifier is contracted to assign to it.
