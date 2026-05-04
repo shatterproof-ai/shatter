@@ -227,6 +227,21 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism_max: Option<usize>,
 
+    /// Number of observer subprocesses the random explorer fans candidate
+    /// executions out to within a single function. Each slot is a separate
+    /// frontend subprocess (frontends remain serial per process). `1`
+    /// preserves the legacy single-process exploration path. See str-frc.3
+    /// for the underlying primitive and str-frc.6 for the surfaced knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observer_pool: Option<usize>,
+
+    /// Override the bounded candidate queue capacity that sits between the
+    /// candidate generator and the observer pool (str-frc.5). When unset, the
+    /// capacity is auto-derived from `observer_pool` and `max_iterations`.
+    /// Has no effect when `observer_pool <= 1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_queue_capacity: Option<usize>,
+
     /// Output preferences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputConfig>,
@@ -2850,6 +2865,8 @@ defaults:
                 "parallelism": 4,
                 "parallelism_min": 2,
                 "parallelism_max": 32,
+                "observer_pool": 6,
+                "candidate_queue_capacity": 24,
                 "output": {
                     "format": "json",
                     "paths": ["reports/scan.html"],
@@ -2861,6 +2878,8 @@ defaults:
                 "seeds_dir": ".my-seeds"
             }"#;
             let config: ProjectConfig = serde_json::from_str(json).unwrap();
+            assert_eq!(config.observer_pool, Some(6));
+            assert_eq!(config.candidate_queue_capacity, Some(24));
             assert_eq!(config.include, vec!["src/**/*.ts"]);
             assert_eq!(config.exclude, vec!["**/*.test.ts"]);
             assert_eq!(config.language.as_deref(), Some("typescript"));
@@ -2944,6 +2963,8 @@ defaults:
                 no_cache: None,
                 seeds_dir: None,
                 capture_side_effects: Some(true),
+                observer_pool: None,
+                candidate_queue_capacity: None,
             };
             let json = serde_json::to_string(&config).unwrap();
             let restored: ProjectConfig = serde_json::from_str(&json).unwrap();

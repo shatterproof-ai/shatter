@@ -182,6 +182,8 @@ async fn main() -> ExitCode {
             stdout,
             format,
             workers,
+            observer_pool,
+            candidate_queue_capacity,
             from_artifacts,
             parallelism_min,
             parallelism_max,
@@ -228,6 +230,32 @@ async fn main() -> ExitCode {
             // User-provided values always win; multipliers only expand the defaults.
             let budgets =
                 resolve_mcdc_budgets(max_iterations, per_function_timeout, solver_timeout, mcdc);
+
+            // str-frc.6: resolve concurrency knobs with CLI > project-config >
+            // built-in default precedence. The project config is rooted at
+            // --project-dir when set, otherwise the current working directory.
+            let project_cfg_root = cli
+                .project_dir
+                .as_deref()
+                .map(std::path::Path::new)
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let project_cfg = shatter_core::config::load_project_config(&project_cfg_root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to load project config: {e}");
+                    None
+                });
+            let effective_observer_pool = crate::helpers::resolve_observer_pool(
+                observer_pool,
+                project_cfg.as_ref().and_then(|c| c.observer_pool),
+            );
+            let effective_candidate_queue_capacity =
+                crate::helpers::resolve_candidate_queue_capacity(
+                    candidate_queue_capacity,
+                    project_cfg
+                        .as_ref()
+                        .and_then(|c| c.candidate_queue_capacity),
+                );
 
             commands::explore::run_explore(
                 &targets,
@@ -291,6 +319,8 @@ async fn main() -> ExitCode {
                 planner.as_deref(),
                 parallelism_bounds,
                 require_rust,
+                effective_observer_pool,
+                effective_candidate_queue_capacity,
             )
             .await
         }
