@@ -350,9 +350,19 @@ func buildDirectExecutionRequest(
 // Method targets (str-hy9b.H5) are now legal first-class targets; selection
 // prefers a free function when both share a name, matching pre-H5 behavior
 // for the free-function path.
+//
+// `function` may be either the bare AST symbol name (e.g. "Compute") or
+// the receiver-decorated qualified name shatter-go now emits in
+// FunctionAnalysis.Name (e.g. "(*Service).Compute", str-fuhw.1.1). Bare
+// matches preserve the legacy free-function vs. method preference; a
+// qualified match resolves uniquely to one method without that
+// preference because the receiver is already disambiguated.
 func selectDirectWrapperTarget(targets []wrapper.WrapperTarget, function string) (wrapper.WrapperTarget, error) {
 	var methodMatch *wrapper.WrapperTarget
 	for i, target := range targets {
+		if methodWrapperQualifiedName(target) == function {
+			return targets[i], nil
+		}
 		if target.SymbolName != function {
 			continue
 		}
@@ -367,6 +377,20 @@ func selectDirectWrapperTarget(targets []wrapper.WrapperTarget, function string)
 		return *methodMatch, nil
 	}
 	return wrapper.WrapperTarget{}, fmt.Errorf("function not found: %s", function)
+}
+
+// methodWrapperQualifiedName mirrors qualifiedNameOf for a WrapperTarget so
+// the direct-execute selector can match against the receiver-decorated
+// FunctionAnalysis.Name shatter-go emits for methods (str-fuhw.1.1).
+// Returns the bare SymbolName for free-function targets.
+func methodWrapperQualifiedName(t wrapper.WrapperTarget) string {
+	if t.Kind != wrapper.TargetKindMethod || t.ReceiverType == "" {
+		return t.SymbolName
+	}
+	if t.IsPointerRecv {
+		return "(*" + t.ReceiverType + ")." + t.SymbolName
+	}
+	return "(" + t.ReceiverType + ")." + t.SymbolName
 }
 
 func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.ConstructorCandidate {

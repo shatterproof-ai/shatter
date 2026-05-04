@@ -1424,12 +1424,15 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 }
 
 // findFuncDeclByBareName scans every syntax file in pkg for the FuncDecl
-// whose bare name matches `name`. Mirrors the analyzer's matching shape:
-// the analyzer emits the bare `fn.Name.Name` whether the symbol is a free
-// function or a method, so the same matcher works for both. When multiple
-// methods share a name (different receiver types), this returns the first
-// in source order — sufficient for the H5 path where the caller already
-// supplied a target_id pointing at one specific declaration.
+// whose name matches `name`. The matcher accepts either the bare AST
+// name (e.g. "Write") or the receiver-decorated qualified name shatter-go
+// emits for methods (e.g. "(*Foo).Write", str-fuhw.1.1). Free functions
+// continue to use the bare form on both sides. When the qualified form
+// is supplied for a method the match is unique even when multiple
+// methods in the package share a bare name; when the bare form is
+// supplied, this returns the first matching FuncDecl in source order
+// (preserving prior behavior for callers that have not adopted the
+// qualified form yet).
 func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
 	for _, file := range pkg.Syntax {
 		if file == nil {
@@ -1440,7 +1443,7 @@ func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if fn.Name.Name == name {
+			if fn.Name.Name == name || qualifiedNameOf(fn) == name {
 				return fn
 			}
 		}

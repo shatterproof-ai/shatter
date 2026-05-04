@@ -223,14 +223,23 @@ func buildImportAliasMap(file *ast.File) map[string]string {
 	return m
 }
 
-// findFuncDeclByLine locates the ast.FuncDecl matching a FunctionAnalysis by name and start line.
+// findFuncDeclByLine locates the ast.FuncDecl matching a FunctionAnalysis by
+// name and start line. The name argument may be either the bare AST name
+// (e.g. "Write") or the receiver-decorated qualified name shatter-go emits
+// for methods (e.g. "(*Foo).Write", str-fuhw.1.1); both forms match the
+// same FuncDecl as long as the start line agrees. The dual match keeps
+// callers that already hold a FunctionAnalysis.Name working without
+// rewriting their argument.
 func findFuncDeclByLine(fset *token.FileSet, file *ast.File, name string, startLine int) *ast.FuncDecl {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		if fn.Name.Name == name && fset.Position(fn.Pos()).Line == startLine {
+		if fset.Position(fn.Pos()).Line != startLine {
+			continue
+		}
+		if fn.Name.Name == name || qualifiedNameOf(fn) == name {
 			return fn
 		}
 	}
