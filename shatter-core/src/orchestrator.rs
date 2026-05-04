@@ -2747,10 +2747,17 @@ mod tests {
     use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
     use crate::protocol::{BoundOp, InductionVar, LoopBodyState, LoopInfo, PerformanceMetrics};
     use crate::solver::ConcreteValue;
-    use crate::strategy::MetaStrategy;
+    use crate::strategy::{
+        InputStrategy, MetaConfig, MetaStrategy, RegisteredStrategy, RegisteredStrategyKind,
+        StrategyContext,
+    };
     use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
     use crate::types::TypeInfo;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     fn empty_perf() -> PerformanceMetrics {
         PerformanceMetrics {
@@ -2815,6 +2822,194 @@ mod tests {
                 SymExpr::Const(ConstValue::Int(induction_value)),
             )]),
         }
+    }
+
+    struct TestFixedStrategy {
+        candidates: VecDeque<Vec<serde_json::Value>>,
+    }
+
+    impl TestFixedStrategy {
+        fn new(candidates: Vec<Vec<serde_json::Value>>) -> Self {
+            Self {
+                candidates: candidates.into(),
+            }
+        }
+    }
+
+    impl InputStrategy for TestFixedStrategy {
+        fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<serde_json::Value>> {
+            self.candidates.pop_front()
+        }
+
+        fn name(&self) -> &str {
+            "test_fixed"
+        }
+    }
+
+    struct BlockingFeedbackStrategy {
+        feedback_started: Arc<AtomicBool>,
+        release_feedback: Arc<AtomicBool>,
+        feedback_calls: Arc<AtomicUsize>,
+    }
+
+    impl InputStrategy for BlockingFeedbackStrategy {
+        fn next(&mut self, _ctx: &StrategyContext) -> Option<Vec<serde_json::Value>> {
+            None
+        }
+
+        fn feedback(
+            &mut self,
+            _inputs: &[serde_json::Value],
+            _result: &ExecuteResult,
+            _was_new_path: bool,
+        ) {
+            self.feedback_started.store(true, Ordering::SeqCst);
+            while !self.release_feedback.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            self.feedback_calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn name(&self) -> &str {
+            "blocking_feedback"
+        }
+
+        fn is_finite(&self) -> bool {
+            false
+        }
+    }
+
+    fn scheduler_strategy_context() -> StrategyContext {
+        StrategyContext {
+            params: vec![make_int_param("x")],
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        }
+    }
+
+    fn scheduler_meta_strategy(
+        feedback_started: Arc<AtomicBool>,
+        release_feedback: Arc<AtomicBool>,
+        feedback_calls: Arc<AtomicUsize>,
+    ) -> MetaStrategy {
+        MetaStrategy::new(
+            vec![
+                RegisteredStrategy::new(
+                    RegisteredStrategyKind::UserProvided,
+                    Box::new(TestFixedStrategy::new(vec![
+                        vec![serde_json::json!(1)],
+                        vec![serde_json::json!(2)],
+                    ])),
+                ),
+                RegisteredStrategy::new(
+                    RegisteredStrategyKind::Z3Solver,
+                    Box::new(BlockingFeedbackStrategy {
+                        feedback_started,
+                        release_feedback,
+                        feedback_calls,
+                    }),
+                ),
+            ],
+            MetaConfig {
+                adaptive: false,
+                ..MetaConfig::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn async_feedback_scheduler_prefetches_candidate_before_blocking_feedback() {
+        let feedback_started = Arc::new(AtomicBool::new(false));
+        let release_feedback = Arc::new(AtomicBool::new(false));
+        let feedback_calls = Arc::new(AtomicUsize::new(0));
+        let meta_strategy = scheduler_meta_strategy(
+            Arc::clone(&feedback_started),
+            Arc::clone(&release_feedback),
+            Arc::clone(&feedback_calls),
+        );
+        let mut scheduler =
+            ConcolicFeedbackScheduler::new(meta_strategy, ConcolicFeedbackMode::Async);
+        let ctx = scheduler_strategy_context();
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let first = scheduler
+            .next_meta_candidate(&ctx, &mut rng)
+            .await
+            .expect("first candidate should be available");
+        assert_eq!(first.0, vec![serde_json::json!(1)]);
+
+        scheduler
+            .submit_feedback(
+                vec![serde_json::json!(1)],
+                make_exec_result(vec![]),
+                false,
+                Some(first.1),
+                &ctx,
+                &mut rng,
+            )
+            .await
+            .expect("feedback should submit");
+
+        while !feedback_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        let second = scheduler
+            .next_meta_candidate(&ctx, &mut rng)
+            .await
+            .expect("prefetched candidate should be available while feedback is blocked");
+        assert_eq!(second.0, vec![serde_json::json!(2)]);
+        assert_eq!(scheduler.pipeline_overlaps(), 1);
+        assert_eq!(feedback_calls.load(Ordering::SeqCst), 0);
+
+        release_feedback.store(true, Ordering::SeqCst);
+        scheduler
+            .drain_pending_feedback()
+            .await
+            .expect("feedback should complete");
+        assert_eq!(feedback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_feedback_scheduler_waits_before_next_candidate() {
+        let feedback_started = Arc::new(AtomicBool::new(false));
+        let release_feedback = Arc::new(AtomicBool::new(true));
+        let feedback_calls = Arc::new(AtomicUsize::new(0));
+        let meta_strategy = scheduler_meta_strategy(
+            Arc::clone(&feedback_started),
+            Arc::clone(&release_feedback),
+            Arc::clone(&feedback_calls),
+        );
+        let mut scheduler =
+            ConcolicFeedbackScheduler::new(meta_strategy, ConcolicFeedbackMode::Sync);
+        let ctx = scheduler_strategy_context();
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let first = scheduler
+            .next_meta_candidate(&ctx, &mut rng)
+            .await
+            .expect("first candidate should be available");
+        scheduler
+            .submit_feedback(
+                vec![serde_json::json!(1)],
+                make_exec_result(vec![]),
+                false,
+                Some(first.1),
+                &ctx,
+                &mut rng,
+            )
+            .await
+            .expect("feedback should complete inline");
+
+        assert!(feedback_started.load(Ordering::SeqCst));
+        assert_eq!(feedback_calls.load(Ordering::SeqCst), 1);
+
+        let second = scheduler
+            .next_meta_candidate(&ctx, &mut rng)
+            .await
+            .expect("second candidate should be available after feedback");
+        assert_eq!(second.0, vec![serde_json::json!(2)]);
+        assert_eq!(scheduler.pipeline_overlaps(), 0);
     }
 
     // -- hash_branch_path tests --
