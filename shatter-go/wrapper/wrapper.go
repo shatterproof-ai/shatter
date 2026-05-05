@@ -49,14 +49,12 @@ type WrapperTarget struct {
 	HasResult     bool
 	ResultGoType  string // Go type string for the first return value
 	ResultCount   int    // total number of return values (0 when HasResult is false)
-	// Imports lists the import paths required by the qualified type names that
-	// appear in Parameters[i].GoType and ResultGoType. GenerateWrapper unions
-	// the Imports of all targets and emits an `import` block in the generated
-	// wrapper file. When a target's parameter or result type uses a qualified
-	// name like `context.Context`, `*pgx.Conn`, or `gqlerror.Error`, the
-	// corresponding import path (`context`, `example.com/.../pgx`,
-	// `example.com/.../gqlerror`) must appear here for the generated wrapper
-	// to compile. Cross-ref: str-jeen.33.
+	// Imports lists the import paths required by qualified type names that the
+	// generated wrapper source actually references. Today that means parameter
+	// types such as `context.Context`, `*pgx.Conn`, or `gqlerror.Error`; result
+	// types are tracked in ResultGoType for metadata, but the generated source
+	// does not name them and must not import result-only packages.
+	// Cross-ref: str-jeen.33 and str-iylc.
 	Imports []string
 }
 
@@ -69,9 +67,11 @@ const (
 )
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
-// sorted target IDs and sorted constructor function names. The hash is fully
-// determined by the discovery results so the wrapper filename is stable for
-// the same set of targets and constructors.
+// sorted target IDs, target type parameter signatures, target imports, and
+// sorted constructor function metadata. The hash is fully determined by the
+// discovery results so the wrapper filename is stable for the same set of
+// targets and constructors, and changes when newly discovered imports would
+// otherwise require regenerating an existing wrapper file.
 func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate) string {
 	ids := make([]string, len(targets))
 	for i, t := range targets {
@@ -344,9 +344,10 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		}
 	}
 
-	// importSet accumulates every import path referenced by parameter or
-	// result type expressions on this function so wrapper-gen can emit
-	// matching import statements (str-jeen.33).
+	// importSet accumulates every import path referenced by parameter type
+	// expressions on this function so wrapper-gen can emit matching import
+	// statements (str-jeen.33). Result-only imports are intentionally omitted
+	// because the generated wrapper does not name result types (str-iylc).
 	importSet := make(map[string]struct{})
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, importSet)
 	typeParams := extractWrapperTypeParams(fn)
