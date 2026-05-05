@@ -2,6 +2,7 @@
 """Validate frontend capabilities against the checked-in parity contract.
 
 Fails (exit 1) if any of the following are detected:
+  - The parity matrix YAML contains duplicate mapping keys
   - A command/type with status=implemented for a frontend is absent from
     that frontend's handler code (MISSING_REQUIRED)
   - A frontend's handler advertises a command/type that the matrix marks
@@ -142,8 +143,44 @@ def load_matrix(path: Path) -> dict:
         )
         sys.exit(1)
 
-    with path.open() as f:
-        data = yaml.safe_load(f)
+    class UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def construct_mapping(loader: UniqueKeyLoader, node: object, deep: bool = False) -> dict:
+        if not isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None, None, f"expected a mapping node, got {node.id}", node.start_mark
+            )
+
+        loader.flatten_mapping(node)
+        seen: set[object] = set()
+        for key_node, _ in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+
+        return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+    UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_mapping,
+    )
+
+    try:
+        with path.open() as f:
+            data = yaml.load(f, Loader=UniqueKeyLoader)
+    except yaml.constructor.ConstructorError as exc:
+        print(f"ERROR: Invalid YAML in {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as exc:
+        print(f"ERROR: Could not parse YAML in {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not isinstance(data, dict):
         print(f"ERROR: Parity matrix at {path} must be a YAML mapping", file=sys.stderr)
