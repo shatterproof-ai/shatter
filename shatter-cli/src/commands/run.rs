@@ -638,20 +638,15 @@ pub(crate) const DEGRADED_UNREPRESENTED_PCT: f64 = 25.0;
 /// `validity_reasons` list explains why a run landed at the chosen
 /// tier. Order from best to worst follows
 /// [`report_validity_severity`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ReportValidity {
+    #[default]
     High,
     Degraded,
     Low,
     StaleSourceSet,
     InvalidArtifacts,
-}
-
-impl Default for ReportValidity {
-    fn default() -> Self {
-        ReportValidity::High
-    }
 }
 
 /// Severity ranking used when multiple validity signals apply. The
@@ -1304,33 +1299,45 @@ pub(crate) fn classify_validity(
         });
     }
 
-    if let Some(diff) = source_diff {
-        if diff.is_stale() {
-            tier = worst(tier, ReportValidity::StaleSourceSet);
-            if !diff.added.is_empty() {
-                reasons.push(ValidityReason {
-                    code: "stale_source_set_added".to_string(),
-                    detail: format!("{} source path(s) added after manifest capture", diff.added.len()),
-                    recommended_action:
-                        "Re-run on a quiesced source tree so the manifest snapshot reflects the explored set.".to_string(),
-                });
-            }
-            if !diff.removed.is_empty() {
-                reasons.push(ValidityReason {
-                    code: "stale_source_set_removed".to_string(),
-                    detail: format!("{} source path(s) removed after manifest capture", diff.removed.len()),
-                    recommended_action:
-                        "Re-run on a quiesced source tree; removed files invalidate per-file buckets.".to_string(),
-                });
-            }
-            if !diff.changed.is_empty() {
-                reasons.push(ValidityReason {
-                    code: "stale_source_set_changed".to_string(),
-                    detail: format!("{} source path(s) changed content during run", diff.changed.len()),
-                    recommended_action:
-                        "Re-run on a quiesced source tree; mid-run edits make line buckets unreliable.".to_string(),
-                });
-            }
+    if let Some(diff) = source_diff
+        && diff.is_stale()
+    {
+        tier = worst(tier, ReportValidity::StaleSourceSet);
+        if !diff.added.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_added".to_string(),
+                detail: format!(
+                    "{} source path(s) added after manifest capture",
+                    diff.added.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree so the manifest snapshot reflects the explored set."
+                        .to_string(),
+            });
+        }
+        if !diff.removed.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_removed".to_string(),
+                detail: format!(
+                    "{} source path(s) removed after manifest capture",
+                    diff.removed.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree; removed files invalidate per-file buckets."
+                        .to_string(),
+            });
+        }
+        if !diff.changed.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_changed".to_string(),
+                detail: format!(
+                    "{} source path(s) changed content during run",
+                    diff.changed.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree; mid-run edits make line buckets unreliable."
+                        .to_string(),
+            });
         }
     }
 
