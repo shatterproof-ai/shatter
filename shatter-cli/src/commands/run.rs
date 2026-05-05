@@ -1856,6 +1856,265 @@ mod tests {
         );
     }
 
+    /// str-jeen.42: acceptance-level guard that every documented source-line
+    /// bucket sees nonzero traffic in a mixed run AND that the six buckets
+    /// partition `selected_source_lines` exactly. This is the test that
+    /// must fail if any failure or unsupported span gets dropped from the
+    /// denominator instead of being attributed to a visible bucket.
+    ///
+    /// Differs from `source_representation_metrics_partition_mixed_source_set`:
+    /// that test pins per-bucket totals on a small fixture but never asserts
+    /// the partition-sum invariant. This one constructs a fixture covering
+    /// every bucket — including separate `build_failed` and `runtime_failed`
+    /// reason strings routed through
+    /// [`source_representation_outcome_from_failure_reason`] so the
+    /// reason-string classifier is exercised end-to-end — and asserts the
+    /// sum equals the manifest denominator.
+    ///
+    /// The issue's bucket list names `build_failed` and `runtime_failed`
+    /// separately. The implementation collapses both into the single
+    /// [`SourceRepresentationOutcome::Failed`] bucket
+    /// (`unrepresented_failed_lines`); this test verifies that both
+    /// reason flavors land in that bucket rather than vanishing.
+    #[test]
+    fn mixed_outcome_bucket_partition_holds_for_every_outcome() {
+        // Per-file line counts. Distinct primes/small numbers make
+        // attribution failures easy to read in the assertion message.
+        const COMPLETED_LINES: u32 = 5;
+        const BUILD_FAILED_LINES: u32 = 4;
+        const RUNTIME_FAILED_LINES: u32 = 3;
+        const TIMED_OUT_LINES: u32 = 2;
+        const UNSUPPORTED_LINES: u32 = 6;
+        const NO_TARGET_LINES: u32 = 7;
+        const GAP_FILE_LINES: u32 = 8;
+        // Span on `gap.rs` covers the first three lines, leaving five lines
+        // unattributed to any discovered span — those land in the
+        // `undiscovered` bucket.
+        const GAP_REPRESENTED_LINES: u32 = 3;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_lines(root, "completed.rs", COMPLETED_LINES);
+        write_lines(root, "build_failed.rs", BUILD_FAILED_LINES);
+        write_lines(root, "runtime_failed.rs", RUNTIME_FAILED_LINES);
+        write_lines(root, "timed_out.rs", TIMED_OUT_LINES);
+        write_lines(root, "unsupported.rs", UNSUPPORTED_LINES);
+        write_lines(root, "no_target.rs", NO_TARGET_LINES);
+        write_lines(root, "gap.rs", GAP_FILE_LINES);
+
+        let paths = vec![
+            "completed.rs".to_string(),
+            "build_failed.rs".to_string(),
+            "runtime_failed.rs".to_string(),
+            "timed_out.rs".to_string(),
+            "unsupported.rs".to_string(),
+            "no_target.rs".to_string(),
+            "gap.rs".to_string(),
+        ];
+        let manifest = shatter_core::run_manifest::capture("scan-1", "cfg", &paths, Some(root));
+
+        // Reason strings exercise the reason → outcome classifier the
+        // production path uses. Build- and runtime-failure reasons must
+        // both resolve to `Failed`; "timed out" → `TimedOut`;
+        // "unsupported" → `Unsupported`.
+        let build_failed_outcome =
+            source_representation_outcome_from_failure_reason("build failed: cargo error");
+        let runtime_failed_outcome =
+            source_representation_outcome_from_failure_reason("runtime panic: divide by zero");
+        let timed_out_outcome =
+            source_representation_outcome_from_failure_reason("timed out after 5s");
+        let unsupported_outcome =
+            source_representation_outcome_from_failure_reason("unsupported syntax in frontend");
+        assert_eq!(
+            build_failed_outcome,
+            SourceRepresentationOutcome::Failed,
+            "build-failure reason must classify as Failed",
+        );
+        assert_eq!(
+            runtime_failed_outcome,
+            SourceRepresentationOutcome::Failed,
+            "runtime-failure reason must classify as Failed",
+        );
+        assert_eq!(
+            timed_out_outcome,
+            SourceRepresentationOutcome::TimedOut,
+            "timeout reason must classify as TimedOut",
+        );
+        assert_eq!(
+            unsupported_outcome,
+            SourceRepresentationOutcome::Unsupported,
+            "unsupported reason must classify as Unsupported",
+        );
+
+        let spans = vec![
+            SourceRepresentationSpan {
+                path: "completed.rs".to_string(),
+                start_line: 1,
+                end_line: COMPLETED_LINES,
+                outcome: SourceRepresentationOutcome::Represented,
+            },
+            SourceRepresentationSpan {
+                path: "build_failed.rs".to_string(),
+                start_line: 1,
+                end_line: BUILD_FAILED_LINES,
+                outcome: build_failed_outcome,
+            },
+            SourceRepresentationSpan {
+                path: "runtime_failed.rs".to_string(),
+                start_line: 1,
+                end_line: RUNTIME_FAILED_LINES,
+                outcome: runtime_failed_outcome,
+            },
+            SourceRepresentationSpan {
+                path: "timed_out.rs".to_string(),
+                start_line: 1,
+                end_line: TIMED_OUT_LINES,
+                outcome: timed_out_outcome,
+            },
+            SourceRepresentationSpan {
+                path: "unsupported.rs".to_string(),
+                start_line: 1,
+                end_line: UNSUPPORTED_LINES,
+                outcome: unsupported_outcome,
+            },
+            // `no_target.rs` is omitted from spans on purpose — that's how
+            // a selected file with zero discovered targets reaches the
+            // `unrepresented_no_target_lines` bucket.
+            SourceRepresentationSpan {
+                path: "gap.rs".to_string(),
+                start_line: 1,
+                end_line: GAP_REPRESENTED_LINES,
+                outcome: SourceRepresentationOutcome::Represented,
+            },
+        ];
+
+        let summary = build_run_summary_with_representation("scan-1", &manifest, 2, 2, 0, &spans);
+
+        let expected_selected: u64 = u64::from(COMPLETED_LINES)
+            + u64::from(BUILD_FAILED_LINES)
+            + u64::from(RUNTIME_FAILED_LINES)
+            + u64::from(TIMED_OUT_LINES)
+            + u64::from(UNSUPPORTED_LINES)
+            + u64::from(NO_TARGET_LINES)
+            + u64::from(GAP_FILE_LINES);
+        assert_eq!(
+            summary.selected_source_lines, expected_selected,
+            "manifest denominator must equal the sum of per-file line counts",
+        );
+
+        // Every documented bucket must see traffic — a regression that
+        // dropped (say) unsupported spans on the floor would zero this
+        // bucket while the others still totalled the denominator.
+        assert!(
+            summary.represented_source_lines > 0,
+            "represented_source_lines must be > 0 in a mixed run; got {}",
+            summary.represented_source_lines,
+        );
+        assert!(
+            summary.unrepresented_failed_lines > 0,
+            "unrepresented_failed_lines must be > 0; build_failed and \
+             runtime_failed spans must count somewhere visible. got {}",
+            summary.unrepresented_failed_lines,
+        );
+        assert!(
+            summary.unrepresented_timed_out_lines > 0,
+            "unrepresented_timed_out_lines must be > 0; got {}",
+            summary.unrepresented_timed_out_lines,
+        );
+        assert!(
+            summary.unrepresented_unsupported_lines > 0,
+            "unrepresented_unsupported_lines must be > 0; unsupported \
+             spans must count somewhere visible. got {}",
+            summary.unrepresented_unsupported_lines,
+        );
+        assert!(
+            summary.unrepresented_no_target_lines > 0,
+            "unrepresented_no_target_lines must be > 0; got {}",
+            summary.unrepresented_no_target_lines,
+        );
+        assert!(
+            summary.unrepresented_undiscovered_lines > 0,
+            "unrepresented_undiscovered_lines must be > 0; got {}",
+            summary.unrepresented_undiscovered_lines,
+        );
+
+        // Per-bucket totals match the fixture. Pinning these alongside
+        // the partition-sum check makes a regression point at the
+        // exact bucket that drifted.
+        assert_eq!(
+            summary.represented_source_lines,
+            u64::from(COMPLETED_LINES + GAP_REPRESENTED_LINES)
+        );
+        assert_eq!(
+            summary.unrepresented_failed_lines,
+            u64::from(BUILD_FAILED_LINES + RUNTIME_FAILED_LINES),
+            "both build-failed and runtime-failed spans must contribute \
+             to unrepresented_failed_lines",
+        );
+        assert_eq!(
+            summary.unrepresented_timed_out_lines,
+            u64::from(TIMED_OUT_LINES)
+        );
+        assert_eq!(
+            summary.unrepresented_unsupported_lines,
+            u64::from(UNSUPPORTED_LINES)
+        );
+        assert_eq!(
+            summary.unrepresented_no_target_lines,
+            u64::from(NO_TARGET_LINES)
+        );
+        assert_eq!(
+            summary.unrepresented_undiscovered_lines,
+            u64::from(GAP_FILE_LINES - GAP_REPRESENTED_LINES),
+        );
+
+        // The partition invariant: the six source-line buckets must sum
+        // to `selected_source_lines`. A regression that omits any bucket
+        // from the denominator — failed or unsupported spans dropping
+        // out, for instance — fails here.
+        let bucket_sum = summary.represented_source_lines
+            + summary.unrepresented_failed_lines
+            + summary.unrepresented_timed_out_lines
+            + summary.unrepresented_unsupported_lines
+            + summary.unrepresented_no_target_lines
+            + summary.unrepresented_undiscovered_lines;
+        assert_eq!(
+            bucket_sum,
+            summary.selected_source_lines,
+            "documented six-bucket partition must sum to \
+             selected_source_lines; bucket_sum={bucket_sum}, \
+             selected_source_lines={}, per-bucket: \
+             represented={}, failed={}, timed_out={}, unsupported={}, \
+             no_target={}, undiscovered={}",
+            summary.selected_source_lines,
+            summary.represented_source_lines,
+            summary.unrepresented_failed_lines,
+            summary.unrepresented_timed_out_lines,
+            summary.unrepresented_unsupported_lines,
+            summary.unrepresented_no_target_lines,
+            summary.unrepresented_undiscovered_lines,
+        );
+
+        // Percent fields must be consistent with their line counts.
+        let expected_represented_percent =
+            (summary.represented_source_lines as f64 / expected_selected as f64) * 100.0;
+        assert_percent(
+            summary.represented_source_percent,
+            expected_represented_percent,
+        );
+    }
+
+    /// Write a file with `lines` newline-terminated lines so its
+    /// `line_count` snapshot matches `lines` exactly.
+    fn write_lines(root: &Path, name: &str, lines: u32) {
+        let mut content = String::new();
+        for i in 1..=lines {
+            content.push_str(&i.to_string());
+            content.push('\n');
+        }
+        fs::write(root.join(name), content).unwrap_or_else(|e| panic!("write {name}: {e}"));
+    }
+
     /// Scope hash is deterministic for the same scope and changes when
     /// any scope field changes — so a `run` whose include/exclude/
     /// language/max_depth differs gets a distinct manifest fingerprint.
