@@ -75,7 +75,7 @@ const (
 func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate) string {
 	ids := make([]string, len(targets))
 	for i, t := range targets {
-		ids[i] = t.ID + ":" + typeParamSignature(t.TypeParams)
+		ids[i] = t.ID + ":" + typeParamSignature(t.TypeParams) + ":" + strings.Join(sortedStrings(t.Imports), ",")
 	}
 	sort.Strings(ids)
 
@@ -356,12 +356,8 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
-		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, importSet)
+		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, nil)
 		for _, field := range fn.Type.Results.List {
-			// Walk every result type so multi-return signatures contribute
-			// their imports too (e.g. (User, error) where User is in another
-			// package). Discard the string; we only need the side effect.
-			_ = wrapperGoType(field.Type, pkg.TypesInfo, pkg.Name, importSet)
 			if len(field.Names) == 0 {
 				resultCount++
 			} else {
@@ -389,6 +385,15 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		ResultCount:   resultCount,
 		Imports:       imports,
 	}
+}
+
+func sortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := append([]string{}, values...)
+	sort.Strings(out)
+	return out
 }
 
 func wrapperQualifiedName(fn *ast.FuncDecl) string {

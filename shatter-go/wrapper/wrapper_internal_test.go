@@ -159,6 +159,54 @@ func Handle(w http.ResponseWriter, r *http.Request) {}
 	}
 }
 
+// TestBuildWrapperTargets_DoesNotImportResultOnlyPackages guards against
+// package-wide wrapper build failures from unused imports. The generated
+// wrapper never names result types, so result-only selector packages must not
+// be emitted in the wrapper import block.
+func TestBuildWrapperTargets_DoesNotImportResultOnlyPackages(t *testing.T) {
+	const src = `package resultonly
+
+import "time"
+
+func Wait() time.Duration { return 0 }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "resultonly.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("resultonly", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "resultonly",
+		PkgPath:   "example.com/resultonly",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(targets))
+	}
+	if slices.Contains(targets[0].Imports, "time") {
+		t.Fatalf("result-only import leaked into wrapper target imports: %+v", targets[0].Imports)
+	}
+
+	out := GenerateWrapper("resultonly", targets, nil)
+	if strings.Contains(out, `"time"`) {
+		t.Fatalf("generated wrapper contains unused result-only import:\n%s", out)
+	}
+}
+
 func keysOf(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
