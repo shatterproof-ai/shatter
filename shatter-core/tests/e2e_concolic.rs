@@ -1691,13 +1691,32 @@ fn ensure_go_frontend_binary() -> PathBuf {
 }
 
 /// Spawn the Go frontend subprocess from the freshly-built binary.
-async fn spawn_go_frontend() -> Frontend {
+///
+/// Each invocation creates its own `tempfile::TempDir` and pins
+/// `SHATTER_GO_WORKSPACE_ROOT` to it so concurrently-running e2e tests do not
+/// race on the shared `<repo>/.shatter-cache/go-workspace/` tree. The returned
+/// `TempDir` must outlive the `Frontend` — drop the tuple together at end of
+/// test. See str-8bsv: default parallel `cargo test` previously raced two Go
+/// method-planner E2Es over the same `generated/` overlay-manifest path.
+///
+/// `tag` should be a short, distinct, test-name-derived label (it is only
+/// used as a directory prefix to make stale tempdirs easier to identify).
+async fn spawn_go_frontend(tag: &str) -> (Frontend, tempfile::TempDir) {
     let binary = ensure_go_frontend_binary();
+    let workspace_dir = tempfile::Builder::new()
+        .prefix(&format!("shatter-go-e2e-{tag}-"))
+        .tempdir()
+        .expect("create per-test Go workspace tempdir");
     let mut config = FrontendConfig::new(binary);
     config.request_timeout = std::time::Duration::from_secs(60);
-    Frontend::spawn(&config)
+    config.env_vars.push((
+        "SHATTER_GO_WORKSPACE_ROOT".to_string(),
+        workspace_dir.path().to_string_lossy().into_owned(),
+    ));
+    let frontend = Frontend::spawn(&config)
         .await
-        .expect("failed to spawn Go frontend binary")
+        .expect("failed to spawn Go frontend binary");
+    (frontend, workspace_dir)
 }
 
 /// Path to the H5 method-receiver fixture. The fixture is a minimal
@@ -1740,7 +1759,7 @@ async fn go_method_planner_driven_e2e() {
     use shatter_core::planner_consumer::fetch_planner_seeds;
     use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
 
-    let mut frontend = spawn_go_frontend().await;
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("method-planner-driven").await;
     let fixture = h5_method_receiver_fixture();
     assert!(
         fixture.exists(),
@@ -1897,7 +1916,7 @@ async fn go_method_planner_driven_via_orchestrator() {
     use shatter_core::planner_consumer::fetch_planner_seeds;
     use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
 
-    let mut frontend = spawn_go_frontend().await;
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("method-planner-via-orchestrator").await;
     let fixture = h5_method_receiver_fixture();
     assert!(
         fixture.exists(),
