@@ -206,7 +206,7 @@ func main() {{
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let output_str = output_binary.display().to_string();
-    let mut go_args = vec!["build", "-o", &output_str];
+    let mut go_args = vec!["build", "-buildvcs=false", "-o", &output_str];
     if release {
         go_args.extend(["-trimpath", "-ldflags", "-w -s"]);
     }

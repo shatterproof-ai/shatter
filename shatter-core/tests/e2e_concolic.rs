@@ -1671,7 +1671,7 @@ fn ensure_go_frontend_binary() -> PathBuf {
     let binary_path = tmpdir.join("shatter-go");
 
     let status = std::process::Command::new("go")
-        .args(["build", "-o"])
+        .args(["build", "-buildvcs=false", "-o"])
         .arg(&binary_path)
         .arg(".")
         .current_dir(&go_dir)

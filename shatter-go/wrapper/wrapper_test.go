@@ -200,7 +200,7 @@ func (c Counter) Get() int       { return c.n }
 	}
 
 	// Verify the wrapper compiles as part of the target package.
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer
@@ -270,7 +270,7 @@ func SafeDivide(a, b int) (int, error) {
 		t.Fatalf("write overlay: %v", err)
 	}
 
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer
@@ -341,7 +341,7 @@ func Identity[T any](v T) T {
 		t.Fatalf("write overlay: %v", err)
 	}
 
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer
@@ -550,7 +550,7 @@ func (s *SSEWriter) Flush() { /* no-op */ }
 	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
 		t.Fatalf("write overlay: %v", err)
 	}
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer
@@ -664,7 +664,7 @@ func AddUnnamed(int, int) int { return 0 }
 		t.Fatalf("write overlay: %v", err)
 	}
 
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer

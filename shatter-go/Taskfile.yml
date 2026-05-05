@@ -8,7 +8,7 @@ tasks:
       - go.mod
       - go.sum
     cmds:
-      - go build ./...
+      - go build -buildvcs=false ./...
 
   test:
     desc: Run Go tests

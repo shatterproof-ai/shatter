@@ -82,7 +82,7 @@ fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
     let go_binary = out_dir.join("shatter-go");
 
     let status = Command::new("go")
-        .args(["build", "-o"])
+        .args(["build", "-buildvcs=false", "-o"])
         .arg(&go_binary)
         .arg(".")
         .current_dir(&go_dir)
