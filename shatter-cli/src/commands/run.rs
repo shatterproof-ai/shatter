@@ -1384,6 +1384,95 @@ mod tests {
         assert_eq!(parsed_legacy.skipped_functions, 0);
     }
 
+    // -------------------------------------------------------------------
+    // str-jeen.44: source representation metrics.
+    //
+    // Broad-run coverage must show how much of the selected source set
+    // is represented by completed exploration, and how the unrepresented
+    // remainder splits across failure, timeout, unsupported, no-target,
+    // and undiscovered source lines.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn source_representation_metrics_partition_mixed_source_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("completed.rs"), "1\n2\n3\n4\n").expect("write completed.rs"); // 4
+        fs::write(root.join("failed.rs"), "1\n2\n3\n").expect("write failed.rs"); // 3
+        fs::write(root.join("timeout.rs"), "1\n2\n").expect("write timeout.rs"); // 2
+        fs::write(root.join("unsupported.rs"), "1\n").expect("write unsupported.rs"); // 1
+        fs::write(root.join("no_target.rs"), "1\n2\n3\n4\n").expect("write no_target.rs"); // 4
+        fs::write(root.join("gap.rs"), "1\n2\n3\n4\n5\n6\n").expect("write gap.rs"); // 6, span 1-2
+
+        let paths = vec![
+            "completed.rs".to_string(),
+            "failed.rs".to_string(),
+            "timeout.rs".to_string(),
+            "unsupported.rs".to_string(),
+            "no_target.rs".to_string(),
+            "gap.rs".to_string(),
+        ];
+        let manifest = shatter_core::run_manifest::capture("scan-1", "cfg", &paths, Some(root));
+
+        let spans = vec![
+            SourceRepresentationSpan {
+                path: "completed.rs".to_string(),
+                start_line: 1,
+                end_line: 4,
+                outcome: SourceRepresentationOutcome::Represented,
+            },
+            SourceRepresentationSpan {
+                path: "failed.rs".to_string(),
+                start_line: 1,
+                end_line: 3,
+                outcome: SourceRepresentationOutcome::Failed,
+            },
+            SourceRepresentationSpan {
+                path: "timeout.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+                outcome: SourceRepresentationOutcome::TimedOut,
+            },
+            SourceRepresentationSpan {
+                path: "unsupported.rs".to_string(),
+                start_line: 1,
+                end_line: 1,
+                outcome: SourceRepresentationOutcome::Unsupported,
+            },
+            SourceRepresentationSpan {
+                path: "gap.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+                outcome: SourceRepresentationOutcome::Represented,
+            },
+        ];
+
+        let summary =
+            build_run_summary_with_representation("scan-1", &manifest, 2, 1, 0, &spans);
+
+        assert_eq!(summary.selected_source_lines, 20);
+        assert_eq!(summary.represented_source_lines, 6);
+        assert_eq!(summary.unrepresented_failed_lines, 3);
+        assert_eq!(summary.unrepresented_timed_out_lines, 2);
+        assert_eq!(summary.unrepresented_unsupported_lines, 1);
+        assert_eq!(summary.unrepresented_no_target_lines, 4);
+        assert_eq!(summary.unrepresented_undiscovered_lines, 4);
+
+        assert_percent(summary.represented_source_percent, 30.0);
+        assert_percent(summary.unrepresented_failed_percent, 15.0);
+        assert_percent(summary.unrepresented_timed_out_percent, 10.0);
+        assert_percent(summary.unrepresented_unsupported_percent, 5.0);
+        assert_percent(summary.unrepresented_no_target_percent, 20.0);
+        assert_percent(summary.unrepresented_undiscovered_percent, 20.0);
+    }
+
+    fn assert_percent(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     /// Scope hash is deterministic for the same scope and changes when
     /// any scope field changes — so a `run` whose include/exclude/
     /// language/max_depth differs gets a distinct manifest fingerprint.
