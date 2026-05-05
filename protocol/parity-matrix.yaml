@@ -528,58 +528,6 @@ side_effect_capabilities:
       go: not_captured
       rust: not_captured
 
-# --- Allowed divergences ---
-#
-# Known, intentional drift between frontends. These produce warnings (not
-# failures) in the validator when the affected (frontend, command) pair
-# is found in violation.
-#
-# status: tracked  — known, deferred or under investigation
-# status: accepted — intentional permanent divergence
-# status: resolved — no longer a divergence; remove entry when matrix is updated
-
-# --- Side effect capabilities ---
-#
-# Which side effect kinds each frontend captures in the execute response's
-# side_effects array. All supported kinds use the same field names (normalized).
-#
-# status: required   All frontends must capture this kind
-# status: optional   Frontends may capture this kind; coverage diverges
-
-side_effect_capabilities:
-  global_state_change:
-    status: required
-    notes: >
-      All frontends capture global/package/static mutable variable changes
-      using identical payload shape: { kind, variable, before, after }.
-    frontends:
-      typescript: supported
-      go: supported
-      rust: supported
-
-  console_output:
-    status: optional
-    notes: >
-      TypeScript, Go, and Rust capture console/stdout output with shape { kind, level, message }.
-      Coverage granularity differs between TS (per-call) and Go/Rust (process-level bulk);
-      see allowed_divergences: side-effect-console-coverage.
-      Rust crate-bridge harness does not capture console output.
-    frontends:
-      typescript: supported
-      go: supported
-      rust: supported
-
-  thrown_error:
-    status: optional
-    notes: >
-      TypeScript and Rust emit thrown errors/panics as a thrown_error side effect entry.
-      Go reports via the top-level thrown_error response field instead.
-      See allowed_divergences: side-effect-thrown-error-placement.
-    frontends:
-      typescript: supported
-      go: not_supported
-      rust: supported
-
 # --- Feature capabilities ---
 #
 # Protocol-visible features introduced by the Go frontend redesign (str-hy9b).
@@ -698,6 +646,16 @@ adapter_capabilities:
       typescript: not_supported
       go: not_supported
       rust: implemented
+
+# --- Allowed divergences ---
+#
+# Known, intentional drift between frontends. These produce warnings (not
+# failures) in the validator when the affected (frontend, command) pair
+# is found in violation.
+#
+# status: tracked  - known, deferred or under investigation
+# status: accepted - intentional permanent divergence
+# status: resolved - no longer a divergence; remove entry when matrix is updated
 
 allowed_divergences:
   - id: ts-missing-teardown
