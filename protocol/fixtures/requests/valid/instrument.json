@@ -6,9 +6,10 @@
   "function": "processOrder",
   "mocks": [
     {
-      "module": "node:fs",
-      "function": "readFileSync",
-      "behavior": "return_generated"
+      "symbol": "node:fs::readFileSync",
+      "return_values": ["fixture-data"],
+      "should_track_calls": true,
+      "default_behavior": "return_generated"
     }
   ],
   "project_root": "."

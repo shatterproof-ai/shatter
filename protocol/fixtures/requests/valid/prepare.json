@@ -5,5 +5,20 @@
   "file": "src/example.ts",
   "function": "processOrder",
   "mocks": [],
-  "project_root": "."
+  "project_root": ".",
+  "plan": {
+    "target_id": "src/example.ts::processOrder",
+    "receiver_kind": "",
+    "argument_plans": [
+      {
+        "param_index": 0,
+        "param_name": "id",
+        "kind": "literal",
+        "literal": 42,
+        "type_hint": "number"
+      }
+    ],
+    "priority": 0,
+    "label": "fixture"
+  }
 }
