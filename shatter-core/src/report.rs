@@ -962,9 +962,15 @@ pub fn write_html_report(
 pub fn format_markdown_report(report: &ScanReport) -> String {
     let mut out = String::new();
 
+    // str-jeen.19: lead with whole-source / source-set context so a
+    // reader sees the codebase denominator BEFORE any coverage figure,
+    // then surface attempted-span totals, then the completed-only
+    // coverage line — which is explicitly labeled as a subset so the
+    // smaller denominator is not mistaken for codebase coverage.
     write_md_header(&mut out, report);
     write_md_cumulative(&mut out, &report.cumulative);
-    write_md_source_set_summary(&mut out, &report.codebase.source_set);
+    write_md_source_set_summary(&mut out, &report.codebase);
+    write_md_coverage(&mut out, report);
     write_md_summary_table(&mut out, report);
     write_md_function_details(&mut out, &report.functions);
     write_md_uncovered_branches(&mut out, &report.functions);
@@ -1018,10 +1024,6 @@ pub fn strip_markdown_text(md: &str) -> String {
 fn write_md_header(out: &mut String, report: &ScanReport) {
     let _ = writeln!(out, "# Shatter Scan Report\n");
 
-    let total_covered: usize = report.functions.iter().map(|f| f.branches_covered).sum();
-    let total_branches = report.codebase.total_branches;
-    let coverage = report.codebase.overall_coverage;
-
     let cb = &report.codebase;
     let _ = writeln!(
         out,
@@ -1047,16 +1049,42 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
             cb.unsupported_functions
         );
     }
-    let _ = writeln!(out, "- **Total branches:** {total_branches}");
-    let _ = writeln!(out, "- **Branches covered:** {total_covered}");
-    let _ = writeln!(out, "- **Overall coverage:** {coverage:.1}%");
-    // str-jeen.39: surface the production-ish line denominator alongside
-    // branch totals so the gap to "all source lines" is visible in the
-    // narrative, not just the per-bucket table further down.
+
+    out.push('\n');
+}
+
+/// Emit the coverage section AFTER the source-set summary so a reader
+/// sees the whole-source denominator first and reads the
+/// completed-function coverage as a subset, not as codebase coverage
+/// (str-jeen.19). The first bullets describe the attempted-function
+/// span (what the scan tried to exercise); the final bullet labels the
+/// branch-coverage figure as `(completed-functions subset)` to make
+/// the narrower denominator unmistakable.
+fn write_md_coverage(out: &mut String, report: &ScanReport) {
+    let _ = writeln!(out, "## Coverage\n");
+
+    let cb = &report.codebase;
+    let total_covered: usize = report.functions.iter().map(|f| f.branches_covered).sum();
+    let total_branches = cb.total_branches;
+    let coverage = cb.overall_coverage;
+
     let _ = writeln!(
         out,
-        "- **Production-ish source lines:** {} (denominator for coverage; see Source Set Summary)",
-        cb.productionish_source_lines,
+        "- **Attempted-function span:** {} of {} discovered functions attempted",
+        cb.attempted_functions, cb.total_discovered_functions,
+    );
+    let _ = writeln!(
+        out,
+        "- **Total branches:** {total_branches} (across completed functions)"
+    );
+    let _ = writeln!(out, "- **Branches covered:** {total_covered}");
+    // str-jeen.19: explicit subset label so readers do not mistake the
+    // completed-function denominator for codebase coverage. The
+    // whole-source / attempted-span context above sets the frame; this
+    // line is the narrowest of the three views.
+    let _ = writeln!(
+        out,
+        "- **Overall coverage (completed-functions subset):** {coverage:.1}%",
     );
 
     out.push('\n');
@@ -1065,12 +1093,14 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
 /// Emit a Markdown table summarising file and line counts per
 /// [`SourceBucket`] (str-jeen.39). Always renders all seven buckets so a
 /// reader can see at a glance how much of the codebase is excluded from
-/// the production-ish denominator and why.
-fn write_md_source_set_summary(out: &mut String, summary: &SourceSetSummary) {
+/// the production-ish denominator and why. The closing bullet (str-jeen.19)
+/// surfaces the production-ish line total — the whole-source denominator
+/// the coverage section below should be read against.
+fn write_md_source_set_summary(out: &mut String, codebase: &CodebaseReport) {
     let _ = writeln!(out, "## Source Set Summary\n");
     let _ = writeln!(out, "| Bucket | Files | Lines |");
     let _ = writeln!(out, "|--------|-------|-------|");
-    for (bucket, stats) in summary.rows() {
+    for (bucket, stats) in codebase.source_set.rows() {
         let _ = writeln!(
             out,
             "| `{}` | {} | {} |",
@@ -1079,6 +1109,12 @@ fn write_md_source_set_summary(out: &mut String, summary: &SourceSetSummary) {
             stats.line_count,
         );
     }
+    out.push('\n');
+    let _ = writeln!(
+        out,
+        "- **Production-ish source lines:** {} (whole-source denominator; see Coverage section below)",
+        codebase.productionish_source_lines,
+    );
     out.push('\n');
 }
 
