@@ -466,6 +466,38 @@ pub(crate) async fn run_run(
 
     println!();
 
+    // str-jeen.5: build the run summary, run a per-function .md
+    // self-check (when `output_dir` is set and reports exist on disk
+    // already from a prior partial write — none expected at this
+    // point but the call is cheap), and a manifest diff so we can
+    // print the validity verdict above the per-function detail.
+    // The final summary (with potentially-revised reasons) is
+    // written to `run.json` after `write_run_report` below.
+    let attempted = total_functions;
+    let completed_count = exploration_results.len();
+    let failed_count = attempted.saturating_sub(completed_count);
+    let representation_spans = registry_representation_spans(
+        &registry,
+        &root,
+        &exploration_results,
+        &exploration_failures,
+    );
+    let mut run_summary = build_run_summary_with_representation(
+        &scan_id,
+        &run_manifest,
+        completed_count,
+        failed_count,
+        0,
+        &representation_spans,
+    );
+    let source_diff = run_manifest::diff_against(&run_manifest, &manifest_paths);
+    let (validity_top, reasons_top) =
+        classify_validity(&run_summary, Some(&source_diff), &[]);
+    run_summary.report_validity = validity_top;
+    run_summary.validity_reasons = reasons_top.clone();
+    let validity_md = render_validity_markdown(validity_top, &reasons_top);
+    print_markdown(&validity_md, use_color);
+
     // Step 6: Print summary report
     print_summary_report(
         &root,
@@ -484,33 +516,17 @@ pub(crate) async fn run_run(
     // Step 7: Write output files if requested
     if let Some(dir) = output_dir {
         write_run_report(dir, &call_graph, &exploration_results)?;
-        // str-jeen.17: emit run-level JSON with manifest-driven
-        // selected-source denominators alongside per-function reports.
-        let completed = exploration_results.len();
-        // The run command surfaces only "completed" outcomes (errors are
-        // logged but not pushed). Until the run command tracks per-target
-        // failure / skip outcomes, derive failed = attempted - completed
-        // from the discovery total so the summary still reflects the
-        // ratio of completed to attempted.
-        let attempted = total_functions;
-        let failed = attempted.saturating_sub(completed);
-        let spans = registry_representation_spans(
-            &registry,
-            &root,
-            &exploration_results,
-            &exploration_failures,
-        );
-        write_run_summary_json(
-            dir,
-            &build_run_summary_with_representation(
-                &scan_id,
-                &run_manifest,
-                completed,
-                failed,
-                0,
-                &spans,
-            ),
-        )?;
+        // str-jeen.5: re-classify after `write_run_report` so the
+        // per-function .md self-check can fire `invalid-artifacts`
+        // when expected files are missing on disk. Source-set diff
+        // and representation tier are unchanged from the stdout
+        // pass; only the missing-artifacts signal is new here.
+        let missing_artifacts = missing_run_report_artifacts(dir, &exploration_results);
+        let (validity_final, reasons_final) =
+            classify_validity(&run_summary, Some(&source_diff), &missing_artifacts);
+        run_summary.report_validity = validity_final;
+        run_summary.validity_reasons = reasons_final;
+        write_run_summary_json(dir, &run_summary)?;
     }
 
     shutdown_all_frontends(frontends).await;
@@ -599,6 +615,62 @@ pub(crate) const RUN_SUMMARY_FILENAME: &str = "run.json";
 /// removed or change meaning (additive fields use `#[serde(default)]`
 /// and don't require a bump).
 pub(crate) const RUN_SUMMARY_VERSION: u32 = 1;
+
+/// str-jeen.5: representation-percent threshold at or above which a
+/// run is eligible for `report_validity = high`. Below this, the
+/// run is at best `degraded`.
+pub(crate) const HIGH_REPRESENTATION_PCT: f64 = 75.0;
+
+/// str-jeen.5: representation-percent threshold below which a run
+/// is `low`. Captures the Kapow case where the completed-function
+/// denominator is a tiny fraction of the selected source set.
+pub(crate) const LOW_REPRESENTATION_PCT: f64 = 25.0;
+
+/// str-jeen.5: combined unrepresented-failure share (failed +
+/// timed-out + unsupported lines, as a percent of selected source
+/// lines) at or above which a run drops from `high` to `degraded`
+/// even when overall representation looks healthy. Captures runs
+/// where most of the source set is technically "represented" but a
+/// large slice of it is anchored on failed exploration.
+pub(crate) const DEGRADED_UNREPRESENTED_PCT: f64 = 25.0;
+
+/// str-jeen.5: report-level reliability tag. Single-valued; the
+/// `validity_reasons` list explains why a run landed at the chosen
+/// tier. Order from best to worst follows
+/// [`report_validity_severity`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ReportValidity {
+    #[default]
+    High,
+    Degraded,
+    Low,
+    StaleSourceSet,
+    InvalidArtifacts,
+}
+
+/// Severity ranking used when multiple validity signals apply. The
+/// worst (highest) tier wins.
+fn report_validity_severity(v: ReportValidity) -> u8 {
+    match v {
+        ReportValidity::High => 0,
+        ReportValidity::Degraded => 1,
+        ReportValidity::Low => 2,
+        ReportValidity::StaleSourceSet => 3,
+        ReportValidity::InvalidArtifacts => 4,
+    }
+}
+
+/// str-jeen.5: one machine-readable explanation for why a run's
+/// `report_validity` is what it is. `code` is a closed-set
+/// snake_case token; `detail` is human-readable; `recommended_action`
+/// tells the operator what to do next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ValidityReason {
+    pub code: String,
+    pub detail: String,
+    pub recommended_action: String,
+}
 
 /// Run-level JSON summary written by `shatter run` to
 /// `<output_dir>/run.json` (str-jeen.17).
@@ -692,6 +764,19 @@ pub(crate) struct RunSummary {
     /// `unrepresented_undiscovered_lines / selected_source_lines * 100`.
     #[serde(default)]
     pub unrepresented_undiscovered_percent: f64,
+    /// str-jeen.5: report-level reliability tag, separate from
+    /// process exit code and per-target status. Defaults to `high`
+    /// for legacy `run.json` payloads predating str-jeen.5 — callers
+    /// that read older files will see a `high` validity even though
+    /// no classifier ran.
+    #[serde(default)]
+    pub report_validity: ReportValidity,
+    /// str-jeen.5: machine-readable explanations for the chosen
+    /// `report_validity`. Empty for `high` runs; populated when any
+    /// reason code (representation tier, kapow denominator, stale
+    /// source set, missing artifacts) fires.
+    #[serde(default)]
+    pub validity_reasons: Vec<ValidityReason>,
 }
 
 /// Derive a stable hash of the discovery scope so the manifest's
@@ -1134,7 +1219,216 @@ fn build_run_summary_from_buckets(
             representation.unrepresented_undiscovered_lines,
             selected_source_lines,
         ),
+        report_validity: ReportValidity::High,
+        validity_reasons: Vec::new(),
     }
+}
+
+/// str-jeen.5: pure classifier producing a `(ReportValidity, reasons)`
+/// pair from the run summary plus optional end-of-run signals.
+///
+/// - `summary` carries the manifest-driven denominators and
+///   representation buckets already populated by
+///   `build_run_summary_*`.
+/// - `source_diff`, when `Some` and stale, raises validity to at
+///   least `stale-source-set`.
+/// - `missing_artifacts` is the list of expected per-function
+///   report paths that were absent on disk after `write_run_report`
+///   ran. Non-empty raises validity to `invalid-artifacts`.
+///
+/// The function is total and deterministic so tests can pin tier
+/// transitions at the threshold boundaries.
+pub(crate) fn classify_validity(
+    summary: &RunSummary,
+    source_diff: Option<&run_manifest::ManifestDiff>,
+    missing_artifacts: &[String],
+) -> (ReportValidity, Vec<ValidityReason>) {
+    let mut reasons: Vec<ValidityReason> = Vec::new();
+    let mut tier = ReportValidity::High;
+
+    let rep_pct = summary.represented_source_percent;
+    if rep_pct < LOW_REPRESENTATION_PCT {
+        tier = worst(tier, ReportValidity::Low);
+        reasons.push(ValidityReason {
+            code: "low_representation".to_string(),
+            detail: format!(
+                "represented_source_percent={rep_pct:.1} below low threshold {LOW_REPRESENTATION_PCT:.1}"
+            ),
+            recommended_action:
+                "Investigate failed/timed-out/unsupported buckets in unrepresented_*_lines and re-run after addressing root causes; do not treat as success.".to_string(),
+        });
+    } else if rep_pct < HIGH_REPRESENTATION_PCT {
+        tier = worst(tier, ReportValidity::Degraded);
+        reasons.push(ValidityReason {
+            code: "degraded_representation".to_string(),
+            detail: format!(
+                "represented_source_percent={rep_pct:.1} below high threshold {HIGH_REPRESENTATION_PCT:.1}"
+            ),
+            recommended_action:
+                "Inspect unrepresented_*_lines buckets and broaden frontend coverage where feasible.".to_string(),
+        });
+    }
+
+    let unrepresented_share = summary.unrepresented_failed_percent
+        + summary.unrepresented_timed_out_percent
+        + summary.unrepresented_unsupported_percent;
+    if rep_pct >= HIGH_REPRESENTATION_PCT && unrepresented_share >= DEGRADED_UNREPRESENTED_PCT {
+        tier = worst(tier, ReportValidity::Degraded);
+        reasons.push(ValidityReason {
+            code: "high_unrepresented_failures".to_string(),
+            detail: format!(
+                "unrepresented_failed+timed_out+unsupported share={unrepresented_share:.1}% at or above {DEGRADED_UNREPRESENTED_PCT:.1}%"
+            ),
+            recommended_action:
+                "Triage failure root causes for the largest unrepresented bucket before relying on this report.".to_string(),
+        });
+    }
+
+    // Kapow case: completed denominator is zero but exploration was
+    // attempted. Tier is already `low` via the rep% rule; the reason
+    // code documents the specific failure shape.
+    if summary.completed_functions == 0 && summary.failed_functions > 0 {
+        reasons.push(ValidityReason {
+            code: "kapow_tiny_denominator".to_string(),
+            detail: format!(
+                "completed=0 of attempted={}; rep%={rep_pct:.1}",
+                summary.completed_functions + summary.failed_functions + summary.skipped_functions
+            ),
+            recommended_action:
+                "All attempted functions failed exploration; do not treat as partial-success. Re-run after addressing failure root causes.".to_string(),
+        });
+    }
+
+    if let Some(diff) = source_diff
+        && diff.is_stale()
+    {
+        tier = worst(tier, ReportValidity::StaleSourceSet);
+        if !diff.added.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_added".to_string(),
+                detail: format!(
+                    "{} source path(s) added after manifest capture",
+                    diff.added.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree so the manifest snapshot reflects the explored set."
+                        .to_string(),
+            });
+        }
+        if !diff.removed.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_removed".to_string(),
+                detail: format!(
+                    "{} source path(s) removed after manifest capture",
+                    diff.removed.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree; removed files invalidate per-file buckets."
+                        .to_string(),
+            });
+        }
+        if !diff.changed.is_empty() {
+            reasons.push(ValidityReason {
+                code: "stale_source_set_changed".to_string(),
+                detail: format!(
+                    "{} source path(s) changed content during run",
+                    diff.changed.len()
+                ),
+                recommended_action:
+                    "Re-run on a quiesced source tree; mid-run edits make line buckets unreliable."
+                        .to_string(),
+            });
+        }
+    }
+
+    if !missing_artifacts.is_empty() {
+        tier = worst(tier, ReportValidity::InvalidArtifacts);
+        let preview: Vec<String> = missing_artifacts.iter().take(3).cloned().collect();
+        reasons.push(ValidityReason {
+            code: "invalid_artifacts_missing".to_string(),
+            detail: format!(
+                "{} expected per-function report file(s) missing on disk (e.g. {})",
+                missing_artifacts.len(),
+                preview.join(", ")
+            ),
+            recommended_action:
+                "Inspect output directory for I/O failures; the report references artifacts that do not exist.".to_string(),
+        });
+    }
+
+    (tier, reasons)
+}
+
+/// Pick the worse of two [`ReportValidity`] tiers per
+/// [`report_validity_severity`].
+fn worst(a: ReportValidity, b: ReportValidity) -> ReportValidity {
+    if report_validity_severity(b) > report_validity_severity(a) {
+        b
+    } else {
+        a
+    }
+}
+
+/// Return the kebab-case wire form of a [`ReportValidity`] for
+/// embedding in stdout markdown. Matches the JSON serde rename so
+/// machine-readable output and human-readable output stay aligned.
+fn report_validity_label(v: ReportValidity) -> &'static str {
+    match v {
+        ReportValidity::High => "high",
+        ReportValidity::Degraded => "degraded",
+        ReportValidity::Low => "low",
+        ReportValidity::StaleSourceSet => "stale-source-set",
+        ReportValidity::InvalidArtifacts => "invalid-artifacts",
+    }
+}
+
+/// Render the str-jeen.5 validity block as a markdown fragment.
+/// Empty `reasons` collapses to a single-line "no issues detected"
+/// note so `high` runs still get an explicit verdict.
+pub(crate) fn render_validity_markdown(
+    validity: ReportValidity,
+    reasons: &[ValidityReason],
+) -> String {
+    use std::fmt::Write;
+    let mut md = String::new();
+    let label = report_validity_label(validity);
+    writeln!(md, "## Report Validity: {label}").unwrap();
+    writeln!(md).unwrap();
+    if reasons.is_empty() {
+        writeln!(md, "No validity issues detected.").unwrap();
+        writeln!(md).unwrap();
+        return md;
+    }
+    writeln!(md, "| Reason | Detail | Recommended action |").unwrap();
+    writeln!(md, "|---|---|---|").unwrap();
+    for r in reasons {
+        // Pipes inside cells would break the table; replace just in
+        // case future detail strings carry one.
+        let detail = r.detail.replace('|', "\\|");
+        let action = r.recommended_action.replace('|', "\\|");
+        writeln!(md, "| {} | {} | {} |", r.code, detail, action).unwrap();
+    }
+    writeln!(md).unwrap();
+    md
+}
+
+/// str-jeen.5: per-function self-check. Returns the list of expected
+/// `<safe_name>.md` paths (relative to `output_dir`) that
+/// `write_run_report` was supposed to produce but that are absent on
+/// disk. Mirrors the filename derivation in `write_run_report`.
+pub(crate) fn missing_run_report_artifacts(
+    output_dir: &Path,
+    exploration_results: &[(String, explorer::ObservationOutput)],
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (qname, _) in exploration_results {
+        let safe_name = qname.replace("::", "__").replace('/', "_");
+        let func_path = output_dir.join(format!("{safe_name}.md"));
+        if !func_path.is_file() {
+            missing.push(format!("{safe_name}.md"));
+        }
+    }
+    missing
 }
 
 fn percent_of_source(lines: u64, selected_source_lines: u64) -> f64 {
@@ -2126,5 +2420,298 @@ mod tests {
         assert_eq!(scope_hash(&a), scope_hash(&b));
         b.options.exclude_patterns.push("vendor/**".to_string());
         assert_ne!(scope_hash(&a), scope_hash(&b));
+    }
+
+    // ---------------------------------------------------------------
+    // str-jeen.5: report validity classifier and renderer
+    // ---------------------------------------------------------------
+
+    /// Build a baseline summary anchored on a 100-line denominator so
+    /// `represented_source_percent` is just `represented_source_lines`.
+    fn synth_summary(rep_lines: u64, completed: usize, failed: usize) -> RunSummary {
+        RunSummary {
+            version: RUN_SUMMARY_VERSION,
+            scan_id: "synth".to_string(),
+            selected_source_files: 1,
+            selected_source_lines: 100,
+            completed_functions: completed,
+            failed_functions: failed,
+            skipped_functions: 0,
+            no_target_file_lines: 0,
+            undiscovered_source_lines: 0,
+            represented_source_lines: rep_lines,
+            represented_source_percent: rep_lines as f64,
+            unrepresented_failed_lines: 0,
+            unrepresented_failed_percent: 0.0,
+            unrepresented_timed_out_lines: 0,
+            unrepresented_timed_out_percent: 0.0,
+            unrepresented_unsupported_lines: 0,
+            unrepresented_unsupported_percent: 0.0,
+            unrepresented_no_target_lines: 0,
+            unrepresented_no_target_percent: 0.0,
+            unrepresented_undiscovered_lines: 0,
+            unrepresented_undiscovered_percent: 0.0,
+            report_validity: ReportValidity::High,
+            validity_reasons: Vec::new(),
+        }
+    }
+
+    fn reason_codes(reasons: &[ValidityReason]) -> Vec<&str> {
+        reasons.iter().map(|r| r.code.as_str()).collect()
+    }
+
+    #[test]
+    fn classify_validity_high_when_clean_and_well_represented() {
+        let summary = synth_summary(90, 9, 1);
+        let (tier, reasons) = classify_validity(&summary, None, &[]);
+        assert_eq!(tier, ReportValidity::High);
+        assert!(reasons.is_empty(), "got {reasons:?}");
+    }
+
+    #[test]
+    fn classify_validity_degraded_below_high_threshold() {
+        let summary = synth_summary(50, 5, 5);
+        let (tier, reasons) = classify_validity(&summary, None, &[]);
+        assert_eq!(tier, ReportValidity::Degraded);
+        assert!(reason_codes(&reasons).contains(&"degraded_representation"));
+    }
+
+    #[test]
+    fn classify_validity_low_below_low_threshold() {
+        let summary = synth_summary(10, 1, 9);
+        let (tier, reasons) = classify_validity(&summary, None, &[]);
+        assert_eq!(tier, ReportValidity::Low);
+        assert!(reason_codes(&reasons).contains(&"low_representation"));
+    }
+
+    #[test]
+    fn classify_validity_kapow_attaches_reason_code_at_low_tier() {
+        // Kapow: zero completed but exploration was attempted with
+        // many failures. rep% = 0 → tier `low`; reason code documents
+        // the specific shape so callers don't read it as success.
+        let summary = synth_summary(0, 0, 42);
+        let (tier, reasons) = classify_validity(&summary, None, &[]);
+        assert_eq!(tier, ReportValidity::Low);
+        let codes = reason_codes(&reasons);
+        assert!(codes.contains(&"low_representation"));
+        assert!(codes.contains(&"kapow_tiny_denominator"));
+    }
+
+    #[test]
+    fn classify_validity_demotes_to_degraded_on_high_unrepresented_failures() {
+        // Representation is healthy (rep% >= 75) but failed-lines
+        // share crosses the bar — degrades to `degraded`.
+        let mut summary = synth_summary(80, 8, 2);
+        summary.unrepresented_failed_percent = 30.0;
+        let (tier, reasons) = classify_validity(&summary, None, &[]);
+        assert_eq!(tier, ReportValidity::Degraded);
+        assert!(reason_codes(&reasons).contains(&"high_unrepresented_failures"));
+    }
+
+    #[test]
+    fn classify_validity_stale_source_set_overrides_representation_tier() {
+        let summary = synth_summary(95, 9, 1); // would be `high`
+        let mut diff = run_manifest::ManifestDiff::default();
+        diff.changed.push("src/foo.rs".to_string());
+        let (tier, reasons) = classify_validity(&summary, Some(&diff), &[]);
+        assert_eq!(tier, ReportValidity::StaleSourceSet);
+        assert!(reason_codes(&reasons).contains(&"stale_source_set_changed"));
+    }
+
+    #[test]
+    fn classify_validity_invalid_artifacts_is_worst_tier() {
+        // Even with stale source set + low representation, missing
+        // artifacts wins because the report references files that
+        // don't exist.
+        let summary = synth_summary(5, 0, 50);
+        let mut diff = run_manifest::ManifestDiff::default();
+        diff.removed.push("src/dropped.rs".to_string());
+        let missing = vec!["pkg__mod__fn.md".to_string()];
+        let (tier, reasons) = classify_validity(&summary, Some(&diff), &missing);
+        assert_eq!(tier, ReportValidity::InvalidArtifacts);
+        assert!(reason_codes(&reasons).contains(&"invalid_artifacts_missing"));
+    }
+
+    #[test]
+    fn classify_validity_high_threshold_boundary_is_inclusive() {
+        // rep% exactly at the high threshold should classify as high
+        // (no representation reason). Below it strictly demotes.
+        let at = synth_summary(75, 7, 3);
+        let (tier_at, reasons_at) = classify_validity(&at, None, &[]);
+        assert_eq!(tier_at, ReportValidity::High);
+        assert!(reasons_at.is_empty());
+
+        let mut just_below = synth_summary(75, 7, 3);
+        just_below.represented_source_percent = 74.99;
+        let (tier_below, _) = classify_validity(&just_below, None, &[]);
+        assert_eq!(tier_below, ReportValidity::Degraded);
+    }
+
+    #[test]
+    fn render_validity_markdown_emits_verdict_and_reasons() {
+        let reasons = vec![ValidityReason {
+            code: "degraded_representation".to_string(),
+            detail: "rep%=50.0".to_string(),
+            recommended_action: "Inspect buckets.".to_string(),
+        }];
+        let md = render_validity_markdown(ReportValidity::Degraded, &reasons);
+        assert!(md.contains("## Report Validity: degraded"));
+        assert!(md.contains("degraded_representation"));
+        assert!(md.contains("rep%=50.0"));
+        assert!(md.contains("Inspect buckets."));
+    }
+
+    #[test]
+    fn render_validity_markdown_high_run_collapses_to_no_issues() {
+        let md = render_validity_markdown(ReportValidity::High, &[]);
+        assert!(md.contains("## Report Validity: high"));
+        assert!(md.contains("No validity issues detected."));
+    }
+
+    #[test]
+    fn render_validity_markdown_escapes_pipe_in_detail() {
+        // Detail strings carrying a pipe character must not break the
+        // markdown table layout.
+        let reasons = vec![ValidityReason {
+            code: "x".to_string(),
+            detail: "a|b".to_string(),
+            recommended_action: "c|d".to_string(),
+        }];
+        let md = render_validity_markdown(ReportValidity::Low, &reasons);
+        assert!(md.contains("a\\|b"));
+        assert!(md.contains("c\\|d"));
+    }
+
+    #[test]
+    fn run_summary_validity_round_trips_through_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "x\n").expect("write");
+        let manifest =
+            shatter_core::run_manifest::capture("scan-v", "h", &["a.rs".to_string()], Some(root));
+        let mut summary = build_run_summary("scan-v", &manifest, 1, 0, 0, &[]);
+        summary.report_validity = ReportValidity::Degraded;
+        summary.validity_reasons.push(ValidityReason {
+            code: "degraded_representation".to_string(),
+            detail: "rt".to_string(),
+            recommended_action: "act".to_string(),
+        });
+        let out_dir = root.join("out");
+        write_run_summary_json(&out_dir, &summary).expect("write");
+        let bytes = fs::read(out_dir.join(RUN_SUMMARY_FILENAME)).expect("read");
+        let parsed: RunSummary = serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(parsed.report_validity, ReportValidity::Degraded);
+        assert_eq!(parsed.validity_reasons.len(), 1);
+        assert_eq!(parsed.validity_reasons[0].code, "degraded_representation");
+
+        // Legacy payload (no validity fields) deserializes as `high`
+        // with empty reasons — the additive default covers the
+        // backward-compat contract.
+        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).expect("reparse");
+        let obj = legacy.as_object_mut().unwrap();
+        obj.remove("report_validity");
+        obj.remove("validity_reasons");
+        let legacy_bytes = serde_json::to_vec(&legacy).expect("legacy ser");
+        let legacy_parsed: RunSummary =
+            serde_json::from_slice(&legacy_bytes).expect("legacy parse");
+        assert_eq!(legacy_parsed.report_validity, ReportValidity::High);
+        assert!(legacy_parsed.validity_reasons.is_empty());
+    }
+
+    #[test]
+    fn missing_run_report_artifacts_flags_absent_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path();
+        // Pretend two functions completed; only write one .md file.
+        let results: Vec<(String, explorer::ObservationOutput)> = vec![
+            ("pkg::a".to_string(), explorer::ObservationOutput::default()),
+            ("pkg::b".to_string(), explorer::ObservationOutput::default()),
+        ];
+        fs::write(out.join("pkg__a.md"), "").expect("write a");
+        let missing = missing_run_report_artifacts(out, &results);
+        assert_eq!(missing, vec!["pkg__b.md".to_string()]);
+    }
+
+    #[test]
+    fn classify_validity_detects_real_stale_manifest_diff() {
+        // End-to-end: capture a manifest, mutate the file on disk,
+        // diff, and assert the classifier escalates to
+        // stale-source-set with a `changed` reason.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.join("src.rs");
+        fs::write(&path, "alpha\n").expect("write initial");
+        let manifest_paths = vec!["src.rs".to_string()];
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-stale",
+            "h",
+            &manifest_paths,
+            Some(root),
+        );
+        // Mutate the source file content; the snapshot compares
+        // size + content hash so no sleep is needed.
+        fs::write(&path, "alpha\nbeta\n").expect("rewrite");
+        let diff = shatter_core::run_manifest::diff_against(&manifest, &manifest_paths);
+        assert!(diff.is_stale(), "expected stale diff, got {diff:?}");
+
+        let summary = synth_summary(95, 9, 1);
+        let (tier, reasons) = classify_validity(&summary, Some(&diff), &[]);
+        assert_eq!(tier, ReportValidity::StaleSourceSet);
+        assert!(reason_codes(&reasons).contains(&"stale_source_set_changed"));
+    }
+
+    proptest! {
+        /// Validity tier is monotonic non-improving as
+        /// `represented_source_percent` decreases (with stale and
+        /// artifact signals held clean). Encodes the precedence rule
+        /// that lower representation never produces a better tag.
+        #[test]
+        fn classify_validity_is_monotonic_in_representation_percent(
+            high_pct in 0.0f64..=100.0,
+            low_pct in 0.0f64..=100.0,
+        ) {
+            let (a, b) = if high_pct >= low_pct {
+                (high_pct, low_pct)
+            } else {
+                (low_pct, high_pct)
+            };
+            let mut sum_high = synth_summary(0, 1, 0);
+            sum_high.represented_source_percent = a;
+            let mut sum_low = synth_summary(0, 1, 0);
+            sum_low.represented_source_percent = b;
+            let (tier_high, _) = classify_validity(&sum_high, None, &[]);
+            let (tier_low, _) = classify_validity(&sum_low, None, &[]);
+            prop_assert!(
+                report_validity_severity(tier_high) <= report_validity_severity(tier_low),
+                "rep%={a} produced {tier_high:?} but rep%={b} produced {tier_low:?}",
+            );
+        }
+
+        /// Whenever the source-set diff is stale the validity tag is
+        /// at least `stale-source-set` — never `high`/`degraded`/`low`
+        /// outranking it. Holds independently of representation %.
+        #[test]
+        fn stale_source_set_forces_at_least_stale_tier(
+            rep_pct in 0.0f64..=100.0,
+            n_added in 0usize..5,
+            n_removed in 0usize..5,
+            n_changed in 0usize..5,
+        ) {
+            // At least one bucket non-empty so the diff is stale.
+            let n_added = if n_added + n_removed + n_changed == 0 { 1 } else { n_added };
+            let mut diff = run_manifest::ManifestDiff::default();
+            for i in 0..n_added { diff.added.push(format!("a{i}.rs")); }
+            for i in 0..n_removed { diff.removed.push(format!("r{i}.rs")); }
+            for i in 0..n_changed { diff.changed.push(format!("c{i}.rs")); }
+            prop_assume!(diff.is_stale());
+
+            let mut summary = synth_summary(0, 1, 0);
+            summary.represented_source_percent = rep_pct;
+            let (tier, _) = classify_validity(&summary, Some(&diff), &[]);
+            prop_assert!(
+                report_validity_severity(tier) >= report_validity_severity(ReportValidity::StaleSourceSet),
+                "stale diff produced {tier:?}, expected >= StaleSourceSet",
+            );
+        }
     }
 }
