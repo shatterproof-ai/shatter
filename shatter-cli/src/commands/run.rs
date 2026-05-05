@@ -349,6 +349,7 @@ pub(crate) async fn run_run(
     log::debug!("Exploring functions in dependency order...");
 
     let mut exploration_results: Vec<(String, explorer::ObservationOutput)> = Vec::new();
+    let mut exploration_failures: HashMap<String, String> = HashMap::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         log::debug!("Layer {} ({} function(s)):", layer_idx, layer.len());
@@ -395,6 +396,8 @@ pub(crate) async fn run_run(
 
             let Some(func_analysis) = func_analysis else {
                 log::warn!("Skipping {}: could not get analysis", entry.name);
+                exploration_failures
+                    .insert(qualified_name.clone(), "could not get analysis".to_string());
                 continue;
             };
 
@@ -445,6 +448,7 @@ pub(crate) async fn run_run(
                 }
                 Err(e) => {
                     log::debug!("{}: error: {e}", entry.name);
+                    exploration_failures.insert(qualified_name.clone(), e.to_string());
                 }
             }
 
@@ -490,10 +494,22 @@ pub(crate) async fn run_run(
         // ratio of completed to attempted.
         let attempted = total_functions;
         let failed = attempted.saturating_sub(completed);
-        let spans = registry_spans(&registry, &root);
+        let spans = registry_representation_spans(
+            &registry,
+            &root,
+            &exploration_results,
+            &exploration_failures,
+        );
         write_run_summary_json(
             dir,
-            &build_run_summary(&scan_id, &run_manifest, completed, failed, 0, &spans),
+            &build_run_summary_with_representation(
+                &scan_id,
+                &run_manifest,
+                completed,
+                failed,
+                0,
+                &spans,
+            ),
         )?;
     }
 
@@ -592,7 +608,7 @@ pub(crate) const RUN_SUMMARY_VERSION: u32 = 1;
 /// totals. That's the whole point of this struct: the denominator must
 /// reflect the source set the run selected, even when most targets
 /// fail or skip during exploration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct RunSummary {
     /// Schema version. See [`RUN_SUMMARY_VERSION`].
     pub version: u32,
@@ -633,6 +649,49 @@ pub(crate) struct RunSummary {
     /// their lines are already attributed to `no_target_file_lines`.
     #[serde(default)]
     pub undiscovered_source_lines: u64,
+    /// Selected source lines represented by completed exploration
+    /// (str-jeen.44). This is a source-set metric: a line contributes
+    /// at most once even if overlapping function spans point at it.
+    #[serde(default)]
+    pub represented_source_lines: u64,
+    /// `represented_source_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub represented_source_percent: f64,
+    /// Selected source lines in discovered spans whose final outcome
+    /// failed without a more specific timeout or unsupported bucket.
+    #[serde(default)]
+    pub unrepresented_failed_lines: u64,
+    /// `unrepresented_failed_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub unrepresented_failed_percent: f64,
+    /// Selected source lines in discovered spans whose final outcome
+    /// timed out.
+    #[serde(default)]
+    pub unrepresented_timed_out_lines: u64,
+    /// `unrepresented_timed_out_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub unrepresented_timed_out_percent: f64,
+    /// Selected source lines in discovered spans that were unsupported
+    /// by the frontend or value-generation path.
+    #[serde(default)]
+    pub unrepresented_unsupported_lines: u64,
+    /// `unrepresented_unsupported_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub unrepresented_unsupported_percent: f64,
+    /// Alias of `no_target_file_lines` grouped under the str-jeen.44
+    /// unrepresented-source namespace.
+    #[serde(default)]
+    pub unrepresented_no_target_lines: u64,
+    /// `unrepresented_no_target_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub unrepresented_no_target_percent: f64,
+    /// Alias of `undiscovered_source_lines` grouped under the str-jeen.44
+    /// unrepresented-source namespace.
+    #[serde(default)]
+    pub unrepresented_undiscovered_lines: u64,
+    /// `unrepresented_undiscovered_lines / selected_source_lines * 100`.
+    #[serde(default)]
+    pub unrepresented_undiscovered_percent: f64,
 }
 
 /// Derive a stable hash of the discovery scope so the manifest's
@@ -665,12 +724,7 @@ pub(crate) fn registry_spans(
         .entries()
         .iter()
         .map(|e| {
-            let path = e
-                .file_path
-                .strip_prefix(root)
-                .unwrap_or(&e.file_path)
-                .to_string_lossy()
-                .into_owned();
+            let path = manifest_path_for(&e.file_path, root);
             DiscoveredSpan {
                 path,
                 start_line: e.start_line,
@@ -678,6 +732,60 @@ pub(crate) fn registry_spans(
             }
         })
         .collect()
+}
+
+fn manifest_path_for(file_path: &Path, root: &Path) -> String {
+    file_path
+        .strip_prefix(root)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn registry_representation_spans(
+    registry: &batch_analyze::FunctionRegistry,
+    root: &Path,
+    exploration_results: &[(String, explorer::ObservationOutput)],
+    exploration_failures: &HashMap<String, String>,
+) -> Vec<SourceRepresentationSpan> {
+    let results_by_name: HashMap<&str, &explorer::ObservationOutput> = exploration_results
+        .iter()
+        .map(|(name, output)| (name.as_str(), output))
+        .collect();
+
+    registry
+        .entries()
+        .iter()
+        .map(|entry| {
+            let qualified_name =
+                batch_analyze::FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+            let outcome = match results_by_name.get(qualified_name.as_str()) {
+                Some(output) if output.timed_out => SourceRepresentationOutcome::TimedOut,
+                Some(_) => SourceRepresentationOutcome::Represented,
+                None => exploration_failures
+                    .get(qualified_name.as_str())
+                    .map(|reason| source_representation_outcome_from_failure_reason(reason))
+                    .unwrap_or(SourceRepresentationOutcome::Failed),
+            };
+            SourceRepresentationSpan {
+                path: manifest_path_for(&entry.file_path, root),
+                start_line: entry.start_line,
+                end_line: entry.end_line,
+                outcome,
+            }
+        })
+        .collect()
+}
+
+fn source_representation_outcome_from_failure_reason(reason: &str) -> SourceRepresentationOutcome {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        SourceRepresentationOutcome::TimedOut
+    } else if lower.contains("unsupported") || lower.contains("unexecutable") {
+        SourceRepresentationOutcome::Unsupported
+    } else {
+        SourceRepresentationOutcome::Failed
+    }
 }
 
 /// A discovered function span anchored to a manifest source path.
@@ -699,6 +807,35 @@ pub(crate) struct DiscoveredSpan {
 pub(crate) struct LineBuckets {
     pub no_target_file_lines: u64,
     pub undiscovered_source_lines: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceRepresentationOutcome {
+    Represented,
+    Failed,
+    TimedOut,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceRepresentationSpan {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub outcome: SourceRepresentationOutcome,
+}
+
+/// Source-set representation buckets (str-jeen.44). Unlike function-span
+/// counters, these are line partitions over the selected source manifest:
+/// a selected line contributes to at most one bucket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SourceRepresentationBuckets {
+    pub represented_source_lines: u64,
+    pub unrepresented_failed_lines: u64,
+    pub unrepresented_timed_out_lines: u64,
+    pub unrepresented_unsupported_lines: u64,
+    pub unrepresented_no_target_lines: u64,
+    pub unrepresented_undiscovered_lines: u64,
 }
 
 /// Compute the `no_target_file_lines` and `undiscovered_source_lines`
@@ -794,6 +931,113 @@ fn covered_lines(spans: &[(u32, u32)], line_count: u32) -> u64 {
     total
 }
 
+pub(crate) fn compute_source_representation(
+    manifest: &RunManifest,
+    spans: &[SourceRepresentationSpan],
+) -> SourceRepresentationBuckets {
+    let mut spans_by_path: BTreeMap<&str, Vec<&SourceRepresentationSpan>> = BTreeMap::new();
+    for span in spans {
+        spans_by_path
+            .entry(span.path.as_str())
+            .or_default()
+            .push(span);
+    }
+
+    let mut buckets = SourceRepresentationBuckets::default();
+    for snap in &manifest.source_files {
+        let Some(line_count) = snap.line_count else {
+            continue;
+        };
+        let Some(file_spans) = spans_by_path.get(snap.path.as_str()) else {
+            buckets.unrepresented_no_target_lines = buckets
+                .unrepresented_no_target_lines
+                .saturating_add(u64::from(line_count));
+            continue;
+        };
+
+        let mut line_classes = vec![LineClass::Undiscovered; line_count as usize];
+        for span in file_spans {
+            let Some((start, end)) = clamped_span_range(span.start_line, span.end_line, line_count)
+            else {
+                continue;
+            };
+            let class = LineClass::from_outcome(span.outcome);
+            for line_class in line_classes
+                .iter_mut()
+                .take(end as usize)
+                .skip((start - 1) as usize)
+            {
+                if class.precedence() > line_class.precedence() {
+                    *line_class = class;
+                }
+            }
+        }
+
+        for class in line_classes {
+            match class {
+                LineClass::Undiscovered => {
+                    buckets.unrepresented_undiscovered_lines =
+                        buckets.unrepresented_undiscovered_lines.saturating_add(1);
+                }
+                LineClass::Failed => {
+                    buckets.unrepresented_failed_lines =
+                        buckets.unrepresented_failed_lines.saturating_add(1);
+                }
+                LineClass::TimedOut => {
+                    buckets.unrepresented_timed_out_lines =
+                        buckets.unrepresented_timed_out_lines.saturating_add(1);
+                }
+                LineClass::Unsupported => {
+                    buckets.unrepresented_unsupported_lines =
+                        buckets.unrepresented_unsupported_lines.saturating_add(1);
+                }
+                LineClass::Represented => {
+                    buckets.represented_source_lines =
+                        buckets.represented_source_lines.saturating_add(1);
+                }
+            }
+        }
+    }
+    buckets
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineClass {
+    Undiscovered,
+    Failed,
+    TimedOut,
+    Unsupported,
+    Represented,
+}
+
+impl LineClass {
+    fn from_outcome(outcome: SourceRepresentationOutcome) -> Self {
+        match outcome {
+            SourceRepresentationOutcome::Represented => Self::Represented,
+            SourceRepresentationOutcome::Failed => Self::Failed,
+            SourceRepresentationOutcome::TimedOut => Self::TimedOut,
+            SourceRepresentationOutcome::Unsupported => Self::Unsupported,
+        }
+    }
+
+    fn precedence(self) -> u8 {
+        match self {
+            Self::Undiscovered => 0,
+            Self::Failed => 1,
+            Self::Unsupported => 2,
+            Self::TimedOut => 3,
+            Self::Represented => 4,
+        }
+    }
+}
+
+fn clamped_span_range(start: u32, end: u32, line_count: u32) -> Option<(u32, u32)> {
+    if line_count == 0 || start == 0 || start > line_count {
+        return None;
+    }
+    Some((start, end.min(line_count).max(start)))
+}
+
 /// Build a [`RunSummary`] from a captured manifest, the run's outcome
 /// counters, and the discovered function spans used to bucket
 /// no-target / undiscovered source lines (str-jeen.43). Pure function
@@ -807,16 +1051,97 @@ pub(crate) fn build_run_summary(
     spans: &[DiscoveredSpan],
 ) -> RunSummary {
     let buckets = compute_line_buckets(manifest, spans);
+    let representation = SourceRepresentationBuckets {
+        unrepresented_no_target_lines: buckets.no_target_file_lines,
+        unrepresented_undiscovered_lines: buckets.undiscovered_source_lines,
+        ..SourceRepresentationBuckets::default()
+    };
+    build_run_summary_from_buckets(
+        scan_id,
+        manifest,
+        completed,
+        failed,
+        skipped,
+        representation,
+    )
+}
+
+pub(crate) fn build_run_summary_with_representation(
+    scan_id: &str,
+    manifest: &RunManifest,
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+    spans: &[SourceRepresentationSpan],
+) -> RunSummary {
+    let representation = compute_source_representation(manifest, spans);
+    build_run_summary_from_buckets(
+        scan_id,
+        manifest,
+        completed,
+        failed,
+        skipped,
+        representation,
+    )
+}
+
+fn build_run_summary_from_buckets(
+    scan_id: &str,
+    manifest: &RunManifest,
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+    representation: SourceRepresentationBuckets,
+) -> RunSummary {
+    let selected_source_lines = manifest.selected_source_lines();
     RunSummary {
         version: RUN_SUMMARY_VERSION,
         scan_id: scan_id.to_string(),
         selected_source_files: manifest.selected_source_files(),
-        selected_source_lines: manifest.selected_source_lines(),
+        selected_source_lines,
         completed_functions: completed,
         failed_functions: failed,
         skipped_functions: skipped,
-        no_target_file_lines: buckets.no_target_file_lines,
-        undiscovered_source_lines: buckets.undiscovered_source_lines,
+        no_target_file_lines: representation.unrepresented_no_target_lines,
+        undiscovered_source_lines: representation.unrepresented_undiscovered_lines,
+        represented_source_lines: representation.represented_source_lines,
+        represented_source_percent: percent_of_source(
+            representation.represented_source_lines,
+            selected_source_lines,
+        ),
+        unrepresented_failed_lines: representation.unrepresented_failed_lines,
+        unrepresented_failed_percent: percent_of_source(
+            representation.unrepresented_failed_lines,
+            selected_source_lines,
+        ),
+        unrepresented_timed_out_lines: representation.unrepresented_timed_out_lines,
+        unrepresented_timed_out_percent: percent_of_source(
+            representation.unrepresented_timed_out_lines,
+            selected_source_lines,
+        ),
+        unrepresented_unsupported_lines: representation.unrepresented_unsupported_lines,
+        unrepresented_unsupported_percent: percent_of_source(
+            representation.unrepresented_unsupported_lines,
+            selected_source_lines,
+        ),
+        unrepresented_no_target_lines: representation.unrepresented_no_target_lines,
+        unrepresented_no_target_percent: percent_of_source(
+            representation.unrepresented_no_target_lines,
+            selected_source_lines,
+        ),
+        unrepresented_undiscovered_lines: representation.unrepresented_undiscovered_lines,
+        unrepresented_undiscovered_percent: percent_of_source(
+            representation.unrepresented_undiscovered_lines,
+            selected_source_lines,
+        ),
+    }
+}
+
+fn percent_of_source(lines: u64, selected_source_lines: u64) -> f64 {
+    if selected_source_lines == 0 {
+        0.0
+    } else {
+        ((lines as f64 / selected_source_lines as f64) * 100.0).clamp(0.0, 100.0)
     }
 }
 
@@ -1335,6 +1660,65 @@ mod tests {
                 prop_assert_eq!(buckets.no_target_file_lines, 0);
             }
         }
+
+        #[test]
+        fn source_representation_buckets_never_exceed_selected_source_lines(
+            line_count in 0u32..200,
+            raw_spans in proptest::collection::vec((0u32..250, 0u32..250, 0u8..4), 0..50),
+        ) {
+            let manifest = RunManifest {
+                version: shatter_core::run_manifest::RUN_MANIFEST_VERSION,
+                scan_id: "prop".to_string(),
+                project_root: None,
+                repo_root: None,
+                cwd: String::new(),
+                git_commit: None,
+                git_dirty: None,
+                scope_hash: "scope".to_string(),
+                source_files: vec![shatter_core::run_manifest::SourceFileSnapshot {
+                    path: "f.rs".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: Some(line_count),
+                }],
+                captured_at_ns: 0,
+            };
+            let spans: Vec<SourceRepresentationSpan> = raw_spans
+                .into_iter()
+                .map(|(start_line, end_line, outcome)| SourceRepresentationSpan {
+                    path: "f.rs".to_string(),
+                    start_line,
+                    end_line,
+                    outcome: match outcome {
+                        0 => SourceRepresentationOutcome::Represented,
+                        1 => SourceRepresentationOutcome::Failed,
+                        2 => SourceRepresentationOutcome::TimedOut,
+                        _ => SourceRepresentationOutcome::Unsupported,
+                    },
+                })
+                .collect();
+
+            let buckets = compute_source_representation(&manifest, &spans);
+            let attributed = buckets
+                .represented_source_lines
+                .saturating_add(buckets.unrepresented_failed_lines)
+                .saturating_add(buckets.unrepresented_timed_out_lines)
+                .saturating_add(buckets.unrepresented_unsupported_lines)
+                .saturating_add(buckets.unrepresented_no_target_lines)
+                .saturating_add(buckets.unrepresented_undiscovered_lines);
+
+            prop_assert!(
+                attributed <= u64::from(line_count),
+                "source representation buckets must not exceed selected source lines"
+            );
+            if spans.is_empty() {
+                prop_assert_eq!(buckets.unrepresented_no_target_lines, u64::from(line_count));
+                prop_assert_eq!(buckets.unrepresented_undiscovered_lines, 0);
+            } else {
+                prop_assert_eq!(buckets.unrepresented_no_target_lines, 0);
+            }
+        }
     }
 
     /// `RunSummary` round-trips the new bucket fields through `run.json`
@@ -1447,8 +1831,7 @@ mod tests {
             },
         ];
 
-        let summary =
-            build_run_summary_with_representation("scan-1", &manifest, 2, 1, 0, &spans);
+        let summary = build_run_summary_with_representation("scan-1", &manifest, 2, 1, 0, &spans);
 
         assert_eq!(summary.selected_source_lines, 20);
         assert_eq!(summary.represented_source_lines, 6);
