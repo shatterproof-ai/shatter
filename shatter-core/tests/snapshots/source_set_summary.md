@@ -10,3 +10,5 @@
 | `policy_excluded` | 1 | 80 |
 | `unsupported` | 1 | 30 |
 
+- **Production-ish source lines:** 180 (whole-source denominator; see Coverage section below)
+
