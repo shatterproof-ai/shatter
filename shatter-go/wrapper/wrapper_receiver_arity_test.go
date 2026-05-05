@@ -211,7 +211,7 @@ func compileWrapperFixture(
 		t.Fatalf("write overlay: %v", err)
 	}
 
-	cmd := exec.Command("go", "build", "-overlay", manifestPath, "./...")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
 	cmd.Dir = modDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer

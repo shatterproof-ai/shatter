@@ -109,7 +109,7 @@ func ShatterDriveAndDump(path string) {
 	}
 
 	binaryPath := filepath.Join(workspace, "harness")
-	cmd := exec.Command("go", "build", "-overlay", manifest, "-o", binaryPath, ".")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifest, "-o", binaryPath, ".")
 	cmd.Dir = modRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build -overlay failed: %v\n%s", err, out)
