@@ -106,6 +106,27 @@ func TestDiscoveryHashChangesWithNewTarget(t *testing.T) {
 	}
 }
 
+func TestDiscoveryHashChangesWithTargetImports(t *testing.T) {
+	base := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:UseContext",
+			SymbolName: "UseContext",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "ctx", GoType: "context.Context"}},
+			Imports:    nil,
+		},
+	}
+	withImport := append([]wrapper.WrapperTarget{}, base...)
+	withImport[0].Imports = []string{"context"}
+
+	h1 := wrapper.DiscoveryHash(base, nil)
+	h2 := wrapper.DiscoveryHash(withImport, nil)
+
+	if h1 == h2 {
+		t.Errorf("hash should change when target imports change, got %q both times", h1)
+	}
+}
+
 func TestWriteWrapperFileSkipsRebuild(t *testing.T) {
 	dir := t.TempDir()
 	targets := threeTargets[:1]
@@ -361,9 +382,9 @@ func TestGenerateWrapperEmitsTargetImports(t *testing.T) {
 				{Name: "ctx", GoType: "context.Context"},
 				{Name: "logger", GoType: "*slog.Logger"},
 			},
-			Imports:      []string{"context", "log/slog"},
-			HasResult:    false,
-			ResultCount:  0,
+			Imports:     []string{"context", "log/slog"},
+			HasResult:   false,
+			ResultCount: 0,
 		},
 	}
 
