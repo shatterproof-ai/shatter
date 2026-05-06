@@ -115,31 +115,55 @@ pub(crate) async fn run_scan(
         .into());
     }
 
-    // str-tzbr: reject `scan --dry-run --stdout --format json` (and the
-    // equivalent default-stdout case where `outputs` is empty) before any
-    // work. The dry-run plan is currently markdown-only — emitting it to
-    // a JSON-tagged stdout would silently ship Markdown to a caller that
-    // asked for JSON. Non-dry-run `scan --stdout --format json` continues
-    // to work (it serializes the documented `scan_report` shape).
-    // For `-o <file>.json` users, `--dry-run --format json` is also not
-    // wired; the dry-run path bypasses `outputs`. Reject that combo
-    // explicitly so the failure is visible rather than silently writing
-    // nothing.
+    // str-tzbr / str-jeen.54: the dry-run plan is markdown-only. Two cases:
+    //
+    // 1. `--dry-run --stdout --format json` (and the equivalent default-
+    //    stdout case where `outputs` is empty): stdout is the only sink
+    //    and the user explicitly asked for JSON there. We cannot serve
+    //    that, so we **reject** with a message that names the exact
+    //    flags (`--dry-run`, `--stdout`, `--format json`) to change.
+    //    This preserves the str-tzbr contract that we never silently
+    //    ship Markdown on a JSON-tagged stdout.
+    //
+    // 2. `--dry-run -o <file>.json`: the JSON report file is simply not
+    //    written during dry-run (the markdown plan goes to stdout). Per
+    //    str-jeen.54 we **accept** this combo so projects whose normal
+    //    scan config includes a JSON `-o` report can still run dry-run
+    //    setup checks. We log a per-file warning that names the skipped
+    //    path so the user knows which `-o` flag / config field to drop
+    //    if they actually want JSON output (which requires running
+    //    without `--dry-run`).
     let json_stdout_requested =
         format == crate::args::StdoutFormat::Json && (stdout || outputs.is_empty());
-    let json_output_file_requested = outputs.iter().any(|p| {
-        matches!(
-            crate::args::infer_output_format(p),
-            Ok(crate::args::StdoutFormat::Json)
-        )
-    });
-    if dry_run && (json_stdout_requested || json_output_file_requested) {
+    let json_output_files: Vec<&std::path::PathBuf> = outputs
+        .iter()
+        .filter(|p| {
+            matches!(
+                crate::args::infer_output_format(p),
+                Ok(crate::args::StdoutFormat::Json)
+            )
+        })
+        .collect();
+    if dry_run && json_stdout_requested {
         return Err(
-            "scan --dry-run does not support --format json (and writes no JSON \
-             to -o files). Re-run without --dry-run for the JSON scan report, \
-             or drop --format json / the .json -o file to keep the dry-run plan."
+            "scan --dry-run cannot emit --format json on stdout: the dry-run \
+             plan is markdown-only. To fix, change one of: drop --format json \
+             (to keep the dry-run markdown plan), drop --stdout (and pass \
+             -o <file>.json instead — the file is then skipped during \
+             --dry-run), or drop --dry-run (to run the full scan and produce \
+             the JSON scan_report)."
                 .into(),
         );
+    }
+    if dry_run && !json_output_files.is_empty() {
+        for p in &json_output_files {
+            log::warn!(
+                "scan --dry-run: skipping JSON report output '{}' (the dry-run \
+                 plan is markdown-only, written to stdout). Drop this -o flag \
+                 or run without --dry-run to produce the JSON scan_report.",
+                p.display(),
+            );
+        }
     }
 
     // Resolve directory.
