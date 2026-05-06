@@ -202,6 +202,13 @@ pub enum ValuePlanKind {
     Random,
     /// Track the parameter as a symbolic variable for concolic exploration.
     Symbolic,
+    /// Source the argument from a frontend's runtime-value registry (e.g. Go's
+    /// `context.Background()` for `context.Context`). The companion `literal`
+    /// field carries the source expression as a JSON-encoded string and
+    /// `type_hint` names the registered type. The Rust core does not
+    /// materialize these directly; the producing frontend is responsible for
+    /// realizing the value at execute time.
+    RuntimeValue,
 }
 
 /// Concrete production strategy for one argument of an `InvocationPlan`.
@@ -3446,11 +3453,44 @@ mod tests {
             ValuePlanKind::Zero,
             ValuePlanKind::Random,
             ValuePlanKind::Symbolic,
+            ValuePlanKind::RuntimeValue,
         ] {
             let json = serde_json::to_string(&kind).expect("serialize");
             let decoded: ValuePlanKind = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(decoded, kind);
         }
+        // Go's `ValuePlanKindRuntimeValue = "runtime_value"` must not drift to
+        // "runtimeValue" or similar (str-1hlk.4).
+        assert_eq!(
+            serde_json::to_string(&ValuePlanKind::RuntimeValue).unwrap(),
+            "\"runtime_value\""
+        );
+    }
+
+    #[test]
+    fn value_plan_deserializes_go_runtime_value_argument() {
+        // Round-trip a ValuePlan shaped like the Go planner's
+        // runtimeValuePlans output (kind=runtime_value, literal carries the
+        // source expression as a JSON-encoded string, type_hint names the
+        // registered type).
+        let go_wire = r#"{
+            "param_index": 0,
+            "param_name": "ctx",
+            "kind": "runtime_value",
+            "literal": "context.Background()",
+            "type_hint": "context.Context"
+        }"#;
+        let decoded: ValuePlan = serde_json::from_str(go_wire).expect("deserialize");
+        assert_eq!(decoded.kind, ValuePlanKind::RuntimeValue);
+        assert_eq!(decoded.param_name, "ctx");
+        assert_eq!(decoded.type_hint, "context.Context");
+        assert_eq!(
+            decoded.literal,
+            Some(serde_json::Value::String("context.Background()".into()))
+        );
+        // Re-serialize and ensure the kind round-trips.
+        let reencoded = serde_json::to_value(&decoded).expect("serialize");
+        assert_eq!(reencoded["kind"], "runtime_value");
     }
 
     #[test]

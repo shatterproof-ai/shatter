@@ -8,10 +8,12 @@
 //! orchestrator code paths (see project-wide "parallel paths" contract).
 //!
 //! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s only.
-//! `Random` and `Symbolic` plan entries yield no seed for the current target
-//! and fall through to the normal random / concolic input generation. Callers
-//! that need to surface planner ordering should pass plans in priority order;
-//! seeds are produced in the order the frontend returned them.
+//! `Random`, `Symbolic`, and `RuntimeValue` plan entries yield no seed for
+//! the current target and fall through to the normal random / concolic input
+//! generation (or, for `RuntimeValue`, to the producing frontend's own
+//! runtime-value resolution at execute time). Callers that need to surface
+//! planner ordering should pass plans in priority order; seeds are produced
+//! in the order the frontend returned them.
 
 use serde_json::Value;
 
@@ -100,9 +102,11 @@ pub async fn fetch_planner_seeds(
 /// Map planner outputs to ready-to-execute argument vectors.
 ///
 /// One seed is produced per `InvocationPlan` whose every `ValuePlan` is
-/// directly materializable (`Literal` or `Zero`). Plans containing `Random`
-/// or `Symbolic` entries are skipped — those strategies are already covered
-/// by the explorer's random generator and the orchestrator's Z3 path.
+/// directly materializable (`Literal` or `Zero`). Plans containing `Random`,
+/// `Symbolic`, or `RuntimeValue` entries are skipped — those strategies are
+/// already covered by the explorer's random generator, the orchestrator's
+/// Z3 path, or the producing frontend's runtime-value resolution at execute
+/// time, respectively.
 #[must_use]
 pub fn materialize_seeds(plans: &[InvocationPlan], param_infos: &[ParamInfo]) -> Vec<Vec<Value>> {
     let mut seeds = Vec::new();
@@ -130,7 +134,7 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
-        ValuePlanKind::Random | ValuePlanKind::Symbolic => None,
+        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
     }
 }
 
@@ -235,6 +239,34 @@ mod tests {
         };
         let seeds = materialize_seeds(&[plan], &[int_param("a")]);
         assert!(seeds.is_empty(), "symbolic plan should not materialize");
+    }
+
+    #[test]
+    fn runtime_value_plan_is_skipped() {
+        // Mirrors the Go planner's runtimeValuePlans output: kind=runtime_value,
+        // literal carries a JSON-encoded source expression, type_hint names the
+        // registered Go type. The consumer must accept the wire form
+        // (str-1hlk.4) but skip materialization — the Go launcher resolves the
+        // value at execute time via planner.LookupRuntimeValue.
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "ctx".into(),
+                kind: ValuePlanKind::RuntimeValue,
+                literal: Some(json!("context.Background()")),
+                type_hint: "context.Context".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[int_param("ctx")]);
+        assert!(
+            seeds.is_empty(),
+            "runtime_value plan should not materialize in core consumer",
+        );
     }
 
     #[test]

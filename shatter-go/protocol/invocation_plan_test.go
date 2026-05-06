@@ -243,15 +243,27 @@ func TestValueRequirementKindJSON(t *testing.T) {
 
 func TestValuePlanKindJSON(t *testing.T) {
 	cases := map[protocol.ValuePlanKind]string{
-		protocol.ValuePlanKindLiteral:  `"literal"`,
-		protocol.ValuePlanKindZero:     `"zero"`,
-		protocol.ValuePlanKindRandom:   `"random"`,
-		protocol.ValuePlanKindSymbolic: `"symbolic"`,
+		protocol.ValuePlanKindLiteral:      `"literal"`,
+		protocol.ValuePlanKindZero:         `"zero"`,
+		protocol.ValuePlanKindRandom:       `"random"`,
+		protocol.ValuePlanKindSymbolic:     `"symbolic"`,
+		protocol.ValuePlanKindRuntimeValue: `"runtime_value"`,
 	}
 	for kind, want := range cases {
-		data, _ := json.Marshal(kind)
+		data, err := json.Marshal(kind)
+		if err != nil {
+			t.Fatalf("ValuePlanKind %v marshal error: %v", kind, err)
+		}
 		if string(data) != want {
 			t.Errorf("ValuePlanKind %v JSON = %s, want %s", kind, data, want)
+		}
+		// Round-trip: decoded form must equal the original kind.
+		var got protocol.ValuePlanKind
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("ValuePlanKind %v unmarshal error: %v", kind, err)
+		}
+		if got != kind {
+			t.Errorf("ValuePlanKind round-trip = %v, want %v", got, kind)
 		}
 	}
 }
