@@ -12,6 +12,7 @@
     "complex_type:url",
     "execute",
     "generate",
+    "get_invocation_plan",
     "instrument",
     "prepare",
     "setup",
