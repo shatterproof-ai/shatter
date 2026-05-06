@@ -114,7 +114,7 @@ python3 protocol/schemas/test_schema_validation.py
 Or via Taskfile:
 
 ```bash
-npx task schemas
+task schemas
 ```
 
 ### Conformance testing
@@ -128,7 +128,7 @@ python3 protocol/conformance/conformance_harness.py
 Or via Taskfile:
 
 ```bash
-npx task conformance
+task conformance
 ```
 
 ### Golden tests
@@ -142,7 +142,7 @@ python3 protocol/conformance/run_golden_tests.py
 Or via Taskfile:
 
 ```bash
-npx task golden-test
+task golden-test
 ```
 
 ### Per-language tests
@@ -157,9 +157,9 @@ cd shatter-go && go test ./...      # Go frontend
 
 The same checks run in CI via:
 
-- `npx task schemas` — schema + fixture validation
-- `npx task conformance` — cross-frontend structural conformance
-- `npx task golden-test` — cross-frontend parity golden tests (capability and output matching)
+- `task schemas` — schema + fixture validation
+- `task conformance` — cross-frontend structural conformance
+- `task golden-test` — cross-frontend parity golden tests (capability and output matching)
 
 All three tasks exit non-zero on failure and block merges.
 
@@ -186,7 +186,7 @@ Do NOT update the parity contract for internal refactors, type renames, or imple
 Run the conformance harness after any protocol-visible change:
 
 ```bash
-npx task conformance
+task conformance
 ```
 
 Unexpected drift (a mismatch not listed in `known_drifts`) is a bug. Either fix the diverging frontend or, if the difference is intentional, document it in `known_drifts` with an explanation.

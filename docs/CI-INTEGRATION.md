@@ -6,7 +6,7 @@ This repository uses [Taskfile](https://taskfile.dev/) as the build and quality
 orchestration layer. All quality gates are defined as Taskfile tasks and serve as
 the stable interface between local development, hooks, agent workflows, and CI.
 
-The CI platform is intentionally unspecified. The `npx task` commands should
+The CI platform is intentionally unspecified. The `task` commands should
 therefore be treated as the canonical entrypoints, regardless of whether the
 eventual runner is GitHub Actions, Buildkite, Woodpecker, Jenkins, or another
 system.
@@ -15,28 +15,28 @@ system.
 
 ### General
 
-- `npx task tooling`
+- `task tooling`
   - reports required and optional tool availability
-- `npx task check`
+- `task check`
   - aggregate quality runner
-- `npx task pre-completion`
+- `task pre-completion`
   - local completion gate with git status summary
 
 ### Language-specific
 
-- `npx task core:test` / `npx task core:clippy`
-- `npx task ts:test`
-- `npx task go:test`
+- `task core:test` / `task core:clippy`
+- `task ts:test`
+- `task go:test`
 
 ### Docs and repository metadata
 
-- `npx task docs`
-- `npx task meta`
+- `task docs`
+- `task meta`
 
 ### Protocol validation
 
-- `npx task schemas`
-- `npx task conformance`
+- `task schemas`
+- `task conformance`
 
 ## Strict vs Permissive Mode
 
@@ -66,9 +66,9 @@ Purpose:
 Recommended commands:
 
 ```bash
-npx task tooling
-npx task docs
-npx task meta
+task tooling
+task docs
+task meta
 ```
 
 ### Stage 2: Language quality gates
@@ -80,10 +80,10 @@ Purpose:
 Recommended commands:
 
 ```bash
-npx task core:test
-npx task core:clippy
-npx task ts:test
-npx task go:test
+task core:test
+task core:clippy
+task ts:test
+task go:test
 ```
 
 Notes:
@@ -104,8 +104,8 @@ Purpose:
 Recommended commands:
 
 ```bash
-npx task e2e
-npx task gauntlet
+task e2e
+task gauntlet
 ```
 
 Notes:
@@ -121,7 +121,7 @@ Notes:
 Use:
 
 ```bash
-npx task check
+task check
 ```
 
 Add E2E if the change touches:
@@ -133,7 +133,7 @@ Add E2E if the change touches:
 - CLI wiring for explorer modes
 
 ```bash
-npx task e2e
+task e2e
 ```
 
 ### Main-branch protection
@@ -141,14 +141,14 @@ npx task e2e
 Use:
 
 ```bash
-npx task check
-npx task e2e
+task check
+task e2e
 ```
 
 Optionally add:
 
 ```bash
-npx task gauntlet
+task gauntlet
 ```
 
 ### Nightly or scheduled validation
@@ -264,11 +264,11 @@ entrypoint that developers and agents can also run locally.
 The same tasks should be used by local hooks:
 
 - `pre-commit`
-  - `npx task core:clippy`
-  - `npx task docs`
-  - `npx task meta`
+  - `task core:clippy`
+  - `task docs`
+  - `task meta`
 - `pre-push`
-  - `npx task check`
+  - `task check`
 
 Avoid copying the underlying commands directly into hook configs. Call the
 tasks instead.
@@ -280,15 +280,15 @@ The same tasks should back Claude/agent workflows:
 - bugfix workflow
   - targeted failing test first
   - targeted rerun
-  - `npx task pre-completion`
+  - `task pre-completion`
 - review workflow
   - targeted check task(s) for the area under review
 - completion workflow
-  - `npx task pre-completion`
+  - `task pre-completion`
 
 ## Go Analysis Tools
 
-Three Go-specific analysis tools are available via `npx task go:test`. Each serves a
+Three Go-specific analysis tools are available via `task go:test`. Each serves a
 different purpose and should be enabled at the appropriate CI stage.
 
 ### golangci-lint

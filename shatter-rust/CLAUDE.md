@@ -56,7 +56,7 @@ invocation-outcome wire shape reached cross-frontend parity in str-hy9b.A5.
 
 The planner-surface capabilities (`invocation_plan`, `adapter_http_nethttp`,
 `hint_config_v1`) are declared Go-only at this stage. Rust does not yet
-implement them; conformance tests (`npx task conformance`) expect Rust to
+implement them; conformance tests (`task conformance`) expect Rust to
 return a clean "capability not supported" response rather than crashing
 or returning malformed data when these are probed.
 

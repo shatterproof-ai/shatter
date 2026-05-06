@@ -44,7 +44,7 @@ duplicating fixture authorship.
 cargo build -p shatter-cli
 
 # Full corpus, verbose:
-npx task broad-run-validation
+task broad-run-validation
 # or directly:
 python3 scripts/broad_run_validation_gate.py -v
 
@@ -55,7 +55,7 @@ python3 scripts/broad_run_validation_gate.py --filter ts-tsx-type-only -v
 python3 scripts/broad_run_validation_gate.py --list
 
 # Unit/property tests for the gate's pure functions:
-npx task broad-run-validation-tests
+task broad-run-validation-tests
 ```
 
 The gate exits 0 on PASS, 1 on regression, 2 on bad invocation. Per-fixture
@@ -103,7 +103,7 @@ the thresholds in this manifest:
 
 When you fix a bug above, the protocol is:
 
-1. Run `npx task broad-run-validation` from a fresh worktree to confirm
+1. Run `task broad-run-validation` from a fresh worktree to confirm
    the gate now reports the *new* (tighter) numbers.
 2. Update `manifest.yaml`'s threshold for the affected fixture(s) and
    strike the corresponding row from the table above.

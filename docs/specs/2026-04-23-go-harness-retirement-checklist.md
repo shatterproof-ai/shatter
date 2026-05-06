@@ -116,18 +116,18 @@ Gates that must exist after J2 so legacy cannot regress:
 
 | Gate | What it checks | Where |
 |------|----------------|-------|
-| `grep -r "instrument\.\(Execute\|Instrument\)" shatter-go/` returns only the `instrument` package itself (or nothing) | No caller of the legacy executor survives | Add to `npx task parity` or a new `npx task retirement` |
+| `grep -r "instrument\.\(Execute\|Instrument\)" shatter-go/` returns only the `instrument` package itself (or nothing) | No caller of the legacy executor survives | Add to `task parity` or a new `task retirement` |
 | `grep -r "wrapper\." shatter-go/ --exclude-dir=wrapper` returns nothing outside launcher/build consumers | Wrapper pkg is unused | Same target |
 | `grep -r "SHATTER_HARNESS_CACHE\|SHATTER_HARNESS_SCRATCH" .` returns nothing | Env vars are gone | Same target |
 | `go build ./shatter-go/...` succeeds without `shatter-go/instrument/executor.go` | Legacy file is deletable | CI job |
 | Handler dispatch path in `protocol/handler.go` contains only `build.Builder.Build` + `BinaryRegistry` (no `instrument.` refs in `execute` branch) | Structural check | New lint or small `go test` in `protocol/` |
-| `npx task e2e` (`cargo test --test e2e_concolic`) passes end-to-end via launcher only | Pipeline works without legacy | Existing E2E, re-run |
-| `npx task smoke` passes | Non-empty Go reports | Existing smoke |
-| `npx task gauntlet` passes (with known exceptions documented in root CLAUDE.md) | Broad CLI surface | Existing gauntlet |
-| `npx task parity` + `npx task conformance` pass after handler rewrite | Protocol contract intact | Existing parity |
+| `task e2e` (`cargo test --test e2e_concolic`) passes end-to-end via launcher only | Pipeline works without legacy | Existing E2E, re-run |
+| `task smoke` passes | Non-empty Go reports | Existing smoke |
+| `task gauntlet` passes (with known exceptions documented in root CLAUDE.md) | Broad CLI surface | Existing gauntlet |
+| `task parity` + `task conformance` pass after handler rewrite | Protocol contract intact | Existing parity |
 
 The new retirement gate target should live next to the existing Taskfile
-tiers; wire it into `npx task check` so it runs before merge.
+tiers; wire it into `task check` so it runs before merge.
 
 ## J4 — Walkthrough and docs (str-mbmw)
 
@@ -150,7 +150,7 @@ Walkthrough:
 
 | Item | Action |
 |------|--------|
-| `npx task walkthrough` output for Go targets | Re-baseline after handler swap; expected differences in timing, "prepare" lines, binary cache hits |
+| `task walkthrough` output for Go targets | Re-baseline after handler swap; expected differences in timing, "prepare" lines, binary cache hits |
 | Walkthrough example set | Confirm `examples/go/internal-method` and `examples/go/multi-file-service` render end-to-end through launcher |
 | Walkthrough script(s) — currently no `walkthrough/` dir at repo root; the task is defined in `Taskfile.yml`/`package.json` | Audit the task definition and any referenced script for legacy env vars |
 | New walkthrough note | Add a one-line "binary built at `workspace/binaries/`" line if it materially improves the compact demo story; otherwise suppress |
@@ -172,5 +172,5 @@ same or a follow-on commit once no caller remains.
 
 ## Verification for J1
 
-- `npx task test-standard` passes on this branch (inventory-only change).
+- `task test-standard` passes on this branch (inventory-only change).
 - No file under `shatter-go/` is modified.

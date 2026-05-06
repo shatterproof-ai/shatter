@@ -40,8 +40,8 @@ class PreCompletionBootstrapTest(unittest.TestCase):
 
     def test_pre_completion_skill_uses_bootstrapped_e2e_task(self) -> None:
         skill_text = PRE_COMPLETION_SKILL_PATH.read_text(encoding="utf-8")
-        self.assertIn("npx task smoke", skill_text)
-        self.assertIn("npx task e2e", skill_text)
+        self.assertIn("task smoke", skill_text)
+        self.assertIn("task e2e", skill_text)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ runtime-specific profilers only when a scenario is actually slow or regressed.
 Run the stable subset on the same Linux environment each week:
 
 ```bash
-RESULTS_DIR=.shatter/perf-runs/weekly-$(date +%Y%m%d) npx task perf-ci
+RESULTS_DIR=.shatter/perf-runs/weekly-$(date +%Y%m%d) task perf-ci
 ```
 
 That command:
@@ -79,10 +79,10 @@ when evaluating changes to the frontend lifecycle, scheduler policy, or process-
 
 ```bash
 # Run the isolation corpus (requires a built binary and str-19pm.1 for function/serial)
-npx task perf-isolation
+task perf-isolation
 
 # Generate the cross-mode comparison report
-npx task perf-isolation-report
+task perf-isolation-report
 # Opens .shatter/perf-runs/isolation/isolation-report.md
 ```
 

@@ -1501,21 +1501,21 @@ Expected: All E2E concolic tests pass. These exercise the full analyze → instr
 - [ ] **Step 5: Run quick test tier**
 
 ```bash
-npx task test-quick 2>&1 | tail -20
+task test-quick 2>&1 | tail -20
 ```
 Expected: Pass.
 
 - [ ] **Step 6: Run standard test tier**
 
 ```bash
-npx task test-standard 2>&1 | tail -20
+task test-standard 2>&1 | tail -20
 ```
 Expected: Pass.
 
 - [ ] **Step 7: Run parity check**
 
 ```bash
-npx task parity 2>&1 | tail -10
+task parity 2>&1 | tail -10
 ```
 Expected: Pass (no protocol-visible behavior changes in this implementation).
 
