@@ -94,7 +94,7 @@ func (l *Loader) RunSetup(file, scope, level string, projectRoot *string, parent
 	if err != nil {
 		return nil, fmt.Errorf("preparing setup sandbox: %w", err)
 	}
-	defer prepared.Cleanup()
+	defer func() { _ = prepared.Cleanup() }()
 
 	stdout, err := prepared.Cmd.Output()
 	if err != nil {
