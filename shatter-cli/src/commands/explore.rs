@@ -1327,9 +1327,78 @@ fn load_explore_summaries(dir: &Path) -> Result<Vec<ExploreSummary>, String> {
 // str-jeen.4: artifact-reference validator
 // ---------------------------------------------------------------------------
 
-/// One contract violation surfaced by [`validate_artifact_references`].
+/// Logical artifact reference fed into [`validate_artifact_refs`].
+///
+/// Decouples the validator from the on-disk shape it was first written
+/// against (`ExploreSummary`) so commands that emit different shapes —
+/// notably `run`, which writes per-function `<safe_name>.md` files
+/// alongside a top-level `run.json` — can validate the same contract
+/// (str-ux7q). `file` is a logical owning unit (source-file path for
+/// explore, qualified function name for run); the validator only uses
+/// it to attribute issue diagnostics.
+#[derive(Debug, Clone)]
+pub(crate) struct ArtifactRef {
+    pub file: String,
+    pub function_name: String,
+    pub status: String,
+    pub artifact: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// Per-call configuration for [`validate_artifact_refs`]. Different
+/// commands write different artifact shapes (explore: per-function
+/// `*.json`, plus `summary.json` and `*.resume-state.json` control
+/// files; run: per-function `*.md`, plus a top-level `run.json`
+/// summary). The config tells the stale-extra scanner which file
+/// names count as artifacts vs. control files.
+#[derive(Debug, Clone)]
+pub(crate) struct ArtifactValidationOptions<'a> {
+    /// File extensions (with leading dot) that count as artifact files
+    /// for stale-extra detection. A file under `artifact_root` whose
+    /// name ends with one of these and is not referenced by any
+    /// `ArtifactRef` is reported as `stale_extra`.
+    pub artifact_extensions: &'a [&'a str],
+    /// Exact basenames to skip during the stale-extra scan (control
+    /// files like `summary.json` or `run.json`).
+    pub skip_filenames: &'a [&'a str],
+    /// Filename suffixes to skip during the stale-extra scan
+    /// (sidecars like `.resume-state.json` or atomic-write `.tmp`).
+    pub skip_suffixes: &'a [&'a str],
+}
+
+impl ArtifactValidationOptions<'static> {
+    /// Defaults matching the explore command's on-disk shape: per-
+    /// function `*.json` artifacts plus `summary.json` /
+    /// `*.resume-state.json` control files.
+    pub(crate) fn explore_defaults() -> Self {
+        const EXPLORE_EXTENSIONS: &[&str] = &[".json"];
+        const EXPLORE_SKIP_FILENAMES: &[&str] = &["summary.json"];
+        const EXPLORE_SKIP_SUFFIXES: &[&str] = &[".resume-state.json", ".tmp"];
+        ArtifactValidationOptions {
+            artifact_extensions: EXPLORE_EXTENSIONS,
+            skip_filenames: EXPLORE_SKIP_FILENAMES,
+            skip_suffixes: EXPLORE_SKIP_SUFFIXES,
+        }
+    }
+
+    /// Defaults matching the run command's on-disk shape (str-ux7q):
+    /// per-function `*.md` artifacts plus a top-level `run.json`
+    /// summary that the validator must not flag as a stale extra.
+    pub(crate) fn run_defaults() -> Self {
+        const RUN_EXTENSIONS: &[&str] = &[".md"];
+        const RUN_SKIP_FILENAMES: &[&str] = &["run.json"];
+        const RUN_SKIP_SUFFIXES: &[&str] = &[".tmp"];
+        ArtifactValidationOptions {
+            artifact_extensions: RUN_EXTENSIONS,
+            skip_filenames: RUN_SKIP_FILENAMES,
+            skip_suffixes: RUN_SKIP_SUFFIXES,
+        }
+    }
+}
+
+/// One contract violation surfaced by [`validate_artifact_refs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ArtifactValidationIssue {
+pub(crate) enum ArtifactValidationIssue {
     /// Entry claims `artifact: Some(path)` but the file is absent.
     MissingArtifact {
         file: String,
@@ -1376,16 +1445,16 @@ impl std::fmt::Display for ArtifactValidationIssue {
     }
 }
 
-/// Result of validating one or more explore summaries against an artifact
-/// directory. The integration test in `tests/artifact_references.rs` asserts
-/// `issues` is empty after a normal run.
+/// Result of validating an artifact-reference set against an artifact
+/// directory. The integration test in `tests/artifact_references.rs`
+/// asserts `issues` is empty after a normal run.
 #[derive(Debug, Clone, Default)]
-struct ArtifactValidationReport {
-    issues: Vec<ArtifactValidationIssue>,
+pub(crate) struct ArtifactValidationReport {
+    pub(crate) issues: Vec<ArtifactValidationIssue>,
 }
 
 impl ArtifactValidationReport {
-    fn is_clean(&self) -> bool {
+    pub(crate) fn is_clean(&self) -> bool {
         self.issues.is_empty()
     }
 }
@@ -1406,50 +1475,103 @@ fn validate_artifact_references(
     artifact_root: &Path,
     summaries: &[ExploreSummary],
 ) -> ArtifactValidationReport {
+    let mut refs: Vec<ArtifactRef> = Vec::new();
+    for summary in summaries {
+        for entry in &summary.functions {
+            refs.push(ArtifactRef {
+                file: summary.file.clone(),
+                function_name: entry.function_name.clone(),
+                status: entry.status.clone(),
+                artifact: entry.artifact.clone(),
+                reason: entry.reason.clone(),
+            });
+        }
+    }
+    validate_artifact_refs(
+        artifact_root,
+        &refs,
+        &ArtifactValidationOptions::explore_defaults(),
+    )
+}
+
+/// str-ux7q: shape-agnostic artifact-reference validator. Both the
+/// explore command (`ExploreSummary` rows -> per-function `*.json`)
+/// and the run command (per-function `*.md` results -> exploration
+/// outcomes) feed their references in via [`ArtifactRef`] so the same
+/// three-rule contract — referenced files exist, non-completed rows
+/// carry an unavailable-reason token, and no unreferenced extras
+/// linger under the artifact root — applies uniformly.
+pub(crate) fn validate_artifact_refs(
+    artifact_root: &Path,
+    refs: &[ArtifactRef],
+    opts: &ArtifactValidationOptions,
+) -> ArtifactValidationReport {
     let mut report = ArtifactValidationReport::default();
-    let referenced = check_summary_paths(artifact_root, summaries, &mut report);
-    scan_stale_extras(artifact_root, &referenced, &mut report);
+    let referenced = check_ref_paths(artifact_root, refs, &mut report);
+    scan_stale_extras(artifact_root, &referenced, &mut report, opts);
     report
+}
+
+/// Per-target compatibility wrapper that preserves the
+/// `check_summary_paths` entry point used by the per-target slice of
+/// the contract (where `artifact_root` is shared across sibling
+/// targets, so the full stale-extra sweep must be skipped).
+fn check_summary_paths(
+    artifact_root: &Path,
+    summaries: &[ExploreSummary],
+    report: &mut ArtifactValidationReport,
+) -> std::collections::HashSet<PathBuf> {
+    let mut refs: Vec<ArtifactRef> = Vec::new();
+    for summary in summaries {
+        for entry in &summary.functions {
+            refs.push(ArtifactRef {
+                file: summary.file.clone(),
+                function_name: entry.function_name.clone(),
+                status: entry.status.clone(),
+                artifact: entry.artifact.clone(),
+                reason: entry.reason.clone(),
+            });
+        }
+    }
+    check_ref_paths(artifact_root, &refs, report)
 }
 
 /// Path-existence + unavailable-reason half of the contract. Returns the set
 /// of absolute artifact paths referenced (and verified to exist). The
 /// per-target call site uses this directly to avoid false-positive
 /// `stale_extra` reports against sibling targets that share `artifact_root`.
-fn check_summary_paths(
+fn check_ref_paths(
     artifact_root: &Path,
-    summaries: &[ExploreSummary],
+    refs: &[ArtifactRef],
     report: &mut ArtifactValidationReport,
 ) -> std::collections::HashSet<PathBuf> {
     let mut referenced: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    for summary in summaries {
-        for entry in &summary.functions {
-            match &entry.artifact {
-                Some(relpath) if !relpath.is_empty() => {
-                    let abs = artifact_root.join(relpath);
-                    if !abs.is_file() {
-                        report
-                            .issues
-                            .push(ArtifactValidationIssue::MissingArtifact {
-                                file: summary.file.clone(),
-                                function_name: entry.function_name.clone(),
-                                artifact_relpath: relpath.clone(),
-                            });
-                    } else {
-                        referenced.insert(abs);
-                    }
+    for entry in refs {
+        match &entry.artifact {
+            Some(relpath) if !relpath.is_empty() => {
+                let abs = artifact_root.join(relpath);
+                if !abs.is_file() {
+                    report
+                        .issues
+                        .push(ArtifactValidationIssue::MissingArtifact {
+                            file: entry.file.clone(),
+                            function_name: entry.function_name.clone(),
+                            artifact_relpath: relpath.clone(),
+                        });
+                } else {
+                    referenced.insert(abs);
                 }
-                _ => {
-                    let reason_text = entry.reason.as_deref().unwrap_or("");
-                    if reason_text.is_empty() {
-                        report
-                            .issues
-                            .push(ArtifactValidationIssue::MissingUnavailableReason {
-                                file: summary.file.clone(),
-                                function_name: entry.function_name.clone(),
-                                status: entry.status.clone(),
-                            });
-                    }
+            }
+            _ => {
+                let reason_text = entry.reason.as_deref().unwrap_or("");
+                if reason_text.is_empty() {
+                    report
+                        .issues
+                        .push(ArtifactValidationIssue::MissingUnavailableReason {
+                            file: entry.file.clone(),
+                            function_name: entry.function_name.clone(),
+                            status: entry.status.clone(),
+                        });
                 }
             }
         }
@@ -1457,13 +1579,16 @@ fn check_summary_paths(
     referenced
 }
 
-/// Walk `artifact_root` and report any per-function `*.json` files that no
-/// entry in the supplied summaries references. Skips `summary.json` and
-/// resume-state sidecars (control files, not artifact rows).
+/// Walk `artifact_root` and report any artifact-extension files that
+/// no `ArtifactRef` references. Skips control filenames and sidecar
+/// suffixes per `opts`. Files whose extension is not in
+/// `opts.artifact_extensions` are ignored entirely so unrelated
+/// auxiliary outputs (logs, READMEs, etc.) do not get flagged.
 fn scan_stale_extras(
     artifact_root: &Path,
     referenced: &std::collections::HashSet<PathBuf>,
     report: &mut ArtifactValidationReport,
+    opts: &ArtifactValidationOptions,
 ) {
     let mut dirs_to_visit = vec![artifact_root.to_path_buf()];
     while let Some(current_dir) = dirs_to_visit.pop() {
@@ -1478,11 +1603,21 @@ fn scan_stale_extras(
                 continue;
             }
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if file_name == "summary.json"
-                || file_name.ends_with(".resume-state.json")
-                || file_name.ends_with(".tmp")
-                || !file_name.ends_with(".json")
+            if opts.skip_filenames.iter().any(|name| *name == file_name) {
+                continue;
+            }
+            if opts
+                .skip_suffixes
+                .iter()
+                .any(|suffix| file_name.ends_with(suffix))
             {
+                continue;
+            }
+            let is_artifact_extension = opts
+                .artifact_extensions
+                .iter()
+                .any(|ext| file_name.ends_with(ext));
+            if !is_artifact_extension {
                 continue;
             }
             if !referenced.contains(&path) {
