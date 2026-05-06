@@ -1,4 +1,4 @@
-// Repo-wide regression guard for str-zutu / str-qo1.15.
+// Repo-wide regression guard for str-zutu / str-qo1.15 / str-s4cg.
 //
 // Go's default `-buildvcs=auto` causes `go build` to fail with
 //
@@ -13,6 +13,29 @@
 // them are missing the flag. It catches regressions in shatter-go test
 // helpers, Rust callers (shatter-cli, shatter-core), and the shatter-go
 // Taskfile.
+//
+// Scope: which Go subcommands need the flag (str-s4cg audit, 2026-05).
+//
+// VCS stamping is invoked only by Go subcommands that produce an
+// installable/saved binary — i.e. `go build` and `go install`. The
+// surrounding subcommands (`go test`, `go run`, `go vet`) build internally
+// but do NOT stamp the resulting artifact, so they do NOT panic on
+// `-buildvcs=auto` even in partial-git contexts.
+//
+// Empirical verification (Go 1.x, 2026-05): running each verb against a
+// minimal `package main` module in (a) /tmp with no `.git` ancestor and
+// (b) a tree with a corrupt `.git` parent reproduces the panic only for
+// `go build`. `go vet ./...`, `go run main.go`, and `go test ./...` all
+// succeed without `-buildvcs=false`.
+//
+// Consequence for the meta-test: only `go build` (and `go install`, if
+// it ever appears) is enforced here. The callsites flagged by str-s4cg
+// — `go vet` and `go run` in shatter-go/instrument/instrument_test.go,
+// `go test` in shatter-core/src/test_runner.rs — are deliberately left
+// without the flag, and the scan is intentionally not extended to those
+// verbs. This header is the single source of truth; do not add per-site
+// pointer comments. If a future audit re-flags one of those subcommands,
+// re-read this header rather than adding the flag defensively.
 //
 // Opt-out: a callsite may be excluded by adding the marker
 // `buildvcs-meta-skip` on the same line (use `// buildvcs-meta-skip` for
