@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,7 +157,7 @@ func (h *Handler) Run() error {
 			continue
 		}
 
-		resp, shutdown := h.dispatch(req)
+		resp, shutdown := h.safeDispatch(req)
 		if err := h.send(resp); err != nil {
 			return fmt.Errorf("writing response: %w", err)
 		}
@@ -173,6 +174,39 @@ func (h *Handler) Run() error {
 
 	h.log.Debug("Stdin closed, exiting")
 	return nil
+}
+
+// safeDispatch wraps dispatch with a panic recovery that emits a properly
+// id-tagged error response for the in-flight request (str-jeen.52). Without
+// this guard a panic in any handle* path would terminate the frontend
+// without writing a response for `req`, leaving a pending request on the
+// core side; once a respawned frontend served the next request, the core's
+// stdout reader could surface a stale buffered response from the dead
+// process and report a `response id N does not match request id N+1`
+// IdMismatch instead of the underlying crash. Recovering keeps the
+// request/response pairing intact: every request id is answered exactly
+// once on the same protocol stream, with `internal_error` carrying the
+// recovered value and stack so the failure surfaces loudly without
+// corrupting downstream id alignment.
+func (h *Handler) safeDispatch(req Request) (resp Response, shutdown bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.log.Error("panic during dispatch",
+				"id", req.ID, "command", req.Command, "panic", r)
+			resp = Response{
+				ProtocolVersion: ProtocolVersion,
+				ID:              req.ID,
+				Status:          "error",
+				Code:            ErrInternalError,
+				Message: fmt.Sprintf(
+					"panic during %s: %v\n%s",
+					req.Command, r, debug.Stack(),
+				),
+			}
+			shutdown = false
+		}
+	}()
+	return h.dispatch(req)
 }
 
 func (h *Handler) dispatch(req Request) (Response, bool) {

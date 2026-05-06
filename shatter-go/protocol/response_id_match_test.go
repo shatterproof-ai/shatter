@@ -131,6 +131,69 @@ func TestResponseIDRecoveredFromMalformedJSONLine(t *testing.T) {
 	}
 }
 
+// TestResponseIDPreservedAcrossPanicInDispatch is the dispatch-panic
+// regression for str-jeen.52. A handle* path that panics must not kill the
+// frontend mid-request, because doing so leaves the in-flight request id
+// unanswered: the core blocks reading on a stream that the dead frontend
+// can no longer drive, and once a respawned worker takes over the stale
+// stdout buffer can surface as `response id N does not match request id
+// N+1`. safeDispatch's recover translates the panic into an
+// internal_error response carrying req.ID so every request id is answered
+// exactly once on the same stream.
+//
+// We exercise this by injecting a panicking RuntimeHookFactory — the
+// hookFactories slice is consulted from handleExecute, so an execute
+// request against a target with a non-empty execution_profile drives the
+// factory and triggers the panic.
+func TestResponseIDPreservedAcrossPanicInDispatch(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "x.go")
+	if err := os.WriteFile(tmp, []byte("package main\n\nfunc Add(a int) int { return a }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.NewReader(strings.Join([]string{
+		reqJSON(7001, "handshake", `"capabilities":["analyze"]`),
+		reqJSON(7002, "execute", fmt.Sprintf(
+			`"file":%q,"function":"Add","inputs":[1],"execution_profile":{"adapters":[{"id":"go/panic-injector"}]}`,
+			tmp,
+		)),
+		reqJSON(7003, "shutdown"),
+	}, "\n") + "\n")
+
+	var output bytes.Buffer
+	handler := NewHandler(input, &output, io.Discard)
+	handler.RegisterHookFactory(panicInjectingHookFactory{})
+
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d responses, want 3 (raw=%q)", len(lines), output.String())
+	}
+
+	wantIDs := []int{7001, 7002, 7003}
+	for i, raw := range lines {
+		var resp Response
+		if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+			t.Fatalf("response[%d] unmarshal: %v (raw=%s)", i, err, raw)
+		}
+		if resp.ID != wantIDs[i] {
+			t.Errorf("response[%d] id = %d, want %d (status=%q, code=%q)",
+				i, resp.ID, wantIDs[i], resp.Status, resp.Code)
+		}
+	}
+}
+
+type panicInjectingHookFactory struct{}
+
+func (panicInjectingHookFactory) ID() string { return "go/panic-injector" }
+
+func (panicInjectingHookFactory) CreateRuntimeHooks(_ ExecutionAdapter, _ RuntimeHookContext) *RuntimeHooks {
+	panic("str-jeen.52 regression: simulated dispatch-time panic")
+}
+
 // TestResponseIDMatchesWithBuildFailureNeighbor pairs a frontend-side
 // build failure (analyze of a target whose package has a type error) with
 // a successful sibling analyze on the surrounding bookend requests. The
