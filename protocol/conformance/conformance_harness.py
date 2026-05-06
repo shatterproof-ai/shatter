@@ -126,15 +126,20 @@ class FrontendProc:
             self.proc.wait()
 
 
-def spawn_frontend(name: str, spec: dict[str, Any]) -> FrontendProc | None:
-    """Spawn a frontend subprocess. Returns None if unavailable."""
+def spawn_frontend(name: str, spec: dict[str, Any]) -> tuple[FrontendProc | None, str | None]:
+    """Spawn a frontend subprocess.
+
+    Returns (proc, None) on success, or (None, reason) if the frontend cannot be
+    started. `reason` describes why so callers can decide whether to fail or
+    treat the absence as an explicit skip.
+    """
     command = list(spec["command"])
     cwd = REPO_ROOT / spec["cwd"] if "cwd" in spec else REPO_ROOT
 
     # Check build artifact exists if specified
     build_check = spec.get("build_check")
     if build_check and not (REPO_ROOT / build_check).exists():
-        return None
+        return None, f"build artifact missing: {build_check}"
 
     # Resolve command[0] relative to REPO_ROOT if it's a relative path
     exe = command[0]
@@ -142,7 +147,7 @@ def spawn_frontend(name: str, spec: dict[str, Any]) -> FrontendProc | None:
     if exe_path.exists():
         command[0] = str(exe_path)
     elif not _which(exe):
-        return None
+        return None, f"executable not found on PATH: {exe}"
 
     # Resolve any remaining relative path args (e.g. script paths)
     for i in range(1, len(command)):
@@ -162,10 +167,10 @@ def spawn_frontend(name: str, spec: dict[str, Any]) -> FrontendProc | None:
             cwd=str(cwd),
             env=env,
         )
-    except FileNotFoundError:
-        return None
+    except FileNotFoundError as e:
+        return None, f"spawn failed: {e}"
 
-    return FrontendProc(name, proc)
+    return FrontendProc(name, proc), None
 
 
 def _which(cmd: str) -> bool:
@@ -453,26 +458,56 @@ def _type_label(skel: Any) -> str:
 # Main harness
 # ---------------------------------------------------------------------------
 
+ALLOW_MISSING_ENV = "SHATTER_CONFORMANCE_ALLOW_MISSING"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Protocol conformance harness")
     parser.add_argument(
         "--frontend", "-f",
         action="append",
         dest="frontends",
-        help="Run only the named frontend(s). Can be repeated. Default: all available.",
+        help="Run only the named frontend(s). Can be repeated. Default: all declared.",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="append",
+        dest="allow_missing",
+        default=[],
+        metavar="FRONTEND",
+        help=(
+            "Allow this frontend to be silently skipped if its build artifact "
+            "is missing. Repeatable. Also accepts comma-separated list via "
+            f"${ALLOW_MISSING_ENV}. By default, all declared frontends are "
+            "required and a missing artifact is a hard failure."
+        ),
     )
     return parser.parse_args()
 
 
+def resolve_allow_missing(args: argparse.Namespace) -> set[str]:
+    allowed: set[str] = set(args.allow_missing or [])
+    env_value = os.environ.get(ALLOW_MISSING_ENV, "").strip()
+    if env_value:
+        allowed.update(name.strip() for name in env_value.split(",") if name.strip())
+    return allowed
+
+
 def run_conformance() -> int:
     args = parse_args()
+    allow_missing = resolve_allow_missing(args)
 
     config = load_cases(CASES_FILE)
     frontend_specs = config["frontends"]
     cases = config["cases"]
 
-    # Filter frontends if --frontend specified
+    # Filter frontends if --frontend specified. Selection is itself an explicit
+    # opt-in, so unselected frontends are not required for this run.
     if args.frontends:
+        unknown = set(args.frontends) - set(frontend_specs.keys())
+        if unknown:
+            print(f"{_RED}Unknown frontend(s): {sorted(unknown)}{_RESET}")
+            return 1
         frontend_specs = {
             k: v for k, v in frontend_specs.items() if k in args.frontends
         }
@@ -480,16 +515,39 @@ def run_conformance() -> int:
     print(f"\n{_BOLD}Protocol Conformance Testing{_RESET}")
     print("=" * 40)
 
-    # Phase 1: Spawn frontends
+    # Phase 1: Spawn frontends. By default every declared frontend is required;
+    # missing build artifacts produce a hard failure. Local runs may opt into
+    # an explicit skip via --allow-missing or $SHATTER_CONFORMANCE_ALLOW_MISSING.
     print(f"\n{_BOLD}Spawning frontends:{_RESET}")
     frontends: dict[str, FrontendProc] = {}
+    missing_required: list[str] = []
     for name, spec in frontend_specs.items():
-        fp = spawn_frontend(name, spec)
+        fp, reason = spawn_frontend(name, spec)
         if fp is None:
-            print(f"  {_skip(name)}")
+            if name in allow_missing:
+                print(f"  {_skip(name)} (explicitly allowed missing: {reason})")
+            else:
+                print(f"  {_fail(name)} ({reason})")
+                missing_required.append(f"{name}: {reason}")
         else:
             frontends[name] = fp
             print(f"  {_ok(name)}")
+
+    if missing_required:
+        print(
+            f"\n{_RED}Required frontend(s) unavailable; refusing to run with "
+            f"silent skips.{_RESET}"
+        )
+        for entry in missing_required:
+            print(f"  {_RED}MISSING{_RESET}: {entry}")
+        print(
+            f"\nBuild the missing frontend(s), run only a subset with "
+            f"--frontend, or opt into an explicit local skip with "
+            f"--allow-missing NAME (or {ALLOW_MISSING_ENV}=name1,name2)."
+        )
+        for fp in frontends.values():
+            fp.kill()
+        return 1
 
     if not frontends:
         print(f"\n{_RED}No frontends available. Nothing to test.{_RESET}")
