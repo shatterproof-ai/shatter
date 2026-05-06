@@ -1603,7 +1603,7 @@ fn scan_stale_extras(
                 continue;
             }
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if opts.skip_filenames.iter().any(|name| *name == file_name) {
+            if opts.skip_filenames.contains(&file_name) {
                 continue;
             }
             if opts
