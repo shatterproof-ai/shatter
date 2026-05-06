@@ -18,7 +18,7 @@
     },
     "command": {
       "type": "string",
-      "enum": ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown", "generate", "shutdown"],
+      "enum": ["handshake", "analyze", "instrument", "prepare", "execute", "setup", "teardown", "generate", "get_invocation_plan", "shutdown"],
       "description": "The command to execute."
     }
   },
@@ -31,6 +31,7 @@
     { "$ref": "#/$defs/setup_request" },
     { "$ref": "#/$defs/teardown_request" },
     { "$ref": "#/$defs/generate_request" },
+    { "$ref": "#/$defs/get_invocation_plan_request" },
     { "$ref": "#/$defs/shutdown_request" }
   ],
   "$defs": {
@@ -93,6 +94,13 @@
         "execution_profile": {
           "$ref": "#/$defs/execution_profile",
           "description": "Opaque ordered adapter descriptors selected for this target."
+        },
+        "plan": {
+          "oneOf": [
+            { "$ref": "#/$defs/invocation_plan" },
+            { "type": "null" }
+          ],
+          "description": "Optional invocation plan used to prepare plan-specific launcher artifacts."
         }
       },
       "required": ["command", "file", "function", "mocks"]
@@ -142,6 +150,13 @@
           "items": { "$ref": "mock-config.schema.json" },
           "description": "Mock configurations for external dependencies."
         },
+        "setup_context": {
+          "oneOf": [
+            { "$ref": "setup-context-stack.schema.json" },
+            { "type": "null" }
+          ],
+          "description": "Stack of active setup contexts from enclosing setup commands."
+        },
         "prepare_id": {
           "type": "string",
           "description": "Opaque handle from a prior prepare call. When present, reuse cached build artifacts."
@@ -154,6 +169,13 @@
         "execution_profile": {
           "$ref": "#/$defs/execution_profile",
           "description": "Opaque ordered adapter descriptors selected for this target."
+        },
+        "plan": {
+          "oneOf": [
+            { "$ref": "#/$defs/invocation_plan" },
+            { "type": "null" }
+          ],
+          "description": "Optional invocation plan from get_invocation_plan."
         }
       },
       "required": ["command", "function", "inputs", "mocks"]
@@ -179,7 +201,10 @@
           "description": "Path to the detected project root directory."
         },
         "parent_context": {
-          "$ref": "setup-context-stack.schema.json",
+          "oneOf": [
+            { "$ref": "setup-context-stack.schema.json" },
+            { "type": "null" }
+          ],
           "description": "Contexts from enclosing setup levels, outermost first."
         },
         "execution_profile": {
@@ -231,6 +256,18 @@
       },
       "required": ["command", "file", "name", "kind"]
     },
+    "get_invocation_plan_request": {
+      "type": "object",
+      "properties": {
+        "command": { "const": "get_invocation_plan" },
+        "invocation_requirements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/invocation_requirement" },
+          "description": "Targets and constraints for which the frontend should produce invocation plans."
+        }
+      },
+      "required": ["command", "invocation_requirements"]
+    },
     "shutdown_request": {
       "type": "object",
       "properties": {
@@ -248,6 +285,131 @@
         }
       },
       "required": ["adapters"]
+    },
+    "value_requirement": {
+      "type": "object",
+      "properties": {
+        "param_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based parameter index."
+        },
+        "param_name": {
+          "type": "string",
+          "description": "Declared parameter name, or empty for unnamed parameters."
+        },
+        "type_name": {
+          "type": "string",
+          "description": "Language-specific type string."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["any", "non_zero", "positive", "specific"],
+          "description": "Value constraint classification."
+        },
+        "literal": {
+          "description": "Required literal value when kind is specific."
+        }
+      },
+      "required": ["param_index", "param_name", "type_name", "kind"]
+    },
+    "runtime_requirement": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["receiver_construction", "package_initialization"],
+          "description": "Runtime setup requirement classification."
+        },
+        "type_name": {
+          "type": "string",
+          "description": "Type involved in the requirement."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable explanation of the requirement."
+        }
+      },
+      "required": ["kind"]
+    },
+    "invocation_requirement": {
+      "type": "object",
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "description": "Stable target identifier."
+        },
+        "value_requirements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value_requirement" },
+          "description": "Per-parameter value constraints in declaration order."
+        },
+        "runtime_requirements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtime_requirement" },
+          "description": "Runtime setup preconditions for invocation."
+        }
+      },
+      "required": ["target_id", "value_requirements"]
+    },
+    "value_plan": {
+      "type": "object",
+      "properties": {
+        "param_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based argument position."
+        },
+        "param_name": {
+          "type": "string",
+          "description": "Declared parameter name, or empty for unnamed parameters."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["literal", "zero", "random", "symbolic"],
+          "description": "Argument production strategy."
+        },
+        "literal": {
+          "description": "Concrete value when kind is literal."
+        },
+        "type_hint": {
+          "type": "string",
+          "description": "Language-specific type hint for code generation."
+        }
+      },
+      "required": ["param_index", "param_name", "kind"]
+    },
+    "invocation_plan": {
+      "type": "object",
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "description": "Stable target identifier."
+        },
+        "receiver_kind": {
+          "type": "string",
+          "description": "Receiver construction strategy."
+        },
+        "generic_type_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered concrete type argument list for generic targets."
+        },
+        "argument_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value_plan" },
+          "description": "One value plan per parameter, in declaration order."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Relative ordering within a plan set."
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional human-readable name for this plan."
+        }
+      },
+      "required": ["target_id", "receiver_kind", "argument_plans", "priority"]
     },
     "execution_adapter": {
       "type": "object",

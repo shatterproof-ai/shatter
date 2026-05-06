@@ -1,0 +1,32 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 11,
+  "command": "get_invocation_plan",
+  "invocation_requirements": [
+    {
+      "target_id": "example.com/service:Process",
+      "value_requirements": [
+        {
+          "param_index": 0,
+          "param_name": "id",
+          "type_name": "int",
+          "kind": "positive"
+        },
+        {
+          "param_index": 1,
+          "param_name": "mode",
+          "type_name": "string",
+          "kind": "specific",
+          "literal": "express"
+        }
+      ],
+      "runtime_requirements": [
+        {
+          "kind": "receiver_construction",
+          "type_name": "*Service",
+          "detail": "method receiver must be constructed before invocation"
+        }
+      ]
+    }
+  ]
+}

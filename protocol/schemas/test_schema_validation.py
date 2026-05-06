@@ -26,12 +26,6 @@ FIXTURE_DIR = SCHEMA_DIR.parent / "fixtures"
 # warnings rather than failures so that the check passes while the schemas
 # are being updated. Remove entries as schemas are fixed.
 KNOWN_MISMATCHES: set[str] = {
-    # oneOf discriminator fails because sub-schemas don't declare common
-    # top-level fields (protocol_version, id) and execute_request lacks
-    # setup_context.
-    "requests/valid/execute.json",
-    "requests/valid/instrument.json",
-    "requests/valid/setup.json",
     "responses/valid/analyze.json",
     "responses/valid/execute.json",
 }
