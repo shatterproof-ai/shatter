@@ -70,6 +70,7 @@ pub mod run_manifest;
 pub mod scan_orchestrator;
 pub mod scheduler_policy;
 pub mod scm;
+pub mod status_export;
 pub mod scope;
 pub mod setup_manager;
 pub mod shrink;
