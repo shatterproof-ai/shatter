@@ -228,7 +228,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines += [
             "",
             "No isolation-mode scenarios found in the results directory.",
-            "Run `npx task perf-isolation` first to collect data.",
+            "Run `task perf-isolation` first to collect data.",
         ]
 
     return "\n".join(lines) + "\n"

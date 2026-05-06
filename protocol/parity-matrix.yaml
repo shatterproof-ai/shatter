@@ -1,7 +1,7 @@
 # Shatter Frontend Parity Matrix
 #
 # Machine-readable parity contract consumed by scripts/validate-parity.py.
-# CI task: npx task parity
+# CI task: task parity
 #
 # Ownership: str-7jgm.1 (parity contract spec) seeds and maintains this file.
 # This bootstrap version reflects actual code state as of protocol version 0.1.0.
