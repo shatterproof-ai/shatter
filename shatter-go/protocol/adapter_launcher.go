@@ -16,6 +16,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
 	"github.com/shatter-dev/shatter/shatter-go/overlay"
+	"github.com/shatter-dev/shatter/shatter-go/sandbox"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -93,7 +94,10 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 	}
 
 	return &preparedLauncher{
-		BinaryPath: binaryPath,
+		BinaryPath:  binaryPath,
+		ProjectRoot: moduleDir,
+		WorkDir:     moduleDir,
+		Sandbox:     sandbox.FromEnv(),
 		// Adapter-owned launcher exposes a synthetic invocation surface
 		// rather than a wrapper-target-keyed switch; TargetID and the
 		// receiver_kind override are unused on the adapter path. Leave

@@ -173,7 +173,20 @@ Adapter-owned targets (those with `InvocationModel.Kind == "adapter"`) bypass th
 
 The `skipped_by_policy` status value is already part of the shared `outcome` capability in `protocol/parity-matrix.yaml`; no parity-contract change is required to emit it. The `.shatter/config.yaml` loader is the first implementation under the Go-only `hint_config_v1` capability; broader hint-schema support is described in the Hint Config v1 Contract below.
 
-**Deferred work:** local_fs sandbox enforcement (confining file I/O to `<workspace>/runs/<runID>/sandbox/`) is not implemented; `local_fs` is allow-by-default unconditionally. A follow-up story should add path rewriting and chroot-style confinement before treating `local_fs` classification as enforcement rather than advisory.
+### OS sandbox runner (str-jeen.56)
+
+Go launcher and setup subprocesses can be routed through an OS-level sandbox by setting `SHATTER_SANDBOX_BACKEND`:
+
+- `none` or unset — compatibility mode; runs the launcher directly.
+- `bwrap` — uses bubblewrap with private `/tmp`, private home, no network namespace, read-only host system binds, and a disposable writable scratch copy mounted at the target module's original absolute path.
+- `docker` — uses `docker run` with no network, read-only root filesystem, dropped capabilities, no-new-privileges, private tmpfs mounts, and bind mounts for the scratch project and staged launcher.
+
+Docker options:
+
+- `SHATTER_SANDBOX_DOCKER_IMAGE` defaults to `debian:bookworm-slim`.
+- `SHATTER_SANDBOX_DOCKER_RUNTIME` optionally selects a runtime such as `runsc` for gVisor.
+
+The sandbox runner contains local filesystem writes, but it does not yet emit `file_write` side effects and it is not yet required by the `local_fs` policy gate. The next enforcement step is to make `local_fs` execution require an active sandbox unless an explicit unsafe compatibility flag is set.
 
 ## Hint Config v1 Contract (str-hy9b.G3)
 

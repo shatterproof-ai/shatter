@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"github.com/shatter-dev/shatter/shatter-go/sandbox"
 )
 
 // contextKey uniquely identifies a setup context by scope and level.
@@ -69,20 +70,33 @@ func (l *Loader) RunSetup(file, scope, level string, projectRoot *string, parent
 	}
 
 	// Run the compiled setup binary.
-	runCmd := exec.Command(binPath)
-	runCmd.Dir = filepath.Dir(absFile)
-	runCmd.Env = append(os.Environ(),
+	runEnv := append(os.Environ(),
 		"SHATTER_SETUP_SCOPE="+scope,
 		"SHATTER_SETUP_LEVEL="+level,
 	)
 	if projectRoot != nil {
-		runCmd.Env = append(runCmd.Env, "SHATTER_PROJECT_ROOT="+*projectRoot)
+		runEnv = append(runEnv, "SHATTER_PROJECT_ROOT="+*projectRoot)
 	}
 	if len(parentContext) > 0 {
-		runCmd.Env = append(runCmd.Env, "SHATTER_PARENT_CONTEXT="+string(parentContext))
+		runEnv = append(runEnv, "SHATTER_PARENT_CONTEXT="+string(parentContext))
 	}
 
-	stdout, err := runCmd.Output()
+	runProjectRoot := filepath.Dir(absFile)
+	if projectRoot != nil && *projectRoot != "" {
+		runProjectRoot = *projectRoot
+	}
+	prepared, err := sandbox.FromEnv().Command(sandbox.Spec{
+		BinaryPath:  binPath,
+		ProjectRoot: runProjectRoot,
+		WorkDir:     filepath.Dir(absFile),
+		Env:         runEnv,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("preparing setup sandbox: %w", err)
+	}
+	defer func() { _ = prepared.Cleanup() }()
+
+	stdout, err := prepared.Cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("setup file exited with error: %s: %s", exitErr, string(exitErr.Stderr))
