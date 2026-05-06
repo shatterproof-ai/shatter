@@ -76,14 +76,14 @@ fi'
 
 # Pre-push: check-fast for feature branches, full check for main.
 # Set SHATTER_FULL_PUSH=1 to force the full suite on any push.
-PRE_PUSH_BODY='if [ -f "Taskfile.yml" ] && command -v npx >/dev/null 2>&1; then
+PRE_PUSH_BODY='if [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
   PUSH_TASK="check-fast"
   [ "${SHATTER_FULL_PUSH:-0}" = "1" ] && PUSH_TASK="check"
   while read -r local_ref local_sha remote_ref remote_sha; do
     case "${remote_ref}" in refs/heads/main|refs/heads/master) PUSH_TASK="check" ;; esac
   done
   echo "[shatter] Running task ${PUSH_TASK}..."
-  npx task "${PUSH_TASK}" 2>&1 || exit 1
+  task "${PUSH_TASK}" 2>&1 || exit 1
 fi'
 
 MISSING=0

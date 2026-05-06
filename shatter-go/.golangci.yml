@@ -1,7 +1,7 @@
 version: "2"
 
 # golangci-lint v2 configuration for shatter-go.
-# Runs via: npx task go:test
+# Runs via: task go:test
 
 run:
   timeout: 3m
