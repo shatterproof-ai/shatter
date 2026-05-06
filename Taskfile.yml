@@ -135,12 +135,15 @@ tasks:
       - protocol/registry.yaml
       - protocol/conformance/golden_cases.yaml
       - protocol/conformance/golden/**/*
+      - protocol/generated/manifest.json
       - scripts/validate-protocol-registry.py
+      - scripts/protocol-codegen.py
       - shatter-ts/src/**/*.ts
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
       - python3 scripts/validate-protocol-registry.py
+      - python3 scripts/protocol-codegen.py --check
       - |
         if [ -f scripts/validate-parity.py ]; then
           python3 scripts/validate-parity.py
@@ -148,6 +151,22 @@ tasks:
           echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
         fi
       - python3 protocol/conformance/run_golden_tests.py
+
+  protocol-codegen-check:
+    desc: "Verify generated protocol artifacts are in sync with protocol/registry.yaml"
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - protocol/registry.yaml
+      - protocol/generated/manifest.json
+      - scripts/protocol-codegen.py
+      - scripts/test_protocol_codegen.py
+    cmds:
+      - python3 scripts/protocol-codegen.py --check
+      - python3 -m unittest scripts.test_protocol_codegen
 
   golden-test:
     desc: Run cross-frontend parity golden tests (compare capabilities and outputs against recorded expectations)
