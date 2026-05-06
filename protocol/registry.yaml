@@ -14,57 +14,240 @@ compatibility:
   strategy: major_minor_match
   mismatch_error_code: version_mismatch
 
+# --- Shared enums ---
+#
+# Authoritative list of every string-enum used by the protocol. Field models
+# below reference these as `enum:<name>`. The legacy top-level `setup_levels`,
+# `generator_kinds`, and `branch_types` keys are retained for backward
+# compatibility; their values are mirrored under the corresponding entries
+# here. The validator enforces that mirrored entries stay in sync.
+enums:
+  setup_level:
+    description: Setup/teardown lifecycle scope.
+    values: [session, file, function, execution]
+    mirror_of: setup_levels
+  generator_kind:
+    description: Whether a generate request targets a type name or a parameter name.
+    values: [type_name, param_name]
+    mirror_of: generator_kinds
+  branch_type:
+    description: Source-level construct that produced a branch decision.
+    values:
+      - "if"
+      - else_if
+      - switch
+      - ternary
+      - logical_and
+      - logical_or
+      - "while"
+      - "for"
+      - select
+    mirror_of: branch_types
+  outcome_status:
+    description: Machine-readable classification of a single invocation attempt.
+    values:
+      - completed
+      - completed_with_findings
+      - unsupported
+      - build_failed
+      - runtime_failed
+      - timed_out
+      - skipped_by_policy
+      - preflight_failed
+  value_plan_kind:
+    description: Argument production strategy for an invocation plan.
+    values: [literal, zero, random, symbolic, runtime_value]
+  value_requirement_kind:
+    description: Value constraint classification for an invocation requirement.
+    values: [any, non_zero, positive, specific]
+  runtime_requirement_kind:
+    description: Runtime setup requirement classification.
+    values: [receiver_construction, package_initialization]
+  apply_policy:
+    description: Application policy for an execution adapter.
+    values: [required, auto, suggest, disabled]
+  error_category:
+    description: Classification of an error code.
+    values: [validation, runtime, infrastructure]
+  unsatisfied_requirement_kind:
+    description: Reason the planner could not satisfy an invocation requirement.
+    values:
+      - no_constructor
+      - interface_receiver
+      - generic_unconstrained
+      - cgo_dependency
+      - complex_type
+  discovered_dependency_kind:
+    description: How an execution-time discovered dependency was detected.
+    values: [unmocked_import, subprocess_spawn, stubbed_import]
+  trace_event_type:
+    description: Tag discriminating trace event variants in scope_events.
+    values: [branch, scope]
+  crypto_boundary_kind:
+    description: Whether a runtime crypto boundary is encrypt or decrypt.
+    values: [encrypt, decrypt]
+
 # --- Commands (core → frontend) ---
+#
+# Each command carries a `field_model` block describing its request and
+# response payload structure. See the `enums:` section below for reusable
+# enum types referenced as `enum:<name>` in field types. Field type vocabulary:
+#   string | integer | number | boolean | any | object
+#   array<T>              — homogeneous JSON array of T
+#   enum:<name>           — string constrained to enum.<name>.values
+#   ref:<schema>          — reference to a JSON Schema in protocol/schemas/
+#                           or a $defs entry by name
+#
+# `fields:` (flat name list) is retained as a quick-glance request-field
+# index. The validator enforces that it equals
+# field_model.request_fields.keys(); update both together.
 commands:
   handshake:
     description: Initial protocol negotiation; frontend advertises capabilities.
     fields: [capabilities]
     response_status: handshake
+    field_model:
+      request_fields:
+        capabilities: { type: array<string>, optional: false }
+      response_fields:
+        frontend_version: { type: string, optional: false }
+        language: { type: string, optional: false }
+        capabilities: { type: array<string>, optional: false }
 
   analyze:
     description: Extract type info, branches, and dependencies from a function.
     fields: [file, function, project_root, execution_profile]
     response_status: analyze
+    field_model:
+      request_fields:
+        file: { type: string, optional: false }
+        function: { type: string, optional: true }
+        project_root: { type: string, optional: true }
+        execution_profile: { type: "ref:execution_profile", optional: true }
+      response_fields:
+        functions: { type: "array<ref:function-analysis.schema.json>", optional: false }
 
   instrument:
     description: Instrument a function for symbolic constraint tracking.
-    fields: [file, function, mocks, project_root, execution_profile]
+    fields: [file, function, mocks, project_root, execution_profile, plan]
     response_status: instrument
+    field_model:
+      request_fields:
+        file: { type: string, optional: false }
+        function: { type: string, optional: false }
+        mocks: { type: "array<ref:mock-config.schema.json>", optional: false }
+        project_root: { type: string, optional: true }
+        execution_profile: { type: "ref:execution_profile", optional: true }
+        plan: { type: "ref:invocation_plan", optional: true }
+      response_fields:
+        instrumented: { type: boolean, optional: false }
+        output_file: { type: string, optional: true }
+        instrumentable_line_count: { type: integer, optional: true }
 
   prepare:
     description: Pre-build execution artifacts once for reuse across repeated execute calls.
     fields: [file, function, mocks, project_root, execution_profile]
     response_status: prepare
+    field_model:
+      request_fields:
+        file: { type: string, optional: false }
+        function: { type: string, optional: false }
+        mocks: { type: "array<ref:mock-config.schema.json>", optional: false }
+        project_root: { type: string, optional: true }
+        execution_profile: { type: "ref:execution_profile", optional: true }
+      response_fields:
+        prepare_id: { type: string, optional: false }
 
   execute:
     description: Run an instrumented function with concrete inputs.
-    fields: [function, inputs, mocks, setup_context, capture, prepare_id, execution_profile]
+    fields: [function, inputs, mocks, setup_context, capture, prepare_id, execution_profile, plan]
     response_status: execute
+    field_model:
+      request_fields:
+        function: { type: string, optional: false }
+        inputs: { type: array<any>, optional: false }
+        mocks: { type: "array<ref:mock-config.schema.json>", optional: false }
+        setup_context: { type: "ref:setup-context-stack.schema.json", optional: true }
+        prepare_id: { type: string, optional: true }
+        capture: { type: boolean, optional: true }
+        execution_profile: { type: "ref:execution_profile", optional: true }
+        plan: { type: "ref:invocation_plan", optional: true }
+      response_fields:
+        return_value: { type: any, optional: true }
+        thrown_error: { type: "ref:error-info.schema.json", optional: true }
+        branch_path: { type: "array<ref:branch-decision.schema.json>", optional: false }
+        lines_executed: { type: array<integer>, optional: false }
+        calls_to_external: { type: "array<ref:external-call.schema.json>", optional: false }
+        path_constraints: { type: "array<ref:sym-constraint.schema.json>", optional: false }
+        scope_events: { type: "array<ref:trace_event>", optional: true }
+        loop_body_states: { type: "array<ref:loop_body_state>", optional: true }
+        side_effects: { type: "array<ref:side-effect.schema.json>", optional: false }
+        capture_truncation: { type: object, optional: true }
+        performance: { type: "ref:performance-metrics.schema.json", optional: false }
+        discovered_dependencies: { type: "array<ref:discovered_dependency>", optional: true }
+        connection_failures: { type: "array<ref:connection_failure>", optional: true }
+        outcome: { type: "ref:invocation-outcome.schema.json", optional: true }
+        runtime_crypto_boundaries: { type: array<object>, optional: true }
 
   setup:
     description: Initialize state before execution (DB fixtures, env, etc.).
     fields: [file, scope, level, project_root, parent_context, execution_profile]
     response_status: setup
+    field_model:
+      request_fields:
+        file: { type: string, optional: false }
+        scope: { type: string, optional: false }
+        level: { type: "enum:setup_level", optional: false }
+        project_root: { type: string, optional: true }
+        parent_context: { type: "ref:setup-context-stack.schema.json", optional: true }
+        execution_profile: { type: "ref:execution_profile", optional: true }
+      response_fields:
+        setup_context: { type: any, optional: false }
 
   teardown:
     description: Tear down state established by a prior setup.
     fields: [scope, level]
     response_status: teardown_ack
+    field_model:
+      request_fields:
+        scope: { type: string, optional: false }
+        level: { type: "enum:setup_level", optional: false }
+      response_fields: {}
 
   generate:
     description: Invoke a custom generator to produce a value for a type or parameter.
     fields: [file, name, kind, recipe, project_root]
     response_status: generate
+    field_model:
+      request_fields:
+        file: { type: string, optional: false }
+        name: { type: string, optional: false }
+        kind: { type: "enum:generator_kind", optional: false }
+        recipe: { type: any, optional: true }
+        project_root: { type: string, optional: true }
+      response_fields:
+        value: { type: any, optional: false }
+        generator_id: { type: string, optional: false }
+        recipe: { type: any, optional: true }
 
   shutdown:
     description: Request graceful frontend shutdown.
     fields: []
     response_status: shutdown_ack
+    field_model:
+      request_fields: {}
+      response_fields: {}
 
   get_invocation_plan:
     description: Ask the frontend's planner to produce invocation plans for the supplied targets.
-    fields: [requirements]
+    fields: [invocation_requirements]
     response_status: invocation_plan
+    field_model:
+      request_fields:
+        invocation_requirements: { type: "array<ref:invocation_requirement>", optional: false }
+      response_fields:
+        invocation_plans: { type: "array<ref:invocation_plan>", optional: false }
+        unsatisfied_requirements: { type: "array<ref:unsatisfied_requirement>", optional: true }
 
 # --- Response statuses (frontend → core) ---
 statuses:

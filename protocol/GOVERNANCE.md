@@ -97,11 +97,28 @@ Run **all five** checks locally before declaring the change complete:
 
 ### Registry validation
 
-Verifies that `registry.yaml` matches source code in all implementations.
+Verifies the registry in two layers:
+
+1. **IDL field-model layer.** Every command must carry a `field_model:` block
+   with `request_fields:` and `response_fields:` mappings. Each field declares
+   `{type, optional, ...}`. Field types may be primitives (`string`,
+   `integer`, `number`, `boolean`, `any`, `object`), `array<T>`,
+   `enum:<name>` (referencing a top-level `enums:` entry), or
+   `ref:<schema>` (referencing a JSON Schema in `protocol/schemas/`). The
+   legacy flat `fields:` list must equal the keys of
+   `field_model.request_fields`. Legacy enum mirrors (`setup_levels`,
+   `generator_kinds`, `branch_types`) must agree with their
+   `mirror_of`-tagged entries under `enums:`.
+
+2. **Source-name parity layer.** Cross-checks command, response status, and
+   error code names against source files in core and every frontend.
 
 ```bash
 python3 scripts/validate-protocol-registry.py
 ```
+
+Tests for the validator live at `scripts/test_validate_protocol_registry.py`
+(run via `python3 -m unittest scripts.test_validate_protocol_registry`).
 
 ### Schema validation
 
