@@ -141,6 +141,34 @@ Authoritative matrix entry: `protocol/parity-matrix.yaml`
 `shared_wire_types.no_target_reason.frontends.rust:
 implemented_via_cli_classifier`.
 
+## Rust E2E Gate
+
+`shatter-core/tests/e2e_concolic_rust.rs` (str-o9rz) is the Rust counterpart
+of `shatter-core/tests/e2e_concolic.rs`. It drives the real `shatter-rust`
+subprocess through analyze → instrument → orchestrator-driven explore (with
+Z3 input generation) against three known-answer Rust target programs:
+
+- `arithmetic::classify_number` — i64 cascade, 4 branches; the n==0 branch
+  exercises Z3 input generation.
+- `self_hosting::classify_float` — division-by-zero guard followed by a
+  ratio threshold; the canonical nested-control shape.
+- `enums::classify_option` — `Option<i32>` with match guard; substitutes
+  for the string-branch case while a borrowed-`&str` harness limitation
+  blocks executable string-branch examples.
+
+The test runs under `task check` (Full tier) via `core:test-ignored`. Run
+it directly with:
+
+```
+SHATTER_EXAMPLES_DIR="$(python3 scripts/examples_checkout.py)" \
+  cargo test --test e2e_concolic_rust -- --include-ignored
+```
+
+`orchestrator::explore()` works against the Rust frontend because Analyze
+and Instrument set `last_file` (`src/handler.rs:552, 620`) and Execute
+falls back to it when no `file` is provided (line 803). No protocol
+extension is needed.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
