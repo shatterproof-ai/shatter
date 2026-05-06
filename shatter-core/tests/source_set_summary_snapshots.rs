@@ -102,6 +102,7 @@ fn make_function_report(
         total_lines,
         mocks_used: vec![],
         refactoring_recommendations: vec![],
+        completion_outcome: Default::default(),
     }
 }
 

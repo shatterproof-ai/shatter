@@ -27,6 +27,13 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// `display_name` companions plus qualified/display variants for test-order,
 /// mock usage, and dependency graph fields so consumers no longer infer
 /// whether a field is identity-bearing or human-facing.
+///
+/// str-jeen.53 added `completion_outcome` per function plus
+/// `completed_with_behavior` and `completed_error_only` codebase counts.
+/// All three fields are `#[serde(default)]` and absent in pre-fix
+/// reports decode to defaults that match the conservative reading
+/// (`behavioral` / `0` / `0`), so the change is additive and the
+/// schema version is held at 5.
 pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 5;
 
 /// Aggregated counts derived from a scan's outcome list.
@@ -193,6 +200,52 @@ pub struct MockUsageReport {
     pub mock_execution_count: Option<u64>,
 }
 
+/// Classification of a completed function's exploration result based on
+/// whether at least one discovered input ran without throwing
+/// (str-jeen.53). A `Behavioral` outcome means Shatter exercised real
+/// target behavior and saw at least one normal return; `ErrorOnly`
+/// means every discovered input triggered a thrown error (typically a
+/// wrapper or invocation-shape problem masquerading as completion).
+///
+/// `Behavioral` is the default for the empty-discovered-inputs edge
+/// case so the variant matches the conservative "we didn't see any
+/// invocation errors" reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionOutcome {
+    /// At least one discovered input returned without throwing.
+    #[default]
+    Behavioral,
+    /// At least one discovered input was recorded and every one threw.
+    ErrorOnly,
+}
+
+impl CompletionOutcome {
+    /// Stable wire string for filtering machine-readable output.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            CompletionOutcome::Behavioral => "behavioral",
+            CompletionOutcome::ErrorOnly => "error_only",
+        }
+    }
+
+    /// Classify a function from its discovered-input list. A function
+    /// with zero discovered inputs reads as `Behavioral` — the
+    /// `ErrorOnly` bucket only fires when at least one input was
+    /// recorded and all of them threw.
+    fn from_discovered_inputs(inputs: &[DiscoveredInput]) -> Self {
+        if inputs.is_empty() {
+            return CompletionOutcome::Behavioral;
+        }
+        if inputs.iter().all(|d| d.thrown_error.is_some()) {
+            CompletionOutcome::ErrorOnly
+        } else {
+            CompletionOutcome::Behavioral
+        }
+    }
+}
+
 /// Report data for a single function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionReport {
@@ -261,6 +314,14 @@ pub struct FunctionReport {
     /// Refactoring recommendations for hard-to-mock dependencies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
+    /// Whether this completed function exercised real target behavior or
+    /// only produced invocation errors (str-jeen.53). `behavioral` means
+    /// at least one discovered input ran without throwing; `error_only`
+    /// means every discovered input threw, indicating Shatter never
+    /// successfully invoked the function past its wrapper. Reads
+    /// `behavioral` for pre-str-jeen.53 reports that lack the field.
+    #[serde(default)]
+    pub completion_outcome: CompletionOutcome,
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +372,23 @@ pub struct CodebaseReport {
     /// reading v2 reports should use `completed_functions` and switch on
     /// `version >= 2`. See str-jeen.46.
     pub completed_functions: usize,
+    /// Subset of [`Self::completed_functions`] whose discovered inputs
+    /// included at least one non-throwing execution — i.e. Shatter
+    /// actually exercised target behavior (str-jeen.53). Always
+    /// `<= completed_functions`. Pre-str-jeen.53 reports lack this field
+    /// and decode to `0`; consumers must switch on the field's presence
+    /// or compute it from per-function `completion_outcome` values.
+    #[serde(default)]
+    pub completed_with_behavior: usize,
+    /// Subset of [`Self::completed_functions`] where every discovered
+    /// input threw (str-jeen.53). These functions completed in the
+    /// orchestrator-state sense but Shatter never observed real target
+    /// behavior — the inputs only exercised wrapper / invocation-shape
+    /// errors. Always equals
+    /// `completed_functions - completed_with_behavior`. Pre-str-jeen.53
+    /// reports lack the field and decode to `0`.
+    #[serde(default)]
+    pub completed_error_only: usize,
     /// Number of functions that were attempted and failed (timeouts,
     /// runtime errors, build failures). Each entry has a corresponding
     /// row in [`Self::failed`].
@@ -604,6 +682,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     // (str-tzbr contract). file_path is supplied by the caller via the
     // qualified-ID-keyed file_map.
     let (_qid_file, display_name) = crate::behavior::split_qualified_id(&result.function_name);
+    let completion_outcome = CompletionOutcome::from_discovered_inputs(&discovered_inputs);
     FunctionReport {
         function_name: display_name.to_string(),
         display_name: display_name.to_string(),
@@ -615,6 +694,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         coverage_pct,
         discovered_inputs,
         behavior_clusters,
+        completion_outcome,
         constraint_stats: ConstraintStats {
             total_constraints,
             solver_guided_inputs: 0,
@@ -699,6 +779,21 @@ fn display_names_for_order(test_order: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Split per-function completion outcomes into `(behavioral_count,
+/// error_only_count)` totals (str-jeen.53). The two counts always sum
+/// to `functions.len()`.
+fn split_completion_outcomes(functions: &[FunctionReport]) -> (usize, usize) {
+    let mut behavioral = 0usize;
+    let mut error_only = 0usize;
+    for func in functions {
+        match func.completion_outcome {
+            CompletionOutcome::Behavioral => behavioral += 1,
+            CompletionOutcome::ErrorOnly => error_only += 1,
+        }
+    }
+    (behavioral, error_only)
+}
+
 /// Build a [`CumulativeReport`] from batch state.
 fn build_cumulative_report(state: &BatchState) -> CumulativeReport {
     CumulativeReport {
@@ -750,12 +845,16 @@ pub fn generate_report(
     let source_set = build_source_set_summary(&functions);
     let productionish_source_lines = source_set.production_ish.line_count;
 
+    let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
+
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
         codebase: CodebaseReport {
             attempted_functions: counts.attempted,
             completed_functions: counts.completed,
+            completed_with_behavior,
+            completed_error_only,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped,
             unsupported_functions: counts.unsupported,
@@ -811,12 +910,16 @@ pub fn generate_report_from_scan(
     let source_set = build_source_set_summary(&functions);
     let productionish_source_lines = source_set.production_ish.line_count;
 
+    let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
+
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
         codebase: CodebaseReport {
             attempted_functions: counts.attempted,
             completed_functions: counts.completed,
+            completed_with_behavior,
+            completed_error_only,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped,
             unsupported_functions: counts.unsupported,
@@ -1032,6 +1135,21 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     );
     let _ = writeln!(out, "- **Functions attempted:** {}", cb.attempted_functions);
     let _ = writeln!(out, "- **Functions completed:** {}", cb.completed_functions);
+    // str-jeen.53: split completed totals so error-only completions
+    // (every discovered input threw) don't get counted alongside
+    // functions where Shatter actually exercised target behavior.
+    if cb.completed_functions > 0 {
+        let _ = writeln!(
+            out,
+            "  - **with observed behavior:** {}",
+            cb.completed_with_behavior,
+        );
+        let _ = writeln!(
+            out,
+            "  - **error-only (all discovered inputs threw):** {}",
+            cb.completed_error_only,
+        );
+    }
     if cb.failed_functions > 0 {
         let _ = writeln!(out, "- **Functions failed:** {}", cb.failed_functions);
     }
@@ -1184,13 +1302,16 @@ fn write_md_summary_table(out: &mut String, report: &ScanReport) {
     }
 
     let _ = writeln!(out, "## Function Summary\n");
+    // str-jeen.53: add an Outcome column so error-only completions
+    // (every discovered input threw) are visible at-a-glance and don't
+    // get conflated with functions whose coverage happens to match.
     let _ = writeln!(
         out,
-        "| Status | Function | File | Coverage | Branches | Lines | Iterations |"
+        "| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |"
     );
     let _ = writeln!(
         out,
-        "|--------|----------|------|----------|----------|-------|------------|"
+        "|--------|---------|----------|------|----------|----------|-------|------------|"
     );
 
     for func in &report.functions {
@@ -1202,9 +1323,11 @@ fn write_md_summary_table(out: &mut String, report: &ScanReport) {
             "FAIL"
         };
 
+        let outcome = func.completion_outcome.as_wire_str();
+
         let _ = writeln!(
             out,
-            "| {status} | `{name}` | {file} | {cov:.1}% | {covered}/{total} | {lc}/{tl} | {iter} |",
+            "| {status} | {outcome} | `{name}` | {file} | {cov:.1}% | {covered}/{total} | {lc}/{tl} | {iter} |",
             name = func.function_name,
             file = if func.file_path.is_empty() {
                 "-"
@@ -2431,6 +2554,141 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// str-jeen.53 regression. Mirrors `examples/go/error-only-completion`:
+    /// `DoubleNonNegative` produces a non-throwing path plus a panic
+    /// path (behavioral); `AlwaysPanic` produces only panic paths
+    /// (error-only). The scan report must expose the two outcomes
+    /// separately at both the per-function and codebase-rollup
+    /// levels, and the JSON wire format must let consumers filter
+    /// them without custom post-processing.
+    #[test]
+    fn report_separates_behavioral_and_error_only_completions() {
+        // DoubleNonNegative: one non-throwing input + one throwing.
+        let mut behavioral = make_function_result("DoubleNonNegative", 4, 1, 3, 4, vec![]);
+        behavioral
+            .exploration
+            .new_path_executions
+            .push(ExecutionSummary {
+                inputs: vec![serde_json::json!(-1)],
+                return_value: None,
+                thrown_error: Some("panic: negative input not allowed: -1".to_string()),
+                lines_executed: vec![1, 2],
+                is_new_path: true,
+                error_intent: None,
+            });
+
+        // AlwaysPanic: replace the helper-generated non-throwing input
+        // with a throwing one so every discovered input throws.
+        let mut error_only = make_function_result("AlwaysPanic", 3, 1, 2, 3, vec![]);
+        error_only.exploration.new_path_executions.clear();
+        error_only
+            .exploration
+            .new_path_executions
+            .push(ExecutionSummary {
+                inputs: vec![serde_json::json!(0)],
+                return_value: None,
+                thrown_error: Some("panic: intentional panic: 0".to_string()),
+                lines_executed: vec![1],
+                is_new_path: true,
+                error_intent: None,
+            });
+        error_only
+            .exploration
+            .new_path_executions
+            .push(ExecutionSummary {
+                inputs: vec![serde_json::json!(7)],
+                return_value: None,
+                thrown_error: Some("panic: intentional panic: 7".to_string()),
+                lines_executed: vec![1],
+                is_new_path: true,
+                error_intent: None,
+            });
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![behavioral, error_only],
+            test_order: vec!["DoubleNonNegative".into(), "AlwaysPanic".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let mut file_map = HashMap::new();
+        let go_path = "examples/go/error-only-completion/error_only_completion.go";
+        file_map.insert("DoubleNonNegative".into(), go_path.to_string());
+        file_map.insert("AlwaysPanic".into(), go_path.to_string());
+
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        // Per-function classification surfaces on each FunctionReport.
+        let dnn = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "DoubleNonNegative")
+            .expect("DoubleNonNegative should be in the report");
+        let ap = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "AlwaysPanic")
+            .expect("AlwaysPanic should be in the report");
+        assert_eq!(
+            dnn.completion_outcome,
+            CompletionOutcome::Behavioral,
+            "function with at least one non-throwing input must classify behavioral",
+        );
+        assert_eq!(
+            ap.completion_outcome,
+            CompletionOutcome::ErrorOnly,
+            "function whose every discovered input throws must classify error_only",
+        );
+
+        // Codebase rollup splits the completed total into the two
+        // distinct outcomes; total still adds up to completed_functions.
+        let cb = &report.codebase;
+        assert_eq!(cb.completed_functions, 2);
+        assert_eq!(cb.completed_with_behavior, 1);
+        assert_eq!(cb.completed_error_only, 1);
+        assert_eq!(
+            cb.completed_with_behavior + cb.completed_error_only,
+            cb.completed_functions,
+            "completed_with_behavior + completed_error_only must equal completed_functions",
+        );
+
+        // Machine-readable JSON exposes the per-function field as a
+        // stable wire string and the codebase counts as separate keys —
+        // both filterable without custom post-processing.
+        let json = serde_json::to_string(&report).expect("serialize report");
+        assert!(
+            json.contains("\"completion_outcome\":\"behavioral\""),
+            "report JSON must surface behavioral completion_outcome: {json}",
+        );
+        assert!(
+            json.contains("\"completion_outcome\":\"error_only\""),
+            "report JSON must surface error_only completion_outcome: {json}",
+        );
+        assert!(json.contains("\"completed_with_behavior\":1"));
+        assert!(json.contains("\"completed_error_only\":1"));
+
+        // Markdown report exposes both buckets in the header and the
+        // per-row outcome in the function summary table.
+        let md = format_markdown_report(&report);
+        assert!(
+            md.contains("with observed behavior:** 1"),
+            "markdown header must surface behavioral count: {md}",
+        );
+        assert!(
+            md.contains("error-only (all discovered inputs threw):** 1"),
+            "markdown header must surface error-only count: {md}",
+        );
+        assert!(
+            md.contains("| behavioral | `DoubleNonNegative`"),
+            "function summary row must label DoubleNonNegative behavioral: {md}",
+        );
+        assert!(
+            md.contains("| error_only | `AlwaysPanic`"),
+            "function summary row must label AlwaysPanic error_only: {md}",
+        );
+    }
+
     #[test]
     fn function_report_with_errors() {
         let mut func_result = make_function_result("risky", 5, 1, 3, 5, vec![]);
@@ -2592,6 +2850,7 @@ mod tests {
             total_lines,
             mocks_used: vec![],
             refactoring_recommendations: vec![],
+            completion_outcome: CompletionOutcome::Behavioral,
         }
     }
 
@@ -2696,11 +2955,15 @@ mod tests {
         let md = format_markdown_report(&report);
 
         assert!(
-            md.contains("| Status | Function | File | Coverage | Branches | Lines | Iterations |"),
+            md.contains(
+                "| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |"
+            ),
             "missing table header"
         );
         assert!(
-            md.contains("|--------|----------|------|----------|----------|-------|------------|"),
+            md.contains(
+                "|--------|---------|----------|------|----------|----------|-------|------------|"
+            ),
             "missing table separator"
         );
     }
