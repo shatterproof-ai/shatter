@@ -45,8 +45,8 @@ var threeTargets = []wrapper.WrapperTarget{
 }
 
 var twoCtors = []wrapper.ConstructorCandidate{
-	{FuncName: "NewCounter", TargetType: "Counter"},
-	{FuncName: "MustNewCounter", TargetType: "Counter"},
+	{FuncName: "NewCounter", TargetType: "Counter", ReturnsPointer: true},
+	{FuncName: "MustNewCounter", TargetType: "Counter", ReturnsPointer: true},
 }
 
 func TestGenerateWrapperIsDeterministic(t *testing.T) {
@@ -808,6 +808,134 @@ func CallU32(args ...uint64) uint64 {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
 			err, stderr.String(), src)
+	}
+}
+
+// TestGeneratedWrapperRespectsConstructorReturnKind is the str-jeen.49
+// regression: the wrapper must not blindly dereference a constructor
+// result. When `DefaultRegistry()` returns the value type `Registry`,
+// emitting `_recv := *DefaultRegistry()` for a value receiver fails
+// with `cannot indirect DefaultRegistry() (value of struct type
+// Registry)`. The four legal combinations of constructor return kind
+// (value vs pointer) and receiver kind (value vs pointer) each have a
+// distinct correct call shape, exercised below.
+func TestGeneratedWrapperRespectsConstructorReturnKind(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package retkind
+
+type Registry struct{ n int }
+type Service struct{ n int }
+
+// DefaultRegistry returns a value type — the str-jeen.49 failure case.
+func DefaultRegistry() Registry { return Registry{} }
+
+// NewService returns a pointer type.
+func NewService() *Service { return &Service{} }
+
+func (r Registry) Get() int  { return r.n }
+func (r *Registry) Inc()     { r.n++ }
+func (s Service) GetS() int  { return s.n }
+func (s *Service) IncS()     { s.n++ }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "retkind.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write retkind.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/retkind\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:           "example.com/retkind:(Registry).Get",
+			SymbolName:   "Get",
+			Kind:         wrapper.TargetKindMethod,
+			ReceiverType: "Registry", IsPointerRecv: false,
+			HasResult: true, ResultGoType: "int", ResultCount: 1,
+		},
+		{
+			ID:           "example.com/retkind:(*Registry).Inc",
+			SymbolName:   "Inc",
+			Kind:         wrapper.TargetKindMethod,
+			ReceiverType: "Registry", IsPointerRecv: true,
+		},
+		{
+			ID:           "example.com/retkind:(Service).GetS",
+			SymbolName:   "GetS",
+			Kind:         wrapper.TargetKindMethod,
+			ReceiverType: "Service", IsPointerRecv: false,
+			HasResult: true, ResultGoType: "int", ResultCount: 1,
+		},
+		{
+			ID:           "example.com/retkind:(*Service).IncS",
+			SymbolName:   "IncS",
+			Kind:         wrapper.TargetKindMethod,
+			ReceiverType: "Service", IsPointerRecv: true,
+		},
+	}
+	ctors := []wrapper.ConstructorCandidate{
+		{FuncName: "DefaultRegistry", TargetType: "Registry", ReturnsPointer: false},
+		{FuncName: "NewService", TargetType: "Service", ReturnsPointer: true},
+	}
+
+	src := wrapper.GenerateWrapper("retkind", targets, ctors)
+
+	// Static guards: the four legal call shapes must each appear, and
+	// the bug shape (`*DefaultRegistry()`) must NOT.
+	mustContain := []string{
+		// value-return constructor + value receiver: direct use.
+		"_recv := DefaultRegistry()",
+		// pointer-return constructor + pointer receiver: direct use.
+		"_recv := NewService()",
+		// pointer-return constructor + value receiver: dereference.
+		"_recv := *NewService()",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated wrapper missing expected line %q\nsource:\n%s", want, src)
+		}
+	}
+	// Banned: indirecting a value-returning constructor.
+	if strings.Contains(src, "*DefaultRegistry()") {
+		t.Errorf("generated wrapper indirects DefaultRegistry (which returns a value type)\nsource:\n%s", src)
+	}
+	// Pointer-receiver method on a value-returning constructor: must
+	// take the address of a named local, not call &DefaultRegistry().
+	if strings.Contains(src, "&DefaultRegistry()") {
+		t.Errorf("generated wrapper takes address of DefaultRegistry() return value directly\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "retkind", targets, ctors)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, ctors)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), got)
+	}
+	if strings.Contains(stderr.String(), "cannot indirect") {
+		t.Errorf("build emitted cannot-indirect diagnostic:\nstderr: %s", stderr.String())
 	}
 }
 

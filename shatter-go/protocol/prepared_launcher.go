@@ -400,9 +400,10 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 	constructors := make([]wrapper.ConstructorCandidate, len(candidates))
 	for i, candidate := range candidates {
 		constructors[i] = wrapper.ConstructorCandidate{
-			FuncName:   candidate.FuncName,
-			TargetType: candidate.TargetType,
-			HasParams:  len(candidate.Parameters) > 0,
+			FuncName:       candidate.FuncName,
+			TargetType:     candidate.TargetType,
+			HasParams:      len(candidate.Parameters) > 0,
+			ReturnsPointer: candidate.ReturnsPointer,
 		}
 	}
 	return constructors

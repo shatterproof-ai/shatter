@@ -91,7 +91,15 @@ func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate)
 		if c.HasParams {
 			hasParams = "1"
 		}
-		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams
+		// str-jeen.49: include ReturnsPointer in the hash so that a
+		// constructor whose return kind changes invalidates the cached
+		// wrapper file and triggers regeneration with the correct
+		// dereference shape.
+		returnsPtr := "0"
+		if c.ReturnsPointer {
+			returnsPtr = "1"
+		}
+		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr
 	}
 	sort.Strings(ctors)
 
@@ -209,10 +217,21 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 		for _, c := range ctors {
 			recvKind := WrapperKindConstructorPrefix + c.FuncName
 			fmt.Fprintf(b, "\t\tcase %q:\n", recvKind)
-			if t.IsPointerRecv {
+			// str-jeen.49: choose the call shape from the cross product
+			// of (target receiver kind) × (constructor return kind).
+			// Pre-fix every value-receiver case dereferenced the
+			// constructor result, which fails to compile when the
+			// constructor returns the value form (`cannot indirect`).
+			switch {
+			case t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
-			} else {
+			case t.IsPointerRecv && !c.ReturnsPointer:
+				fmt.Fprintf(b, "\t\t\t_recvVal := %s()\n", c.FuncName)
+				b.WriteString("\t\t\t_recv := &_recvVal\n")
+			case !t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := *%s()\n", c.FuncName)
+			default: // !t.IsPointerRecv && !c.ReturnsPointer
+				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
 			}
 			writeParamDeserialization(b, t.Parameters, "\t\t\t")
 			writeCall(b, t, "_recv", nil, "\t\t\t")

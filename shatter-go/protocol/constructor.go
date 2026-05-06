@@ -47,7 +47,7 @@ func ScanConstructors(pkg *packages.Package) []ConstructorCandidate {
 
 // classifyConstructor tests whether fn is a constructor candidate in pkg.
 func classifyConstructor(fn *ast.FuncDecl, pkg *packages.Package) (ConstructorCandidate, bool) {
-	targetType, returnsError, ok := returnsPackageType(fn, pkg)
+	targetType, returnsPointer, returnsError, ok := returnsPackageType(fn, pkg)
 	if !ok {
 		return ConstructorCandidate{}, false
 	}
@@ -56,20 +56,23 @@ func classifyConstructor(fn *ast.FuncDecl, pkg *packages.Package) (ConstructorCa
 	}
 	params := extractParamsWithContext(fn, pkg.TypesInfo, nil)
 	return ConstructorCandidate{
-		FuncName:     fn.Name.Name,
-		TargetType:   targetType,
-		Parameters:   params,
-		ReturnsError: returnsError,
+		FuncName:       fn.Name.Name,
+		TargetType:     targetType,
+		Parameters:     params,
+		ReturnsError:   returnsError,
+		ReturnsPointer: returnsPointer,
 	}, true
 }
 
 // returnsPackageType reports whether fn returns a same-package named type as
 // its first (and optionally second) result. Returns the bare type name,
-// whether the second result is error, and whether the signature matches.
-func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName string, returnsError bool, ok bool) {
+// whether the first result was a pointer (`*T`), whether the second result
+// is error, and whether the signature matches. The pointer flag drives
+// wrapper-side dereference choices (str-jeen.49).
+func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName string, returnsPointer bool, returnsError bool, ok bool) {
 	results := fn.Type.Results
 	if results == nil || len(results.List) == 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 
 	// Flatten the result field list into individual expressions.
@@ -85,56 +88,61 @@ func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName strin
 	}
 
 	if len(exprs) == 0 || len(exprs) > 2 {
-		return "", false, false
+		return "", false, false, false
 	}
 
-	name, same := samePackageTypeName(exprs[0], pkg)
+	name, isPtr, same := samePackageTypeName(exprs[0], pkg)
 	if !same {
-		return "", false, false
+		return "", false, false, false
 	}
 
 	if len(exprs) == 2 {
 		if !isErrorExpr(exprs[1], pkg.TypesInfo) {
-			return "", false, false
+			return "", false, false, false
 		}
-		return name, true, true
+		return name, isPtr, true, true
 	}
-	return name, false, true
+	return name, isPtr, false, true
 }
 
 // samePackageTypeName reports whether expr resolves to a named type whose
-// defining package matches pkg. Pointer wrappers (*T) are unwrapped first.
-// Returns the bare type name and true on success.
-func samePackageTypeName(expr ast.Expr, pkg *packages.Package) (string, bool) {
+// defining package matches pkg. Pointer wrappers (*T) are unwrapped, with
+// the pointer-ness reported back so the caller can preserve the
+// constructor's return kind for wrapper-generation (str-jeen.49).
+// Returns the bare type name, whether the original expression was a
+// pointer, and whether the resolution succeeded.
+func samePackageTypeName(expr ast.Expr, pkg *packages.Package) (string, bool, bool) {
+	isPointer := false
 	if star, ok := expr.(*ast.StarExpr); ok {
+		isPointer = true
 		expr = star.X
 	}
 	ident, ok := expr.(*ast.Ident)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	if pkg.TypesInfo == nil {
-		return "", false
+		return "", false, false
 	}
 	obj, ok := pkg.TypesInfo.Uses[ident]
 	if !ok {
 		// Fall back to Defs for locally defined identifiers in synthetic modules.
 		obj, ok = pkg.TypesInfo.Defs[ident]
 		if !ok {
-			return "", false
+			return "", false, false
 		}
 	}
 	tn, ok := obj.(*types.TypeName)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	if tn.Pkg() == nil {
-		return "", false
+		return "", false, false
 	}
 	if tn.Pkg().Path() != pkg.PkgPath {
-		return "", false
+		return "", false, false
 	}
-	return tn.Name(), true
+	return tn.Name(), isPointer, true
 }
 
 // isErrorExpr reports whether expr resolves to the built-in error interface.
