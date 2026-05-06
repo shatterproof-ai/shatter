@@ -136,9 +136,16 @@ func (h *Handler) Run() error {
 		var req Request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			h.log.Log(context.Background(), LevelTrace, "Failed to parse request", "err", err)
+			// Best-effort: recover the request id from the raw line even
+			// when the surrounding JSON is malformed so the error response
+			// still aligns with the pending request on the core side
+			// (str-jeen.52). A request whose id is unrecoverable falls back
+			// to 0; pairing that with a non-zero pending request would surface
+			// as IdMismatch on the core, which is the desired loud-fail.
+			recoveredID := bestEffortRequestID(line)
 			errResp := Response{
 				ProtocolVersion: ProtocolVersion,
-				ID:              0,
+				ID:              recoveredID,
 				Status:          "error",
 				Code:            ErrInvalidRequest,
 				Message:         fmt.Sprintf("Invalid JSON: %s", err.Error()),
@@ -1514,6 +1521,51 @@ func isVersionCompatible(version string) bool {
 		return false
 	}
 	return reqMajor == ourMajor && reqMinor == ourMinor
+}
+
+// bestEffortRequestID extracts the integer "id" field from a (possibly
+// malformed) JSON request line. Returns 0 when no id can be recovered.
+//
+// This is intentionally tolerant: it accepts invalid JSON surrounding the
+// id field (e.g. trailing garbage after a valid id, missing closing brace)
+// so that an error response carrying the original request's id can still
+// be aligned with the pending request on the core side. The numeric form
+// is the only one accepted; the wire schema specifies id as a uint64.
+//
+// Recovery is bounded to digits-only after `"id"` plus optional whitespace
+// and a colon; any deviation falls back to 0 so we never mis-attribute a
+// response to the wrong request.
+func bestEffortRequestID(line string) int {
+	const idMarker = `"id"`
+	idx := strings.Index(line, idMarker)
+	if idx < 0 {
+		return 0
+	}
+	rest := line[idx+len(idMarker):]
+	// Skip whitespace then a single colon.
+	pos := 0
+	for pos < len(rest) && (rest[pos] == ' ' || rest[pos] == '\t') {
+		pos++
+	}
+	if pos >= len(rest) || rest[pos] != ':' {
+		return 0
+	}
+	pos++
+	for pos < len(rest) && (rest[pos] == ' ' || rest[pos] == '\t') {
+		pos++
+	}
+	digitsStart := pos
+	for pos < len(rest) && rest[pos] >= '0' && rest[pos] <= '9' {
+		pos++
+	}
+	if digitsStart == pos {
+		return 0
+	}
+	id, err := strconv.Atoi(rest[digitsStart:pos])
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 func (h *Handler) send(resp Response) error {
