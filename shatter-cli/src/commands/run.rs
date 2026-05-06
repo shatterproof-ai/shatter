@@ -12,6 +12,7 @@ use shatter_core::frontend::Frontend;
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::run_manifest::{self, RunManifest};
+use shatter_core::status_export::{StatusArtifactLink, StatusExportInput, write_run_status_json};
 
 /// Resolved scope settings from `shatter.config.json` for the `run` command.
 ///
@@ -173,7 +174,13 @@ pub(crate) async fn run_run(
         // (str-jeen.17) so the denominator (zero) is on disk for tooling.
         if let Some(dir) = output_dir {
             let manifest = run_manifest::capture(&scan_id, &scope_hash(&scope), &[], Some(&root));
+            run_manifest::write_manifest(dir, &manifest);
             write_run_summary_json(dir, &build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]))?;
+            write_run_status_export(
+                dir,
+                &manifest,
+                &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+            )?;
         }
         return Ok(());
     }
@@ -295,6 +302,11 @@ pub(crate) async fn run_run(
                 dir,
                 &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &[]),
             )?;
+            write_run_status_export(
+                dir,
+                &run_manifest,
+                &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+            )?;
         }
         shutdown_all_frontends(frontends).await;
         return Ok(());
@@ -338,6 +350,14 @@ pub(crate) async fn run_run(
             write_run_summary_json(
                 dir,
                 &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &spans),
+            )?;
+            write_run_status_export(
+                dir,
+                &run_manifest,
+                &[
+                    ("analysis_report", dir.join("analysis-summary.md")),
+                    ("run_summary", dir.join(RUN_SUMMARY_FILENAME)),
+                ],
             )?;
         }
 
@@ -491,8 +511,7 @@ pub(crate) async fn run_run(
         &representation_spans,
     );
     let source_diff = run_manifest::diff_against(&run_manifest, &manifest_paths);
-    let (validity_top, reasons_top) =
-        classify_validity(&run_summary, Some(&source_diff), &[]);
+    let (validity_top, reasons_top) = classify_validity(&run_summary, Some(&source_diff), &[]);
     run_summary.report_validity = validity_top;
     run_summary.validity_reasons = reasons_top.clone();
     let validity_md = render_validity_markdown(validity_top, &reasons_top);
@@ -534,6 +553,11 @@ pub(crate) async fn run_run(
         run_summary.report_validity = validity_final;
         run_summary.validity_reasons = reasons_final;
         write_run_summary_json(dir, &run_summary)?;
+        write_run_status_export(
+            dir,
+            &run_manifest,
+            &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+        )?;
     }
 
     shutdown_all_frontends(frontends).await;
@@ -1476,8 +1500,11 @@ pub(crate) fn validate_run_artifact_references(
             reason: Some(failure_reason.clone()),
         });
     }
-    let report =
-        validate_artifact_refs(output_dir, &refs, &ArtifactValidationOptions::run_defaults());
+    let report = validate_artifact_refs(
+        output_dir,
+        &refs,
+        &ArtifactValidationOptions::run_defaults(),
+    );
     report.issues.iter().map(|i| i.to_string()).collect()
 }
 
@@ -1510,6 +1537,31 @@ pub(crate) fn write_run_summary_json(
         .map_err(|e| format!("failed to finalize run summary: {e}"))?;
     log::info!("Wrote run summary to {}", path.display());
     Ok(())
+}
+
+fn write_run_status_export(
+    output_dir: &Path,
+    manifest: &RunManifest,
+    artifact_paths: &[(&str, PathBuf)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_path = output_dir.join(run_manifest::RUN_MANIFEST_FILENAME);
+    let artifacts: Vec<StatusArtifactLink<'_>> = artifact_paths
+        .iter()
+        .map(|(kind, path)| StatusArtifactLink {
+            kind,
+            path: path.as_path(),
+        })
+        .collect();
+    write_run_status_json(
+        output_dir,
+        &StatusExportInput {
+            command: "run",
+            manifest,
+            manifest_path: &manifest_path,
+            artifacts: &artifacts,
+        },
+    )
+    .map_err(|e| format!("failed to write run status export: {e}").into())
 }
 
 #[cfg(test)]
@@ -2736,11 +2788,7 @@ mod tests {
         let issues = validate_run_artifact_references(out, &results, &failures);
         assert_eq!(issues.len(), 1, "got issues={issues:?}");
         assert!(issues[0].starts_with("stale_extra:"), "issue={}", issues[0]);
-        assert!(
-            issues[0].contains("pkg__stale.md"),
-            "issue={}",
-            issues[0]
-        );
+        assert!(issues[0].contains("pkg__stale.md"), "issue={}", issues[0]);
     }
 
     /// str-ux7q: classify_validity escalates to `invalid-artifacts`
@@ -2767,12 +2815,8 @@ mod tests {
         let path = root.join("src.rs");
         fs::write(&path, "alpha\n").expect("write initial");
         let manifest_paths = vec!["src.rs".to_string()];
-        let manifest = shatter_core::run_manifest::capture(
-            "scan-stale",
-            "h",
-            &manifest_paths,
-            Some(root),
-        );
+        let manifest =
+            shatter_core::run_manifest::capture("scan-stale", "h", &manifest_paths, Some(root));
         // Mutate the source file content; the snapshot compares
         // size + content hash so no sleep is needed.
         fs::write(&path, "alpha\nbeta\n").expect("rewrite");

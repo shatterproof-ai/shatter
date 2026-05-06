@@ -78,6 +78,7 @@ pub mod solver;
 pub mod source_bucket;
 pub mod spec;
 pub mod spec_diff;
+pub mod status_export;
 pub mod strace_discovery;
 pub mod strategy;
 pub mod stratum;

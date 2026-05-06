@@ -34,6 +34,7 @@ use crate::mock_gen::mock_config_from_behavior_map;
 use crate::pipeline::{self, AnalyzeOutput};
 use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
+use crate::status_export::{StatusArtifactLink, StatusExportInput};
 use crate::types::TypeInfo;
 
 /// Shared budget surplus within a topological layer.
@@ -700,10 +701,11 @@ pub struct ScanSummary {
 }
 
 const SCAN_SUMMARY_VERSION: u32 = 1;
+const SCAN_SUMMARY_FILENAME: &str = "summary.json";
 
 /// Write the scan summary to `<scan_root>/summary.json` using atomic rename.
 fn write_scan_summary(scan_root: &Path, summary: &ScanSummary) {
-    let path = scan_root.join("summary.json");
+    let path = scan_root.join(SCAN_SUMMARY_FILENAME);
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
@@ -724,6 +726,26 @@ fn write_scan_summary(scan_root: &Path, summary: &ScanSummary) {
         return;
     }
     log::debug!("Updated scan summary -> {}", path.display());
+}
+
+fn write_scan_status(scan_root: &Path, manifest: &crate::run_manifest::RunManifest) {
+    let manifest_path = scan_root.join(crate::run_manifest::RUN_MANIFEST_FILENAME);
+    let summary_path = scan_root.join(SCAN_SUMMARY_FILENAME);
+    let artifacts = [StatusArtifactLink {
+        kind: "scan_summary",
+        path: &summary_path,
+    }];
+    if let Err(e) = crate::status_export::write_run_status_json(
+        scan_root,
+        &StatusExportInput {
+            command: "scan",
+            manifest,
+            manifest_path: &manifest_path,
+            artifacts: &artifacts,
+        },
+    ) {
+        log::warn!("failed to write scan status export: {e}");
+    }
 }
 
 /// Create an initial summary with status `Running` and no function entries.
@@ -1550,6 +1572,7 @@ pub async fn scan(
     summary.source_diff = Some(diff);
     if config.write_artifacts {
         write_scan_summary(&scan_root_dir, &summary);
+        write_scan_status(&scan_root_dir, &run_manifest);
     }
 
     Ok(result)
@@ -3779,6 +3802,9 @@ pub async fn parallel_scan_with_progress(
         &manifest_source_paths,
     );
     maybe_write_summary(&summary);
+    if write_artifacts {
+        write_scan_status(&scan_root_dir, &run_manifest);
+    }
 
     Ok(ParallelScanResult {
         function_results: all_results,
@@ -10005,6 +10031,17 @@ mod tests {
         assert_eq!(summary.status, ScanRunStatus::Completed);
         let diff = summary.source_diff.expect("source_diff written");
         assert!(!diff.is_stale());
+
+        let status_path = scan_root_dir.join(crate::status_export::RUN_STATUS_FILENAME);
+        let status_bytes = std::fs::read(status_path).expect("run-status.json read");
+        let status: crate::status_export::RunStatus =
+            serde_json::from_slice(&status_bytes).expect("run-status.json parse");
+        assert_eq!(status.run.scan_id, scan_id);
+        assert_eq!(status.command.name, "scan");
+        assert_eq!(status.command.config_hash, manifest.scope_hash);
+        assert_eq!(status.manifest.path, "manifest.json");
+        assert_eq!(status.artifacts[0].kind, "scan_summary");
+        assert_eq!(status.artifacts[0].path, "summary.json");
     }
 }
 
