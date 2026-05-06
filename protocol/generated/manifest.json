@@ -1,0 +1,205 @@
+{
+  "commands": {
+    "analyze": {
+      "fields": [
+        "execution_profile",
+        "file",
+        "function",
+        "project_root"
+      ],
+      "response_status": "analyze"
+    },
+    "execute": {
+      "fields": [
+        "capture",
+        "execution_profile",
+        "function",
+        "inputs",
+        "mocks",
+        "plan",
+        "prepare_id",
+        "setup_context"
+      ],
+      "response_status": "execute"
+    },
+    "generate": {
+      "fields": [
+        "file",
+        "kind",
+        "name",
+        "project_root",
+        "recipe"
+      ],
+      "response_status": "generate"
+    },
+    "get_invocation_plan": {
+      "fields": [
+        "invocation_requirements"
+      ],
+      "response_status": "invocation_plan"
+    },
+    "handshake": {
+      "fields": [
+        "capabilities"
+      ],
+      "response_status": "handshake"
+    },
+    "instrument": {
+      "fields": [
+        "execution_profile",
+        "file",
+        "function",
+        "mocks",
+        "plan",
+        "project_root"
+      ],
+      "response_status": "instrument"
+    },
+    "prepare": {
+      "fields": [
+        "execution_profile",
+        "file",
+        "function",
+        "mocks",
+        "project_root"
+      ],
+      "response_status": "prepare"
+    },
+    "setup": {
+      "fields": [
+        "execution_profile",
+        "file",
+        "level",
+        "parent_context",
+        "project_root",
+        "scope"
+      ],
+      "response_status": "setup"
+    },
+    "shutdown": {
+      "fields": [],
+      "response_status": "shutdown_ack"
+    },
+    "teardown": {
+      "fields": [
+        "level",
+        "scope"
+      ],
+      "response_status": "teardown_ack"
+    }
+  },
+  "compatibility": {
+    "mismatch_error_code": "version_mismatch",
+    "strategy": "major_minor_match"
+  },
+  "enums": {
+    "apply_policy": [
+      "auto",
+      "disabled",
+      "required",
+      "suggest"
+    ],
+    "branch_type": [
+      "else_if",
+      "for",
+      "if",
+      "logical_and",
+      "logical_or",
+      "select",
+      "switch",
+      "ternary",
+      "while"
+    ],
+    "crypto_boundary_kind": [
+      "decrypt",
+      "encrypt"
+    ],
+    "discovered_dependency_kind": [
+      "stubbed_import",
+      "subprocess_spawn",
+      "unmocked_import"
+    ],
+    "error_category": [
+      "infrastructure",
+      "runtime",
+      "validation"
+    ],
+    "generator_kind": [
+      "param_name",
+      "type_name"
+    ],
+    "outcome_status": [
+      "build_failed",
+      "completed",
+      "completed_with_findings",
+      "preflight_failed",
+      "runtime_failed",
+      "skipped_by_policy",
+      "timed_out",
+      "unsupported"
+    ],
+    "runtime_requirement_kind": [
+      "package_initialization",
+      "receiver_construction"
+    ],
+    "setup_level": [
+      "execution",
+      "file",
+      "function",
+      "session"
+    ],
+    "trace_event_type": [
+      "branch",
+      "scope"
+    ],
+    "unsatisfied_requirement_kind": [
+      "cgo_dependency",
+      "complex_type",
+      "generic_unconstrained",
+      "interface_receiver",
+      "no_constructor"
+    ],
+    "value_plan_kind": [
+      "literal",
+      "random",
+      "runtime_value",
+      "symbolic",
+      "zero"
+    ],
+    "value_requirement_kind": [
+      "any",
+      "non_zero",
+      "positive",
+      "specific"
+    ]
+  },
+  "error_codes": [
+    "compilation_error",
+    "execution_crash",
+    "execution_timeout",
+    "file_not_found",
+    "function_not_found",
+    "instrumentation_failed",
+    "internal_error",
+    "invalid_request",
+    "not_supported",
+    "parse_error",
+    "preflight_failed",
+    "version_mismatch"
+  ],
+  "manifest_schema_version": 1,
+  "protocol_version": "0.1.0",
+  "statuses": [
+    "analyze",
+    "error",
+    "execute",
+    "generate",
+    "handshake",
+    "instrument",
+    "invocation_plan",
+    "prepare",
+    "setup",
+    "shutdown_ack",
+    "teardown_ack"
+  ]
+}
