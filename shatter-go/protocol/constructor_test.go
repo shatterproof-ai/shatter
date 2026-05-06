@@ -52,6 +52,10 @@ func TestScanConstructorsFindsNamedCandidates(t *testing.T) {
 		if svc.ReturnsError {
 			t.Errorf("NewService.ReturnsError = true, want false")
 		}
+		// str-jeen.49: NewService returns *Service, so ReturnsPointer=true.
+		if !svc.ReturnsPointer {
+			t.Errorf("NewService.ReturnsPointer = false, want true (returns *Service)")
+		}
 	}
 
 	// --- MustNewClient ---
@@ -68,6 +72,62 @@ func TestScanConstructorsFindsNamedCandidates(t *testing.T) {
 		if cli.ReturnsError {
 			t.Errorf("MustNewClient.ReturnsError = true, want false")
 		}
+	}
+}
+
+// TestScanConstructorsRecordsReturnKind is the str-jeen.49 regression: a
+// constructor's return kind (pointer vs value) must be preserved on the
+// ConstructorCandidate so wrapper generation can choose the correct
+// dereference shape. Pre-fix the pointer was silently unwrapped in
+// samePackageTypeName and the kind was lost.
+func TestScanConstructorsRecordsReturnKind(t *testing.T) {
+	ldr, cleanup, err := newTransientLoader()
+	if err != nil {
+		t.Fatalf("newTransientLoader: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	tmpFile := filepath.Join(t.TempDir(), "ret.go")
+	src := `package testdata
+
+type Registry struct{ n int }
+type Service struct{ n int }
+
+// DefaultRegistry returns a value type — the failure case from Zolem.
+func DefaultRegistry() Registry { return Registry{} }
+
+// NewService returns a pointer type.
+func NewService() *Service { return &Service{} }
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	pkg, err := loadPackageForAnalysis(ldr, tmpFile)
+	if err != nil {
+		t.Fatalf("loadPackageForAnalysis: %v", err)
+	}
+
+	candidates := ScanConstructors(pkg)
+	byName := map[string]ConstructorCandidate{}
+	for _, c := range candidates {
+		byName[c.FuncName] = c
+	}
+
+	def, ok := byName["DefaultRegistry"]
+	if !ok {
+		t.Fatalf("DefaultRegistry not found in candidates: %v", candidateFuncNames(candidates))
+	}
+	if def.ReturnsPointer {
+		t.Errorf("DefaultRegistry.ReturnsPointer = true, want false (returns Registry)")
+	}
+
+	svc, ok := byName["NewService"]
+	if !ok {
+		t.Fatalf("NewService not found in candidates: %v", candidateFuncNames(candidates))
+	}
+	if !svc.ReturnsPointer {
+		t.Errorf("NewService.ReturnsPointer = false, want true (returns *Service)")
 	}
 }
 
@@ -166,6 +226,9 @@ func TestConstructorCandidateJSONRoundtrip(t *testing.T) {
 		if got.ReturnsError != c.ReturnsError {
 			rt.Errorf("ReturnsError: got %v, want %v", got.ReturnsError, c.ReturnsError)
 		}
+		if got.ReturnsPointer != c.ReturnsPointer {
+			rt.Errorf("ReturnsPointer: got %v, want %v", got.ReturnsPointer, c.ReturnsPointer)
+		}
 	})
 }
 
@@ -174,10 +237,11 @@ func genConstructorCandidate() *rapid.Generator[ConstructorCandidate] {
 		prefix := rapid.SampledFrom([]string{"New", "MustNew", "Default"}).Draw(rt, "prefix")
 		suffix := rapid.StringMatching(`[A-Z][a-z]{1,8}`).Draw(rt, "suffix")
 		return ConstructorCandidate{
-			FuncName:     prefix + suffix,
-			TargetType:   rapid.StringMatching(`[A-Z][a-z]{2,8}`).Draw(rt, "type"),
-			Parameters:   []ParamInfo{},
-			ReturnsError: rapid.Bool().Draw(rt, "returns_error"),
+			FuncName:       prefix + suffix,
+			TargetType:     rapid.StringMatching(`[A-Z][a-z]{2,8}`).Draw(rt, "type"),
+			Parameters:     []ParamInfo{},
+			ReturnsError:   rapid.Bool().Draw(rt, "returns_error"),
+			ReturnsPointer: rapid.Bool().Draw(rt, "returns_pointer"),
 		}
 	})
 }

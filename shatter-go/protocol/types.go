@@ -67,6 +67,16 @@ type ConstructorCandidate struct {
 	TargetType   string      `json:"target_type"`
 	Parameters   []ParamInfo `json:"parameters"`
 	ReturnsError bool        `json:"returns_error"`
+	// ReturnsPointer is true when the constructor's first result is a
+	// pointer (`*T`) and false when it is the value form (`T`). The
+	// receiver-aware wrapper generator branches on this flag combined
+	// with the target method's receiver kind to choose the correct call
+	// shape (`_recv := NewT()` vs `_recv := *NewT()` vs the addressable
+	// pair `_v := DefaultT(); _recv := &_v`). Pre-fix all constructor
+	// results were dereferenced for value receivers, which fails to
+	// compile when the constructor returns the value form. See
+	// str-jeen.49.
+	ReturnsPointer bool `json:"returns_pointer,omitempty"`
 }
 
 // SetupLevel defines the lifecycle granularity for setup/teardown.

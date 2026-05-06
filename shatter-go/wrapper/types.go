@@ -22,4 +22,15 @@ type ConstructorCandidate struct {
 	FuncName   string
 	TargetType string
 	HasParams  bool
+	// ReturnsPointer reports whether the constructor's return type is the
+	// pointer form (`*T`) or the value form (`T`). Wrapper generation
+	// branches on the combination of receiver kind and this flag:
+	//   ptr-recv + ptr-ret  →  _recv := NewT()
+	//   ptr-recv + val-ret  →  _v := DefaultT(); _recv := &_v
+	//   val-recv + ptr-ret  →  _recv := *NewT()
+	//   val-recv + val-ret  →  _recv := DefaultT()
+	// Pre-fix every val-recv case emitted `*ctor()`, which fails to
+	// compile when the constructor returns a value (`cannot indirect`).
+	// See str-jeen.49.
+	ReturnsPointer bool
 }
