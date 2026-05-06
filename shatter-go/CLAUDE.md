@@ -97,7 +97,7 @@ Go declares support for all four redesign feature capabilities in
 - `hint_config_v1` — `.shatter/config.yaml` hint schema (str-hy9b.G3). Go-only.
 
 TS and Rust currently declare `outcome` only; conformance tests
-(`npx task conformance`) enforce that the Go-only capabilities return a
+(`task conformance`) enforce that the Go-only capabilities return a
 clean "capability not supported" response from TS/Rust rather than
 crashing or returning malformed data.
 

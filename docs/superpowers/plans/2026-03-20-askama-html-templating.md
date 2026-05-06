@@ -336,17 +336,17 @@ Verify the full CLI pipeline still works with the new templates.
 
 - [ ] **Step 1: Run the quick test tier**
 
-Run: `npx task test-quick`
+Run: `task test-quick`
 Expected: PASS
 
 - [ ] **Step 2: Run the standard test tier**
 
-Run: `npx task test-standard`
+Run: `task test-standard`
 Expected: PASS
 
 - [ ] **Step 3: Run the walkthrough**
 
-Run: `npx task walkthrough`
+Run: `task walkthrough`
 Expected: PASS (check ERROR SUMMARY at end)
 
 - [ ] **Step 4: Manual spot-check**

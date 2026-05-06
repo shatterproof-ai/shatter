@@ -28,7 +28,7 @@ Which parallel code paths are affected? Check all that apply and confirm the par
 - [ ] Unit tests added or updated
 - [ ] Property tests (proptest / fast-check / rapid) added for any new public function
 - [ ] E2E concolic tests verified (`cargo test --test e2e_concolic`)
-- [ ] Conformance tests verified (`npx task conformance`) — required if protocol-visible
+- [ ] Conformance tests verified (`task conformance`) — required if protocol-visible
 - [ ] Walkthrough updated (`demo/walkthrough.sh`) if the compact demo narrative changes
 - [ ] Gauntlet updated (`demo/gauntlet.sh`) or equivalent targeted coverage added for non-demo CLI changes
 

@@ -20,7 +20,7 @@ Shatter has three language frontends: TypeScript (`shatter-ts/`), Go (`shatter-g
 | File | Role |
 |---|---|
 | `protocol/parity-matrix.yaml` | **The authoritative matrix.** `side_effect_capabilities` enumerates which frontend captures which side effect kinds. `allowed_divergences` lists known, tracked drift. |
-| `protocol/conformance/conformance_cases.yaml` | Wire-format test cases run by `npx task conformance`. `known_drifts` section tracks accepted output differences. |
+| `protocol/conformance/conformance_cases.yaml` | Wire-format test cases run by `task conformance`. `known_drifts` section tracks accepted output differences. |
 | `protocol/GOVERNANCE.md` | Checklist for adding a new protocol message type (registry, schemas, fixtures, per-frontend handlers, round-trip tests, conformance cases). |
 | `shatter-ts/CLAUDE.md`, `shatter-go/CLAUDE.md`, `shatter-rust/CLAUDE.md` | Per-frontend parity contracts: timeout, instrumentor, side effects, prepare, invocation model, ite. |
 
@@ -72,15 +72,15 @@ Invalid values (non-numeric, zero, negative) fall back to the default silently.
 
 ## When you're about to…
 
-- **Add a new protocol message type** → follow `protocol/GOVERNANCE.md` step by step; update all three frontends or document the drift in `known_drifts`; run `npx task parity` + `npx task conformance`.
+- **Add a new protocol message type** → follow `protocol/GOVERNANCE.md` step by step; update all three frontends or document the drift in `known_drifts`; run `task parity` + `task conformance`.
 - **Change execute response shape** → update `shatter-core/src/protocol.rs`, round-trip tests in all three frontends, conformance cases, and the affected frontend `CLAUDE.md`'s side effect / invocation / prepare section as relevant.
 - **Add a new side effect capture kind in one frontend** → confirm the cross-frontend story in `protocol/parity-matrix.yaml`, update the affected frontend's `CLAUDE.md`, add known drift if other frontends won't match immediately.
-- **Refactor a frontend internally without touching wire format** → no parity contract update needed. Confirm with `npx task conformance` that output is identical.
+- **Refactor a frontend internally without touching wire format** → no parity contract update needed. Confirm with `task conformance` that output is identical.
 - **Plan work that spans multiple frontends** → Read one file in each target frontend's subtree before reasoning, so each crate's nested CLAUDE.md loads. Otherwise you plan without the per-frontend contracts.
 
 ## Validation gates
 
-- `npx task parity` — registry consistency + capability contract
-- `npx task conformance` — wire format parity across frontends
-- `npx task check` — Full tier: runs both of the above plus cross-language tests
+- `task parity` — registry consistency + capability contract
+- `task conformance` — wire format parity across frontends
+- `task check` — Full tier: runs both of the above plus cross-language tests
 - `cargo test --test e2e_concolic` — full pipeline E2E through the TS frontend subprocess

@@ -18,8 +18,8 @@ hooks without disturbing existing content (e.g. Beads integration).
 
 | Hook | Task | Scope |
 |------|------|-------|
-| `pre-commit` | `npx task core:clippy` | Rust tests + clippy |
-| `pre-push` | `npx task check` | All language quality gates |
+| `pre-commit` | `task core:clippy` | Rust tests + clippy |
+| `pre-push` | `task check` | All language quality gates |
 
 ## Skipping hooks
 

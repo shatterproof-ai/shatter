@@ -536,7 +536,7 @@ Expected: All E2E tests PASS. The Rust frontend is exercised end-to-end here.
 
 - [ ] **Step 4: Run walkthrough**
 
-Run: `npx task walkthrough 2>&1 | tail -40`
+Run: `task walkthrough 2>&1 | tail -40`
 
 Expected: Walkthrough completes. Check the ERROR SUMMARY at the end. Step 10 (Rust explore) should complete within 120s.
 

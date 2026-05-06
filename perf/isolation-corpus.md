@@ -67,16 +67,16 @@ python3 scripts/perf_runner.py run \
 
 ```bash
 # Run everything with the isolation- prefix
-npx task perf-isolation
+task perf-isolation
 
 # Or with a custom output directory:
-RESULTS_DIR=.shatter/perf-runs/isolation-$(date +%Y%m%d) npx task perf-isolation
+RESULTS_DIR=.shatter/perf-runs/isolation-$(date +%Y%m%d) task perf-isolation
 ```
 
 ### Generate the cross-mode comparison report
 
 ```bash
-npx task perf-isolation-report
+task perf-isolation-report
 
 # The report is written to .shatter/perf-runs/isolation/isolation-report.md
 # and .shatter/perf-runs/isolation/isolation-report.json

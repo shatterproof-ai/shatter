@@ -50,4 +50,4 @@ Neither `shatter-core/src/protocol.rs` nor `shatter-go/protocol/types.go` define
 
 ## Verification
 
-This audit is docs-only. `npx task test-standard` was run and passed to confirm no incidental changes.
+This audit is docs-only. `task test-standard` was run and passed to confirm no incidental changes.

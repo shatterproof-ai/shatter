@@ -1197,7 +1197,7 @@ if metrics.fuzz_found > 0 {
 
 - [ ] **Step 3: Run the quick test tier**
 
-Run: `npx task test-quick`
+Run: `task test-quick`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
@@ -1244,12 +1244,12 @@ Expected: PASS (including new test case)
 
 - [ ] **Step 3: Run standard test tier**
 
-Run: `npx task test-standard`
+Run: `task test-standard`
 Expected: PASS
 
 - [ ] **Step 4: Run full check**
 
-Run: `npx task check`
+Run: `task check`
 Expected: PASS
 
 - [ ] **Step 5: Commit any test fixtures**
