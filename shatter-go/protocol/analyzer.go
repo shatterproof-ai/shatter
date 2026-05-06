@@ -287,6 +287,20 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		if isSyntheticPackageInitDecl(fn) {
 			continue
 		}
+		// Skip the CLI entrypoint `func main()` in `package main`. Like
+		// `init`, main is reserved by the Go runtime: it takes no
+		// parameters, returns nothing, and is invoked once by the runtime
+		// at process start. Surfacing it as a target lets scan dispatch
+		// it through the launcher subprocess, where any `os.Exit` or
+		// `log.Fatal` in the body terminates the process before the
+		// harness writes a response — the resulting "launcher: subprocess
+		// exited unexpectedly" error reads as an infrastructure failure
+		// rather than the target behavior it actually is (str-jeen.55).
+		// Non-`main` helpers in the same `package main` remain
+		// discoverable; only the literal `func main()` symbol is gated.
+		if isMainEntrypointDecl(fn, pkg.Name) {
+			continue
+		}
 		// str-fuhw.1.1: callers may filter by either the bare AST name
 		// ("Compute") or the receiver-decorated qualified name shatter-go
 		// emits in FunctionAnalysis.Name ("(*Service).Compute"). Match
@@ -420,6 +434,37 @@ func isSyntheticPackageInitDecl(fn *ast.FuncDecl) bool {
 		return false
 	}
 	return fn.Name.Name == "init"
+}
+
+// isMainEntrypointDecl reports whether fn is the CLI entrypoint
+// `func main()` in `package main` (no receiver, no parameters, no results).
+// These declarations are invoked by the Go runtime at process start and
+// cannot be invoked directly as targets — surfacing them sends scan into
+// a launcher subprocess that terminates whenever the body calls os.Exit
+// or log.Fatal, producing misleading "launcher: subprocess exited
+// unexpectedly" failures (str-jeen.55). The predicate intentionally
+// matches only the literal `main` free function in `package main`, so
+// helper functions in the same CLI package remain discoverable.
+func isMainEntrypointDecl(fn *ast.FuncDecl, packageName string) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	if packageName != "main" {
+		return false
+	}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		return false
+	}
+	if fn.Name.Name != "main" {
+		return false
+	}
+	if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 {
+		return false
+	}
+	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
+		return false
+	}
+	return true
 }
 
 // declarationBelongsToTargetFile reports whether the function declaration's

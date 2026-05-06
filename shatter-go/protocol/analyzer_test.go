@@ -1707,6 +1707,38 @@ func TestAnalyzeFile_ExcludesSyntheticPackageInit(t *testing.T) {
 	}
 }
 
+// TestAnalyzeFile_ExcludesMainEntrypoint (str-jeen.55) verifies that a
+// `package main` `func main()` declaration is not surfaced as an executable
+// target. Executing main directly produces "launcher: subprocess exited
+// unexpectedly" failures whenever the body invokes os.Exit / log.Fatal,
+// which Zolem broad-run scans were misclassifying as launcher infrastructure
+// failures. Non-`main` free functions in the same package must remain
+// discoverable so helpers in CLI packages are still explorable.
+func TestAnalyzeFile_ExcludesMainEntrypoint(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("main_funcs/main_funcs.go"), "")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	for _, fa := range results {
+		if fa.Name == "main" {
+			t.Errorf("AnalyzeFile surfaced package-main entrypoint as a target")
+		}
+	}
+	var sawHelper bool
+	for _, fa := range results {
+		if fa.Name == "Helper" {
+			sawHelper = true
+		}
+	}
+	if !sawHelper {
+		names := make([]string, 0, len(results))
+		for _, r := range results {
+			names = append(names, r.Name)
+		}
+		t.Errorf("AnalyzeFile dropped Helper; got names: %s", strings.Join(names, ","))
+	}
+}
+
 // TestAnalyzeFile_DistinguishesSameNameMethodsAcrossReceivers is the
 // str-fuhw.1.1 regression: two methods named Write on different receivers
 // in the same file must surface as two distinct FunctionAnalysis entries

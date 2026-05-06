@@ -458,3 +458,85 @@ async fn e2e_go_variadic_sum_discovers_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test 4: `package main` CLI entrypoints are filtered from analyze output.
+//
+// str-jeen.55: Zolem broad-run scans were dispatching `func main()` targets
+// through the launcher subprocess; bodies that called `os.Exit` /
+// `log.Fatal` killed the harness before it wrote a response, and the Go
+// session reader surfaced "launcher: subprocess exited unexpectedly" —
+// which the scan classifier reported as a launcher infrastructure failure.
+//
+// The fix filters `func main()` at the Go analyzer (mirroring the existing
+// `init` skip), so scan never reaches the launcher with a CLI entrypoint.
+// This E2E asserts the contract end-to-end against the real Go frontend
+// subprocess for all three fixture shapes (printer, os.Exit, log.Fatal):
+//
+//   - the analyze response lists no `main` entry, AND
+//   - the named non-`main` helper IS surfaced (so `package main` stays
+//     useful for explorable helpers), AND
+//   - no analyze response message mentions "subprocess exited unexpectedly"
+//     (the original Zolem-visible misclassification string).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess"]
+async fn e2e_go_filters_main_entrypoints_from_scan() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("main-entrypoint", "main.go", "Helper"),
+        ("main-os-exit", "main.go", "Compute"),
+        ("main-log-fatal", "main.go", "Classify"),
+    ];
+
+    for (dir, file_name, helper_name) in cases {
+        let file = repo_examples_go_dir().join(dir).join(file_name);
+        assert!(
+            file.exists(),
+            "fixture missing: {} -- was the worktree set up correctly?",
+            file.display()
+        );
+        let file_str = file.to_string_lossy().into_owned();
+
+        let (mut frontend, _workspace_dir) =
+            spawn_go_frontend(&format!("filter-main-{dir}")).await;
+
+        let response = frontend
+            .send(ProtoCommand::Analyze {
+                file: file_str.clone(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await
+            .expect("analyze command failed");
+
+        match response.result {
+            ResponseResult::Analyze { functions } => {
+                let names: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
+                assert!(
+                    !names.iter().any(|n| n == "main"),
+                    "{dir}: analyze surfaced `main` as a target (names={names:?}); \
+                     str-jeen.55 requires the Go analyzer to filter `func main()` \
+                     in `package main`"
+                );
+                assert!(
+                    names.iter().any(|n| n == helper_name),
+                    "{dir}: analyze dropped non-main helper {helper_name} \
+                     (names={names:?}); only `main` should be filtered"
+                );
+            }
+            ResponseResult::Error { code, message, .. } => {
+                assert!(
+                    !message.contains("subprocess exited unexpectedly"),
+                    "{dir}: analyze surfaced launcher misclassification \
+                     ({code:?}): {message}"
+                );
+                panic!("{dir}: analyze error ({code:?}): {message}");
+            }
+            other => panic!("{dir}: expected Analyze response, got: {other:?}"),
+        }
+
+        frontend.shutdown().await.expect("frontend shutdown failed");
+    }
+}
