@@ -26,12 +26,15 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// v4 added `qualified_id` to per-function records. v5 adds explicit
 /// `display_name` companions plus qualified/display variants for test-order,
 /// mock usage, and dependency graph fields so consumers no longer infer
-/// whether a field is identity-bearing or human-facing. v6 adds
-/// `completion_outcome` per function plus `completed_with_behavior` and
-/// `completed_error_only` codebase counts so consumers can filter
-/// completed-with-invocation-errors separately from real behavioral
-/// exploration (str-jeen.53).
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 6;
+/// whether a field is identity-bearing or human-facing.
+///
+/// str-jeen.53 added `completion_outcome` per function plus
+/// `completed_with_behavior` and `completed_error_only` codebase counts.
+/// All three fields are `#[serde(default)]` and absent in pre-fix
+/// reports decode to defaults that match the conservative reading
+/// (`behavioral` / `0` / `0`), so the change is additive and the
+/// schema version is held at 5.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 5;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
