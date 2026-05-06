@@ -399,3 +399,70 @@ func Mixed(a int, _ string, _ token.Pos) {}
 		}
 	}
 }
+
+// TestBuildWrapperTargets_DetectsVariadic is the str-jeen.48 analyze-side
+// regression: when a function declares a final `...T` parameter,
+// BuildWrapperTargets must surface IsVariadic=true on the corresponding
+// WrapperParam and render the GoType as the slice form (`[]T`). Without
+// this, GenerateWrapper would emit a non-expanded call site and the
+// generated wrapper would fail to build.
+func TestBuildWrapperTargets_DetectsVariadic(t *testing.T) {
+	const src = `package vary
+
+func RunCommand(name string, args ...string) int { return len(name) + len(args) }
+
+func CallU32(args ...uint64) uint64 { var s uint64; for _, v := range args { s += v }; return s }
+
+func NoVariadic(xs []string) int { return len(xs) }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "v.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("vary", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name: "vary", PkgPath: "example.com/vary",
+		Syntax: []*ast.File{file}, Types: tpkg, TypesInfo: info,
+	}
+	targets := BuildWrapperTargets(pkg)
+
+	byName := map[string]WrapperTarget{}
+	for _, t := range targets {
+		byName[t.SymbolName] = t
+	}
+
+	check := func(name, paramName, wantGoType string, wantVariadic bool) {
+		t.Helper()
+		tgt, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing target %q", name)
+		}
+		if len(tgt.Parameters) == 0 {
+			t.Fatalf("%s: no parameters", name)
+		}
+		last := tgt.Parameters[len(tgt.Parameters)-1]
+		if last.Name != paramName {
+			t.Errorf("%s: last param name = %q, want %q", name, last.Name, paramName)
+		}
+		if last.GoType != wantGoType {
+			t.Errorf("%s: last param GoType = %q, want %q", name, last.GoType, wantGoType)
+		}
+		if last.IsVariadic != wantVariadic {
+			t.Errorf("%s: last param IsVariadic = %v, want %v", name, last.IsVariadic, wantVariadic)
+		}
+	}
+
+	check("RunCommand", "args", "[]string", true)
+	check("CallU32", "args", "[]uint64", true)
+	check("NoVariadic", "xs", "[]string", false)
+}

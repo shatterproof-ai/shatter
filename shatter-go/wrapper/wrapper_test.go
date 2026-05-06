@@ -678,6 +678,139 @@ func AddUnnamed(int, int) int { return 0 }
 	}
 }
 
+// TestGeneratedWrapperCompilesVariadic is the str-jeen.48 regression: a
+// wrapper for a function whose final parameter is variadic must emit
+// `args...` at the call site. Pre-fix the wrapper emitted `runCommand(ctx,
+// binaryPath, args)` for `func(context.Context, string, ...string)`,
+// producing a `cannot use args (variable of type []string) as string`
+// build error. The fixtures cover the three failure shapes Zolem
+// surfaced: a free variadic function, a variadic factory, and a helper
+// that takes `...uint64`.
+func TestGeneratedWrapperCompilesVariadic(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package variadic
+
+import "context"
+
+// RunCommand is the canonical free variadic function from Zolem.
+func RunCommand(ctx context.Context, name string, args ...string) int {
+	_ = ctx
+	return len(name) + len(args)
+}
+
+type Generator struct{ id int }
+type Handler struct{ gens []*Generator }
+
+// MakeHandler is the variadic factory shape: NewHandler(...*Generator).
+func MakeHandler(gens ...*Generator) *Handler {
+	return &Handler{gens: gens}
+}
+
+// CallU32 is the WASM-helper shape: callU32(...uint64).
+func CallU32(args ...uint64) uint64 {
+	var sum uint64
+	for _, v := range args {
+		sum += v
+	}
+	return sum
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "variadic.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write variadic.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/variadic\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/variadic:RunCommand",
+			SymbolName: "RunCommand",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context"},
+				{Name: "name", GoType: "string"},
+				{Name: "args", GoType: "[]string", IsVariadic: true},
+			},
+			Imports:      []string{"context"},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+		{
+			ID:         "example.com/variadic:MakeHandler",
+			SymbolName: "MakeHandler",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "gens", GoType: "[]*Generator", IsVariadic: true},
+			},
+			HasResult:    true,
+			ResultGoType: "*Handler",
+			ResultCount:  1,
+		},
+		{
+			ID:         "example.com/variadic:CallU32",
+			SymbolName: "CallU32",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "args", GoType: "[]uint64", IsVariadic: true},
+			},
+			HasResult:    true,
+			ResultGoType: "uint64",
+			ResultCount:  1,
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "variadic", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	src, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+
+	mustContain := []string{
+		"RunCommand(ctx, name, args...)",
+		"MakeHandler(gens...)",
+		"CallU32(args...)",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("generated wrapper missing variadic call %q\nsource:\n%s", want, src)
+		}
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), src)
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 

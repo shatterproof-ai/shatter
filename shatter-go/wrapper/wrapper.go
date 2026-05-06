@@ -25,9 +25,15 @@ import (
 
 // WrapperParam describes one parameter of a wrapper target, including the
 // Go type name required for code generation.
+//
+// IsVariadic is true only for the final positional parameter of a function
+// declared with `...T`. The GoType for a variadic parameter is the slice
+// form (`[]T`); the call site must expand it with `args...` so the wrapper
+// passes through to the target's variadic call shape (str-jeen.48).
 type WrapperParam struct {
-	Name   string
-	GoType string // concrete Go type string, e.g. "int", "*Counter", "string"
+	Name       string
+	GoType     string // concrete Go type string, e.g. "int", "*Counter", "string"
+	IsVariadic bool
 }
 
 // TypeParamInfo describes one generic type parameter declared by a wrapper target.
@@ -248,7 +254,16 @@ func writeGenericTargetCase(b *strings.Builder, t WrapperTarget) {
 func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, typeArgs []string, indent string) {
 	args := make([]string, len(t.Parameters))
 	for i, p := range t.Parameters {
-		args[i] = p.Name
+		// str-jeen.48: a variadic parameter (declared `...T` in source) is
+		// stored as a slice but must be expanded at the call site so the
+		// wrapper produces the same call shape as the target's signature.
+		// Without `args...` the build fails with `cannot use args (variable
+		// of type []T) as T`.
+		if p.IsVariadic {
+			args[i] = p.Name + "..."
+		} else {
+			args[i] = p.Name
+		}
 	}
 	argList := strings.Join(args, ", ")
 
@@ -439,11 +454,26 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, im
 	var params []WrapperParam
 	index := 0
 	for _, field := range fn.Type.Params.List {
-		goType := wrapperGoType(field.Type, info, pkgName, importSet)
+		// str-jeen.48: detect a `...T` parameter. Go's grammar permits the
+		// ellipsis only on the final field, and that field always carries
+		// at most one named identifier. The local variable type is `[]T`,
+		// not `...T`; IsVariadic drives `args...` expansion at the call
+		// site (see writeCall).
+		fieldType := field.Type
+		isVariadic := false
+		if ellipsis, ok := fieldType.(*ast.Ellipsis); ok {
+			isVariadic = true
+			fieldType = ellipsis.Elt
+		}
+		elemType := wrapperGoType(fieldType, info, pkgName, importSet)
+		goType := elemType
+		if isVariadic {
+			goType = "[]" + elemType
+		}
 		if len(field.Names) == 0 {
 			// Unnamed parameter (e.g. `func F(int, string)`): a single
 			// field with no names represents one positional parameter.
-			params = append(params, WrapperParam{Name: syntheticParamName(index), GoType: goType})
+			params = append(params, WrapperParam{Name: syntheticParamName(index), GoType: goType, IsVariadic: isVariadic})
 			index++
 			continue
 		}
@@ -455,7 +485,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, im
 				// substitute a stable synthetic name.
 				localName = syntheticParamName(index)
 			}
-			params = append(params, WrapperParam{Name: localName, GoType: goType})
+			params = append(params, WrapperParam{Name: localName, GoType: goType, IsVariadic: isVariadic})
 			index++
 		}
 	}
@@ -572,6 +602,11 @@ func wrapperASTTypeString(expr ast.Expr) string {
 			return "[]" + wrapperASTTypeString(e.Elt)
 		}
 		return "[...]" + wrapperASTTypeString(e.Elt)
+	case *ast.Ellipsis:
+		// str-jeen.48: a `...T` parameter type renders as `[]T` for the
+		// wrapper's local variable; the call site appends `...` based on
+		// IsVariadic, not on the rendered type string.
+		return "[]" + wrapperASTTypeString(e.Elt)
 	case *ast.MapType:
 		return "map[" + wrapperASTTypeString(e.Key) + "]" + wrapperASTTypeString(e.Value)
 	case *ast.SelectorExpr:
