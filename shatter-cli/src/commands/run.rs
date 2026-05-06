@@ -521,9 +521,16 @@ pub(crate) async fn run_run(
         // when expected files are missing on disk. Source-set diff
         // and representation tier are unchanged from the stdout
         // pass; only the missing-artifacts signal is new here.
-        let missing_artifacts = missing_run_report_artifacts(dir, &exploration_results);
+        // str-ux7q: feed the shared cross-command artifact-reference
+        // validator instead of just checking per-function .md
+        // presence — this also catches exploration failures that
+        // never recorded an unavailable-reason token, and stale
+        // unreferenced .md files left under `output_dir` from a
+        // previous run.
+        let validation_issues =
+            validate_run_artifact_references(dir, &exploration_results, &exploration_failures);
         let (validity_final, reasons_final) =
-            classify_validity(&run_summary, Some(&source_diff), &missing_artifacts);
+            classify_validity(&run_summary, Some(&source_diff), &validation_issues);
         run_summary.report_validity = validity_final;
         run_summary.validity_reasons = reasons_final;
         write_run_summary_json(dir, &run_summary)?;
@@ -543,7 +550,7 @@ fn write_run_report(
         .map_err(|e| format!("failed to create output dir '{}': {e}", dir.display()))?;
 
     for (qname, result) in exploration_results {
-        let safe_name = qname.replace("::", "__").replace('/', "_");
+        let safe_name = run_report_safe_name(qname);
         let func_path = dir.join(format!("{safe_name}.md"));
 
         let pct = if result.total_lines > 0 {
@@ -1232,16 +1239,21 @@ fn build_run_summary_from_buckets(
 ///   `build_run_summary_*`.
 /// - `source_diff`, when `Some` and stale, raises validity to at
 ///   least `stale-source-set`.
-/// - `missing_artifacts` is the list of expected per-function
-///   report paths that were absent on disk after `write_run_report`
-///   ran. Non-empty raises validity to `invalid-artifacts`.
+/// - `validation_issues` is the list of artifact-reference contract
+///   violation diagnostics surfaced by the shared validator (see
+///   [`validate_run_artifact_references`], str-ux7q). This includes
+///   missing per-function `<safe_name>.md` files, exploration
+///   failures with no recorded reason token, and unreferenced
+///   `*.md` extras under `output_dir`. Non-empty raises validity to
+///   `invalid-artifacts`. Historically (str-jeen.5) this slot only
+///   carried the per-function `.md` presence check.
 ///
 /// The function is total and deterministic so tests can pin tier
 /// transitions at the threshold boundaries.
 pub(crate) fn classify_validity(
     summary: &RunSummary,
     source_diff: Option<&run_manifest::ManifestDiff>,
-    missing_artifacts: &[String],
+    validation_issues: &[String],
 ) -> (ReportValidity, Vec<ValidityReason>) {
     let mut reasons: Vec<ValidityReason> = Vec::new();
     let mut tier = ReportValidity::High;
@@ -1341,18 +1353,19 @@ pub(crate) fn classify_validity(
         }
     }
 
-    if !missing_artifacts.is_empty() {
+    if !validation_issues.is_empty() {
         tier = worst(tier, ReportValidity::InvalidArtifacts);
-        let preview: Vec<String> = missing_artifacts.iter().take(3).cloned().collect();
+        let preview: Vec<String> = validation_issues.iter().take(3).cloned().collect();
         reasons.push(ValidityReason {
             code: "invalid_artifacts_missing".to_string(),
             detail: format!(
-                "{} expected per-function report file(s) missing on disk (e.g. {})",
-                missing_artifacts.len(),
-                preview.join(", ")
+                "{} artifact-reference contract violation(s) (e.g. {})",
+                validation_issues.len(),
+                preview.join("; ")
             ),
             recommended_action:
-                "Inspect output directory for I/O failures; the report references artifacts that do not exist.".to_string(),
+                "Inspect output directory for I/O failures or stale per-function reports; the run references artifacts that do not exist or that lack a recorded reason."
+                    .to_string(),
         });
     }
 
@@ -1412,23 +1425,60 @@ pub(crate) fn render_validity_markdown(
     md
 }
 
-/// str-jeen.5: per-function self-check. Returns the list of expected
-/// `<safe_name>.md` paths (relative to `output_dir`) that
-/// `write_run_report` was supposed to produce but that are absent on
-/// disk. Mirrors the filename derivation in `write_run_report`.
-pub(crate) fn missing_run_report_artifacts(
+/// str-ux7q: derive the on-disk filename stem from a qualified
+/// function name. Single source of truth used by both
+/// [`write_run_report`] and the validator so the two cannot drift.
+pub(crate) fn run_report_safe_name(qname: &str) -> String {
+    qname.replace("::", "__").replace('/', "_")
+}
+
+/// str-ux7q: validate the run command's artifact-reference contract
+/// using the shared cross-command validator from `explore.rs`.
+///
+/// The run command's on-disk shape is:
+/// * one `<safe_name>.md` per completed exploration (written by
+///   [`write_run_report`]),
+/// * a top-level `run.json` summary (written by
+///   [`write_run_summary_json`] after this validator runs, so the
+///   stale-extra scan skips it via the `run_defaults` skip list),
+/// * one logical "no artifact, must have a reason token" reference
+///   per exploration failure surfaced in `exploration_failures`.
+///
+/// Returns the list of issue diagnostics (one per violation) suitable
+/// for feeding into [`classify_validity`]'s `validation_issues`
+/// parameter. Empty list = clean run.
+pub(crate) fn validate_run_artifact_references(
     output_dir: &Path,
     exploration_results: &[(String, explorer::ObservationOutput)],
+    exploration_failures: &HashMap<String, String>,
 ) -> Vec<String> {
-    let mut missing = Vec::new();
+    use crate::commands::explore::{
+        ArtifactRef, ArtifactValidationOptions, validate_artifact_refs,
+    };
+
+    let mut refs: Vec<ArtifactRef> = Vec::new();
     for (qname, _) in exploration_results {
-        let safe_name = qname.replace("::", "__").replace('/', "_");
-        let func_path = output_dir.join(format!("{safe_name}.md"));
-        if !func_path.is_file() {
-            missing.push(format!("{safe_name}.md"));
-        }
+        let safe_name = run_report_safe_name(qname);
+        refs.push(ArtifactRef {
+            file: qname.clone(),
+            function_name: qname.clone(),
+            status: "completed".to_string(),
+            artifact: Some(format!("{safe_name}.md")),
+            reason: None,
+        });
     }
-    missing
+    for (qname, failure_reason) in exploration_failures {
+        refs.push(ArtifactRef {
+            file: qname.clone(),
+            function_name: qname.clone(),
+            status: "failed".to_string(),
+            artifact: None,
+            reason: Some(failure_reason.clone()),
+        });
+    }
+    let report =
+        validate_artifact_refs(output_dir, &refs, &ArtifactValidationOptions::run_defaults());
+    report.issues.iter().map(|i| i.to_string()).collect()
 }
 
 fn percent_of_source(lines: u64, selected_source_lines: u64) -> f64 {
@@ -2618,18 +2668,93 @@ mod tests {
         assert!(legacy_parsed.validity_reasons.is_empty());
     }
 
+    /// str-ux7q: the shared artifact-reference validator must flag a
+    /// per-function `<safe_name>.md` that `write_run_report` was
+    /// supposed to produce but that is absent on disk. Replaces the
+    /// older `missing_run_report_artifacts_flags_absent_files` test —
+    /// same scenario, now driven through the cross-command validator
+    /// so the `invalid_artifacts_missing` reason fires on the same
+    /// signal in both commands.
     #[test]
-    fn missing_run_report_artifacts_flags_absent_files() {
+    fn validate_run_artifact_references_flags_missing_per_function_md() {
         let dir = tempfile::tempdir().expect("tempdir");
         let out = dir.path();
-        // Pretend two functions completed; only write one .md file.
         let results: Vec<(String, explorer::ObservationOutput)> = vec![
             ("pkg::a".to_string(), explorer::ObservationOutput::default()),
             ("pkg::b".to_string(), explorer::ObservationOutput::default()),
         ];
         fs::write(out.join("pkg__a.md"), "").expect("write a");
-        let missing = missing_run_report_artifacts(out, &results);
-        assert_eq!(missing, vec!["pkg__b.md".to_string()]);
+        let failures: HashMap<String, String> = HashMap::new();
+        let issues = validate_run_artifact_references(out, &results, &failures);
+        assert_eq!(issues.len(), 1, "got issues={issues:?}");
+        let only = &issues[0];
+        assert!(only.starts_with("missing_artifact:"), "issue={only}");
+        assert!(only.contains("path=pkg__b.md"), "issue={only}");
+    }
+
+    /// str-ux7q: an exploration failure with an empty reason token
+    /// is a contract violation — downstream consumers can't classify
+    /// the row. The shared validator treats this the same way it
+    /// does for explore-shaped rows that lack an `unavailable_reason`.
+    #[test]
+    fn validate_run_artifact_references_flags_failure_with_empty_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path();
+        let results: Vec<(String, explorer::ObservationOutput)> = Vec::new();
+        let mut failures: HashMap<String, String> = HashMap::new();
+        // Empty reason = no token recorded. Validator must surface
+        // this so the run report can't claim the failure was
+        // categorized.
+        failures.insert("pkg::broken".to_string(), String::new());
+        let issues = validate_run_artifact_references(out, &results, &failures);
+        assert_eq!(issues.len(), 1, "got issues={issues:?}");
+        assert!(
+            issues[0].starts_with("missing_unavailable_reason:"),
+            "issue={}",
+            issues[0]
+        );
+    }
+
+    /// str-ux7q: an unreferenced `*.md` left over from a prior run is
+    /// surfaced as `stale_extra` so the report can't quietly include
+    /// out-of-band files. `run.json` is on the validator's skip list
+    /// (it's the run summary control file, not a per-function
+    /// artifact), so it must not trip the stale-extra rule.
+    #[test]
+    fn validate_run_artifact_references_flags_stale_extras_but_skips_run_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path();
+        let results: Vec<(String, explorer::ObservationOutput)> =
+            vec![("pkg::a".to_string(), explorer::ObservationOutput::default())];
+        fs::write(out.join("pkg__a.md"), "").expect("write a");
+        // Leftover from a prior run that referenced `pkg::stale` —
+        // the current run does not.
+        fs::write(out.join("pkg__stale.md"), "").expect("write stale");
+        // Control file: must be ignored by the stale-extra scan.
+        fs::write(out.join("run.json"), "{}").expect("write run.json");
+        let failures: HashMap<String, String> = HashMap::new();
+        let issues = validate_run_artifact_references(out, &results, &failures);
+        assert_eq!(issues.len(), 1, "got issues={issues:?}");
+        assert!(issues[0].starts_with("stale_extra:"), "issue={}", issues[0]);
+        assert!(
+            issues[0].contains("pkg__stale.md"),
+            "issue={}",
+            issues[0]
+        );
+    }
+
+    /// str-ux7q: classify_validity escalates to `invalid-artifacts`
+    /// on any non-empty validation-issues slice, regardless of the
+    /// underlying issue shape (missing artifact, missing reason,
+    /// stale extra). Pins the wiring between the richer validator
+    /// and the validity classifier.
+    #[test]
+    fn classify_validity_escalates_on_stale_extra_validation_issue() {
+        let summary = synth_summary(95, 9, 1); // would be `high`
+        let stale = vec!["stale_extra: path=/tmp/out/old.md".to_string()];
+        let (tier, reasons) = classify_validity(&summary, None, &stale);
+        assert_eq!(tier, ReportValidity::InvalidArtifacts);
+        assert!(reason_codes(&reasons).contains(&"invalid_artifacts_missing"));
     }
 
     #[test]
