@@ -1,0 +1,30 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 12,
+  "command": "execute",
+  "function": "example.com/svc:Process",
+  "inputs": [],
+  "mocks": [],
+  "plan": {
+    "target_id": "example.com/svc:Process",
+    "receiver_kind": "zero_value",
+    "argument_plans": [
+      {
+        "param_index": 0,
+        "param_name": "ctx",
+        "kind": "runtime_value",
+        "literal": "context.Background()",
+        "type_hint": "context.Context"
+      },
+      {
+        "param_index": 1,
+        "param_name": "id",
+        "kind": "literal",
+        "literal": 42,
+        "type_hint": "int"
+      }
+    ],
+    "priority": 0,
+    "label": "runtime_value parity (str-1hlk.4)"
+  }
+}

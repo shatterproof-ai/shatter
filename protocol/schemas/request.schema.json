@@ -366,8 +366,8 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["literal", "zero", "random", "symbolic"],
-          "description": "Argument production strategy."
+          "enum": ["literal", "zero", "random", "symbolic", "runtime_value"],
+          "description": "Argument production strategy. `runtime_value` sources the argument from the producing frontend's runtime-value registry (e.g. Go's context.Background() for context.Context); `literal` then carries the source expression as a JSON-encoded string and `type_hint` names the registered type."
         },
         "literal": {
           "description": "Concrete value when kind is literal."

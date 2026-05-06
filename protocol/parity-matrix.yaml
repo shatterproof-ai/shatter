@@ -580,6 +580,14 @@ feature_capabilities:
       and orchestrator paths. TypeScript has no planner yet; the Rust
       frontend does not yet consume `Execute.plan` either — see
       `ts-rust-execute-plan-not-implemented` below.
+
+      `argument_plans[].kind` enum: `literal`, `zero`, `random`, `symbolic`,
+      `runtime_value` (str-1hlk.4). The Go planner emits `runtime_value` for
+      parameters resolved from the Go runtime-value registry (e.g.
+      `context.Context` → `context.Background()`); the Rust core deserializes
+      it but does not materialize it into a seed (the producing frontend
+      resolves the source expression at execute time via
+      `planner.LookupRuntimeValue`).
     frontends:
       typescript: not_supported
       go: supported
