@@ -12,6 +12,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/overlay"
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
 
 const packageMain = "main"
@@ -123,7 +124,12 @@ func writeGeneratedSource(path, source string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(source), 0o644)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		return err
+	}
+	// Preflight: detect zero-byte materializations before `go build` sees
+	// them (str-jeen.51).
+	return workspace.VerifyMaterializedSource(path, len(source) > 0)
 }
 
 // renamedTestSibling pairs an original `_test.go` path with its rewritten
@@ -210,8 +216,16 @@ func rewriteFilePackage(path, packageName string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	return printer.Fprint(out, fset, file)
+	if printErr := printer.Fprint(out, fset, file); printErr != nil {
+		_ = out.Close()
+		return printErr
+	}
+	if closeErr := out.Close(); closeErr != nil {
+		return closeErr
+	}
+	// Preflight: a zero-byte rewrite would otherwise surface downstream as
+	// `expected package, found EOF` from `go build` (str-jeen.51).
+	return workspace.VerifyMaterializedSource(path, true)
 }
 
 func exportedGlobalVars(sourcePath string) ([]string, error) {
