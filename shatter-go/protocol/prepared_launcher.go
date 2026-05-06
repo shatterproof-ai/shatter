@@ -16,6 +16,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
+	"github.com/shatter-dev/shatter/shatter-go/sandbox"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
@@ -39,6 +40,9 @@ type preparedExecution interface {
 type preparedLauncher struct {
 	ArtifactDir string
 	BinaryPath  string
+	ProjectRoot string
+	WorkDir     string
+	Sandbox     sandbox.Runner
 	// TargetID is the stable target identifier the wrapper's switch keys on
 	// (`<pkg.PkgPath>:<qualified_name>`). Stored separately from the
 	// default receiver_kind so receiver overrides don't risk picking up a
@@ -171,7 +175,11 @@ func (p *preparedLauncher) sessionOrOpen() (*launcher.LauncherSession, error) {
 		return p.session, nil
 	}
 
-	session, err := launcher.OpenSession(p.BinaryPath)
+	session, err := launcher.OpenSessionWithOptions(p.BinaryPath, launcher.SessionOptions{
+		ProjectRoot: p.ProjectRoot,
+		WorkDir:     p.WorkDir,
+		Sandbox:     p.Sandbox,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +255,9 @@ func (h *Handler) prepareDirectExecution(
 
 	return &preparedLauncher{
 		BinaryPath:             result.BinaryPath,
+		ProjectRoot:            req.TargetModuleDir,
+		WorkDir:                req.TargetModuleDir,
+		Sandbox:                sandbox.FromEnv(),
 		TargetID:               targetID,
 		DefaultReceiverKind:    defaultReceiverKind,
 		DefaultGenericTypeArgs: append([]string{}, defaultGenericTypeArgs...),

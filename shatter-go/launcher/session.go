@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/shatter-dev/shatter/shatter-go/sandbox"
 )
 
 const sessionBufferSize = 4 * 1024 * 1024
@@ -67,26 +69,55 @@ type LauncherSession struct {
 	enc                   *json.Encoder
 	sc                    *bufio.Scanner
 	stdin                 interface{ Close() error }
+	cleanup               func() error
 	InvocationsDispatched int
+}
+
+// SessionOptions configures launcher subprocess execution.
+type SessionOptions struct {
+	ProjectRoot string
+	WorkDir     string
+	Env         []string
+	Sandbox     sandbox.Runner
 }
 
 // OpenSession starts the launcher binary at binaryPath and returns a session
 // ready to accept Invoke calls. The caller must call Close when done.
 func OpenSession(binaryPath string) (*LauncherSession, error) {
-	cmd := exec.Command(binaryPath) //nolint:gosec
+	return OpenSessionWithOptions(binaryPath, SessionOptions{})
+}
+
+// OpenSessionWithOptions starts the launcher binary with explicit execution
+// options. When options.Sandbox is enabled, the launcher runs behind that
+// backend with ProjectRoot mounted as a disposable scratch filesystem.
+func OpenSessionWithOptions(binaryPath string, options SessionOptions) (*LauncherSession, error) {
+	prepared, err := options.Sandbox.Command(sandbox.Spec{
+		BinaryPath:  binaryPath,
+		ProjectRoot: options.ProjectRoot,
+		WorkDir:     options.WorkDir,
+		Env:         options.Env,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("launcher: prepare subprocess: %w", err)
+	}
+	cleanup := prepared.Cleanup
+	cmd := prepared.Cmd
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		_ = cleanup()
 		return nil, fmt.Errorf("launcher: stdin pipe: %w", err)
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		stdinPipe.Close()
+		_ = cleanup()
 		return nil, fmt.Errorf("launcher: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		stdinPipe.Close()
+		_ = cleanup()
 		return nil, fmt.Errorf("launcher: start subprocess: %w", err)
 	}
 
@@ -94,10 +125,11 @@ func OpenSession(binaryPath string) (*LauncherSession, error) {
 	sc.Buffer(make([]byte, sessionBufferSize), sessionBufferSize)
 
 	return &LauncherSession{
-		cmd:   cmd,
-		enc:   json.NewEncoder(stdinPipe),
-		sc:    sc,
-		stdin: stdinPipe,
+		cmd:     cmd,
+		enc:     json.NewEncoder(stdinPipe),
+		sc:      sc,
+		stdin:   stdinPipe,
+		cleanup: cleanup,
 	}, nil
 }
 
@@ -165,11 +197,15 @@ func (s *LauncherSession) InvokeWithTimeout(req LauncherRequest, timeout time.Du
 func (s *LauncherSession) Close() error {
 	_ = s.stdin.Close()
 	err := s.cmd.Wait()
+	cleanupErr := s.runCleanup()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return nil
+		return cleanupErr
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return cleanupErr
 }
 
 // Kill forcibly terminates the launcher subprocess. Intended for recovery
@@ -181,5 +217,17 @@ func (s *LauncherSession) Kill() error {
 	if err := s.cmd.Process.Kill(); err != nil {
 		return err
 	}
-	return s.cmd.Wait()
+	err := s.cmd.Wait()
+	cleanupErr := s.runCleanup()
+	if err != nil {
+		return err
+	}
+	return cleanupErr
+}
+
+func (s *LauncherSession) runCleanup() error {
+	if s.cleanup == nil {
+		return nil
+	}
+	return s.cleanup()
 }

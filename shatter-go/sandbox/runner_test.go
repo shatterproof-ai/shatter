@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -114,7 +115,7 @@ func TestDockerCommandUsesHardenedDefaults(t *testing.T) {
 	defer prepared.Cleanup()
 
 	args := prepared.Cmd.Args
-	assertArgSequence(t, args, "run", "--rm", "-i")
+	assertArgSequence(t, args[1:], "run", "--rm", "-i")
 	assertArgPair(t, args, "--runtime", "runsc")
 	assertArgPair(t, args, "--network", "none")
 	assertArgPair(t, args, "--read-only", "")
@@ -125,6 +126,59 @@ func TestDockerCommandUsesHardenedDefaults(t *testing.T) {
 	assertArgPair(t, args, "--workdir", projectRoot)
 	assertArgPair(t, args, "--entrypoint", "/shatter-bin/launcher")
 	assertArg(t, args, "shatter-go-runtime:test")
+}
+
+func TestBubblewrapCommandContainsRelativeAndTmpWrites(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not installed")
+	}
+
+	hostRoot := t.TempDir()
+	projectRoot := filepath.Join(hostRoot, "project")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("mkdir project root: %v", err)
+	}
+	tmpName := "shatter-bwrap-test-" + strings.ReplaceAll(t.Name(), "/", "-")
+	binaryPath := filepath.Join(hostRoot, "launcher")
+	script := "#!/bin/sh\n" +
+		"mkdir -p rel\n" +
+		"printf rel > rel/created.txt\n" +
+		"mkdir -p /tmp/" + tmpName + "\n" +
+		"printf tmp > /tmp/" + tmpName + "/created.txt\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write launcher script: %v", err)
+	}
+
+	prepared, err := NewRunner(Config{
+		Backend:  BackendBubblewrap,
+		TempRoot: t.TempDir(),
+	}).Command(Spec{
+		BinaryPath:  binaryPath,
+		ProjectRoot: projectRoot,
+		WorkDir:     projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	defer prepared.Cleanup()
+
+	out, err := prepared.Cmd.CombinedOutput()
+	if err != nil {
+		if isBubblewrapEnvironmentError(string(out), err) {
+			t.Skipf("bwrap unavailable in this environment: %v\n%s", err, out)
+		}
+		t.Fatalf("run bwrap command: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(projectRoot, "rel", "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("relative write leaked to host project root, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(os.TempDir(), tmpName, "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("/tmp write leaked to host tmp, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.ProjectCopy, "rel", "created.txt")); err != nil {
+		t.Fatalf("relative write missing from scratch project: %v", err)
+	}
 }
 
 func writeExecutable(t *testing.T, dir, name string) string {
@@ -179,4 +233,19 @@ func assertArgSequence(t *testing.T, args []string, sequence ...string) {
 			t.Fatalf("arg[%d] = %q, want %q in %v", i, args[i], want, sequence)
 		}
 	}
+}
+
+func isBubblewrapEnvironmentError(output string, err error) bool {
+	message := output + "\n" + err.Error()
+	for _, fragment := range []string{
+		"No permissions to create new namespace",
+		"Operation not permitted",
+		"Creating new namespace failed",
+		"bwrap: setting up uid map",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
