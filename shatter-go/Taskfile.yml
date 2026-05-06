@@ -7,8 +7,11 @@ tasks:
       - '**/*.go'
       - go.mod
       - go.sum
+    generates:
+      - bin/shatter-go
     cmds:
       - go build -buildvcs=false ./...
+      - go build -buildvcs=false -o bin/shatter-go .
 
   test:
     desc: Run Go tests
