@@ -13,6 +13,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/overlay"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
 
 const instrumentedSubdir = "instrumented"
@@ -126,6 +127,12 @@ func InstrumentPackageForOverlay(packageDir, discoveryHash, generatedDir string)
 		instrumentedPath := filepath.Join(absOutDir, filepath.Base(sourcePath))
 		if err := os.WriteFile(instrumentedPath, source, 0o644); err != nil {
 			return nil, fmt.Errorf("instrument: write %q: %w", instrumentedPath, err)
+		}
+		// Preflight: catch zero-byte materializations here so callers see a
+		// specific workspace error instead of an opaque `expected package,
+		// found EOF` from `go build` (str-jeen.51).
+		if err := workspace.VerifyMaterializedSource(instrumentedPath, len(source) > 0); err != nil {
+			return nil, fmt.Errorf("instrument: verify materialized %q: %w", instrumentedPath, err)
 		}
 		results = append(results, InstrumentedFile{
 			OriginalPath:     sourcePath,
