@@ -47,9 +47,15 @@
       ],
       "dependencies": [
         {
-          "module": "node:fs",
-          "name": "readFileSync",
-          "kind": "function_call"
+          "kind": "function_call",
+          "symbol": "readFileSync",
+          "source_module": "node:fs",
+          "return_type": { "kind": "str" },
+          "param_types": [
+            { "kind": "str" },
+            { "kind": "str" }
+          ],
+          "call_sites": [4]
         }
       ],
       "return_type": { "kind": "str" },

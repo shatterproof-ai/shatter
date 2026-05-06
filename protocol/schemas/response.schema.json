@@ -16,6 +16,10 @@
       "minimum": 0,
       "description": "Request ID this response corresponds to."
     },
+    "timing": {
+      "$ref": "#/$defs/timing_summary",
+      "description": "Optional timing summary for this frontend command."
+    },
     "status": {
       "type": "string",
       "enum": [
@@ -28,6 +32,7 @@
         "teardown_ack",
         "generate",
         "shutdown_ack",
+        "invocation_plan",
         "error"
       ],
       "description": "The response type, matching the originating command."
@@ -43,6 +48,7 @@
     { "$ref": "#/$defs/teardown_ack_response" },
     { "$ref": "#/$defs/generate_response" },
     { "$ref": "#/$defs/shutdown_ack_response" },
+    { "$ref": "#/$defs/invocation_plan_response" },
     { "$ref": "#/$defs/error_response" }
   ],
   "$defs": {
@@ -140,6 +146,16 @@
           "items": { "$ref": "sym-constraint.schema.json" },
           "description": "Symbolic path constraints collected."
         },
+        "scope_events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/trace_event" },
+          "description": "Scope-annotated execution trace (branches plus loop/call markers). When non-empty, enables scope-aware path collapsing."
+        },
+        "loop_body_states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/loop_body_state" },
+          "description": "Per-iteration symbolic snapshots for supported loop bodies."
+        },
         "side_effects": {
           "type": "array",
           "items": { "$ref": "side-effect.schema.json" },
@@ -169,6 +185,20 @@
         "performance": {
           "$ref": "performance-metrics.schema.json",
           "description": "Performance metrics."
+        },
+        "discovered_dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/discovered_dependency" },
+          "description": "Dependencies discovered at execution time that static analysis missed."
+        },
+        "connection_failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/connection_failure" },
+          "description": "Connection failures detected during external calls; used to trigger LiveFirst fallback."
+        },
+        "outcome": {
+          "$ref": "invocation-outcome.schema.json",
+          "description": "Structured invocation outcome. Currently emitted by the Go frontend; absent from TS/Rust frontends."
         },
         "runtime_crypto_boundaries": {
           "type": "array",
@@ -261,6 +291,24 @@
       },
       "required": ["status"]
     },
+    "invocation_plan_response": {
+      "type": "object",
+      "description": "Successful planner result for a get_invocation_plan request.",
+      "properties": {
+        "status": { "const": "invocation_plan" },
+        "invocation_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/invocation_plan" },
+          "description": "Resolved plans, one per satisfiable requirement. Order is arbitrary."
+        },
+        "unsatisfied_requirements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unsatisfied_requirement" },
+          "description": "Requirements the planner could not satisfy, each annotated with a reason."
+        }
+      },
+      "required": ["status", "invocation_plans"]
+    },
     "error_response": {
       "type": "object",
       "properties": {
@@ -278,9 +326,10 @@
             "invalid_request",
             "compilation_error",
             "internal_error",
-            "not_supported"
+            "not_supported",
+            "preflight_failed"
           ],
-          "description": "Machine-readable error code."
+          "description": "Machine-readable error code. Mirrors shatter-core protocol::ErrorCode."
         },
         "message": {
           "type": "string",
@@ -297,6 +346,169 @@
     },
     "invocation_outcome": {
       "$ref": "invocation-outcome.schema.json"
+    },
+    "trace_event": {
+      "type": "object",
+      "description": "One entry in the scope-annotated execution trace. Tagged by `type`: branch decisions or scope events.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["branch", "scope"]
+        }
+      },
+      "required": ["type"]
+    },
+    "loop_body_state": {
+      "type": "object",
+      "description": "Per-iteration symbolic snapshot for one loop body.",
+      "properties": {
+        "loop_id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Matches the loop_id in scope events and LoopInfo."
+        },
+        "iteration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based iteration index in execution order."
+        },
+        "locals": {
+          "type": "object",
+          "additionalProperties": { "$ref": "sym-expr.schema.json" },
+          "description": "Symbolic expressions for tracked identifier locals at this iteration."
+        }
+      },
+      "required": ["loop_id", "iteration"]
+    },
+    "discovered_dependency": {
+      "type": "object",
+      "description": "A dependency discovered at execution time that static analysis missed.",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Fully qualified symbol or module name."
+        },
+        "source_module": {
+          "type": "string",
+          "description": "Module the dependency was imported from."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["unmocked_import", "subprocess_spawn", "stubbed_import"],
+          "description": "How the dependency was detected."
+        },
+        "is_subprocess_spawn": {
+          "type": "boolean",
+          "description": "Whether this dependency spawns a subprocess."
+        }
+      },
+      "required": ["symbol", "source_module", "kind", "is_subprocess_spawn"]
+    },
+    "connection_failure": {
+      "type": "object",
+      "description": "A connection failure detected during execution, enabling LiveFirst fallback.",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "External symbol whose call failed (e.g. 'http:fetch')."
+        },
+        "error_kind": {
+          "type": "string",
+          "description": "Failure category (e.g. 'connection_refused', 'dns_failure', 'auth_error', 'timeout', 'other')."
+        },
+        "message": {
+          "type": "string",
+          "description": "Original error message from the failing call."
+        }
+      },
+      "required": ["symbol", "error_kind", "message"]
+    },
+    "value_plan": {
+      "type": "object",
+      "properties": {
+        "param_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "param_name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["literal", "zero", "random", "symbolic", "runtime_value"]
+        },
+        "literal": {},
+        "type_hint": {
+          "type": "string"
+        }
+      },
+      "required": ["param_index", "param_name", "kind"]
+    },
+    "invocation_plan": {
+      "type": "object",
+      "properties": {
+        "target_id": { "type": "string" },
+        "receiver_kind": { "type": "string" },
+        "generic_type_args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "argument_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value_plan" }
+        },
+        "priority": { "type": "integer" },
+        "label": { "type": "string" }
+      },
+      "required": ["target_id", "receiver_kind", "argument_plans", "priority"]
+    },
+    "unsatisfied_requirement": {
+      "type": "object",
+      "description": "Planning failure for one target.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "no_constructor",
+            "interface_receiver",
+            "generic_unconstrained",
+            "cgo_dependency",
+            "complex_type"
+          ],
+          "description": "Failure classification."
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "target_id"]
+    },
+    "timing_summary": {
+      "type": "object",
+      "description": "Optional timing summary emitted by a frontend command.",
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/timing_phase_summary" }
+        }
+      }
+    },
+    "timing_phase_summary": {
+      "type": "object",
+      "properties": {
+        "phase_path": { "type": "string" },
+        "total_ms": { "type": "number" },
+        "self_ms": { "type": "number" },
+        "count": { "type": "integer", "minimum": 0 },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "required": ["phase_path", "total_ms"]
     }
   }
 }
