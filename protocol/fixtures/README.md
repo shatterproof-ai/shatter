@@ -10,9 +10,9 @@ fixtures/
     valid/        8 files — one per command
     invalid/      8 files — malformed requests (missing fields, wrong types, unknown commands)
   responses/
-    valid/        9 files — one per response status (including error)
-    invalid/      4 files — malformed responses
-  errors/        10 files — one per ErrorCode with realistic messages and details
+    valid/        16 files — one per response status (including error and invocation_plan), plus variants
+    invalid/      6 files — malformed responses
+  errors/        12 files — one per ErrorCode with realistic messages and details
 ```
 
 ## Naming Convention
@@ -38,13 +38,14 @@ handshake, analyze, instrument, execute, setup, teardown, generate, shutdown
 
 ### Response statuses (responses/valid/)
 
-handshake, analyze, instrument, execute, setup, teardown_ack, generate, shutdown_ack, error
+handshake, analyze, instrument, execute, setup, teardown_ack, generate,
+shutdown_ack, invocation_plan, error
 
 ### Error codes (errors/)
 
 file_not_found, function_not_found, parse_error, instrumentation_failed,
 execution_timeout, execution_crash, version_mismatch, invalid_request,
-compilation_error, internal_error
+compilation_error, internal_error, not_supported, preflight_failed
 
 ### Malformed request classes (requests/invalid/)
 

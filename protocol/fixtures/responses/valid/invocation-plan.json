@@ -1,0 +1,36 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 21,
+  "status": "invocation_plan",
+  "invocation_plans": [
+    {
+      "target_id": "pkg/widgets.NewWidget",
+      "receiver_kind": "",
+      "argument_plans": [
+        {
+          "param_index": 0,
+          "param_name": "ctx",
+          "kind": "runtime_value",
+          "type_hint": "context.Context",
+          "literal": "context.Background()"
+        },
+        {
+          "param_index": 1,
+          "param_name": "size",
+          "kind": "literal",
+          "literal": 42,
+          "type_hint": "int"
+        }
+      ],
+      "priority": 0,
+      "label": "default"
+    }
+  ],
+  "unsatisfied_requirements": [
+    {
+      "kind": "interface_receiver",
+      "target_id": "pkg/widgets.Renderer.Render",
+      "detail": "Renderer is an interface; no constructor available"
+    }
+  ]
+}

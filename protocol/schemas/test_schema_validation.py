@@ -25,10 +25,7 @@ FIXTURE_DIR = SCHEMA_DIR.parent / "fixtures"
 # Fixtures with known schema mismatches. The validator reports these as
 # warnings rather than failures so that the check passes while the schemas
 # are being updated. Remove entries as schemas are fixed.
-KNOWN_MISMATCHES: set[str] = {
-    "responses/valid/analyze.json",
-    "responses/valid/execute.json",
-}
+KNOWN_MISMATCHES: set[str] = set()
 
 
 def load_json(path: Path) -> dict:

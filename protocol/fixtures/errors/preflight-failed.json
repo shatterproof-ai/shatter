@@ -1,0 +1,7 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 12,
+  "status": "error",
+  "code": "preflight_failed",
+  "message": "preflight check failed: missing node_modules in project root"
+}
