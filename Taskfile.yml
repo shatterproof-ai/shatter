@@ -248,17 +248,20 @@ tasks:
   # --- E2E, pre-completion, gauntlet, clean (issue 6) ---
 
   e2e:
-    desc: Run E2E concolic pipeline tests
-    deps: [ts:build]
+    desc: Run E2E concolic pipeline tests (TS + Rust frontends)
+    deps: [ts:build, rust-fe:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
+      - shatter-core/tests/e2e_concolic_rust.rs
       - shatter-core/src/**/*.rs
       - shatter-ts/src/**/*.ts
+      - shatter-rust/src/**/*.rs
       - scripts/examples_checkout.py
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
         SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic
+        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_rust -- --include-ignored
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."
