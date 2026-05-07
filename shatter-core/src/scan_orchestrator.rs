@@ -35,7 +35,8 @@ use crate::pipeline::{self, AnalyzeOutput};
 use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
 use crate::status_export::{
-    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus,
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusTargetInput,
+    StatusTargetOutcome, StatusTargetValidityImpact,
 };
 use crate::types::TypeInfo;
 
@@ -734,6 +735,7 @@ fn write_scan_status(
     scan_root: &Path,
     manifest: &crate::run_manifest::RunManifest,
     files: &[StatusFileInput],
+    targets: &[StatusTargetInput],
 ) {
     let manifest_path = scan_root.join(crate::run_manifest::RUN_MANIFEST_FILENAME);
     let summary_path = scan_root.join(SCAN_SUMMARY_FILENAME);
@@ -749,6 +751,7 @@ fn write_scan_status(
             manifest_path: &manifest_path,
             artifacts: &artifacts,
             files,
+            targets,
         },
     ) {
         log::warn!("failed to write scan status export: {e}");
@@ -825,6 +828,108 @@ fn status_file_status_from_counts(counts: &StatusFileCounts) -> StatusFileStatus
     } else {
         StatusFileStatus::Skipped
     }
+}
+
+fn status_target_inputs_from_scan_summary(
+    scan_root: &Path,
+    summary: &ScanSummary,
+    file_map: &HashMap<String, String>,
+    analyses: &[FunctionAnalysis],
+) -> Vec<StatusTargetInput> {
+    let spans_by_name: HashMap<&str, &FunctionAnalysis> = analyses
+        .iter()
+        .map(|analysis| (analysis.name.as_str(), analysis))
+        .collect();
+
+    summary
+        .functions
+        .iter()
+        .map(|entry| {
+            let analysis = spans_by_name.get(entry.function_name.as_str()).copied();
+            let source_file = file_map
+                .get(&entry.function_name)
+                .cloned()
+                .or_else(|| analysis.and_then(|analysis| analysis.source_file.clone()))
+                .unwrap_or_default();
+            let (outcome, validity_impact) = status_target_outcome(entry);
+            StatusTargetInput {
+                target_id: entry.function_name.clone(),
+                name: entry.function_name.clone(),
+                source_file,
+                start_line: analysis.map_or(0, |analysis| analysis.start_line),
+                end_line: analysis.map_or(0, |analysis| analysis.end_line),
+                outcome,
+                artifact_path: entry
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| scan_root.join(artifact)),
+                failure_reason: entry.reason.clone(),
+                unavailable_reason: entry
+                    .artifact
+                    .is_none()
+                    .then(|| target_unavailable_reason(entry)),
+                validity_impact,
+            }
+        })
+        .collect()
+}
+
+fn status_target_outcome(
+    entry: &ScanSummaryEntry,
+) -> (StatusTargetOutcome, StatusTargetValidityImpact) {
+    match entry.status.as_str() {
+        "completed" => (
+            StatusTargetOutcome::Completed,
+            StatusTargetValidityImpact::Contributes,
+        ),
+        "failed" if entry.reason.as_deref().is_some_and(is_timeout_reason) => (
+            StatusTargetOutcome::TimedOut,
+            StatusTargetValidityImpact::Degrades,
+        ),
+        "failed" => (
+            StatusTargetOutcome::Failed,
+            StatusTargetValidityImpact::Degrades,
+        ),
+        "skipped" if entry.reason.as_deref().is_some_and(is_unsupported_reason) => (
+            StatusTargetOutcome::Unsupported,
+            StatusTargetValidityImpact::Excluded,
+        ),
+        "skipped" if entry
+            .reason
+            .as_deref()
+            .is_some_and(is_unavailable_frontend_reason) =>
+        {
+            (
+                StatusTargetOutcome::UnavailableFrontend,
+                StatusTargetValidityImpact::Degrades,
+            )
+        }
+        "skipped" => (
+            StatusTargetOutcome::Skipped,
+            StatusTargetValidityImpact::Excluded,
+        ),
+        _ => (
+            StatusTargetOutcome::Failed,
+            StatusTargetValidityImpact::Degrades,
+        ),
+    }
+}
+
+fn is_timeout_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("timed out") || lower.contains("timeout")
+}
+
+fn is_unavailable_frontend_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("frontend") || lower.contains("preflight")
+}
+
+fn target_unavailable_reason(entry: &ScanSummaryEntry) -> String {
+    entry
+        .reason
+        .clone()
+        .unwrap_or_else(|| "target artifact unavailable".to_string())
 }
 
 /// Create an initial summary with status `Running` and no function entries.
@@ -1652,7 +1757,18 @@ pub async fn scan(
     if config.write_artifacts {
         write_scan_summary(&scan_root_dir, &summary);
         let status_files = status_file_inputs_from_scan_summary(&summary, &config.file_map);
-        write_scan_status(&scan_root_dir, &run_manifest, &status_files);
+        let status_targets = status_target_inputs_from_scan_summary(
+            &scan_root_dir,
+            &summary,
+            &config.file_map,
+            analyses,
+        );
+        write_scan_status(
+            &scan_root_dir,
+            &run_manifest,
+            &status_files,
+            &status_targets,
+        );
     }
 
     Ok(result)
@@ -3884,7 +4000,18 @@ pub async fn parallel_scan_with_progress(
     maybe_write_summary(&summary);
     if write_artifacts {
         let status_files = status_file_inputs_from_scan_summary(&summary, &config.file_map);
-        write_scan_status(&scan_root_dir, &run_manifest, &status_files);
+        let status_targets = status_target_inputs_from_scan_summary(
+            &scan_root_dir,
+            &summary,
+            &config.file_map,
+            analyses,
+        );
+        write_scan_status(
+            &scan_root_dir,
+            &run_manifest,
+            &status_files,
+            &status_targets,
+        );
     }
 
     Ok(ParallelScanResult {
@@ -10132,6 +10259,17 @@ mod tests {
             status.files[0].status,
             crate::status_export::StatusFileStatus::Completed
         );
+        assert_eq!(status.targets.len(), 1);
+        assert_eq!(status.targets[0].target_id, "solo");
+        assert_eq!(status.targets[0].name, "solo");
+        assert_eq!(status.targets[0].source_file, "test.ts");
+        assert_eq!(status.targets[0].start_line, 1);
+        assert_eq!(status.targets[0].end_line, 5);
+        assert_eq!(
+            status.targets[0].outcome,
+            crate::status_export::StatusTargetOutcome::Completed
+        );
+        assert!(status.targets[0].artifact.is_some());
     }
 }
 

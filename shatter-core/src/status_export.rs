@@ -3,7 +3,8 @@
 //! `run-status.json` is the machine-readable entry point for broad-run
 //! automation. This initial schema records stable run identity, the source
 //! snapshot/manifest identity, and links to existing artifacts. Detailed
-//! per-file rows for each source in the captured manifest.
+//! per-file rows for each source in the captured manifest, and
+//! per-target rows for discovered or attempted targets.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,8 @@ pub struct StatusExportInput<'a> {
     pub artifacts: &'a [StatusArtifactLink<'a>],
     /// Per-file target accounting keyed by manifest path.
     pub files: &'a [StatusFileInput],
+    /// Per-target outcome rows.
+    pub targets: &'a [StatusTargetInput],
 }
 
 /// One artifact link requested by the status export caller.
@@ -84,6 +87,61 @@ pub enum StatusFileStatus {
     Skipped,
 }
 
+/// Per-target status input supplied by the run/scan caller.
+#[derive(Debug, Clone)]
+pub struct StatusTargetInput {
+    /// Stable target identity, usually `<source>::<function>`.
+    pub target_id: String,
+    /// Human-facing target name.
+    pub name: String,
+    /// Manifest source path for the target.
+    pub source_file: String,
+    /// First source line covered by the target.
+    pub start_line: u32,
+    /// Last source line covered by the target.
+    pub end_line: u32,
+    /// Target-level outcome.
+    pub outcome: StatusTargetOutcome,
+    /// Per-target artifact path, if an artifact was written.
+    pub artifact_path: Option<PathBuf>,
+    /// Failure or skip reason, if any.
+    pub failure_reason: Option<String>,
+    /// Reason the artifact is unavailable when no path exists.
+    pub unavailable_reason: Option<String>,
+    /// How this target affects report validity.
+    pub validity_impact: StatusTargetValidityImpact,
+}
+
+/// Target-level outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusTargetOutcome {
+    /// Target completed successfully and has an artifact.
+    Completed,
+    /// Target was attempted and failed.
+    Failed,
+    /// Target timed out during execution.
+    TimedOut,
+    /// Target was discovered but unsupported by current execution semantics.
+    Unsupported,
+    /// Target was skipped for a non-frontend reason.
+    Skipped,
+    /// Required frontend was unavailable.
+    UnavailableFrontend,
+}
+
+/// Validity impact of a target outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusTargetValidityImpact {
+    /// Target contributes represented evidence.
+    Contributes,
+    /// Target degrades validity because it failed or was unavailable.
+    Degrades,
+    /// Target is excluded from the validity denominator.
+    Excluded,
+}
+
 /// Top-level status export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunStatus {
@@ -102,6 +160,9 @@ pub struct RunStatus {
     /// One status row per selected source file in the manifest.
     #[serde(default)]
     pub files: Vec<StatusFileRow>,
+    /// One status row per discovered or attempted target.
+    #[serde(default)]
+    pub targets: Vec<StatusTargetRow>,
     /// Linked artifacts available for downstream consumers.
     pub artifacts: Vec<StatusArtifact>,
 }
@@ -181,6 +242,44 @@ pub struct StatusFileRow {
     pub status: StatusFileStatus,
 }
 
+/// Per-target status row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusTargetRow {
+    /// Stable target identity, usually `<source>::<function>`.
+    pub target_id: String,
+    /// Human-facing target name.
+    pub name: String,
+    /// Manifest source path for the target.
+    pub source_file: String,
+    /// Source language inferred from the file extension when supported.
+    pub language: Option<String>,
+    /// Frontend selected for this target when supported.
+    pub frontend: Option<String>,
+    /// First source line covered by the target.
+    pub start_line: u32,
+    /// Last source line covered by the target.
+    pub end_line: u32,
+    /// Target-level outcome.
+    pub outcome: StatusTargetOutcome,
+    /// Failure or skip reason, if any.
+    pub failure_reason: Option<String>,
+    /// How this target affects report validity.
+    pub validity_impact: StatusTargetValidityImpact,
+    /// Target artifact contract.
+    pub artifact: Option<StatusTargetArtifact>,
+}
+
+/// Target artifact path or structured unavailability reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusTargetArtifact {
+    /// Artifact path, relative to the status export directory when possible.
+    pub path: Option<String>,
+    /// SHA-256 of the artifact contents.
+    pub sha256: Option<String>,
+    /// Reason no artifact exists for this target.
+    pub unavailable_reason: Option<String>,
+}
+
 /// Status export write failure.
 #[derive(Debug, Error)]
 pub enum StatusExportError {
@@ -251,6 +350,7 @@ pub fn build_run_status(output_dir: &Path, input: &StatusExportInput<'_>) -> Run
             selected_source_lines: manifest.selected_source_lines(),
         },
         files: build_file_rows(manifest, input.files),
+        targets: build_target_rows(output_dir, input.targets),
         artifacts: input
             .artifacts
             .iter()
@@ -277,6 +377,13 @@ pub fn write_run_status_json(
     status.manifest.sha256 = Some(hash_file(input.manifest_path)?);
     for (artifact, link) in status.artifacts.iter_mut().zip(input.artifacts.iter()) {
         artifact.sha256 = Some(hash_file(link.path)?);
+    }
+    for (target, input_target) in status.targets.iter_mut().zip(input.targets.iter()) {
+        if let Some(path) = input_target.artifact_path.as_deref()
+            && let Some(artifact) = target.artifact.as_mut()
+        {
+            artifact.sha256 = Some(hash_file(path)?);
+        }
     }
 
     let json = serde_json::to_string_pretty(&status).map_err(StatusExportError::Serialize)?;
@@ -322,6 +429,42 @@ fn build_file_rows(manifest: &RunManifest, files: &[StatusFileInput]) -> Vec<Sta
             }
         })
         .collect()
+}
+
+fn build_target_rows(output_dir: &Path, targets: &[StatusTargetInput]) -> Vec<StatusTargetRow> {
+    targets
+        .iter()
+        .map(|target| {
+            let frontend = frontend_for_path(&target.source_file);
+            StatusTargetRow {
+                target_id: target.target_id.clone(),
+                name: target.name.clone(),
+                source_file: target.source_file.clone(),
+                language: frontend.map(|info| info.language.to_string()),
+                frontend: frontend.map(|info| info.frontend.to_string()),
+                start_line: target.start_line,
+                end_line: target.end_line,
+                outcome: target.outcome,
+                failure_reason: target.failure_reason.clone(),
+                validity_impact: target.validity_impact,
+                artifact: target_artifact(output_dir, target),
+            }
+        })
+        .collect()
+}
+
+fn target_artifact(output_dir: &Path, target: &StatusTargetInput) -> Option<StatusTargetArtifact> {
+    if target.artifact_path.is_none() && target.unavailable_reason.is_none() {
+        return None;
+    }
+    Some(StatusTargetArtifact {
+        path: target
+            .artifact_path
+            .as_deref()
+            .map(|path| display_path(output_dir, path)),
+        sha256: None,
+        unavailable_reason: target.unavailable_reason.clone(),
+    })
 }
 
 fn default_file_status(source_bucket: SourceBucket) -> StatusFileStatus {
@@ -435,6 +578,7 @@ mod tests {
                     path: &summary_path,
                 }],
                 files: &[],
+                targets: &[],
             },
         )
         .expect("write status");
@@ -526,6 +670,7 @@ mod tests {
                         status: StatusFileStatus::UnavailableFrontend,
                     },
                 ],
+                targets: &[],
             },
         );
 
@@ -586,6 +731,221 @@ mod tests {
             .expect("no target row");
         assert_eq!(no_targets.discovered_target_count, 0);
         assert_eq!(no_targets.status, StatusFileStatus::NoTarget);
+    }
+
+    #[test]
+    fn writes_per_target_status_rows_and_validates_artifacts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-targets".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                source_file("src/app.ts", Some(12)),
+                source_file("pkg/handler.go", Some(20)),
+                source_file("crates/missing.rs", None),
+            ],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        let artifact_dir = root.join("functions");
+        fs::create_dir_all(&artifact_dir).expect("artifact dir");
+        let completed_artifact = artifact_dir.join("00001_src_app_ts_doThing.json");
+        fs::write(&completed_artifact, br#"{"ok":true}"#).expect("write artifact");
+
+        write_run_status_json(
+            root,
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[],
+                targets: &[
+                    StatusTargetInput {
+                        target_id: "src/app.ts::doThing".to_string(),
+                        name: "doThing".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 3,
+                        end_line: 8,
+                        outcome: StatusTargetOutcome::Completed,
+                        artifact_path: Some(completed_artifact.clone()),
+                        failure_reason: None,
+                        unavailable_reason: None,
+                        validity_impact: StatusTargetValidityImpact::Contributes,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::Handle".to_string(),
+                        name: "Handle".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 10,
+                        end_line: 20,
+                        outcome: StatusTargetOutcome::Failed,
+                        artifact_path: None,
+                        failure_reason: Some("runtime failed".to_string()),
+                        unavailable_reason: Some("artifact unavailable after failure".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::Unsupported".to_string(),
+                        name: "Unsupported".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 30,
+                        end_line: 35,
+                        outcome: StatusTargetOutcome::Unsupported,
+                        artifact_path: None,
+                        failure_reason: Some("unsupported parameter type".to_string()),
+                        unavailable_reason: Some("unsupported target".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Excluded,
+                    },
+                    StatusTargetInput {
+                        target_id: "crates/missing.rs::needsFrontend".to_string(),
+                        name: "needsFrontend".to_string(),
+                        source_file: "crates/missing.rs".to_string(),
+                        start_line: 1,
+                        end_line: 1,
+                        outcome: StatusTargetOutcome::UnavailableFrontend,
+                        artifact_path: None,
+                        failure_reason: Some("frontend preflight failed".to_string()),
+                        unavailable_reason: Some("frontend unavailable".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                ],
+            },
+        )
+        .expect("write status");
+
+        let status_path = root.join(RUN_STATUS_FILENAME);
+        let bytes = fs::read(status_path).expect("read status");
+        let status: RunStatus = serde_json::from_slice(&bytes).expect("parse status");
+        assert_eq!(status.targets.len(), 4);
+
+        let completed = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "src/app.ts::doThing")
+            .expect("completed target");
+        assert_eq!(completed.name, "doThing");
+        assert_eq!(completed.source_file, "src/app.ts");
+        assert_eq!(completed.language.as_deref(), Some("typescript"));
+        assert_eq!(completed.frontend.as_deref(), Some("shatter-ts"));
+        assert_eq!(completed.start_line, 3);
+        assert_eq!(completed.end_line, 8);
+        assert_eq!(completed.outcome, StatusTargetOutcome::Completed);
+        assert_eq!(
+            completed.validity_impact,
+            StatusTargetValidityImpact::Contributes
+        );
+        let artifact = completed.artifact.as_ref().expect("completed artifact");
+        assert_eq!(
+            artifact.path.as_deref(),
+            Some("functions/00001_src_app_ts_doThing.json")
+        );
+        assert!(artifact.sha256.is_some());
+        assert_eq!(artifact.unavailable_reason, None);
+
+        let failed = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "pkg/handler.go::Handle")
+            .expect("failed target");
+        assert_eq!(failed.outcome, StatusTargetOutcome::Failed);
+        assert_eq!(failed.failure_reason.as_deref(), Some("runtime failed"));
+        assert_eq!(
+            failed
+                .artifact
+                .as_ref()
+                .and_then(|artifact| artifact.unavailable_reason.as_deref()),
+            Some("artifact unavailable after failure")
+        );
+
+        let unsupported = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "pkg/handler.go::Unsupported")
+            .expect("unsupported target");
+        assert_eq!(unsupported.outcome, StatusTargetOutcome::Unsupported);
+        assert_eq!(
+            unsupported.validity_impact,
+            StatusTargetValidityImpact::Excluded
+        );
+
+        let unavailable = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "crates/missing.rs::needsFrontend")
+            .expect("unavailable target");
+        assert_eq!(
+            unavailable.outcome,
+            StatusTargetOutcome::UnavailableFrontend
+        );
+        assert_eq!(unavailable.language.as_deref(), Some("rust"));
+        assert_eq!(unavailable.frontend.as_deref(), Some("shatter-rust"));
+    }
+
+    #[test]
+    fn rejects_missing_target_artifact_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-missing-target-artifact".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![source_file("src/app.ts", Some(12))],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let err = write_run_status_json(
+            root,
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[],
+                targets: &[StatusTargetInput {
+                    target_id: "src/app.ts::doThing".to_string(),
+                    name: "doThing".to_string(),
+                    source_file: "src/app.ts".to_string(),
+                    start_line: 3,
+                    end_line: 8,
+                    outcome: StatusTargetOutcome::Completed,
+                    artifact_path: Some(root.join("functions/missing.json")),
+                    failure_reason: None,
+                    unavailable_reason: None,
+                    validity_impact: StatusTargetValidityImpact::Contributes,
+                }],
+            },
+        )
+        .expect_err("missing target artifact must fail status export");
+
+        assert!(matches!(err, StatusExportError::ReadArtifact { .. }));
+        assert!(
+            !root.join(RUN_STATUS_FILENAME).exists(),
+            "status export must not be finalized when target artifact validation fails"
+        );
     }
 
     fn source_file(path: &str, line_count: Option<u32>) -> SourceFileSnapshot {
