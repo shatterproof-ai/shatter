@@ -107,13 +107,16 @@ Side effects are optional observations emitted in the `side_effects` array of ex
 | `console_output` | `level`, `message` | ✅ | ✅ | ✅ |
 | `thrown_error` | `error_type`, `message`, `stack` | ✅ | ✅ | ✅ |
 | `global_mutation` | `name` | ✅ | ✅ | ❌ |
+| `file_write` | `path`, `content` | ❌ | ✅ | ❌ |
+| `network_request` | `method`, `url`, `body` | ❌ | ✅ | ❌ |
+| `environment_read` | `variable`, `value` | ❌ | ✅ | ❌ |
 
 All supported kinds use the field names above — no frontend-specific aliases.
 
 ### Divergences in capture coverage
 
 - **`console_output` granularity**: TypeScript and Go capture per-call output with individual log levels. Rust captures process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`), and the Rust crate-bridge harness does not capture console output.
-- **OS-level capture**: Go does not yet capture `file_write`, `network_request`, or `environment_read`; these require OS-level or runtime interception. See divergence `go-side-effects-partial`.
+- **OS-level capture**: Go captures `file_write`, `network_request`, and `environment_read` through source-overlay rewrites of high-confidence stdlib calls only: `os.WriteFile`, `os.Getenv`, `os.LookupEnv`, and package-level `net/http.Get`/`Post`/`PostForm`. Lower-level file writes, raw sockets, custom clients, `http.Client.Do`, `os.Environ`, and uninstrumented dependencies are accepted limits of the current AST-only interception. See divergence `go-side-effects-partial`.
 
 ---
 
@@ -213,21 +216,21 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ### `go-side-effects-partial`
 
-**Description:** Go captures `console_output`, `global_state_change`, `thrown_error`, and `global_mutation` side effects. The kinds `file_write`, `network_request`, and `environment_read` are defined in the protocol struct and wire format but not yet emitted by the Go executor because they require OS-level or runtime interception rather than the existing wrapper-level observation.
+**Description:** Go captures all canonical side-effect kinds at the protocol level. For `file_write`, `network_request`, and `environment_read`, capture is limited to high-confidence stdlib package-level calls rewritten by the overlay AST instrumentation: `os.WriteFile`, `os.Getenv`, `os.LookupEnv`, and `net/http.Get`/`Post`/`PostForm`. Lower-level syscall/raw socket/custom client surfaces and uninstrumented dependencies are accepted permanent limits of the current source-overlay interception mechanism.
 
 **Affected frontends:** go
 
 **Affected commands:** execute
 
-**Status:** tracked
+**Status:** accepted
 
 **Owner:** Ketan Gangatirkar
 
-**Tracking issue:** str-1hlk.21
+**Tracking issue:** none
 
-**Resolution condition:** Go executor captures and emits `file_write`, `network_request`, and `environment_read` side effects, or the parity contract documents a permanent limitation for a kind that cannot be captured safely.
+**Resolution condition:** Go continues to emit the supported stdlib call shapes and this matrix names the lower-level surfaces that the overlay AST mechanism does not attempt to capture.
 
-**Resolution:** Plan and implement OS-level or runtime interception for file writes, network requests, and environment variable reads, potentially by using the sandbox runner's observation boundary.
+**Resolution:** Keep Go capture source-level and deterministic. Do not add ptrace, eBPF, LD_PRELOAD, or platform-specific syscall interception unless a future issue explicitly introduces an OS-observation backend with a portability and sandboxing design.
 
 ---
 

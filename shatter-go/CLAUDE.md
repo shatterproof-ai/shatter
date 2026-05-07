@@ -57,11 +57,13 @@ Go includes `loop_body_states` in protocol structs for execute-response round-tr
 
 ## Side Effect Parity Contract
 
-Go captures 4 of 7 canonical kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7; only OS-level/runtime interception capture logic is missing for the remaining kinds.
+Go emits all 7 canonical side-effect kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7.
 
-Captured: `console_output` (overlay-instrumented calls to `fmt.Print*`, `log.Print*`, and package-level `slog.Debug/Info/Warn/Error` emit per-call entries with log/info/warn/error/debug levels; process-level stdout/stderr remains a fallback for uninstrumented output), `global_state_change` (pre/post diff of exported package-level variables), `thrown_error` (panic/error details in `side_effects` and top-level `thrown_error`), `global_mutation` (name-only entry emitted alongside detected global state changes). Not captured: `file_write`, `network_request`, `environment_read`.
+Captured: `console_output` (overlay-instrumented calls to `fmt.Print*`, `log.Print*`, and package-level `slog.Debug/Info/Warn/Error` emit per-call entries with log/info/warn/error/debug levels; process-level stdout/stderr remains a fallback for uninstrumented output), `global_state_change` (pre/post diff of exported package-level variables), `thrown_error` (panic/error details in `side_effects` and top-level `thrown_error`), `global_mutation` (name-only entry emitted alongside detected global state changes), `file_write` (overlay-instrumented `os.WriteFile` with path/content), `network_request` (overlay-instrumented package-level `net/http.Get`, `Post`, and `PostForm` with method/url), `environment_read` (overlay-instrumented `os.Getenv` and `os.LookupEnv` with variable/value).
 
-`convertSideEffects()` in `protocol/handler.go` maps all 7 fields, so adding a new capture kind only requires populating the struct in `executor.go`.
+Limits: Go side-effect capture is source-overlay based, not syscall based. It does not capture `os.File.Write`/`WriteString`, syscall writes, `http.Client.Do`, custom clients/transports, raw `net.Dial` traffic, `os.Environ`, third-party APIs, or uninstrumented dependency code.
+
+`convertSideEffects()` in `protocol/handler.go` maps all 7 fields.
 
 Authoritative matrix: `protocol/parity-matrix.yaml` `side_effect_capabilities` and `allowed_divergences: go-side-effects-partial`.
 

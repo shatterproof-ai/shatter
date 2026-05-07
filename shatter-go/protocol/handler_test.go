@@ -1650,6 +1650,79 @@ func chatter() int {
 	}
 }
 
+func TestExecuteCapturesGoOSLevelSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "target.go")
+	outPath := filepath.Join(dir, "out.txt")
+	src := `package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+)
+
+func osEffects(path string) int {
+	_ = os.WriteFile(path, []byte("payload"), 0644)
+	os.Setenv("SHATTER_SIDE_EFFECT_TEST", "seen")
+	_ = os.Getenv("SHATTER_SIDE_EFFECT_TEST")
+	_, _ = os.LookupEnv("SHATTER_SIDE_EFFECT_TEST")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	resp, err := http.Get(server.URL + "/ping")
+	if err == nil {
+		defer resp.Body.Close()
+	}
+	return 1
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"osEffects"`, tmp)),
+		reqJSON(3, "execute", fmt.Sprintf(`"function":"osEffects","inputs":[%q],"mocks":[]`, outPath)),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+
+	var sawFileWrite, sawEnvRead, sawNetworkRequest bool
+	for _, effect := range responses[2].SideEffects {
+		switch effect.Kind {
+		case "file_write":
+			if effect.Path == outPath && effect.Content == "payload" {
+				sawFileWrite = true
+			}
+		case "environment_read":
+			if effect.Variable == "SHATTER_SIDE_EFFECT_TEST" && effect.Value != nil && *effect.Value == "seen" {
+				sawEnvRead = true
+			}
+		case "network_request":
+			if effect.Method == "GET" && strings.Contains(effect.URL, "/ping") {
+				sawNetworkRequest = true
+			}
+		}
+	}
+	if !sawFileWrite {
+		t.Fatalf("missing file_write side effect for %s; side effects: %+v", outPath, responses[2].SideEffects)
+	}
+	if !sawEnvRead {
+		t.Fatalf("missing environment_read side effect for SHATTER_SIDE_EFFECT_TEST; side effects: %+v", responses[2].SideEffects)
+	}
+	if !sawNetworkRequest {
+		t.Fatalf("missing network_request side effect for GET /ping; side effects: %+v", responses[2].SideEffects)
+	}
+}
+
 func TestConvertSideEffects(t *testing.T) {
 	input := []instrument.SideEffect{
 		{Kind: "console_output", Level: "log", Message: "hello stdout"},
