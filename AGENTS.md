@@ -2,6 +2,21 @@
 
 This project uses **bd** (beads) for issue tracking. See shared agent rules (`beads.md`) for basic commands, issue decomposition, batch commands, and git merge workflow. Below are Shatter-specific extensions.
 
+## Kapow Refute Workflow
+
+For Kapow validation work that needs symbol-aware refactors, use the Shatter
+wrapper instead of rediscovering Refute paths:
+
+```bash
+python3 scripts/kapow_refute_agent.py check
+python3 scripts/kapow_refute_agent.py smoke
+```
+
+The wrapper targets `~/project/kapow/.agents/bin/refute` by default and uses
+`~/project/refute` as the installer source. See
+[`docs/validation/kapow-refute-agent-workflow.md`](docs/validation/kapow-refute-agent-workflow.md)
+for install, smoke, and failure-mode details.
+
 ## Issue Title Guidelines
 
 Titles appear in `bd list`, `bd ready`, and terminal window titles where space
