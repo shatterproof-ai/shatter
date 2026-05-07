@@ -1457,7 +1457,7 @@ fn generate_dispatch_harness(
         let param_names = &fn_info.param_names;
         let param_types = &fn_info.param_types;
         let return_type = &fn_info.return_type;
-        h.push_str(&format!("            {:?} => {{\n", fn_name.as_str()));
+        h.push_str(&format!("            {:?} => 'shatter_arm: {{\n", fn_name.as_str()));
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
@@ -1468,7 +1468,7 @@ fn generate_dispatch_harness(
                 ));
                 h.push_str("                    Ok(value) => value,\n");
                 h.push_str(&format!(
-                    "                    Err(__err) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0, vec![]),\n"
+                    "                    Err(__err) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0),\n"
                 ));
                 h.push_str("                };\n");
                 if mapping.needs_slice_conversion {
@@ -1482,7 +1482,7 @@ fn generate_dispatch_harness(
                 ));
                 h.push_str("                    Ok(value) => value,\n");
                 h.push_str(&format!(
-                    "                    Err(__err) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0, vec![]),\n"
+                    "                    Err(__err) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0),\n"
                 ));
                 h.push_str("                };\n");
             }
