@@ -661,9 +661,20 @@ adapter_capabilities:
 # failures) in the validator when the affected (frontend, command) pair
 # is found in violation.
 #
-# status: tracked  - known, deferred or under investigation
-# status: accepted - intentional permanent divergence
-# status: resolved - no longer a divergence; remove entry when matrix is updated
+# Required fields per entry (enforced by scripts/validate-parity.py):
+#   id, description, affected_frontends, affected_commands, status,
+#   resolution, owner, tracking_issue, resolution_condition.
+# `resolved` entries additionally require `resolved_at` (ISO YYYY-MM-DD)
+# and are removed within a 30-day grace period after resolution; the
+# validator FAILS once the grace expires (str-1hlk.12).
+#
+# status: tracked  - known, deferred or under investigation; tracking_issue
+#                    must reference an open bd issue for the work
+# status: accepted - intentional permanent divergence; tracking_issue may
+#                    be the literal string "none" (justification in
+#                    resolution / resolution_condition)
+# status: resolved - no longer a divergence; remove the entry within
+#                    30 days of resolved_at
 
 allowed_divergences:
   - id: ts-missing-teardown
@@ -674,6 +685,11 @@ allowed_divergences:
     affected_frontends: [typescript]
     affected_commands: [teardown]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.13
+    resolution_condition: >
+      'teardown' is present in SUPPORTED_CAPABILITIES in
+      shatter-ts/src/handlers.ts and a teardown handler returns success.
     resolution: >
       Implement teardown in the TypeScript frontend and add 'teardown' to
       SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts.
@@ -686,6 +702,12 @@ allowed_divergences:
     affected_frontends: [rust]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.15
+    resolution_condition: >
+      The NonExecutable early-exit path is removed from the Rust executor
+      and execute returns a non-not_supported outcome for all input types
+      that TS/Go handle.
     resolution: >
       Expand the Rust executor to handle all input types that TS/Go handle,
       removing the NonExecutable early-exit path.
@@ -718,21 +740,17 @@ allowed_divergences:
     affected_frontends: [typescript, rust]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.16
+    resolution_condition: >
+      TypeScript and Rust execute handlers consume Command::Execute.plan
+      and dispatch method targets via plan-driven invocation, matching
+      Go's runtime_failed/completed outcome contract for method targets.
     resolution: >
       Implement plan-aware execute in TypeScript (when a planner is added
       in those frontends) and in Rust (when method-target invocation
       becomes part of the Rust frontend's surface). Both are deferred
       until a real planner exists in the corresponding frontend.
-
-  - id: rust-prepare-not-supported
-    description: >
-      The Rust frontend now implements the prepare command. It pre-builds the
-      harness binary and returns a prepare_id (SHA-256 of file:function:mocks,
-      first 16 hex chars). Subsequent execute calls with that prepare_id skip
-      compilation.
-    affected_frontends: [rust]
-    affected_commands: [prepare]
-    status: resolved
 
   - id: side-effect-console-coverage
     description: >
@@ -745,6 +763,11 @@ allowed_divergences:
     affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.14
+    resolution_condition: >
+      Go executor emits per-call console_output entries with distinct
+      log levels (log/info/warn/error/debug), matching TypeScript granularity.
     resolution: >
       Improve Go to capture per-call console output via harness injection.
 
@@ -757,6 +780,11 @@ allowed_divergences:
     affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.14
+    resolution_condition: >
+      Go executor emits thrown_error entries inside the side_effects array
+      in addition to the top-level thrown_error field.
     resolution: >
       Add thrown_error side effect emission to Go executor,
       mirroring TypeScript/Rust behavior. The top-level field can be retained
@@ -773,22 +801,17 @@ allowed_divergences:
     affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.14
+    resolution_condition: >
+      Go executor captures and emits thrown_error and global_mutation
+      side effects. file_write/network_request/environment_read remain
+      explicitly out of scope until OS-level interception is planned;
+      this entry can be narrowed at that point.
     resolution: >
       Implement thrown_error capture by wrapping goroutine execution and
       detecting panics/recovered errors. file_write, network_request, and
       environment_read require OS-level interception which is not yet planned.
-
-  - id: rust-side-effects-not-captured
-    description: >
-      The Rust frontend now captures 3 of the 7 canonical side effect kinds:
-      console_output (stdout/stderr via fd redirection in standalone/dispatch
-      harnesses), thrown_error (panics caught and emitted as side effects),
-      and global_state_change (mutable static variable snapshots). The remaining
-      kinds (global_mutation, file_write, network_request, environment_read)
-      are not yet captured. Crate-bridge harness does not capture console_output.
-    affected_frontends: [rust]
-    affected_commands: [execute]
-    status: resolved
 
   - id: medium-opacity-analyze-partial
     description: >
@@ -804,6 +827,12 @@ allowed_divergences:
     affected_frontends: [rust]
     affected_commands: [analyze]
     status: accepted
+    owner: Ketan Gangatirkar
+    tracking_issue: none
+    resolution_condition: >
+      Permanent divergence — Rust analyze is a stub. If the Rust frontend
+      ever gains full static analysis, this entry should be removed and
+      medium_opacity emission added following TS/Go heuristics.
     resolution: >
       Intentional permanent divergence for the Rust frontend analyze stub.
       When/if the Rust frontend gains full static analysis, it should emit
@@ -820,6 +849,12 @@ allowed_divergences:
     affected_frontends: [go, rust]
     affected_commands: [analyze]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.17
+    resolution_condition: >
+      Go frontend produces ite SymExpr nodes from conditional reassignment
+      via data flow analysis. Rust portion is deferred until full analyze
+      implementation lands and can be split into a follow-up entry then.
     resolution: >
       Add data flow tracking to Go frontend (separate issue). Rust frontend
       deferred until full analyze implementation lands.
@@ -840,6 +875,12 @@ allowed_divergences:
     affected_frontends: [go, rust]
     affected_commands: [analyze, instrument, prepare, execute, setup]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.18
+    resolution_condition: >
+      Go and Rust frontends emit preflight_failed for equivalent
+      missing-dependency or missing-toolchain conditions (missing go.sum
+      / module cache for Go; missing toolchain or target dir for Rust).
     resolution: >
       Add an environment preflight in the Go and Rust frontends that
       emits `preflight_failed` for the equivalent missing-dependency or
@@ -856,6 +897,12 @@ allowed_divergences:
     affected_frontends: [go, rust]
     affected_commands: [execute]
     status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-1hlk.19
+    resolution_condition: >
+      Go and Rust execute paths populate loop_body_states with the same
+      loop_id and zero-based iteration contract as TypeScript, or the
+      reconstruction logic moves into a shared core-side postprocessor.
     resolution: >
       Add loop snapshot emission to Go and Rust execute paths with the same
       `loop_id` and zero-based `iteration` contract as TypeScript, or move the

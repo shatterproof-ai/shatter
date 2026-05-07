@@ -7,6 +7,9 @@
 
 # Known drifts that are reported as warnings rather than failures.
 # Remove entries as frontends are fixed to align.
+# Each entry SHOULD reference the corresponding allowed_divergences id from
+# protocol/parity-matrix.yaml in the `reason` text so a future reader can
+# find the owning bd issue and resolution condition (str-1hlk.12).
 known_drifts:
   # Go handler includes a "functions" field in responses where other
   # frontends do not. Tracked for future alignment.
