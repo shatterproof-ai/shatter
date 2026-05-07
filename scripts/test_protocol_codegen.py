@@ -29,6 +29,9 @@ CHECKED_IN_TS_ENUMS = (
 CHECKED_IN_GO_ENUMS = (
     REPO_ROOT / "shatter-go" / "protocol" / "protocol_enums_gen.go"
 )
+CHECKED_IN_RUST_ENUMS = (
+    REPO_ROOT / "shatter-rust" / "src" / "generated" / "protocol_enums.rs"
+)
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -333,6 +336,118 @@ class GoEmitterTest(unittest.TestCase):
         Go-frontend's own self-analysis skips this file."""
         first_line = CHECKED_IN_GO_ENUMS.read_text(encoding="utf-8").splitlines()[0]
         self.assertRegex(first_line, r"^// Code generated .* DO NOT EDIT\.$")
+
+
+class RustEmitterTest(unittest.TestCase):
+    """str-1hlk.9: the Rust emitter participates in --write/--check."""
+
+    def _registry_keys(self, top: str) -> list[str]:
+        import yaml  # local import: keeps test importable without pyyaml
+
+        with REGISTRY.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        return sorted((data.get(top) or {}).keys())
+
+    def _rust_const_slice(self, source: str, name: str) -> list[str]:
+        match = re.search(
+            rf"pub const {name}: &\[&str\] = &\[\s*((?:\".*?\",\s*)+)\];",
+            source,
+            re.DOTALL,
+        )
+        if not match:
+            self.fail(f"could not find {name} in Rust enum module")
+        return re.findall(r'"([^"]+)"', match.group(1))
+
+    def test_rust_enum_module_is_checked_in(self) -> None:
+        self.assertTrue(
+            CHECKED_IN_RUST_ENUMS.is_file(),
+            f"missing checked-in Rust enum module at {CHECKED_IN_RUST_ENUMS}",
+        )
+
+    def test_rust_enum_module_passes_check(self) -> None:
+        """--check must succeed against the checked-in Rust module."""
+        proc = _run(["--check"])
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"--check failed against checked-in artifacts:\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+        )
+
+    def test_rust_emitter_is_deterministic(self) -> None:
+        """Running --rust-out twice must produce byte-identical output."""
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            out_a = Path(tmp_a) / "protocol_enums.rs"
+            out_b = Path(tmp_b) / "protocol_enums.rs"
+            for out in (out_a, out_b):
+                proc = _run(
+                    [
+                        "--registry",
+                        str(REGISTRY),
+                        "--rust-out",
+                        str(out),
+                        "--write",
+                    ]
+                )
+                self.assertEqual(
+                    proc.returncode, 0, f"generator failed: {proc.stderr}"
+                )
+            self.assertEqual(
+                out_a.read_bytes(),
+                out_b.read_bytes(),
+                "Rust emitter output is not deterministic",
+            )
+
+    def test_rust_check_mode_fails_on_drift(self) -> None:
+        """--check must exit non-zero with a diff when the Rust module drifts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = Path(tmp) / "protocol_enums.rs"
+            shutil.copyfile(CHECKED_IN_RUST_ENUMS, stale)
+            stale.write_text(
+                stale.read_text(encoding="utf-8").replace(
+                    '"analyze"', '"DRIFT_analyze"', 1
+                ),
+                encoding="utf-8",
+            )
+            proc = _run(
+                [
+                    "--registry",
+                    str(REGISTRY),
+                    "--rust-out",
+                    str(stale),
+                    "--check",
+                ]
+            )
+            self.assertNotEqual(
+                proc.returncode,
+                0,
+                "expected --check to fail on drifted Rust module",
+            )
+            combined = proc.stdout + proc.stderr
+            self.assertIn(
+                "DRIFT_analyze",
+                combined,
+                "expected unified diff mentioning the drifted token",
+            )
+
+    def test_rust_command_slice_matches_registry(self) -> None:
+        """Generated ALL_COMMANDS must equal sorted registry command keys."""
+        source = CHECKED_IN_RUST_ENUMS.read_text(encoding="utf-8")
+        rust_commands = self._rust_const_slice(source, "ALL_COMMANDS")
+        registry_commands = self._registry_keys("commands")
+        self.assertEqual(rust_commands, registry_commands)
+
+    def test_rust_error_code_slice_matches_registry(self) -> None:
+        source = CHECKED_IN_RUST_ENUMS.read_text(encoding="utf-8")
+        rust_codes = self._rust_const_slice(source, "ALL_ERROR_CODES")
+        registry_codes = self._registry_keys("error_codes")
+        self.assertEqual(rust_codes, registry_codes)
+
+    def test_rust_response_status_slice_includes_error(self) -> None:
+        """ResponseStatus must include the universal "error" status."""
+        source = CHECKED_IN_RUST_ENUMS.read_text(encoding="utf-8")
+        rust_statuses = self._rust_const_slice(source, "ALL_RESPONSE_STATUSES")
+        self.assertIn("error", rust_statuses)
 
 
 if __name__ == "__main__":
