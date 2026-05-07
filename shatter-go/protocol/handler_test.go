@@ -1597,9 +1597,11 @@ func TestExecuteConsoleOutputEmitsPerCallLevels(t *testing.T) {
 import (
 	"fmt"
 	"log/slog"
+	"os"
 )
 
 func chatter() int {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	fmt.Print("plain")
 	fmt.Println("line")
 	fmt.Printf("formatted %d", 7)
