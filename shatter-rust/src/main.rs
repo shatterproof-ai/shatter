@@ -6,6 +6,7 @@ mod adapters;
 mod analyzer;
 mod executor;
 mod file_handle_generator;
+mod generated;
 mod generators;
 mod handler;
 mod instrument;
