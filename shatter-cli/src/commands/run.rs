@@ -2903,6 +2903,78 @@ mod tests {
     }
 
     #[test]
+    fn coverage_budget_gates_emit_failed_threshold_decisions() {
+        let mut summary = synth_summary(40, 4, 6);
+        summary.unrepresented_failed_lines = 15;
+        summary.unrepresented_timed_out_lines = 5;
+        summary.unrepresented_failed_percent = 15.0;
+        summary.unrepresented_timed_out_percent = 5.0;
+        summary.unrepresented_unsupported_lines = 12;
+        summary.unrepresented_unsupported_percent = 12.0;
+        summary.report_validity = ReportValidity::Low;
+
+        let gates = shatter_core::config::CoverageBudgetGates {
+            min_source_representation_percent: Some(50.0),
+            max_failed_span_percent: Some(10.0),
+            max_unsupported_span_percent: Some(5.0),
+            fail_on_low_report_validity: Some(true),
+            ..shatter_core::config::CoverageBudgetGates::default()
+        };
+
+        let decisions = evaluate_coverage_budget_gates(&summary, &gates);
+        assert_eq!(decisions.len(), 4);
+        assert!(decisions.iter().all(|decision| decision.status == "failed"));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "min_source_representation_percent"
+                && decision.threshold.as_deref() == Some("50.0")
+                && decision.observed.as_deref() == Some("40.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "max_failed_span_percent"
+                && decision.threshold.as_deref() == Some("10.0")
+                && decision.observed.as_deref() == Some("20.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "max_unsupported_span_percent"
+                && decision.threshold.as_deref() == Some("5.0")
+                && decision.observed.as_deref() == Some("12.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "fail_on_low_report_validity"
+                && decision.observed.as_deref() == Some("low")
+        }));
+    }
+
+    #[test]
+    fn run_summary_gate_decisions_round_trip_through_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut summary = synth_summary(90, 9, 1);
+        summary.gate_decisions = vec![StatusGateDecision {
+            gate: "min_source_representation_percent".to_string(),
+            status: "passed".to_string(),
+            threshold: Some("75.0".to_string()),
+            observed: Some("90.0".to_string()),
+            reason: None,
+        }];
+
+        write_run_summary_json(dir.path(), &summary).expect("write");
+        let bytes = fs::read(dir.path().join(RUN_SUMMARY_FILENAME)).expect("read");
+        let parsed: RunSummary = serde_json::from_slice(&bytes).expect("parse");
+
+        assert_eq!(parsed.gate_decisions.len(), 1);
+        assert_eq!(parsed.gate_decisions[0].gate, "min_source_representation_percent");
+
+        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).expect("reparse");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("gate_decisions");
+        let legacy_parsed: RunSummary =
+            serde_json::from_value(legacy).expect("legacy parse");
+        assert!(legacy_parsed.gate_decisions.is_empty());
+    }
+
+    #[test]
     fn classify_validity_high_threshold_boundary_is_inclusive() {
         // rep% exactly at the high threshold should classify as high
         // (no representation reason). Below it strictly demotes.
