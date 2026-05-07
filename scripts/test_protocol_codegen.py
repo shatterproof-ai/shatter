@@ -26,6 +26,9 @@ CHECKED_IN_MANIFEST = REPO_ROOT / "protocol" / "generated" / "manifest.json"
 CHECKED_IN_TS_ENUMS = (
     REPO_ROOT / "shatter-ts" / "src" / "generated" / "protocol-enums.ts"
 )
+CHECKED_IN_GO_ENUMS = (
+    REPO_ROOT / "shatter-go" / "protocol" / "protocol_enums_gen.go"
+)
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -215,6 +218,121 @@ class TypeScriptEmitterTest(unittest.TestCase):
         source = CHECKED_IN_TS_ENUMS.read_text(encoding="utf-8")
         ts_statuses = self._ts_const_tuple(source, "ALL_RESPONSE_STATUSES")
         self.assertIn("error", ts_statuses)
+
+
+class GoEmitterTest(unittest.TestCase):
+    """str-1hlk.8: the Go emitter participates in --write/--check."""
+
+    def _registry_keys(self, top: str) -> list[str]:
+        import yaml  # local import: keeps test importable without pyyaml
+
+        with REGISTRY.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        return sorted((data.get(top) or {}).keys())
+
+    def _go_var_block(self, source: str, name: str) -> list[str]:
+        match = re.search(
+            rf"var {name} = \[\]string\{{\s*((?:\".*?\",\s*)+)\}}",
+            source,
+            re.DOTALL,
+        )
+        if not match:
+            self.fail(f"could not find {name} in Go enum module")
+        return re.findall(r'"([^"]+)"', match.group(1))
+
+    def test_go_enum_module_is_checked_in(self) -> None:
+        self.assertTrue(
+            CHECKED_IN_GO_ENUMS.is_file(),
+            f"missing checked-in Go enum module at {CHECKED_IN_GO_ENUMS}",
+        )
+
+    def test_go_enum_module_passes_check(self) -> None:
+        proc = _run(["--check"])
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"--check failed against checked-in artifacts:\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+        )
+
+    def test_go_emitter_is_deterministic(self) -> None:
+        """Running --go-out twice must produce byte-identical output."""
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            out_a = Path(tmp_a) / "protocol_enums_gen.go"
+            out_b = Path(tmp_b) / "protocol_enums_gen.go"
+            for out in (out_a, out_b):
+                proc = _run(
+                    [
+                        "--registry",
+                        str(REGISTRY),
+                        "--go-out",
+                        str(out),
+                        "--write",
+                    ]
+                )
+                self.assertEqual(
+                    proc.returncode, 0, f"generator failed: {proc.stderr}"
+                )
+            self.assertEqual(
+                out_a.read_bytes(),
+                out_b.read_bytes(),
+                "Go emitter output is not deterministic",
+            )
+
+    def test_go_check_mode_fails_on_drift(self) -> None:
+        """--check must exit non-zero with a diff when the Go module drifts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = Path(tmp) / "protocol_enums_gen.go"
+            shutil.copyfile(CHECKED_IN_GO_ENUMS, stale)
+            stale.write_text(
+                stale.read_text(encoding="utf-8").replace(
+                    '"analyze"', '"DRIFT_analyze"', 1
+                ),
+                encoding="utf-8",
+            )
+            proc = _run(
+                [
+                    "--registry",
+                    str(REGISTRY),
+                    "--go-out",
+                    str(stale),
+                    "--check",
+                ]
+            )
+            self.assertNotEqual(
+                proc.returncode,
+                0,
+                "expected --check to fail on drifted Go module",
+            )
+            combined = proc.stdout + proc.stderr
+            self.assertIn(
+                "DRIFT_analyze",
+                combined,
+                "expected unified diff mentioning the drifted token",
+            )
+
+    def test_go_command_slice_matches_registry(self) -> None:
+        source = CHECKED_IN_GO_ENUMS.read_text(encoding="utf-8")
+        go_commands = self._go_var_block(source, "AllCommands")
+        registry_commands = self._registry_keys("commands")
+        self.assertEqual(go_commands, registry_commands)
+
+    def test_go_error_code_slice_matches_registry(self) -> None:
+        source = CHECKED_IN_GO_ENUMS.read_text(encoding="utf-8")
+        go_codes = self._go_var_block(source, "AllErrorCodes")
+        registry_codes = self._registry_keys("error_codes")
+        self.assertEqual(go_codes, registry_codes)
+
+    def test_go_response_status_slice_includes_error(self) -> None:
+        source = CHECKED_IN_GO_ENUMS.read_text(encoding="utf-8")
+        go_statuses = self._go_var_block(source, "AllResponseStatuses")
+        self.assertIn("error", go_statuses)
+
+    def test_go_module_has_canonical_generated_header(self) -> None:
+        """Standard `// Code generated ... DO NOT EDIT.` header so the
+        Go-frontend's own self-analysis skips this file."""
+        first_line = CHECKED_IN_GO_ENUMS.read_text(encoding="utf-8").splitlines()[0]
+        self.assertRegex(first_line, r"^// Code generated .* DO NOT EDIT\.$")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ import (
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 )
 
-const ProtocolVersion = "0.1.0"
+// ProtocolVersion is now declared in protocol_enums_gen.go (generated
+// from protocol/registry.yaml; str-1hlk.8).
 
 // TargetKind classifies a discovered invocation target.
 type TargetKind string
