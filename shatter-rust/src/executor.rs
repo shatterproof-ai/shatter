@@ -4668,6 +4668,67 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         }
     }
 
+    #[test]
+    fn crate_backed_module_path_input_executes_via_bridge() {
+        // Functions whose inputs are named through crate-local paths cannot run
+        // in the wrapped bin_only harness because `crate::...` resolves against
+        // the temporary harness crate. Default execute should route them through
+        // crate_bridge instead of returning not_supported.
+        let dir = std::env::temp_dir().join("shatter-test-crate-bridge-input");
+        let src_file = write_test_crate(
+            &dir,
+            r#"
+mod config {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    pub(crate) struct Config {
+        enabled: bool,
+    }
+}
+
+use crate::config::Config;
+
+fn enabled(config: Config) -> bool {
+    config.enabled
+}
+"#,
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "enabled",
+            &[serde_json::json!({ "enabled": true })],
+            &[],
+            30_000,
+            None,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(true)),
+                    "enabled({{ enabled: true }}) should return true"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_backed_module_path_input_executes_via_bridge: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // cargo check helpers
     // -------------------------------------------------------------------------
