@@ -1492,6 +1492,54 @@ func double(x int) int {
 	}
 }
 
+func TestExecutePanicEmitsThrownErrorSideEffect(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func explode() int {
+	panic("boom")
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"explode"`, tmp)),
+		reqJSON(3, "execute", `"function":"explode","inputs":[],"mocks":[]`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+	if responses[2].ThrownError == nil {
+		t.Fatal("execute response missing top-level thrown_error")
+	}
+
+	var thrownEffects []SideEffect
+	for _, effect := range responses[2].SideEffects {
+		if effect.Kind == "thrown_error" {
+			thrownEffects = append(thrownEffects, effect)
+		}
+	}
+	if len(thrownEffects) != 1 {
+		t.Fatalf("thrown_error side effects = %d, want 1; all side effects: %+v", len(thrownEffects), responses[2].SideEffects)
+	}
+	if thrownEffects[0].ErrorType != "panic" {
+		t.Fatalf("thrown_error error_type = %q, want panic", thrownEffects[0].ErrorType)
+	}
+	if thrownEffects[0].Message != "boom" {
+		t.Fatalf("thrown_error message = %q, want boom", thrownEffects[0].Message)
+	}
+	if thrownEffects[0].Stack == nil || !strings.Contains(*thrownEffects[0].Stack, "explode") {
+		t.Fatalf("thrown_error stack missing explode frame: %v", thrownEffects[0].Stack)
+	}
+}
+
 func TestConvertSideEffects(t *testing.T) {
 	input := []instrument.SideEffect{
 		{Kind: "console_output", Level: "log", Message: "hello stdout"},
