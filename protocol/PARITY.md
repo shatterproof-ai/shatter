@@ -296,13 +296,15 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ### `loop-body-states-typescript-only`
 
-**Description:** TypeScript emits `loop_body_states` in execute responses for supported canonical counted loops, combining cached `LoopInfo` metadata with observed runtime iteration counts. Go and Rust include the field in protocol structs for wire compatibility but do not populate it yet.
+**Description:** TypeScript, Go, and Rust now emit `loop_body_states` in execute responses for supported loop executions. Go reconstructs loop_id and zero-based iteration snapshots from cached `LoopInfo` metadata and observed runtime `scope_events`; Rust records loop body entry directly in its runtime. Go and Rust currently emit empty `locals` maps rather than TypeScript's symbolic local snapshots.
 
 **Affected frontends:** go, rust
 
 **Affected commands:** execute
 
-**Status:** tracked
+**Status:** resolved
+
+**Resolved at:** 2026-05-07
 
 **Owner:** Ketan Gangatirkar
 
@@ -310,7 +312,7 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Resolution condition:** Go and Rust execute paths populate `loop_body_states` with the same `loop_id` and zero-based `iteration` contract as TypeScript, or the reconstruction logic moves into a shared core-side postprocessor.
 
-**Resolution:** Add loop snapshot emission to Go and Rust execute paths.
+**Resolution:** Go direct execute emits loop_body_states from LoopInfo plus scope_events; Rust instrumented execute emits loop_body_states from runtime loop_enter hooks. Both use the same loop_id and zero-based iteration contract.
 
 ---
 

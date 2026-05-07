@@ -345,6 +345,7 @@ impl PersistentHarness {
                     calls_to_external: vec![],
                     path_constraints: vec![],
                     side_effects: vec![],
+                    loop_body_states: vec![],
                     performance: serde_json::json!({
                         "wall_time_ms": timeout_ms as f64,
                         "cpu_time_us": 0,
@@ -395,6 +396,7 @@ impl PersistentHarness {
                     calls_to_external: vec![],
                     path_constraints: vec![],
                     side_effects: vec![],
+                    loop_body_states: vec![],
                     performance: serde_json::json!({
                         "wall_time_ms": timeout_ms as f64,
                         "cpu_time_us": 0,
@@ -567,6 +569,8 @@ pub struct ExecuteResult {
     pub path_constraints: Vec<Value>,
     #[serde(default)]
     pub side_effects: Vec<Value>,
+    #[serde(default)]
+    pub loop_body_states: Vec<Value>,
     pub performance: Value,
 }
 
@@ -3253,6 +3257,13 @@ pub fn execute_axum_handler(
 mod tests {
     use super::*;
 
+    fn is_offline_compile_error_message(msg: &str) -> bool {
+        msg.contains("spurious network error")
+            || msg.contains("download of config.json failed")
+            || msg.contains("Could not resolve host")
+            || msg.contains("Could not resolve hostname")
+    }
+
     #[test]
     fn find_runtime_crate_via_env() {
         let runtime_path = find_runtime_crate_path();
@@ -3812,6 +3823,59 @@ fn main() {
             &bridge_cache,
         );
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_for_loop_emits_loop_body_states() {
+        let dir = std::env::temp_dir().join("shatter-test-loop-body-states");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.rs");
+        std::fs::write(
+            &file,
+            r#"
+fn sum_to(n: i32) -> i32 {
+    let mut total = 0;
+    for i in 0..n {
+        total += i;
+    }
+    total
+}
+"#,
+        )
+        .unwrap();
+
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let result = execute_function(
+            &file.to_string_lossy(),
+            "sum_to",
+            &[serde_json::json!(3)],
+            &[],
+            5000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(result.loop_body_states.len(), 3);
+                for (idx, state) in result.loop_body_states.iter().enumerate() {
+                    assert_eq!(state["loop_id"], serde_json::json!(0));
+                    assert_eq!(state["iteration"], serde_json::json!(idx as u32));
+                }
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_for_loop_emits_loop_body_states: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

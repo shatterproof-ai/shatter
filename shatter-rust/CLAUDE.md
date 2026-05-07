@@ -26,7 +26,7 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-s
 
 ## Loop Snapshot Parity Contract
 
-Rust includes `loop_body_states` in protocol structs for execute-response wire compatibility, but does not emit loop snapshots yet. TypeScript currently owns snapshot production for supported counted loops; tracked drift lives in `protocol/parity-matrix.yaml` as `loop-body-states-typescript-only`.
+Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map; TypeScript remains the frontend with symbolic local snapshot contents.
 
 ## Prepare Parity Contract
 

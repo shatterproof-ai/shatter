@@ -123,6 +123,8 @@ pub fn instrument_source_with_timing(
 struct Instrumentor {
     /// Next branch ID to assign.
     branch_id: u32,
+    /// Next loop ID to assign.
+    loop_id: u32,
     /// If set, only instrument this function.
     target_function: Option<String>,
     /// Whether we are currently inside the target function.
@@ -135,6 +137,7 @@ impl Instrumentor {
     fn new(target_function: Option<&str>) -> Self {
         Self {
             branch_id: 0,
+            loop_id: 0,
             target_function: target_function.map(String::from),
             inside_target: target_function.is_none(), // if no target, always active
             current_line: 0,
@@ -145,6 +148,13 @@ impl Instrumentor {
     fn next_branch_id(&mut self) -> u32 {
         let id = self.branch_id;
         self.branch_id += 1;
+        id
+    }
+
+    /// Allocate and return the next loop ID.
+    fn next_loop_id(&mut self) -> u32 {
+        let id = self.loop_id;
+        self.loop_id += 1;
         id
     }
 
@@ -203,6 +213,15 @@ impl Instrumentor {
             // Fallback: empty statement
             syn::parse2(quote! { ; }).expect("semicolon should parse")
         })
+    }
+
+    fn loop_enter_stmt(&mut self) -> Stmt {
+        let id = self.next_loop_id();
+        let tokens: TokenStream = quote! {
+            shatter_rust_runtime::loop_enter(#id);
+        };
+        syn::parse2(tokens)
+            .unwrap_or_else(|_| syn::parse2(quote! { ; }).expect("semicolon should parse"))
     }
 }
 
@@ -267,6 +286,8 @@ impl VisitMut for Instrumentor {
 
         let wrapped = self.wrap_condition(&node.cond);
         *node.cond = wrapped;
+        let loop_enter = self.loop_enter_stmt();
+        node.body.stmts.insert(0, loop_enter);
 
         syn::visit_mut::visit_expr_while_mut(self, node);
     }
@@ -284,7 +305,9 @@ impl VisitMut for Instrumentor {
             node.expr.to_token_stream()
         );
         let stmt = self.branch_hit_stmt(line, &constraint_json);
+        let loop_enter = self.loop_enter_stmt();
         node.body.stmts.insert(0, stmt);
+        node.body.stmts.insert(0, loop_enter);
 
         syn::visit_mut::visit_expr_for_loop_mut(self, node);
     }
@@ -523,6 +546,7 @@ fn count_up(mut n: i32) -> i32 {
         let result = instrument(source);
         assert!(result.branch_count >= 1);
         assert!(result.source.contains("branch_hit"));
+        assert!(result.source.contains("loop_enter"));
     }
 
     #[test]
@@ -560,6 +584,7 @@ fn sum_vec(items: &[i32]) -> i32 {
         let result = instrument(source);
         assert!(result.branch_count >= 1);
         assert!(result.source.contains("branch_hit"));
+        assert!(result.source.contains("loop_enter"));
     }
 
     #[test]
