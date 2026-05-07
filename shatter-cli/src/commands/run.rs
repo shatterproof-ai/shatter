@@ -13,7 +13,7 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::run_manifest::{self, RunManifest};
 use shatter_core::status_export::{
-    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus,
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusGateDecision,
     StatusLineWeightedFailureImpact, StatusReportValidity, StatusRollupInput, StatusTargetInput,
     StatusTargetOutcome, StatusTargetValidityImpact, StatusValidityReason, write_run_status_json,
 };
@@ -28,6 +28,7 @@ use shatter_core::status_export::{
 pub(crate) struct RunScope {
     pub(crate) options: DiscoveryOptions,
     pub(crate) language_filter: Option<String>,
+    pub(crate) coverage_budget_gates: shatter_core::config::CoverageBudgetGates,
 }
 
 /// Build a [`RunScope`] from the project config in `root` (if any).
@@ -58,6 +59,7 @@ pub(crate) fn run_scope_from_project_config(root: &Path) -> RunScope {
             max_depth: cfg.max_depth,
         },
         language_filter: cfg.language.clone(),
+        coverage_budget_gates: cfg.coverage_budget_gates.unwrap_or_default(),
     }
 }
 
@@ -88,6 +90,44 @@ pub(crate) fn apply_language_filter(
     files.into_iter().filter(|(_, l)| *l == target).collect()
 }
 
+/// CLI coverage-budget overrides for `shatter run`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CoverageBudgetGateOverrides {
+    pub(crate) min_source_representation_percent: Option<f64>,
+    pub(crate) max_failed_span_percent: Option<f64>,
+    pub(crate) max_unsupported_span_percent: Option<f64>,
+    pub(crate) fail_on_stale_source_set: bool,
+    pub(crate) fail_on_missing_artifacts: bool,
+    pub(crate) fail_on_low_report_validity: bool,
+}
+
+impl CoverageBudgetGateOverrides {
+    fn apply_to(
+        self,
+        mut gates: shatter_core::config::CoverageBudgetGates,
+    ) -> shatter_core::config::CoverageBudgetGates {
+        if self.min_source_representation_percent.is_some() {
+            gates.min_source_representation_percent = self.min_source_representation_percent;
+        }
+        if self.max_failed_span_percent.is_some() {
+            gates.max_failed_span_percent = self.max_failed_span_percent;
+        }
+        if self.max_unsupported_span_percent.is_some() {
+            gates.max_unsupported_span_percent = self.max_unsupported_span_percent;
+        }
+        if self.fail_on_stale_source_set {
+            gates.fail_on_stale_source_set = Some(true);
+        }
+        if self.fail_on_missing_artifacts {
+            gates.fail_on_missing_artifacts = Some(true);
+        }
+        if self.fail_on_low_report_validity {
+            gates.fail_on_low_report_validity = Some(true);
+        }
+        gates
+    }
+}
+
 use crate::commands::scan::{print_summary_report, write_analysis_report};
 use crate::helpers::*;
 
@@ -107,6 +147,7 @@ pub(crate) async fn run_run(
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
     use_color: bool,
+    coverage_budget_overrides: CoverageBudgetGateOverrides,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -155,6 +196,8 @@ pub(crate) async fn run_run(
     // project author leak into discovery and produce noisy preflight warnings.
     log::debug!("Discovering source files...");
     let scope = run_scope_from_project_config(&root);
+    let coverage_budget_gates =
+        coverage_budget_overrides.apply_to(scope.coverage_budget_gates.clone());
     if !scope.options.include_patterns.is_empty()
         || !scope.options.exclude_patterns.is_empty()
         || scope.options.max_depth.is_some()
@@ -179,7 +222,9 @@ pub(crate) async fn run_run(
         if let Some(dir) = output_dir {
             let manifest = run_manifest::capture(&scan_id, &scope_hash(&scope), &[], Some(&root));
             run_manifest::write_manifest(dir, &manifest);
-            let run_summary = build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]);
+            let mut run_summary = build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]);
+            run_summary.gate_decisions =
+                evaluate_coverage_budget_gates(&run_summary, &coverage_budget_gates);
             write_run_summary_json(dir, &run_summary)?;
             write_run_status_export(
                 dir,
@@ -189,6 +234,9 @@ pub(crate) async fn run_run(
                 &[],
                 &run_status_rollup_input_from_summary(&run_summary),
             )?;
+            if coverage_budget_failed(&run_summary.gate_decisions) {
+                return Err("coverage budget gates failed".into());
+            }
         }
         return Ok(());
     }
@@ -556,6 +604,7 @@ pub(crate) async fn run_run(
         use_color,
     );
 
+    let budget_failed;
     // Step 7: Write output files if requested
     if let Some(dir) = output_dir {
         write_run_report(dir, &call_graph, &exploration_results)?;
@@ -576,6 +625,13 @@ pub(crate) async fn run_run(
             classify_validity(&run_summary, Some(&source_diff), &validation_issues);
         run_summary.report_validity = validity_final;
         run_summary.validity_reasons = reasons_final;
+        run_summary.gate_decisions =
+            evaluate_coverage_budget_gates(&run_summary, &coverage_budget_gates);
+        budget_failed = coverage_budget_failed(&run_summary.gate_decisions);
+        print_markdown(
+            &render_gate_decisions_markdown(&run_summary.gate_decisions),
+            use_color,
+        );
         write_run_summary_json(dir, &run_summary)?;
         let status_files = run_status_file_inputs_from_registry(
             &registry,
@@ -599,9 +655,20 @@ pub(crate) async fn run_run(
             &status_targets,
             &run_status_rollup_input_from_summary(&run_summary),
         )?;
+    } else {
+        run_summary.gate_decisions =
+            evaluate_coverage_budget_gates(&run_summary, &coverage_budget_gates);
+        budget_failed = coverage_budget_failed(&run_summary.gate_decisions);
+        print_markdown(
+            &render_gate_decisions_markdown(&run_summary.gate_decisions),
+            use_color,
+        );
     }
 
     shutdown_all_frontends(frontends).await;
+    if budget_failed {
+        return Err("coverage budget gates failed".into());
+    }
     Ok(())
 }
 
@@ -849,6 +916,9 @@ pub(crate) struct RunSummary {
     /// source set, missing artifacts) fires.
     #[serde(default)]
     pub validity_reasons: Vec<ValidityReason>,
+    /// Optional coverage budget gate decisions evaluated for this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_decisions: Vec<StatusGateDecision>,
 }
 
 /// Derive a stable hash of the discovery scope so the manifest's
@@ -1479,6 +1549,7 @@ fn build_run_summary_from_buckets(
         ),
         report_validity: ReportValidity::High,
         validity_reasons: Vec::new(),
+        gate_decisions: Vec::new(),
     }
 }
 
@@ -1621,6 +1692,160 @@ pub(crate) fn classify_validity(
     }
 
     (tier, reasons)
+}
+
+/// Evaluate opt-in coverage budget gates against a finalized run summary.
+pub(crate) fn evaluate_coverage_budget_gates(
+    summary: &RunSummary,
+    gates: &shatter_core::config::CoverageBudgetGates,
+) -> Vec<StatusGateDecision> {
+    let mut decisions = Vec::new();
+
+    if let Some(threshold) = gates.min_source_representation_percent {
+        let observed = summary.represented_source_percent;
+        decisions.push(threshold_decision(
+            "min_source_representation_percent",
+            observed >= threshold,
+            threshold,
+            observed,
+            "represented_source_percent met the configured minimum",
+            "represented_source_percent is below the configured minimum",
+        ));
+    }
+
+    if let Some(threshold) = gates.max_failed_span_percent {
+        let observed = (summary.unrepresented_failed_percent
+            + summary.unrepresented_timed_out_percent)
+            .clamp(0.0, 100.0);
+        decisions.push(threshold_decision(
+            "max_failed_span_percent",
+            observed <= threshold,
+            threshold,
+            observed,
+            "failed/timed-out source span percent is within budget",
+            "failed/timed-out source span percent exceeds budget",
+        ));
+    }
+
+    if let Some(threshold) = gates.max_unsupported_span_percent {
+        let observed = summary.unrepresented_unsupported_percent;
+        decisions.push(threshold_decision(
+            "max_unsupported_span_percent",
+            observed <= threshold,
+            threshold,
+            observed,
+            "unsupported source span percent is within budget",
+            "unsupported source span percent exceeds budget",
+        ));
+    }
+
+    if gates.fail_on_stale_source_set.unwrap_or(false) {
+        let failed = summary.report_validity == ReportValidity::StaleSourceSet;
+        decisions.push(boolean_gate_decision(
+            "fail_on_stale_source_set",
+            !failed,
+            report_validity_label(summary.report_validity),
+            "report validity is not stale-source-set",
+            "report validity is stale-source-set",
+        ));
+    }
+
+    if gates.fail_on_missing_artifacts.unwrap_or(false) {
+        let failed = summary.report_validity == ReportValidity::InvalidArtifacts;
+        decisions.push(boolean_gate_decision(
+            "fail_on_missing_artifacts",
+            !failed,
+            report_validity_label(summary.report_validity),
+            "report validity is not invalid-artifacts",
+            "report validity is invalid-artifacts",
+        ));
+    }
+
+    if gates.fail_on_low_report_validity.unwrap_or(false) {
+        let failed = report_validity_severity(summary.report_validity)
+            >= report_validity_severity(ReportValidity::Low);
+        decisions.push(boolean_gate_decision(
+            "fail_on_low_report_validity",
+            !failed,
+            report_validity_label(summary.report_validity),
+            "report validity is above low",
+            "report validity is low or worse",
+        ));
+    }
+
+    decisions
+}
+
+fn threshold_decision(
+    gate: &str,
+    passed: bool,
+    threshold: f64,
+    observed: f64,
+    passed_reason: &str,
+    failed_reason: &str,
+) -> StatusGateDecision {
+    StatusGateDecision {
+        gate: gate.to_string(),
+        status: gate_status(passed).to_string(),
+        threshold: Some(format_percent_value(threshold)),
+        observed: Some(format_percent_value(observed)),
+        reason: Some(if passed { passed_reason } else { failed_reason }.to_string()),
+    }
+}
+
+fn boolean_gate_decision(
+    gate: &str,
+    passed: bool,
+    observed: &str,
+    passed_reason: &str,
+    failed_reason: &str,
+) -> StatusGateDecision {
+    StatusGateDecision {
+        gate: gate.to_string(),
+        status: gate_status(passed).to_string(),
+        threshold: Some("true".to_string()),
+        observed: Some(observed.to_string()),
+        reason: Some(if passed { passed_reason } else { failed_reason }.to_string()),
+    }
+}
+
+fn gate_status(passed: bool) -> &'static str {
+    if passed { "passed" } else { "failed" }
+}
+
+fn format_percent_value(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+fn coverage_budget_failed(decisions: &[StatusGateDecision]) -> bool {
+    decisions
+        .iter()
+        .any(|decision| decision.status.as_str() == "failed")
+}
+
+fn render_gate_decisions_markdown(decisions: &[StatusGateDecision]) -> String {
+    use std::fmt::Write;
+    let mut md = String::new();
+    if decisions.is_empty() {
+        return md;
+    }
+    writeln!(md, "## Coverage Budget Gates").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "| Gate | Status | Threshold | Observed | Reason |").unwrap();
+    writeln!(md, "|---|---|---|---|---|").unwrap();
+    for decision in decisions {
+        let threshold = decision.threshold.as_deref().unwrap_or("");
+        let observed = decision.observed.as_deref().unwrap_or("");
+        let reason = decision.reason.as_deref().unwrap_or("").replace('|', "\\|");
+        writeln!(
+            md,
+            "| {} | {} | {} | {} | {} |",
+            decision.gate, decision.status, threshold, observed, reason
+        )
+        .unwrap();
+    }
+    writeln!(md).unwrap();
+    md
 }
 
 /// Pick the worse of two [`ReportValidity`] tiers per
@@ -1787,7 +2012,11 @@ fn run_status_rollup_input_from_summary(summary: &RunSummary) -> StatusRollupInp
             unrepresented_no_target_lines: summary.unrepresented_no_target_lines,
             unrepresented_undiscovered_lines: summary.unrepresented_undiscovered_lines,
         }),
-        gate_decisions: None,
+        gate_decisions: if summary.gate_decisions.is_empty() {
+            None
+        } else {
+            Some(summary.gate_decisions.clone())
+        },
     }
 }
 
@@ -2823,6 +3052,7 @@ mod tests {
             unrepresented_undiscovered_percent: 0.0,
             report_validity: ReportValidity::High,
             validity_reasons: Vec::new(),
+            gate_decisions: Vec::new(),
         }
     }
 
@@ -2900,6 +3130,80 @@ mod tests {
         let (tier, reasons) = classify_validity(&summary, Some(&diff), &missing);
         assert_eq!(tier, ReportValidity::InvalidArtifacts);
         assert!(reason_codes(&reasons).contains(&"invalid_artifacts_missing"));
+    }
+
+    #[test]
+    fn coverage_budget_gates_emit_failed_threshold_decisions() {
+        let mut summary = synth_summary(40, 4, 6);
+        summary.unrepresented_failed_lines = 15;
+        summary.unrepresented_timed_out_lines = 5;
+        summary.unrepresented_failed_percent = 15.0;
+        summary.unrepresented_timed_out_percent = 5.0;
+        summary.unrepresented_unsupported_lines = 12;
+        summary.unrepresented_unsupported_percent = 12.0;
+        summary.report_validity = ReportValidity::Low;
+
+        let gates = shatter_core::config::CoverageBudgetGates {
+            min_source_representation_percent: Some(50.0),
+            max_failed_span_percent: Some(10.0),
+            max_unsupported_span_percent: Some(5.0),
+            fail_on_low_report_validity: Some(true),
+            ..shatter_core::config::CoverageBudgetGates::default()
+        };
+
+        let decisions = evaluate_coverage_budget_gates(&summary, &gates);
+        assert_eq!(decisions.len(), 4);
+        assert!(decisions.iter().all(|decision| decision.status == "failed"));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "min_source_representation_percent"
+                && decision.threshold.as_deref() == Some("50.0")
+                && decision.observed.as_deref() == Some("40.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "max_failed_span_percent"
+                && decision.threshold.as_deref() == Some("10.0")
+                && decision.observed.as_deref() == Some("20.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "max_unsupported_span_percent"
+                && decision.threshold.as_deref() == Some("5.0")
+                && decision.observed.as_deref() == Some("12.0")
+        }));
+        assert!(decisions.iter().any(|decision| {
+            decision.gate == "fail_on_low_report_validity"
+                && decision.observed.as_deref() == Some("low")
+        }));
+    }
+
+    #[test]
+    fn run_summary_gate_decisions_round_trip_through_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut summary = synth_summary(90, 9, 1);
+        summary.gate_decisions = vec![StatusGateDecision {
+            gate: "min_source_representation_percent".to_string(),
+            status: "passed".to_string(),
+            threshold: Some("75.0".to_string()),
+            observed: Some("90.0".to_string()),
+            reason: None,
+        }];
+
+        write_run_summary_json(dir.path(), &summary).expect("write");
+        let bytes = fs::read(dir.path().join(RUN_SUMMARY_FILENAME)).expect("read");
+        let parsed: RunSummary = serde_json::from_slice(&bytes).expect("parse");
+
+        assert_eq!(parsed.gate_decisions.len(), 1);
+        assert_eq!(
+            parsed.gate_decisions[0].gate,
+            "min_source_representation_percent"
+        );
+
+        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).expect("reparse");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("gate_decisions");
+        let legacy_parsed: RunSummary = serde_json::from_value(legacy).expect("legacy parse");
+        assert!(legacy_parsed.gate_decisions.is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use shatter_core::explorer;
 use shatter_core::log_level::LogLevel;
@@ -147,6 +147,33 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: CliCommand,
+}
+
+#[derive(Clone, Debug, Default, Args)]
+pub(crate) struct CoverageBudgetGateArgs {
+    /// Fail when represented source percent is below this threshold.
+    #[arg(long)]
+    pub(crate) min_source_representation_percent: Option<f64>,
+
+    /// Fail when failed + timed-out source span percent exceeds this threshold.
+    #[arg(long)]
+    pub(crate) max_failed_span_percent: Option<f64>,
+
+    /// Fail when unsupported source span percent exceeds this threshold.
+    #[arg(long)]
+    pub(crate) max_unsupported_span_percent: Option<f64>,
+
+    /// Fail when the run report is stale because the source set changed.
+    #[arg(long)]
+    pub(crate) fail_on_stale_source_set: bool,
+
+    /// Fail when the run report has invalid or missing artifact references.
+    #[arg(long)]
+    pub(crate) fail_on_missing_artifacts: bool,
+
+    /// Fail when report validity is low or worse.
+    #[arg(long)]
+    pub(crate) fail_on_low_report_validity: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1078,6 +1105,9 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
 
+        #[command(flatten)]
+        coverage_budget_gates: CoverageBudgetGateArgs,
+
         /// Compile harnesses in release mode (optimized but slower compilation).
         /// Default is debug mode for faster compilation.
         #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
@@ -2006,6 +2036,44 @@ mod tests {
             } => {
                 assert_eq!(request_timeout, 45);
                 assert_eq!(timeout, 300);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_run_with_coverage_budget_gates() {
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "--min-source-representation-percent",
+            "75",
+            "--max-failed-span-percent",
+            "10",
+            "--max-unsupported-span-percent",
+            "5",
+            "--fail-on-stale-source-set",
+            "--fail-on-missing-artifacts",
+            "--fail-on-low-report-validity",
+            "/tmp/repo",
+        ]);
+        match cli.command {
+            CliCommand::Run {
+                coverage_budget_gates,
+                ..
+            } => {
+                assert_eq!(
+                    coverage_budget_gates.min_source_representation_percent,
+                    Some(75.0)
+                );
+                assert_eq!(coverage_budget_gates.max_failed_span_percent, Some(10.0));
+                assert_eq!(
+                    coverage_budget_gates.max_unsupported_span_percent,
+                    Some(5.0)
+                );
+                assert!(coverage_budget_gates.fail_on_stale_source_set);
+                assert!(coverage_budget_gates.fail_on_missing_artifacts);
+                assert!(coverage_budget_gates.fail_on_low_report_validity);
             }
             _ => panic!("expected Run command"),
         }
