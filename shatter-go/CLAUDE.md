@@ -57,9 +57,9 @@ Go includes `loop_body_states` in protocol structs for execute-response round-tr
 
 ## Side Effect Parity Contract
 
-Go captures 2 of 7 canonical kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7; only capture logic is missing.
+Go captures 4 of 7 canonical kinds. Both `instrument.SideEffect` (in `executor.go`) and `protocol.SideEffect` (in `protocol/types.go`) carry fields for all 7; only OS-level/runtime interception capture logic is missing for the remaining kinds.
 
-Captured: `console_output` (stdout/stderr buffers in `executor.go`, stdout→"log" stderr→"error", no per-message truncation), `global_state_change` (pre/post diff of exported package-level variables). Not captured: `thrown_error` (panics handled internally — see `go-side-effects-partial`), `global_mutation`, `file_write`, `network_request`, `environment_read`.
+Captured: `console_output` (stdout/stderr buffers in `executor.go`, stdout→"log" stderr→"error", no per-message truncation), `global_state_change` (pre/post diff of exported package-level variables), `thrown_error` (panic/error details in `side_effects` and top-level `thrown_error`), `global_mutation` (name-only entry emitted alongside detected global state changes). Not captured: `file_write`, `network_request`, `environment_read`.
 
 `convertSideEffects()` in `protocol/handler.go` maps all 7 fields, so adding a new capture kind only requires populating the struct in `executor.go`.
 

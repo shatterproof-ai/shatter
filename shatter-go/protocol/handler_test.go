@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"github.com/shatter-dev/shatter/shatter-go/launcher"
 )
 
 // reqJSON builds a JSON request string using ProtocolVersion instead of a
@@ -1492,6 +1493,103 @@ func double(x int) int {
 	}
 }
 
+func TestExecutePanicEmitsThrownErrorSideEffect(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func explode() int {
+	panic("boom")
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"explode"`, tmp)),
+		reqJSON(3, "execute", `"function":"explode","inputs":[],"mocks":[]`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+	if responses[2].ThrownError == nil {
+		t.Fatal("execute response missing top-level thrown_error")
+	}
+
+	var thrownEffects []SideEffect
+	for _, effect := range responses[2].SideEffects {
+		if effect.Kind == "thrown_error" {
+			thrownEffects = append(thrownEffects, effect)
+		}
+	}
+	if len(thrownEffects) != 1 {
+		t.Fatalf("thrown_error side effects = %d, want 1; all side effects: %+v", len(thrownEffects), responses[2].SideEffects)
+	}
+	if thrownEffects[0].ErrorType != "panic" {
+		t.Fatalf("thrown_error error_type = %q, want panic", thrownEffects[0].ErrorType)
+	}
+	if thrownEffects[0].Message != "boom" {
+		t.Fatalf("thrown_error message = %q, want boom", thrownEffects[0].Message)
+	}
+	if thrownEffects[0].Stack == nil || !strings.Contains(*thrownEffects[0].Stack, "explode") {
+		t.Fatalf("thrown_error stack missing explode frame: %v", thrownEffects[0].Stack)
+	}
+}
+
+func TestExecuteGlobalStateChangeEmitsGlobalMutationSideEffect(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+var Counter int
+
+func bump() int {
+	Counter++
+	return Counter
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"bump"`, tmp)),
+		reqJSON(3, "execute", `"function":"bump","inputs":[],"mocks":[]`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+
+	var sawStateChange, sawMutation bool
+	for _, effect := range responses[2].SideEffects {
+		switch effect.Kind {
+		case "global_state_change":
+			if effect.Variable == "Counter" {
+				sawStateChange = true
+			}
+		case "global_mutation":
+			if effect.Name == "Counter" {
+				sawMutation = true
+			}
+		}
+	}
+	if !sawStateChange {
+		t.Fatalf("missing global_state_change for Counter; side effects: %+v", responses[2].SideEffects)
+	}
+	if !sawMutation {
+		t.Fatalf("missing global_mutation for Counter; side effects: %+v", responses[2].SideEffects)
+	}
+}
+
 func TestConvertSideEffects(t *testing.T) {
 	input := []instrument.SideEffect{
 		{Kind: "console_output", Level: "log", Message: "hello stdout"},
@@ -1612,6 +1710,47 @@ func TestConvertSideEffectsAllKinds(t *testing.T) {
 	}
 	if result[6].Variable != "Counter" {
 		t.Errorf("global_state_change Variable = %q, want %q", result[6].Variable, "Counter")
+	}
+}
+
+func TestConvertLauncherSideEffectsAllKinds(t *testing.T) {
+	stack := "at foo:1"
+	value := "secret"
+	body := json.RawMessage(`{"x":1}`)
+	before := json.RawMessage(`0`)
+	after := json.RawMessage(`1`)
+
+	input := []launcher.LauncherSideEffect{
+		{Kind: "console_output", Level: "warn", Message: "watch out"},
+		{Kind: "file_write", Path: "/tmp/out.txt", Content: "data"},
+		{Kind: "network_request", Method: "POST", URL: "https://example.com", Body: &body},
+		{Kind: "environment_read", Variable: "HOME", Value: &value},
+		{Kind: "global_mutation", Name: "GlobalCounter"},
+		{Kind: "thrown_error", ErrorType: "TypeError", Message: "bad type", Stack: &stack},
+		{Kind: "global_state_change", Variable: "Counter", Before: before, After: after},
+	}
+	result := convertLauncherSideEffects(input)
+	if len(result) != 7 {
+		t.Fatalf("expected 7 side effects, got %d", len(result))
+	}
+
+	if result[1].Path != "/tmp/out.txt" || result[1].Content != "data" {
+		t.Fatalf("file_write fields lost: %+v", result[1])
+	}
+	if result[2].Method != "POST" || result[2].URL != "https://example.com" || result[2].Body == nil {
+		t.Fatalf("network_request fields lost: %+v", result[2])
+	}
+	if result[3].Variable != "HOME" || result[3].Value == nil || *result[3].Value != "secret" {
+		t.Fatalf("environment_read fields lost: %+v", result[3])
+	}
+	if result[4].Name != "GlobalCounter" {
+		t.Fatalf("global_mutation fields lost: %+v", result[4])
+	}
+	if result[5].ErrorType != "TypeError" || result[5].Stack == nil || *result[5].Stack != "at foo:1" {
+		t.Fatalf("thrown_error fields lost: %+v", result[5])
+	}
+	if result[6].Before == nil || result[6].After == nil {
+		t.Fatalf("global_state_change before/after fields lost: %+v", result[6])
 	}
 }
 

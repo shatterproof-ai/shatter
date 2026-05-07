@@ -104,15 +104,16 @@ Side effects are optional observations emitted in the `side_effects` array of ex
 | Kind | Payload fields | TypeScript | Go | Rust |
 |------|---------------|------------|----|------|
 | `global_state_change` | `variable`, `before`, `after` | ✅ | ✅ | ✅ |
-| `console_output` | `level`, `message` | ✅ | ✅ | ❌ |
-| `thrown_error` | `error_type`, `message`, `stack` | ✅ | ❌ | ❌ |
+| `console_output` | `level`, `message` | ✅ | ✅ | ✅ |
+| `thrown_error` | `error_type`, `message`, `stack` | ✅ | ✅ | ✅ |
+| `global_mutation` | `name` | ✅ | ✅ | ❌ |
 
 All supported kinds use the field names above — no frontend-specific aliases.
 
 ### Divergences in capture coverage
 
-- **`console_output` granularity**: TypeScript captures per-call via a proxy console (individual log levels); Go captures process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`); Rust does not capture console output at all. See divergence `side-effect-console-coverage`.
-- **`thrown_error` placement**: TypeScript emits thrown errors as a `thrown_error` side effect inside the `side_effects` array. Go and Rust report them in the top-level `thrown_error` response field instead. See divergence `side-effect-thrown-error-placement`.
+- **`console_output` granularity**: TypeScript captures per-call via a proxy console (individual log levels); Go and Rust capture process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`). Rust crate-bridge harness does not capture console output. See divergence `side-effect-console-coverage`.
+- **OS-level capture**: Go does not yet capture `file_write`, `network_request`, or `environment_read`; these require OS-level or runtime interception. See divergence `go-side-effects-partial`.
 
 ---
 
@@ -200,7 +201,7 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Owner:** Ketan Gangatirkar
 
-**Tracking issue:** str-1hlk.14
+**Tracking issue:** str-1hlk.20
 
 **Resolution condition:** Go executor emits per-call `console_output` entries with distinct log levels (log/info/warn/error/debug), matching TypeScript granularity.
 
@@ -210,13 +211,15 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ### `side-effect-thrown-error-placement`
 
-**Description:** TypeScript and Rust emit thrown errors/panics as a `{ kind: "thrown_error", error_type, message, stack }` entry inside the `side_effects` array AND via the top-level `thrown_error` response field. Go reports thrown errors exclusively via the top-level field.
+**Description:** TypeScript and Rust emit thrown errors/panics as a `{ kind: "thrown_error", error_type, message, stack }` entry inside the `side_effects` array AND via the top-level `thrown_error` response field. Go now reports thrown errors via both placements as well.
 
 **Affected frontends:** go
 
 **Affected commands:** execute (side_effects field)
 
-**Status:** tracked
+**Status:** resolved
+
+**Resolved at:** 2026-05-07
 
 **Owner:** Ketan Gangatirkar
 
@@ -230,7 +233,7 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ### `go-side-effects-partial`
 
-**Description:** Go only captures `console_output` and `global_state_change` side effects. The kinds `thrown_error`, `global_mutation`, `file_write`, `network_request`, and `environment_read` are defined in the protocol struct and wire format but not yet emitted by the Go executor.
+**Description:** Go captures `console_output`, `global_state_change`, `thrown_error`, and `global_mutation` side effects. The kinds `file_write`, `network_request`, and `environment_read` are defined in the protocol struct and wire format but not yet emitted by the Go executor because they require OS-level or runtime interception rather than the existing wrapper-level observation.
 
 **Affected frontends:** go
 
@@ -240,11 +243,11 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Owner:** Ketan Gangatirkar
 
-**Tracking issue:** str-1hlk.14
+**Tracking issue:** str-1hlk.21
 
-**Resolution condition:** Go executor captures and emits `thrown_error` and `global_mutation` side effects. `file_write`/`network_request`/`environment_read` remain explicitly out of scope until OS-level interception is planned; this entry can be narrowed at that point.
+**Resolution condition:** Go executor captures and emits `file_write`, `network_request`, and `environment_read` side effects, or the parity contract documents a permanent limitation for a kind that cannot be captured safely.
 
-**Resolution:** Implement `thrown_error` capture by wrapping goroutine execution and detecting panics/recovered errors.
+**Resolution:** Plan and implement OS-level or runtime interception for file writes, network requests, and environment variable reads, potentially by using the sandbox runner's observation boundary.
 
 ---
 

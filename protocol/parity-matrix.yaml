@@ -479,11 +479,11 @@ side_effect_capabilities:
     status: optional
     notes: >
       TS and Rust capture errors/panics during execution (error_type, message, stack).
-      Go does not yet capture thrown_error; panics are handled internally.
-      See go-side-effects-partial for tracking.
+      Go captures panics/errors both via the top-level thrown_error field and
+      as a thrown_error side effect entry.
     frontends:
       typescript: captured
-      go: not_captured
+      go: captured
       rust: captured
 
   global_mutation:
@@ -491,10 +491,11 @@ side_effect_capabilities:
     notes: >
       TS captures mutations to exported module-level names (name only, no value).
       Distinct from global_state_change which captures before/after values.
-      Go does not yet emit this kind.
+      Go emits name-only entries when its exported package-level global diff
+      detects a changed variable.
     frontends:
       typescript: captured
-      go: not_captured
+      go: captured
       rust: not_captured
 
   file_write:
@@ -745,7 +746,7 @@ allowed_divergences:
     affected_commands: [execute]
     status: tracked
     owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.14
+    tracking_issue: str-1hlk.20
     resolution_condition: >
       Go executor emits per-call console_output entries with distinct
       log levels (log/info/warn/error/debug), matching TypeScript granularity.
@@ -757,10 +758,11 @@ allowed_divergences:
       TypeScript and Rust emit thrown errors/panics as a side effect entry with
       { kind: "thrown_error", error_type, message, stack } inside the
       side_effects array AND via the top-level thrown_error response field.
-      Go reports thrown errors exclusively via the top-level field.
+      Go now reports thrown errors via both placements as well.
     affected_frontends: [go]
     affected_commands: [execute]
-    status: tracked
+    status: resolved
+    resolved_at: 2026-05-07
     owner: Ketan Gangatirkar
     tracking_issue: str-1hlk.14
     resolution_condition: >
@@ -773,26 +775,26 @@ allowed_divergences:
 
   - id: go-side-effects-partial
     description: >
-      Go only captures console_output and global_state_change side effects.
-      The kinds thrown_error, global_mutation, file_write, network_request,
+      Go captures console_output, global_state_change, thrown_error, and
+      global_mutation side effects. The kinds file_write, network_request,
       and environment_read are defined in the protocol struct and wire format
-      but not yet emitted by the Go executor. The instrument.SideEffect struct
-      and convertSideEffects() fully support all 7 kinds; only the capture
-      logic is missing.
+      but not yet emitted by the Go executor because they require OS-level or
+      runtime interception rather than the existing wrapper-level observation.
+      The instrument.SideEffect struct and conversion layers fully support all
+      7 kinds; only the capture logic is missing.
     affected_frontends: [go]
     affected_commands: [execute]
     status: tracked
     owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.14
+    tracking_issue: str-1hlk.21
     resolution_condition: >
-      Go executor captures and emits thrown_error and global_mutation
-      side effects. file_write/network_request/environment_read remain
-      explicitly out of scope until OS-level interception is planned;
-      this entry can be narrowed at that point.
+      Go executor captures and emits file_write, network_request, and
+      environment_read side effects, or the parity contract documents a
+      permanent limitation for a kind that cannot be captured safely.
     resolution: >
-      Implement thrown_error capture by wrapping goroutine execution and
-      detecting panics/recovered errors. file_write, network_request, and
-      environment_read require OS-level interception which is not yet planned.
+      Plan and implement OS-level or runtime interception for file writes,
+      network requests, and environment variable reads, potentially by using
+      the sandbox runner's observation boundary.
 
   - id: medium-opacity-analyze-partial
     description: >
