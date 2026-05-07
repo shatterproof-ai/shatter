@@ -261,6 +261,37 @@ pub struct ProjectConfig {
     /// Enable rich side-effect capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_side_effects: Option<bool>,
+
+    /// Optional broad-run coverage budget gates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_budget_gates: Option<CoverageBudgetGates>,
+}
+
+/// Optional broad-run coverage budget gates.
+///
+/// All fields are opt-in. Leaving this struct empty preserves the historical
+/// behavior: reports may be marked degraded/low, but the command does not fail
+/// solely because a budget was not configured.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct CoverageBudgetGates {
+    /// Minimum acceptable `represented_source_percent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_source_representation_percent: Option<f64>,
+    /// Maximum acceptable failed/timed-out source-span percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_failed_span_percent: Option<f64>,
+    /// Maximum acceptable unsupported source-span percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_unsupported_span_percent: Option<f64>,
+    /// Fail when the final report validity is `stale-source-set`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_on_stale_source_set: Option<bool>,
+    /// Fail when the final report validity is `invalid-artifacts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_on_missing_artifacts: Option<bool>,
+    /// Fail when final report validity is `low` or worse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_on_low_report_validity: Option<bool>,
 }
 
 /// Output preferences for scan reports.
@@ -2875,7 +2906,15 @@ defaults:
                 "capture_side_effects": true,
                 "no_cache": true,
                 "cache_dir": ".my-cache",
-                "seeds_dir": ".my-seeds"
+                "seeds_dir": ".my-seeds",
+                "coverage_budget_gates": {
+                    "min_source_representation_percent": 75.0,
+                    "max_failed_span_percent": 10.0,
+                    "max_unsupported_span_percent": 5.0,
+                    "fail_on_stale_source_set": true,
+                    "fail_on_missing_artifacts": true,
+                    "fail_on_low_report_validity": true
+                }
             }"#;
             let config: ProjectConfig = serde_json::from_str(json).unwrap();
             assert_eq!(config.observer_pool, Some(6));
@@ -2897,6 +2936,13 @@ defaults:
             );
             assert_eq!(config.output.as_ref().map(|o| o.paths.len()), Some(1));
             assert_eq!(config.output.as_ref().and_then(|o| o.stdout), Some(true));
+            let gates = config.coverage_budget_gates.as_ref().unwrap();
+            assert_eq!(gates.min_source_representation_percent, Some(75.0));
+            assert_eq!(gates.max_failed_span_percent, Some(10.0));
+            assert_eq!(gates.max_unsupported_span_percent, Some(5.0));
+            assert_eq!(gates.fail_on_stale_source_set, Some(true));
+            assert_eq!(gates.fail_on_missing_artifacts, Some(true));
+            assert_eq!(gates.fail_on_low_report_validity, Some(true));
         }
 
         #[test]
@@ -2908,6 +2954,7 @@ defaults:
             assert!(config.language.is_none());
             assert!(config.timeout_total.is_none());
             assert!(config.output.is_none());
+            assert!(config.coverage_budget_gates.is_none());
         }
 
         #[test]
@@ -2963,6 +3010,7 @@ defaults:
                 no_cache: None,
                 seeds_dir: None,
                 capture_side_effects: Some(true),
+                coverage_budget_gates: None,
                 observer_pool: None,
                 candidate_queue_capacity: None,
             };

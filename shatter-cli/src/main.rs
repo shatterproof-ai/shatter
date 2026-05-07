@@ -670,6 +670,7 @@ async fn main() -> ExitCode {
             request_timeout,
             exec_timeout,
             build_timeout,
+            coverage_budget_gates,
             release,
             solver_timeout: _,
             memory_limit,
@@ -688,6 +689,16 @@ async fn main() -> ExitCode {
                 memory_limit,
                 cli.project_dir.as_deref(),
                 use_color,
+                commands::run::CoverageBudgetGateOverrides {
+                    min_source_representation_percent: coverage_budget_gates
+                        .min_source_representation_percent,
+                    max_failed_span_percent: coverage_budget_gates.max_failed_span_percent,
+                    max_unsupported_span_percent: coverage_budget_gates
+                        .max_unsupported_span_percent,
+                    fail_on_stale_source_set: coverage_budget_gates.fail_on_stale_source_set,
+                    fail_on_missing_artifacts: coverage_budget_gates.fail_on_missing_artifacts,
+                    fail_on_low_report_validity: coverage_budget_gates.fail_on_low_report_validity,
+                },
             )
             .await
         }
