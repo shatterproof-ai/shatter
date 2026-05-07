@@ -20,6 +20,54 @@ use crate::source_bucket::{SourceBucket, classify_path};
 /// Filename of the authoritative status export written under a run artifact root.
 pub const RUN_STATUS_FILENAME: &str = "run-status.json";
 
+/// Filename of the tab-separated projection written beside [`RUN_STATUS_FILENAME`].
+pub const RUN_STATUS_TSV_FILENAME: &str = "run-status.tsv";
+
+/// Stable column order for [`RUN_STATUS_TSV_FILENAME`].
+///
+/// Rows use `row_type` to distinguish the single run rollup row from file
+/// and target projection rows. Empty cells mean the JSON field is absent or
+/// not applicable for that row type.
+pub const RUN_STATUS_TSV_COLUMNS: [&str; 37] = [
+    "schema_version",
+    "scan_id",
+    "command",
+    "config_hash",
+    "row_type",
+    "file_path",
+    "language",
+    "frontend",
+    "source_bucket",
+    "selected_line_count",
+    "file_status",
+    "discovered_target_count",
+    "attempted_target_count",
+    "completed_target_count",
+    "failed_target_count",
+    "unsupported_target_count",
+    "target_id",
+    "target_name",
+    "start_line",
+    "end_line",
+    "target_outcome",
+    "failure_reason",
+    "validity_impact",
+    "artifact_path",
+    "artifact_sha256",
+    "artifact_unavailable_reason",
+    "report_validity",
+    "validity_reason_codes",
+    "selected_source_files",
+    "selected_source_lines",
+    "represented_source_lines",
+    "unrepresented_failed_lines",
+    "unrepresented_timed_out_lines",
+    "unrepresented_unsupported_lines",
+    "unrepresented_unavailable_frontend_lines",
+    "unrepresented_no_target_lines",
+    "unrepresented_undiscovered_lines",
+];
+
 /// On-disk schema version for [`RunStatus`].
 pub const RUN_STATUS_SCHEMA_VERSION: u32 = 1;
 
@@ -530,7 +578,8 @@ pub fn build_run_status(output_dir: &Path, input: &StatusExportInput<'_>) -> Run
     }
 }
 
-/// Write `run-status.json` under `output_dir` using atomic rename.
+/// Write `run-status.json` and its TSV projection under `output_dir` using
+/// atomic rename for each artifact.
 pub fn write_run_status_json(
     output_dir: &Path,
     input: &StatusExportInput<'_>,
@@ -555,16 +604,239 @@ pub fn write_run_status_json(
 
     let json = serde_json::to_string_pretty(&status).map_err(StatusExportError::Serialize)?;
     let path = output_dir.join(RUN_STATUS_FILENAME);
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, json).map_err(|source| StatusExportError::WriteTemp {
+    write_atomic_status_file(&path, &json)?;
+
+    let tsv = render_run_status_tsv(&status);
+    let tsv_path = output_dir.join(RUN_STATUS_TSV_FILENAME);
+    write_atomic_status_file(&tsv_path, &tsv)?;
+    Ok(())
+}
+
+/// Render the stable TSV projection of an already-built [`RunStatus`].
+///
+/// The renderer does not derive status semantics of its own. It flattens the
+/// JSON-facing status value into one run row, one row per file, and one row
+/// per target using [`RUN_STATUS_TSV_COLUMNS`]. Tabs and line breaks in cell
+/// values are normalized to spaces so each JSON row remains one TSV row.
+#[must_use]
+pub fn render_run_status_tsv(status: &RunStatus) -> String {
+    let mut lines = Vec::with_capacity(status.files.len().saturating_add(status.targets.len()) + 2);
+    lines.push(RUN_STATUS_TSV_COLUMNS.join("\t"));
+
+    let mut run_row = base_tsv_row(status, "run");
+    add_rollup_tsv_cells(&mut run_row, status);
+    lines.push(render_tsv_row(&run_row));
+
+    for file in &status.files {
+        let mut row = base_tsv_row(status, "file");
+        row.insert("file_path", file.path.clone());
+        row.insert("language", file.language.clone().unwrap_or_default());
+        row.insert("frontend", file.frontend.clone().unwrap_or_default());
+        row.insert(
+            "source_bucket",
+            file.source_bucket.as_wire_str().to_string(),
+        );
+        row.insert("selected_line_count", file.selected_line_count.to_string());
+        row.insert("file_status", file_status_wire(file.status).to_string());
+        row.insert(
+            "discovered_target_count",
+            file.discovered_target_count.to_string(),
+        );
+        row.insert(
+            "attempted_target_count",
+            file.attempted_target_count.to_string(),
+        );
+        row.insert(
+            "completed_target_count",
+            file.completed_target_count.to_string(),
+        );
+        row.insert("failed_target_count", file.failed_target_count.to_string());
+        row.insert(
+            "unsupported_target_count",
+            file.unsupported_target_count.to_string(),
+        );
+        lines.push(render_tsv_row(&row));
+    }
+
+    for target in &status.targets {
+        let mut row = base_tsv_row(status, "target");
+        row.insert("file_path", target.source_file.clone());
+        row.insert("language", target.language.clone().unwrap_or_default());
+        row.insert("frontend", target.frontend.clone().unwrap_or_default());
+        row.insert("target_id", target.target_id.clone());
+        row.insert("target_name", target.name.clone());
+        row.insert("start_line", target.start_line.to_string());
+        row.insert("end_line", target.end_line.to_string());
+        row.insert(
+            "target_outcome",
+            target_outcome_wire(target.outcome).to_string(),
+        );
+        row.insert(
+            "failure_reason",
+            target.failure_reason.clone().unwrap_or_default(),
+        );
+        row.insert(
+            "validity_impact",
+            validity_impact_wire(target.validity_impact).to_string(),
+        );
+        if let Some(artifact) = &target.artifact {
+            row.insert("artifact_path", artifact.path.clone().unwrap_or_default());
+            row.insert(
+                "artifact_sha256",
+                artifact.sha256.clone().unwrap_or_default(),
+            );
+            row.insert(
+                "artifact_unavailable_reason",
+                artifact.unavailable_reason.clone().unwrap_or_default(),
+            );
+        }
+        lines.push(render_tsv_row(&row));
+    }
+
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn write_atomic_status_file(path: &Path, contents: &str) -> Result<(), StatusExportError> {
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("status")
+    ));
+    std::fs::write(&tmp_path, contents).map_err(|source| StatusExportError::WriteTemp {
         path: tmp_path.clone(),
         source,
     })?;
-    std::fs::rename(&tmp_path, &path).map_err(|source| StatusExportError::Finalize {
-        path: path.clone(),
+    std::fs::rename(&tmp_path, path).map_err(|source| StatusExportError::Finalize {
+        path: path.to_path_buf(),
         source,
-    })?;
-    Ok(())
+    })
+}
+
+fn base_tsv_row(status: &RunStatus, row_type: &'static str) -> BTreeMap<&'static str, String> {
+    BTreeMap::from([
+        ("schema_version", status.schema_version.to_string()),
+        ("scan_id", status.run.scan_id.clone()),
+        ("command", status.command.name.clone()),
+        ("config_hash", status.command.config_hash.clone()),
+        ("row_type", row_type.to_string()),
+    ])
+}
+
+fn add_rollup_tsv_cells(row: &mut BTreeMap<&'static str, String>, status: &RunStatus) {
+    let denominators = status.rollups.source_denominators;
+    let impact = status.rollups.line_weighted_failure_impact;
+    row.insert(
+        "report_validity",
+        report_validity_wire(status.rollups.validity.report_validity).to_string(),
+    );
+    row.insert(
+        "validity_reason_codes",
+        status
+            .rollups
+            .validity
+            .reasons
+            .iter()
+            .map(|reason| reason.code.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    row.insert(
+        "selected_source_files",
+        denominators.selected_source_files.to_string(),
+    );
+    row.insert(
+        "selected_source_lines",
+        denominators.selected_source_lines.to_string(),
+    );
+    row.insert(
+        "represented_source_lines",
+        impact.represented_source_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_failed_lines",
+        impact.unrepresented_failed_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_timed_out_lines",
+        impact.unrepresented_timed_out_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_unsupported_lines",
+        impact.unrepresented_unsupported_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_unavailable_frontend_lines",
+        impact.unrepresented_unavailable_frontend_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_no_target_lines",
+        impact.unrepresented_no_target_lines.to_string(),
+    );
+    row.insert(
+        "unrepresented_undiscovered_lines",
+        impact.unrepresented_undiscovered_lines.to_string(),
+    );
+}
+
+fn render_tsv_row(row: &BTreeMap<&'static str, String>) -> String {
+    RUN_STATUS_TSV_COLUMNS
+        .iter()
+        .map(|column| tsv_cell(row.get(column).map_or("", String::as_str)))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
+fn tsv_cell(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\t' | '\n' | '\r' => ' ',
+            _ => character,
+        })
+        .collect()
+}
+
+fn file_status_wire(status: StatusFileStatus) -> &'static str {
+    match status {
+        StatusFileStatus::Completed => "completed",
+        StatusFileStatus::Partial => "partial",
+        StatusFileStatus::Failed => "failed",
+        StatusFileStatus::NoTarget => "no-target",
+        StatusFileStatus::Unsupported => "unsupported",
+        StatusFileStatus::UnavailableFrontend => "unavailable-frontend",
+        StatusFileStatus::Skipped => "skipped",
+    }
+}
+
+fn target_outcome_wire(outcome: StatusTargetOutcome) -> &'static str {
+    match outcome {
+        StatusTargetOutcome::Completed => "completed",
+        StatusTargetOutcome::Failed => "failed",
+        StatusTargetOutcome::TimedOut => "timed-out",
+        StatusTargetOutcome::Unsupported => "unsupported",
+        StatusTargetOutcome::Skipped => "skipped",
+        StatusTargetOutcome::UnavailableFrontend => "unavailable-frontend",
+    }
+}
+
+fn validity_impact_wire(impact: StatusTargetValidityImpact) -> &'static str {
+    match impact {
+        StatusTargetValidityImpact::Contributes => "contributes",
+        StatusTargetValidityImpact::Degrades => "degrades",
+        StatusTargetValidityImpact::Excluded => "excluded",
+    }
+}
+
+fn report_validity_wire(validity: StatusReportValidity) -> &'static str {
+    match validity {
+        StatusReportValidity::High => "high",
+        StatusReportValidity::Degraded => "degraded",
+        StatusReportValidity::Low => "low",
+        StatusReportValidity::StaleSourceSet => "stale-source-set",
+        StatusReportValidity::InvalidArtifacts => "invalid-artifacts",
+    }
 }
 
 fn build_rollups(
@@ -964,6 +1236,7 @@ mod tests {
 
     use super::*;
     use crate::run_manifest::{RUN_MANIFEST_VERSION, RunManifest, SourceFileSnapshot};
+    use proptest::prelude::*;
 
     #[test]
     fn writes_status_export_skeleton_with_manifest_and_artifact_links() {
@@ -1027,6 +1300,194 @@ mod tests {
         assert_eq!(status.artifacts[0].path, "run.json");
         assert!(status.artifacts[0].sha256.is_some());
         assert!(status.generated_at_ns > 0);
+    }
+
+    #[test]
+    fn writes_tsv_projection_matching_json_rows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-tsv".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![source_file("src/app.ts", Some(12))],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let artifact_dir = root.join("functions");
+        fs::create_dir_all(&artifact_dir).expect("artifact dir");
+        let completed_artifact = artifact_dir.join("00001_src_app_ts_ok.json");
+        fs::write(&completed_artifact, br#"{"ok":true}"#).expect("write artifact");
+
+        write_run_status_json(
+            root,
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[StatusFileInput {
+                    path: "src/app.ts".to_string(),
+                    discovered_targets: 2,
+                    attempted_targets: 2,
+                    completed_targets: 1,
+                    failed_targets: 1,
+                    unsupported_targets: 0,
+                    status: StatusFileStatus::Partial,
+                }],
+                targets: &[
+                    StatusTargetInput {
+                        target_id: "src/app.ts::ok".to_string(),
+                        name: "ok".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 2,
+                        end_line: 4,
+                        outcome: StatusTargetOutcome::Completed,
+                        artifact_path: Some(completed_artifact.clone()),
+                        failure_reason: None,
+                        unavailable_reason: None,
+                        validity_impact: StatusTargetValidityImpact::Contributes,
+                    },
+                    StatusTargetInput {
+                        target_id: "src/app.ts::fails".to_string(),
+                        name: "fails".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 8,
+                        end_line: 12,
+                        outcome: StatusTargetOutcome::Failed,
+                        artifact_path: None,
+                        failure_reason: Some("runtime failed".to_string()),
+                        unavailable_reason: Some("artifact unavailable after failure".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                ],
+                rollups: StatusRollupInput {
+                    report_validity: Some(StatusReportValidity::Degraded),
+                    validity_reasons: vec![StatusValidityReason {
+                        code: "failed_target".to_string(),
+                        detail: "one target failed".to_string(),
+                        recommended_action: "inspect target artifact".to_string(),
+                    }],
+                    line_weighted_failure_impact: Some(StatusLineWeightedFailureImpact {
+                        represented_source_lines: 3,
+                        unrepresented_failed_lines: 5,
+                        unrepresented_timed_out_lines: 0,
+                        unrepresented_unsupported_lines: 0,
+                        unrepresented_unavailable_frontend_lines: 0,
+                        unrepresented_no_target_lines: 0,
+                        unrepresented_undiscovered_lines: 4,
+                    }),
+                    gate_decisions: None,
+                },
+            },
+        )
+        .expect("write status");
+
+        let status_bytes = fs::read(root.join(RUN_STATUS_FILENAME)).expect("read status");
+        let status: RunStatus = serde_json::from_slice(&status_bytes).expect("parse status");
+        let tsv = fs::read_to_string(root.join(RUN_STATUS_TSV_FILENAME)).expect("read status tsv");
+        let rows = parse_tsv(&tsv);
+
+        assert_eq!(
+            tsv.lines().next(),
+            Some(RUN_STATUS_TSV_COLUMNS.join("\t").as_str())
+        );
+        assert_eq!(rows.len(), 4);
+
+        let run_row = rows
+            .iter()
+            .find(|row| row["row_type"] == "run")
+            .expect("run row");
+        assert_eq!(run_row["schema_version"], status.schema_version.to_string());
+        assert_eq!(run_row["scan_id"], status.run.scan_id);
+        assert_eq!(run_row["command"], status.command.name);
+        assert_eq!(run_row["config_hash"], status.command.config_hash);
+        assert_eq!(
+            run_row["report_validity"], "degraded",
+            "run validity should project JSON rollups, not markdown status"
+        );
+        assert_eq!(run_row["validity_reason_codes"], "failed_target");
+        assert_eq!(
+            run_row["represented_source_lines"],
+            status
+                .rollups
+                .line_weighted_failure_impact
+                .represented_source_lines
+                .to_string()
+        );
+
+        let json_file = status.files.first().expect("json file row");
+        let file_row = rows
+            .iter()
+            .find(|row| row["row_type"] == "file")
+            .expect("file row");
+        assert_eq!(file_row["file_path"], json_file.path);
+        assert_eq!(
+            file_row["language"],
+            json_file.language.as_deref().unwrap_or("")
+        );
+        assert_eq!(
+            file_row["frontend"],
+            json_file.frontend.as_deref().unwrap_or("")
+        );
+        assert_eq!(
+            file_row["source_bucket"],
+            json_file.source_bucket.as_wire_str()
+        );
+        assert_eq!(
+            file_row["selected_line_count"],
+            json_file.selected_line_count.to_string()
+        );
+        assert_eq!(file_row["file_status"], "partial");
+        assert_eq!(
+            file_row["discovered_target_count"],
+            json_file.discovered_target_count.to_string()
+        );
+        assert_eq!(
+            file_row["attempted_target_count"],
+            json_file.attempted_target_count.to_string()
+        );
+        assert_eq!(
+            file_row["completed_target_count"],
+            json_file.completed_target_count.to_string()
+        );
+        assert_eq!(
+            file_row["failed_target_count"],
+            json_file.failed_target_count.to_string()
+        );
+
+        let json_target = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "src/app.ts::fails")
+            .expect("json target row");
+        let target_row = rows
+            .iter()
+            .find(|row| row["target_id"] == json_target.target_id)
+            .expect("target row");
+        assert_eq!(target_row["row_type"], "target");
+        assert_eq!(target_row["file_path"], json_target.source_file);
+        assert_eq!(target_row["target_name"], json_target.name);
+        assert_eq!(target_row["start_line"], json_target.start_line.to_string());
+        assert_eq!(target_row["end_line"], json_target.end_line.to_string());
+        assert_eq!(target_row["target_outcome"], "failed");
+        assert_eq!(target_row["failure_reason"], "runtime failed");
+        assert_eq!(target_row["validity_impact"], "degrades");
+        assert_eq!(
+            target_row["artifact_unavailable_reason"],
+            "artifact unavailable after failure"
+        );
     }
 
     #[test]
@@ -1574,5 +2035,33 @@ mod tests {
             content_hash: Some("hash".to_string()),
             line_count,
         }
+    }
+
+    proptest! {
+        #[test]
+        fn tsv_cells_never_contain_row_or_column_separators(
+            value in proptest::collection::vec(any::<char>(), 0..128)
+                .prop_map(|chars| chars.into_iter().collect::<String>())
+        ) {
+            let cell = tsv_cell(&value);
+            prop_assert!(!cell.contains('\t'));
+            prop_assert!(!cell.contains('\n'));
+            prop_assert!(!cell.contains('\r'));
+        }
+    }
+
+    fn parse_tsv(tsv: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+        let mut lines = tsv.lines();
+        let header: Vec<&str> = lines.next().expect("tsv header").split('\t').collect();
+        lines
+            .map(|line| {
+                let values: Vec<&str> = line.split('\t').collect();
+                header
+                    .iter()
+                    .zip(values)
+                    .map(|(name, value)| ((*name).to_string(), value.to_string()))
+                    .collect()
+            })
+            .collect()
     }
 }

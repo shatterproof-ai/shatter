@@ -10338,6 +10338,25 @@ mod tests {
             crate::status_export::StatusReportValidity::High
         );
         assert!(status.rollups.gate_decisions.is_none());
+
+        let status_tsv_path = scan_root_dir.join(crate::status_export::RUN_STATUS_TSV_FILENAME);
+        let status_tsv = std::fs::read_to_string(status_tsv_path).expect("run-status.tsv read");
+        assert_eq!(
+            status_tsv.lines().next(),
+            Some(
+                crate::status_export::RUN_STATUS_TSV_COLUMNS
+                    .join("\t")
+                    .as_str()
+            )
+        );
+        assert!(status_tsv.lines().any(|line| {
+            let columns: Vec<&str> = line.split('\t').collect();
+            columns.get(4) == Some(&"file") && columns.get(5) == Some(&"test.ts")
+        }));
+        assert!(status_tsv.lines().any(|line| {
+            let columns: Vec<&str> = line.split('\t').collect();
+            columns.get(4) == Some(&"target") && columns.get(16) == Some(&"solo")
+        }));
     }
 }
 
