@@ -6,7 +6,40 @@
  * a protocol version for compatibility checking.
  */
 
-export const PROTOCOL_VERSION = "0.1.0";
+// Command, ResponseStatus, ErrorCode (+ ALL_ERROR_CODES), SetupLevel,
+// GeneratorKind, and BranchType — plus the PROTOCOL_VERSION constant — are
+// generated from `protocol/registry.yaml` by `scripts/protocol-codegen.py`
+// (str-1hlk.7). They live in `./generated/protocol-enums.ts` and are
+// re-exported here so existing callers continue importing from
+// `./protocol`. Do not redefine these unions in this file — the generated
+// module is the only source of truth.
+export {
+  PROTOCOL_VERSION,
+  ALL_COMMANDS,
+  ALL_RESPONSE_STATUSES,
+  ALL_ERROR_CODES,
+  ALL_SETUP_LEVELS,
+  ALL_GENERATOR_KINDS,
+  ALL_BRANCH_TYPES,
+} from "./generated/protocol-enums.js";
+export type {
+  Command,
+  ResponseStatus,
+  ErrorCode,
+  SetupLevel,
+  GeneratorKind,
+  BranchType,
+} from "./generated/protocol-enums.js";
+
+import type {
+  Command,
+  SetupLevel,
+  GeneratorKind,
+  ResponseStatus,
+  ErrorCode,
+  BranchType,
+} from "./generated/protocol-enums.js";
+
 export const FRONTEND_LANGUAGE = "typescript";
 
 // ---------------------------------------------------------------------------
@@ -14,8 +47,6 @@ export const FRONTEND_LANGUAGE = "typescript";
 // ---------------------------------------------------------------------------
 
 export type SetupMode = "per_function" | "per_execution";
-
-export type SetupLevel = "session" | "file" | "function" | "execution";
 
 export interface SetupContextEntry {
   level: SetupLevel;
@@ -54,19 +85,6 @@ export interface AdapterHint {
 export interface ExecutionProfile {
   adapters: ExecutionAdapter[];
 }
-
-export type GeneratorKind = "type_name" | "param_name";
-
-export type Command =
-  | "handshake"
-  | "analyze"
-  | "instrument"
-  | "prepare"
-  | "execute"
-  | "setup"
-  | "teardown"
-  | "generate"
-  | "shutdown";
 
 export interface MockConfig {
   symbol: string;
@@ -172,40 +190,6 @@ export type Request =
 // ---------------------------------------------------------------------------
 // Response: Frontend → Core
 // ---------------------------------------------------------------------------
-
-export type ResponseStatus =
-  | "handshake"
-  | "analyze"
-  | "instrument"
-  | "prepare"
-  | "execute"
-  | "setup"
-  | "teardown_ack"
-  | "generate"
-  | "shutdown_ack"
-  | "error";
-
-/** Canonical error codes matching protocol/registry.yaml (12 codes). */
-export const ALL_ERROR_CODES = [
-  "file_not_found",
-  "function_not_found",
-  "parse_error",
-  "instrumentation_failed",
-  "execution_timeout",
-  "execution_crash",
-  "version_mismatch",
-  "invalid_request",
-  "compilation_error",
-  "internal_error",
-  "not_supported",
-  // str-jeen.40: env-preflight failure (e.g. missing node_modules).
-  // Distinct from `not_supported` so env faults bucket separately from
-  // frontend-capability gaps. Replaces the str-jeen.26 stopgap that
-  // reused `not_supported` for this case.
-  "preflight_failed",
-] as const;
-
-export type ErrorCode = (typeof ALL_ERROR_CODES)[number];
 
 interface BaseResponse {
   protocol_version: string;
@@ -499,16 +483,6 @@ export interface BranchInfo {
   condition: SymExpr | null;
   branch_type: BranchType;
 }
-
-export type BranchType =
-  | "if"
-  | "else_if"
-  | "switch"
-  | "ternary"
-  | "logical_and"
-  | "logical_or"
-  | "while"
-  | "for";
 
 export type SymExpr =
   | { kind: "param"; name: string; path: string[] }
