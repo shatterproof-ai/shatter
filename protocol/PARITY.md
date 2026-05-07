@@ -112,7 +112,7 @@ All supported kinds use the field names above — no frontend-specific aliases.
 
 ### Divergences in capture coverage
 
-- **`console_output` granularity**: TypeScript captures per-call via a proxy console (individual log levels); Go and Rust capture process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`). Rust crate-bridge harness does not capture console output. See divergence `side-effect-console-coverage`.
+- **`console_output` granularity**: TypeScript and Go capture per-call output with individual log levels. Rust captures process-level stdout/stderr bulk output (all stdout → level `"log"`, all stderr → level `"error"`), and the Rust crate-bridge harness does not capture console output.
 - **OS-level capture**: Go does not yet capture `file_write`, `network_request`, or `environment_read`; these require OS-level or runtime interception. See divergence `go-side-effects-partial`.
 
 ---
@@ -186,26 +186,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 **Resolution condition:** TypeScript and Rust execute handlers consume `Command::Execute.plan` and dispatch method targets via plan-driven invocation, matching Go's `runtime_failed`/`completed` outcome contract for method targets.
 
 **Resolution:** Implement plan-aware execute in TypeScript and Rust when planners are added in those frontends.
-
----
-
-### `side-effect-console-coverage`
-
-**Description:** All frontends that capture console output use the same `{ kind, level, message }` shape, but differ in granularity. TypeScript intercepts each `console.*` call individually (per-call granularity, distinct log levels). Go captures process-level stdout/stderr in bulk (all stdout → `"log"`, all stderr → `"error"`). Rust crate-bridge harness does not capture console output.
-
-**Affected frontends:** go
-
-**Affected commands:** execute (side_effects field)
-
-**Status:** tracked
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.20
-
-**Resolution condition:** Go executor emits per-call `console_output` entries with distinct log levels (log/info/warn/error/debug), matching TypeScript granularity.
-
-**Resolution:** Improve Go to capture per-call console output via harness injection.
 
 ---
 

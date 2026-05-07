@@ -15,6 +15,7 @@ func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
 	branchID := 0
 	loopID := 0
 	callSiteID := 0
+	consoleImports := consoleImportAliases(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -34,8 +35,43 @@ func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
 		}, fn.Body.List...)
 
 		transformBlock(fset, fn.Body, params, &branchID, &loopID, &callSiteID)
+		rewriteConsoleCalls(fn.Body, consoleImports)
 	}
 	return branchID
+}
+
+func consoleImportAliases(file *ast.File) map[string]string {
+	aliases := map[string]string{}
+	if file == nil {
+		return aliases
+	}
+	for _, imp := range file.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		switch path {
+		case "fmt", "log", "log/slog":
+		default:
+			continue
+		}
+		name := ""
+		if imp.Name != nil {
+			if imp.Name.Name == "." || imp.Name.Name == "_" {
+				continue
+			}
+			name = imp.Name.Name
+		} else if path == "log/slog" {
+			name = "slog"
+		} else {
+			name = path
+		}
+		aliases[name] = path
+	}
+	return aliases
 }
 
 // buildParamSet extracts parameter names from a function declaration.
@@ -100,6 +136,94 @@ func transformStmtList(
 		newList = append(newList, stmt)
 	}
 	return newList
+}
+
+func rewriteConsoleCalls(root ast.Node, imports map[string]string) {
+	if root == nil || len(imports) == 0 {
+		return
+	}
+	ast.Inspect(root, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		rewriteConsoleCall(call, imports)
+		return true
+	})
+}
+
+func rewriteConsoleCall(call *ast.CallExpr, imports map[string]string) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return
+	}
+	importPath, ok := imports[pkg.Name]
+	if !ok {
+		return
+	}
+
+	switch importPath {
+	case "fmt":
+		rewriteFmtConsoleCall(call, sel)
+	case "log":
+		rewriteLogConsoleCall(call, sel)
+	case "log/slog":
+		rewriteSlogConsoleCall(call, sel)
+	}
+}
+
+func rewriteFmtConsoleCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	var helper string
+	switch sel.Sel.Name {
+	case "Print":
+		helper = "__shatter_console_fmt_print"
+	case "Println":
+		helper = "__shatter_console_fmt_println"
+	case "Printf":
+		helper = "__shatter_console_fmt_printf"
+	default:
+		return
+	}
+	call.Fun = ast.NewIdent(helper)
+	call.Args = append([]ast.Expr{stringLit("log"), sel}, call.Args...)
+}
+
+func rewriteLogConsoleCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	var helper string
+	switch sel.Sel.Name {
+	case "Print":
+		helper = "__shatter_console_log_print"
+	case "Println":
+		helper = "__shatter_console_log_println"
+	case "Printf":
+		helper = "__shatter_console_log_printf"
+	default:
+		return
+	}
+	call.Fun = ast.NewIdent(helper)
+	call.Args = append([]ast.Expr{stringLit("log"), sel}, call.Args...)
+}
+
+func rewriteSlogConsoleCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	level := ""
+	switch sel.Sel.Name {
+	case "Debug":
+		level = "debug"
+	case "Info":
+		level = "info"
+	case "Warn":
+		level = "warn"
+	case "Error":
+		level = "error"
+	default:
+		return
+	}
+	call.Fun = ast.NewIdent("__shatter_console_slog")
+	call.Args = append([]ast.Expr{stringLit(level), sel}, call.Args...)
 }
 
 func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int) {

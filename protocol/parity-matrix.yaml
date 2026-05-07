@@ -455,8 +455,10 @@ side_effect_capabilities:
     status: required
     notes: >
       All execute-capable frontends must capture stdout/stderr output.
-      Level values: "log", "warn", "error", "info", "debug" (TS);
-      "log" (stdout) and "error" (stderr) as combined buffers (Go and Rust).
+      TypeScript and Go emit per-call entries with level values
+      "log", "warn", "error", "info", and "debug". Rust currently captures
+      stdout/stderr as combined buffers using level "log" for stdout and
+      "error" for stderr.
       Rust captures via fd redirection in standalone/dispatch harnesses;
       crate-bridge harness does not capture console output.
     frontends:
@@ -733,25 +735,6 @@ allowed_divergences:
       in those frontends) and in Rust (when method-target invocation
       becomes part of the Rust frontend's surface). Both are deferred
       until a real planner exists in the corresponding frontend.
-
-  - id: side-effect-console-coverage
-    description: >
-      All frontends that capture console output use the same shape
-      { kind: "console_output", level, message }, but differ in granularity.
-      TypeScript intercepts each console.* call individually (per-call, distinct
-      log levels). Go and Rust capture process-level stdout/stderr bulk output
-      (all stdout → level "log", all stderr → level "error").
-      Rust crate-bridge harness does not capture console output.
-    affected_frontends: [go]
-    affected_commands: [execute]
-    status: tracked
-    owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.20
-    resolution_condition: >
-      Go executor emits per-call console_output entries with distinct
-      log levels (log/info/warn/error/debug), matching TypeScript granularity.
-    resolution: >
-      Improve Go to capture per-call console output via harness injection.
 
   - id: side-effect-thrown-error-placement
     description: >
