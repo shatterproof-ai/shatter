@@ -488,6 +488,16 @@ tasks:
     cmds:
       - python3 -m unittest scripts.test_broad_run_validation_gate
 
+  kapow-refute-agent:
+    desc: "Check the Refute binary available to agents validating Kapow"
+    cmds:
+      - python3 scripts/kapow_refute_agent.py smoke
+
+  kapow-refute-agent-tests:
+    desc: "Unit tests for the Kapow Refute agent wrapper"
+    cmds:
+      - python3 -m unittest scripts.test_kapow_refute_agent
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
