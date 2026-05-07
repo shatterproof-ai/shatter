@@ -673,6 +673,8 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_effects: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_body_states: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub performance: Option<serde_json::Value>,
 
     // Error fields
@@ -738,6 +740,7 @@ impl Response {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             prepare_id: None,
             code: None,
@@ -1019,6 +1022,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: None,
             message: None,
@@ -1053,6 +1057,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: None,
             message: None,
@@ -1087,6 +1092,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: Some("internal_error".to_string()),
             message: Some("something broke".to_string()),
@@ -1121,6 +1127,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: None,
             message: None,
@@ -1335,6 +1342,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: None,
             message: None,
@@ -1369,6 +1377,7 @@ mod tests {
             calls_to_external: None,
             path_constraints: None,
             side_effects: None,
+            loop_body_states: None,
             performance: None,
             code: None,
             message: None,

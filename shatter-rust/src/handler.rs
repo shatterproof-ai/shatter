@@ -909,6 +909,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.calls_to_external = Some(result.calls_to_external);
                 resp.path_constraints = Some(result.path_constraints);
                 resp.side_effects = Some(result.side_effects);
+                resp.loop_body_states = Some(result.loop_body_states);
                 resp.performance = Some(result.performance);
                 self.finalize_response(resp, timing.as_mut())
             }
@@ -1287,6 +1288,57 @@ mod tests {
         assert_eq!(
             resp.frontend_version.as_deref(),
             Some(crate::protocol::FRONTEND_VERSION)
+        );
+    }
+
+    #[test]
+    fn executor_result_preserves_loop_body_states() {
+        let raw = serde_json::json!({
+            "return_value": 6,
+            "branch_path": [],
+            "lines_executed": [],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "side_effects": [],
+            "loop_body_states": [
+                {"loop_id": 3, "iteration": 0, "locals": {}},
+                {"loop_id": 3, "iteration": 1, "locals": {}}
+            ],
+            "performance": {
+                "wall_time_ms": 0.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        });
+
+        let result: crate::executor::ExecuteResult =
+            serde_json::from_value(raw).expect("execute result");
+
+        assert_eq!(result.loop_body_states.len(), 2);
+        assert_eq!(result.loop_body_states[0]["loop_id"], 3);
+        assert_eq!(result.loop_body_states[1]["iteration"], 1);
+    }
+
+    #[test]
+    fn response_serializes_loop_body_states() {
+        let mut resp = Response::base(7);
+        resp.status = "execute".to_string();
+        resp.loop_body_states = Some(vec![serde_json::json!({
+            "loop_id": 4,
+            "iteration": 0,
+            "locals": {}
+        })]);
+
+        let encoded = serde_json::to_value(&resp).expect("response JSON");
+
+        assert_eq!(
+            encoded["loop_body_states"][0]["loop_id"],
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            encoded["loop_body_states"][0]["iteration"],
+            serde_json::json!(0)
         );
     }
 

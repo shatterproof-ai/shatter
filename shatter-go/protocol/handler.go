@@ -897,6 +897,9 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		return resp
 	}
 
+	if cachedAnalysis != nil && len(result.LoopBodyStates) == 0 {
+		result.LoopBodyStates = buildLoopBodyStatesFromScopeEvents(cachedAnalysis.Loops, result.ScopeEvents)
+	}
 	return mapExecuteResult(resp, result, timing)
 }
 
@@ -1020,6 +1023,54 @@ func convertLoopBodyStates(states []instrument.LoopBodyState) []LoopBodyState {
 		})
 	}
 	return result
+}
+
+func buildLoopBodyStatesFromScopeEvents(loops []LoopInfo, scopeEvents []json.RawMessage) []instrument.LoopBodyState {
+	if len(loops) == 0 || len(scopeEvents) == 0 {
+		return nil
+	}
+
+	knownLoopIDs := make(map[int]bool, len(loops))
+	for _, loop := range loops {
+		knownLoopIDs[loop.LoopID] = true
+	}
+
+	type scopeEvent struct {
+		Kind   string `json:"kind"`
+		LoopID *int   `json:"loop_id,omitempty"`
+	}
+	type traceEvent struct {
+		Type  string      `json:"type"`
+		Kind  string      `json:"kind"`
+		Event *scopeEvent `json:"event,omitempty"`
+	}
+
+	iterations := make(map[int]int, len(loops))
+	states := make([]instrument.LoopBodyState, 0)
+	for _, raw := range scopeEvents {
+		var event traceEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			continue
+		}
+		if event.Type != "scope" && event.Kind != "scope" {
+			continue
+		}
+		if event.Event == nil || event.Event.Kind != "loop_enter" || event.Event.LoopID == nil {
+			continue
+		}
+		loopID := *event.Event.LoopID
+		if !knownLoopIDs[loopID] {
+			continue
+		}
+		iteration := iterations[loopID]
+		iterations[loopID] = iteration + 1
+		states = append(states, instrument.LoopBodyState{
+			LoopID:    loopID,
+			Iteration: iteration,
+			Locals:    map[string]json.RawMessage{},
+		})
+	}
+	return states
 }
 
 func convertErrorInfo(e *instrument.ErrorInfo) *ErrorInfo {

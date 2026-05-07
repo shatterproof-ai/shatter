@@ -7,7 +7,7 @@
 //! All state is thread-local so concurrent tests don't interfere.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -106,8 +106,20 @@ pub struct ExecuteResult {
     /// Symbolic path constraints collected.
     #[serde(default)]
     pub path_constraints: Vec<SymConstraint>,
+    /// Per-iteration loop body snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_body_states: Vec<LoopBodyState>,
     /// Performance metrics.
     pub performance: PerformanceMetrics,
+}
+
+/// Per-iteration snapshot for one loop body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopBodyState {
+    pub loop_id: u32,
+    pub iteration: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub locals: BTreeMap<String, Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +137,8 @@ struct RecordingState {
     branch_path: Vec<BranchDecision>,
     external_calls: Vec<ExternalCall>,
     mock_registry: HashMap<String, MockEntry>,
+    loop_iterations: HashMap<u32, u32>,
+    loop_body_states: Vec<LoopBodyState>,
 }
 
 impl RecordingState {
@@ -133,6 +147,8 @@ impl RecordingState {
             branch_path: Vec::new(),
             external_calls: Vec::new(),
             mock_registry: HashMap::new(),
+            loop_iterations: HashMap::new(),
+            loop_body_states: Vec::new(),
         }
     }
 
@@ -140,6 +156,8 @@ impl RecordingState {
         self.branch_path.clear();
         self.external_calls.clear();
         self.mock_registry.clear();
+        self.loop_iterations.clear();
+        self.loop_body_states.clear();
     }
 }
 
@@ -169,6 +187,20 @@ pub fn branch_hit(id: u32, line: u32, taken: bool, constraint_json: &str) {
             line,
             taken,
             constraint,
+        });
+    });
+}
+
+/// Record entry into a loop body and allocate a zero-based iteration index.
+pub fn loop_enter(loop_id: u32) {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let iteration = *state.loop_iterations.get(&loop_id).unwrap_or(&0);
+        state.loop_iterations.insert(loop_id, iteration + 1);
+        state.loop_body_states.push(LoopBodyState {
+            loop_id,
+            iteration,
+            locals: BTreeMap::new(),
         });
     });
 }
@@ -264,6 +296,7 @@ pub fn flush_results() -> String {
             lines_executed: Vec::new(),
             calls_to_external: state.external_calls.clone(),
             path_constraints,
+            loop_body_states: state.loop_body_states.clone(),
             performance: PerformanceMetrics::default(),
         };
 
@@ -466,6 +499,26 @@ mod tests {
             assert_eq!(state.branch_path[1].branch_id, 2);
             assert!(!state.branch_path[1].taken);
         });
+    }
+
+    #[test]
+    fn loop_enter_records_zero_based_iterations() {
+        setup();
+
+        loop_enter(4);
+        loop_enter(4);
+        loop_enter(7);
+
+        let json = flush_results();
+        let result: ExecuteResult = serde_json::from_str(&json).expect("valid result");
+        assert_eq!(result.loop_body_states.len(), 3);
+        assert_eq!(result.loop_body_states[0].loop_id, 4);
+        assert_eq!(result.loop_body_states[0].iteration, 0);
+        assert!(result.loop_body_states[0].locals.is_empty());
+        assert_eq!(result.loop_body_states[1].loop_id, 4);
+        assert_eq!(result.loop_body_states[1].iteration, 1);
+        assert_eq!(result.loop_body_states[2].loop_id, 7);
+        assert_eq!(result.loop_body_states[2].iteration, 0);
     }
 
     #[test]

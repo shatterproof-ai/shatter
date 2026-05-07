@@ -53,7 +53,7 @@ Go can deserialize `ite` SymExpr nodes but does not produce them — Go lacks da
 
 ## Loop Snapshot Parity Contract
 
-Go includes `loop_body_states` in protocol structs for execute-response round-tripping, but does not emit the field yet. TypeScript is currently the only frontend that produces loop snapshots for supported counted loops. This drift is tracked in `protocol/parity-matrix.yaml` as `loop-body-states-typescript-only`.
+Go emits `loop_body_states` for analyzed canonical counted loops by combining cached `FunctionAnalysis.loops` metadata with runtime `scope_events`. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map; TypeScript remains the frontend with symbolic local snapshot contents.
 
 ## Side Effect Parity Contract
 
