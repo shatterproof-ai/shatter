@@ -1053,7 +1053,17 @@ fn check_bin_only_compatibility(
         }
     }
 
-    // 3. External crate types — not available in isolated harness.
+    // 3. Module-local crate/super paths — source is wrapped in `mod user_code`,
+    // so absolute paths still point at the temporary harness crate.
+    if ctx.has_module_path_uses {
+        issues.push(
+            "file imports types through crate/super module paths: \
+             won't resolve in the wrapped bin_only harness"
+                .to_string(),
+        );
+    }
+
+    // 4. External crate types — not available in isolated harness.
     // Skipped for crate-backed mode because user deps are forwarded.
     if !crate_backed {
         for (name, ty) in ctx.sig.param_names.iter().zip(ctx.sig.param_types.iter()) {
@@ -1238,9 +1248,14 @@ fn generate_harness(
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
         if let Some(mapping) = owned_type_for_ref(ty) {
             h.push_str(&format!(
-                "        let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                "        let {clean_name}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                 mapping.deser_type
             ));
+            h.push_str("            Ok(value) => value,\n");
+            h.push_str(&format!(
+                "            Err(__err) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0, vec![]),\n"
+            ));
+            h.push_str("        };\n");
             if mapping.needs_slice_conversion {
                 h.push_str(&format!(
                     "        let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
@@ -1248,8 +1263,13 @@ fn generate_harness(
             }
         } else {
             h.push_str(&format!(
-                "        let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                "        let {clean_name}: {ty} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
             ));
+            h.push_str("            Ok(value) => value,\n");
+            h.push_str(&format!(
+                "            Err(__err) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0, vec![]),\n"
+            ));
+            h.push_str("        };\n");
         }
     }
     h.push('\n');
@@ -1437,15 +1457,20 @@ fn generate_dispatch_harness(
         let param_names = &fn_info.param_names;
         let param_types = &fn_info.param_types;
         let return_type = &fn_info.return_type;
-        h.push_str(&format!("            {:?} => {{\n", fn_name.as_str()));
+        h.push_str(&format!("            {:?} => 'shatter_arm: {{\n", fn_name.as_str()));
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
             if let Some(mapping) = owned_type_for_ref(ty) {
                 h.push_str(&format!(
-                    "                let {clean_name}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                    "                let {clean_name}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                     mapping.deser_type
                 ));
+                h.push_str("                    Ok(value) => value,\n");
+                h.push_str(&format!(
+                    "                    Err(__err) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0),\n"
+                ));
+                h.push_str("                };\n");
                 if mapping.needs_slice_conversion {
                     h.push_str(&format!(
                         "                let {clean_name}_refs: Vec<&str> = {clean_name}_owned.iter().map(|s| s.as_str()).collect();\n"
@@ -1453,8 +1478,13 @@ fn generate_dispatch_harness(
                 }
             } else {
                 h.push_str(&format!(
-                    "                let {clean_name}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                    "                let {clean_name}: {ty} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
                 ));
+                h.push_str("                    Ok(value) => value,\n");
+                h.push_str(&format!(
+                    "                    Err(__err) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0),\n"
+                ));
+                h.push_str("                };\n");
             }
         }
         // Build argument list.
@@ -1971,6 +2001,7 @@ fn generate_crate_bridge_wrapper(
     w.push_str("// Generated by shatter-rust crate_bridge — do not edit\n");
     w.push_str("#![allow(unused_imports, dead_code, clippy::all)]\n");
     w.push_str("use serde_json::Value;\n\n");
+    w.push_str("use super::*;\n\n");
 
     // Per-function wrapper: deserialise inputs, call via super::, return JSON.
     for fn_info in fns {
@@ -1987,9 +2018,14 @@ fn generate_crate_bridge_wrapper(
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
             if let Some(mapping) = owned_type_for_ref(ty) {
                 w.push_str(&format!(
-                    "    let {clean}_owned: {} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n",
+                    "    let {clean}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                     mapping.deser_type
                 ));
+                w.push_str("        Ok(value) => value,\n");
+                w.push_str(&format!(
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                ));
+                w.push_str("    };\n");
                 if mapping.needs_slice_conversion {
                     w.push_str(&format!(
                         "    let {clean}_refs: Vec<&str> = {clean}_owned.iter().map(|s| s.as_str()).collect();\n"
@@ -1997,8 +2033,13 @@ fn generate_crate_bridge_wrapper(
                 }
             } else {
                 w.push_str(&format!(
-                    "    let {clean}: {ty} = serde_json::from_value(inputs[{i}].clone()).unwrap_or_default();\n"
+                    "    let {clean}: {ty} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
                 ));
+                w.push_str("        Ok(value) => value,\n");
+                w.push_str(&format!(
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                ));
+                w.push_str("    };\n");
             }
         }
 
@@ -2674,10 +2715,26 @@ pub fn prepare_harness(
     if let Some(crate_root) = find_crate_root(file_path) {
         let ctx = extract_fn_context(&source, function_name)?;
         let dummy_inputs: Vec<Value> = ctx.sig.param_names.iter().map(|_| Value::Null).collect();
-        let _ = execute_function_crate_backed(
+        let result = execute_function_crate_backed(
             file_path, function_name, &dummy_inputs, mocks,
             timeout_ms, None, crate_cache, &crate_root,
-        )?;
+        );
+        match result {
+            Ok(_) => {}
+            Err(ExecuteError::NonExecutable(_)) if harness_mode.is_none() => {
+                let _ = execute_function_crate_bridge(
+                    file_path,
+                    function_name,
+                    &dummy_inputs,
+                    mocks,
+                    timeout_ms,
+                    None,
+                    bridge_cache,
+                    &crate_root,
+                )?;
+            }
+            Err(err) => return Err(err),
+        }
         return Ok(());
     }
 
@@ -2768,17 +2825,49 @@ pub fn execute_function_with_timing(
     }
 
     // Route crate-backed files to the stable bin-only dispatch harness path.
+    // If bin_only cannot represent the source layout, retry through crate_bridge
+    // unless the caller explicitly requested a harness mode.
     if let Some(crate_root) = find_crate_root(file_path) {
-        return execute_function_crate_backed(
-            file_path,
-            function_name,
-            inputs,
-            mocks,
-            timeout_ms,
-            timing,
-            crate_cache,
-            &crate_root,
-        );
+        let result = if let Some(timing) = timing.as_mut() {
+            execute_function_crate_backed(
+                file_path,
+                function_name,
+                inputs,
+                mocks,
+                timeout_ms,
+                Some(&mut **timing),
+                crate_cache,
+                &crate_root,
+            )
+        } else {
+            execute_function_crate_backed(
+                file_path,
+                function_name,
+                inputs,
+                mocks,
+                timeout_ms,
+                None,
+                crate_cache,
+                &crate_root,
+            )
+        };
+
+        match result {
+            Ok(result) => return Ok(result),
+            Err(ExecuteError::NonExecutable(_)) if harness_mode.is_none() => {
+                return execute_function_crate_bridge(
+                    file_path,
+                    function_name,
+                    inputs,
+                    mocks,
+                    timeout_ms,
+                    timing,
+                    bridge_cache,
+                    &crate_root,
+                );
+            }
+            Err(err) => return Err(err),
+        }
     }
 
     // Compute cache key before doing any expensive work.
@@ -3672,7 +3761,7 @@ fn main() {
 
         // Should deserialize to String (owned), not &str
         assert!(
-            harness.contains("name_owned: String = serde_json::from_value"),
+            harness.contains("name_owned: String = match serde_json::from_value"),
             "expected owned String deserialization\n\nharness:\n{harness}"
         );
         // Should pass &name_owned to the function
@@ -4429,14 +4518,14 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     //   double(7) → 14
 
     /// Write a minimal crate (Cargo.toml + src/lib.rs) to `dir` and return the
-    /// path to the source file.  The crate has no external dependencies so
-    /// compilation is fast.
+    /// path to the source file.  The crate includes serde so input structs can
+    /// derive the traits needed by generated harnesses.
     fn write_test_crate(dir: &std::path::Path, source: &str) -> PathBuf {
         let src_dir = dir.join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
         std::fs::write(
             dir.join("Cargo.toml"),
-            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n",
         )
         .unwrap();
         let src_file = src_dir.join("lib.rs");
@@ -4665,6 +4754,67 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
                 );
             }
             other => panic!("expected NonExecutable error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_module_path_input_executes_via_bridge() {
+        // Functions whose inputs are named through crate-local paths cannot run
+        // in the wrapped bin_only harness because `crate::...` resolves against
+        // the temporary harness crate. Default execute should route them through
+        // crate_bridge instead of returning not_supported.
+        let dir = std::env::temp_dir().join("shatter-test-crate-bridge-input");
+        let src_file = write_test_crate(
+            &dir,
+            r#"
+mod config {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    pub(crate) struct Config {
+        pub(crate) enabled: bool,
+    }
+}
+
+use crate::config::Config;
+
+fn enabled(config: Config) -> bool {
+    config.enabled
+}
+"#,
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "enabled",
+            &[serde_json::json!({ "enabled": true })],
+            &[],
+            30_000,
+            None,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(true)),
+                    "enabled({{ enabled: true }}) should return true"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_backed_module_path_input_executes_via_bridge: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
         }
     }
 

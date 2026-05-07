@@ -114,13 +114,12 @@ commands:
   execute:
     status: required
     notes: >
-      All frontends advertise execute. Rust execute handler compiles and runs
-      code but returns not_supported for NonExecutable inputs
-      (see allowed_divergences: rust-execute-partial).
+      All frontends advertise execute and return the standardized execute
+      outcome envelope.
     frontends:
       typescript: implemented
       go: implemented
-      rust: partial
+      rust: implemented
 
   generate:
     status: required
@@ -693,24 +692,6 @@ allowed_divergences:
     resolution: >
       Implement teardown in the TypeScript frontend and add 'teardown' to
       SUPPORTED_CAPABILITIES in shatter-ts/src/handlers.ts.
-
-  - id: rust-execute-partial
-    description: >
-      The Rust execute handler compiles and runs Rust code but returns
-      not_supported for NonExecutable inputs (e.g. functions requiring
-      dynamic dispatch). Full execution parity with TypeScript and Go is pending.
-    affected_frontends: [rust]
-    affected_commands: [execute]
-    status: tracked
-    owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.15
-    resolution_condition: >
-      The NonExecutable early-exit path is removed from the Rust executor
-      and execute returns a non-not_supported outcome for all input types
-      that TS/Go handle.
-    resolution: >
-      Expand the Rust executor to handle all input types that TS/Go handle,
-      removing the NonExecutable early-exit path.
 
   - id: ts-rust-execute-plan-not-implemented
     description: >

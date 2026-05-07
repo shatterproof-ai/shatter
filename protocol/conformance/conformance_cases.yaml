@@ -174,25 +174,22 @@ cases:
         - message
         - details
 
-  - name: prepare_not_supported_rust
-    # Rust returns not_supported because execute is partial.
+  - name: prepare_supported_rust
     frontends: [rust]
     request:
       protocol_version: "0.1.0"
       id: 10
       command: prepare
-      file: "examples/rust/01-simple-add.rs"
+      file: "protocol/conformance/fixtures/rust/add.rs"
       function: "add"
       mocks: []
     expect:
-      status: error
+      status: prepare
       required_fields:
-        code:
-          type: string
-        message:
+        prepare_id:
           type: string
       dynamic_fields:
-        - message
+        - prepare_id
 
   - name: execute_with_invalid_prepare_id
     # Sending an unknown prepare_id to a frontend that supports prepare returns an error.
