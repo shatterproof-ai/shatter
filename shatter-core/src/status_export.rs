@@ -948,6 +948,196 @@ mod tests {
         );
     }
 
+    #[test]
+    fn writes_status_rollup_metrics() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-rollups".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                source_file("src/app.ts", Some(10)),
+                source_file("pkg/handler.go", Some(20)),
+                source_file("tests/app.test.ts", Some(4)),
+                source_file("generated/schema.gen.ts", Some(8)),
+                source_file("README.md", Some(7)),
+            ],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+
+        let status = build_run_status(
+            root,
+            &StatusExportInput {
+                command: "run",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[
+                    StatusFileInput {
+                        path: "src/app.ts".to_string(),
+                        discovered_targets: 2,
+                        attempted_targets: 2,
+                        completed_targets: 1,
+                        failed_targets: 1,
+                        unsupported_targets: 0,
+                        status: StatusFileStatus::Partial,
+                    },
+                    StatusFileInput {
+                        path: "pkg/handler.go".to_string(),
+                        discovered_targets: 2,
+                        attempted_targets: 1,
+                        completed_targets: 0,
+                        failed_targets: 1,
+                        unsupported_targets: 1,
+                        status: StatusFileStatus::Failed,
+                    },
+                ],
+                targets: &[
+                    StatusTargetInput {
+                        target_id: "src/app.ts::ok".to_string(),
+                        name: "ok".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 2,
+                        end_line: 6,
+                        outcome: StatusTargetOutcome::Completed,
+                        artifact_path: None,
+                        failure_reason: None,
+                        unavailable_reason: None,
+                        validity_impact: StatusTargetValidityImpact::Contributes,
+                    },
+                    StatusTargetInput {
+                        target_id: "src/app.ts::fail".to_string(),
+                        name: "fail".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 7,
+                        end_line: 10,
+                        outcome: StatusTargetOutcome::Failed,
+                        artifact_path: None,
+                        failure_reason: Some("runtime failed".to_string()),
+                        unavailable_reason: Some("runtime failed".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::slow".to_string(),
+                        name: "slow".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 3,
+                        end_line: 8,
+                        outcome: StatusTargetOutcome::TimedOut,
+                        artifact_path: None,
+                        failure_reason: Some("timed out".to_string()),
+                        unavailable_reason: Some("timed out".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::unsupported".to_string(),
+                        name: "unsupported".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 9,
+                        end_line: 12,
+                        outcome: StatusTargetOutcome::Unsupported,
+                        artifact_path: None,
+                        failure_reason: Some("unsupported parameter".to_string()),
+                        unavailable_reason: Some("unsupported parameter".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Excluded,
+                    },
+                    StatusTargetInput {
+                        target_id: "src/app.ts::preflight".to_string(),
+                        name: "preflight".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 1,
+                        end_line: 1,
+                        outcome: StatusTargetOutcome::UnavailableFrontend,
+                        artifact_path: None,
+                        failure_reason: Some("preflight failed".to_string()),
+                        unavailable_reason: Some("preflight failed".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                ],
+                rollups: StatusRollupInput {
+                    report_validity: Some(StatusReportValidity::Degraded),
+                    validity_reasons: vec![StatusValidityReason {
+                        code: "degraded_representation".to_string(),
+                        detail: "represented_source_percent=50.0".to_string(),
+                        recommended_action: "inspect failed buckets".to_string(),
+                    }],
+                    line_weighted_failure_impact: Some(StatusLineWeightedFailureImpact {
+                        represented_source_lines: 5,
+                        unrepresented_failed_lines: 4,
+                        unrepresented_timed_out_lines: 6,
+                        unrepresented_unsupported_lines: 4,
+                        unrepresented_unavailable_frontend_lines: 1,
+                        unrepresented_no_target_lines: 7,
+                        unrepresented_undiscovered_lines: 22,
+                    }),
+                    gate_decisions: None,
+                },
+            },
+        );
+
+        assert_eq!(status.rollups.source_denominators.selected_source_files, 5);
+        assert_eq!(status.rollups.source_denominators.selected_source_lines, 49);
+        assert_eq!(status.rollups.source_denominators.discovered_targets, 4);
+        assert_eq!(status.rollups.source_denominators.attempted_targets, 3);
+        assert_eq!(status.rollups.source_denominators.completed_targets, 1);
+        assert_eq!(status.rollups.source_denominators.failed_targets, 2);
+        assert_eq!(status.rollups.source_denominators.unsupported_targets, 1);
+
+        let production = status
+            .rollups
+            .source_buckets
+            .iter()
+            .find(|bucket| bucket.source_bucket == SourceBucket::ProductionIsh)
+            .expect("production bucket");
+        assert_eq!(production.selected_file_count, 2);
+        assert_eq!(production.selected_line_count, 30);
+        let unsupported = status
+            .rollups
+            .source_buckets
+            .iter()
+            .find(|bucket| bucket.source_bucket == SourceBucket::Unsupported)
+            .expect("unsupported bucket");
+        assert_eq!(unsupported.selected_file_count, 1);
+        assert_eq!(unsupported.selected_line_count, 7);
+
+        assert_eq!(
+            status.rollups.validity.report_validity,
+            StatusReportValidity::Degraded
+        );
+        assert_eq!(
+            status.rollups.validity.reasons[0].code,
+            "degraded_representation"
+        );
+
+        let ts_frontend = status
+            .rollups
+            .frontend_availability
+            .iter()
+            .find(|frontend| frontend.frontend == "shatter-ts")
+            .expect("typescript frontend");
+        assert_eq!(ts_frontend.selected_file_count, 3);
+        assert_eq!(ts_frontend.selected_line_count, 22);
+        assert_eq!(ts_frontend.target_count, 3);
+        assert_eq!(ts_frontend.unavailable_target_count, 1);
+        assert_eq!(ts_frontend.preflight_failed_target_count, 1);
+
+        assert_eq!(
+            status
+                .rollups
+                .line_weighted_failure_impact
+                .unrepresented_timed_out_lines,
+            6
+        );
+        assert!(status.rollups.gate_decisions.is_none());
+    }
+
     fn source_file(path: &str, line_count: Option<u32>) -> SourceFileSnapshot {
         SourceFileSnapshot {
             path: path.to_string(),
