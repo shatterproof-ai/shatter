@@ -12,7 +12,7 @@
 //! topological layer are explored concurrently. Per-function timeouts prevent
 //! a single slow function from stalling the entire scan.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,7 +34,9 @@ use crate::mock_gen::mock_config_from_behavior_map;
 use crate::pipeline::{self, AnalyzeOutput};
 use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
-use crate::status_export::{StatusArtifactLink, StatusExportInput};
+use crate::status_export::{
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus,
+};
 use crate::types::TypeInfo;
 
 /// Shared budget surplus within a topological layer.
@@ -728,7 +730,11 @@ fn write_scan_summary(scan_root: &Path, summary: &ScanSummary) {
     log::debug!("Updated scan summary -> {}", path.display());
 }
 
-fn write_scan_status(scan_root: &Path, manifest: &crate::run_manifest::RunManifest) {
+fn write_scan_status(
+    scan_root: &Path,
+    manifest: &crate::run_manifest::RunManifest,
+    files: &[StatusFileInput],
+) {
     let manifest_path = scan_root.join(crate::run_manifest::RUN_MANIFEST_FILENAME);
     let summary_path = scan_root.join(SCAN_SUMMARY_FILENAME);
     let artifacts = [StatusArtifactLink {
@@ -742,9 +748,82 @@ fn write_scan_status(scan_root: &Path, manifest: &crate::run_manifest::RunManife
             manifest,
             manifest_path: &manifest_path,
             artifacts: &artifacts,
+            files,
         },
     ) {
         log::warn!("failed to write scan status export: {e}");
+    }
+}
+
+#[derive(Debug, Default)]
+struct StatusFileCounts {
+    discovered: u64,
+    attempted: u64,
+    completed: u64,
+    failed: u64,
+    unsupported: u64,
+}
+
+fn status_file_inputs_from_scan_summary(
+    summary: &ScanSummary,
+    file_map: &HashMap<String, String>,
+) -> Vec<StatusFileInput> {
+    let mut by_path: BTreeMap<String, StatusFileCounts> = BTreeMap::new();
+    for entry in &summary.functions {
+        let Some(path) = file_map.get(&entry.function_name) else {
+            continue;
+        };
+        let counts = by_path.entry(path.clone()).or_default();
+        counts.discovered += 1;
+        match entry.status.as_str() {
+            "completed" => {
+                counts.attempted += 1;
+                counts.completed += 1;
+            }
+            "failed" => {
+                counts.attempted += 1;
+                counts.failed += 1;
+            }
+            "skipped" if entry.reason.as_deref().is_some_and(is_unsupported_reason) => {
+                counts.unsupported += 1;
+            }
+            "skipped" => {}
+            _ => {}
+        }
+    }
+
+    by_path
+        .into_iter()
+        .map(|(path, counts)| StatusFileInput {
+            path,
+            discovered_targets: counts.discovered,
+            attempted_targets: counts.attempted,
+            completed_targets: counts.completed,
+            failed_targets: counts.failed,
+            unsupported_targets: counts.unsupported,
+            status: status_file_status_from_counts(&counts),
+        })
+        .collect()
+}
+
+fn is_unsupported_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("unsupported") || lower.contains("unexecutable")
+}
+
+fn status_file_status_from_counts(counts: &StatusFileCounts) -> StatusFileStatus {
+    if counts.discovered == 0 {
+        StatusFileStatus::NoTarget
+    } else if counts.completed == counts.discovered {
+        StatusFileStatus::Completed
+    } else if counts.completed > 0 {
+        StatusFileStatus::Partial
+    } else if counts.failed > 0 {
+        StatusFileStatus::Failed
+    } else if counts.unsupported > 0 {
+        StatusFileStatus::Unsupported
+    } else {
+        StatusFileStatus::Skipped
     }
 }
 
@@ -1572,7 +1651,8 @@ pub async fn scan(
     summary.source_diff = Some(diff);
     if config.write_artifacts {
         write_scan_summary(&scan_root_dir, &summary);
-        write_scan_status(&scan_root_dir, &run_manifest);
+        let status_files = status_file_inputs_from_scan_summary(&summary, &config.file_map);
+        write_scan_status(&scan_root_dir, &run_manifest, &status_files);
     }
 
     Ok(result)
@@ -3803,7 +3883,8 @@ pub async fn parallel_scan_with_progress(
     );
     maybe_write_summary(&summary);
     if write_artifacts {
-        write_scan_status(&scan_root_dir, &run_manifest);
+        let status_files = status_file_inputs_from_scan_summary(&summary, &config.file_map);
+        write_scan_status(&scan_root_dir, &run_manifest, &status_files);
     }
 
     Ok(ParallelScanResult {
@@ -10042,6 +10123,15 @@ mod tests {
         assert_eq!(status.manifest.path, "manifest.json");
         assert_eq!(status.artifacts[0].kind, "scan_summary");
         assert_eq!(status.artifacts[0].path, "summary.json");
+        assert_eq!(status.files.len(), 1);
+        assert_eq!(status.files[0].path, "test.ts");
+        assert_eq!(status.files[0].discovered_target_count, 1);
+        assert_eq!(status.files[0].attempted_target_count, 1);
+        assert_eq!(status.files[0].completed_target_count, 1);
+        assert_eq!(
+            status.files[0].status,
+            crate::status_export::StatusFileStatus::Completed
+        );
     }
 }
 
