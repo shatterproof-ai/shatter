@@ -503,31 +503,40 @@ side_effect_capabilities:
   file_write:
     status: optional
     notes: >
-      Not yet captured by any frontend. Would require OS-level file syscall
-      interception. Protocol shape: {path, content?}.
+      Go captures high-confidence package-level os.WriteFile calls through
+      overlay AST instrumentation and emits {path, content?}. Lower-level
+      os.File.Write/WriteString, syscall writes, third-party filesystem APIs,
+      and writes performed by uninstrumented dependencies remain outside this
+      interception boundary.
     frontends:
       typescript: not_captured
-      go: not_captured
+      go: captured
       rust: not_captured
 
   network_request:
     status: optional
     notes: >
-      Not yet captured by any frontend. Would require HTTP interception.
-      Protocol shape: {method, url, body?}.
+      Go captures high-confidence package-level net/http.Get, Post, and
+      PostForm calls through overlay AST instrumentation and emits
+      {method, url, body?}; request bodies are not duplicated because doing so
+      would consume arbitrary io.Reader values. Custom clients, http.Client.Do,
+      transports, raw net.Dial traffic, and uninstrumented dependencies remain
+      outside this interception boundary.
     frontends:
       typescript: not_captured
-      go: not_captured
+      go: captured
       rust: not_captured
 
   environment_read:
     status: optional
     notes: >
-      Not yet captured by any frontend. Would require env-read interception.
-      Protocol shape: {variable, value?}.
+      Go captures high-confidence package-level os.Getenv and os.LookupEnv
+      calls through overlay AST instrumentation and emits {variable, value?}.
+      Bulk os.Environ reads, syscall-level environment access, and
+      uninstrumented dependencies remain outside this interception boundary.
     frontends:
       typescript: not_captured
-      go: not_captured
+      go: captured
       rust: not_captured
 
 # --- Feature capabilities ---
@@ -758,26 +767,27 @@ allowed_divergences:
 
   - id: go-side-effects-partial
     description: >
-      Go captures console_output, global_state_change, thrown_error, and
-      global_mutation side effects. The kinds file_write, network_request,
-      and environment_read are defined in the protocol struct and wire format
-      but not yet emitted by the Go executor because they require OS-level or
-      runtime interception rather than the existing wrapper-level observation.
-      The instrument.SideEffect struct and conversion layers fully support all
-      7 kinds; only the capture logic is missing.
+      Go captures all canonical side-effect kinds at the protocol level.
+      For file_write, network_request, and environment_read, capture is limited
+      to high-confidence stdlib package-level calls rewritten by the overlay
+      AST instrumentation: os.WriteFile, os.Getenv, os.LookupEnv, and
+      net/http.Get/Post/PostForm. Lower-level syscall/raw socket/custom client
+      surfaces and uninstrumented dependencies are accepted permanent limits of
+      the current source-overlay interception mechanism.
     affected_frontends: [go]
     affected_commands: [execute]
-    status: tracked
+    status: accepted
     owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.21
+    tracking_issue: none
     resolution_condition: >
-      Go executor captures and emits file_write, network_request, and
-      environment_read side effects, or the parity contract documents a
-      permanent limitation for a kind that cannot be captured safely.
+      Go continues to emit the supported stdlib call shapes and this matrix
+      names the lower-level surfaces that the overlay AST mechanism does not
+      attempt to capture.
     resolution: >
-      Plan and implement OS-level or runtime interception for file writes,
-      network requests, and environment variable reads, potentially by using
-      the sandbox runner's observation boundary.
+      Keep Go capture source-level and deterministic. Do not add ptrace,
+      eBPF, LD_PRELOAD, or platform-specific syscall interception unless a
+      future issue explicitly introduces an OS-observation backend with a
+      portability and sandboxing design.
 
   - id: medium-opacity-analyze-partial
     description: >

@@ -8,7 +8,7 @@
   "properties": {
     "kind": {
       "type": "string",
-      "enum": ["console_output", "file_write", "network_request", "global_mutation", "thrown_error", "global_state_change"]
+      "enum": ["console_output", "file_write", "network_request", "environment_read", "global_mutation", "thrown_error", "global_state_change"]
     }
   },
   "oneOf": [
@@ -34,6 +34,14 @@
         "url": { "type": "string", "description": "Request URL." }
       },
       "required": ["kind", "method", "url"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "environment_read" },
+        "variable": { "type": "string", "description": "Environment variable name." },
+        "value": { "type": ["string", "null"], "description": "Value read, or null if unavailable." }
+      },
+      "required": ["kind", "variable"]
     },
     {
       "properties": {

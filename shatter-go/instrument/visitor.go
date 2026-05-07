@@ -15,7 +15,7 @@ func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
 	branchID := 0
 	loopID := 0
 	callSiteID := 0
-	consoleImports := consoleImportAliases(file)
+	sideEffectImports := sideEffectImportAliases(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -35,12 +35,12 @@ func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
 		}, fn.Body.List...)
 
 		transformBlock(fset, fn.Body, params, &branchID, &loopID, &callSiteID)
-		rewriteConsoleCalls(fn.Body, consoleImports)
+		rewriteSideEffectCalls(fn.Body, sideEffectImports)
 	}
 	return branchID
 }
 
-func consoleImportAliases(file *ast.File) map[string]string {
+func sideEffectImportAliases(file *ast.File) map[string]string {
 	aliases := map[string]string{}
 	if file == nil {
 		return aliases
@@ -54,7 +54,7 @@ func consoleImportAliases(file *ast.File) map[string]string {
 			continue
 		}
 		switch path {
-		case "fmt", "log", "log/slog":
+		case "fmt", "log", "log/slog", "os", "net/http":
 		default:
 			continue
 		}
@@ -66,6 +66,8 @@ func consoleImportAliases(file *ast.File) map[string]string {
 			name = imp.Name.Name
 		} else if path == "log/slog" {
 			name = "slog"
+		} else if path == "net/http" {
+			name = "http"
 		} else {
 			name = path
 		}
@@ -138,7 +140,7 @@ func transformStmtList(
 	return newList
 }
 
-func rewriteConsoleCalls(root ast.Node, imports map[string]string) {
+func rewriteSideEffectCalls(root ast.Node, imports map[string]string) {
 	if root == nil || len(imports) == 0 {
 		return
 	}
@@ -147,12 +149,12 @@ func rewriteConsoleCalls(root ast.Node, imports map[string]string) {
 		if !ok {
 			return true
 		}
-		rewriteConsoleCall(call, imports)
+		rewriteSideEffectCall(call, imports)
 		return true
 	})
 }
 
-func rewriteConsoleCall(call *ast.CallExpr, imports map[string]string) {
+func rewriteSideEffectCall(call *ast.CallExpr, imports map[string]string) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -173,6 +175,10 @@ func rewriteConsoleCall(call *ast.CallExpr, imports map[string]string) {
 		rewriteLogConsoleCall(call, sel)
 	case "log/slog":
 		rewriteSlogConsoleCall(call, sel)
+	case "os":
+		rewriteOSSideEffectCall(call, sel)
+	case "net/http":
+		rewriteHTTPClientSideEffectCall(call, sel)
 	}
 }
 
@@ -224,6 +230,38 @@ func rewriteSlogConsoleCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
 	}
 	call.Fun = ast.NewIdent("__shatter_console_slog")
 	call.Args = append([]ast.Expr{stringLit(level), sel}, call.Args...)
+}
+
+func rewriteOSSideEffectCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	var helper string
+	switch sel.Sel.Name {
+	case "WriteFile":
+		helper = "__shatter_side_effect_os_write_file"
+	case "Getenv":
+		helper = "__shatter_side_effect_os_getenv"
+	case "LookupEnv":
+		helper = "__shatter_side_effect_os_lookupenv"
+	default:
+		return
+	}
+	call.Fun = ast.NewIdent(helper)
+	call.Args = append([]ast.Expr{sel}, call.Args...)
+}
+
+func rewriteHTTPClientSideEffectCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	var helper string
+	switch sel.Sel.Name {
+	case "Get":
+		helper = "__shatter_side_effect_http_get"
+	case "Post":
+		helper = "__shatter_side_effect_http_post"
+	case "PostForm":
+		helper = "__shatter_side_effect_http_post_form"
+	default:
+		return
+	}
+	call.Fun = ast.NewIdent(helper)
+	call.Args = append([]ast.Expr{sel}, call.Args...)
 }
 
 func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
