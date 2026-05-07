@@ -435,6 +435,7 @@ mod tests {
                     path: &summary_path,
                 }],
                 files: &[],
+                targets: &[],
             },
         )
         .expect("write status");
@@ -526,6 +527,7 @@ mod tests {
                         status: StatusFileStatus::UnavailableFrontend,
                     },
                 ],
+                targets: &[],
             },
         );
 
@@ -586,6 +588,209 @@ mod tests {
             .expect("no target row");
         assert_eq!(no_targets.discovered_target_count, 0);
         assert_eq!(no_targets.status, StatusFileStatus::NoTarget);
+    }
+
+    #[test]
+    fn writes_per_target_status_rows_and_validates_artifacts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-targets".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                source_file("src/app.ts", Some(12)),
+                source_file("pkg/handler.go", Some(20)),
+                source_file("crates/missing.rs", None),
+            ],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        let artifact_dir = root.join("functions");
+        fs::create_dir_all(&artifact_dir).expect("artifact dir");
+        let completed_artifact = artifact_dir.join("00001_src_app_ts_doThing.json");
+        fs::write(&completed_artifact, br#"{"ok":true}"#).expect("write artifact");
+
+        write_run_status_json(
+            root,
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[],
+                targets: &[
+                    StatusTargetInput {
+                        target_id: "src/app.ts::doThing".to_string(),
+                        name: "doThing".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 3,
+                        end_line: 8,
+                        outcome: StatusTargetOutcome::Completed,
+                        artifact_path: Some(completed_artifact.clone()),
+                        failure_reason: None,
+                        unavailable_reason: None,
+                        validity_impact: StatusTargetValidityImpact::Contributes,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::Handle".to_string(),
+                        name: "Handle".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 10,
+                        end_line: 20,
+                        outcome: StatusTargetOutcome::Failed,
+                        artifact_path: None,
+                        failure_reason: Some("runtime failed".to_string()),
+                        unavailable_reason: Some("artifact unavailable after failure".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::Unsupported".to_string(),
+                        name: "Unsupported".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 30,
+                        end_line: 35,
+                        outcome: StatusTargetOutcome::Unsupported,
+                        artifact_path: None,
+                        failure_reason: Some("unsupported parameter type".to_string()),
+                        unavailable_reason: Some("unsupported target".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Excluded,
+                    },
+                    StatusTargetInput {
+                        target_id: "crates/missing.rs::needsFrontend".to_string(),
+                        name: "needsFrontend".to_string(),
+                        source_file: "crates/missing.rs".to_string(),
+                        start_line: 1,
+                        end_line: 1,
+                        outcome: StatusTargetOutcome::UnavailableFrontend,
+                        artifact_path: None,
+                        failure_reason: Some("frontend preflight failed".to_string()),
+                        unavailable_reason: Some("frontend unavailable".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                ],
+            },
+        )
+        .expect("write status");
+
+        let status_path = root.join(RUN_STATUS_FILENAME);
+        let bytes = fs::read(status_path).expect("read status");
+        let status: RunStatus = serde_json::from_slice(&bytes).expect("parse status");
+        assert_eq!(status.targets.len(), 4);
+
+        let completed = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "src/app.ts::doThing")
+            .expect("completed target");
+        assert_eq!(completed.name, "doThing");
+        assert_eq!(completed.source_file, "src/app.ts");
+        assert_eq!(completed.language.as_deref(), Some("typescript"));
+        assert_eq!(completed.frontend.as_deref(), Some("shatter-ts"));
+        assert_eq!(completed.start_line, 3);
+        assert_eq!(completed.end_line, 8);
+        assert_eq!(completed.outcome, StatusTargetOutcome::Completed);
+        assert_eq!(completed.validity_impact, StatusTargetValidityImpact::Contributes);
+        let artifact = completed.artifact.as_ref().expect("completed artifact");
+        assert_eq!(artifact.path.as_deref(), Some("functions/00001_src_app_ts_doThing.json"));
+        assert!(artifact.sha256.is_some());
+        assert_eq!(artifact.unavailable_reason, None);
+
+        let failed = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "pkg/handler.go::Handle")
+            .expect("failed target");
+        assert_eq!(failed.outcome, StatusTargetOutcome::Failed);
+        assert_eq!(failed.failure_reason.as_deref(), Some("runtime failed"));
+        assert_eq!(
+            failed
+                .artifact
+                .as_ref()
+                .and_then(|artifact| artifact.unavailable_reason.as_deref()),
+            Some("artifact unavailable after failure")
+        );
+
+        let unsupported = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "pkg/handler.go::Unsupported")
+            .expect("unsupported target");
+        assert_eq!(unsupported.outcome, StatusTargetOutcome::Unsupported);
+        assert_eq!(unsupported.validity_impact, StatusTargetValidityImpact::Excluded);
+
+        let unavailable = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == "crates/missing.rs::needsFrontend")
+            .expect("unavailable target");
+        assert_eq!(unavailable.outcome, StatusTargetOutcome::UnavailableFrontend);
+        assert_eq!(unavailable.language.as_deref(), Some("rust"));
+        assert_eq!(unavailable.frontend.as_deref(), Some("shatter-rust"));
+    }
+
+    #[test]
+    fn rejects_missing_target_artifact_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-missing-target-artifact".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![source_file("src/app.ts", Some(12))],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let err = write_run_status_json(
+            root,
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[],
+                targets: &[StatusTargetInput {
+                    target_id: "src/app.ts::doThing".to_string(),
+                    name: "doThing".to_string(),
+                    source_file: "src/app.ts".to_string(),
+                    start_line: 3,
+                    end_line: 8,
+                    outcome: StatusTargetOutcome::Completed,
+                    artifact_path: Some(root.join("functions/missing.json")),
+                    failure_reason: None,
+                    unavailable_reason: None,
+                    validity_impact: StatusTargetValidityImpact::Contributes,
+                }],
+            },
+        )
+        .expect_err("missing target artifact must fail status export");
+
+        assert!(matches!(err, StatusExportError::ReadArtifact { .. }));
+        assert!(
+            !root.join(RUN_STATUS_FILENAME).exists(),
+            "status export must not be finalized when target artifact validation fails"
+        );
     }
 
     fn source_file(path: &str, line_count: Option<u32>) -> SourceFileSnapshot {
