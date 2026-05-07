@@ -593,7 +593,8 @@ def run_conformance() -> int:
 
                 # Skip commands the frontend doesn't support (based on capabilities)
                 cmd = request.get("command", "")
-                if fp.capabilities and cmd not in ("handshake", "shutdown"):
+                ignore_capability_check = bool(case.get("ignore_capability_check", False))
+                if fp.capabilities and cmd not in ("handshake", "shutdown") and not ignore_capability_check:
                     if cmd not in fp.capabilities:
                         print(f"    {fname}: {_skip('(not in capabilities)')}")
                         continue

@@ -19,9 +19,9 @@ known_drifts:
   # Side effect capture divergences across frontends.
   # See protocol/parity-matrix.yaml side_effect_capabilities for the full matrix.
   - pattern: "side_effects.*thrown_error"
-    reason: "Go does not yet capture thrown_error side effects; only TS emits this kind (see go-side-effects-partial)"
+    reason: "Historical side-effect placement drift; see side-effect-thrown-error-placement"
   - pattern: "side_effects.*global_mutation"
-    reason: "Go does not yet capture global_mutation side effects; only TS emits this kind (see go-side-effects-partial)"
+    reason: "Global mutation capture differs by frontend; see go-side-effects-partial"
 
   # ite SymExpr production divergence: TS produces ite via SSA phi-node merging
   # in data flow analysis. Go and Rust can deserialize ite but do not produce it.
@@ -194,11 +194,12 @@ cases:
   - name: execute_with_invalid_prepare_id
     # Sending an unknown prepare_id to a frontend that supports prepare returns an error.
     # We test this by sending prepare_id without first calling prepare.
-    frontends: [noop]
+    frontends: [rust]
     request:
       protocol_version: "0.1.0"
       id: 11
       command: execute
+      file: "protocol/conformance/fixtures/rust/add.rs"
       function: "add"
       inputs: [1, 2]
       mocks: []
@@ -217,6 +218,65 @@ cases:
       dynamic_fields:
         - code
         - message
+
+  - name: unsupported_command_returns_invalid_request
+    ignore_capability_check: true
+    skip_frontends: [noop]
+    request:
+      protocol_version: "0.1.0"
+      id: 12
+      command: definitely_not_a_command
+    expect:
+      status: error
+      required_fields:
+        code:
+          type: string
+          enum: ["invalid_request"]
+        message:
+          type: string
+      dynamic_fields:
+        - message
+        - details
+
+  - name: version_mismatch_rejected
+    skip_frontends: [noop]
+    request:
+      protocol_version: "99.0.0"
+      id: 13
+      command: handshake
+      capabilities: []
+    expect:
+      status: error
+      required_fields:
+        code:
+          type: string
+          enum: ["version_mismatch"]
+        message:
+          type: string
+      dynamic_fields:
+        - message
+        - details
+
+  - name: analyze_missing_file_precedes_missing_function
+    skip_frontends: [noop]
+    request:
+      protocol_version: "0.1.0"
+      id: 14
+      command: analyze
+      file: "__nonexistent__/missing-before-function.ts"
+      function: "alsoMissing"
+      project_root: "."
+    expect:
+      status: error
+      required_fields:
+        code:
+          type: string
+          enum: ["file_not_found"]
+        message:
+          type: string
+      dynamic_fields:
+        - message
+        - details
 
   # --- H4: feature_capabilities assertions ------------------------------
   #
@@ -462,6 +522,56 @@ cases:
         - code
         - message
         - details
+
+  - name: analyze_runtime_value_go
+    frontends: [go]
+    request:
+      protocol_version: "0.1.0"
+      id: 23
+      command: analyze
+      file: "protocol/conformance/fixtures/go/runtime_value.go"
+      function: "UseContext"
+      project_root: "protocol/conformance/fixtures/go"
+    expect:
+      status: analyze
+      required_fields:
+        functions:
+          type: array
+          min_length: 1
+      dynamic_fields:
+        - functions
+
+  - name: planner_runtime_value_go
+    frontends: [go]
+    request:
+      protocol_version: "0.1.0"
+      id: 24
+      command: get_invocation_plan
+      invocation_requirements:
+        - target_id: "example.com/shatter-conformance-go:UseContext"
+    expect:
+      status: invocation_plan
+      required_fields:
+        invocation_plans:
+          type: array
+          min_length: 1
+          first_item_fields:
+            target_id:
+              type: string
+              enum: ["example.com/shatter-conformance-go:UseContext"]
+            argument_plans:
+              type: array
+              min_length: 1
+              first_item_fields:
+                kind:
+                  type: string
+                  enum: ["runtime_value"]
+                type_hint:
+                  type: string
+                  enum: ["context.Context"]
+      dynamic_fields:
+        - invocation_plans
+        - unsatisfied_requirements
 
   - name: shutdown
     request:

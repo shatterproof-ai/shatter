@@ -1,0 +1,4 @@
+functions:
+  "protocol/conformance/fixtures/go/runtime_value.go:UseContext":
+    generators:
+      ctx: context.Context
