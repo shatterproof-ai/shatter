@@ -9,10 +9,18 @@ Fails (exit 1) if any of the following are detected:
     as not_implemented for that frontend (UNDOCUMENTED)
   - A command or complex_type detected in handler code is not present in
     the parity matrix at all (UNDOCUMENTED)
+  - An allowed_divergences entry is missing required metadata
+    (id/description/status/owner/tracking_issue/resolution_condition;
+    resolved entries also require resolved_at) (str-1hlk.12)
+  - A divergence id appears in protocol/PARITY.md but not in
+    parity-matrix.yaml, or vice versa (silent drift)
+  - A resolved divergence has a resolved_at date older than
+    DRIFT_RESOLUTION_GRACE_DAYS (default 30)
 
 Emits warnings (not failures) if:
   - A mismatch is covered by an entry in allowed_divergences with
     status: accepted or status: tracked
+  - A resolved divergence is within the grace window but not yet removed
 
 Parity matrix schema (protocol/parity-matrix.yaml):
 
@@ -41,14 +49,19 @@ Parity matrix schema (protocol/parity-matrix.yaml):
         affected_commands: [...]
         status: tracked | accepted | resolved
         resolution: '...'
+        owner: '...'
+        tracking_issue: '<bd-id>' | 'none'   # 'none' allowed only for accepted
+        resolution_condition: '...'
+        resolved_at: 'YYYY-MM-DD'            # required for resolved entries
 
 Usage:
-    python3 scripts/validate-parity.py [--matrix PATH] [--verbose]
+    python3 scripts/validate-parity.py [--matrix PATH] [--verbose] [--today YYYY-MM-DD]
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import re
 import sys
 from dataclasses import dataclass, field
@@ -58,6 +71,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 
 DEFAULT_MATRIX_PATH = REPO_ROOT / "protocol" / "parity-matrix.yaml"
+PARITY_MD_PATH = REPO_ROOT / "protocol" / "PARITY.md"
 REGISTRY_PATH = REPO_ROOT / "protocol" / "registry.yaml"
 
 # Frontend source files
@@ -65,6 +79,27 @@ TS_HANDLERS = REPO_ROOT / "shatter-ts" / "src" / "handlers.ts"
 GO_CONSTANTS = REPO_ROOT / "shatter-go" / "protocol" / "constants.go"
 GO_HANDLER = REPO_ROOT / "shatter-go" / "protocol" / "handler.go"
 RUST_HANDLER = REPO_ROOT / "shatter-rust" / "src" / "handler.rs"
+
+# str-1hlk.12: how long a `resolved` divergence may linger after its
+# resolved_at date before the validator promotes the warning to a failure.
+DRIFT_RESOLUTION_GRACE_DAYS = 30
+
+# Required keys on every allowed_divergences entry.
+REQUIRED_DIVERGENCE_FIELDS: tuple[str, ...] = (
+    "id",
+    "description",
+    "affected_frontends",
+    "affected_commands",
+    "status",
+    "resolution",
+    "owner",
+    "tracking_issue",
+    "resolution_condition",
+)
+
+VALID_DIVERGENCE_STATUSES: frozenset[str] = frozenset(
+    ("tracked", "accepted", "resolved")
+)
 
 # Commands not listed in registry capabilities (always handled, never negotiated)
 IMPLICIT_COMMANDS = {"handshake", "shutdown"}
@@ -356,6 +391,184 @@ def build_divergence_index(allowed: list[dict]) -> set[tuple[str, str]]:
     return excused
 
 
+def _is_nonempty_str(value: object) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _parse_iso_date(value: object) -> _dt.date | None:
+    """Parse a YYYY-MM-DD string. PyYAML may already return a date object."""
+    if isinstance(value, _dt.date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return _dt.date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def parity_md_divergence_ids(parity_md_path: Path) -> set[str] | None:
+    """Extract divergence ids from the `### `<id>`` headings in PARITY.md.
+
+    Returns None if PARITY.md cannot be read (validator should still run; the
+    sync check just gets skipped with an error).
+    """
+    if not parity_md_path.exists():
+        return None
+    text = parity_md_path.read_text()
+    # Limit to the "Allowed Divergences" section so unrelated `### `...`` ids
+    # elsewhere in the doc do not pollute the set.
+    section_match = re.search(
+        r"^##\s+Allowed Divergences\s*$", text, re.MULTILINE
+    )
+    if section_match is None:
+        return set()
+    section_start = section_match.end()
+    next_h2 = re.search(r"^##\s+\S", text[section_start:], re.MULTILINE)
+    section_text = (
+        text[section_start : section_start + next_h2.start()]
+        if next_h2
+        else text[section_start:]
+    )
+    return set(re.findall(r"^###\s+`([^`]+)`\s*$", section_text, re.MULTILINE))
+
+
+def validate_divergence_metadata(
+    allowed: list[dict],
+    parity_md_ids: set[str] | None,
+    today: _dt.date,
+    result: Result,
+    grace_days: int = DRIFT_RESOLUTION_GRACE_DAYS,
+) -> None:
+    """Enforce required metadata + grace-period rules on allowed_divergences.
+
+    Implements str-1hlk.12 acceptance criteria:
+      - Validator fails on divergence entries missing metadata.
+      - Resolved drift entries fail after a grace period (DRIFT_RESOLUTION_GRACE_DAYS).
+      - PARITY.md and parity-matrix.yaml no longer diverge silently.
+    """
+    yaml_ids: set[str] = set()
+    seen_ids: set[str] = set()
+
+    for idx, div in enumerate(allowed):
+        if not isinstance(div, dict):
+            result.error(
+                f"allowed_divergences[{idx}]: expected a mapping, "
+                f"got {type(div).__name__}"
+            )
+            continue
+
+        div_id = div.get("id")
+        id_label = div_id if _is_nonempty_str(div_id) else f"<index {idx}>"
+
+        # Required scalar/list fields
+        for required in REQUIRED_DIVERGENCE_FIELDS:
+            if required not in div:
+                result.error(
+                    f"allowed_divergences[{id_label}]: missing required field "
+                    f"'{required}'"
+                )
+                continue
+            value = div[required]
+            if required in ("affected_frontends", "affected_commands"):
+                if not isinstance(value, list) or not value:
+                    result.error(
+                        f"allowed_divergences[{id_label}]: '{required}' must "
+                        f"be a non-empty list"
+                    )
+            else:
+                if not _is_nonempty_str(value):
+                    result.error(
+                        f"allowed_divergences[{id_label}]: '{required}' must "
+                        f"be a non-empty string"
+                    )
+
+        # Duplicate id detection
+        if _is_nonempty_str(div_id):
+            assert isinstance(div_id, str)
+            if div_id in seen_ids:
+                result.error(
+                    f"allowed_divergences[{div_id}]: duplicate id"
+                )
+            seen_ids.add(div_id)
+            yaml_ids.add(div_id)
+
+        status = div.get("status")
+        if _is_nonempty_str(status) and status not in VALID_DIVERGENCE_STATUSES:
+            assert isinstance(status, str)
+            result.error(
+                f"allowed_divergences[{id_label}]: unknown status "
+                f"'{status}' (expected one of: "
+                f"{sorted(VALID_DIVERGENCE_STATUSES)})"
+            )
+
+        tracking_issue = div.get("tracking_issue")
+        if _is_nonempty_str(tracking_issue):
+            assert isinstance(tracking_issue, str)
+            normalized_ti = tracking_issue.strip().lower()
+            if normalized_ti == "none" and status != "accepted":
+                result.error(
+                    f"allowed_divergences[{id_label}]: tracking_issue='none' "
+                    f"is only allowed for status='accepted' (this entry is "
+                    f"status='{status}')"
+                )
+
+        # Resolved-entry grace period
+        if status == "resolved":
+            resolved_at_raw = div.get("resolved_at")
+            if resolved_at_raw is None or (
+                isinstance(resolved_at_raw, str) and resolved_at_raw.strip() == ""
+            ):
+                result.error(
+                    f"allowed_divergences[{id_label}]: status='resolved' "
+                    f"requires 'resolved_at' (YYYY-MM-DD)"
+                )
+            else:
+                resolved_at = _parse_iso_date(resolved_at_raw)
+                if resolved_at is None:
+                    result.error(
+                        f"allowed_divergences[{id_label}]: resolved_at "
+                        f"'{resolved_at_raw}' is not a valid YYYY-MM-DD date"
+                    )
+                else:
+                    age_days = (today - resolved_at).days
+                    if age_days > grace_days:
+                        result.error(
+                            f"allowed_divergences[{id_label}]: resolved on "
+                            f"{resolved_at.isoformat()} ({age_days} days ago) "
+                            f"— grace period of {grace_days} days has expired; "
+                            f"remove this entry from parity-matrix.yaml and "
+                            f"protocol/PARITY.md"
+                        )
+                    else:
+                        result.warn(
+                            f"allowed_divergences[{id_label}]: resolved on "
+                            f"{resolved_at.isoformat()} — schedule removal "
+                            f"within {grace_days - age_days} day(s)"
+                        )
+
+    # PARITY.md ↔ parity-matrix.yaml sync check.
+    if parity_md_ids is None:
+        result.error(
+            f"protocol/PARITY.md not found at {PARITY_MD_PATH} — cannot "
+            f"verify divergence id parity with parity-matrix.yaml"
+        )
+        return
+
+    only_yaml = yaml_ids - parity_md_ids
+    only_md = parity_md_ids - yaml_ids
+    for div_id in sorted(only_yaml):
+        result.error(
+            f"divergence '{div_id}' present in parity-matrix.yaml but missing "
+            f"from protocol/PARITY.md (silent drift)"
+        )
+    for div_id in sorted(only_md):
+        result.error(
+            f"divergence '{div_id}' present in protocol/PARITY.md but missing "
+            f"from parity-matrix.yaml (silent drift)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Core validation
 # ---------------------------------------------------------------------------
@@ -366,8 +579,16 @@ def validate(
     registry_caps: dict[str, set[str]],
     result: Result,
     verbose: bool,
+    today: _dt.date | None = None,
+    parity_md_path: Path = PARITY_MD_PATH,
 ) -> None:
     allowed_divergences: list[dict] = matrix.get("allowed_divergences", []) or []
+    validate_divergence_metadata(
+        allowed_divergences,
+        parity_md_divergence_ids(parity_md_path),
+        today or _dt.date.today(),
+        result,
+    )
     excused = build_divergence_index(allowed_divergences)
 
     registry_commands = registry_caps.get("command", set())
@@ -573,6 +794,16 @@ def parse_args() -> argparse.Namespace:
         "--verbose", "-v", action="store_true",
         help="Show detected capabilities per frontend"
     )
+    parser.add_argument(
+        "--today",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help=(
+            "Pin 'today' for the resolved-entry grace-period check "
+            "(defaults to system date; tests use this to make assertions "
+            "deterministic)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -580,6 +811,18 @@ def main() -> int:
     args = parse_args()
     verbose: bool = args.verbose
     matrix_path: Path = args.matrix
+
+    if args.today:
+        try:
+            today = _dt.date.fromisoformat(args.today)
+        except ValueError:
+            print(
+                f"ERROR: --today expects YYYY-MM-DD, got {args.today!r}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        today = _dt.date.today()
 
     print(f"Loading parity matrix: {matrix_path}")
     matrix = load_matrix(matrix_path)
@@ -626,7 +869,9 @@ def main() -> int:
 
     result = Result()
     print("\nValidating...")
-    validate(matrix, detected_per_frontend, registry_caps, result, verbose)
+    validate(
+        matrix, detected_per_frontend, registry_caps, result, verbose, today=today
+    )
 
     # Report
     print()
