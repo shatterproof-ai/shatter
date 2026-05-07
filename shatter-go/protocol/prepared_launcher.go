@@ -541,12 +541,21 @@ func convertLauncherSideEffects(effects []launcher.LauncherSideEffect) []instrum
 		before := effect.Before
 		after := effect.After
 		converted[i] = instrument.SideEffect{
-			Kind:     effect.Kind,
-			Level:    effect.Level,
-			Message:  effect.Message,
-			Variable: effect.Variable,
-			Before:   &before,
-			After:    &after,
+			Kind:      effect.Kind,
+			Level:     effect.Level,
+			Message:   effect.Message,
+			Path:      effect.Path,
+			Content:   effect.Content,
+			Method:    effect.Method,
+			URL:       effect.URL,
+			Body:      effect.Body,
+			Name:      effect.Name,
+			ErrorType: effect.ErrorType,
+			Stack:     effect.Stack,
+			Variable:  effect.Variable,
+			Value:     effect.Value,
+			Before:    &before,
+			After:     &after,
 		}
 		if len(effect.Before) == 0 {
 			converted[i].Before = nil

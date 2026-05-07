@@ -23,12 +23,21 @@ type LauncherRequest struct {
 }
 
 type LauncherSideEffect struct {
-	Kind     string          `json:"kind"`
-	Level    string          `json:"level,omitempty"`
-	Message  string          `json:"message,omitempty"`
-	Variable string          `json:"variable,omitempty"`
-	Before   json.RawMessage `json:"before,omitempty"`
-	After    json.RawMessage `json:"after,omitempty"`
+	Kind      string           `json:"kind"`
+	Level     string           `json:"level,omitempty"`
+	Message   string           `json:"message,omitempty"`
+	Path      string           `json:"path,omitempty"`
+	Content   string           `json:"content,omitempty"`
+	Method    string           `json:"method,omitempty"`
+	URL       string           `json:"url,omitempty"`
+	Body      *json.RawMessage `json:"body,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	ErrorType string           `json:"error_type,omitempty"`
+	Stack     *string          `json:"stack,omitempty"`
+	Variable  string           `json:"variable,omitempty"`
+	Value     *string          `json:"value,omitempty"`
+	Before    json.RawMessage  `json:"before,omitempty"`
+	After     json.RawMessage  `json:"after,omitempty"`
 }
 
 type LauncherError struct {

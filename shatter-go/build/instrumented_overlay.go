@@ -148,6 +148,7 @@ type renamedTestSibling struct {
 // distinction by rewriting:
 //   - `package <orig>`       → `package <new>`
 //   - `package <orig>_test`  → `package <new>_test`
+//
 // File bodies are not preserved: `_test.go` files are excluded from
 // `go build` so only the package declaration matters for build-time
 // directory consistency. Files declaring an unrelated package name are
@@ -271,12 +272,21 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 	b.WriteString("\t\"time\"\n")
 	b.WriteString(")\n\n")
 	b.WriteString("type ShatterSideEffect struct {\n")
-	b.WriteString("\tKind     string          `json:\"kind\"`\n")
-	b.WriteString("\tLevel    string          `json:\"level,omitempty\"`\n")
-	b.WriteString("\tMessage  string          `json:\"message,omitempty\"`\n")
-	b.WriteString("\tVariable string          `json:\"variable,omitempty\"`\n")
-	b.WriteString("\tBefore   json.RawMessage `json:\"before,omitempty\"`\n")
-	b.WriteString("\tAfter    json.RawMessage `json:\"after,omitempty\"`\n")
+	b.WriteString("\tKind      string           `json:\"kind\"`\n")
+	b.WriteString("\tLevel     string           `json:\"level,omitempty\"`\n")
+	b.WriteString("\tMessage   string           `json:\"message,omitempty\"`\n")
+	b.WriteString("\tPath      string           `json:\"path,omitempty\"`\n")
+	b.WriteString("\tContent   string           `json:\"content,omitempty\"`\n")
+	b.WriteString("\tMethod    string           `json:\"method,omitempty\"`\n")
+	b.WriteString("\tURL       string           `json:\"url,omitempty\"`\n")
+	b.WriteString("\tBody      *json.RawMessage `json:\"body,omitempty\"`\n")
+	b.WriteString("\tName      string           `json:\"name,omitempty\"`\n")
+	b.WriteString("\tErrorType string           `json:\"error_type,omitempty\"`\n")
+	b.WriteString("\tStack     *string          `json:\"stack,omitempty\"`\n")
+	b.WriteString("\tVariable  string           `json:\"variable,omitempty\"`\n")
+	b.WriteString("\tValue     *string          `json:\"value,omitempty\"`\n")
+	b.WriteString("\tBefore    json.RawMessage  `json:\"before,omitempty\"`\n")
+	b.WriteString("\tAfter     json.RawMessage  `json:\"after,omitempty\"`\n")
 	b.WriteString("}\n\n")
 	b.WriteString("type ShatterError struct {\n")
 	b.WriteString("\tErrorType     string `json:\"error_type\"`\n")
@@ -437,21 +447,26 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 
 	b.WriteString("\tif capture {\n")
 	b.WriteString("\t\t_resp.SideEffects = append(_resp.SideEffects, shatterConsoleSideEffects(_stdout, _stderr)...)\n")
-	b.WriteString("\t}\n")
+	b.WriteString("\t\tif _resp.ThrownError != nil {\n")
+	b.WriteString("\t\t\t_stack := _resp.ThrownError.Stack\n")
+	b.WriteString("\t\t\t_resp.SideEffects = append(_resp.SideEffects, ShatterSideEffect{Kind: \"thrown_error\", ErrorType: _resp.ThrownError.ErrorType, Message: _resp.ThrownError.Message, Stack: &_stack})\n")
+	b.WriteString("\t\t}\n")
 	for _, name := range globalVars {
-		fmt.Fprintf(&b, "\tif _ok_%s {\n", name)
-		fmt.Fprintf(&b, "\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", name, name)
-		fmt.Fprintf(&b, "\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", name, name)
-		b.WriteString("\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, ShatterSideEffect{\n")
-		b.WriteString("\t\t\t\t\tKind:     \"global_state_change\",\n")
-		fmt.Fprintf(&b, "\t\t\t\t\tVariable: %q,\n", name)
-		fmt.Fprintf(&b, "\t\t\t\t\tBefore:   _bef_%s,\n", name)
-		fmt.Fprintf(&b, "\t\t\t\t\tAfter:    _aft_%s,\n", name)
-		b.WriteString("\t\t\t\t})\n")
+		fmt.Fprintf(&b, "\t\tif _ok_%s {\n", name)
+		fmt.Fprintf(&b, "\t\t\tif _aft_%s, _e := json.Marshal(%s); _e == nil {\n", name, name)
+		fmt.Fprintf(&b, "\t\t\t\tif string(_aft_%s) != string(_bef_%s) {\n", name, name)
+		b.WriteString("\t\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, ShatterSideEffect{\n")
+		b.WriteString("\t\t\t\t\t\tKind:     \"global_state_change\",\n")
+		fmt.Fprintf(&b, "\t\t\t\t\t\tVariable: %q,\n", name)
+		fmt.Fprintf(&b, "\t\t\t\t\t\tBefore:   _bef_%s,\n", name)
+		fmt.Fprintf(&b, "\t\t\t\t\t\tAfter:    _aft_%s,\n", name)
+		b.WriteString("\t\t\t\t\t})\n")
+		fmt.Fprintf(&b, "\t\t\t\t\t_resp.SideEffects = append(_resp.SideEffects, ShatterSideEffect{Kind: \"global_mutation\", Name: %q})\n", name)
+		b.WriteString("\t\t\t\t}\n")
 		b.WriteString("\t\t\t}\n")
 		b.WriteString("\t\t}\n")
-		b.WriteString("\t}\n")
 	}
+	b.WriteString("\t}\n")
 	if hasMocks {
 		b.WriteString("\tif _mockCalls := shatterGetAndResetMockCalls(); len(_mockCalls) > 0 {\n")
 		b.WriteString("\t\t_resp.ExternalCalls, _ = json.Marshal(_mockCalls)\n")
