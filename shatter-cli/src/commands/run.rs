@@ -13,7 +13,8 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::run_manifest::{self, RunManifest};
 use shatter_core::status_export::{
-    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, write_run_status_json,
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusTargetInput,
+    StatusTargetOutcome, StatusTargetValidityImpact, write_run_status_json,
 };
 
 /// Resolved scope settings from `shatter.config.json` for the `run` command.
@@ -183,6 +184,7 @@ pub(crate) async fn run_run(
                 &manifest,
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
                 &[],
+                &[],
             )?;
         }
         return Ok(());
@@ -313,6 +315,7 @@ pub(crate) async fn run_run(
                 &run_manifest,
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
                 &status_files,
+                &[],
             )?;
         }
         shutdown_all_frontends(frontends).await;
@@ -361,6 +364,14 @@ pub(crate) async fn run_run(
             let no_failures = HashMap::new();
             let status_files =
                 run_status_file_inputs_from_registry(&registry, &root, &[], &no_failures);
+            let status_targets = run_status_target_inputs_from_registry(
+                &registry,
+                &root,
+                dir,
+                &[],
+                &no_failures,
+                Some("analyze-only run did not explore target"),
+            );
             write_run_status_export(
                 dir,
                 &run_manifest,
@@ -369,6 +380,7 @@ pub(crate) async fn run_run(
                     ("run_summary", dir.join(RUN_SUMMARY_FILENAME)),
                 ],
                 &status_files,
+                &status_targets,
             )?;
         }
 
@@ -570,11 +582,20 @@ pub(crate) async fn run_run(
             &exploration_results,
             &exploration_failures,
         );
+        let status_targets = run_status_target_inputs_from_registry(
+            &registry,
+            &root,
+            dir,
+            &exploration_results,
+            &exploration_failures,
+            None,
+        );
         write_run_status_export(
             dir,
             &run_manifest,
             &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
             &status_files,
+            &status_targets,
         )?;
     }
 
@@ -1000,6 +1021,112 @@ fn run_status_file_status_from_counts(counts: &RunStatusFileCounts) -> StatusFil
     } else {
         StatusFileStatus::Skipped
     }
+}
+
+fn run_status_target_inputs_from_registry(
+    registry: &batch_analyze::FunctionRegistry,
+    root: &Path,
+    output_dir: &Path,
+    exploration_results: &[(String, explorer::ObservationOutput)],
+    exploration_failures: &HashMap<String, String>,
+    default_skip_reason: Option<&str>,
+) -> Vec<StatusTargetInput> {
+    let results_by_name: HashMap<&str, &explorer::ObservationOutput> = exploration_results
+        .iter()
+        .map(|(name, output)| (name.as_str(), output))
+        .collect();
+
+    registry
+        .entries()
+        .iter()
+        .map(|entry| {
+            let qualified_name =
+                batch_analyze::FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+            let source_file = manifest_path_for(&entry.file_path, root);
+            let result = results_by_name.get(qualified_name.as_str()).copied();
+            let explicit_failure = exploration_failures.get(qualified_name.as_str());
+            let failure_reason = explicit_failure
+                .cloned()
+                .or_else(|| default_skip_reason.map(str::to_string));
+            let (outcome, validity_impact) =
+                run_status_target_outcome(result, failure_reason.as_deref());
+            let artifact_path = (outcome == StatusTargetOutcome::Completed)
+                .then(|| output_dir.join(format!("{}.md", run_report_safe_name(&qualified_name))));
+
+            StatusTargetInput {
+                target_id: qualified_name,
+                name: entry.name.clone(),
+                source_file,
+                start_line: entry.start_line,
+                end_line: entry.end_line,
+                outcome,
+                artifact_path,
+                failure_reason: failure_reason.clone(),
+                unavailable_reason: (outcome != StatusTargetOutcome::Completed).then(|| {
+                    failure_reason
+                        .clone()
+                        .unwrap_or_else(|| "target artifact unavailable".to_string())
+                }),
+                validity_impact,
+            }
+        })
+        .collect()
+}
+
+fn run_status_target_outcome(
+    result: Option<&explorer::ObservationOutput>,
+    failure_reason: Option<&str>,
+) -> (StatusTargetOutcome, StatusTargetValidityImpact) {
+    if let Some(output) = result {
+        if output.timed_out {
+            return (
+                StatusTargetOutcome::TimedOut,
+                StatusTargetValidityImpact::Degrades,
+            );
+        }
+        return (
+            StatusTargetOutcome::Completed,
+            StatusTargetValidityImpact::Contributes,
+        );
+    }
+
+    let Some(reason) = failure_reason else {
+        return (
+            StatusTargetOutcome::Skipped,
+            StatusTargetValidityImpact::Excluded,
+        );
+    };
+    if is_unsupported_failure_reason(reason) {
+        (
+            StatusTargetOutcome::Unsupported,
+            StatusTargetValidityImpact::Excluded,
+        )
+    } else if is_timeout_failure_reason(reason) {
+        (
+            StatusTargetOutcome::TimedOut,
+            StatusTargetValidityImpact::Degrades,
+        )
+    } else if is_unavailable_frontend_failure_reason(reason) {
+        (
+            StatusTargetOutcome::UnavailableFrontend,
+            StatusTargetValidityImpact::Degrades,
+        )
+    } else {
+        (
+            StatusTargetOutcome::Failed,
+            StatusTargetValidityImpact::Degrades,
+        )
+    }
+}
+
+fn is_timeout_failure_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("timed out") || lower.contains("timeout")
+}
+
+fn is_unavailable_frontend_failure_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("frontend") || lower.contains("preflight")
 }
 
 /// A discovered function span anchored to a manifest source path.
@@ -1642,6 +1769,7 @@ fn write_run_status_export(
     manifest: &RunManifest,
     artifact_paths: &[(&str, PathBuf)],
     files: &[StatusFileInput],
+    targets: &[StatusTargetInput],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest_path = output_dir.join(run_manifest::RUN_MANIFEST_FILENAME);
     let artifacts: Vec<StatusArtifactLink<'_>> = artifact_paths
@@ -1659,6 +1787,7 @@ fn write_run_status_export(
             manifest_path: &manifest_path,
             artifacts: &artifacts,
             files,
+            targets,
         },
     )
     .map_err(|e| format!("failed to write run status export: {e}").into())
