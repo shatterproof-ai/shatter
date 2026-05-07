@@ -13,8 +13,9 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::run_manifest::{self, RunManifest};
 use shatter_core::status_export::{
-    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusTargetInput,
-    StatusTargetOutcome, StatusTargetValidityImpact, write_run_status_json,
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus,
+    StatusLineWeightedFailureImpact, StatusReportValidity, StatusRollupInput, StatusTargetInput,
+    StatusTargetOutcome, StatusTargetValidityImpact, StatusValidityReason, write_run_status_json,
 };
 
 /// Resolved scope settings from `shatter.config.json` for the `run` command.
@@ -178,13 +179,15 @@ pub(crate) async fn run_run(
         if let Some(dir) = output_dir {
             let manifest = run_manifest::capture(&scan_id, &scope_hash(&scope), &[], Some(&root));
             run_manifest::write_manifest(dir, &manifest);
-            write_run_summary_json(dir, &build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]))?;
+            let run_summary = build_run_summary(&scan_id, &manifest, 0, 0, 0, &[]);
+            write_run_summary_json(dir, &run_summary)?;
             write_run_status_export(
                 dir,
                 &manifest,
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
                 &[],
                 &[],
+                &run_status_rollup_input_from_summary(&run_summary),
             )?;
         }
         return Ok(());
@@ -303,10 +306,8 @@ pub(crate) async fn run_run(
         // zero functions, the source-set denominators must reflect the
         // selected files in the manifest snapshot, not collapse to zero.
         if let Some(dir) = output_dir {
-            write_run_summary_json(
-                dir,
-                &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &[]),
-            )?;
+            let run_summary = build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &[]);
+            write_run_summary_json(dir, &run_summary)?;
             let no_failures = HashMap::new();
             let status_files =
                 run_status_file_inputs_from_registry(&registry, &root, &[], &no_failures);
@@ -316,6 +317,7 @@ pub(crate) async fn run_run(
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
                 &status_files,
                 &[],
+                &run_status_rollup_input_from_summary(&run_summary),
             )?;
         }
         shutdown_all_frontends(frontends).await;
@@ -357,10 +359,8 @@ pub(crate) async fn run_run(
             // selected-source denominator is recorded even without
             // exploration outcomes.
             let spans = registry_spans(&registry, &root);
-            write_run_summary_json(
-                dir,
-                &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &spans),
-            )?;
+            let run_summary = build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &spans);
+            write_run_summary_json(dir, &run_summary)?;
             let no_failures = HashMap::new();
             let status_files =
                 run_status_file_inputs_from_registry(&registry, &root, &[], &no_failures);
@@ -381,6 +381,7 @@ pub(crate) async fn run_run(
                 ],
                 &status_files,
                 &status_targets,
+                &run_status_rollup_input_from_summary(&run_summary),
             )?;
         }
 
@@ -596,6 +597,7 @@ pub(crate) async fn run_run(
             &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
             &status_files,
             &status_targets,
+            &run_status_rollup_input_from_summary(&run_summary),
         )?;
     }
 
@@ -1764,12 +1766,48 @@ pub(crate) fn write_run_summary_json(
     Ok(())
 }
 
+fn run_status_rollup_input_from_summary(summary: &RunSummary) -> StatusRollupInput {
+    StatusRollupInput {
+        report_validity: Some(status_report_validity(summary.report_validity)),
+        validity_reasons: summary
+            .validity_reasons
+            .iter()
+            .map(|reason| StatusValidityReason {
+                code: reason.code.clone(),
+                detail: reason.detail.clone(),
+                recommended_action: reason.recommended_action.clone(),
+            })
+            .collect(),
+        line_weighted_failure_impact: Some(StatusLineWeightedFailureImpact {
+            represented_source_lines: summary.represented_source_lines,
+            unrepresented_failed_lines: summary.unrepresented_failed_lines,
+            unrepresented_timed_out_lines: summary.unrepresented_timed_out_lines,
+            unrepresented_unsupported_lines: summary.unrepresented_unsupported_lines,
+            unrepresented_unavailable_frontend_lines: 0,
+            unrepresented_no_target_lines: summary.unrepresented_no_target_lines,
+            unrepresented_undiscovered_lines: summary.unrepresented_undiscovered_lines,
+        }),
+        gate_decisions: None,
+    }
+}
+
+fn status_report_validity(validity: ReportValidity) -> StatusReportValidity {
+    match validity {
+        ReportValidity::High => StatusReportValidity::High,
+        ReportValidity::Degraded => StatusReportValidity::Degraded,
+        ReportValidity::Low => StatusReportValidity::Low,
+        ReportValidity::StaleSourceSet => StatusReportValidity::StaleSourceSet,
+        ReportValidity::InvalidArtifacts => StatusReportValidity::InvalidArtifacts,
+    }
+}
+
 fn write_run_status_export(
     output_dir: &Path,
     manifest: &RunManifest,
     artifact_paths: &[(&str, PathBuf)],
     files: &[StatusFileInput],
     targets: &[StatusTargetInput],
+    rollups: &StatusRollupInput,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest_path = output_dir.join(run_manifest::RUN_MANIFEST_FILENAME);
     let artifacts: Vec<StatusArtifactLink<'_>> = artifact_paths
@@ -1788,6 +1826,7 @@ fn write_run_status_export(
             artifacts: &artifacts,
             files,
             targets,
+            rollups: rollups.clone(),
         },
     )
     .map_err(|e| format!("failed to write run status export: {e}").into())

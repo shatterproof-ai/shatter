@@ -35,8 +35,9 @@ use crate::pipeline::{self, AnalyzeOutput};
 use crate::protocol::{BranchInfo, BranchType, ExecuteResult, FunctionAnalysis, MockConfig};
 use crate::setup_manager::SetupManager;
 use crate::status_export::{
-    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusTargetInput,
-    StatusTargetOutcome, StatusTargetValidityImpact,
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, StatusReportValidity,
+    StatusRollupInput, StatusTargetInput, StatusTargetOutcome, StatusTargetValidityImpact,
+    StatusValidityReason,
 };
 use crate::types::TypeInfo;
 
@@ -733,6 +734,7 @@ fn write_scan_summary(scan_root: &Path, summary: &ScanSummary) {
 
 fn write_scan_status(
     scan_root: &Path,
+    summary: &ScanSummary,
     manifest: &crate::run_manifest::RunManifest,
     files: &[StatusFileInput],
     targets: &[StatusTargetInput],
@@ -752,9 +754,63 @@ fn write_scan_status(
             artifacts: &artifacts,
             files,
             targets,
+            rollups: status_rollup_input_from_scan_summary(summary),
         },
     ) {
         log::warn!("failed to write scan status export: {e}");
+    }
+}
+
+fn status_rollup_input_from_scan_summary(summary: &ScanSummary) -> StatusRollupInput {
+    let mut validity_reasons = Vec::new();
+    let report_validity = match summary.status {
+        ScanRunStatus::Running | ScanRunStatus::Completed => StatusReportValidity::High,
+        ScanRunStatus::Failed | ScanRunStatus::Interrupted => StatusReportValidity::Low,
+        ScanRunStatus::StaleSourceSet => {
+            if let Some(diff) = summary.source_diff.as_ref() {
+                if !diff.added.is_empty() {
+                    validity_reasons.push(StatusValidityReason {
+                        code: "stale_source_set_added".to_string(),
+                        detail: format!("{} source path(s) added after manifest capture", diff.added.len()),
+                        recommended_action:
+                            "Re-run on a quiesced source tree so the manifest snapshot reflects the explored set."
+                                .to_string(),
+                    });
+                }
+                if !diff.removed.is_empty() {
+                    validity_reasons.push(StatusValidityReason {
+                        code: "stale_source_set_removed".to_string(),
+                        detail: format!(
+                            "{} source path(s) removed after manifest capture",
+                            diff.removed.len()
+                        ),
+                        recommended_action:
+                            "Re-run on a quiesced source tree; removed files invalidate per-file buckets."
+                                .to_string(),
+                    });
+                }
+                if !diff.changed.is_empty() {
+                    validity_reasons.push(StatusValidityReason {
+                        code: "stale_source_set_changed".to_string(),
+                        detail: format!(
+                            "{} source path(s) changed content during run",
+                            diff.changed.len()
+                        ),
+                        recommended_action:
+                            "Re-run on a quiesced source tree; mid-run edits make line buckets unreliable."
+                                .to_string(),
+                    });
+                }
+            }
+            StatusReportValidity::StaleSourceSet
+        }
+    };
+
+    StatusRollupInput {
+        report_validity: Some(report_validity),
+        validity_reasons,
+        line_weighted_failure_impact: None,
+        gate_decisions: None,
     }
 }
 
@@ -894,10 +950,11 @@ fn status_target_outcome(
             StatusTargetOutcome::Unsupported,
             StatusTargetValidityImpact::Excluded,
         ),
-        "skipped" if entry
-            .reason
-            .as_deref()
-            .is_some_and(is_unavailable_frontend_reason) =>
+        "skipped"
+            if entry
+                .reason
+                .as_deref()
+                .is_some_and(is_unavailable_frontend_reason) =>
         {
             (
                 StatusTargetOutcome::UnavailableFrontend,
@@ -1765,6 +1822,7 @@ pub async fn scan(
         );
         write_scan_status(
             &scan_root_dir,
+            &summary,
             &run_manifest,
             &status_files,
             &status_targets,
@@ -4008,6 +4066,7 @@ pub async fn parallel_scan_with_progress(
         );
         write_scan_status(
             &scan_root_dir,
+            &summary,
             &run_manifest,
             &status_files,
             &status_targets,
@@ -10270,6 +10329,15 @@ mod tests {
             crate::status_export::StatusTargetOutcome::Completed
         );
         assert!(status.targets[0].artifact.is_some());
+        assert_eq!(status.rollups.source_denominators.selected_source_files, 1);
+        assert_eq!(status.rollups.source_denominators.discovered_targets, 1);
+        assert_eq!(status.rollups.source_denominators.attempted_targets, 1);
+        assert_eq!(status.rollups.source_denominators.completed_targets, 1);
+        assert_eq!(
+            status.rollups.validity.report_validity,
+            crate::status_export::StatusReportValidity::High
+        );
+        assert!(status.rollups.gate_decisions.is_none());
     }
 }
 
