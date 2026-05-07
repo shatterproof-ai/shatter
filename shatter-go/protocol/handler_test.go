@@ -1590,6 +1590,64 @@ func bump() int {
 	}
 }
 
+func TestExecuteConsoleOutputEmitsPerCallLevels(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+import (
+	"fmt"
+	"log/slog"
+)
+
+func chatter() int {
+	fmt.Print("plain")
+	fmt.Println("line")
+	fmt.Printf("formatted %d", 7)
+	slog.Info("info message")
+	slog.Warn("warn message")
+	slog.Error("error message")
+	slog.Debug("debug message")
+	return 1
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["instrument","execute"]`),
+		reqJSON(2, "instrument", fmt.Sprintf(`"file":"%s","function":"chatter"`, tmp)),
+		reqJSON(3, "execute", `"function":"chatter","inputs":[],"mocks":[]`),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, want execute (message: %s)", responses[2].Status, responses[2].Message)
+	}
+
+	got := map[string]int{}
+	for _, effect := range responses[2].SideEffects {
+		if effect.Kind == "console_output" {
+			got[effect.Level+"|"+effect.Message]++
+		}
+	}
+	for _, want := range []string{
+		"log|plain",
+		"log|line",
+		"log|formatted 7",
+		"info|info message",
+		"warn|warn message",
+		"error|error message",
+		"debug|debug message",
+	} {
+		if got[want] != 1 {
+			t.Fatalf("console effect %q count = %d, want 1; all side effects: %+v", want, got[want], responses[2].SideEffects)
+		}
+	}
+}
+
 func TestConvertSideEffects(t *testing.T) {
 	input := []instrument.SideEffect{
 		{Kind: "console_output", Level: "log", Message: "hello stdout"},
