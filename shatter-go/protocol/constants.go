@@ -20,13 +20,11 @@ const (
 	ErrPreflightFailed = "preflight_failed"
 )
 
-// AllErrorCodes lists all valid error codes for parity testing.
-var AllErrorCodes = []string{
-	ErrFileNotFound, ErrFunctionNotFound, ErrParseError,
-	ErrInstrumentationFailed, ErrExecutionTimeout, ErrExecutionCrash,
-	ErrVersionMismatch, ErrInvalidRequest, ErrCompilationError,
-	ErrInternalError, ErrNotSupported, ErrPreflightFailed,
-}
+// AllErrorCodes is provided by protocol_enums_gen.go (generated from
+// protocol/registry.yaml). The hand-written ErrXxx constants above are
+// reconciled against the generated list in generated_enums_test.go so a
+// new error code cannot land in registry.yaml without a matching Err*
+// constant (and vice versa).
 
 // CommandCapabilities lists the standard protocol commands this frontend supports.
 var CommandCapabilities = []string{"analyze", "execute", "instrument", "generate", "setup", "teardown", "prepare", "get_invocation_plan"}
