@@ -37,6 +37,9 @@ pub struct StatusExportInput<'a> {
     pub files: &'a [StatusFileInput],
     /// Per-target outcome rows.
     pub targets: &'a [StatusTargetInput],
+    /// Optional caller-supplied rollup values that cannot be derived from
+    /// manifest/file/target rows without re-running command-specific logic.
+    pub rollups: StatusRollupInput,
 }
 
 /// One artifact link requested by the status export caller.
@@ -142,6 +145,65 @@ pub enum StatusTargetValidityImpact {
     Excluded,
 }
 
+/// Optional rollup inputs supplied by a command-specific caller.
+#[derive(Debug, Clone, Default)]
+pub struct StatusRollupInput {
+    /// Report validity computed by the command's existing classifier.
+    pub report_validity: Option<StatusReportValidity>,
+    /// Machine-readable validity reason codes/details.
+    pub validity_reasons: Vec<StatusValidityReason>,
+    /// Line-weighted impact buckets from an existing command report.
+    pub line_weighted_failure_impact: Option<StatusLineWeightedFailureImpact>,
+    /// Reserved optional gate-decision slots for future threshold work.
+    pub gate_decisions: Option<Vec<StatusGateDecision>>,
+}
+
+/// Report-level validity tier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusReportValidity {
+    /// Report has no known validity degradation.
+    #[default]
+    High,
+    /// Report is usable but materially incomplete.
+    Degraded,
+    /// Report has too little representation to treat as reliable.
+    Low,
+    /// Source files changed between manifest capture and run completion.
+    StaleSourceSet,
+    /// Referenced artifacts were missing or inconsistent.
+    InvalidArtifacts,
+}
+
+/// One reason explaining a non-high report validity tier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusValidityReason {
+    /// Stable snake_case reason token.
+    pub code: String,
+    /// Human-readable detail.
+    pub detail: String,
+    /// Suggested operator action.
+    pub recommended_action: String,
+}
+
+/// Reserved gate-decision record for future threshold gates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusGateDecision {
+    /// Stable gate name.
+    pub gate: String,
+    /// Stable gate status token.
+    pub status: String,
+    /// Threshold value, when numeric.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<String>,
+    /// Observed value, when numeric.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed: Option<String>,
+    /// Optional human-readable reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Top-level status export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunStatus {
@@ -163,6 +225,9 @@ pub struct RunStatus {
     /// One status row per discovered or attempted target.
     #[serde(default)]
     pub targets: Vec<StatusTargetRow>,
+    /// Broad-run rollup metrics derived from authoritative status rows and
+    /// command-specific summary data.
+    pub rollups: StatusRollups,
     /// Linked artifacts available for downstream consumers.
     pub artifacts: Vec<StatusArtifact>,
 }
@@ -280,6 +345,107 @@ pub struct StatusTargetArtifact {
     pub unavailable_reason: Option<String>,
 }
 
+/// Broad-run status rollups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusRollups {
+    /// Source and target denominators for broad-run analysis.
+    pub source_denominators: StatusSourceDenominators,
+    /// Selected source files and lines per path-classification bucket.
+    pub source_buckets: Vec<StatusSourceBucketRollup>,
+    /// Report validity tier and reason codes.
+    pub validity: StatusValidityRollup,
+    /// Frontend availability and preflight counts.
+    pub frontend_availability: Vec<StatusFrontendAvailabilityRollup>,
+    /// Line-weighted representation/failure impact buckets.
+    pub line_weighted_failure_impact: StatusLineWeightedFailureImpact,
+    /// Reserved optional threshold gate decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_decisions: Option<Vec<StatusGateDecision>>,
+}
+
+/// Source and target denominator rollups.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusSourceDenominators {
+    /// Files captured in the run manifest.
+    pub selected_source_files: usize,
+    /// Lines captured in the run manifest.
+    pub selected_source_lines: u64,
+    /// File rows represented in the status export.
+    pub status_file_rows: usize,
+    /// Targets discovered by analysis.
+    pub discovered_targets: u64,
+    /// Targets attempted by exploration.
+    pub attempted_targets: u64,
+    /// Targets completed successfully.
+    pub completed_targets: u64,
+    /// Targets that failed or timed out after attempt.
+    pub failed_targets: u64,
+    /// Targets excluded as unsupported.
+    pub unsupported_targets: u64,
+    /// Targets skipped for non-frontend reasons.
+    pub skipped_targets: u64,
+    /// Targets blocked by frontend/preflight availability.
+    pub unavailable_frontend_targets: u64,
+}
+
+/// Selected source-set totals for one bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusSourceBucketRollup {
+    /// Source-set bucket.
+    pub source_bucket: SourceBucket,
+    /// Selected manifest files in this bucket.
+    pub selected_file_count: usize,
+    /// Selected manifest lines in this bucket.
+    pub selected_line_count: u64,
+}
+
+/// Report validity rollup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusValidityRollup {
+    /// Report-level validity tier.
+    pub report_validity: StatusReportValidity,
+    /// Machine-readable reasons for the tier.
+    pub reasons: Vec<StatusValidityReason>,
+}
+
+/// Frontend availability rollup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusFrontendAvailabilityRollup {
+    /// Source language handled by this frontend.
+    pub language: String,
+    /// Frontend implementation name.
+    pub frontend: String,
+    /// Selected manifest files routed to this frontend.
+    pub selected_file_count: usize,
+    /// Selected manifest lines routed to this frontend.
+    pub selected_line_count: u64,
+    /// Status target rows routed to this frontend.
+    pub target_count: u64,
+    /// Targets blocked by unavailable frontend/preflight.
+    pub unavailable_target_count: u64,
+    /// Targets whose reason indicates a preflight failure.
+    pub preflight_failed_target_count: u64,
+}
+
+/// Line-weighted source representation and failure impact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusLineWeightedFailureImpact {
+    /// Selected source lines represented by successful exploration.
+    pub represented_source_lines: u64,
+    /// Selected source lines blocked by ordinary failures.
+    pub unrepresented_failed_lines: u64,
+    /// Selected source lines blocked by timeouts.
+    pub unrepresented_timed_out_lines: u64,
+    /// Selected source lines excluded as unsupported.
+    pub unrepresented_unsupported_lines: u64,
+    /// Selected source lines blocked by frontend/preflight availability.
+    pub unrepresented_unavailable_frontend_lines: u64,
+    /// Selected source lines in files with no discovered targets.
+    pub unrepresented_no_target_lines: u64,
+    /// Selected source lines outside discovered spans.
+    pub unrepresented_undiscovered_lines: u64,
+}
+
 /// Status export write failure.
 #[derive(Debug, Error)]
 pub enum StatusExportError {
@@ -351,6 +517,7 @@ pub fn build_run_status(output_dir: &Path, input: &StatusExportInput<'_>) -> Run
         },
         files: build_file_rows(manifest, input.files),
         targets: build_target_rows(output_dir, input.targets),
+        rollups: build_rollups(manifest, input.files, input.targets, &input.rollups),
         artifacts: input
             .artifacts
             .iter()
@@ -398,6 +565,263 @@ pub fn write_run_status_json(
         source,
     })?;
     Ok(())
+}
+
+fn build_rollups(
+    manifest: &RunManifest,
+    files: &[StatusFileInput],
+    targets: &[StatusTargetInput],
+    input: &StatusRollupInput,
+) -> StatusRollups {
+    StatusRollups {
+        source_denominators: build_source_denominators(manifest, files, targets),
+        source_buckets: build_source_bucket_rollups(manifest),
+        validity: StatusValidityRollup {
+            report_validity: input.report_validity.unwrap_or_default(),
+            reasons: input.validity_reasons.clone(),
+        },
+        frontend_availability: build_frontend_availability(manifest, targets),
+        line_weighted_failure_impact: input
+            .line_weighted_failure_impact
+            .unwrap_or_else(|| derive_line_weighted_failure_impact(manifest, targets)),
+        gate_decisions: input.gate_decisions.clone(),
+    }
+}
+
+fn build_source_denominators(
+    manifest: &RunManifest,
+    files: &[StatusFileInput],
+    targets: &[StatusTargetInput],
+) -> StatusSourceDenominators {
+    let discovered_from_files: u64 = files.iter().map(|file| file.discovered_targets).sum();
+    let attempted_from_files: u64 = files.iter().map(|file| file.attempted_targets).sum();
+    let completed_from_files: u64 = files.iter().map(|file| file.completed_targets).sum();
+    let failed_from_files: u64 = files.iter().map(|file| file.failed_targets).sum();
+    let unsupported_from_files: u64 = files.iter().map(|file| file.unsupported_targets).sum();
+
+    let target_discovered = targets.len() as u64;
+    let target_attempted = targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.outcome,
+                StatusTargetOutcome::Completed
+                    | StatusTargetOutcome::Failed
+                    | StatusTargetOutcome::TimedOut
+            )
+        })
+        .count() as u64;
+    let target_completed = targets
+        .iter()
+        .filter(|target| target.outcome == StatusTargetOutcome::Completed)
+        .count() as u64;
+    let target_failed = targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.outcome,
+                StatusTargetOutcome::Failed | StatusTargetOutcome::TimedOut
+            )
+        })
+        .count() as u64;
+    let target_unsupported = targets
+        .iter()
+        .filter(|target| target.outcome == StatusTargetOutcome::Unsupported)
+        .count() as u64;
+
+    StatusSourceDenominators {
+        selected_source_files: manifest.selected_source_files(),
+        selected_source_lines: manifest.selected_source_lines(),
+        status_file_rows: files.len(),
+        discovered_targets: prefer_file_count(discovered_from_files, files, target_discovered),
+        attempted_targets: prefer_file_count(attempted_from_files, files, target_attempted),
+        completed_targets: prefer_file_count(completed_from_files, files, target_completed),
+        failed_targets: prefer_file_count(failed_from_files, files, target_failed),
+        unsupported_targets: prefer_file_count(unsupported_from_files, files, target_unsupported),
+        skipped_targets: targets
+            .iter()
+            .filter(|target| target.outcome == StatusTargetOutcome::Skipped)
+            .count() as u64,
+        unavailable_frontend_targets: targets
+            .iter()
+            .filter(|target| target.outcome == StatusTargetOutcome::UnavailableFrontend)
+            .count() as u64,
+    }
+}
+
+fn prefer_file_count(file_count: u64, files: &[StatusFileInput], target_count: u64) -> u64 {
+    if files.is_empty() {
+        target_count
+    } else {
+        file_count
+    }
+}
+
+fn build_source_bucket_rollups(manifest: &RunManifest) -> Vec<StatusSourceBucketRollup> {
+    const SOURCE_BUCKETS: [SourceBucket; 7] = [
+        SourceBucket::ProductionIsh,
+        SourceBucket::TestSpec,
+        SourceBucket::Generated,
+        SourceBucket::DeclarationOnly,
+        SourceBucket::FixtureSample,
+        SourceBucket::PolicyExcluded,
+        SourceBucket::Unsupported,
+    ];
+
+    SOURCE_BUCKETS
+        .iter()
+        .map(|bucket| {
+            let mut selected_file_count = 0usize;
+            let mut selected_line_count = 0u64;
+            for source_file in &manifest.source_files {
+                if classify_path(&source_file.path) == *bucket {
+                    selected_file_count = selected_file_count.saturating_add(1);
+                    selected_line_count = selected_line_count
+                        .saturating_add(u64::from(source_file.line_count.unwrap_or(0)));
+                }
+            }
+            StatusSourceBucketRollup {
+                source_bucket: *bucket,
+                selected_file_count,
+                selected_line_count,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default)]
+struct FrontendAvailabilityBuilder {
+    language: String,
+    frontend: String,
+    selected_file_count: usize,
+    selected_line_count: u64,
+    target_count: u64,
+    unavailable_target_count: u64,
+    preflight_failed_target_count: u64,
+}
+
+fn build_frontend_availability(
+    manifest: &RunManifest,
+    targets: &[StatusTargetInput],
+) -> Vec<StatusFrontendAvailabilityRollup> {
+    let mut by_frontend: BTreeMap<String, FrontendAvailabilityBuilder> = BTreeMap::new();
+    for source_file in &manifest.source_files {
+        let Some(info) = frontend_for_path(&source_file.path) else {
+            continue;
+        };
+        let builder = by_frontend
+            .entry(info.frontend.to_string())
+            .or_insert_with(|| FrontendAvailabilityBuilder {
+                language: info.language.to_string(),
+                frontend: info.frontend.to_string(),
+                ..FrontendAvailabilityBuilder::default()
+            });
+        builder.selected_file_count = builder.selected_file_count.saturating_add(1);
+        builder.selected_line_count = builder
+            .selected_line_count
+            .saturating_add(u64::from(source_file.line_count.unwrap_or(0)));
+    }
+
+    for target in targets {
+        let Some(info) = frontend_for_path(&target.source_file) else {
+            continue;
+        };
+        let builder = by_frontend
+            .entry(info.frontend.to_string())
+            .or_insert_with(|| FrontendAvailabilityBuilder {
+                language: info.language.to_string(),
+                frontend: info.frontend.to_string(),
+                ..FrontendAvailabilityBuilder::default()
+            });
+        builder.target_count = builder.target_count.saturating_add(1);
+        if target.outcome == StatusTargetOutcome::UnavailableFrontend {
+            builder.unavailable_target_count = builder.unavailable_target_count.saturating_add(1);
+        }
+        if target
+            .failure_reason
+            .as_deref()
+            .is_some_and(is_preflight_reason)
+            || target
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(is_preflight_reason)
+        {
+            builder.preflight_failed_target_count =
+                builder.preflight_failed_target_count.saturating_add(1);
+        }
+    }
+
+    by_frontend
+        .into_values()
+        .map(|builder| StatusFrontendAvailabilityRollup {
+            language: builder.language,
+            frontend: builder.frontend,
+            selected_file_count: builder.selected_file_count,
+            selected_line_count: builder.selected_line_count,
+            target_count: builder.target_count,
+            unavailable_target_count: builder.unavailable_target_count,
+            preflight_failed_target_count: builder.preflight_failed_target_count,
+        })
+        .collect()
+}
+
+fn derive_line_weighted_failure_impact(
+    manifest: &RunManifest,
+    targets: &[StatusTargetInput],
+) -> StatusLineWeightedFailureImpact {
+    let mut impact = StatusLineWeightedFailureImpact::default();
+    for target in targets {
+        let lines = u64::from(target_span_line_count(target));
+        match target.outcome {
+            StatusTargetOutcome::Completed => {
+                impact.represented_source_lines =
+                    impact.represented_source_lines.saturating_add(lines);
+            }
+            StatusTargetOutcome::Failed => {
+                impact.unrepresented_failed_lines =
+                    impact.unrepresented_failed_lines.saturating_add(lines);
+            }
+            StatusTargetOutcome::TimedOut => {
+                impact.unrepresented_timed_out_lines =
+                    impact.unrepresented_timed_out_lines.saturating_add(lines);
+            }
+            StatusTargetOutcome::Unsupported => {
+                impact.unrepresented_unsupported_lines =
+                    impact.unrepresented_unsupported_lines.saturating_add(lines);
+            }
+            StatusTargetOutcome::UnavailableFrontend => {
+                impact.unrepresented_unavailable_frontend_lines = impact
+                    .unrepresented_unavailable_frontend_lines
+                    .saturating_add(lines);
+            }
+            StatusTargetOutcome::Skipped => {}
+        }
+    }
+
+    let target_source_files: std::collections::BTreeSet<&str> = targets
+        .iter()
+        .map(|target| target.source_file.as_str())
+        .collect();
+    for source_file in &manifest.source_files {
+        if !target_source_files.contains(source_file.path.as_str()) {
+            impact.unrepresented_no_target_lines = impact
+                .unrepresented_no_target_lines
+                .saturating_add(u64::from(source_file.line_count.unwrap_or(0)));
+        }
+    }
+    impact
+}
+
+fn target_span_line_count(target: &StatusTargetInput) -> u32 {
+    if target.start_line == 0 || target.end_line < target.start_line {
+        0
+    } else {
+        target.end_line - target.start_line + 1
+    }
+}
+
+fn is_preflight_reason(reason: &str) -> bool {
+    reason.to_ascii_lowercase().contains("preflight")
 }
 
 fn build_file_rows(manifest: &RunManifest, files: &[StatusFileInput]) -> Vec<StatusFileRow> {
@@ -579,6 +1003,7 @@ mod tests {
                 }],
                 files: &[],
                 targets: &[],
+                rollups: StatusRollupInput::default(),
             },
         )
         .expect("write status");
@@ -671,6 +1096,7 @@ mod tests {
                     },
                 ],
                 targets: &[],
+                rollups: StatusRollupInput::default(),
             },
         );
 
@@ -822,6 +1248,7 @@ mod tests {
                         validity_impact: StatusTargetValidityImpact::Degrades,
                     },
                 ],
+                rollups: StatusRollupInput::default(),
             },
         )
         .expect("write status");
@@ -937,6 +1364,7 @@ mod tests {
                     unavailable_reason: None,
                     validity_impact: StatusTargetValidityImpact::Contributes,
                 }],
+                rollups: StatusRollupInput::default(),
             },
         )
         .expect_err("missing target artifact must fail status export");
@@ -946,6 +1374,196 @@ mod tests {
             !root.join(RUN_STATUS_FILENAME).exists(),
             "status export must not be finalized when target artifact validation fails"
         );
+    }
+
+    #[test]
+    fn writes_status_rollup_metrics() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest = RunManifest {
+            version: RUN_MANIFEST_VERSION,
+            scan_id: "scan-rollups".to_string(),
+            project_root: Some(root.display().to_string()),
+            repo_root: Some(root.display().to_string()),
+            cwd: root.display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                source_file("src/app.ts", Some(10)),
+                source_file("pkg/handler.go", Some(20)),
+                source_file("tests/app.test.ts", Some(4)),
+                source_file("generated/schema.gen.ts", Some(8)),
+                source_file("README.md", Some(7)),
+            ],
+            captured_at_ns: 42,
+        };
+        let manifest_path = root.join("manifest.json");
+
+        let status = build_run_status(
+            root,
+            &StatusExportInput {
+                command: "run",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &[],
+                files: &[
+                    StatusFileInput {
+                        path: "src/app.ts".to_string(),
+                        discovered_targets: 2,
+                        attempted_targets: 2,
+                        completed_targets: 1,
+                        failed_targets: 1,
+                        unsupported_targets: 0,
+                        status: StatusFileStatus::Partial,
+                    },
+                    StatusFileInput {
+                        path: "pkg/handler.go".to_string(),
+                        discovered_targets: 2,
+                        attempted_targets: 1,
+                        completed_targets: 0,
+                        failed_targets: 1,
+                        unsupported_targets: 1,
+                        status: StatusFileStatus::Failed,
+                    },
+                ],
+                targets: &[
+                    StatusTargetInput {
+                        target_id: "src/app.ts::ok".to_string(),
+                        name: "ok".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 2,
+                        end_line: 6,
+                        outcome: StatusTargetOutcome::Completed,
+                        artifact_path: None,
+                        failure_reason: None,
+                        unavailable_reason: None,
+                        validity_impact: StatusTargetValidityImpact::Contributes,
+                    },
+                    StatusTargetInput {
+                        target_id: "src/app.ts::fail".to_string(),
+                        name: "fail".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 7,
+                        end_line: 10,
+                        outcome: StatusTargetOutcome::Failed,
+                        artifact_path: None,
+                        failure_reason: Some("runtime failed".to_string()),
+                        unavailable_reason: Some("runtime failed".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::slow".to_string(),
+                        name: "slow".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 3,
+                        end_line: 8,
+                        outcome: StatusTargetOutcome::TimedOut,
+                        artifact_path: None,
+                        failure_reason: Some("timed out".to_string()),
+                        unavailable_reason: Some("timed out".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                    StatusTargetInput {
+                        target_id: "pkg/handler.go::unsupported".to_string(),
+                        name: "unsupported".to_string(),
+                        source_file: "pkg/handler.go".to_string(),
+                        start_line: 9,
+                        end_line: 12,
+                        outcome: StatusTargetOutcome::Unsupported,
+                        artifact_path: None,
+                        failure_reason: Some("unsupported parameter".to_string()),
+                        unavailable_reason: Some("unsupported parameter".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Excluded,
+                    },
+                    StatusTargetInput {
+                        target_id: "src/app.ts::preflight".to_string(),
+                        name: "preflight".to_string(),
+                        source_file: "src/app.ts".to_string(),
+                        start_line: 1,
+                        end_line: 1,
+                        outcome: StatusTargetOutcome::UnavailableFrontend,
+                        artifact_path: None,
+                        failure_reason: Some("preflight failed".to_string()),
+                        unavailable_reason: Some("preflight failed".to_string()),
+                        validity_impact: StatusTargetValidityImpact::Degrades,
+                    },
+                ],
+                rollups: StatusRollupInput {
+                    report_validity: Some(StatusReportValidity::Degraded),
+                    validity_reasons: vec![StatusValidityReason {
+                        code: "degraded_representation".to_string(),
+                        detail: "represented_source_percent=50.0".to_string(),
+                        recommended_action: "inspect failed buckets".to_string(),
+                    }],
+                    line_weighted_failure_impact: Some(StatusLineWeightedFailureImpact {
+                        represented_source_lines: 5,
+                        unrepresented_failed_lines: 4,
+                        unrepresented_timed_out_lines: 6,
+                        unrepresented_unsupported_lines: 4,
+                        unrepresented_unavailable_frontend_lines: 1,
+                        unrepresented_no_target_lines: 7,
+                        unrepresented_undiscovered_lines: 22,
+                    }),
+                    gate_decisions: None,
+                },
+            },
+        );
+
+        assert_eq!(status.rollups.source_denominators.selected_source_files, 5);
+        assert_eq!(status.rollups.source_denominators.selected_source_lines, 49);
+        assert_eq!(status.rollups.source_denominators.discovered_targets, 4);
+        assert_eq!(status.rollups.source_denominators.attempted_targets, 3);
+        assert_eq!(status.rollups.source_denominators.completed_targets, 1);
+        assert_eq!(status.rollups.source_denominators.failed_targets, 2);
+        assert_eq!(status.rollups.source_denominators.unsupported_targets, 1);
+
+        let production = status
+            .rollups
+            .source_buckets
+            .iter()
+            .find(|bucket| bucket.source_bucket == SourceBucket::ProductionIsh)
+            .expect("production bucket");
+        assert_eq!(production.selected_file_count, 2);
+        assert_eq!(production.selected_line_count, 30);
+        let unsupported = status
+            .rollups
+            .source_buckets
+            .iter()
+            .find(|bucket| bucket.source_bucket == SourceBucket::Unsupported)
+            .expect("unsupported bucket");
+        assert_eq!(unsupported.selected_file_count, 1);
+        assert_eq!(unsupported.selected_line_count, 7);
+
+        assert_eq!(
+            status.rollups.validity.report_validity,
+            StatusReportValidity::Degraded
+        );
+        assert_eq!(
+            status.rollups.validity.reasons[0].code,
+            "degraded_representation"
+        );
+
+        let ts_frontend = status
+            .rollups
+            .frontend_availability
+            .iter()
+            .find(|frontend| frontend.frontend == "shatter-ts")
+            .expect("typescript frontend");
+        assert_eq!(ts_frontend.selected_file_count, 3);
+        assert_eq!(ts_frontend.selected_line_count, 22);
+        assert_eq!(ts_frontend.target_count, 3);
+        assert_eq!(ts_frontend.unavailable_target_count, 1);
+        assert_eq!(ts_frontend.preflight_failed_target_count, 1);
+
+        assert_eq!(
+            status
+                .rollups
+                .line_weighted_failure_impact
+                .unrepresented_timed_out_lines,
+            6
+        );
+        assert!(status.rollups.gate_decisions.is_none());
     }
 
     fn source_file(path: &str, line_count: Option<u32>) -> SourceFileSnapshot {
