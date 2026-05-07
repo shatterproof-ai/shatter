@@ -12,7 +12,9 @@ use shatter_core::frontend::Frontend;
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 use shatter_core::run_manifest::{self, RunManifest};
-use shatter_core::status_export::{StatusArtifactLink, StatusExportInput, write_run_status_json};
+use shatter_core::status_export::{
+    StatusArtifactLink, StatusExportInput, StatusFileInput, StatusFileStatus, write_run_status_json,
+};
 
 /// Resolved scope settings from `shatter.config.json` for the `run` command.
 ///
@@ -180,6 +182,7 @@ pub(crate) async fn run_run(
                 dir,
                 &manifest,
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+                &[],
             )?;
         }
         return Ok(());
@@ -302,10 +305,14 @@ pub(crate) async fn run_run(
                 dir,
                 &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &[]),
             )?;
+            let no_failures = HashMap::new();
+            let status_files =
+                run_status_file_inputs_from_registry(&registry, &root, &[], &no_failures);
             write_run_status_export(
                 dir,
                 &run_manifest,
                 &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+                &status_files,
             )?;
         }
         shutdown_all_frontends(frontends).await;
@@ -351,6 +358,9 @@ pub(crate) async fn run_run(
                 dir,
                 &build_run_summary(&scan_id, &run_manifest, 0, 0, 0, &spans),
             )?;
+            let no_failures = HashMap::new();
+            let status_files =
+                run_status_file_inputs_from_registry(&registry, &root, &[], &no_failures);
             write_run_status_export(
                 dir,
                 &run_manifest,
@@ -358,6 +368,7 @@ pub(crate) async fn run_run(
                     ("analysis_report", dir.join("analysis-summary.md")),
                     ("run_summary", dir.join(RUN_SUMMARY_FILENAME)),
                 ],
+                &status_files,
             )?;
         }
 
@@ -553,10 +564,17 @@ pub(crate) async fn run_run(
         run_summary.report_validity = validity_final;
         run_summary.validity_reasons = reasons_final;
         write_run_summary_json(dir, &run_summary)?;
+        let status_files = run_status_file_inputs_from_registry(
+            &registry,
+            &root,
+            &exploration_results,
+            &exploration_failures,
+        );
         write_run_status_export(
             dir,
             &run_manifest,
             &[("run_summary", dir.join(RUN_SUMMARY_FILENAME))],
+            &status_files,
         )?;
     }
 
@@ -901,6 +919,86 @@ fn source_representation_outcome_from_failure_reason(reason: &str) -> SourceRepr
         SourceRepresentationOutcome::Unsupported
     } else {
         SourceRepresentationOutcome::Failed
+    }
+}
+
+#[derive(Debug, Default)]
+struct RunStatusFileCounts {
+    discovered: u64,
+    attempted: u64,
+    completed: u64,
+    failed: u64,
+    unsupported: u64,
+}
+
+fn run_status_file_inputs_from_registry(
+    registry: &batch_analyze::FunctionRegistry,
+    root: &Path,
+    exploration_results: &[(String, explorer::ObservationOutput)],
+    exploration_failures: &HashMap<String, String>,
+) -> Vec<StatusFileInput> {
+    let results_by_name: HashMap<&str, &explorer::ObservationOutput> = exploration_results
+        .iter()
+        .map(|(name, output)| (name.as_str(), output))
+        .collect();
+    let mut by_path: BTreeMap<String, RunStatusFileCounts> = BTreeMap::new();
+
+    for entry in registry.entries() {
+        let qualified_name =
+            batch_analyze::FunctionRegistry::qualified_name(&entry.file_path, &entry.name);
+        let path = manifest_path_for(&entry.file_path, root);
+        let counts = by_path.entry(path).or_default();
+        counts.discovered += 1;
+
+        if let Some(output) = results_by_name.get(qualified_name.as_str()) {
+            counts.attempted += 1;
+            if output.timed_out {
+                counts.failed += 1;
+            } else {
+                counts.completed += 1;
+            }
+        } else if let Some(reason) = exploration_failures.get(qualified_name.as_str()) {
+            if is_unsupported_failure_reason(reason) {
+                counts.unsupported += 1;
+            } else {
+                counts.attempted += 1;
+                counts.failed += 1;
+            }
+        }
+    }
+
+    by_path
+        .into_iter()
+        .map(|(path, counts)| StatusFileInput {
+            path,
+            discovered_targets: counts.discovered,
+            attempted_targets: counts.attempted,
+            completed_targets: counts.completed,
+            failed_targets: counts.failed,
+            unsupported_targets: counts.unsupported,
+            status: run_status_file_status_from_counts(&counts),
+        })
+        .collect()
+}
+
+fn is_unsupported_failure_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("unsupported") || lower.contains("unexecutable")
+}
+
+fn run_status_file_status_from_counts(counts: &RunStatusFileCounts) -> StatusFileStatus {
+    if counts.discovered == 0 {
+        StatusFileStatus::NoTarget
+    } else if counts.completed == counts.discovered {
+        StatusFileStatus::Completed
+    } else if counts.completed > 0 {
+        StatusFileStatus::Partial
+    } else if counts.failed > 0 {
+        StatusFileStatus::Failed
+    } else if counts.unsupported > 0 {
+        StatusFileStatus::Unsupported
+    } else {
+        StatusFileStatus::Skipped
     }
 }
 
@@ -1543,6 +1641,7 @@ fn write_run_status_export(
     output_dir: &Path,
     manifest: &RunManifest,
     artifact_paths: &[(&str, PathBuf)],
+    files: &[StatusFileInput],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest_path = output_dir.join(run_manifest::RUN_MANIFEST_FILENAME);
     let artifacts: Vec<StatusArtifactLink<'_>> = artifact_paths
@@ -1559,6 +1658,7 @@ fn write_run_status_export(
             manifest,
             manifest_path: &manifest_path,
             artifacts: &artifacts,
+            files,
         },
     )
     .map_err(|e| format!("failed to write run status export: {e}").into())
