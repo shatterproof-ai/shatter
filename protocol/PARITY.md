@@ -31,7 +31,7 @@ The remaining commands are advertised in handshake capabilities. Core checks the
 | `handshake` | required | ✅ | ✅ | ✅ | Base protocol; not a capability |
 | `shutdown` | required | ✅ | ✅ | ✅ | Base protocol; not a capability |
 | `analyze` | required | ✅ | ✅ | ✅ | All frontends implement |
-| `execute` | required | ✅ | ✅ | ⚠️ partial | Rust handler exists but execution logic is unimplemented (see divergence `rust-execute-unimplemented`) |
+| `execute` | required | ✅ | ✅ | ✅ | All frontends implement |
 | `generate` | required | ✅ | ✅ | ✅ | All frontends implement |
 | `instrument` | optional | ✅ | ✅ | ❌ | Rust does not advertise; core gates on capability |
 | `setup` | optional | ✅ | ✅ | ❌ | Rust does not advertise; core gates on capability |
@@ -165,26 +165,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 **Resolution condition:** `teardown` is present in `SUPPORTED_CAPABILITIES` in `shatter-ts/src/handlers.ts` and a teardown handler returns success.
 
 **Resolution:** Implement teardown in the TypeScript frontend and add `teardown` to its `SUPPORTED_CAPABILITIES`.
-
----
-
-### `rust-execute-partial`
-
-**Description:** The Rust execute handler compiles and runs Rust code but returns `not_supported` for `NonExecutable` inputs (e.g. functions requiring dynamic dispatch). Full execution parity with TypeScript and Go is pending.
-
-**Affected frontends:** rust
-
-**Affected commands:** execute
-
-**Status:** tracked
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.15
-
-**Resolution condition:** The `NonExecutable` early-exit path is removed from the Rust executor and `execute` returns a non-`not_supported` outcome for all input types that TS/Go handle.
-
-**Resolution:** Expand the Rust executor to handle all input types that TS/Go handle, removing the `NonExecutable` early-exit path.
 
 ---
 
