@@ -128,6 +128,36 @@ func (f *fakePreparedExecution) InvokeWithReceiverKind(receiverKind string, _ []
 	return &instrument.ExecuteResult{}, nil
 }
 
+func TestBuildLoopBodyStatesFromScopeEvents(t *testing.T) {
+	states := buildLoopBodyStatesFromScopeEvents(
+		[]LoopInfo{{LoopID: 2}, {LoopID: 7}},
+		[]json.RawMessage{
+			json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":2}}`),
+			json.RawMessage(`{"kind":"scope","event":{"kind":"loop_exit","loop_id":2}}`),
+			json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":7}}`),
+			json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":99}}`),
+			json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":2}}`),
+		},
+	)
+
+	if len(states) != 3 {
+		t.Fatalf("loop body states len = %d, want 3", len(states))
+	}
+	assertState := func(idx, loopID, iteration int) {
+		t.Helper()
+		if states[idx].LoopID != loopID || states[idx].Iteration != iteration {
+			t.Fatalf("states[%d] = loop_id %d iteration %d, want loop_id %d iteration %d",
+				idx, states[idx].LoopID, states[idx].Iteration, loopID, iteration)
+		}
+		if states[idx].Locals == nil {
+			t.Fatalf("states[%d].Locals = nil, want empty map", idx)
+		}
+	}
+	assertState(0, 2, 0)
+	assertState(1, 7, 0)
+	assertState(2, 2, 1)
+}
+
 func TestHandshakeResponse(t *testing.T) {
 	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
@@ -1720,6 +1750,54 @@ func osEffects(path string) int {
 	}
 	if !sawNetworkRequest {
 		t.Fatalf("missing network_request side effect for GET /ping; side effects: %+v", responses[2].SideEffects)
+	}
+}
+
+func TestExecuteEmitsLoopBodyStatesForCountedLoops(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "target.go")
+	src := `package main
+
+func sumTo(n int) int {
+	total := 0
+	for i := 0; i < n; i++ {
+		total += i
+	}
+	return total
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := conversation(t,
+		reqJSON(1, "handshake", `"capabilities":["analyze","execute"]`),
+		reqJSON(2, "analyze", fmt.Sprintf(`"file":"%s","function":"sumTo"`, tmp)),
+		reqJSON(3, "execute", fmt.Sprintf(`"file":"%s","function":"sumTo","inputs":[3],"mocks":[]`, tmp)),
+		reqJSON(4, "shutdown"),
+	)
+	if len(responses) != 4 {
+		t.Fatalf("got %d responses, want 4", len(responses))
+	}
+	if responses[1].Status != "analyze" {
+		t.Fatalf("analyze: status = %q, message = %s", responses[1].Status, responses[1].Message)
+	}
+	if len(responses[1].Functions) != 1 || len(responses[1].Functions[0].Loops) != 1 {
+		t.Fatalf("analyze loops = %+v, want one counted loop", responses[1].Functions)
+	}
+	if responses[2].Status != "execute" {
+		t.Fatalf("execute: status = %q, message = %s", responses[2].Status, responses[2].Message)
+	}
+	if len(responses[2].LoopBodyStates) != 3 {
+		t.Fatalf("loop_body_states len = %d, want 3; response = %+v", len(responses[2].LoopBodyStates), responses[2])
+	}
+	for i, state := range responses[2].LoopBodyStates {
+		if state.LoopID != 0 {
+			t.Fatalf("state[%d].loop_id = %d, want 0", i, state.LoopID)
+		}
+		if state.Iteration != i {
+			t.Fatalf("state[%d].iteration = %d, want %d", i, state.Iteration, i)
+		}
 	}
 }
 
