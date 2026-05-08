@@ -246,21 +246,34 @@ run_cmd() {
         fi
         # Wait for tee subprocesses to flush
         wait 2>/dev/null || true
-        # Scan for error indicators in the captured output. Patterns cover:
-        # - generic process-level signals ([error], panic, SIGSEGV, ...)
-        # - scan summary lines reporting non-zero error count
-        #   (e.g. "Scan complete: 43 function(s) tested, 0 skipped, 2 error(s)")
-        # - scan report rows whose outcome is FAIL (markdown table cells like
-        #   "| FAIL | error_only | `computeStats` | ...").
-        # str-jeen.57: previously only the first pattern group was checked, so
-        # scan FAIL rows and "N error(s)" summaries did not affect gauntlet
-        # status.
-        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
-        if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
-            echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
-            grep -iE "$error_pattern" "$output_tmp" \
-                | sed 's/^/    /' >> "$ERROR_LOG"
-            STEP_ERRORS=$((STEP_ERRORS + 1))
+        # str-jeen.59: delegate error detection to gauntlet_check_output.py.
+        # The helper handles process-level error markers, scan-report FAIL
+        # rows, and "Scan complete: ... N error(s)" summaries, suppressing
+        # entries listed in demo/gauntlet-scan-allowlist.yaml. Output that
+        # the helper flags is appended to ERROR_LOG verbatim.
+        local check_helper="${SCRIPT_DIR}/gauntlet_check_output.py"
+        local check_allowlist="${SCRIPT_DIR}/gauntlet-scan-allowlist.yaml"
+        if [[ -f "$check_helper" && -f "$check_allowlist" ]]; then
+            local check_out
+            check_out="$(mktemp)"
+            if ! python3 "$check_helper" \
+                --allowlist "$check_allowlist" \
+                --output "$output_tmp" \
+                --step "${CURRENT_STEP}" >"$check_out" 2>&1; then
+                cat "$check_out" >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
+            rm -f "$check_out"
+        else
+            # Fallback to the legacy inline regex (str-jeen.57 form) if the
+            # helper or allowlist is missing.
+            local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
+            if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
+                echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
+                grep -iE "$error_pattern" "$output_tmp" \
+                    | sed 's/^/    /' >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
         fi
         if [[ "$wants_timing" == true ]]; then
             latest_timing_file="$(find "$TIMING_DIR" -maxdepth 1 -name '*.timing.json' -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"

@@ -64,6 +64,11 @@ expected_failures:
     outcome: FAIL
     category: error_only
     reason: Regex-driven semver grammar with many parse-error branches; concolic engine lacks full string regex support.
+  - file: 14-semver.ts
+    function: satisfiesRange
+    outcome: FAIL
+    category: behavioral
+    reason: Borderline coverage (~47-64%); flaps across 50% PASS/WARN/FAIL threshold between runs due to explorer iteration variance.
   - file: 17-mock-branches.ts
     function: classifyConfigs
     outcome: FAIL

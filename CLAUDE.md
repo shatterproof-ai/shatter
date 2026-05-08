@@ -37,7 +37,7 @@ These are the only suites that exercise the full pipeline end-to-end — a modul
 
 **Walkthrough gate.** The walkthrough is a compact 8–15 step demo with language parity across TS/Go/Rust for analyze/explore/scan/reporting. Optimize for a coherent product story, not command coverage. Run after changes to walkthrough output, walkthrough examples, or the compact demo flow.
 
-**Gauntlet gate.** Broad CLI and coverage probe — flag permutations, config variants, stress cases, non-essential command probes. Prints an ERROR SUMMARY and exits 1 on any errors. Known exceptions: `stale` exit 1 is informational; scan errors on `11-opaque-types.ts` and `12-external-deps.ts` are expected.
+**Gauntlet gate.** Broad CLI and coverage probe — flag permutations, config variants, stress cases, non-essential command probes. Prints an ERROR SUMMARY and exits 1 on any errors. Per-step output is screened by `demo/gauntlet_check_output.py` against `demo/gauntlet-scan-allowlist.yaml`: process-level errors are always flagged; scan-report `FAIL` rows and `Scan complete: ... N error(s)` summaries are flagged only when they exceed the allowlist. New unallowlisted FAILs fail the gauntlet. Known exceptions: `stale` exit 1 is informational; scan errors on `11-opaque-types.ts` and `12-external-deps.ts` are allowlisted as unsupported fixtures.
 
 ### Completion Checklist
 
