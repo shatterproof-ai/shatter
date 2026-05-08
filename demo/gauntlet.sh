@@ -44,8 +44,9 @@ HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-gauntlet.XXXXXX")"
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-gauntlet-errors.XXXXXX")"
 STEP_ERRORS=0
 EXAMPLES_ROOT=""
+BENCH_MANIFEST_TMP=""
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" "$BENCH_MANIFEST_TMP" || true; }
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
@@ -709,9 +710,34 @@ step 58 $TOTAL "Nondeterminism Review" \
     bash -c "$SHATTER nondeterminism review --cache-dir '$SHATTER_CACHE_DIR' </dev/null; echo '(exit 0 expected: no nondeterminism candidates in standalone arithmetic scan)'"
 
 # Stage 58: Benchmark run (smoke tier, minimal)
+# Rewrite the bench manifest so its `examples/...` targets resolve under the
+# fresh examples checkout used by the rest of the gauntlet (str-02ws). Without
+# this, every smoke-tier scenario fails with FileNotFound while bench still
+# exits 0.
+BENCH_MANIFEST_TMP="$(mktemp "${TMPDIR:-/tmp}/shatter-bench-manifest.XXXXXX.json")"
+python3 - "$SAMPLE_MANIFEST" "$EXAMPLES_ROOT" "$BENCH_MANIFEST_TMP" <<'PY'
+import json
+import sys
+
+src, examples_root, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+def rewrite(value):
+    if isinstance(value, str) and value.startswith("examples/"):
+        return f"{examples_root}/{value[len('examples/'):]}"
+    if isinstance(value, list):
+        return [rewrite(v) for v in value]
+    if isinstance(value, dict):
+        return {k: rewrite(v) for k, v in value.items()}
+    return value
+
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(rewrite(data), fh, indent=2)
+PY
 step 59 $TOTAL "Benchmark Run (Smoke)" \
     "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
-    $SHATTER bench --tier smoke --repeats 1 --warmups 0
+    $SHATTER bench --manifest "$BENCH_MANIFEST_TMP" --tier smoke --repeats 1 --warmups 0
 
 # Stage 59: Cache clear
 step 60 $TOTAL "Cache Clear" \
