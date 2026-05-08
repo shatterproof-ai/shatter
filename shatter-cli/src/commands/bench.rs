@@ -197,6 +197,37 @@ pub(crate) async fn run_bench(
         let _ = frontend.send(ProtoCommand::Shutdown).await;
     }
 
+    // Treat any scenario with a failed run (analyze error or exit_ok=false in
+    // a measured run) as a benchmark failure. Without this, gauntlet step 59
+    // could pass while every target reported FileNotFound (str-02ws).
+    let failed: Vec<&ScenarioResult> = bundle
+        .scenarios
+        .iter()
+        .filter(|s| s.runs.iter().any(|r| !r.exit_ok))
+        .collect();
+    if !failed.is_empty() {
+        let total = bundle.scenarios.len();
+        eprintln!(
+            "\nBenchmark failed: {} of {} scenario(s) had errors",
+            failed.len(),
+            total,
+        );
+        for scenario in &failed {
+            let first_err = scenario
+                .runs
+                .iter()
+                .find_map(|r| r.error.as_deref())
+                .unwrap_or("(no error message)");
+            eprintln!("  {}: {}", scenario.target, first_err);
+        }
+        return Err(format!(
+            "{} of {} benchmark scenario(s) failed",
+            failed.len(),
+            total,
+        )
+        .into());
+    }
+
     Ok(())
 }
 
