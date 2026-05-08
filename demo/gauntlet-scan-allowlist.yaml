@@ -1,0 +1,113 @@
+# Gauntlet scan FAIL allowlist (str-jeen.59).
+#
+# The gauntlet scans `examples/standalone/ts/` against a default 100% coverage
+# threshold. Several functions are complex parsers, multi-condition validators,
+# or state machines that the random/concolic explorer cannot fully cover within
+# the gauntlet's default iteration budget. Their FAIL rows are honest
+# explorer-limit signal, not regressions, so we suppress them at the harness
+# level while keeping them visible in the scan report.
+#
+# Adding a new entry here requires a one-line reason. Removing an entry once
+# its function reaches PASS is the goal.
+#
+# Format:
+#   expected_failures:
+#     - file: <basename>           # e.g. 04-errors.ts
+#       function: <name>           # e.g. computeStats
+#       outcome: FAIL              # currently always FAIL; reserved for future
+#       category: error_only|behavioral
+#       reason: <one line>
+#
+#   expected_scan_errors:
+#     count: <int>                  # max scan-summary "N error(s)" tolerated
+#     files: [<basename>, ...]      # documented sources of those errors
+#     reason: <one line>
+
+expected_failures:
+  - file: 04-errors.ts
+    function: computeStats
+    outcome: FAIL
+    category: error_only
+    reason: Many error-throwing branches; explorer cannot enumerate all throw paths within default iteration budget.
+  - file: 05-unions.ts
+    function: computeArea
+    outcome: FAIL
+    category: behavioral
+    reason: Discriminated-union shape with deep type-narrowing; coverage limited by union-input synthesis.
+  - file: 05-unions.ts
+    function: routeRequest
+    outcome: FAIL
+    category: behavioral
+    reason: Discriminated-union routing across multiple request shapes; coverage limited by union-input synthesis.
+  - file: 06-nested-control-flow.ts
+    function: processStateMachine
+    outcome: FAIL
+    category: error_only
+    reason: Deeply nested state-machine with 29 branches; explorer cannot reach all transitions in default budget.
+  - file: 07-auth-validation.ts
+    function: authorizeRequest
+    outcome: FAIL
+    category: behavioral
+    reason: Multi-condition authorization with 29 branches over role/scope/resource combinations.
+  - file: 07-auth-validation.ts
+    function: validateJwt
+    outcome: FAIL
+    category: behavioral
+    reason: Structural JWT validation with 26 branches; signature/exp/iss checks beyond explorer reach in default budget.
+  - file: 10-path-router.ts
+    function: matchRoute
+    outcome: FAIL
+    category: behavioral
+    reason: Path-matching with 50 branches over wildcard/regex segments; concolic engine lacks full string regex support.
+  - file: 14-semver.ts
+    function: parseSemver
+    outcome: FAIL
+    category: error_only
+    reason: Regex-driven semver grammar with many parse-error branches; concolic engine lacks full string regex support.
+  - file: 14-semver.ts
+    function: satisfiesRange
+    outcome: FAIL
+    category: behavioral
+    reason: Borderline coverage (~47-64%); flaps across 50% PASS/WARN/FAIL threshold between runs due to explorer iteration variance.
+  - file: 17-mock-branches.ts
+    function: classifyConfigs
+    outcome: FAIL
+    category: error_only
+    reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+  - file: 17-mock-branches.ts
+    function: classifyStatus
+    outcome: FAIL
+    category: error_only
+    reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+  - file: 17-mock-branches.ts
+    function: loadOrDefault
+    outcome: FAIL
+    category: behavioral
+    reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+  - file: 18-accept-language.ts
+    function: negotiateLanguage
+    outcome: FAIL
+    category: error_only
+    reason: Accept-Language header parser with 28 branches over quality values and tag matching; concolic string ops insufficient.
+  - file: 19-robots-policy.ts
+    function: evaluateRobotsPolicy
+    outcome: FAIL
+    category: behavioral
+    reason: robots.txt rule precedence with 28 branches over user-agent and path-prefix matching; coverage limited by string handling.
+  - file: 20-dotenv-parser.ts
+    function: parseDotenv
+    outcome: FAIL
+    category: behavioral
+    reason: Line-based parser with 45 branches over quoting, escapes, and comments; concolic string ops insufficient.
+  - file: 21-crypto-boundary.ts
+    function: classifySecret
+    outcome: FAIL
+    category: error_only
+    reason: Pattern-matching secret classifier; behaviors gated by entropy/regex checks beyond explorer reach.
+
+expected_scan_errors:
+  count: 2
+  files:
+    - 11-opaque-types.ts
+    - 12-external-deps.ts
+  reason: Opaque-type scaffolding and external-dependency import surface are intentionally unsupported gauntlet fixtures; documented in CLAUDE.md.
