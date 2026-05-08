@@ -512,11 +512,11 @@ fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
 
 /// Root directory for the entire scan (parent of `functions/`).
 fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
-    project_root
+    let root = project_root
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("shatter-artifacts")
+        .unwrap_or_else(|| PathBuf::from("."));
+    crate::harness_storage::HarnessStorage::resolve_artifact_root(&root)
         .join("scan-results")
         .join(scan_id)
 }

@@ -1003,11 +1003,11 @@ async fn fetch_planner_extra_seeds(
 }
 
 fn explore_artifact_root(project_root: Option<&str>) -> PathBuf {
-    project_root
+    let root = project_root
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("shatter-artifacts")
+        .unwrap_or_else(|| PathBuf::from("."));
+    shatter_core::harness_storage::HarnessStorage::resolve_artifact_root(&root)
         .join("explore-results")
 }
 
