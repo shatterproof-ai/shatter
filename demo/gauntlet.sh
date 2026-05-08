@@ -335,9 +335,22 @@ pause() {
     echo ""
 }
 
+EXPECTED_NEXT_STEP=1
+STEPS_RUN=0
+
 step() {
     local num="$1" total="$2" title="$3" desc="$4"
     shift 4
+    if [[ "$num" -ne "$EXPECTED_NEXT_STEP" ]]; then
+        echo "${RED}gauntlet step numbering error: got step ${num}, expected ${EXPECTED_NEXT_STEP} (${title})${RESET}" >&2
+        exit 2
+    fi
+    if [[ "$num" -gt "$total" ]]; then
+        echo "${RED}gauntlet step numbering error: step ${num} exceeds declared total ${total}${RESET}" >&2
+        exit 2
+    fi
+    EXPECTED_NEXT_STEP=$((EXPECTED_NEXT_STEP + 1))
+    STEPS_RUN=$((STEPS_RUN + 1))
     local step_started_ms step_elapsed_ms
     CURRENT_STEP="$num"
     step_started_ms="$(now_ms)"
@@ -358,7 +371,7 @@ mapfile -t EXAMPLES < <(load_sample_group "walkthrough.typescript" | while IFS= 
 mapfile -t GO_EXAMPLES < <(load_sample_group "walkthrough.go" | while IFS= read -r sample; do example_path "$sample"; done)
 mapfile -t RUST_EXAMPLES < <(load_sample_group "walkthrough.rust" | while IFS= read -r sample; do example_path "$sample"; done)
 
-TOTAL=62
+TOTAL=60
 
 # ─── Gauntlet ─────────────────────────────────────────────────────────
 
@@ -442,48 +455,48 @@ step 12 $TOTAL "Scan Rust Examples" \
     $SHATTER scan --core-sample 3 --dry-run "$EXAMPLES_RUST_SRC_DIR"
 
 # Stage 13: Run (full pipeline, analyze only)
-step 14 $TOTAL "Run: Analyze Only" \
+step 13 $TOTAL "Run: Analyze Only" \
     "Discover, analyze, and report on all files in the standalone TS directory" \
     $SHATTER run --analyze-only "$EXAMPLES_TS_DIR"
 
 # Stage 14: Run (full pipeline with exploration)
-step 15 $TOTAL "Run: Full Pipeline" \
+step 14 $TOTAL "Run: Full Pipeline" \
     "Discover, analyze, explore, and generate a full report" \
     $SHATTER run --max-iterations 10 --timeout 60 "$EXAMPLES_TS_DIR"
 
 # Stage 15: Log level verbosity (debug)
-step 16 $TOTAL "Verbose Output with Debug Log Level" \
+step 15 $TOTAL "Verbose Output with Debug Log Level" \
     "Show detailed progress output using --log-level debug" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 --log-level debug "${EXAMPLES[0]}"
 
 # Stage 16: Request timeout
-step 17 $TOTAL "Request Timeout" \
+step 16 $TOTAL "Request Timeout" \
     "Set a per-request timeout to bound frontend communication" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 --request-timeout 15 "${EXAMPLES[@]}"
 
 # Stage 17: User-provided inputs via config
-step 18 $TOTAL "User-Provided Inputs via Config" \
+step 17 $TOTAL "User-Provided Inputs via Config" \
     "Load candidate inputs from a .shatter config directory" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 --config "$EXAMPLES_TS_CONFIG" \
     "${EXAMPLES[0]}"
 
 # Stage 18: Performance stats
-step 19 $TOTAL "Performance Stats" \
+step 18 $TOTAL "Performance Stats" \
     "Show gauntlet timing summaries using structured timing artifacts" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 "${EXAMPLES[@]}"
 
 # Stage 19: Parallel scan with worker pool
-step 20 $TOTAL "Parallel Scan" \
+step 19 $TOTAL "Parallel Scan" \
     "Scan with multiple worker processes for faster exploration" \
     $SHATTER scan --parallelism 2 --timeout-per-fn 30 "$EXAMPLES_TS_DIR"
 
 # Stage 20: Parallel explore with --workers
-step 21 $TOTAL "Parallel Explore" \
+step 20 $TOTAL "Parallel Explore" \
     "Explore multiple functions in parallel using --workers (limits concurrency)" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 --workers 2 "${EXAMPLES[@]}"
 
 # Stage 22: Execution timeout
-step 22 $TOTAL "Execution Timeout" \
+step 21 $TOTAL "Execution Timeout" \
     "Configure per-execution timeout passed to frontends" \
     $SHATTER explore --max-iterations 20 --timeout-explore 15 --exec-timeout 5 --build-timeout 20 "${EXAMPLES[0]}"
 
@@ -701,6 +714,13 @@ step 60 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
     $SHATTER cache clear
 
+
+# ─── Step inventory check ────────────────────────────────────────────
+if [[ "$STEPS_RUN" -ne "$TOTAL" ]]; then
+    echo "${RED}gauntlet step inventory mismatch: ran ${STEPS_RUN} step(s), declared total ${TOTAL}${RESET}" >&2
+    echo "  Step inventory: ran ${STEPS_RUN}, declared ${TOTAL}" >> "$ERROR_LOG"
+    STEP_ERRORS=$((STEP_ERRORS + 1))
+fi
 
 # ─── HTML Report Summary ──────────────────────────────────────────────
 echo ""
