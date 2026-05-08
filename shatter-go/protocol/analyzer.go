@@ -579,6 +579,12 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	deps := extractDependencies(fset, fn.Body, info)
 	literals := extractLiterals(fn, file)
 
+	// Build the data-flow map for this function body.  The map is not yet
+	// plumbed into branch-constraint extraction — that wiring lands in
+	// str-1hlk.17.3.  Computing it here ensures the infrastructure is
+	// exercised and ready for the next step.
+	_ = walkBodyForFlow(fn.Body, paramNames)
+
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
 
@@ -1472,6 +1478,217 @@ func stmtText(fset *token.FileSet, stmt ast.Stmt) string {
 	return buf.String()
 }
 
+// --- Data-Flow Walk ---
+
+// analyzerFlowMap maps variable names to their current symbolic expression
+// during the analyzer's body walk.  It uses the protocol-level *SymExpr type
+// (distinct from the instrument package's unexported symExpr).
+type analyzerFlowMap = map[string]*SymExpr
+
+// snapshotAnalyzerFlow returns a shallow copy of fm.
+func snapshotAnalyzerFlow(fm analyzerFlowMap) analyzerFlowMap {
+	out := make(analyzerFlowMap, len(fm))
+	for k, v := range fm {
+		out[k] = v
+	}
+	return out
+}
+
+// walkBodyForFlow walks the function body in statement order, maintaining a
+// flow map seeded from the function's parameter symbols.  It handles:
+//   - *ast.AssignStmt (= and :=): rebuilds each RHS symbolically against the
+//     current flow map and updates the LHS name.
+//   - *ast.DeclStmt (var): seeds declared names with their initializer value.
+//   - *ast.IfStmt: snapshot/walk-then/walk-else/mergeFlowMaps protocol,
+//     producing ite nodes for variables that diverge across branches.
+//
+// The returned map is not yet wired into branch-constraint extraction —
+// that landing is deferred to str-1hlk.17.3.
+func walkBodyForFlow(body *ast.BlockStmt, params map[string]bool) analyzerFlowMap {
+	if body == nil {
+		return make(analyzerFlowMap)
+	}
+	fm := make(analyzerFlowMap, len(params))
+	for name := range params {
+		fm[name] = &SymExpr{Kind: "param", Name: name, Path: []string{}, Args: []SymExpr{}}
+	}
+	return walkAnalyzerStmts(body.List, params, fm)
+}
+
+// walkAnalyzerStmts is the recursive core of the analyzer body walk.
+func walkAnalyzerStmts(stmts []ast.Stmt, params map[string]bool, fm analyzerFlowMap) analyzerFlowMap {
+	cur := snapshotAnalyzerFlow(fm)
+	for _, stmt := range stmts {
+		cur = applyAnalyzerStmt(stmt, params, cur)
+	}
+	return cur
+}
+
+// applyAnalyzerStmt applies a single statement's data-flow effects to cur.
+func applyAnalyzerStmt(stmt ast.Stmt, params map[string]bool, cur analyzerFlowMap) analyzerFlowMap {
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		return applyAnalyzerAssign(s, params, cur)
+	case *ast.DeclStmt:
+		return applyAnalyzerDecl(s, params, cur)
+	case *ast.IfStmt:
+		return applyAnalyzerIf(s, params, cur)
+	case *ast.BlockStmt:
+		if s != nil {
+			return walkAnalyzerStmts(s.List, params, cur)
+		}
+	}
+	return cur
+}
+
+func applyAnalyzerAssign(s *ast.AssignStmt, params map[string]bool, cur analyzerFlowMap) analyzerFlowMap {
+	out := snapshotAnalyzerFlow(cur)
+	switch {
+	case len(s.Lhs) == len(s.Rhs):
+		vals := make([]*SymExpr, len(s.Rhs))
+		for i, rhs := range s.Rhs {
+			vals[i] = buildSymExprWithFlow(rhs, params, cur)
+		}
+		for i, lhs := range s.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
+				out[ident.Name] = vals[i]
+			}
+		}
+	case len(s.Rhs) == 1:
+		for _, lhs := range s.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
+				out[ident.Name] = &SymExpr{Kind: "unknown", Args: []SymExpr{}}
+			}
+		}
+	}
+	return out
+}
+
+func applyAnalyzerDecl(ds *ast.DeclStmt, params map[string]bool, cur analyzerFlowMap) analyzerFlowMap {
+	gd, ok := ds.Decl.(*ast.GenDecl)
+	if !ok || gd.Tok != token.VAR {
+		return cur
+	}
+	out := snapshotAnalyzerFlow(cur)
+	for _, spec := range gd.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok || len(vs.Values) == 0 {
+			continue
+		}
+		if len(vs.Names) == len(vs.Values) {
+			for i, nameIdent := range vs.Names {
+				if nameIdent.Name == "_" {
+					continue
+				}
+				out[nameIdent.Name] = buildSymExprWithFlow(vs.Values[i], params, cur)
+			}
+		}
+	}
+	return out
+}
+
+func applyAnalyzerIf(s *ast.IfStmt, params map[string]bool, cur analyzerFlowMap) analyzerFlowMap {
+	if s.Init != nil {
+		cur = applyAnalyzerStmt(s.Init, params, cur)
+	}
+	cond := buildSymExprWithFlow(s.Cond, params, cur)
+	before := snapshotAnalyzerFlow(cur)
+
+	thenMap := walkAnalyzerStmts(s.Body.List, params, cur)
+
+	var elseMap analyzerFlowMap
+	if s.Else != nil {
+		switch e := s.Else.(type) {
+		case *ast.BlockStmt:
+			elseMap = walkAnalyzerStmts(e.List, params, cur)
+		case *ast.IfStmt:
+			elseMap = applyAnalyzerIf(e, params, snapshotAnalyzerFlow(cur))
+		}
+	}
+	if elseMap == nil {
+		elseMap = snapshotAnalyzerFlow(before)
+	}
+
+	return mergeAnalyzerFlowMaps(cond, thenMap, elseMap, before)
+}
+
+// mergeAnalyzerFlowMaps applies SSA phi-node semantics using the protocol
+// *SymExpr type, mirroring the instrument package's mergeFlowMaps logic.
+func mergeAnalyzerFlowMaps(cond *SymExpr, thenMap, elseMap, baseMap analyzerFlowMap) analyzerFlowMap {
+	if cond == nil || cond.Kind == "unknown" {
+		result := snapshotAnalyzerFlow(baseMap)
+		for k, v := range elseMap {
+			result[k] = v
+		}
+		for k, v := range thenMap {
+			if _, ok := result[k]; !ok {
+				result[k] = v
+			}
+		}
+		return result
+	}
+
+	allVars := make(map[string]struct{}, len(thenMap)+len(elseMap))
+	for k := range thenMap {
+		allVars[k] = struct{}{}
+	}
+	for k := range elseMap {
+		allVars[k] = struct{}{}
+	}
+
+	result := make(analyzerFlowMap, len(allVars))
+	for name := range allVars {
+		thenVal := thenMap[name]
+		elseVal := elseMap[name]
+		preVal := baseMap[name]
+
+		if thenVal == elseVal {
+			if thenVal != nil {
+				result[name] = thenVal
+			}
+			continue
+		}
+
+		// Variable introduced in exactly one branch and not pre-existing.
+		if preVal == nil && (thenVal == nil || elseVal == nil) {
+			val := thenVal
+			if val == nil {
+				val = elseVal
+			}
+			if val != nil {
+				result[name] = val
+			}
+			continue
+		}
+
+		// Divergent: emit ite.
+		thenExpr := thenVal
+		if thenExpr == nil {
+			thenExpr = preVal
+		}
+		elseExpr := elseVal
+		if elseExpr == nil {
+			elseExpr = preVal
+		}
+
+		switch {
+		case thenExpr != nil && elseExpr != nil:
+			result[name] = &SymExpr{
+				Kind:      "ite",
+				Condition: cond,
+				ThenExpr:  thenExpr,
+				ElseExpr:  elseExpr,
+				Args:      []SymExpr{},
+			}
+		case thenExpr != nil:
+			result[name] = thenExpr
+		case elseExpr != nil:
+			result[name] = elseExpr
+		}
+	}
+	return result
+}
+
 // --- Symbolic Expression Building ---
 
 func buildSymExpr(expr ast.Expr, params map[string]bool) *SymExpr {
@@ -1495,6 +1712,74 @@ func buildSymExpr(expr ast.Expr, params map[string]bool) *SymExpr {
 		return buildSymExpr(e.X, params)
 	default:
 		return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
+	}
+}
+
+// buildSymExprWithFlow is like buildSymExpr but resolves *ast.Ident nodes
+// through fm before consulting params.  When a variable name is present in fm,
+// its tracked symbolic value is returned instead of a fresh param node.
+// Sub-expressions are recursively resolved through the same flow map so that
+// composite expressions like "label + 1" resolve "label" through fm.
+// Pass nil for fm to get the same behaviour as buildSymExpr.
+func buildSymExprWithFlow(expr ast.Expr, params map[string]bool, fm analyzerFlowMap) *SymExpr {
+	if expr == nil {
+		return nil
+	}
+	if fm == nil {
+		return buildSymExpr(expr, params)
+	}
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return buildSymExprWithFlow(e.X, params, fm)
+	case *ast.Ident:
+		if sym, ok := fm[e.Name]; ok {
+			return sym
+		}
+		return identSymExpr(e, params)
+	case *ast.BinaryExpr:
+		op := tokenToOp(e.Op)
+		left := buildSymExprWithFlow(e.X, params, fm)
+		right := buildSymExprWithFlow(e.Y, params, fm)
+		return &SymExpr{Kind: "bin_op", Op: op, Left: left, Right: right, Args: []SymExpr{}}
+	case *ast.UnaryExpr:
+		var op string
+		switch e.Op {
+		case token.SUB:
+			op = "neg"
+		case token.XOR:
+			op = "bitwise_not"
+		case token.NOT:
+			op = "not"
+		default:
+			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
+		}
+		operand := buildSymExprWithFlow(e.X, params, fm)
+		return &SymExpr{Kind: "un_op", Op: op, Operand: operand, Args: []SymExpr{}}
+	case *ast.CallExpr:
+		// Resolve call arguments through the flow map.
+		var name string
+		switch fn := e.Fun.(type) {
+		case *ast.Ident:
+			name = fn.Name
+		case *ast.SelectorExpr:
+			name = exprString(e.Fun)
+		default:
+			name = "unknown"
+		}
+		args := make([]SymExpr, len(e.Args))
+		for i, arg := range e.Args {
+			sym := buildSymExprWithFlow(arg, params, fm)
+			if sym != nil {
+				args[i] = *sym
+			} else {
+				args[i] = SymExpr{Kind: "unknown", Args: []SymExpr{}}
+			}
+		}
+		return &SymExpr{Kind: "call", Name: name, Args: args}
+	default:
+		// SelectorExpr, BasicLit, and other leaf types do not reference
+		// flow-tracked variables; fall back to the existing builder.
+		return buildSymExpr(expr, params)
 	}
 }
 

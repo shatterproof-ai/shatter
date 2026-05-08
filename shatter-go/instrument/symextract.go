@@ -38,11 +38,24 @@ type symConstraint struct {
 // exprToSymExpr converts a Go AST expression into a symExpr tree.
 // params is the set of function parameter names for identifying symbolic variables.
 func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
+	return exprToSymExprWithFlow(expr, params, nil)
+}
+
+// exprToSymExprWithFlow is like exprToSymExpr but also resolves identifiers
+// through fm before consulting params.  When a variable name is present in fm,
+// its tracked symbolic value is returned instead of computing a fresh node.
+// Pass nil for fm to get the same behaviour as exprToSymExpr.
+func exprToSymExprWithFlow(expr ast.Expr, params map[string]bool, fm flowMap) *symExpr {
 	switch e := expr.(type) {
 	case *ast.ParenExpr:
-		return exprToSymExpr(e.X, params)
+		return exprToSymExprWithFlow(e.X, params, fm)
 
 	case *ast.Ident:
+		if fm != nil {
+			if sym, ok := fm[e.Name]; ok {
+				return sym
+			}
+		}
 		if params[e.Name] {
 			return &symExpr{Kind: "param", Name: e.Name, Path: []string{}}
 		}
@@ -68,8 +81,8 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 		return &symExpr{
 			Kind:  "bin_op",
 			Op:    op,
-			Left:  exprToSymExpr(e.X, params),
-			Right: exprToSymExpr(e.Y, params),
+			Left:  exprToSymExprWithFlow(e.X, params, fm),
+			Right: exprToSymExprWithFlow(e.Y, params, fm),
 		}
 
 	case *ast.UnaryExpr:
@@ -87,7 +100,7 @@ func exprToSymExpr(expr ast.Expr, params map[string]bool) *symExpr {
 		return &symExpr{
 			Kind:    "un_op",
 			Op:      op,
-			Operand: exprToSymExpr(e.X, params),
+			Operand: exprToSymExprWithFlow(e.X, params, fm),
 		}
 
 	case *ast.SelectorExpr:
