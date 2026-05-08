@@ -319,6 +319,30 @@ uses custom generators, the producer side calls `Generate` on a single
 generator-frontend (today's behavior, preserved). Revisit only if
 benchmarks justify generator-side parallelism.
 
+### 7.4 Generator Thread Count
+
+str-5e1i closes the remaining `generator thread count` question without
+adding a public knob.
+
+Do **not** add `--generator-threads` until profiling shows candidate
+production, not observer `Execute` latency, is the limiting stage. The
+current producer is deliberately single-owner because it mutates shared
+exploration state in a strict order:
+
+- seeded `StdRng` state,
+- `MetaStrategy::next()` / feedback-sensitive candidate ordering,
+- custom-generator prefetch cursors,
+- per-iteration mock generation,
+- live-first mock overrides learned from observer results, and
+- duplicate suppression fingerprints.
+
+Parallel producers would need to serialize those state transitions or
+partition them with a new deterministic merge contract. That added
+coordination would erase most plausible throughput gain for the present
+random observer pool, where candidate construction is cheap and observer
+subprocess round-trips dominate. The practical tuning knobs remain
+`observer_pool` and `candidate_queue_capacity`.
+
 ## 8. Required Regression Fixtures
 
 These must exist before str-frc.3 closes; str-frc.5 adds the queue-policy
@@ -374,6 +398,9 @@ team-lead applies any beads edits.
   str-frc.7 as "deferred, documented here," that is supported by this
   spec. Otherwise str-frc.7's acceptance criterion ("documented decision")
   is met by linking to §7.3.
+- **str-5e1i (Generator thread count):** §7.4 records the decision not
+  to implement a generator-thread primitive or public knob without
+  profiling evidence that candidate production is the bottleneck.
 
 ## 10. Open Questions
 
