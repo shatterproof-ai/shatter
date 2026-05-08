@@ -69,6 +69,21 @@ impl HarnessStorage {
         project_root.join("shatter-artifacts")
     }
 
+    /// Resolve the artifact root, honoring `SHATTER_ARTIFACT_DIR` if set.
+    ///
+    /// Used by explore/scan output writers so callers (the gauntlet, CI,
+    /// external audit runs) can redirect repo-local artifact writes to a
+    /// temporary directory without modifying the project layout.
+    pub fn resolve_artifact_root(project_root: &Path) -> PathBuf {
+        if let Some(override_dir) = std::env::var_os(ENV_ARTIFACT_DIR) {
+            let p = PathBuf::from(override_dir);
+            if !p.as_os_str().is_empty() {
+                return p;
+            }
+        }
+        Self::default_artifact_dir(project_root)
+    }
+
     /// Reusable harness/build cache directory.
     pub fn cache_root(&self) -> &Path {
         &self.cache_root
@@ -136,6 +151,50 @@ mod tests {
         let root = Path::new("/home/user/project");
         assert_eq!(
             HarnessStorage::default_artifact_dir(root),
+            PathBuf::from("/home/user/project/shatter-artifacts")
+        );
+    }
+
+    // Env-var mutating tests share process state. Serialize them so they
+    // don't race with one another or with the env_vars test.
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn resolve_artifact_root_falls_back_to_default_when_env_unset() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        // SAFETY: serialized via ENV_TEST_LOCK; no other thread reads/writes
+        // SHATTER_ARTIFACT_DIR while this test runs.
+        unsafe { std::env::remove_var(ENV_ARTIFACT_DIR) };
+        let root = Path::new("/home/user/project");
+        assert_eq!(
+            HarnessStorage::resolve_artifact_root(root),
+            PathBuf::from("/home/user/project/shatter-artifacts")
+        );
+    }
+
+    #[test]
+    fn resolve_artifact_root_honors_env_var_when_set() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        // SAFETY: serialized via ENV_TEST_LOCK.
+        unsafe { std::env::set_var(ENV_ARTIFACT_DIR, "/tmp/gauntlet-artifacts") };
+        let root = Path::new("/home/user/project");
+        let resolved = HarnessStorage::resolve_artifact_root(root);
+        // SAFETY: serialized via ENV_TEST_LOCK.
+        unsafe { std::env::remove_var(ENV_ARTIFACT_DIR) };
+        assert_eq!(resolved, PathBuf::from("/tmp/gauntlet-artifacts"));
+    }
+
+    #[test]
+    fn resolve_artifact_root_ignores_empty_env_var() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        // SAFETY: serialized via ENV_TEST_LOCK.
+        unsafe { std::env::set_var(ENV_ARTIFACT_DIR, "") };
+        let root = Path::new("/home/user/project");
+        let resolved = HarnessStorage::resolve_artifact_root(root);
+        // SAFETY: serialized via ENV_TEST_LOCK.
+        unsafe { std::env::remove_var(ENV_ARTIFACT_DIR) };
+        assert_eq!(
+            resolved,
             PathBuf::from("/home/user/project/shatter-artifacts")
         );
     }

@@ -22,9 +22,13 @@ TOTAL_STEP_WALL_MS=0
 # Use temporary directories so the gauntlet never pollutes repo-local state
 # and never contends with Cargo's workspace artifact lock (avoids silent stalls
 # when another cargo command is active).
-export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE CARGO_TARGET_DIR
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR SHATTER_ARTIFACT_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE CARGO_TARGET_DIR
 SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
 SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
+# Redirect explore/scan artifact writes (shatter-artifacts/) out of the repo
+# so the gauntlet does not leave multi-GB ignored output behind. See
+# str-jeen.58.
+SHATTER_ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-artifacts.XXXXXX")"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")}"
 GOCACHE="${GOCACHE:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")}"
@@ -41,7 +45,7 @@ ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-gauntlet-errors.XXXXXX")"
 STEP_ERRORS=0
 EXAMPLES_ROOT=""
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
