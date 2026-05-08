@@ -26,7 +26,7 @@ Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-s
 
 ## Loop Snapshot Parity Contract
 
-Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map; TypeScript remains the frontend with symbolic local snapshot contents.
+Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
 
 ## Prepare Parity Contract
 

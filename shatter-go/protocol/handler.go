@@ -898,7 +898,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	}
 
 	if cachedAnalysis != nil && len(result.LoopBodyStates) == 0 {
-		result.LoopBodyStates = buildLoopBodyStatesFromScopeEvents(cachedAnalysis.Loops, result.ScopeEvents)
+		result.LoopBodyStates = buildLoopBodyStatesFromAnalysis(cachedAnalysis, result.ScopeEvents)
 	}
 	return mapExecuteResult(resp, result, timing)
 }

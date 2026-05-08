@@ -43,7 +43,7 @@ TS emits `loop_body_states` in execute responses for supported canonical counted
 
 Wire shape: `loop_body_states: [{ loop_id, iteration, locals }]` where `locals` is a map of identifier-local names to `SymExpr`.
 
-Go and Rust also emit `loop_body_states` using the shared `loop_id` and zero-based `iteration` contract. Their `locals` maps are currently empty; TS remains the frontend that emits symbolic local snapshot contents. See `protocol/parity-matrix.yaml` `loop-body-states-typescript-only`.
+Go and Rust also emit `loop_body_states` using the shared `loop_id` and zero-based `iteration` contract. Go emits symbolic locals for a narrow counted-loop accumulator slice; Rust currently emits empty `locals` maps because its runtime hook has no source-level symbolic environment. See `protocol/parity-matrix.yaml` `loop-body-states-typescript-only`.
 
 ## Side Effect Parity Contract
 
