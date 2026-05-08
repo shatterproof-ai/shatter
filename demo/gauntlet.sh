@@ -246,8 +246,16 @@ run_cmd() {
         fi
         # Wait for tee subprocesses to flush
         wait 2>/dev/null || true
-        # Scan for error indicators in the captured output
-        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error'
+        # Scan for error indicators in the captured output. Patterns cover:
+        # - generic process-level signals ([error], panic, SIGSEGV, ...)
+        # - scan summary lines reporting non-zero error count
+        #   (e.g. "Scan complete: 43 function(s) tested, 0 skipped, 2 error(s)")
+        # - scan report rows whose outcome is FAIL (markdown table cells like
+        #   "| FAIL | error_only | `computeStats` | ...").
+        # str-jeen.57: previously only the first pattern group was checked, so
+        # scan FAIL rows and "N error(s)" summaries did not affect gauntlet
+        # status.
+        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
         if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
             echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
             grep -iE "$error_pattern" "$output_tmp" \
