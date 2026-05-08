@@ -1,6 +1,7 @@
 package instrument
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -232,4 +233,194 @@ func TestBoolLiterals(t *testing.T) {
 			t.Errorf("%s: got value=%v, want %v", tc.input, sym.Value, tc.value)
 		}
 	}
+}
+
+// ── exprToSymExprWithFlow ─────────────────────────────────────────────────────
+
+func TestExprToSymExprWithFlow_ResolvesFlowMapEntry(t *testing.T) {
+	// A variable tracked in the flow map resolves to its symbolic value.
+	fm := flowMap{"label": constInt(42)}
+	expr, _ := parser.ParseExpr("label")
+	sym := exprToSymExprWithFlow(expr, map[string]bool{}, fm)
+	if sym.Kind != "const" || sym.Value.(int64) != 42 {
+		t.Errorf("got %+v, want const int 42", sym)
+	}
+}
+
+func TestExprToSymExprWithFlow_ParamFallback(t *testing.T) {
+	// A name not in the flow map falls back to param resolution.
+	fm := flowMap{"other": constInt(1)}
+	expr, _ := parser.ParseExpr("x > 0")
+	params := map[string]bool{"x": true}
+	sym := exprToSymExprWithFlow(expr, params, fm)
+	if sym.Kind != "bin_op" || sym.Op != "gt" {
+		t.Fatalf("got kind=%q op=%q, want bin_op gt", sym.Kind, sym.Op)
+	}
+	if sym.Left.Kind != "param" || sym.Left.Name != "x" {
+		t.Errorf("left = %+v, want param x", sym.Left)
+	}
+}
+
+func TestExprToSymExprWithFlow_NilFmMatchesExprToSymExpr(t *testing.T) {
+	expr, _ := parser.ParseExpr("x > 10")
+	params := map[string]bool{"x": true}
+	without := exprToSymExpr(expr, params)
+	withNil := exprToSymExprWithFlow(expr, params, nil)
+	if without.Kind != withNil.Kind || without.Op != withNil.Op {
+		t.Errorf("nil fm: got %+v, want %+v", withNil, without)
+	}
+}
+
+func TestExprToSymExprWithFlow_SubexprResolution(t *testing.T) {
+	// label is tracked as const(5); the expression "label + 1" should resolve
+	// the label operand through the flow map → bin_op(add, const(5), const(1)).
+	fm := flowMap{"label": constInt(5)}
+	expr, _ := parser.ParseExpr("label + 1")
+	sym := exprToSymExprWithFlow(expr, map[string]bool{}, fm)
+	if sym.Kind != "bin_op" || sym.Op != "add" {
+		t.Fatalf("kind=%q op=%q, want bin_op add", sym.Kind, sym.Op)
+	}
+	if sym.Left.Kind != "const" || sym.Left.Value.(int64) != 5 {
+		t.Errorf("left = %+v, want const int 5 from flow map", sym.Left)
+	}
+}
+
+// ── walkStmtsForFlow ──────────────────────────────────────────────────────────
+
+func TestWalkStmtsForFlow_SimpleAssign(t *testing.T) {
+	// label := x + 1 seeds the flow map with a bin_op.
+	src := `package p
+func f(x int) {
+	label := x + 1
+	_ = label
+}`
+	fm := parseAndWalkFirstFunc(t, src)
+	got, ok := fm["label"]
+	if !ok {
+		t.Fatal("label not in flow map")
+	}
+	if got.Kind != "bin_op" || got.Op != "add" {
+		t.Errorf("kind=%q op=%q, want bin_op add", got.Kind, got.Op)
+	}
+	if got.Left.Kind != "param" || got.Left.Name != "x" {
+		t.Errorf("left = %+v, want param x", got.Left)
+	}
+}
+
+func TestWalkStmtsForFlow_ConditionalReassignment(t *testing.T) {
+	// var label int
+	// if x > 0 { label = 1 } else { label = 2 }
+	// → label becomes ite(x>0, const(1), const(2)).
+	// Note: using 2 instead of -1 to keep both branches as BasicLit (positive integers).
+	src := `package p
+func f(x int) int {
+	var label int
+	if x > 0 {
+		label = 1
+	} else {
+		label = 2
+	}
+	return label
+}`
+	fm := parseAndWalkFirstFunc(t, src)
+	got, ok := fm["label"]
+	if !ok {
+		t.Fatal("label not in flow map")
+	}
+	if got.Kind != "ite" {
+		t.Fatalf("kind = %q, want ite", got.Kind)
+	}
+	if got.Condition == nil || got.Condition.Kind != "bin_op" || got.Condition.Op != "gt" {
+		t.Errorf("condition = %+v, want bin_op gt", got.Condition)
+	}
+	if got.ThenExpr == nil || got.ThenExpr.Kind != "const" {
+		t.Errorf("then_expr = %+v, want const int 1", got.ThenExpr)
+	}
+	if got.ElseExpr == nil || got.ElseExpr.Kind != "const" {
+		t.Errorf("else_expr = %+v, want const int 2", got.ElseExpr)
+	}
+}
+
+func TestWalkStmtsForFlow_IfOnly_NoElse(t *testing.T) {
+	// label := 0
+	// if x > 0 { label = 1 }
+	// → ite(x>0, const(1), const(0)).
+	src := `package p
+func f(x int) int {
+	label := 0
+	if x > 0 {
+		label = 1
+	}
+	return label
+}`
+	fm := parseAndWalkFirstFunc(t, src)
+	got, ok := fm["label"]
+	if !ok {
+		t.Fatal("label not in flow map")
+	}
+	if got.Kind != "ite" {
+		t.Fatalf("kind = %q, want ite", got.Kind)
+	}
+	if got.ThenExpr == nil || got.ThenExpr.Kind != "const" {
+		t.Errorf("then_expr = %+v, want const", got.ThenExpr)
+	}
+	if got.ElseExpr == nil || got.ElseExpr.Kind != "const" {
+		t.Errorf("else_expr = %+v, want const (pre-if value)", got.ElseExpr)
+	}
+}
+
+func TestWalkStmtsForFlow_NoReassignment_NoIte(t *testing.T) {
+	// label := 42; if x > 0 { /* no label reassignment */ }
+	// → label stays const(42), no ite emitted.
+	src := `package p
+func f(x int) int {
+	label := 42
+	if x > 0 {
+		_ = x
+	}
+	return label
+}`
+	fm := parseAndWalkFirstFunc(t, src)
+	got, ok := fm["label"]
+	if !ok {
+		t.Fatal("label not in flow map")
+	}
+	if got.Kind == "ite" {
+		t.Errorf("expected no ite when label is not reassigned in branches")
+	}
+	if got.Kind != "const" {
+		t.Errorf("kind = %q, want const", got.Kind)
+	}
+}
+
+// parseAndWalkFirstFunc parses src, extracts the first function's body and
+// params, seeds the flow map from params, and returns the result of
+// walkStmtsForFlow over the body statements.
+func parseAndWalkFirstFunc(t *testing.T, src string) flowMap {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "t.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(file.Decls) == 0 {
+		t.Fatal("no declarations in source")
+	}
+	fn, ok := file.Decls[0].(*ast.FuncDecl)
+	if !ok || fn.Body == nil {
+		t.Fatal("first declaration is not a function with a body")
+	}
+	params := make(map[string]bool)
+	if fn.Type.Params != nil {
+		for _, field := range fn.Type.Params.List {
+			for _, name := range field.Names {
+				params[name.Name] = true
+			}
+		}
+	}
+	fm := make(flowMap, len(params))
+	for name := range params {
+		fm[name] = &symExpr{Kind: "param", Name: name, Path: []string{}}
+	}
+	return walkStmtsForFlow(fn.Body.List, params, fm)
 }
