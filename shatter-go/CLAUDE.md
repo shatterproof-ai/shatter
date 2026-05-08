@@ -53,7 +53,7 @@ Go can deserialize `ite` SymExpr nodes but does not produce them — Go lacks da
 
 ## Loop Snapshot Parity Contract
 
-Go emits `loop_body_states` for analyzed canonical counted loops by combining cached `FunctionAnalysis.loops` metadata with runtime `scope_events`. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map; TypeScript remains the frontend with symbolic local snapshot contents.
+Go emits `loop_body_states` for analyzed canonical counted loops by combining cached `FunctionAnalysis.loops` metadata with runtime `scope_events`. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. For the supported source-AST slice, Go also emits symbolic `locals` for the induction variable and simple identifier accumulators updated with `+=`, `-=`, `*=`, `/=`, `++`, or `--`.
 
 ## Side Effect Parity Contract
 

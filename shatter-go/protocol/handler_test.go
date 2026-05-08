@@ -158,6 +158,54 @@ func TestBuildLoopBodyStatesFromScopeEvents(t *testing.T) {
 	assertState(2, 2, 1)
 }
 
+func TestBuildLoopBodyStatesFromAnalysisIncludesLocals(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "target.go")
+	src := `package main
+
+func sumTo(n int) int {
+	total := 0
+	for i := 0; i < n; i++ {
+		total += i
+	}
+	return total
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := &FunctionAnalysis{
+		Name:       "sumTo",
+		SourceFile: tmp,
+		Loops: []LoopInfo{{
+			LoopID: 0,
+			Line:   5,
+			InductionVar: &InductionVar{
+				Name: "i",
+			},
+		}},
+	}
+	states := buildLoopBodyStatesFromAnalysis(analysis, []json.RawMessage{
+		json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":0}}`),
+		json.RawMessage(`{"kind":"scope","event":{"kind":"loop_enter","loop_id":0}}`),
+	})
+
+	if len(states) != 2 {
+		t.Fatalf("loop body states len = %d, want 2", len(states))
+	}
+	converted := convertLoopBodyStates(states)
+	first := converted[0].Locals
+	if first["i"].Kind != "const" || first["i"].Value != float64(0) {
+		t.Fatalf("first locals[i] = %+v, want const int 0", first["i"])
+	}
+	if first["total"].Kind != "const" || first["total"].Value != float64(0) {
+		t.Fatalf("first locals[total] = %+v, want const int 0", first["total"])
+	}
+	if converted[1].Locals["total"].Kind != "bin_op" {
+		t.Fatalf("second locals[total] = %+v, want accumulator bin_op", converted[1].Locals["total"])
+	}
+}
+
 func TestHandshakeResponse(t *testing.T) {
 	resp := sendRecv(t, reqJSON(42, "handshake", `"capabilities":["analyze"]`))
 	if resp.Status != "handshake" {
@@ -1798,6 +1846,20 @@ func sumTo(n int) int {
 		if state.Iteration != i {
 			t.Fatalf("state[%d].iteration = %d, want %d", i, state.Iteration, i)
 		}
+	}
+	first := responses[2].LoopBodyStates[0].Locals
+	if first["i"].Kind != "const" || first["i"].Value != float64(0) {
+		t.Fatalf("first locals[i] = %+v, want const int 0", first["i"])
+	}
+	if first["total"].Kind != "const" || first["total"].Value != float64(0) {
+		t.Fatalf("first locals[total] = %+v, want const int 0", first["total"])
+	}
+	second := responses[2].LoopBodyStates[1].Locals
+	if second["i"].Kind != "bin_op" {
+		t.Fatalf("second locals[i] = %+v, want bin_op from increment", second["i"])
+	}
+	if second["total"].Kind != "bin_op" {
+		t.Fatalf("second locals[total] = %+v, want bin_op from accumulator", second["total"])
 	}
 }
 
