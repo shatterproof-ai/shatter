@@ -226,7 +226,15 @@ func tokenToOp(tok token.Token) string {
 // If the expression can be represented symbolically, returns kind "expr".
 // Otherwise returns kind "unknown" with the source text as a hint.
 func extractConstraint(fset *token.FileSet, expr ast.Expr, params map[string]bool) symConstraint {
-	sym := exprToSymExpr(expr, params)
+	return extractConstraintWithFlow(fset, expr, params, nil)
+}
+
+// extractConstraintWithFlow is like extractConstraint but resolves identifiers
+// through fm before consulting params.  When a variable name is present in fm,
+// its tracked symbolic value is returned instead of computing a fresh node.
+// Pass nil for fm to get the same behaviour as extractConstraint.
+func extractConstraintWithFlow(fset *token.FileSet, expr ast.Expr, params map[string]bool, fm flowMap) symConstraint {
+	sym := exprToSymExprWithFlow(expr, params, fm)
 	if sym.Kind != "unknown" {
 		return symConstraint{Kind: "expr", Expr: sym}
 	}
