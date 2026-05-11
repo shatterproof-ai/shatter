@@ -49,7 +49,7 @@ import type { SetupModule } from "./setup-loader.js";
 
 /** Supported capabilities for this frontend. */
 const SUPPORTED_CAPABILITIES = [
-  "analyze", "execute", "instrument", "prepare", "setup", "generate",
+  "analyze", "execute", "instrument", "prepare", "setup", "teardown", "generate",
   "complex_type:date", "complex_type:date_time", "complex_type:duration",
   "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",

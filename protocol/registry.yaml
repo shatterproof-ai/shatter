@@ -414,6 +414,7 @@ frontends:
       - instrument
       - prepare
       - setup
+      - teardown
       - generate
     complex_type_capabilities:
       - date

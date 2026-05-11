@@ -1472,12 +1472,13 @@ export function usesAlias(): number {
   });
 
   describe("capabilities", () => {
-    it("includes setup and generate in capabilities", async () => {
+    it("includes setup, teardown, and generate in capabilities", async () => {
       const { response } = await handleRequest(
         makeRequest({ command: "handshake", capabilities: [] }),
       );
       if (response.status === "handshake") {
         expect(response.capabilities).toContain("setup");
+        expect(response.capabilities).toContain("teardown");
         expect(response.capabilities).toContain("generate");
       }
     });
