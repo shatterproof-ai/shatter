@@ -574,16 +574,15 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	params := extractParamsWithContext(fn, info, fc)
 	returnType := extractReturnType(fn, info)
 	paramNames := paramNameSet(params)
-	branches := extractBranches(fset, fn.Body, paramNames)
+	// Build the data-flow map for this function body.  The map threads through
+	// extractBranches so that branch conditions referencing conditionally-assigned
+	// local variables resolve to ite SymExpr nodes (str-1hlk.17.3).
+	fm := walkBodyForFlow(fn.Body, paramNames)
+
+	branches := extractBranches(fset, fn.Body, paramNames, fm)
 	loops := extractLoops(fset, fn.Body, paramNames)
 	deps := extractDependencies(fset, fn.Body, info)
 	literals := extractLiterals(fn, file)
-
-	// Build the data-flow map for this function body.  The map is not yet
-	// plumbed into branch-constraint extraction — that wiring lands in
-	// str-1hlk.17.3.  Computing it here ensures the infrastructure is
-	// exercised and ready for the next step.
-	_ = walkBodyForFlow(fn.Body, paramNames)
 
 	startLine := fset.Position(fn.Pos()).Line
 	endLine := fset.Position(fn.End()).Line
@@ -1120,22 +1119,29 @@ func typeInfoFromAST(expr ast.Expr) TypeInfo {
 
 // --- Branch Extraction ---
 
-func extractBranches(fset *token.FileSet, body *ast.BlockStmt, params map[string]bool) []BranchInfo {
+// extractBranches walks the function body collecting BranchInfo for every
+// control-flow decision point. fm is the post-body analyzerFlowMap produced
+// by walkBodyForFlow; it is threaded into each branch-condition builder so
+// that local variables whose symbolic value is tracked (e.g. a variable
+// conditionally assigned across an if/else) resolve to ite SymExpr nodes
+// rather than "unknown". Pass nil for fm to get the pre-str-1hlk.17.3
+// behaviour (params-only resolution).
+func extractBranches(fset *token.FileSet, body *ast.BlockStmt, params map[string]bool, fm analyzerFlowMap) []BranchInfo {
 	var branches []BranchInfo
 	nextID := 0
 
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch stmt := n.(type) {
 		case *ast.IfStmt:
-			branches = append(branches, ifBranch(fset, stmt, params, &nextID))
+			branches = append(branches, ifBranch(fset, stmt, params, fm, &nextID))
 		case *ast.SwitchStmt:
-			branches = append(branches, switchBranches(fset, stmt, params, &nextID)...)
+			branches = append(branches, switchBranches(fset, stmt, params, fm, &nextID)...)
 		case *ast.ForStmt:
 			if stmt.Cond != nil {
-				branches = append(branches, forBranch(fset, stmt, params, &nextID))
+				branches = append(branches, forBranch(fset, stmt, params, fm, &nextID))
 			}
 		case *ast.RangeStmt:
-			branches = append(branches, rangeBranch(fset, stmt, params, &nextID))
+			branches = append(branches, rangeBranch(fset, stmt, params, fm, &nextID))
 		case *ast.SelectStmt:
 			branches = append(branches, selectBranches(fset, stmt, &nextID)...)
 		}
@@ -1342,11 +1348,11 @@ func inductionVarModifiedInBody(body *ast.BlockStmt, varName string) bool {
 	return modified
 }
 
-func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, nextID *int) BranchInfo {
+func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, fm analyzerFlowMap, nextID *int) BranchInfo {
 	id := *nextID
 	*nextID++
 	condText := exprText(fset, stmt.Cond)
-	cond := buildSymExpr(stmt.Cond, params)
+	cond := buildSymExprWithFlow(stmt.Cond, params, fm)
 	branchType := "if"
 	return BranchInfo{
 		ID:            id,
@@ -1364,7 +1370,7 @@ func ifBranch(fset *token.FileSet, stmt *ast.IfStmt, params map[string]bool, nex
 // seen) from exceeding the analyzer-reported denominator (str-qo1.11). For a
 // multi-literal case clause (`case A, B:`) the analyzer surfaces the
 // disjunction in both ConditionText and the symbolic Condition (str-5jen).
-func switchBranches(fset *token.FileSet, stmt *ast.SwitchStmt, params map[string]bool, nextID *int) []BranchInfo {
+func switchBranches(fset *token.FileSet, stmt *ast.SwitchStmt, params map[string]bool, fm analyzerFlowMap, nextID *int) []BranchInfo {
 	var branches []BranchInfo
 	for _, clause := range stmt.Body.List {
 		cc, ok := clause.(*ast.CaseClause)
@@ -1373,7 +1379,7 @@ func switchBranches(fset *token.FileSet, stmt *ast.SwitchStmt, params map[string
 		}
 		id := *nextID
 		*nextID++
-		condText, cond := switchCaseConditionText(fset, stmt.Tag, cc, params)
+		condText, cond := switchCaseConditionText(fset, stmt.Tag, cc, params, fm)
 		branches = append(branches, BranchInfo{
 			ID:            id,
 			Line:          fset.Position(cc.Pos()).Line,
@@ -1395,6 +1401,7 @@ func switchCaseConditionText(
 	tag ast.Expr,
 	cc *ast.CaseClause,
 	params map[string]bool,
+	fm analyzerFlowMap,
 ) (string, *SymExpr) {
 	if cc.List == nil {
 		return "default", nil
@@ -1409,9 +1416,9 @@ func switchCaseConditionText(
 		}
 	}
 	condText := strings.Join(parts, conditionJoiner)
-	cond := buildSwitchCaseSymExpr(tag, cc.List[0], params)
+	cond := buildSwitchCaseSymExpr(tag, cc.List[0], params, fm)
 	for _, lit := range cc.List[1:] {
-		right := buildSwitchCaseSymExpr(tag, lit, params)
+		right := buildSwitchCaseSymExpr(tag, lit, params, fm)
 		cond = &SymExpr{
 			Kind:  "bin_op",
 			Op:    "or",
@@ -1423,26 +1430,26 @@ func switchCaseConditionText(
 	return condText, cond
 }
 
-func forBranch(fset *token.FileSet, stmt *ast.ForStmt, params map[string]bool, nextID *int) BranchInfo {
+func forBranch(fset *token.FileSet, stmt *ast.ForStmt, params map[string]bool, fm analyzerFlowMap, nextID *int) BranchInfo {
 	id := *nextID
 	*nextID++
 	return BranchInfo{
 		ID:            id,
 		Line:          fset.Position(stmt.Pos()).Line,
 		ConditionText: exprText(fset, stmt.Cond),
-		Condition:     buildSymExpr(stmt.Cond, params),
+		Condition:     buildSymExprWithFlow(stmt.Cond, params, fm),
 		BranchType:    "for",
 	}
 }
 
-func rangeBranch(fset *token.FileSet, stmt *ast.RangeStmt, params map[string]bool, nextID *int) BranchInfo {
+func rangeBranch(fset *token.FileSet, stmt *ast.RangeStmt, params map[string]bool, fm analyzerFlowMap, nextID *int) BranchInfo {
 	id := *nextID
 	*nextID++
 	return BranchInfo{
 		ID:            id,
 		Line:          fset.Position(stmt.Pos()).Line,
 		ConditionText: "range " + exprText(fset, stmt.X),
-		Condition:     buildSymExpr(stmt.X, params),
+		Condition:     buildSymExprWithFlow(stmt.X, params, fm),
 		BranchType:    "for",
 	}
 }
@@ -1908,12 +1915,12 @@ func callSymExpr(call *ast.CallExpr, params map[string]bool) *SymExpr {
 	}
 }
 
-func buildSwitchCaseSymExpr(tag ast.Expr, caseExpr ast.Expr, params map[string]bool) *SymExpr {
+func buildSwitchCaseSymExpr(tag ast.Expr, caseExpr ast.Expr, params map[string]bool, fm analyzerFlowMap) *SymExpr {
 	if tag == nil {
-		return buildSymExpr(caseExpr, params)
+		return buildSymExprWithFlow(caseExpr, params, fm)
 	}
-	left := buildSymExpr(tag, params)
-	right := buildSymExpr(caseExpr, params)
+	left := buildSymExprWithFlow(tag, params, fm)
+	right := buildSymExprWithFlow(caseExpr, params, fm)
 	return &SymExpr{
 		Kind:  "bin_op",
 		Op:    "eq",

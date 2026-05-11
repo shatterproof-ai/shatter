@@ -34,6 +34,7 @@ use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult};
 use shatter_core::planner_consumer::fetch_planner_seeds;
 use shatter_core::protocol::{Command as ProtoCommand, FunctionAnalysis, ResponseResult};
+use shatter_core::sym_expr::SymExpr;
 
 // ---------------------------------------------------------------------------
 // Shared helpers (mirror the TS / Rust counterparts).
@@ -445,6 +446,112 @@ async fn e2e_go_variadic_sum_discovers_branches() {
 
     let return_values = return_value_set(&result);
     for expected in ["\"above\"", "\"below\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: ite SymExpr in branch conditions (str-1hlk.17.3).
+//
+// Categorize(x int) int -- 2 paths:
+//   1. x > 0  -> label=1  -> label > 0 is true  -> returns 2
+//   2. x <= 0 -> label=-1 -> label > 0 is false -> returns 0
+//
+// With the flow-map-aware branch extraction the second branch condition
+// resolves `label` to ite{x>0, 1, -1}, so the static condition becomes
+// bin_op{gt, ite{...}, 0}.  This test asserts:
+//   a) the static analysis emits an ite SymExpr for branch 1's condition, AND
+//   b) Z3 drives the full pipeline to both return values.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_categorize_ite_in_branch_condition() {
+    let file = repo_examples_go_dir().join("05-conditional-merge.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("categorize-ite").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Categorize").await;
+    assert_eq!(analysis.params.len(), 1, "Categorize takes 1 param (x int)");
+    assert!(
+        analysis.branches.len() >= 2,
+        "Categorize should have >= 2 branches; got {}",
+        analysis.branches.len()
+    );
+
+    // Assert that branch 1's condition contains an ite SymExpr as its left
+    // operand — the key outcome of str-1hlk.17.3 (flow-map wired into
+    // extractBranches so that `label` resolves to ite{x>0, 1, -1}).
+    let br1 = &analysis.branches[1];
+    let cond1 = br1.condition.as_ref().expect("branch 1 condition is None");
+    let left1 = match cond1 {
+        SymExpr::BinOp { left, .. } => left.as_ref(),
+        other => panic!(
+            "branch 1 condition should be BinOp (label > 0); got {:?}",
+            other
+        ),
+    };
+    match left1 {
+        SymExpr::Ite { condition, .. } => {
+            match condition.as_ref() {
+                SymExpr::BinOp { .. } => {}
+                other => panic!("ite.condition should be BinOp (x > 0); got {:?}", other),
+            }
+        }
+        other => panic!(
+            "branch 1 BinOp.left should be Ite (label resolved via flow map); got {:?}",
+            other
+        ),
+    };
+
+    instrument_function(&mut frontend, &file_str, "Categorize").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!(3)],
+        vec![serde_json::json!(-2)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "Categorize",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["2", "0"] {
         assert!(
             return_values.contains(expected),
             "should discover branch returning {expected}; found: {return_values:?}"

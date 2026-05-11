@@ -49,7 +49,23 @@ Run after any change to: the Go analyzer, instrumentor, launcher, wrapper genera
 
 ## Ite SymExpr Parity Contract
 
-Go can deserialize `ite` SymExpr nodes but does not produce them — Go lacks data flow tracking; `exprToSymExpr` only resolves function parameters. Adding SSA phi-node merging is a separate effort. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
+Go produces `ite` SymExpr nodes from conditional variable reassignment across
+if/else branches.  The mechanism:
+
+1. `instrument/flow.go` — `flowMap`, `snapshot`, `mergeFlowMaps` (str-1hlk.17.1)
+2. `instrument/flowwalk.go` — `walkStmtsForFlow`, `applyIfToFlow` (str-1hlk.17.2)
+3. `protocol/analyzer.go` — `walkBodyForFlow` builds the body-level flow map;
+   `extractBranches` threads it through `buildSymExprWithFlow` so branch
+   conditions referencing conditionally-assigned local variables resolve to
+   `ite{condition, then_expr, else_expr}` (str-1hlk.17.3).
+
+Example: a variable `label` assigned 1 in the then-branch and -1 in the
+else-branch produces `label = ite(x > 0, const(1), un_op(neg, const(1)))`.
+A subsequent branch `label > 0` then surfaces as
+`bin_op(gt, ite{...}, const(0))` in `FunctionAnalysis.Branches[i].Condition`.
+
+Rust frontend analyze is still a stub and does not produce `ite`.
+See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
 ## Loop Snapshot Parity Contract
 

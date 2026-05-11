@@ -487,6 +487,86 @@ func TestAnalyzeProcessOrderBranchReferencesStructField(t *testing.T) {
 	}
 }
 
+// TestAnalyzeCategorizeIteInBranchCondition is the str-1hlk.17.3 integration
+// test.  It feeds examples/go/05-conditional-merge.go::Categorize to the
+// analyzer and asserts that the second branch condition contains an ite
+// SymExpr — the result of threading the data-flow map through
+// extractBranches.
+//
+// Categorize assigns `label` (1 or -1) conditionally across an if/else, then
+// tests `label > 0`.  After the flow-map walk, label's symbolic value is
+// ite{condition: x>0, then_expr: 1, else_expr: -1}.  The second branch
+// condition therefore resolves to  bin_op{gt, ite{...}, const{0}}.
+func TestAnalyzeCategorizeIteInBranchCondition(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	// Navigate from shatter-go/protocol/ to repo root (two levels up)
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	p := filepath.Join(repoRoot, "examples", "go", "05-conditional-merge.go")
+	if _, err := os.Stat(p); err != nil {
+		t.Skipf("example file not found at %s: %v", p, err)
+	}
+
+	results, err := AnalyzeFile(p, "Categorize")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	fn := results[0]
+	if len(fn.Branches) < 2 {
+		t.Fatalf("Categorize has %d branches, want >= 2 (if x>0 and if label>0)", len(fn.Branches))
+	}
+
+	// Branch 0: plain parameter comparison — x > 0.
+	br0 := fn.Branches[0]
+	if br0.Condition == nil {
+		t.Fatal("branch 0 condition is nil")
+	}
+	if br0.Condition.Kind != "bin_op" || br0.Condition.Op != "gt" {
+		t.Errorf("branch 0: want bin_op/gt, got kind=%q op=%q", br0.Condition.Kind, br0.Condition.Op)
+	}
+	if br0.Condition.Left == nil || br0.Condition.Left.Kind != "param" {
+		t.Errorf("branch 0 left: want param, got %+v", br0.Condition.Left)
+	}
+
+	// Branch 1: label > 0 — label resolves to ite(x>0, 1, -1).
+	br1 := fn.Branches[1]
+	if br1.Condition == nil {
+		t.Fatal("branch 1 condition is nil")
+	}
+	if br1.Condition.Kind != "bin_op" || br1.Condition.Op != "gt" {
+		t.Errorf("branch 1: want bin_op/gt, got kind=%q op=%q", br1.Condition.Kind, br1.Condition.Op)
+	}
+	left1 := br1.Condition.Left
+	if left1 == nil {
+		t.Fatal("branch 1 left is nil")
+	}
+	if left1.Kind != "ite" {
+		t.Errorf("branch 1 left kind = %q, want ite (label resolves to ite via flow map)", left1.Kind)
+	}
+	// The ite condition should be x > 0.
+	if left1.Condition == nil {
+		t.Fatal("ite.condition is nil")
+	}
+	if left1.Condition.Kind != "bin_op" || left1.Condition.Op != "gt" {
+		t.Errorf("ite.condition: want bin_op/gt, got kind=%q op=%q", left1.Condition.Kind, left1.Condition.Op)
+	}
+	// then_expr = 1 (const int); else_expr = -1 which in Go AST is
+	// un_op{neg, const{1}} rather than const{-1}.
+	if left1.ThenExpr == nil || left1.ThenExpr.Kind != "const" {
+		t.Errorf("ite.then_expr: want const, got %+v", left1.ThenExpr)
+	}
+	if left1.ElseExpr == nil {
+		t.Fatal("ite.else_expr is nil")
+	}
+	// -1 is represented as un_op{neg, const{1}} at the AST level.
+	if left1.ElseExpr.Kind != "un_op" || left1.ElseExpr.Op != "neg" {
+		t.Errorf("ite.else_expr: want un_op/neg (representing -1), got kind=%q op=%q",
+			left1.ElseExpr.Kind, left1.ElseExpr.Op)
+	}
+}
+
 func TestAnalyzeSwitchCaseHasEqSymExpr(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("switches.go"), "SwitchOnString")
 	if err != nil {
@@ -1449,7 +1529,7 @@ func TestSymExprArgsNeverNull(t *testing.T) {
 	// buildSwitchCaseSymExpr
 	var tag ast.Expr = &ast.Ident{Name: "x"}
 	var caseExpr ast.Expr = &ast.BasicLit{Kind: token.INT, Value: "1"}
-	checkArgsNotNull(t, "buildSwitchCaseSymExpr", buildSwitchCaseSymExpr(tag, caseExpr, params))
+	checkArgsNotNull(t, "buildSwitchCaseSymExpr", buildSwitchCaseSymExpr(tag, caseExpr, params, nil))
 }
 
 // --- Cyclic struct regression tests (str-ipk1) ---

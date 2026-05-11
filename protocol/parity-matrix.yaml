@@ -818,22 +818,23 @@ allowed_divergences:
     description: >
       The ite SymExpr variant represents SSA phi-node merges from conditional
       variable reassignment. TypeScript produces ite expressions via data flow
-      analysis in visitStatementsForDataFlow (str-4kop). Go and Rust frontends
-      can deserialize ite (struct fields / enum variant present) but do not
-      produce ite because they lack data flow tracking. Go only resolves
-      function parameters in exprToSymExpr; Rust frontend analyze is a stub.
-    affected_frontends: [go, rust]
+      analysis in visitStatementsForDataFlow (str-4kop). Go now also produces
+      ite expressions: walkBodyForFlow builds a flow map (str-1hlk.17.1/17.2)
+      and extractBranches threads it through buildSymExprWithFlow so branch
+      conditions referencing conditionally-assigned local variables resolve to
+      ite nodes (str-1hlk.17.3). Rust frontend analyze is still a stub and
+      does not produce ite.
+    affected_frontends: [rust]
     affected_commands: [analyze]
     status: tracked
     owner: Ketan Gangatirkar
     tracking_issue: str-1hlk.17
     resolution_condition: >
-      Go frontend produces ite SymExpr nodes from conditional reassignment
-      via data flow analysis. Rust portion is deferred until full analyze
-      implementation lands and can be split into a follow-up entry then.
+      Rust frontend produces ite SymExpr nodes from conditional reassignment
+      via data flow analysis, mirroring Go and TypeScript.
     resolution: >
-      Add data flow tracking to Go frontend (separate issue). Rust frontend
-      deferred until full analyze implementation lands.
+      Go ite production resolved in str-1hlk.17.3. Rust frontend deferred
+      until full analyze implementation lands.
 
   - id: error-code-preflight-failed-typescript-only
     description: >
