@@ -6,9 +6,32 @@ If you want repo setup, beads, or contributor workflow, see [CONTRIBUTING.md](CO
 
 ## 1. Install Shatter
 
+### Latest continuous binary
+
+This is the normal path for trying Shatter or adding it to a project quickly:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | bash
+shatter --version
+```
+
+Shatter's published binaries are continuous development builds, not semver
+releases. Build tags look like `continuous-20260512-1735-abc123def456` and are
+intended to be easy to find, install, and pin.
+
+For repeatable CI, pin one exact build tag:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | BUILD=continuous-20260512-1735-abc123def456 bash
+shatter scan src/
+```
+
+Use the unpinned latest build for local use or non-blocking scheduled jobs; use
+an exact `BUILD` value for required CI gates.
+
 ### Build from source
 
-This is the most reliable path on the current repository state.
+Use this when you are developing Shatter itself or need a local source build.
 
 ```bash
 git clone https://github.com/shatterproof-ai/shatter.git
@@ -23,16 +46,6 @@ Prerequisites:
 - Node.js 22+
 - Go 1.24+
 - `libclang`
-
-### Optional release installer
-
-If you want a published release build instead of a local source build:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | bash
-```
-
-If no release artifact exists for your platform or desired version, fall back to the source build above.
 
 ## 2. Explore One Function
 

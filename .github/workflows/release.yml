@@ -181,13 +181,20 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create GitHub Release
+    name: Create continuous GitHub Release
     needs: [build-ts, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Generate release tag
-        id: tag
-        run: echo "tag=build-$(date -u '+%Y%m%d-%H%M')" >> "$GITHUB_OUTPUT"
+      - name: Generate continuous build tag
+        id: build
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          stamp="$(date -u '+%Y%m%d-%H%M')"
+          tag="continuous-${stamp}-${short_sha}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -208,18 +215,81 @@ jobs:
           cp shatter-ts/worker-bundle.js shatter-windows-x86_64/shatter-ts/
           (cd shatter-windows-x86_64 && zip -r ../shatter-windows-x86_64.zip .)
 
+      - name: Generate release manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.build.outputs.tag }}
+          CREATED_AT: ${{ steps.build.outputs.created_at }}
+          SHORT_SHA: ${{ steps.build.outputs.short_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd artifacts
+          sha256sum \
+            shatter-linux-x86_64.tar.gz \
+            shatter-linux-aarch64.tar.gz \
+            shatter-macos-x86_64.tar.gz \
+            shatter-macos-aarch64.tar.gz \
+            shatter-windows-x86_64.zip > SHA256SUMS
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          repo = os.environ["REPO"]
+          tag = os.environ["RELEASE_TAG"]
+          checksums = {}
+          for line in Path("SHA256SUMS").read_text().splitlines():
+              digest, name = line.split(maxsplit=1)
+              checksums[name] = digest
+
+          platforms = [
+              ("linux-x86_64", "shatter-linux-x86_64.tar.gz"),
+              ("linux-aarch64", "shatter-linux-aarch64.tar.gz"),
+              ("darwin-x86_64", "shatter-macos-x86_64.tar.gz"),
+              ("darwin-aarch64", "shatter-macos-aarch64.tar.gz"),
+              ("windows-x86_64", "shatter-windows-x86_64.zip"),
+          ]
+          assets = []
+          for platform, name in platforms:
+              assets.append({
+                  "platform": platform,
+                  "name": name,
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  "sha256": checksums[name],
+              })
+
+          manifest = {
+              "schema_version": 1,
+              "project": "shatter",
+              "channel": "continuous",
+              "tag": tag,
+              "created_at": os.environ["CREATED_AT"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "git_short_sha": os.environ["SHORT_SHA"],
+              "compatibility": "development build; no semver stability is implied",
+              "assets": assets,
+          }
+          Path("shatter-release.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_TAG: ${{ steps.build.outputs.tag }}
+          SHORT_SHA: ${{ steps.build.outputs.short_sha }}
           REPO: ${{ github.repository }}
         run: |
           gh release create "$RELEASE_TAG" \
             --repo "$REPO" \
-            --title "Build $RELEASE_TAG" \
-            --generate-notes \
+            --title "Continuous build $RELEASE_TAG" \
+            --notes "Continuous Shatter build from main at ${SHORT_SHA}. These binaries are easy to consume and pin, but the build name does not imply semver compatibility." \
             artifacts/shatter-linux-x86_64.tar.gz \
             artifacts/shatter-linux-aarch64.tar.gz \
             artifacts/shatter-macos-x86_64.tar.gz \
             artifacts/shatter-macos-aarch64.tar.gz \
-            artifacts/shatter-windows-x86_64.zip
+            artifacts/shatter-windows-x86_64.zip \
+            artifacts/SHA256SUMS \
+            artifacts/shatter-release.json
