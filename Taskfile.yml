@@ -218,7 +218,11 @@ tasks:
     sources:
       - .github/workflows/**/*.yml
       - .semgrep/**/*
+      - install.sh
+      - scripts/test_install_manifest.py
     cmds:
+      - bash -n install.sh
+      - python3 -m unittest scripts.test_install_manifest
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
           actionlint

@@ -27,7 +27,26 @@ See [SPEC.md](SPEC.md) for the canonical behavior reference.
 
 ## Install
 
-The most reliable path today is to build from source.
+### Install the latest continuous binary
+
+Shatter publishes continuously built GitHub Release archives for common Linux
+and macOS platforms. These releases are named like
+`continuous-20260512-1735-abc123def456`: the name identifies exactly what was
+built, but it does not imply semver compatibility or long-term API stability.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | bash
+```
+
+For repeatable CI, pin the exact build tag:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | BUILD=continuous-20260512-1735-abc123def456 bash
+```
+
+The installer reads the release manifest, verifies the archive checksum, and
+installs `shatter` into `~/.local/bin` by default. Set `INSTALL_DIR` to choose a
+different destination.
 
 ### Build from source
 
@@ -44,16 +63,6 @@ Shatter's demo, smoke, and E2E flows fetch the separate
 `https://github.com/shatterproof-ai/examples` repository into `/tmp` on demand.
 Set `SHATTER_EXAMPLES_DIR` if you want those flows to use an existing checkout
 instead of the default `/tmp/shatter-examples-main` cache.
-
-### Install a published release
-
-The repository also includes an installer script for GitHub Release assets:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | bash
-```
-
-If release assets are not available for your version or platform, build from source instead.
 
 ## Initialize a Project
 
