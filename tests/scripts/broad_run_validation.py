@@ -130,12 +130,32 @@ def assert_denominator(report: dict[str, Any], min_attempted: int) -> list[str]:
     skipped = cb.get("skipped_functions_count", 0)
     unsupported = cb.get("unsupported_functions", 0)
     total_discovered = cb.get("total_discovered_functions", 0)
-    sum_classified = completed + failed + skipped + unsupported
-    if sum_classified != attempted:
+    # str-21w2: `skipped_functions_count` now equals the length of the
+    # `skipped_functions` array (Expected + Unsupported), so it already
+    # includes `unsupported_functions`. The attempt-side identity is
+    # therefore `completed + failed + (skipped - unsupported) == attempted`
+    # because unsupported targets are filtered before any attempt. The
+    # discovery-side identity covers the full universe.
+    expected_skipped = skipped - unsupported
+    sum_attempted = completed + failed + expected_skipped
+    if sum_attempted != attempted:
         errors.append(
-            f"denominator mismatch: completed({completed}) + failed({failed}) "
-            f"+ skipped({skipped}) + unsupported({unsupported}) = {sum_classified} "
-            f"!= attempted({attempted})"
+            f"attempt denominator mismatch: completed({completed}) + failed({failed}) "
+            f"+ expected_skipped({expected_skipped}) = {sum_attempted} "
+            f"!= attempted({attempted}) "
+            f"(skipped_functions_count={skipped}, unsupported={unsupported})"
+        )
+    sum_discovered = completed + failed + skipped
+    if sum_discovered != total_discovered:
+        errors.append(
+            f"discovery denominator mismatch: completed({completed}) + failed({failed}) "
+            f"+ skipped({skipped}) = {sum_discovered} "
+            f"!= total_discovered_functions({total_discovered})"
+        )
+    if unsupported > skipped:
+        errors.append(
+            f"unsupported_functions({unsupported}) exceeds "
+            f"skipped_functions_count({skipped}); they must be a sub-count"
         )
     if attempted < min_attempted:
         errors.append(
