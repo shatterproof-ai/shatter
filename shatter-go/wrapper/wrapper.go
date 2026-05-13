@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 )
 
 // WrapperParam describes one parameter of a wrapper target, including the
@@ -34,6 +36,14 @@ type WrapperParam struct {
 	Name       string
 	GoType     string // concrete Go type string, e.g. "int", "*Counter", "string"
 	IsVariadic bool
+	// RuntimeValueExpr, when non-empty, carries a Go-source expression
+	// (e.g. `context.Background()`, `httptest.NewRecorder()`) that the
+	// wrapper substitutes for the parameter's value instead of decoding
+	// from `inputs[i]` (str-gxjs.1). The expression comes from the
+	// planner's runtime-value registry keyed by GoType; the necessary
+	// import paths are added to the owning WrapperTarget.Imports list.
+	// Empty for parameters that follow the JSON-input path.
+	RuntimeValueExpr string
 }
 
 // TypeParamInfo describes one generic type parameter declared by a wrapper target.
@@ -244,6 +254,16 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 
 func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent string) {
 	for i, p := range params {
+		if p.RuntimeValueExpr != "" {
+			// str-gxjs.1: parameter is satisfied by the planner's
+			// runtime-value registry. Emit a direct Go expression
+			// (e.g. context.Background()) at the param-init site so
+			// the wrapper does not need a JSON input for this slot.
+			// The expression must produce a value assignable to GoType
+			// — the planner registry enforces that contract.
+			fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
+			continue
+		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
 		fmt.Fprintf(b, "%sif %d < len(inputs) {\n", indent, i)
 		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(inputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
@@ -384,6 +404,15 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// because the generated wrapper does not name result types (str-iylc).
 	importSet := make(map[string]struct{})
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, importSet)
+	// str-gxjs.1: bind runtime-value expressions for parameter types the
+	// planner's registry can satisfy (context.Context → context.Background(),
+	// http.ResponseWriter → httptest.NewRecorder(), …). The expression and
+	// its required imports are recorded on the param + target so
+	// writeParamDeserialization can emit a direct assignment instead of a
+	// json.Unmarshal block. Without this, a target taking context.Context
+	// would compile and link but the param would be the zero interface
+	// value (`nil`), panicking on first use.
+	applyRuntimeValueBindings(params, importSet)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -464,6 +493,37 @@ const syntheticParamPrefix = "_p"
 // Go identifiers.
 func syntheticParamName(index int) string {
 	return fmt.Sprintf("%s%d", syntheticParamPrefix, index)
+}
+
+// applyRuntimeValueBindings consults the planner's runtime-value registry
+// for each WrapperParam and records the first candidate expression when
+// the param's GoType matches a registered entry. The required imports
+// are added to importSet so wrapper-gen emits them alongside the
+// existing parameter-type imports. Variadic params are skipped because
+// the registry today carries values for the scalar type (`io.Writer`)
+// and not for its `...T` form, where slice-spread semantics would
+// change the call shape (str-jeen.48).
+//
+// Multiple candidate entries (e.g. `io.Writer` has both `&bytes.Buffer{}`
+// and `io.Discard`) collapse to the first one — the wrapper produces a
+// single fixed expression per param at build time; per-input variation
+// would require a wrapper-side switch and is outside this change.
+func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struct{}) {
+	for i := range params {
+		if params[i].IsVariadic {
+			continue
+		}
+		candidates := runtimeval.Lookup(params[i].GoType)
+		if len(candidates) == 0 {
+			continue
+		}
+		params[i].RuntimeValueExpr = candidates[0].Expression
+		for _, imp := range candidates[0].Imports {
+			if imp != "" {
+				importSet[imp] = struct{}{}
+			}
+		}
+	}
 }
 
 func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, importSet map[string]struct{}) []WrapperParam {

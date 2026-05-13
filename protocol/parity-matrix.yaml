@@ -596,9 +596,18 @@ feature_capabilities:
       `runtime_value` (str-1hlk.4). The Go planner emits `runtime_value` for
       parameters resolved from the Go runtime-value registry (e.g.
       `context.Context` → `context.Background()`); the Rust core deserializes
-      it but does not materialize it into a seed (the producing frontend
-      resolves the source expression at execute time via
-      `planner.LookupRuntimeValue`).
+      it but does not materialize it into a seed.
+
+      str-gxjs.1: the producing frontend now resolves the source expression
+      at WRAPPER BUILD time rather than execute time. When a parameter's
+      Go-source type matches a `shatter-go/runtimeval` registry entry, the
+      generated wrapper bakes the expression into the param-init site
+      (`var ctx context.Context = context.Background()`) instead of
+      decoding from `inputs[i]` via `json.Unmarshal`. Required imports are
+      added to the wrapper's import block. The Rust core's
+      `materialize_value` path remains unchanged: it still skips
+      `runtime_value` plans because no seed is needed — the wrapper
+      already has the value baked in.
     frontends:
       typescript: not_supported
       go: supported
