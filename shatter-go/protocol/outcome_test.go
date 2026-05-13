@@ -275,3 +275,48 @@ func (s *Service) Compute(n int) int { return s.value + n }
 		t.Errorf("ThrownError.Message should mention 'unknown receiver kind' from wrapper switch, got %q", resp.Outcome.ThrownError.Message)
 	}
 }
+
+// TestExecuteAsyncGoroutinePanicEmitsRuntimeFailure verifies str-1y6q: a target
+// that spawns a goroutine which panics (before or shortly after the target
+// returns) must not be reported as a successful invocation. The instrumented
+// overlay wraps every `go` statement so a panic in the spawned goroutine is
+// captured as the invocation's thrown_error rather than crashing the harness
+// subprocess after the response has already been written as "completed".
+func TestExecuteAsyncGoroutinePanicEmitsRuntimeFailure(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "watcher.go")
+	src := `package main
+
+import "time"
+
+func startWatcher() string {
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		var p *int
+		_ = *p
+	}()
+	return "started"
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"startWatcher","inputs":[]`, tmp))
+	resp := sendRecv(t, req)
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status == OutcomeStatusCompleted {
+		t.Fatalf("outcome.Status = completed, but a spawned goroutine panicked: this is the str-1y6q bug — async panics must surface as a failure outcome (response: %+v)", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusRuntimeFailed {
+		t.Errorf("outcome.Status = %q, want runtime_failed (response: %+v)", resp.Outcome.Status, resp)
+	}
+	if resp.Outcome.ThrownError == nil {
+		t.Fatalf("expected ThrownError populated for runtime_failed outcome (response: %+v)", resp)
+	}
+	msg := resp.Outcome.ThrownError.Message
+	if !strings.Contains(msg, "nil pointer") && !strings.Contains(msg, "invalid memory") {
+		t.Errorf("ThrownError.Message should reference the goroutine panic, got %q", msg)
+	}
+}

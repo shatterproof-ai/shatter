@@ -389,6 +389,38 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 	b.WriteString("\tshatterSideEffectMu sync.Mutex\n")
 	b.WriteString("\tshatterSideEffects   []ShatterSideEffect\n")
 	b.WriteString(")\n\n")
+	// str-1y6q: capture panics from spawned goroutines. The visitor rewrites
+	// every `go X(...)` to `go func() { defer __shatter_recover_goroutine(); X(...) }()`
+	// so panics no longer escape and crash the harness process between
+	// invocations. ShatterExecute waits a short grace period after the target
+	// returns, then drains pending panics into the response's thrown_error.
+	b.WriteString("var (\n")
+	b.WriteString("\tshatterGoroutinePanicMu sync.Mutex\n")
+	b.WriteString("\tshatterGoroutinePanics  []ShatterError\n")
+	b.WriteString(")\n\n")
+	b.WriteString("func __shatter_recover_goroutine() {\n")
+	b.WriteString("\tr := recover()\n")
+	b.WriteString("\tif r == nil {\n\t\treturn\n\t}\n")
+	b.WriteString("\tstk := make([]byte, 4096)\n")
+	b.WriteString("\tn := runtime.Stack(stk, false)\n")
+	b.WriteString("\tshatterGoroutinePanicMu.Lock()\n")
+	b.WriteString("\tshatterGoroutinePanics = append(shatterGoroutinePanics, ShatterError{ErrorType: \"goroutine_panic\", Message: fmt.Sprintf(\"panic in spawned goroutine: %v\", r), Stack: string(stk[:n]), ErrorCategory: \"runtime\"})\n")
+	b.WriteString("\tshatterGoroutinePanicMu.Unlock()\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterDrainGoroutinePanics() []ShatterError {\n")
+	b.WriteString("\tshatterGoroutinePanicMu.Lock()\n")
+	b.WriteString("\tdefer shatterGoroutinePanicMu.Unlock()\n")
+	b.WriteString("\tif len(shatterGoroutinePanics) == 0 {\n\t\treturn nil\n\t}\n")
+	b.WriteString("\tout := make([]ShatterError, len(shatterGoroutinePanics))\n")
+	b.WriteString("\tcopy(out, shatterGoroutinePanics)\n")
+	b.WriteString("\tshatterGoroutinePanics = shatterGoroutinePanics[:0]\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}\n\n")
+	// shatterGoroutinePanicGrace is the time we wait after the target returns
+	// before sampling spawned-goroutine panics. Short enough to keep
+	// invocations snappy; long enough to catch panics that race the
+	// response write.
+	b.WriteString("const shatterGoroutinePanicGrace = 100 * time.Millisecond\n\n")
 	b.WriteString("func shatterRecordSideEffect(effect ShatterSideEffect) {\n")
 	b.WriteString("\tshatterSideEffectMu.Lock()\n")
 	b.WriteString("\tshatterSideEffects = append(shatterSideEffects, effect)\n")
@@ -538,9 +570,30 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 	b.WriteString("\t\t_ret       any\n")
 	b.WriteString("\t\t_invokeErr error\n")
 	b.WriteString("\t)\n")
+	b.WriteString("\t_goroutinesBefore := runtime.NumGoroutine()\n")
 	b.WriteString("\t_thrownErr := shatterSafeCall(func() {\n")
 	b.WriteString("\t\t_ret, _invokeErr = ShatterInvoke(plan, inputs)\n")
 	b.WriteString("\t})\n")
+	// str-1y6q: if the target spawned goroutines, wait briefly for them to
+	// either settle or surface a panic via __shatter_recover_goroutine.
+	// Skip the wait entirely when no extra goroutines exist so the common
+	// path stays fast.
+	b.WriteString("\tif runtime.NumGoroutine() > _goroutinesBefore {\n")
+	b.WriteString("\t\t_deadline := time.Now().Add(shatterGoroutinePanicGrace)\n")
+	b.WriteString("\t\tfor time.Now().Before(_deadline) {\n")
+	b.WriteString("\t\t\tshatterGoroutinePanicMu.Lock()\n")
+	b.WriteString("\t\t\t_hasPanic := len(shatterGoroutinePanics) > 0\n")
+	b.WriteString("\t\t\tshatterGoroutinePanicMu.Unlock()\n")
+	b.WriteString("\t\t\tif _hasPanic || runtime.NumGoroutine() <= _goroutinesBefore {\n")
+	b.WriteString("\t\t\t\tbreak\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\ttime.Sleep(time.Millisecond)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif _goPanics := shatterDrainGoroutinePanics(); len(_goPanics) > 0 && _thrownErr == nil {\n")
+	b.WriteString("\t\t_first := _goPanics[0]\n")
+	b.WriteString("\t\t_thrownErr = &_first\n")
+	b.WriteString("\t}\n")
 	b.WriteString("\t_stdout, _stderr := _cap.Stop()\n")
 	b.WriteString("\t_perfResult := _perf.Finish()\n")
 	b.WriteString("\t_rec := __shatter_collect_results()\n")
