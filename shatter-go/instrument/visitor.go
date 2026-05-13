@@ -132,6 +132,8 @@ func transformStmtList(
 			transformForStmt(fset, s, params, branchID, loopID, callSiteID)
 		case *ast.RangeStmt:
 			transformRangeStmt(fset, s, params, branchID, loopID, callSiteID)
+		case *ast.GoStmt:
+			wrapGoStmtForPanicCapture(s)
 		}
 		// Instrument function literals in expressions (callbacks).
 		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, enclosingBlock)
@@ -368,6 +370,29 @@ func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, _ /*params*/ map[
 			[]ast.Stmt{makeScopeRecordStmt("loop_enter", lid), recordCall},
 			append(s.Body.List, makeScopeRecordStmt("loop_exit", lid))...,
 		)
+	}
+}
+
+// wrapGoStmtForPanicCapture rewrites `go X(...)` into
+// `go func() { defer __shatter_recover_goroutine(); X(...) }()` so that an
+// uncaught panic in the spawned goroutine is captured by the harness rather
+// than crashing the entire subprocess (str-1y6q). Argument evaluation moves
+// inside the closure, but on Go 1.22+ per-iteration loop captures keep this
+// safe for the common `go f(x)` pattern.
+func wrapGoStmtForPanicCapture(s *ast.GoStmt) {
+	if s == nil || s.Call == nil {
+		return
+	}
+	orig := s.Call
+	body := &ast.BlockStmt{List: []ast.Stmt{
+		&ast.DeferStmt{Call: &ast.CallExpr{Fun: ast.NewIdent("__shatter_recover_goroutine")}},
+		&ast.ExprStmt{X: orig},
+	}}
+	s.Call = &ast.CallExpr{
+		Fun: &ast.FuncLit{
+			Type: &ast.FuncType{Params: &ast.FieldList{}},
+			Body: body,
+		},
 	}
 }
 
