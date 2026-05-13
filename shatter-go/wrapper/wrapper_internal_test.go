@@ -207,6 +207,120 @@ func Wait() time.Duration { return 0 }
 	}
 }
 
+// TestExtractWrapperParams_PreservesPointerShape (str-9j2e) verifies that a
+// parameter declared as a single pointer (`*T`) emits a wrapper local typed
+// as `*T`, not `[]*T`. Pre-fix the zolem `internal/provider/openai/handler.go::NewHandler`
+// build failed with `cannot use wasmGenerator (variable of type []*wasmgen.Generator)
+// as *wasmgen.Generator value` because the wrapper's variable declaration
+// was being prefixed with `[]` even though the parameter was not variadic.
+func TestExtractWrapperParams_PreservesPointerShape(t *testing.T) {
+	const src = `package handlers
+
+type Generator struct{}
+type Handler struct{}
+
+func NewHandler(gen *Generator) *Handler { return &Handler{} }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{},
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	if _, err := conf.Check("handlers", fset, []*ast.File{file}, info); err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "handlers",
+		PkgPath:   "example.com/handlers",
+		Syntax:    []*ast.File{file},
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	var newHandler *WrapperTarget
+	for i, target := range targets {
+		if target.SymbolName == "NewHandler" {
+			newHandler = &targets[i]
+			break
+		}
+	}
+	if newHandler == nil {
+		t.Fatalf("NewHandler target not found; targets: %+v", targets)
+	}
+	if len(newHandler.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d: %+v", len(newHandler.Parameters), newHandler.Parameters)
+	}
+	param := newHandler.Parameters[0]
+	if param.IsVariadic {
+		t.Errorf("param IsVariadic = true for a non-variadic pointer parameter; want false")
+	}
+	if param.GoType != "*Generator" {
+		t.Errorf("param.GoType = %q, want %q (callers see a slice type and trip 'cannot use ... as *Generator value')", param.GoType, "*Generator")
+	}
+}
+
+// TestGenerateWrapper_ValueReturningConstructor (str-9j2e) verifies that a
+// value-returning constructor combined with a value-receiver method emits
+// `_recv := DefaultRegistry()` rather than `_recv := *DefaultRegistry()`.
+// The latter caused the zolem `internal/specs/registry.go::DefaultRegistry`
+// build failure `cannot indirect DefaultRegistry() (value of struct type
+// Registry)` because the wrapper applied a pointer dereference to a
+// value-typed expression.
+func TestGenerateWrapper_ValueReturningConstructor(t *testing.T) {
+	const src = `package specs
+
+type Registry struct{}
+
+func DefaultRegistry() Registry { return Registry{} }
+
+func (r Registry) DoIt() {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "r.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{},
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	if _, err := conf.Check("specs", fset, []*ast.File{file}, info); err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "specs",
+		PkgPath:   "example.com/specs",
+		Syntax:    []*ast.File{file},
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	ctorCandidates := []ConstructorCandidate{
+		{
+			FuncName:       "DefaultRegistry",
+			TargetType:     "Registry",
+			HasParams:      false,
+			ReturnsPointer: false, // value-returning constructor
+		},
+	}
+
+	out := GenerateWrapper("specs", targets, ctorCandidates)
+	if strings.Contains(out, "*DefaultRegistry()") {
+		t.Errorf("wrapper applies pointer dereference to value-returning constructor:\n%s", out)
+	}
+	if !strings.Contains(out, "_recv := DefaultRegistry()") {
+		t.Errorf("wrapper missing direct value-bind from DefaultRegistry():\n%s", out)
+	}
+}
+
 func keysOf(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
