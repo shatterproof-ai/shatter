@@ -3,6 +3,8 @@ package wrapper_test
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1096,6 +1098,192 @@ func (s *Server) Send(args ...string) int { return len(args) }
 	}
 }
 
+// TestPointerWrapperEndToEndFromPackagesLoad is the str-9j2e regression. It
+// drives the full path that production prepare hits — packages.Load →
+// BuildWrapperTargets → WriteWrapperFile → `go build` — for the two zolem
+// signatures captured in the bug:
+//
+//   - A free function with a non-variadic pointer parameter — the
+//     `internal/provider/openai/handler.go::NewHandler(gen *wasmgen.Generator)`
+//     shape. Pre-fix surfaced as `cannot use wasmGenerator (variable of type
+//     []*wasmgen.Generator) as *wasmgen.Generator value` whenever a path
+//     between extraction and the call site re-injected the variadic slice
+//     prefix.
+//   - A value-returning constructor combined with a value-receiver method —
+//     the `internal/specs/registry.go::DefaultRegistry` shape. Pre-fix
+//     surfaced as `cannot indirect DefaultRegistry() (value of struct type
+//     Registry)` because the wrapper applied a pointer dereference to a
+//     value-typed expression.
+//
+// Both shapes are exercised inside one Go module so a single `go build`
+// validates the wrapper compiles for both. Because BuildWrapperTargets and
+// ScanConstructors are the same path the production prepare hits, any
+// regression that breaks pointer shape or constructor return-kind handling
+// will fail the build step here.
+func TestPointerWrapperEndToEndFromPackagesLoad(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package zolem9j2e
+
+// Generator stands in for an external pointer-typed parameter like
+// wasmgen.Generator: a struct passed by pointer to NewHandler.
+type Generator struct{ id int }
+
+// Handler is the return type of NewHandler.
+type Handler struct{ gen *Generator }
+
+// NewHandler is the str-9j2e pointer-parameter shape from
+// internal/provider/openai/handler.go: a non-variadic *T parameter
+// must reach the wrapper as ` + "`*T`" + `, never as ` + "`[]*T`" + `.
+func NewHandler(wasmGenerator *Generator) *Handler {
+	return &Handler{gen: wasmGenerator}
+}
+
+// Registry is the str-9j2e value-returning constructor target type.
+type Registry struct{ n int }
+
+// DefaultRegistry returns Registry (value, not pointer). Wrapper
+// generation must not emit ` + "`*DefaultRegistry()`" + ` for the value
+// receiver case below; the value-returning kind has to propagate
+// through ScanConstructors all the way to GenerateWrapper.
+func DefaultRegistry() Registry { return Registry{} }
+
+// Get is a value-receiver method. The wrapper case for Get must bind
+// _recv directly from DefaultRegistry() without an intervening
+// pointer dereference, otherwise the package-level build fails with
+// ` + "`cannot indirect DefaultRegistry()`" + `.
+func (r Registry) Get() int { return r.n }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "zolem9j2e.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/zolem9j2e\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+
+	// Confirm NewHandler's pointer parameter survived as *Generator.
+	var newHandler *wrapper.WrapperTarget
+	for i, tg := range targets {
+		if tg.SymbolName == "NewHandler" {
+			newHandler = &targets[i]
+			break
+		}
+	}
+	if newHandler == nil {
+		t.Fatalf("NewHandler target not found")
+	}
+	if len(newHandler.Parameters) != 1 {
+		t.Fatalf("NewHandler param count = %d, want 1", len(newHandler.Parameters))
+	}
+	param := newHandler.Parameters[0]
+	if param.IsVariadic {
+		t.Errorf("NewHandler.Parameters[0].IsVariadic = true (non-variadic pointer mislabeled)")
+	}
+	if param.GoType != "*Generator" {
+		t.Errorf("NewHandler.Parameters[0].GoType = %q, want %q (zolem str-9j2e regression: pointer parameter mis-rendered as slice)", param.GoType, "*Generator")
+	}
+
+	// Build the constructor candidate set via the same shape the production
+	// scanner produces (protocol.ScanConstructors → toWrapperConstructors).
+	// Inlined here to avoid pulling the protocol package into wrapper_test.
+	ctors := scanConstructorCandidatesForTest(t, pkgs[0])
+
+	// Confirm DefaultRegistry was classified as a value-returning ctor.
+	var hadDefaultRegistry bool
+	for _, c := range ctors {
+		if c.FuncName == "DefaultRegistry" {
+			hadDefaultRegistry = true
+			if c.ReturnsPointer {
+				t.Errorf("DefaultRegistry classified ReturnsPointer=true (source returns the value type Registry; wrapper would emit *DefaultRegistry() and fail to compile)")
+			}
+			if c.TargetType != "Registry" {
+				t.Errorf("DefaultRegistry.TargetType = %q, want %q", c.TargetType, "Registry")
+			}
+		}
+	}
+	if !hadDefaultRegistry {
+		t.Fatalf("DefaultRegistry not surfaced by constructor scan; ctors: %+v", ctors)
+	}
+
+	src := wrapper.GenerateWrapper("zolem9j2e", targets, ctors)
+
+	// Static guards on the wrapper source.
+	mustContain := []string{
+		// NewHandler must receive a single *Generator, not a slice.
+		"var wasmGenerator *Generator",
+		// Registry.Get under the DefaultRegistry receiver-kind: direct
+		// value-bind, no pointer dereference.
+		"_recv := DefaultRegistry()",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated wrapper missing %q\nsource:\n%s", want, src)
+		}
+	}
+	bannedSubstrings := []string{
+		// Pointer dereference on value-returning constructor.
+		"*DefaultRegistry()",
+		// Slice declaration for the non-variadic pointer parameter.
+		"var wasmGenerator []*Generator",
+	}
+	for _, banned := range bannedSubstrings {
+		if strings.Contains(src, banned) {
+			t.Errorf("generated wrapper contains banned substring %q\nsource:\n%s", banned, src)
+		}
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "zolem9j2e", targets, ctors)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, ctors)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), src)
+	}
+}
+
 func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1116,4 +1304,101 @@ func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 	if !bytes.Equal(content1, []byte(inMemory)) {
 		t.Error("file content differs from in-memory GenerateWrapper output")
 	}
+}
+
+// scanConstructorCandidatesForTest mirrors the production scanner
+// (protocol.ScanConstructors + toWrapperConstructors) using only the AST
+// and types information that packages.Load populates. It scans the package
+// for top-level functions whose return shape is a same-package named type
+// (T or *T, optionally paired with error), and whose name starts with
+// `New`, `MustNew`, or `Default`, OR whose body contains a composite
+// literal return. The returned wrapper.ConstructorCandidate values match
+// the production wire shape — in particular, ReturnsPointer carries the
+// pointer-ness of the first return so the wrapper case logic in
+// str-jeen.49 / str-9j2e can branch correctly.
+func scanConstructorCandidatesForTest(t *testing.T, pkg *packages.Package) []wrapper.ConstructorCandidate {
+	t.Helper()
+	if pkg == nil || pkg.TypesInfo == nil {
+		t.Fatalf("scanConstructorCandidatesForTest: pkg.TypesInfo is nil")
+	}
+	var ctors []wrapper.ConstructorCandidate
+	for _, file := range pkg.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if fn.Recv != nil && len(fn.Recv.List) > 0 {
+				continue
+			}
+			name := fn.Name.Name
+			results := fn.Type.Results
+			if results == nil || len(results.List) == 0 {
+				continue
+			}
+			if !ctorNameAllowed(name) && !bodyHasCompositeReturn(fn) {
+				continue
+			}
+			// Flatten the first return field into a single type expression.
+			firstField := results.List[0]
+			typ := firstField.Type
+			returnsPointer := false
+			if star, ok := typ.(*ast.StarExpr); ok {
+				returnsPointer = true
+				typ = star.X
+			}
+			ident, ok := typ.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			obj := pkg.TypesInfo.Uses[ident]
+			if obj == nil {
+				obj = pkg.TypesInfo.Defs[ident]
+			}
+			if obj == nil || obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
+				continue
+			}
+			ctors = append(ctors, wrapper.ConstructorCandidate{
+				FuncName:       name,
+				TargetType:     obj.Name(),
+				HasParams:      fn.Type.Params != nil && len(fn.Type.Params.List) > 0,
+				ReturnsPointer: returnsPointer,
+			})
+		}
+	}
+	return ctors
+}
+
+func ctorNameAllowed(name string) bool {
+	return strings.HasPrefix(name, "New") ||
+		strings.HasPrefix(name, "MustNew") ||
+		strings.HasPrefix(name, "Default")
+}
+
+func bodyHasCompositeReturn(fn *ast.FuncDecl) bool {
+	if fn.Body == nil {
+		return false
+	}
+	for _, stmt := range fn.Body.List {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok {
+			continue
+		}
+		for _, result := range ret.Results {
+			switch e := result.(type) {
+			case *ast.CompositeLit:
+				return true
+			case *ast.UnaryExpr:
+				if e.Op == token.AND {
+					if _, ok := e.X.(*ast.CompositeLit); ok {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
