@@ -64,7 +64,7 @@ else-branch produces `label = ite(x > 0, const(1), un_op(neg, const(1)))`.
 A subsequent branch `label > 0` then surfaces as
 `bin_op(gt, ite{...}, const(0))` in `FunctionAnalysis.Branches[i].Condition`.
 
-Rust frontend analyze is still a stub and does not produce `ite`.
+Rust frontend analysis is implemented but does not yet produce `ite`.
 See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
 ## Loop Snapshot Parity Contract

@@ -40,7 +40,7 @@ Shatter runs on real-world projects with external dependencies (APIs, databases,
 | Live-first / record mode | **Missing** | — |
 | User fixture format | **Missing** | — |
 | Refactoring recommendations | **Missing** | — |
-| Rust frontend mock injection | **Missing** | execute unimplemented |
+| Rust frontend mock injection | **Partial** | symbol return-value mocks are supported in generated harnesses; some interception surfaces remain limited |
 
 ### Frontend Mock Registries
 

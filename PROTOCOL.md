@@ -2,7 +2,7 @@
 
 Version: `0.1.0`
 
-This document defines the JSON protocol for communication between the Shatter core engine (Rust) and language-specific frontends (TypeScript, Go, etc.). Frontends are long-lived subprocesses that the core spawns and communicates with over stdin/stdout.
+This document defines the JSON protocol for communication between the Shatter core engine (Rust) and language-specific frontends (TypeScript, Go, Rust, etc.). Frontends are long-lived subprocesses that the core spawns and communicates with over stdin/stdout.
 
 ## Wire Format
 
@@ -172,7 +172,7 @@ Pre-compile the instrumented harness for a function once and return an opaque `p
 2. Pass `prepare_id` in every `execute` call for that function/mocks combination.
 3. Call `teardown` (level: `function`) when done to free resources.
 
-**Frontend support:** TypeScript and Go implement `prepare`. Rust returns `not_supported` (execute is partial — see `rust-prepare-not-supported` in `protocol/parity-matrix.yaml`). Core checks capabilities before sending.
+**Frontend support:** TypeScript, Go, and Rust implement `prepare`. Core checks capabilities before sending, and any frontend that does not advertise `prepare` returns `not_supported`.
 
 **Request:**
 
@@ -202,7 +202,7 @@ Fields: `file` (required), `function` (required), `mocks` (required, must match 
 
 The `prepare_id` is a 16-hex-character opaque handle. Pass it in `execute` requests as `"prepare_id": "<id>"`. When a frontend doesn't support `prepare`, pass `prepare_id: null` and the frontend falls back to per-execute compilation.
 
-**Error response:** `{ "status": "error", "code": "not_supported", ... }` for Rust and any frontend that doesn't implement prepare.
+**Error response:** `{ "status": "error", "code": "not_supported", ... }` for any frontend that doesn't implement prepare.
 
 ---
 

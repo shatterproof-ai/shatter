@@ -12,7 +12,7 @@ This closes both str-9u7n (stdin inputs) and str-lefp (persistent subprocess) to
 
 Crash recovery (dead subprocess restart, timeout enforcement) is handled by the orchestrator in shatter-core, not the frontends.
 
-**Frontends in scope:** `shatter-go` and `shatter-rust` (the Rust language frontend). `shatter-ts` is out of scope (different execution model). `shatter-rust` the CLI binary is out of scope (execute is unimplemented).
+**Frontends in scope:** `shatter-go` and `shatter-rust` (the Rust language frontend). `shatter-ts` is out of scope (different execution model). The Shatter CLI binary is out of scope.
 
 ---
 
@@ -270,6 +270,6 @@ Existing `e2e_concolic` tests exercise the full pipeline through both frontends.
 ## Out of Scope
 - Orchestrator-level crash recovery and timeout enforcement (handled in shatter-core)
 - TypeScript frontend `shatter-ts` (already subprocess-based, different execution model)
-- `shatter-rust` CLI binary (execute is unimplemented; no change needed)
+- Shatter CLI binary (this design changes frontend harness executors only)
 - Cache size limits or LRU eviction
 - Per-function teardown of harness subprocesses (subprocesses persist until shutdown)

@@ -31,11 +31,12 @@ The remaining commands are advertised in handshake capabilities. Core checks the
 | `handshake` | required | ✅ | ✅ | ✅ | Base protocol; not a capability |
 | `shutdown` | required | ✅ | ✅ | ✅ | Base protocol; not a capability |
 | `analyze` | required | ✅ | ✅ | ✅ | All frontends implement |
+| `prepare` | optional | ✅ | ✅ | ✅ | All frontends implement reusable harness preparation |
 | `execute` | required | ✅ | ✅ | ✅ | All frontends implement |
 | `generate` | required | ✅ | ✅ | ✅ | All frontends implement |
-| `instrument` | optional | ✅ | ✅ | ❌ | Rust does not advertise; core gates on capability |
-| `setup` | optional | ✅ | ✅ | ❌ | Rust does not advertise; core gates on capability |
-| `teardown` | optional | ❌ | ✅ | ❌ | Only Go advertises; core gates on capability (see divergence `ts-missing-teardown`) |
+| `instrument` | optional | ✅ | ✅ | ✅ | Core gates on capability |
+| `setup` | optional | ✅ | ✅ | ✅ | Core gates on capability |
+| `teardown` | optional | ❌ | ✅ | ✅ | TypeScript does not advertise; core gates on capability (see divergence `ts-missing-teardown`) |
 
 ---
 
@@ -130,7 +131,7 @@ All frontends must read `SHATTER_EXEC_TIMEOUT` (seconds) and apply it to functio
 |----------|---------|----------------|
 | TypeScript | 15s | `getExecTimeoutMs()` in `src/executor.ts` |
 | Go | 5s | `execTimeout()` in `instrument/executor.go` |
-| Rust | 5s | `exec_timeout_from_env()` in `src/handler.rs` (stored; not yet applied) |
+| Rust | 5s | `exec_timeout_from_env()` in `src/handler.rs`; applied by the harness runner |
 
 ### Error Codes
 
@@ -236,7 +237,7 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ### `medium-opacity-analyze-partial`
 
-**Description:** The `medium_opacity` field on `TypeInfo` opaque variants is an optional advisory field. TypeScript and Go frontends emit it when medium-confidence heuristics fire. The Rust frontend analyze handler is a stub and does not yet perform static analysis, so it never emits `medium_opacity`. The field is intentionally non-skip-causing in the Rust core.
+**Description:** The `medium_opacity` field on `TypeInfo` opaque variants is an optional advisory field. TypeScript and Go frontends emit it when medium-confidence heuristics fire. The Rust frontend performs static analysis but does not yet implement this medium-opacity heuristic, so it never emits `medium_opacity`. The field is intentionally non-skip-causing in the Rust core.
 
 **Affected frontends:** rust
 
@@ -248,17 +249,17 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Tracking issue:** none (intentional permanent divergence)
 
-**Resolution condition:** Permanent divergence — Rust analyze is a stub. If the Rust frontend ever gains full static analysis, this entry should be removed and `medium_opacity` emission added following TS/Go heuristics.
+**Resolution condition:** Permanent divergence until Rust adds medium-opacity analysis. If the Rust frontend gains this heuristic, this entry should be removed and `medium_opacity` emission added following TS/Go behavior.
 
-**Resolution:** Intentional permanent divergence for the Rust frontend analyze stub.
+**Resolution:** Intentional divergence for the current Rust analyzer.
 
 ---
 
 ### `ite-symexpr-production-partial`
 
-**Description:** The `ite` `SymExpr` variant represents SSA phi-node merges from conditional variable reassignment. TypeScript produces `ite` expressions via data flow analysis. Go and Rust frontends can deserialize `ite` but do not produce it because they lack data flow tracking.
+**Description:** The `ite` `SymExpr` variant represents SSA phi-node merges from conditional variable reassignment. TypeScript and Go produce `ite` expressions via data-flow analysis. Rust can deserialize `ite` but does not yet perform the data-flow pass needed to produce it.
 
-**Affected frontends:** go, rust
+**Affected frontends:** rust
 
 **Affected commands:** analyze
 
@@ -268,9 +269,9 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Tracking issue:** str-1hlk.17
 
-**Resolution condition:** Go frontend produces `ite` `SymExpr` nodes from conditional reassignment via data flow analysis. Rust portion is deferred until full analyze implementation lands and can be split into a follow-up entry then.
+**Resolution condition:** Rust frontend produces `ite` `SymExpr` nodes from conditional reassignment via data-flow analysis.
 
-**Resolution:** Add data flow tracking to Go frontend. Rust frontend deferred until full analyze implementation lands.
+**Resolution:** Add data-flow tracking to the Rust frontend.
 
 ---
 
