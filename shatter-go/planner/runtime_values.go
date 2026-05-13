@@ -69,6 +69,47 @@ var runtimeValueRegistry = map[string][]RuntimeValue{
 			Imports:         []string{"bytes"},
 			SideEffectClass: protocol.ClassPure,
 		},
+		{
+			Expression:      "io.Discard",
+			TypeHint:        "io.Writer",
+			Imports:         []string{"io"},
+			SideEffectClass: protocol.ClassPure,
+		},
+	},
+	// str-gxjs: io.ReadCloser is the type Go's `http.Request.Body` carries,
+	// so it appears in every handler-shaped scan. io.NopCloser wraps an
+	// in-memory reader without touching OS file descriptors.
+	"io.ReadCloser": {
+		{
+			Expression:      `io.NopCloser(strings.NewReader(""))`,
+			TypeHint:        "io.ReadCloser",
+			Imports:         []string{"io", "strings"},
+			SideEffectClass: protocol.ClassPure,
+		},
+	},
+	// str-gxjs: http.ResponseWriter is synthesised via httptest.NewRecorder,
+	// the canonical in-memory recorder used by net/http tests. Safe — it
+	// does not bind a network socket.
+	"http.ResponseWriter": {
+		{
+			Expression:      "httptest.NewRecorder()",
+			TypeHint:        "http.ResponseWriter",
+			Imports:         []string{"net/http/httptest"},
+			SideEffectClass: protocol.ClassPure,
+		},
+	},
+	// str-gxjs: *http.Request goes through httptest.NewRequest so the
+	// Body / URL / method fields are populated by the stdlib's own
+	// constructor rather than by composite-literal synthesis (which
+	// can't fill unexported fields). bytes.NewReader keeps the body
+	// in-memory; no network or filesystem side effects.
+	"*http.Request": {
+		{
+			Expression:      `httptest.NewRequest("GET", "/", bytes.NewReader(nil))`,
+			TypeHint:        "*http.Request",
+			Imports:         []string{"bytes", "net/http/httptest"},
+			SideEffectClass: protocol.ClassPure,
+		},
 	},
 	"time.Time": {
 		{
