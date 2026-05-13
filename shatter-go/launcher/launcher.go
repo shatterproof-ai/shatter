@@ -152,6 +152,15 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, err
 	}
 
+	// Build to a same-directory temp path and atomically rename to the
+	// final binaryPath on success. Concurrent BuildLauncher callers (in
+	// other goroutines or other processes) cache-check via os.Stat on the
+	// final binaryPath; without atomic rename, those callers can observe
+	// a partially-written file (go build's copy-fallback opens
+	// O_CREATE|O_WRONLY|O_TRUNC), return that path, and then trip a
+	// `text file busy` startup error when they exec it (str-0cui).
+	tempBinaryPath := fmt.Sprintf("%s.tmp-%d-%d", binaryPath, os.Getpid(), time.Now().UnixNano())
+
 	// `-buildvcs=false` disables Go's VCS stamping for the launcher binary.
 	// The launcher is a disposable, generated artifact; stamping serves no
 	// purpose, and `-buildvcs=auto` (the default) causes builds to fail with
@@ -159,7 +168,7 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	// or any ancestor contains a `.git` that the toolchain cannot probe
 	// (e.g. when shatter is run against a real module checkout from a
 	// generated workspace path). See str-qo1.15.
-	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false", "-o", binaryPath}
+	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false", "-o", tempBinaryPath}
 	if opts.OverlayPath != "" {
 		buildArgs = append(buildArgs, "-overlay", opts.OverlayPath)
 	} else if opts.WrapperRealPath != "" && opts.WrapperInTreePath != "" {
@@ -179,7 +188,13 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	cmd.Dir = launcherDir
 	cmd.Env = goEnv
 	if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
+		_ = os.Remove(tempBinaryPath)
 		return "", false, fmt.Errorf("launcher: go build: %w\n%s", buildErr, out)
+	}
+
+	if err := os.Rename(tempBinaryPath, binaryPath); err != nil {
+		_ = os.Remove(tempBinaryPath)
+		return "", false, fmt.Errorf("launcher: publish binary %q: %w", binaryPath, err)
 	}
 
 	return binaryPath, true, nil

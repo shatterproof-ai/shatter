@@ -213,3 +213,118 @@ chmod +x "$out"
 		t.Fatalf("fresh builds = %d, want 1", freshCount)
 	}
 }
+
+// TestBuildLauncherAtomicWriteAgainstSlowBuild reproduces str-0cui: when go
+// build creates the output file non-atomically (e.g. via copy-fallback on a
+// cross-filesystem GOCACHE), a concurrent BuildLauncher call can observe the
+// partial file via its pre-lock cache stat and return a not-yet-complete path
+// to the caller. The caller then execs a partial / busy binary and trips
+// `text file busy` or other startup failures.
+//
+// We simulate the non-atomic write with a fake `go` that creates the output
+// path empty, sleeps, and only later writes a real executable script. Any
+// path returned by BuildLauncher must point at a fully written, executable
+// file regardless of when in the producer's lifecycle the caller arrived.
+func TestBuildLauncherAtomicWriteAgainstSlowBuild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake go script uses POSIX shell")
+	}
+
+	fakeBinDir := t.TempDir()
+	fakeGo := filepath.Join(fakeBinDir, "go")
+	fakeGoScript := `#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-o" ]; then
+		shift
+		out="$1"
+	fi
+	shift || true
+done
+if [ -z "$out" ]; then
+	exit 0
+fi
+mkdir -p "$(dirname "$out")"
+# Phase 1: create output path empty and executable, simulating go's
+# non-atomic copy-fallback that opens O_CREATE|O_WRONLY|O_TRUNC.
+: > "$out"
+chmod +x "$out"
+# Phase 2: simulate the body of the write taking time.
+sleep 0.3
+# Phase 3: write the real contents.
+printf '#!/bin/sh\nexit 0\n' > "$out"
+chmod +x "$out"
+`
+	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	targetModuleDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "go.mod"), []byte("module example.com/targets\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write target go.mod: %v", err)
+	}
+
+	opts := launcher.BuildOptions{
+		TargetModulePath: "example.com/targets",
+		TargetModuleDir:  targetModuleDir,
+		TargetImportPath: "example.com/targets",
+		DiscoveryHash:    "atomic-race-hash",
+		GeneratedDir:     filepath.Join(t.TempDir(), "generated"),
+		BinariesDir:      filepath.Join(t.TempDir(), "binaries"),
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	type workerResult struct {
+		path        string
+		size        int64
+		statErr     error
+		err         error
+	}
+	results := make(chan workerResult, workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			path, _, err := launcher.BuildLauncher(opts)
+			res := workerResult{path: path, err: err}
+			if err == nil {
+				info, statErr := os.Stat(path)
+				if statErr != nil {
+					res.statErr = statErr
+				} else {
+					res.size = info.Size()
+				}
+			}
+			results <- res
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	emptyObserved := 0
+	for r := range results {
+		if r.err != nil {
+			t.Errorf("BuildLauncher returned error: %v", r.err)
+			continue
+		}
+		if r.statErr != nil {
+			t.Errorf("stat returned binary %q: %v", r.path, r.statErr)
+			continue
+		}
+		t.Logf("worker returned path=%q size=%d (observed immediately on return)", r.path, r.size)
+		if r.size == 0 {
+			emptyObserved++
+		}
+	}
+	if emptyObserved > 0 {
+		t.Errorf("%d workers received an empty (partial) binary from BuildLauncher: callers would exec a partially-written file (text file busy / startup failure)", emptyObserved)
+	}
+}
