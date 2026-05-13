@@ -68,3 +68,17 @@ func AcceptsPlainInterface(v interface{}) string {
 	}
 	return "non-nil"
 }
+
+// AcceptsRequestPointer takes a *http.Request. The Body field is an
+// io.ReadCloser; pre-str-gxjs the analyzer flagged this whole tree as
+// opaque (Body → io.ReadCloser → I/O stream) and skipped the function.
+// Post-str-gxjs *http.Request short-circuits to a synthesizable kind.
+func AcceptsRequestPointer(r *http.Request) string {
+	return r.Method
+}
+
+// AcceptsIOReadCloser takes an io.ReadCloser — historically opaque,
+// post-str-gxjs synthesizable via io.NopCloser(strings.NewReader("")).
+func AcceptsIOReadCloser(rc io.ReadCloser) error {
+	return rc.Close()
+}

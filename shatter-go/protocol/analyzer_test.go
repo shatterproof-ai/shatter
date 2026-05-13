@@ -931,11 +931,17 @@ func TestAnalyzeOpaqueTypes(t *testing.T) {
 		{"AcceptsChanString", "ch", "opaque", "chan string"},
 		{"AcceptsNetConn", "conn", "opaque", "net.Conn"},
 		{"AcceptsOsFile", "f", "opaque", "os.File"},
-		{"AcceptsIOReader", "r", "opaque", "io.Reader"},
-		{"AcceptsIOWriter", "w", "opaque", "io.Writer"},
+		// str-gxjs: io.Reader/io.Writer/http.ResponseWriter are now
+		// synthesizable by the planner via the runtime-value registry
+		// (strings.NewReader, &bytes.Buffer{}, httptest.NewRecorder()).
+		// The analyzer emits Kind="unknown" with TypeName set on the
+		// ParamInfo; the opaque categorization moves to a separate
+		// assertion in TestAnalyzeSynthesizableStdlibTypes.
+		{"AcceptsIOReader", "r", "unknown", ""},
+		{"AcceptsIOWriter", "w", "unknown", ""},
 		{"AcceptsSqlDB", "db", "opaque", "sql.DB"},
 		{"AcceptsSqlTx", "tx", "opaque", "sql.Tx"},
-		{"AcceptsResponseWriter", "w", "opaque", "http.ResponseWriter"},
+		{"AcceptsResponseWriter", "w", "unknown", ""},
 		{"AcceptsNetListener", "ln", "opaque", "net.Listener"},
 	}
 
@@ -958,6 +964,49 @@ func TestAnalyzeOpaqueTypes(t *testing.T) {
 			}
 			if p.Type.Label != tc.wantLabel {
 				t.Errorf("param type label = %q, want %q", p.Type.Label, tc.wantLabel)
+			}
+		})
+	}
+}
+
+// str-gxjs: io.Reader / io.Writer / io.ReadCloser / http.ResponseWriter /
+// *http.Request used to be flagged as opaque and the function skipped
+// before any planning attempt. Post-str-gxjs the analyzer emits
+// Kind="unknown" with the canonical Go-source spelling on
+// ParamInfo.TypeName so the planner's runtime-value registry can
+// resolve a safe in-memory expression (httptest.NewRecorder() and so on).
+// The Rust core's check_executability accepts "unknown" params, so the
+// function reaches the explore phase instead of landing in the skipped
+// bucket.
+func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
+	cases := []struct {
+		funcName     string
+		wantTypeName string
+	}{
+		{"AcceptsIOReader", "io.Reader"},
+		{"AcceptsIOWriter", "io.Writer"},
+		{"AcceptsResponseWriter", "http.ResponseWriter"},
+		{"AcceptsRequestPointer", "*http.Request"},
+		{"AcceptsIOReadCloser", "io.ReadCloser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.funcName, func(t *testing.T) {
+			results, err := AnalyzeFile(testdataPath("opaque.go"), tc.funcName)
+			if err != nil {
+				t.Fatalf("AnalyzeFile: %v", err)
+			}
+			if len(results) == 0 || len(results[0].Params) < 1 {
+				t.Fatalf("no params returned for %s", tc.funcName)
+			}
+			p := results[0].Params[0]
+			if p.Type.Kind != "unknown" {
+				t.Errorf("Type.Kind = %q, want %q (synthesizable types must not be opaque)", p.Type.Kind, "unknown")
+			}
+			if p.TypeName == nil {
+				t.Fatalf("TypeName = nil, want %q so the planner registry can resolve a synthesized expression", tc.wantTypeName)
+			}
+			if *p.TypeName != tc.wantTypeName {
+				t.Errorf("TypeName = %q, want %q", *p.TypeName, tc.wantTypeName)
 			}
 		})
 	}

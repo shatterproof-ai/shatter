@@ -641,6 +641,18 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 	var params []ParamInfo
 	for _, field := range fn.Type.Params.List {
 		ti := goTypeFromExprWithContext(field.Type, info, fc)
+		// str-gxjs: when the param is a synthesizable stdlib type
+		// (io.Writer, http.ResponseWriter, *http.Request, …) record the
+		// canonical Go-source spelling on TypeName so the planner's
+		// runtime-value registry can resolve it. Without this the
+		// planner has no key to look up and the function would fall to
+		// the generic unsatisfied path.
+		var synthSpelling string
+		if info != nil {
+			if tv, ok := info.Types[field.Type]; ok {
+				synthSpelling = synthesizableStdlibType(tv.Type)
+			}
+		}
 		for _, name := range field.Names {
 			param := ParamInfo{
 				Name: name.Name,
@@ -648,6 +660,9 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 			}
 			if typeParamName := typeParamTypeName(field.Type, info); typeParamName != "" {
 				param.TypeName = &typeParamName
+			} else if synthSpelling != "" {
+				spelling := synthSpelling
+				param.TypeName = &spelling
 			}
 			params = append(params, param)
 		}
@@ -756,9 +771,76 @@ var nativeHandleFieldNames = map[string]bool{
 var opaqueGoTypes = map[string]map[string]bool{
 	"net":          {"Conn": true, "Listener": true, "PacketConn": true},
 	"os":           {"File": true},
-	"io":           {"Reader": true, "Writer": true, "ReadWriter": true, "Closer": true, "ReadCloser": true, "WriteCloser": true},
+	"io":           {"ReadWriter": true, "Closer": true, "WriteCloser": true},
 	"database/sql": {"DB": true, "Tx": true, "Rows": true},
-	"net/http":     {"ResponseWriter": true},
+}
+
+// synthesizableStdlibTypes lists stdlib named types the Go planner can
+// satisfy without user hints via the runtime-value registry (str-gxjs).
+// Each entry maps `pkg.Path() / type name` to the canonical Go-source
+// spelling used by `planner.LookupRuntimeValue`.
+//
+// These types would otherwise be rejected as opaque by `isOpaqueGoType`
+// or as unknown interfaces by the underlying-type fallthrough, and the
+// Rust core's `check_executability` would skip every function that
+// accepts one. Short-circuiting them here keeps the function executable
+// and supplies the canonical type name the planner needs to dispatch
+// the registry entry (`httptest.NewRecorder()` for `http.ResponseWriter`
+// and so on).
+//
+// The pointer-wrapped form (e.g. `*http.Request`) is handled separately
+// in `synthesizableStdlibType` because Go represents it as
+// `*types.Pointer` to the named type rather than a named type itself.
+var synthesizableStdlibTypes = map[string]map[string]string{
+	"io": {
+		"Reader":     "io.Reader",
+		"Writer":     "io.Writer",
+		"ReadCloser": "io.ReadCloser",
+	},
+	"net/http": {
+		"ResponseWriter": "http.ResponseWriter",
+	},
+}
+
+// synthesizableStdlibPointerTypes lists named types whose pointer form
+// (e.g. `*http.Request`) the planner can synthesize. The mapped value
+// is the canonical Go-source spelling including the leading `*`.
+var synthesizableStdlibPointerTypes = map[string]map[string]string{
+	"net/http": {
+		"Request": "*http.Request",
+	},
+}
+
+// synthesizableStdlibType returns the canonical Go-source type spelling
+// when t (or its pointer pointee, for `synthesizableStdlibPointerTypes`)
+// is in the synthesizable set; otherwise "". The returned spelling is
+// the registry key consumed by `planner.LookupRuntimeValue`.
+func synthesizableStdlibType(t types.Type) string {
+	if named, ok := t.(*types.Named); ok {
+		if spelling := namedSynthesizableSpelling(named, synthesizableStdlibTypes); spelling != "" {
+			return spelling
+		}
+	}
+	if ptr, ok := t.(*types.Pointer); ok {
+		if named, ok := ptr.Elem().(*types.Named); ok {
+			if spelling := namedSynthesizableSpelling(named, synthesizableStdlibPointerTypes); spelling != "" {
+				return spelling
+			}
+		}
+	}
+	return ""
+}
+
+func namedSynthesizableSpelling(named *types.Named, table map[string]map[string]string) string {
+	obj := named.Obj()
+	if obj == nil || obj.Pkg() == nil {
+		return ""
+	}
+	pkgEntries, ok := table[obj.Pkg().Path()]
+	if !ok {
+		return ""
+	}
+	return pkgEntries[obj.Name()]
 }
 
 // isOpaqueGoType checks whether t is a known opaque resource type.
@@ -910,6 +992,19 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	}
 	visited[t] = true
 	defer delete(visited, t)
+
+	// str-gxjs: short-circuit stdlib types the Go planner can synthesize
+	// via the runtime-value registry. We emit `Kind: "unknown"` so the
+	// Rust core's executability check does not skip the function; the
+	// canonical type spelling is carried on `ParamInfo.TypeName`
+	// (see extractParamsWithContext) so the planner can dispatch the
+	// registered expression (httptest.NewRecorder() etc.). This check
+	// must run before isOpaqueGoType because the synthesizable set
+	// intentionally overlaps the historical opaque set for `io.Writer`
+	// and friends.
+	if synthesizableStdlibType(t) != "" {
+		return TypeInfo{Kind: "unknown"}
+	}
 
 	// Check for opaque resource types (channels, sockets, file handles, etc.)
 	if label, ok := isOpaqueGoType(t); ok {

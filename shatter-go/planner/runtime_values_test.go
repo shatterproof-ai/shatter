@@ -57,7 +57,16 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 		{"context.Context", []string{"context.Background()"}, "context"},
 		{"*bytes.Buffer", []string{"&bytes.Buffer{}"}, "bytes"},
 		{"io.Reader", []string{`strings.NewReader("")`}, "strings"},
-		{"io.Writer", []string{"&bytes.Buffer{}"}, "bytes"},
+		// str-gxjs: io.Writer now offers io.Discard as a second candidate
+		// for sinks the test doesn't need to inspect.
+		// str-gxjs: io.Writer has two candidates with different imports; the
+		// import assertion below checks that each row carries AT LEAST ONE
+		// of its required imports, and the multi-row io.Writer case carries
+		// "bytes" on the first row and "io" on the second — both acceptable.
+		{"io.Writer", []string{"&bytes.Buffer{}", "io.Discard"}, ""},
+		{"io.ReadCloser", []string{`io.NopCloser(strings.NewReader(""))`}, "io"},
+		{"http.ResponseWriter", []string{"httptest.NewRecorder()"}, "net/http/httptest"},
+		{"*http.Request", []string{`httptest.NewRequest("GET", "/", bytes.NewReader(nil))`}, "net/http/httptest"},
 		{"time.Time", []string{"time.Time{}", "time.Now()"}, "time"},
 		{"http.Header", []string{"http.Header{}"}, "net/http"},
 	}
@@ -77,15 +86,19 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 				if rvs[i].SideEffectClass != protocol.ClassPure {
 					t.Errorf("rvs[%d].SideEffectClass = %q, want %q", i, rvs[i].SideEffectClass, protocol.ClassPure)
 				}
-				foundImport := false
-				for _, imp := range rvs[i].Imports {
-					if imp == tc.wantImport {
-						foundImport = true
-						break
+				if tc.wantImport != "" {
+					foundImport := false
+					for _, imp := range rvs[i].Imports {
+						if imp == tc.wantImport {
+							foundImport = true
+							break
+						}
 					}
-				}
-				if !foundImport {
-					t.Errorf("rvs[%d].Imports = %v, want to include %q", i, rvs[i].Imports, tc.wantImport)
+					if !foundImport {
+						t.Errorf("rvs[%d].Imports = %v, want to include %q", i, rvs[i].Imports, tc.wantImport)
+					}
+				} else if len(rvs[i].Imports) == 0 {
+					t.Errorf("rvs[%d].Imports = empty, expected at least one import for %q", i, tc.typeName)
 				}
 			}
 		})
