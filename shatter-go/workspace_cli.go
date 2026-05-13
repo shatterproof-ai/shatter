@@ -41,6 +41,8 @@ func runWorkspaceGC(args []string, stdout, stderr io.Writer) int {
 	maxAgeDays := flags.Int("max-age-days", int(workspace.DefaultGCMaxAge/(24*time.Hour)), "delete runs older than this many days")
 	maxRunsBytes := flags.Int64("max-runs-bytes", workspace.DefaultGCMaxRunsBytes, "hard cap on total runs/ size in bytes")
 	maxCacheBytes := flags.Int64("max-cache-bytes", workspace.DefaultGCMaxCacheBytes, "per-cache-dir size cap in bytes")
+	maxGeneratedBytes := flags.Int64("max-generated-bytes", workspace.DefaultGCMaxGeneratedBytes, "cap on total generated/ size in bytes")
+	maxBinariesBytes := flags.Int64("max-binaries-bytes", workspace.DefaultGCMaxBinariesBytes, "cap on total binaries/ size in bytes")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -52,11 +54,13 @@ func runWorkspaceGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	opts := workspace.GCOptions{
-		KeepLastN:     *keep,
-		MaxAge:        time.Duration(*maxAgeDays) * 24 * time.Hour,
-		MaxRunsBytes:  *maxRunsBytes,
-		MaxCacheBytes: *maxCacheBytes,
-		DryRun:        *dryRun,
+		KeepLastN:         *keep,
+		MaxAge:            time.Duration(*maxAgeDays) * 24 * time.Hour,
+		MaxRunsBytes:      *maxRunsBytes,
+		MaxCacheBytes:     *maxCacheBytes,
+		MaxGeneratedBytes: *maxGeneratedBytes,
+		MaxBinariesBytes:  *maxBinariesBytes,
+		DryRun:            *dryRun,
 	}
 	report, err := artifactWorkspace.RunGC(opts)
 	if err != nil {
@@ -100,6 +104,10 @@ func printGCReport(out io.Writer, report *workspace.GCReport, dryRun bool, root 
 
 	fmt.Fprintf(out, "  runs/ size: %s -> %s\n",
 		humanBytes(report.RunsSizeBefore), humanBytes(report.RunsSizeAfter))
+	fmt.Fprintf(out, "  generated/ size: %s -> %s\n",
+		humanBytes(report.GeneratedSizeBefore), humanBytes(report.GeneratedSizeAfter))
+	fmt.Fprintf(out, "  binaries/ size: %s -> %s\n",
+		humanBytes(report.BinariesSizeBefore), humanBytes(report.BinariesSizeAfter))
 	cacheNames := make([]string, 0, len(report.CacheSizes))
 	for name := range report.CacheSizes {
 		cacheNames = append(cacheNames, name)
