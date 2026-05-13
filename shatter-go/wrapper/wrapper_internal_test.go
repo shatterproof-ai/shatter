@@ -159,6 +159,68 @@ func Handle(w http.ResponseWriter, r *http.Request) {}
 	}
 }
 
+// str-gxjs.1: when a parameter's Go-source type matches a runtime-value
+// registry entry (context.Context, http.ResponseWriter, …), the generated
+// wrapper must (a) substitute the registered expression at the param-init
+// site instead of decoding from inputs[i] via json.Unmarshal, and
+// (b) emit the import paths the expression needs. Without this, a function
+// taking context.Context would compile-link but leave the param as the
+// zero interface value (nil), panicking on first use.
+func TestGenerateWrapper_RuntimeValueSubstitutesContextBackground(t *testing.T) {
+	const src = `package svc
+
+import "context"
+
+func Ping(ctx context.Context) int { return 1 }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("svc", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "svc",
+		PkgPath:   "example.com/svc",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if len(target.Parameters) != 1 {
+		t.Fatalf("len(parameters) = %d, want 1", len(target.Parameters))
+	}
+	if target.Parameters[0].RuntimeValueExpr != "context.Background()" {
+		t.Errorf("RuntimeValueExpr = %q, want %q",
+			target.Parameters[0].RuntimeValueExpr, "context.Background()")
+	}
+	if !slices.Contains(target.Imports, "context") {
+		t.Errorf("target.Imports = %v, want to contain %q", target.Imports, "context")
+	}
+
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, "var ctx context.Context = context.Background()") {
+		t.Errorf("wrapper missing direct context.Background() assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(inputs[0], &ctx)") {
+		t.Errorf("wrapper still decodes ctx from inputs; runtime-value substitution should bypass json.Unmarshal; source:\n%s", out)
+	}
+}
+
 // TestBuildWrapperTargets_DoesNotImportResultOnlyPackages guards against
 // package-wide wrapper build failures from unused imports. The generated
 // wrapper never names result types, so result-only selector packages must not

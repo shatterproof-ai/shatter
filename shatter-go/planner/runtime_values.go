@@ -2,10 +2,10 @@ package planner
 
 import (
 	"encoding/json"
-	"sort"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 )
 
 // RuntimeValue is a single registered candidate expression for a Go parameter
@@ -17,6 +17,10 @@ import (
 // generator must add to the wrapper file. SideEffectClass is the coarse
 // policy class this expression implies when used as an argument (defaults to
 // ClassPure).
+//
+// The registry data lives in `shatter-go/runtimeval` (str-gxjs.1) so the
+// wrapper package can also consume it without forming an import cycle
+// through planner → protocol → build → wrapper.
 type RuntimeValue struct {
 	// Expression is the Go source expression (e.g. `context.Background()`).
 	Expression string
@@ -31,110 +35,6 @@ type RuntimeValue struct {
 	SideEffectClass protocol.SideEffectClass
 }
 
-// runtimeValueRegistry is the default set of Go parameter types the planner
-// can satisfy without user hints. Keyed by the Go source spelling of the
-// parameter type, including any leading `*` for pointer types.
-//
-// Each entry lists candidates in priority order; earlier candidates are
-// preferred. The order is stable to keep plan enumeration deterministic.
-var runtimeValueRegistry = map[string][]RuntimeValue{
-	"context.Context": {
-		{
-			Expression:      "context.Background()",
-			TypeHint:        "context.Context",
-			Imports:         []string{"context"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	"*bytes.Buffer": {
-		{
-			Expression:      "&bytes.Buffer{}",
-			TypeHint:        "*bytes.Buffer",
-			Imports:         []string{"bytes"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	"io.Reader": {
-		{
-			Expression:      `strings.NewReader("")`,
-			TypeHint:        "io.Reader",
-			Imports:         []string{"strings"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	"io.Writer": {
-		{
-			Expression:      "&bytes.Buffer{}",
-			TypeHint:        "io.Writer",
-			Imports:         []string{"bytes"},
-			SideEffectClass: protocol.ClassPure,
-		},
-		{
-			Expression:      "io.Discard",
-			TypeHint:        "io.Writer",
-			Imports:         []string{"io"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	// str-gxjs: io.ReadCloser is the type Go's `http.Request.Body` carries,
-	// so it appears in every handler-shaped scan. io.NopCloser wraps an
-	// in-memory reader without touching OS file descriptors.
-	"io.ReadCloser": {
-		{
-			Expression:      `io.NopCloser(strings.NewReader(""))`,
-			TypeHint:        "io.ReadCloser",
-			Imports:         []string{"io", "strings"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	// str-gxjs: http.ResponseWriter is synthesised via httptest.NewRecorder,
-	// the canonical in-memory recorder used by net/http tests. Safe — it
-	// does not bind a network socket.
-	"http.ResponseWriter": {
-		{
-			Expression:      "httptest.NewRecorder()",
-			TypeHint:        "http.ResponseWriter",
-			Imports:         []string{"net/http/httptest"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	// str-gxjs: *http.Request goes through httptest.NewRequest so the
-	// Body / URL / method fields are populated by the stdlib's own
-	// constructor rather than by composite-literal synthesis (which
-	// can't fill unexported fields). bytes.NewReader keeps the body
-	// in-memory; no network or filesystem side effects.
-	"*http.Request": {
-		{
-			Expression:      `httptest.NewRequest("GET", "/", bytes.NewReader(nil))`,
-			TypeHint:        "*http.Request",
-			Imports:         []string{"bytes", "net/http/httptest"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	"time.Time": {
-		{
-			Expression:      "time.Time{}",
-			TypeHint:        "time.Time",
-			Imports:         []string{"time"},
-			SideEffectClass: protocol.ClassPure,
-		},
-		{
-			Expression:      "time.Now()",
-			TypeHint:        "time.Time",
-			Imports:         []string{"time"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-	"http.Header": {
-		{
-			Expression:      "http.Header{}",
-			TypeHint:        "http.Header",
-			Imports:         []string{"net/http"},
-			SideEffectClass: protocol.ClassPure,
-		},
-	},
-}
-
 // LookupRuntimeValue returns the ordered runtime-value candidates registered
 // for the given Go type spelling. The returned slice is a copy; callers may
 // mutate it freely. Imports on each entry are sorted and deduplicated.
@@ -143,15 +43,20 @@ var runtimeValueRegistry = map[string][]RuntimeValue{
 // matches the exact spelling; it does not strip aliases or interface
 // wrappers.
 func LookupRuntimeValue(typeName string) []RuntimeValue {
-	entries, ok := runtimeValueRegistry[typeName]
-	if !ok {
+	cands := runtimeval.Lookup(typeName)
+	if len(cands) == 0 {
 		return nil
 	}
-	out := make([]RuntimeValue, len(entries))
-	for i, e := range entries {
-		out[i] = e
-		out[i].Imports = sortedUniqueImports(e.Imports)
-		if out[i].SideEffectClass == "" {
+	out := make([]RuntimeValue, len(cands))
+	for i, c := range cands {
+		out[i] = RuntimeValue{
+			Expression: c.Expression,
+			TypeHint:   c.TypeHint,
+			Imports:    c.Imports,
+		}
+		if c.SideEffectClass != "" {
+			out[i].SideEffectClass = protocol.SideEffectClass(c.SideEffectClass)
+		} else {
 			out[i].SideEffectClass = protocol.ClassPure
 		}
 	}
@@ -161,12 +66,7 @@ func LookupRuntimeValue(typeName string) []RuntimeValue {
 // RegisteredRuntimeValueTypes returns the sorted list of type spellings the
 // registry currently recognizes. Intended for diagnostics and tests.
 func RegisteredRuntimeValueTypes() []string {
-	out := make([]string, 0, len(runtimeValueRegistry))
-	for k := range runtimeValueRegistry {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return runtimeval.RegisteredTypes()
 }
 
 // runtimeValueTypeName extracts the Go-source type spelling from a ParamInfo
@@ -248,26 +148,4 @@ func generatorPlans(paramIndex int, p protocol.ParamInfo, typeName string, maxPl
 		})
 	}
 	return plans
-}
-
-func sortedUniqueImports(paths []string) []string {
-	if len(paths) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(paths))
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		seen[p] = struct{}{}
-	}
-	if len(seen) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out
 }
