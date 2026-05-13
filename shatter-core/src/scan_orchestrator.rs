@@ -1856,6 +1856,110 @@ impl ParallelScanResult {
         let attempted = self.function_results.len() + self.skipped.len();
         attempted > 0 && self.function_results.is_empty()
     }
+
+    /// Bucket the scan outcome into counts the CLI summary and exit policy
+    /// reason about (str-izhn).
+    #[must_use]
+    pub fn counts(&self) -> ScanCounts {
+        let mut failed = 0;
+        let mut unsupported = 0;
+        let mut expected = 0;
+        for s in &self.skipped {
+            match s.category {
+                SkipCategory::Error => failed += 1,
+                SkipCategory::Unsupported => unsupported += 1,
+                SkipCategory::Expected => expected += 1,
+            }
+        }
+        ScanCounts {
+            completed: self.function_results.len(),
+            failed,
+            unsupported,
+            expected_skips: expected,
+        }
+    }
+
+    /// Apply a [`ScanFailurePolicy`] to the result and return the reason the
+    /// scan should exit nonzero, or `None` if the policy is satisfied.
+    ///
+    /// The default policy is permissive (returns `None` for partial failures)
+    /// to preserve backwards-compatible exit codes; CI/workflows opt in via
+    /// `--fail-on-failures` or `--failure-threshold` (str-izhn).
+    #[must_use]
+    pub fn evaluate_failure_policy(&self, policy: ScanFailurePolicy) -> Option<String> {
+        let counts = self.counts();
+        let attempted = counts.completed + counts.failed;
+        if policy.fail_on_failures && counts.failed > 0 {
+            return Some(format!(
+                "{} of {} attempted function(s) failed (--fail-on-failures)",
+                counts.failed, attempted,
+            ));
+        }
+        if let Some(threshold) = policy.failure_threshold_percent
+            && attempted > 0
+        {
+            let pct = (counts.failed as f64 / attempted as f64) * 100.0;
+            if pct > threshold as f64 {
+                return Some(format!(
+                    "failure rate {:.1}% ({} of {} attempted) exceeds --failure-threshold {}%",
+                    pct, counts.failed, attempted, threshold,
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// Counts surfaced in the scan summary and exit-policy decision (str-izhn).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanCounts {
+    /// Functions that were attempted and explored successfully.
+    pub completed: usize,
+    /// Functions attempted but skipped with [`SkipCategory::Error`] —
+    /// timeouts, exploration errors, crashes, observed target panics.
+    pub failed: usize,
+    /// Functions discovered but never attempted because their shape is not
+    /// supported (unexecutable parameters, etc.).
+    pub unsupported: usize,
+    /// Benign skips: cache hits, checkpoint resumes, intentional bypasses.
+    pub expected_skips: usize,
+}
+
+/// CLI policy for translating scan outcomes into process exit codes
+/// (str-izhn). Default is permissive: exit 0 unless **every** attempted
+/// function failed (the prior `has_scan_failure` rule still applies).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScanFailurePolicy {
+    /// If true, exit nonzero when any attempted function fails.
+    pub fail_on_failures: bool,
+    /// If set, exit nonzero when the failure rate (failed / attempted) is
+    /// strictly greater than this percentage (0..=100).
+    pub failure_threshold_percent: Option<u32>,
+}
+
+impl ScanFailurePolicy {
+    /// Build a policy from the single `--fail-on-failures[=PERCENT]` CLI
+    /// flag (str-izhn). `None` means the flag was omitted (permissive);
+    /// `Some(0)` means the flag was set without a value (fail on any
+    /// failure); `Some(n)` means fail when the failure rate exceeds `n%`.
+    ///
+    /// The flag is fused into a single arg so the clap-derived parser stays
+    /// inside its default test-thread stack budget — adding a second arg
+    /// tipped the `try_parse_from` error path over 2MB on small fixtures.
+    #[must_use]
+    pub fn from_cli_flag(value: Option<u32>) -> Self {
+        match value {
+            None => Self::default(),
+            Some(0) => Self {
+                fail_on_failures: true,
+                failure_threshold_percent: None,
+            },
+            Some(pct) => Self {
+                fail_on_failures: false,
+                failure_threshold_percent: Some(pct),
+            },
+        }
+    }
 }
 
 /// Minimum number of idle workers to keep warm in the pool.
@@ -4421,12 +4525,20 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         .iter()
         .filter(|s| s.category == SkipCategory::Error)
         .collect();
+    let unsupported_count = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Unsupported)
+        .count();
 
+    // str-izhn: summary line names every bucket so CI and Makefile wrappers
+    // can grep `failed=` / `unsupported=` without parsing the report body.
     out.push_str(&format!(
-        "Scan complete: {} function(s) tested, {} skipped, {} error(s) ({} worker(s))\n",
+        "Scan complete: {} completed, {} failed, {} unsupported, {} skipped ({} worker(s))\n",
         result.function_results.len(),
-        expected.len(),
         errors.len(),
+        unsupported_count,
+        expected.len(),
         result.workers_used,
     ));
 
@@ -5556,9 +5668,10 @@ mod tests {
         };
 
         let report = format_parallel_scan_report(&result);
-        assert!(report.contains("1 function(s) tested"));
+        assert!(report.contains("1 completed"));
+        assert!(report.contains("1 failed"));
+        assert!(report.contains("0 unsupported"));
         assert!(report.contains("0 skipped"));
-        assert!(report.contains("1 error(s)"));
         assert!(report.contains("4 worker(s)"));
         assert!(!report.contains("Test order"));
         assert!(report.contains("Errors (1):"));
@@ -5611,8 +5724,10 @@ mod tests {
         };
 
         let report = format_parallel_scan_report(&result);
+        assert!(report.contains("1 completed"));
+        assert!(report.contains("0 failed"));
+        assert!(report.contains("0 unsupported"));
         assert!(report.contains("0 skipped"));
-        assert!(report.contains("0 error(s)"));
         assert!(!report.contains("Skipped (expected"));
         assert!(!report.contains("Errors ("));
     }
@@ -9417,6 +9532,149 @@ mod tests {
             !result.has_scan_failure(),
             "1 explored out of 2 attempted is not a total failure"
         );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_default_passes_partial_failures() {
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("ok", vec![])],
+            test_order: vec!["ok".into(), "bad".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "bad".into(),
+                reason: "timeout".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        assert!(
+            result
+                .evaluate_failure_policy(ScanFailurePolicy::default())
+                .is_none(),
+            "default permissive policy must not flag partial failures",
+        );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_fail_on_failures_flags_any_failure() {
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("ok", vec![])],
+            test_order: vec!["ok".into(), "bad".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "bad".into(),
+                reason: "panic".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let reason = result.evaluate_failure_policy(ScanFailurePolicy {
+            fail_on_failures: true,
+            failure_threshold_percent: None,
+        });
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("1 of 2")),
+            "fail-on-failures must name the failed/attempted counts; got: {reason:?}",
+        );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_threshold_allows_under_limit() {
+        // 1 failed out of 4 attempted = 25%, threshold 50 should pass.
+        let result = ParallelScanResult {
+            function_results: vec![
+                make_function_result("a", vec![]),
+                make_function_result("b", vec![]),
+                make_function_result("c", vec![]),
+            ],
+            test_order: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "d".into(),
+                reason: "timeout".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        assert!(
+            result
+                .evaluate_failure_policy(ScanFailurePolicy {
+                    fail_on_failures: false,
+                    failure_threshold_percent: Some(50),
+                })
+                .is_none(),
+            "25% failure rate must satisfy a 50% threshold",
+        );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_threshold_trips_over_limit() {
+        // 3 failed out of 4 attempted = 75%, threshold 50 should fail.
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("a", vec![])],
+            test_order: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "b".into(),
+                    reason: "timeout".into(),
+                    category: SkipCategory::Error,
+                },
+                SkippedFunction {
+                    function_name: "c".into(),
+                    reason: "panic".into(),
+                    category: SkipCategory::Error,
+                },
+                SkippedFunction {
+                    function_name: "d".into(),
+                    reason: "error".into(),
+                    category: SkipCategory::Error,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let reason = result.evaluate_failure_policy(ScanFailurePolicy {
+            fail_on_failures: false,
+            failure_threshold_percent: Some(50),
+        });
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|r| r.contains("75.0%") && r.contains("--failure-threshold 50")),
+            "threshold breach must name the rate and limit; got: {reason:?}",
+        );
+    }
+
+    #[test]
+    fn counts_separate_unsupported_and_failed() {
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("ok", vec![])],
+            test_order: vec!["ok".into(), "bad".into(), "u".into()],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "bad".into(),
+                    reason: "panic".into(),
+                    category: SkipCategory::Error,
+                },
+                SkippedFunction {
+                    function_name: "u".into(),
+                    reason: "unexecutable param".into(),
+                    category: SkipCategory::Unsupported,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let counts = result.counts();
+        assert_eq!(counts.completed, 1);
+        assert_eq!(counts.failed, 1);
+        assert_eq!(counts.unsupported, 1);
+        assert_eq!(counts.expected_skips, 0);
     }
 
     #[test]

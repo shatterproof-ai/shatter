@@ -1006,6 +1006,22 @@ pub(crate) enum CliCommand {
         /// continue with available languages (str-jeen.13).
         #[arg(long)]
         require_rust: bool,
+
+        /// Exit nonzero on attempted-function failures (str-izhn).
+        ///
+        /// Without a value, any failed attempt makes the run exit nonzero.
+        /// With `=<PERCENT>` (0-100), the run exits nonzero only when the
+        /// failure rate strictly exceeds that percentage — useful for "fail
+        /// the build only when more than 20% of attempts failed."
+        /// Omitted entirely, partial-failure scans still exit 0 for
+        /// backwards compatibility.
+        #[arg(
+            long,
+            value_name = "PERCENT",
+            num_args = 0..=1,
+            default_missing_value = "0",
+        )]
+        fail_on_failures: Option<u32>,
     },
 
     /// Discover and export behavioral properties and invariants as a YAML spec.
