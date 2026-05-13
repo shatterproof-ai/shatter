@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -225,6 +226,153 @@ func TestPlanGCMissingMetadataFallsBackToMtime(t *testing.T) {
 	}
 	if report.Candidates[0].Reason != GCReasonAge {
 		t.Fatalf("reason = %q, want %q", report.Candidates[0].Reason, GCReasonAge)
+	}
+}
+
+// seedGeneratedHashDir creates a fake generated/<hash> subtree with
+// controlled mtime and contents totalling sizeBytes. Used to exercise
+// the str-5zjc generated/ pruning path.
+func seedGeneratedHashDir(t *testing.T, workspace *Workspace, hash string, mtime time.Time, sizeBytes int) string {
+	t.Helper()
+	dir := filepath.Join(workspace.GeneratedDir(), hash)
+	if err := os.MkdirAll(filepath.Join(dir, "launcher"), 0o755); err != nil {
+		t.Fatalf("mkdir generated/%s: %v", hash, err)
+	}
+	if sizeBytes > 0 {
+		if err := os.WriteFile(filepath.Join(dir, "launcher", "main.go"), make([]byte, sizeBytes), 0o644); err != nil {
+			t.Fatalf("write generated payload: %v", err)
+		}
+	}
+	if err := os.Chtimes(dir, mtime, mtime); err != nil {
+		t.Fatalf("chtimes generated dir: %v", err)
+	}
+	return dir
+}
+
+// seedBinary creates a fake binaries/shatter_launcher_<hash> file with
+// controlled mtime and size. Used to exercise the str-5zjc binaries/
+// pruning path.
+func seedBinary(t *testing.T, workspace *Workspace, hash string, mtime time.Time, sizeBytes int) string {
+	t.Helper()
+	path := filepath.Join(workspace.BinariesDir(), "shatter_launcher_"+hash)
+	if err := os.WriteFile(path, make([]byte, sizeBytes), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("chtimes binary: %v", err)
+	}
+	return path
+}
+
+// TestPlanGCBoundsGeneratedDir verifies that the str-5zjc workspace disk
+// bound is applied to generated/<hash> entries: anything older than MaxAge
+// is evicted by age, and the oldest survivors are evicted by size until
+// total generated/ size is within MaxGeneratedBytes.
+func TestPlanGCBoundsGeneratedDir(t *testing.T) {
+	workspace := openWorkspace(t)
+	now := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
+	const perEntryBytes = 512 * 1024 // 512 KiB
+
+	// Three old entries → should be age-evicted.
+	for index := 0; index < 3; index++ {
+		seedGeneratedHashDir(t, workspace, fmt.Sprintf("old%d", index), now.Add(-30*24*time.Hour), perEntryBytes)
+	}
+	// Five fresh entries; cap allows only two by size.
+	for index := 0; index < 5; index++ {
+		seedGeneratedHashDir(t, workspace, fmt.Sprintf("fresh%d", index), now.Add(time.Duration(index)*time.Hour), perEntryBytes)
+	}
+
+	const cap = int64(2 * perEntryBytes)
+	report, err := workspace.PlanGC(GCOptions{
+		KeepLastN:         -1,
+		MaxAge:            14 * 24 * time.Hour,
+		MaxRunsBytes:      -1,
+		MaxCacheBytes:     -1,
+		MaxGeneratedBytes: cap,
+		MaxBinariesBytes:  -1,
+		Now:               now,
+	})
+	if err != nil {
+		t.Fatalf("PlanGC: %v", err)
+	}
+
+	ageEvictions := 0
+	sizeEvictions := 0
+	for _, candidate := range report.Candidates {
+		switch candidate.Reason {
+		case GCReasonGeneratedAge:
+			ageEvictions++
+		case GCReasonGeneratedSize:
+			sizeEvictions++
+		}
+	}
+	if ageEvictions != 3 {
+		t.Errorf("got %d age evictions, want 3", ageEvictions)
+	}
+	if sizeEvictions != 3 {
+		t.Errorf("got %d size evictions (5 fresh - cap of 2), want 3", sizeEvictions)
+	}
+	// Surviving size must be at or under the cap.
+	surviving := report.GeneratedSizeBefore
+	for _, candidate := range report.Candidates {
+		if candidate.Reason == GCReasonGeneratedAge || candidate.Reason == GCReasonGeneratedSize {
+			surviving -= candidate.Size
+		}
+	}
+	if surviving > cap {
+		t.Errorf("surviving generated/ size %d > cap %d", surviving, cap)
+	}
+}
+
+// TestRunGCPrunesBinariesPreservingRegistry verifies the str-5zjc binaries/
+// pruning path: stale launcher binaries are deleted, total binaries/ size
+// falls under the cap, and the persistent binary_registry.json index is
+// never evicted (BinaryRegistry self-evicts stale lookups, so leaving the
+// index alone is harmless).
+func TestRunGCPrunesBinariesPreservingRegistry(t *testing.T) {
+	workspace := openWorkspace(t)
+	now := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
+	const perBinaryBytes = 1024 * 1024 // 1 MiB
+
+	for index := 0; index < 6; index++ {
+		seedBinary(t, workspace, fmt.Sprintf("hash%02d", index), now.Add(time.Duration(index)*time.Minute), perBinaryBytes)
+	}
+	registryPath := filepath.Join(workspace.BinariesDir(), "binary_registry.json")
+	if err := os.WriteFile(registryPath, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+
+	const cap = int64(2 * perBinaryBytes)
+	report, err := workspace.RunGC(GCOptions{
+		KeepLastN:         -1,
+		MaxAge:            -1,
+		MaxRunsBytes:      -1,
+		MaxCacheBytes:     -1,
+		MaxGeneratedBytes: -1,
+		MaxBinariesBytes:  cap,
+		Now:               now,
+	})
+	if err != nil {
+		t.Fatalf("RunGC: %v", err)
+	}
+
+	binariesEvicted := 0
+	for _, candidate := range report.Candidates {
+		if candidate.Reason == GCReasonBinariesSize {
+			binariesEvicted++
+		}
+		if filepath.Base(candidate.Path) == "binary_registry.json" {
+			t.Errorf("registry was selected for eviction at %q; it must be preserved", candidate.Path)
+		}
+	}
+	if binariesEvicted != 4 {
+		t.Errorf("got %d binaries evicted (6 - cap of 2), want 4", binariesEvicted)
+	}
+	if _, err := os.Stat(registryPath); err != nil {
+		t.Errorf("registry must remain on disk after gc: %v", err)
+	}
+	if report.BinariesSizeAfter > cap {
+		t.Errorf("BinariesSizeAfter %d > cap %d", report.BinariesSizeAfter, cap)
 	}
 }
 

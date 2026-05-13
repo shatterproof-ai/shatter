@@ -10,26 +10,34 @@ import (
 )
 
 const (
-	DefaultGCKeepLastN     = 20
-	DefaultGCMaxAge        = 14 * 24 * time.Hour
-	DefaultGCMaxRunsBytes  = int64(5) * 1024 * 1024 * 1024 // 5 GiB
-	DefaultGCMaxCacheBytes = int64(5) * 1024 * 1024 * 1024 // 5 GiB
+	DefaultGCKeepLastN         = 20
+	DefaultGCMaxAge            = 14 * 24 * time.Hour
+	DefaultGCMaxRunsBytes      = int64(5) * 1024 * 1024 * 1024 // 5 GiB
+	DefaultGCMaxCacheBytes     = int64(5) * 1024 * 1024 * 1024 // 5 GiB
+	DefaultGCMaxGeneratedBytes = int64(1) * 1024 * 1024 * 1024 // 1 GiB
+	DefaultGCMaxBinariesBytes  = int64(1) * 1024 * 1024 * 1024 // 1 GiB
 
-	GCReasonCount     = "count"
-	GCReasonAge       = "age"
-	GCReasonSize      = "size"
-	GCReasonCacheSize = "cache-size"
+	GCReasonCount         = "count"
+	GCReasonAge           = "age"
+	GCReasonSize          = "size"
+	GCReasonCacheSize     = "cache-size"
+	GCReasonGeneratedAge  = "generated-age"
+	GCReasonGeneratedSize = "generated-size"
+	GCReasonBinariesAge   = "binaries-age"
+	GCReasonBinariesSize  = "binaries-size"
 )
 
 // GCOptions controls which runs and cache entries are eligible for eviction.
 // Zero values receive the DefaultGC* sentinels below; set a bound explicitly
 // to a negative number to disable the corresponding rule.
 type GCOptions struct {
-	KeepLastN     int
-	MaxAge        time.Duration
-	MaxRunsBytes  int64
-	MaxCacheBytes int64
-	DryRun        bool
+	KeepLastN         int
+	MaxAge            time.Duration
+	MaxRunsBytes      int64
+	MaxCacheBytes     int64
+	MaxGeneratedBytes int64
+	MaxBinariesBytes  int64
+	DryRun            bool
 
 	// Now is injectable for tests so age decisions stay deterministic.
 	// Defaults to time.Now().
@@ -52,14 +60,18 @@ type CacheSizes struct {
 
 // GCReport summarizes a planning or execution pass.
 type GCReport struct {
-	Scanned        int
-	Candidates     []GCCandidate
-	Deleted        []string
-	BytesPlanned   int64
-	BytesRemoved   int64
-	RunsSizeBefore int64
-	RunsSizeAfter  int64
-	CacheSizes     map[string]CacheSizes
+	Scanned             int
+	Candidates          []GCCandidate
+	Deleted             []string
+	BytesPlanned        int64
+	BytesRemoved        int64
+	RunsSizeBefore      int64
+	RunsSizeAfter       int64
+	CacheSizes          map[string]CacheSizes
+	GeneratedSizeBefore int64
+	GeneratedSizeAfter  int64
+	BinariesSizeBefore  int64
+	BinariesSizeAfter   int64
 }
 
 // PlanGC enumerates runs and caches and returns the set of paths that would
@@ -107,12 +119,28 @@ func (w *Workspace) planOrRun(opts GCOptions, apply bool) (*GCReport, error) {
 		candidates = append(candidates, cacheCandidates...)
 	}
 
+	generatedBefore, generatedCandidates, err := planHashedDirCandidates(w.GeneratedDir(), opts.MaxGeneratedBytes, opts.MaxAge, opts.Now, GCReasonGeneratedAge, GCReasonGeneratedSize)
+	if err != nil {
+		return nil, err
+	}
+	candidates = append(candidates, generatedCandidates...)
+
+	binariesBefore, binariesCandidates, err := planFileTreeCandidates(w.BinariesDir(), opts.MaxBinariesBytes, opts.MaxAge, opts.Now, GCReasonBinariesAge, GCReasonBinariesSize, registryFileName)
+	if err != nil {
+		return nil, err
+	}
+	candidates = append(candidates, binariesCandidates...)
+
 	report := &GCReport{
-		Scanned:        len(runs),
-		Candidates:     candidates,
-		RunsSizeBefore: runsSizeBefore,
-		RunsSizeAfter:  runsSizeBefore,
-		CacheSizes:     cacheSizes,
+		Scanned:             len(runs),
+		Candidates:          candidates,
+		RunsSizeBefore:      runsSizeBefore,
+		RunsSizeAfter:       runsSizeBefore,
+		CacheSizes:          cacheSizes,
+		GeneratedSizeBefore: generatedBefore,
+		GeneratedSizeAfter:  generatedBefore,
+		BinariesSizeBefore:  binariesBefore,
+		BinariesSizeAfter:   binariesBefore,
 	}
 	for _, candidate := range candidates {
 		report.BytesPlanned += candidate.Size
@@ -136,8 +164,17 @@ func (w *Workspace) planOrRun(opts GCOptions, apply bool) (*GCReport, error) {
 		sizes.After = sizes.Before - removed
 		cacheSizes[name] = sizes
 	}
+	report.GeneratedSizeAfter = generatedBefore - bytesFromCandidates(candidates, GCReasonGeneratedAge, GCReasonGeneratedSize)
+	report.BinariesSizeAfter = binariesBefore - bytesFromCandidates(candidates, GCReasonBinariesAge, GCReasonBinariesSize)
 	return report, nil
 }
+
+// registryFileName names the build registry index that lives alongside
+// compiled launcher binaries. It is excluded from binaries/ eviction
+// because BinaryRegistry.Lookup self-evicts entries whose binary is
+// missing, so leaving the index intact is harmless and avoids needing
+// callers to recreate it.
+const registryFileName = "binary_registry.json"
 
 func withGCDefaults(opts GCOptions) GCOptions {
 	if opts.KeepLastN == 0 {
@@ -151,6 +188,12 @@ func withGCDefaults(opts GCOptions) GCOptions {
 	}
 	if opts.MaxCacheBytes == 0 {
 		opts.MaxCacheBytes = DefaultGCMaxCacheBytes
+	}
+	if opts.MaxGeneratedBytes == 0 {
+		opts.MaxGeneratedBytes = DefaultGCMaxGeneratedBytes
+	}
+	if opts.MaxBinariesBytes == 0 {
+		opts.MaxBinariesBytes = DefaultGCMaxBinariesBytes
 	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
@@ -348,6 +391,136 @@ func bytesFromCandidatesInPath(candidates []GCCandidate, pathPrefix string) int6
 		}
 	}
 	return total
+}
+
+// planHashedDirCandidates evicts direct subdirectories of root by age then
+// total size. Used for generated/, which is keyed by per-target discovery
+// hash and not reachable via any in-process index — stale entries are pure
+// dead weight on disk. Entries older than maxAge are always evicted; the
+// remainder is capped at maxBytes by removing the oldest survivors first.
+// A negative cap disables that rule.
+func planHashedDirCandidates(root string, maxBytes int64, maxAge time.Duration, now time.Time, ageReason, sizeReason string) (totalBefore int64, candidates []GCCandidate, err error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil, nil
+		}
+		return 0, nil, fmt.Errorf("read dir %s: %w", root, err)
+	}
+
+	type hashedEntry struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+	collected := make([]hashedEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		size, sizeErr := dirSize(path)
+		if sizeErr != nil {
+			return 0, nil, fmt.Errorf("size %s: %w", path, sizeErr)
+		}
+		collected = append(collected, hashedEntry{path: path, size: size, modTime: info.ModTime()})
+		totalBefore += size
+	}
+
+	evicted := make(map[string]struct{})
+	if maxAge > 0 {
+		ageCutoff := now.Add(-maxAge)
+		for _, entry := range collected {
+			if entry.modTime.Before(ageCutoff) {
+				candidates = append(candidates, GCCandidate{Path: entry.path, Reason: ageReason, Size: entry.size})
+				evicted[entry.path] = struct{}{}
+			}
+		}
+	}
+
+	if maxBytes >= 0 {
+		survivors := make([]hashedEntry, 0, len(collected))
+		surviving := int64(0)
+		for _, entry := range collected {
+			if _, ok := evicted[entry.path]; ok {
+				continue
+			}
+			survivors = append(survivors, entry)
+			surviving += entry.size
+		}
+		sort.Slice(survivors, func(i, j int) bool {
+			return survivors[i].modTime.Before(survivors[j].modTime)
+		})
+		for surviving > maxBytes && len(survivors) > 0 {
+			oldest := survivors[0]
+			survivors = survivors[1:]
+			candidates = append(candidates, GCCandidate{Path: oldest.path, Reason: sizeReason, Size: oldest.size})
+			surviving -= oldest.size
+		}
+	}
+	return totalBefore, candidates, nil
+}
+
+// planFileTreeCandidates evicts files under root by age then total size.
+// Used for binaries/, which is a flat tree of compiled launcher binaries
+// keyed by discovery hash. Filenames in skipNames are never evicted —
+// these are persistent index files (e.g. binary_registry.json) maintained
+// alongside the binaries.
+func planFileTreeCandidates(root string, maxBytes int64, maxAge time.Duration, now time.Time, ageReason, sizeReason string, skipNames ...string) (totalBefore int64, candidates []GCCandidate, err error) {
+	skip := make(map[string]struct{}, len(skipNames))
+	for _, name := range skipNames {
+		skip[name] = struct{}{}
+	}
+
+	files, err := collectCacheFiles(root)
+	if err != nil {
+		return 0, nil, err
+	}
+	filtered := files[:0]
+	for _, file := range files {
+		if _, isSkipped := skip[filepath.Base(file.path)]; isSkipped {
+			continue
+		}
+		filtered = append(filtered, file)
+		totalBefore += file.size
+	}
+
+	evicted := make(map[string]struct{})
+	if maxAge > 0 {
+		ageCutoff := now.Add(-maxAge)
+		for _, file := range filtered {
+			if file.modTime.Before(ageCutoff) {
+				candidates = append(candidates, GCCandidate{Path: file.path, Reason: ageReason, Size: file.size})
+				evicted[file.path] = struct{}{}
+			}
+		}
+	}
+
+	if maxBytes >= 0 {
+		survivors := make([]cacheFile, 0, len(filtered))
+		surviving := int64(0)
+		for _, file := range filtered {
+			if _, ok := evicted[file.path]; ok {
+				continue
+			}
+			survivors = append(survivors, file)
+			surviving += file.size
+		}
+		sort.Slice(survivors, func(i, j int) bool {
+			return survivors[i].modTime.Before(survivors[j].modTime)
+		})
+		for surviving > maxBytes && len(survivors) > 0 {
+			oldest := survivors[0]
+			survivors = survivors[1:]
+			candidates = append(candidates, GCCandidate{Path: oldest.path, Reason: sizeReason, Size: oldest.size})
+			surviving -= oldest.size
+		}
+	}
+	return totalBefore, candidates, nil
 }
 
 func hasPathPrefix(path, prefix string) bool {
