@@ -75,6 +75,7 @@ pub(crate) async fn run_scan(
     genetic_config: &shatter_core::config::GeneticConfig,
     parallelism_bounds: crate::helpers::ParallelismBounds,
     require_rust: bool,
+    failure_policy: shatter_core::scan_orchestrator::ScanFailurePolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_pool_path = if no_seeds {
         None
@@ -1083,6 +1084,15 @@ pub(crate) async fn run_scan(
                     "scan failed: {attempted} function(s) attempted but 0 explored successfully"
                 )
                 .into());
+            }
+
+            // str-izhn: apply opt-in failure policy after rendering the
+            // report. The default policy stays permissive — wrappers that
+            // want CI to fail on any failure pass `--fail-on-failures` or
+            // `--failure-threshold`. The summary above already names the
+            // completed/failed/unsupported counts.
+            if let Some(reason) = result.evaluate_failure_policy(failure_policy) {
+                return Err(format!("scan failed: {reason}").into());
             }
         }
         Err(e) => {

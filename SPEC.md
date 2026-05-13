@@ -679,7 +679,7 @@ $ shatter scan --progress src/
 {"type":"progress","status":"completed","function":"calculateTotal","current":3,"total":4,"elapsed_ms":2105}
 {"type":"progress","status":"skipped","function":"formatOutput","current":4,"total":4,"elapsed_ms":2108}
 
-Scan complete: 3 function(s) tested, 1 skipped, 0 error(s) (4 worker(s))
+Scan complete: 3 completed, 0 failed, 0 unsupported, 1 skipped (4 worker(s))
 
 -- add --
   Iterations: 100
@@ -696,7 +696,7 @@ $ shatter scan src/
 [3/4] calculateTotal (2.1s elapsed)
 [4/4] formatOutput (2.1s elapsed)
 
-Scan complete: 3 function(s) tested, 1 skipped, 0 error(s) (4 worker(s))
+Scan complete: 3 completed, 0 failed, 0 unsupported, 1 skipped (4 worker(s))
 
 -- add --
   Iterations: 100
@@ -723,7 +723,7 @@ $ shatter scan --resume auto src/
 [3/4] calculateTotal (0.5s elapsed)
 [4/4] formatOutput (1.2s elapsed)
 
-Scan complete: 2 function(s) tested, 2 skipped, 0 error(s) (4 worker(s))
+Scan complete: 2 completed, 0 failed, 0 unsupported, 2 skipped (4 worker(s))
 ```
 
 **Resume after source change**:

@@ -448,6 +448,7 @@ async fn main() -> ExitCode {
             parallelism_min,
             parallelism_max,
             require_rust,
+            fail_on_failures,
         } => {
             // str-1wcl: clean external-audit runs (`-o <external> --no-cache
             // --no-seeds`) must not write `.shatter/` into the audited
@@ -628,6 +629,9 @@ async fn main() -> ExitCode {
                 &genetic_config,
                 parallelism_bounds,
                 require_rust,
+                shatter_core::scan_orchestrator::ScanFailurePolicy::from_cli_flag(
+                    fail_on_failures,
+                ),
             )
             .await
         }

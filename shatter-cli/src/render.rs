@@ -44,6 +44,9 @@ pub(crate) struct ScanView {
     /// Pre-formatted sampling line, or empty string if no sampling was active.
     pub sampling_info: String,
     pub total_tested: usize,
+    /// Count of discovered functions that were never attempted because their
+    /// shape is unsupported (str-izhn).
+    pub unsupported_count: usize,
 }
 
 /// Per-function summary row in a scan result.
@@ -163,10 +166,21 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         })
         .collect();
 
-    let (expected, errors): (Vec<_>, Vec<_>) = result
+    let expected: Vec<_> = result
         .skipped
         .iter()
-        .partition(|s| s.category == SkipCategory::Expected);
+        .filter(|s| s.category == SkipCategory::Expected)
+        .collect();
+    let errors: Vec<_> = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Error)
+        .collect();
+    let unsupported_count = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Unsupported)
+        .count();
 
     let to_view = |s: &&shatter_core::scan_orchestrator::SkippedFunction| SkippedView {
         function_name: s.function_name.clone(),
@@ -198,6 +212,7 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         skipped_errors: errors.iter().map(to_view).collect(),
         workers_used: result.workers_used,
         sampling_info,
+        unsupported_count,
     }
 }
 

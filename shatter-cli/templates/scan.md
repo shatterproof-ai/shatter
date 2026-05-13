@@ -11,7 +11,7 @@
 {% endfor %}
 ---
 
-Scan complete: **{{ total_tested }} function(s)** tested, **{{ skipped_expected.len() }} skipped**, **{{ skipped_errors.len() }} error(s)** ({{ workers_used }} worker(s))
+Scan complete: **{{ total_tested }} completed**, **{{ skipped_errors.len() }} failed**, **{{ unsupported_count }} unsupported**, **{{ skipped_expected.len() }} skipped** ({{ workers_used }} worker(s))
 {% if !skipped_errors.is_empty() %}
 **Errors:**
 {% for s in skipped_errors -%}
