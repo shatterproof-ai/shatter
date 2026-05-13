@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
+	"golang.org/x/tools/go/packages"
 )
 
 // threeTargets and twoCtors are the acceptance-criteria inputs.
@@ -936,6 +937,162 @@ func (s *Service) IncS()     { s.n++ }
 	}
 	if strings.Contains(stderr.String(), "cannot indirect") {
 		t.Errorf("build emitted cannot-indirect diagnostic:\nstderr: %s", stderr.String())
+	}
+}
+
+// TestVariadicWrapperEndToEndFromPackagesLoad is the str-fxj7 regression:
+// closes the gap between TestBuildWrapperTargets_DetectsVariadic (AST-only,
+// no compile) and TestGeneratedWrapperCompilesVariadic (compiles, but uses
+// hand-built WrapperTargets that bypass extractWrapperParams). This test
+// drives the full path that production prepare hits — packages.Load →
+// BuildWrapperTargets → WriteWrapperFile → `go build` — for the exact
+// zolem signatures from str-fxj7:
+//
+//   - runCommand(ctx context.Context, binaryPath string, args ...string)
+//     (unexported free function with leading non-variadic params)
+//   - callU32(ctx context.Context, fn Function, args ...uint64)
+//     (variadic of a non-primitive type)
+//   - (*Server).Send(args ...string) (variadic on a method receiver)
+//
+// Pre-fix, any path that lost IsVariadic between extraction and call-site
+// emission would surface as `cannot use args (variable of type []T) as T
+// value in argument to ...`.
+func TestVariadicWrapperEndToEndFromPackagesLoad(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package zolemlike
+
+import "context"
+
+// Function mirrors the wazero api.Function interface shape that zolem's
+// callU32 takes as its second parameter.
+type Function interface {
+	Call(ctx context.Context, args ...uint64) ([]uint64, error)
+}
+
+// runCommand is the unexported free variadic function from zolem's
+// internal/ollama/client.go (str-fxj7).
+func runCommand(ctx context.Context, binaryPath string, args ...string) error {
+	_ = ctx
+	_ = binaryPath
+	_ = args
+	return nil
+}
+
+// callU32 mirrors zolem's internal/wasmgen/generator.go shape: variadic
+// uint64 with a leading non-primitive (interface) parameter.
+func callU32(ctx context.Context, fn Function, args ...uint64) (uint64, error) {
+	_ = ctx
+	_ = fn
+	var sum uint64
+	for _, v := range args {
+		sum += v
+	}
+	return sum, nil
+}
+
+type Server struct{}
+
+// Send exercises a variadic on a pointer-receiver method.
+func (s *Server) Send(args ...string) int { return len(args) }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "zolemlike.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/zolemlike\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+
+	// Confirm IsVariadic survived extraction for every variadic target.
+	wantVariadic := map[string]string{
+		"runCommand": "args",
+		"callU32":    "args",
+		"Send":       "args",
+	}
+	for _, tg := range targets {
+		paramName, expected := wantVariadic[tg.SymbolName]
+		if !expected {
+			continue
+		}
+		if len(tg.Parameters) == 0 {
+			t.Errorf("%s: no parameters", tg.SymbolName)
+			continue
+		}
+		last := tg.Parameters[len(tg.Parameters)-1]
+		if last.Name != paramName {
+			t.Errorf("%s: last param name = %q, want %q", tg.SymbolName, last.Name, paramName)
+		}
+		if !last.IsVariadic {
+			t.Errorf("%s: last param IsVariadic=false (extraction dropped variadic flag)", tg.SymbolName)
+		}
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "zolemlike", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	src, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+
+	mustContain := []string{
+		"runCommand(ctx, binaryPath, args...)",
+		"callU32(ctx, fn, args...)",
+		"_recv.Send(args...)",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("generated wrapper missing variadic call %q\nsource:\n%s", want, src)
+		}
+	}
+
+	// Stage the wrapper file in-tree via the overlay manifest so the wrapper
+	// compiles against the unexported targets in the same package.
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), src)
 	}
 }
 
