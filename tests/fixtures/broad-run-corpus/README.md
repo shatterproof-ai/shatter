@@ -31,12 +31,14 @@ task broad-run-corpus
 The gate (`tests/scripts/broad_run_validation.py`) invokes `shatter scan`
 against each sub-fixture and asserts:
 
-1. **Denominator integrity** — the sum of `completed_functions`,
-   `failed_functions`, `skipped_functions_count`, and
-   `unsupported_functions` equals `attempted_functions`, and
-   `attempted_functions` is at least the manifest's `min_attempted`
-   threshold (so silent skips can't shrink the denominator below
-   what Kapow exposed).
+1. **Denominator integrity** — `skipped_functions_count` equals
+   `skipped_functions.len()` (Expected + Unsupported, per str-21w2)
+   and `unsupported_functions` is a sub-count of it. The attempt-side
+   identity `completed + failed + (skipped - unsupported) == attempted`
+   and the discovery-side identity `completed + failed + skipped ==
+   total_discovered_functions` both hold. `attempted_functions` is at
+   least the manifest's `min_attempted` threshold so silent skips can't
+   shrink the denominator below what Kapow exposed.
 2. **Artifact integrity** — every `file_path` referenced in `failed`,
    `skipped`, and `functions` arrays points to a real file on disk.
 3. **Failure-class presence** — at least one `failed[].reason` matches

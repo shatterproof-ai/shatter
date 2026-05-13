@@ -34,7 +34,15 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// reports decode to defaults that match the conservative reading
 /// (`behavioral` / `0` / `0`), so the change is additive and the
 /// schema version is held at 5.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 5;
+///
+/// str-21w2 changes the semantics of `skipped_functions_count` so it
+/// equals `skipped_functions.len()` (Expected + Unsupported), matching
+/// the field name and the array it describes. Pre-fix v5 reports
+/// counted only Expected, while the array carried both — consumers
+/// could not derive completeness from the JSON. The `unsupported_functions`
+/// field remains and is now a documented sub-count of
+/// `skipped_functions_count`. Schema bumps to v6.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 6;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -393,13 +401,24 @@ pub struct CodebaseReport {
     /// runtime errors, build failures). Each entry has a corresponding
     /// row in [`Self::failed`].
     pub failed_functions: usize,
-    /// Number of functions skipped for benign reasons (cache hits,
-    /// checkpoint resumes, intentional bypasses). Distinct from
-    /// `unsupported_functions`.
+    /// Total number of entries in [`Self::skipped_functions`]. Equals
+    /// `skipped_functions.len()` and equals
+    /// `expected_skipped + unsupported_functions`, where
+    /// `expected_skipped` is the count of benign skips (cache hits,
+    /// checkpoint resumes, intentional bypasses) and
+    /// `unsupported_functions` is the count of targets filtered before
+    /// any attempt.
+    ///
+    /// Pre-str-21w2 v5 reports set this to the Expected-only sub-count
+    /// while the array carried both Expected and Unsupported entries —
+    /// consumers could not derive completeness from the JSON. v6
+    /// (str-21w2) realigns the count with the array length.
     pub skipped_functions_count: usize,
     /// Number of functions filtered out before any exploration because
     /// the analyzer or executor cannot model the target's shape (for
-    /// example, unexecutable parameter types).
+    /// example, unexecutable parameter types). Sub-count of
+    /// [`Self::skipped_functions_count`] — unsupported entries appear
+    /// in [`Self::skipped_functions`] with `category == "unsupported"`.
     pub unsupported_functions: usize,
     /// Total functions surfaced by analysis before any filtering. Equals
     /// `attempted + unsupported`.
@@ -856,7 +875,7 @@ pub fn generate_report(
             completed_with_behavior,
             completed_error_only,
             failed_functions: counts.failed,
-            skipped_functions_count: counts.expected_skipped,
+            skipped_functions_count: counts.expected_skipped + counts.unsupported,
             unsupported_functions: counts.unsupported,
             total_discovered_functions: counts.discovered,
             total_branches,
@@ -921,7 +940,7 @@ pub fn generate_report_from_scan(
             completed_with_behavior,
             completed_error_only,
             failed_functions: counts.failed,
-            skipped_functions_count: counts.expected_skipped,
+            skipped_functions_count: counts.expected_skipped + counts.unsupported,
             unsupported_functions: counts.unsupported,
             total_discovered_functions: counts.discovered,
             total_branches,
@@ -1154,13 +1173,35 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
         let _ = writeln!(out, "- **Functions failed:** {}", cb.failed_functions);
     }
     if cb.skipped_functions_count > 0 {
+        // str-21w2: `skipped_functions_count` now matches
+        // `skipped_functions.len()` (Expected + Unsupported); show the
+        // Unsupported sub-count beneath it so the markdown breakdown
+        // stays unambiguous without double-counting.
         let _ = writeln!(
             out,
             "- **Functions skipped:** {}",
             cb.skipped_functions_count
         );
-    }
-    if cb.unsupported_functions > 0 {
+        if cb.unsupported_functions > 0 {
+            let _ = writeln!(
+                out,
+                "  - **unsupported (target shape not representable):** {}",
+                cb.unsupported_functions
+            );
+            let expected = cb
+                .skipped_functions_count
+                .saturating_sub(cb.unsupported_functions);
+            if expected > 0 {
+                let _ = writeln!(
+                    out,
+                    "  - **expected (cache/checkpoint/bypass):** {expected}",
+                );
+            }
+        }
+    } else if cb.unsupported_functions > 0 {
+        // Defensive path: if a producer reports unsupported without
+        // populating `skipped_functions_count` (e.g. a stale v5 report
+        // round-tripped through this writer), still surface the count.
         let _ = writeln!(
             out,
             "- **Functions unsupported:** {}",
@@ -2336,7 +2377,11 @@ mod tests {
         let cb = &report.codebase;
         assert_eq!(cb.completed_functions, COMPLETED);
         assert_eq!(cb.unsupported_functions, UNSUPPORTED);
-        assert_eq!(cb.skipped_functions_count, EXPECTED_SKIP);
+        // str-21w2: `skipped_functions_count` matches the length of
+        // `skipped_functions` (Expected + Unsupported). The
+        // `unsupported_functions` field is the Unsupported sub-count.
+        assert_eq!(cb.skipped_functions_count, EXPECTED_SKIP + UNSUPPORTED);
+        assert_eq!(cb.skipped_functions_count, cb.skipped_functions.len());
         assert_eq!(cb.failed_functions, 0);
         // attempted counts attempt = completed + failed + expected_skipped;
         // unsupported targets were never attempted.
@@ -2355,6 +2400,85 @@ mod tests {
             .collect();
         assert!(categories.contains(&"unsupported"));
         assert!(categories.contains(&"expected"));
+    }
+
+    /// str-21w2 regression: with Unsupported entries present, the JSON
+    /// report's `skipped_functions_count` must equal the length of the
+    /// `skipped_functions` array, and `unsupported_functions` must
+    /// equal the number of `category == "unsupported"` entries. Before
+    /// the fix, consumers saw `skipped_functions_count == 0` while the
+    /// array carried 71 unsupported rows.
+    #[test]
+    fn json_report_skipped_counts_agree_with_array_lengths() {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("good", 5, 1, 3, 5, vec![])],
+            test_order: vec!["good".into()],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "opaque_a".into(),
+                    reason: "unexecutable param: opaque type".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Unsupported,
+                },
+                SkippedFunction {
+                    function_name: "opaque_b".into(),
+                    reason: "unexecutable param: opaque type".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Unsupported,
+                },
+                SkippedFunction {
+                    function_name: "opaque_c".into(),
+                    reason: "unexecutable param: opaque type".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Unsupported,
+                },
+                SkippedFunction {
+                    function_name: "cached".into(),
+                    reason: "checkpoint resume".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Expected,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+        };
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        // In-memory invariant.
+        let cb = &report.codebase;
+        assert_eq!(
+            cb.skipped_functions_count,
+            cb.skipped_functions.len(),
+            "skipped_functions_count must equal skipped_functions.len()",
+        );
+        let unsupported_in_array = cb
+            .skipped_functions
+            .iter()
+            .filter(|s| s.category == "unsupported")
+            .count();
+        assert_eq!(
+            cb.unsupported_functions, unsupported_in_array,
+            "unsupported_functions must equal number of unsupported entries",
+        );
+        assert!(
+            cb.unsupported_functions <= cb.skipped_functions_count,
+            "unsupported_functions must be a sub-count of skipped_functions_count",
+        );
+
+        // Same invariants survive a JSON round-trip — this is the
+        // surface consumers actually read.
+        let json = serde_json::to_string(&report).expect("serialize");
+        let parsed: ScanReport = serde_json::from_str(&json).expect("deserialize");
+        let pcb = &parsed.codebase;
+        assert_eq!(pcb.skipped_functions_count, pcb.skipped_functions.len());
+        let parsed_unsupported = pcb
+            .skipped_functions
+            .iter()
+            .filter(|s| s.category == "unsupported")
+            .count();
+        assert_eq!(pcb.unsupported_functions, parsed_unsupported);
+
+        // Concrete values for the fixture.
+        assert_eq!(pcb.skipped_functions_count, 4);
+        assert_eq!(pcb.unsupported_functions, 3);
     }
 
     #[test]
