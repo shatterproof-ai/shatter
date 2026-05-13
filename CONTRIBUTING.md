@@ -44,7 +44,7 @@ shatter-core/     Rust core engine
 shatter-cli/      Rust CLI binary
 shatter-ts/       TypeScript frontend
 shatter-go/       Go frontend
-shatter-rust/     Rust frontend work in progress
+shatter-rust/     Rust frontend
 demo/             Walkthrough scripts
 docs/             Design notes, glossary, CI, plans
 ```

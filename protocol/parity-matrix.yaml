@@ -794,8 +794,8 @@ allowed_divergences:
       The `medium_opacity` field on TypeInfo opaque variants is an optional advisory
       field added in str-gvde. TypeScript and Go frontends emit it when medium-confidence
       heuristics fire (infrastructure package prefix, closeable interface, native handle
-      field). The Rust frontend analyze handler is a stub and does not yet perform
-      static analysis, so it never emits `medium_opacity`.
+      field). The Rust frontend performs static analysis but does not yet implement
+      this medium-opacity heuristic, so it never emits `medium_opacity`.
       The field is intentionally non-skip-causing in the Rust core: check_executability
       only produces SkipReason for high-confidence opaque types (static_opacity set, or
       label in the known high-confidence lookup table). medium_opacity alone is advisory
@@ -806,13 +806,13 @@ allowed_divergences:
     owner: Ketan Gangatirkar
     tracking_issue: none
     resolution_condition: >
-      Permanent divergence — Rust analyze is a stub. If the Rust frontend
-      ever gains full static analysis, this entry should be removed and
-      medium_opacity emission added following TS/Go heuristics.
+      Permanent divergence until Rust adds medium-opacity analysis. If the Rust
+      frontend gains this heuristic, this entry should be removed and
+      medium_opacity emission should follow TS/Go behavior.
     resolution: >
-      Intentional permanent divergence for the Rust frontend analyze stub.
-      When/if the Rust frontend gains full static analysis, it should emit
-      medium_opacity following the same heuristics as TypeScript and Go.
+      Intentional divergence for the current Rust analyzer. When/if the Rust
+      frontend gains medium-opacity analysis, it should emit medium_opacity
+      following the same heuristics as TypeScript and Go.
 
   - id: ite-symexpr-production-partial
     description: >
@@ -822,8 +822,8 @@ allowed_divergences:
       ite expressions: walkBodyForFlow builds a flow map (str-1hlk.17.1/17.2)
       and extractBranches threads it through buildSymExprWithFlow so branch
       conditions referencing conditionally-assigned local variables resolve to
-      ite nodes (str-1hlk.17.3). Rust frontend analyze is still a stub and
-      does not produce ite.
+      ite nodes (str-1hlk.17.3). Rust analyzes branches and symbolic conditions
+      but does not yet perform the data-flow pass needed to produce ite.
     affected_frontends: [rust]
     affected_commands: [analyze]
     status: tracked

@@ -572,4 +572,4 @@ Phases 2 and 3 can proceed in parallel. Phase 7 (Go) can proceed in parallel wit
 | Exponential blowup for deeply nested `&&`/`||` chains | Performance | Cap condition count per decision at 16. Beyond that, treat as a single decision (branch coverage only) and log a warning. |
 | MC/DC queries are UNSAT due to coupled conditions | Completeness | Track infeasible pairs separately. Report "7/8 analyzable, 1 infeasible" rather than penalizing the percentage. |
 | Protocol message size increases | Network/perf | `conditions` is `Option` — only present in MC/DC mode. Typical functions have 2-4 conditions per compound decision; the overhead is minimal. |
-| Frontend parity burden | Implementation effort | TS first as reference implementation. Go follows the same pattern. Rust frontend is deferred (execute unimplemented). |
+| Frontend parity burden | Implementation effort | TS first as reference implementation. Go follows the same pattern. Rust MC/DC support can follow when scheduled; see current SPEC/PARITY docs for Rust frontend status. |

@@ -2,9 +2,9 @@
 
 Implementation status of protocol features across Shatter's three language frontends.
 
-**Legend:** Y = implemented | N = not implemented | P = partial | S = stub (command accepted, returns "not yet implemented")
+**Legend:** Y = implemented | N = not implemented | P = partial
 
-Last updated: 2026-03-03
+Last updated: 2026-05-13
 
 ## Protocol Commands
 
@@ -13,34 +13,35 @@ Last updated: 2026-03-03
 | handshake | Y | Y | Y | All return capabilities list |
 | analyze | Y | Y | Y | Branch detection, type inference, literals |
 | instrument | Y | Y | Y | Source-to-source with branch/constraint tracking |
-| execute | Y | Y | S | Rust returns "not yet implemented" |
-| setup | Y | Y | S | Rust returns "not yet implemented" |
-| teardown | Y | Y | S | Rust returns "not yet implemented" |
-| generate | Y | Y | S | Rust returns "not yet implemented" |
+| prepare | Y | Y | Y | Pre-builds reusable harness artifacts where supported |
+| execute | Y | Y | Y | Rust uses harness-backed execution; some plan surfaces remain unsupported |
+| setup | Y | Y | Y | Rust compiles and executes setup files |
+| teardown | Y | Y | Y | Rust acknowledges teardown and clears function-level caches |
+| generate | Y | Y | Y | Rust supports WASM and native Rust generator dispatch |
 | shutdown | Y | Y | Y | |
 
 ## Execution Features
 
 | Feature | TypeScript | Go | Rust | Notes |
 |---------|-----------|-----|------|-------|
-| Function execution | Y | Y | N | Go uses subprocess harness; TS uses vm.runInContext |
-| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s (stored, not applied yet) |
-| Performance metrics | Y | Y | N | wall_time_ms, setup_time_ms |
-| Mock support | Y | Y | N | Symbol-level function mocking with return values |
-| Setup/teardown lifecycle | Y | Y | N | Per-function and per-execution modes |
+| Function execution | Y | Y | Y | Go and Rust use subprocess harnesses; TS uses vm.runInContext |
+| SHATTER_EXEC_TIMEOUT | Y | Y | Y | TS default 15s, Go default 5s, Rust default 5s |
+| Performance metrics | Y | Y | Y | wall_time_ms and related timing fields |
+| Mock support | Y | Y | P | Rust registers symbol-level return-value mocks in generated harnesses; some interception surfaces remain limited |
+| Setup/teardown lifecycle | Y | Y | Y | Per-function and per-execution modes |
 
 ## Side-Effect Capture
 
 | Side Effect | TypeScript | Go | Rust | Notes |
 |-------------|-----------|-----|------|-------|
-| Console output | Y | N | N | TS proxies console.log/warn/error/info/debug |
+| Console output | Y | Y | P | Rust captures process stdout/stderr in standalone/dispatch harnesses; crate-bridge skips |
 | process.stdout.write | N | N | N | TS only captures console methods, not raw stdout |
-| File I/O | N | N | N | Not captured in any frontend |
-| Network calls | N | N | N | Not captured in any frontend |
-| Environment variable access | N | N | N | Not captured in any frontend |
-| Global mutation | N | N | N | Not captured in any frontend |
-| Thrown errors | Y | P | N | TS captures in thrown_error + side_effects; Go captures in thrown_error only |
-| Global state changes | N | N | N | Not captured in any frontend |
+| File I/O | N | P | N | Go captures high-confidence `os.WriteFile` calls |
+| Network calls | N | P | N | Go captures package-level `net/http` calls |
+| Environment variable access | N | P | N | Go captures `os.Getenv` and `os.LookupEnv` |
+| Global mutation | Y | Y | N | Rust emits `global_state_change`, not generic `global_mutation` |
+| Thrown errors | Y | Y | Y | All frontends report thrown errors or panics |
+| Global state changes | Y | Y | Y | Canonical `global_state_change` side effect |
 
 ## Analysis Features
 
@@ -49,9 +50,9 @@ Last updated: 2026-03-03
 | Branch detection | Y | Y | Y | if/else, switch/match, loops |
 | Type inference | Y | Y | Y | Parameter and return types |
 | Literal extraction | Y | Y | Y | String, number, bool literals from source |
-| Symbolic constraint reporting | Y | Y | N | TS and Go extract symbolic expressions from branches |
+| Symbolic constraint reporting | Y | Y | P | Rust extracts branch conditions but not ITE-producing data-flow expressions |
 | Call graph / dependency extraction | Y | Y | Y | Function-level call dependencies |
-| Generator support | Y | Y | N | Custom input generators from setup |
+| Generator support | Y | Y | P | Rust supports generator dispatch; native Rust generators require a custom frontend build |
 
 ## Instrumentation Features
 
@@ -92,7 +93,7 @@ long-running session. This divergence is permitted and documented here.
 |----------|--------------------------------|----------------------------------|
 | TypeScript | 15 s (`DEFAULT_EXEC_TIMEOUT_MS` in `executor.ts`) | N/A (transpilation is synchronous) |
 | Go | 5 s (`defaultExecTimeout` in `executor.go`) | 30 s (`defaultBuildTimeout` in `executor.go`) |
-| Rust | 5 s (`DEFAULT_EXEC_TIMEOUT_MS` in `handler.rs`) | N/A (execute unimplemented) |
+| Rust | 5 s (`DEFAULT_EXEC_TIMEOUT_MS` in `handler.rs`) | 30 s (`SHATTER_BUILD_TIMEOUT` fallback in `executor.rs`) |
 
 Fallback defaults differ from CLI defaults intentionally: the CLI always passes the
 env var, so the frontend fallback is only relevant when a frontend is invoked without

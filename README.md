@@ -21,7 +21,7 @@ Shatter is under active development. The current frontend status is:
 |----------|--------|-------|
 | TypeScript | Supported | `shatter-ts` frontend |
 | Go | Supported | `shatter-go` frontend |
-| Rust | Partial | `shatter-rust` protocol handler exists, but execution support is not complete |
+| Rust | Supported | `shatter-rust` frontend for `.rs` targets; see SPEC for tracked parity gaps |
 
 See [SPEC.md](SPEC.md) for the canonical behavior reference.
 

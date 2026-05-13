@@ -43,7 +43,7 @@ Source code → Analyze → Explore → Cluster → Report
 
 - **Core engine** (`shatter-core`): Rust library. Orchestrates analysis, exploration, clustering, spec generation, test export, and snapshot diffing.
 - **CLI** (`shatter-cli`): Thin clap wrapper. Parses arguments, delegates to core.
-- **Language frontends**: Separate processes (TypeScript via Node.js, Go via compiled binary). Communicate via NDJSON over stdin/stdout. Handle language-specific parsing, instrumentation, and execution.
+- **Language frontends**: Separate processes (TypeScript via Node.js, Go via compiled binary, Rust via compiled binary). Communicate via NDJSON over stdin/stdout. Handle language-specific parsing, instrumentation, and execution.
 
 ### 1.3 Supported Languages
 
@@ -53,7 +53,11 @@ Source code → Analyze → Explore → Cluster → Report
 |------------|---------------|-----------------|-----------|
 | TypeScript | `shatter-ts`  | `.ts`, `.tsx`   | Supported |
 | Go         | `shatter-go`  | `.go`           | Supported |
-| Rust       | `shatter-rust`| `.rs`           | Stub (protocol handler only) |
+| Rust       | `shatter-rust`| `.rs`           | Supported |
+
+Rust support includes analysis, instrumentation, harness-backed execution,
+setup/teardown, generator dispatch, and `prepare` caching. Remaining Rust gaps
+are tracked as parity limitations, not absence of frontend support.
 
 ---
 
@@ -740,7 +744,7 @@ $ shatter scan --resume auto src/
 
 1. **Explorer is primarily random**: The concolic loop currently uses random input generation with boundary value seeding. Z3 constraint solving is integrated but the symbolic path negation loop is not yet driving exploration systematically.
 2. **Provenance is always "observed"**: Since the explorer doesn't use Z3 for path constraint solving, all preconditions and postconditions are marked `observed`, never `proven`.
-3. **Rust frontend is a stub**: `shatter-rust` implements the protocol handler but `analyze`, `instrument`, and `execute` return "not yet implemented".
+3. **Rust parity gaps remain**: `shatter-rust` is supported, but some advanced analysis and execution-planning surfaces still lag TypeScript/Go. Known gaps include ITE-producing data-flow analysis, some planner-surface capabilities, and environment preflight emission.
 4. **No Windows support**: Frontends assume Unix-like process spawning.
 5. **No support for async functions**: The explorer does not handle async/await or promises.
 6. **Limited type inference**: Complex TypeScript types (generics, conditional types, mapped types) may not be fully analyzed.

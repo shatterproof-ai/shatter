@@ -14,7 +14,7 @@ Commands: `handshake`, `analyze`, `instrument`, `execute`, `setup`, `teardown`, 
 
 ## Ite SymExpr Parity Contract
 
-Can deserialize `ite` SymExpr nodes (`SymExpr::Ite` in `protocol.rs`) but does not produce them. The analyze handler is a stub and does not perform data flow tracking. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
+Can deserialize `ite` SymExpr nodes (`SymExpr::Ite` in `protocol.rs`) but does not produce them. The analyzer extracts functions, types, branches, literals, dependencies, and symbolic conditions, but it does not yet perform the data-flow pass needed to produce `ite` nodes. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
 
 ## Side Effect Parity Contract
 
@@ -171,4 +171,4 @@ extension is needed.
 
 ## Timeout Contract
 
-5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Currently stored but not applied (execute is unimplemented).
+5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Execute passes the configured timeout to the harness runner, which kills timed-out subprocesses and emits a timeout-shaped `thrown_error`.

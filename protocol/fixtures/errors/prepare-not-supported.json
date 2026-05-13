@@ -3,5 +3,5 @@
   "id": 10,
   "status": "error",
   "code": "not_supported",
-  "message": "prepare not supported (execute is partial)"
+  "message": "prepare not supported by this frontend"
 }

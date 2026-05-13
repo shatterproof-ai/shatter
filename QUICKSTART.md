@@ -124,6 +124,7 @@ Useful follow-ons:
 
 ```bash
 shatter scan --changed src/
+shatter scan --language rust crates/my-crate/src/
 shatter diff snapshots/shipping.json current/shipping.json
 ```
 
@@ -139,5 +140,5 @@ shatter diff snapshots/shipping.json current/shipping.json
 
 - File targets use `<file>:<function>` for one function or `<file>` for all exported functions in that file.
 - Initializing a project is separate from installing the `shatter` binary.
-- TypeScript and Go are the current primary user-facing frontends.
-- Rust support is not yet complete for normal end-user exploration workflows.
+- TypeScript, Go, and Rust are the current user-facing frontends.
+- Rust scans require a reachable `shatter-rust` frontend. From a source checkout, build it with `cargo build --manifest-path shatter-rust/Cargo.toml`; pass `--require-rust` when a missing Rust frontend should fail the command instead of skipping `.rs` files.
