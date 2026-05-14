@@ -306,8 +306,8 @@ commands you run, Shatter may also persist repo-local cache and artifact data in
 ```yaml
 defaults:
   max_iterations: 50
-  setup_file: "./setup.ts"
-  setup_mode: per_function  # or per_execution
+  setup: "./setup.ts"
+  setup_level: function  # or execution
 
 functions:
   "src/auth.ts:validateToken":
@@ -318,6 +318,13 @@ opaque_types:
   - DatabaseConnection
   - HttpClient
 ```
+
+Functions that need live resource parameters such as database clients, LSP
+clients, HTTP framework contexts, file handles, or async runtimes require
+additional setup, generators, an execution adapter, or an intentional
+`opaque_types` declaration. See
+[`docs/resource-parameters.md`](docs/resource-parameters.md) for the user-facing
+decision guide.
 
 **Scope configuration** (`shatter.scope.yaml`): Controls which files/functions are included and which dependencies are mocked.
 

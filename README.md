@@ -10,6 +10,7 @@ This file is the user-facing entry point.
 
 - Want to try Shatter on a function today? Start with [QUICKSTART.md](QUICKSTART.md).
 - Want to know what files and directories Shatter creates? See [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md).
+- Want to handle database clients, LSP clients, HTTP contexts, or other live resources? See [docs/resource-parameters.md](docs/resource-parameters.md).
 - Want precise command behavior and output contracts? See [SPEC.md](SPEC.md).
 - Want to work on Shatter itself? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -91,7 +92,7 @@ Shatter uses two configuration files with distinct responsibilities:
 | File | Scope | Controls |
 |------|-------|----------|
 | `shatter.config.json` | Project root | Scan-global: file discovery, output, caching, resource limits |
-| `.shatter/config.yaml` | Hierarchical (any directory level) | Per-function: iterations, timeouts, mocks, genetic, generators, setup |
+| `.shatter/config.yaml` | Hierarchical (any directory level) | Per-function: iterations, timeouts, mocks, genetic, generators, setup, opaque types, execution profiles |
 
 ### `shatter.config.json` — scan-global defaults
 
@@ -140,9 +141,11 @@ built-in defaults. CLI flags always override config file values.
 
 Created by `shatter init`. Can be placed at multiple levels in the project tree;
 the nearest config to each target file wins on conflicts. Per-function settings
-like iteration limits, timeouts, mocks, genetic algorithm config, generators, and
-setup files belong here. See [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md) for
-the full schema.
+like iteration limits, timeouts, mocks, genetic algorithm config, generators,
+setup files, opaque type declarations, and execution profiles belong here. See
+[docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md) for the full schema, and
+[docs/resource-parameters.md](docs/resource-parameters.md) for guidance on live
+resource parameters.
 
 ### Override Precedence
 
@@ -222,6 +225,7 @@ Shatter combines concrete execution with symbolic reasoning:
 
 - [QUICKSTART.md](QUICKSTART.md): first successful run as a user
 - [docs/PROJECT-LAYOUT.md](docs/PROJECT-LAYOUT.md): project directories, config files, caches, and artifacts
+- [docs/resource-parameters.md](docs/resource-parameters.md): setup, generators, opaque types, and adapters for live resource parameters
 - [SPEC.md](SPEC.md): detailed command and output behavior
 - [docs/INDEX.md](docs/INDEX.md): documentation map
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and workflow

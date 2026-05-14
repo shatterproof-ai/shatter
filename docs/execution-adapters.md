@@ -21,6 +21,11 @@ Use this document when:
 - decomposing execution-adapter work into tracker issues
 - evaluating whether a proposal composes cleanly with future extensions
 
+If you are configuring a project and need practical guidance for a function that
+takes a live resource parameter, start with
+[`resource-parameters.md`](resource-parameters.md). This document is the
+architecture reference for implementing or extending adapter support.
+
 ## Why This Exists
 
 Shatter works best when a target behaves like a plain exported function with a
