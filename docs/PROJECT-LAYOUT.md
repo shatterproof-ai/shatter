@@ -17,7 +17,7 @@ Use this as the reference for:
 |------|---------|---------------|-------------------|
 | `shatter.config.json` | Scan-global defaults (discovery, output, cache, resource limits) | Yes | Durable |
 | `.shatter/` | Project-local Shatter configuration and some shared state | Yes, selectively | Kept in the project |
-| `.shatter/config.yaml` | Hierarchical per-function config (iterations, timeouts, mocks, generators) | Yes | Durable |
+| `.shatter/config.yaml` | Hierarchical per-function config (iterations, timeouts, mocks, generators, setup, opaque types, execution profiles) | Yes | Durable |
 | `shatter.scope.yaml` | Scope/include/exclude and mocking controls | Yes | Durable |
 | `.shatter/setup.<ext>` | Session-level setup file | Yes | Durable |
 | `shatter.setup.<ext>` | Preferred root-level session setup file | Yes | Durable |
@@ -77,6 +77,7 @@ What it is used for:
 - mock fixture overrides
 - nondeterminism review decisions
 - generator configuration for custom frontends
+- execution adapter selection for supported frontends
 - genetic algorithm settings
 
 Important behavior:
@@ -87,6 +88,11 @@ Important behavior:
 
 Paths inside this config are commonly resolved relative to the `.shatter/`
 directory that contains the config.
+
+Use [resource-parameters.md](resource-parameters.md) when a target takes a live
+resource parameter such as a database connection, LSP client, HTTP context, file
+handle, or framework runtime. That guide explains when to use `opaque_types`,
+setup files, generators, execution profiles, or a smaller testable API boundary.
 
 ## `shatter.scope.yaml`
 
