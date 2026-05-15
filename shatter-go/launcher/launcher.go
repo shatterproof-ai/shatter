@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
+	"golang.org/x/mod/modfile"
 )
 
 const (
@@ -138,12 +139,15 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, fmt.Errorf("launcher: write main.go: %w", err)
 	}
 
+	targetGoVersion, targetReplaces := readTargetGoMod(opts.TargetModuleDir)
 	goMod := buildLauncherGoMod(
 		launcherModuleName,
 		opts.TargetModulePath,
 		opts.TargetModuleDir,
 		opts.UseHarnessLoop,
 		opts.HarnessRuntimeDir,
+		targetGoVersion,
+		targetReplaces,
 	)
 	if err := os.WriteFile(filepath.Join(launcherDir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		return "", false, fmt.Errorf("launcher: write go.mod: %w", err)
@@ -374,17 +378,58 @@ func GenerateHarnessLauncherMain(targetImportPath string) string {
 	return b.String()
 }
 
+// readTargetGoMod parses the target module's go.mod and returns its go version
+// string and replace directives. On any read or parse error, both zero values
+// are returned and the caller falls back to defaults.
+func readTargetGoMod(targetModuleDir string) (goVersion string, replaces []*modfile.Replace) {
+	data, err := os.ReadFile(filepath.Join(targetModuleDir, "go.mod"))
+	if err != nil {
+		return "", nil
+	}
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", nil
+	}
+	if f.Go != nil {
+		goVersion = f.Go.Version
+	}
+	return goVersion, f.Replace
+}
+
 func buildLauncherGoMod(
 	moduleName,
 	targetModulePath,
 	targetModuleDir string,
 	useHarnessLoop bool,
 	harnessRuntimeDir string,
+	goVersion string,
+	targetReplaces []*modfile.Replace,
 ) string {
+	if goVersion == "" {
+		goVersion = "1.23.0"
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "module %s\n\ngo 1.23.0\n\n", moduleName)
+	fmt.Fprintf(&b, "module %s\n\ngo %s\n\n", moduleName, goVersion)
 	fmt.Fprintf(&b, "require %s v0.0.0\n\n", targetModulePath)
 	fmt.Fprintf(&b, "replace %s => %s\n", targetModulePath, targetModuleDir)
+	// Propagate local replace directives from the target module (str-jeen.75).
+	// Go only honors replace from the main module, so the launcher must
+	// re-declare any local-path replaces the target depends on.
+	for _, r := range targetReplaces {
+		if r.New.Version != "" {
+			// Version-pinned replace: leave to normal module resolution.
+			continue
+		}
+		newPath := r.New.Path
+		if !filepath.IsAbs(newPath) {
+			newPath = filepath.Join(targetModuleDir, newPath)
+		}
+		if r.Old.Version != "" {
+			fmt.Fprintf(&b, "replace %s %s => %s\n", r.Old.Path, r.Old.Version, newPath)
+		} else {
+			fmt.Fprintf(&b, "replace %s => %s\n", r.Old.Path, newPath)
+		}
+	}
 	if useHarnessLoop {
 		fmt.Fprintf(&b, "\nrequire %s v0.0.0\n", instrument.HarnessRuntimeModuleName)
 		fmt.Fprintf(&b, "replace %s => %s\n", instrument.HarnessRuntimeModuleName, harnessRuntimeDir)

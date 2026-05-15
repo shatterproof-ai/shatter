@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 func TestGenerateLauncherMainIsDeterministic(t *testing.T) {
@@ -326,5 +328,126 @@ chmod +x "$out"
 	}
 	if emptyObserved > 0 {
 		t.Errorf("%d workers received an empty (partial) binary from BuildLauncher: callers would exec a partially-written file (text file busy / startup failure)", emptyObserved)
+	}
+}
+
+// str-jeen.61: launcher go.mod must use the target module's go version.
+
+func TestReadTargetGoModVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tgt\n\ngo 1.26.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goVersion, _ := launcher.ReadTargetGoMod(dir)
+	if goVersion != "1.26.3" {
+		t.Errorf("go version = %q, want %q", goVersion, "1.26.3")
+	}
+}
+
+func TestReadTargetGoModMissingFallback(t *testing.T) {
+	dir := t.TempDir() // no go.mod
+	goVersion, replaces := launcher.ReadTargetGoMod(dir)
+	if goVersion != "" {
+		t.Errorf("expected empty version, got %q", goVersion)
+	}
+	if replaces != nil {
+		t.Errorf("expected nil replaces, got %v", replaces)
+	}
+}
+
+func TestBuildLauncherGoModUsesTargetVersion(t *testing.T) {
+	got := launcher.BuildLauncherGoModForTest(
+		"launcher/mod", "example.com/tgt", "/tmp/tgt",
+		false, "",
+		"1.26.3", nil,
+	)
+	if !strings.Contains(got, "go 1.26.3") {
+		t.Errorf("expected 'go 1.26.3' in go.mod, got:\n%s", got)
+	}
+}
+
+func TestBuildLauncherGoModFallsBackToDefault(t *testing.T) {
+	got := launcher.BuildLauncherGoModForTest(
+		"launcher/mod", "example.com/tgt", "/tmp/tgt",
+		false, "",
+		"", nil, // empty version triggers fallback
+	)
+	if !strings.Contains(got, "go 1.23.0") {
+		t.Errorf("expected fallback 'go 1.23.0' in go.mod, got:\n%s", got)
+	}
+}
+
+// str-jeen.75: local replace directives from target go.mod must be propagated.
+
+func TestBuildLauncherGoModPropagatesLocalReplace(t *testing.T) {
+	replaces := []*modfile.Replace{
+		{
+			Old: module.Version{Path: "github.com/foo/bar"},
+			New: module.Version{Path: "/abs/path/to/api"},
+		},
+	}
+	got := launcher.BuildLauncherGoModForTest(
+		"launcher/mod", "example.com/tgt", "/tmp/tgt",
+		false, "",
+		"1.24.0", replaces,
+	)
+	if !strings.Contains(got, "replace github.com/foo/bar => /abs/path/to/api") {
+		t.Errorf("expected local replace propagated in go.mod, got:\n%s", got)
+	}
+}
+
+func TestBuildLauncherGoModResolvesRelativeReplace(t *testing.T) {
+	replaces := []*modfile.Replace{
+		{
+			Old: module.Version{Path: "github.com/foo/bar"},
+			New: module.Version{Path: "../../api"},
+		},
+	}
+	got := launcher.BuildLauncherGoModForTest(
+		"launcher/mod", "example.com/tgt", "/project/tools/nleval",
+		false, "",
+		"1.24.0", replaces,
+	)
+	want := "replace github.com/foo/bar => /project/api"
+	if !strings.Contains(got, want) {
+		t.Errorf("expected relative path resolved to %q in go.mod, got:\n%s", want, got)
+	}
+}
+
+func TestBuildLauncherGoModSkipsVersionPinnedReplace(t *testing.T) {
+	replaces := []*modfile.Replace{
+		{
+			Old: module.Version{Path: "github.com/foo/bar", Version: "v1.0.0"},
+			New: module.Version{Path: "github.com/foo/barv2", Version: "v2.0.0"},
+		},
+	}
+	got := launcher.BuildLauncherGoModForTest(
+		"launcher/mod", "example.com/tgt", "/tmp/tgt",
+		false, "",
+		"1.24.0", replaces,
+	)
+	if strings.Contains(got, "github.com/foo/barv2") {
+		t.Errorf("version-pinned replace should NOT be propagated, got:\n%s", got)
+	}
+}
+
+func TestReadTargetGoModReplace(t *testing.T) {
+	dir := t.TempDir()
+	goModContent := "module example.com/tgt\n\ngo 1.24.0\n\nrequire github.com/foo/bar v0.1.0\n\nreplace github.com/foo/bar => ../../api\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goVersion, replaces := launcher.ReadTargetGoMod(dir)
+	if goVersion != "1.24.0" {
+		t.Errorf("go version = %q, want %q", goVersion, "1.24.0")
+	}
+	if len(replaces) != 1 {
+		t.Fatalf("len(replaces) = %d, want 1", len(replaces))
+	}
+	if replaces[0].Old.Path != "github.com/foo/bar" {
+		t.Errorf("replace old path = %q, want %q", replaces[0].Old.Path, "github.com/foo/bar")
+	}
+	if replaces[0].New.Path != "../../api" {
+		t.Errorf("replace new path = %q, want %q", replaces[0].New.Path, "../../api")
 	}
 }
