@@ -1,0 +1,49 @@
+name: Cleanup Continuous Releases
+
+on:
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Print releases that would be deleted without deleting them'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    name: Retain continuous prereleases
+    runs-on: ubuntu-latest
+    env:
+      KEEP_RECENT: '30'
+      KEEP_MONTHLY: '12'
+      PROTECTED_TAGS: continuous-20260512-1735-abc123def456
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Delete expired continuous prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry-run || 'false' }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --repo "$REPO" --limit 500 --json tagName,isPrerelease,createdAt \
+            | python3 scripts/retention_continuous_releases.py \
+                --keep-recent "$KEEP_RECENT" \
+                --keep-monthly "$KEEP_MONTHLY" \
+                --protect "$PROTECTED_TAGS" \
+            | while read -r tag; do
+                if [ -z "$tag" ]; then
+                  continue
+                fi
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "would delete $tag"
+                else
+                  gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag
+                fi
+              done

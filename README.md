@@ -49,6 +49,11 @@ The installer reads the release manifest, verifies the archive checksum, and
 installs `shatter` into `~/.local/bin` by default. Set `INSTALL_DIR` to choose a
 different destination.
 
+Projects can also consume the same GitHub Release payloads through a
+registryless npm tarball dependency, a Go tool wrapper, or the GitHub setup
+action. Pick one repo-level owner rather than adding Shatter to every language
+manifest in a mixed repo. See [docs/distribution.md](docs/distribution.md).
+
 ### Build from source
 
 Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and `libclang`.

@@ -9,6 +9,7 @@ Where to find what in Shatter's documentation.
 | [README.md](../README.md) | High-level product overview and user entry point | **Users** | Current behavior |
 | [QUICKSTART.md](../QUICKSTART.md) | Copy-paste first run for end users | **Users** | Current behavior |
 | [docs/PROJECT-LAYOUT.md](PROJECT-LAYOUT.md) | Project directories, config files, caches, artifacts, and legacy path notes | **Users and contributors** | Current behavior |
+| [docs/distribution.md](distribution.md) | Package-manager, setup-action, update-bot, and release-retention guidance | **Users and CI maintainers** | Current behavior |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Contributor setup, build/test workflow, and navigation to agent/process docs | **Contributors** | Current behavior |
 | [SPEC.md](../SPEC.md) | Behavioral specification — how each command, feature, and output format should behave | **Users, contributors, auditors** | Current behavior (living document, updated as functionality changes) |
 | [PLAN.md](../PLAN.md) | Architecture vision and implementation roadmap for v2 | **Contributors and architects** | Roadmap — describes planned/in-progress work, not necessarily current state |
@@ -29,7 +30,7 @@ Where to find what in Shatter's documentation.
 
 ## How to Read These Docs
 
-- **Using Shatter?** Start with [README.md](../README.md), then run through [QUICKSTART.md](../QUICKSTART.md). Use [docs/PROJECT-LAYOUT.md](PROJECT-LAYOUT.md) to understand what Shatter writes in your project, [docs/resource-parameters.md](resource-parameters.md) when targets need live resources, and [SPEC.md](../SPEC.md) when you need precise command or output behavior.
+- **Using Shatter?** Start with [README.md](../README.md), then run through [QUICKSTART.md](../QUICKSTART.md). Use [docs/distribution.md](distribution.md) to choose an install owner, [docs/PROJECT-LAYOUT.md](PROJECT-LAYOUT.md) to understand what Shatter writes in your project, [docs/resource-parameters.md](resource-parameters.md) when targets need live resources, and [SPEC.md](../SPEC.md) when you need precise command or output behavior.
 - **Building a frontend?** Read [PROTOCOL.md](../PROTOCOL.md) for the wire format, then check existing frontends (`shatter-ts/`, `shatter-go/`, `shatter-rust/`) for reference implementations.
 - **Designing framework-specific execution support?** Read [docs/execution-adapters.md](execution-adapters.md) for the long-term execution-adapter architecture, then use [SPEC.md](../SPEC.md) and [PROTOCOL.md](../PROTOCOL.md) to separate implemented behavior from planned subsystem design.
 - **Contributing code?** Start with [CONTRIBUTING.md](../CONTRIBUTING.md), then read [CLAUDE.md](../CLAUDE.md) for quality standards and [AGENTS.md](../AGENTS.md) for workflow. Each sub-crate has its own `CLAUDE.md` with component-specific guidance.
