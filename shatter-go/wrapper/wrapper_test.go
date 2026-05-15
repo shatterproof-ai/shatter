@@ -1414,6 +1414,124 @@ func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 // the production wire shape — in particular, ReturnsPointer carries the
 // pointer-ness of the first return so the wrapper case logic in
 // str-jeen.49 / str-9j2e can branch correctly.
+// TestVariadicForwardingWithIntermediateSlice is the str-jeen.76 regression:
+// when a package defines both a variadic helper (chipsHint ...string) and a
+// target function that builds a []string and passes it to the helper, the
+// generated wrapper for chipsHint must forward the slice with `...` at the
+// call site (chipsHint(choices...)). Pre-fix observed in api/internal/fit
+// where 8 files failed with "cannot use choices (variable of type []string)
+// as string value in argument to chipsHint".
+func TestVariadicForwardingWithIntermediateSlice(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package fit
+
+// chipsHint is the variadic helper whose wrapper must use chipsHint(choices...).
+func chipsHint(choices ...string) string {
+	if len(choices) == 0 {
+		return ""
+	}
+	return choices[0]
+}
+
+// CostFit builds an intermediate []string and passes it to chipsHint via spread.
+// The wrapper for CostFit itself needs no special handling; the wrapper for
+// chipsHint must forward its []string param with "..." to avoid the
+// "cannot use choices (variable of type []string) as string value" error.
+func CostFit(x int) string {
+	choices := []string{"low", "medium", "high"}
+	return chipsHint(choices...)
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "fit.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write fit.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/fit\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+
+	// Confirm chipsHint's variadic parameter survived extraction.
+	var chipsHintTarget *wrapper.WrapperTarget
+	for i, tg := range targets {
+		if tg.SymbolName == "chipsHint" {
+			chipsHintTarget = &targets[i]
+			break
+		}
+	}
+	if chipsHintTarget == nil {
+		t.Fatalf("chipsHint target not found; targets: %+v", targets)
+	}
+	if len(chipsHintTarget.Parameters) != 1 {
+		t.Fatalf("chipsHint: expected 1 parameter, got %d", len(chipsHintTarget.Parameters))
+	}
+	param := chipsHintTarget.Parameters[0]
+	if !param.IsVariadic {
+		t.Errorf("chipsHint.Parameters[0].IsVariadic = false, want true (variadic detection regression)")
+	}
+	if param.GoType != "[]string" {
+		t.Errorf("chipsHint.Parameters[0].GoType = %q, want %q", param.GoType, "[]string")
+	}
+
+	src := wrapper.GenerateWrapper("fit", targets, nil)
+	// The generated call must spread the slice.
+	if !strings.Contains(src, "chipsHint(choices...)") {
+		t.Errorf("generated wrapper missing variadic spread call chipsHint(choices...)\nsource:\n%s", src)
+	}
+
+	// Verify the generated wrapper compiles against the unexported package targets.
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "fit", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	got, _ := os.ReadFile(wrapperPath)
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
 func scanConstructorCandidatesForTest(t *testing.T, pkg *packages.Package) []wrapper.ConstructorCandidate {
 	t.Helper()
 	if pkg == nil || pkg.TypesInfo == nil {
