@@ -185,6 +185,8 @@ jobs:
     needs: [build-ts, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Generate continuous build tag
         id: build
         shell: bash
@@ -275,6 +277,12 @@ jobs:
           )
           PY
 
+      - name: Package npm tarballs
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/package_npm_release.py --artifacts-dir artifacts --out-dir artifacts
+
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -291,5 +299,10 @@ jobs:
             artifacts/shatter-macos-x86_64.tar.gz \
             artifacts/shatter-macos-aarch64.tar.gz \
             artifacts/shatter-windows-x86_64.zip \
+            artifacts/shatter-npm-wrapper.tgz \
+            artifacts/shatter-npm-linux-x64.tgz \
+            artifacts/shatter-npm-linux-arm64.tgz \
+            artifacts/shatter-npm-darwin-x64.tgz \
+            artifacts/shatter-npm-darwin-arm64.tgz \
             artifacts/SHA256SUMS \
             artifacts/shatter-release.json

@@ -53,10 +53,23 @@ resolve_build() {
     *) error "Unsupported CHANNEL '${CHANNEL}'. Use latest, continuous, nightly, or set BUILD explicitly." ;;
   esac
 
+  if ! command -v python3 >/dev/null 2>&1; then
+    error "Resolving the latest continuous build requires python3. Install python3 or set BUILD explicitly."
+  fi
+
   info "Fetching" "latest continuous build tag..."
-  BUILD=$(curl -sSfL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' \
-    | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/')
+  BUILD=$(curl -sSfL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+    | python3 -c '
+import json
+import sys
+
+for release in json.load(sys.stdin):
+    tag = release.get("tag_name", "")
+    if release.get("prerelease") and tag.startswith("continuous-"):
+        print(tag)
+        raise SystemExit(0)
+raise SystemExit(1)
+' || true)
 
   if [ -z "$BUILD" ]; then
     error "Could not determine latest build. Set BUILD explicitly or check https://github.com/${REPO}/releases"

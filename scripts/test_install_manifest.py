@@ -1,8 +1,10 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +76,26 @@ class InstallManifestTests(unittest.TestCase):
             'unset BUILD\nVERSION="continuous-test"\nresolve_build\nprintf "%s" "$BUILD"'
         )
         self.assertEqual(actual.splitlines()[-1], "continuous-test")
+
+    def test_latest_resolution_selects_continuous_prerelease(self):
+        with tempfile.TemporaryDirectory() as temp:
+            curl = Path(temp) / "curl"
+            curl.write_text(
+                """#!/usr/bin/env bash
+cat <<'JSON'
+[
+  {"tag_name": "v1.0.0", "prerelease": false},
+  {"tag_name": "continuous-20260512-1735-abc123def456", "prerelease": true}
+]
+JSON
+"""
+            )
+            curl.chmod(0o755)
+            with mock.patch.dict("os.environ", {"PATH": f"{temp}:{os.environ['PATH']}"}):
+                actual = run_installer_snippet(
+                    'unset BUILD VERSION\nCHANNEL="continuous"\nresolve_build\nprintf "%s" "$BUILD"'
+                )
+        self.assertEqual(actual.splitlines()[-1], "continuous-20260512-1735-abc123def456")
 
 
 if __name__ == "__main__":

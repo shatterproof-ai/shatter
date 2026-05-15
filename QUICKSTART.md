@@ -29,6 +29,11 @@ shatter scan src/
 Use the unpinned latest build for local use or non-blocking scheduled jobs; use
 an exact `BUILD` value for required CI gates.
 
+If your repository already has a root package manager or CI setup, install
+Shatter through that owner instead of every language subproject. See
+[docs/distribution.md](docs/distribution.md) for npm tarball, Go tool wrapper,
+GitHub Action, and update-bot examples.
+
 ### Build from source
 
 Use this when you are developing Shatter itself or need a local source build.

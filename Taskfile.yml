@@ -220,9 +220,16 @@ tasks:
       - .semgrep/**/*
       - install.sh
       - scripts/test_install_manifest.py
+      - scripts/package_npm_release.py
+      - scripts/test_package_npm_release.py
+      - scripts/retention_continuous_releases.py
+      - scripts/test_retention_continuous_releases.py
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_install_manifest
+      - python3 -m unittest scripts.test_package_npm_release
+      - python3 -m unittest scripts.test_retention_continuous_releases
+      - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
           actionlint
