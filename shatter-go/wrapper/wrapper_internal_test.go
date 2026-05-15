@@ -1,6 +1,7 @@
 package wrapper
 
 import (
+	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -61,7 +62,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {}
 
 	importSet := make(map[string]struct{})
 	for _, field := range fn.Type.Params.List {
-		_ = wrapperGoType(field.Type, info, "handlers", importSet)
+		_ = wrapperGoType(field.Type, info, "handlers", "", importSet)
 	}
 
 	if _, ok := importSet["net/http"]; !ok {
@@ -294,13 +295,18 @@ func NewHandler(gen *Generator) *Handler { return &Handler{} }
 		Uses:  map[*ast.Ident]types.Object{},
 	}
 	conf := types.Config{Importer: importer.Default()}
-	if _, err := conf.Check("handlers", fset, []*ast.File{file}, info); err != nil {
+	tpkg, err := conf.Check("handlers", fset, []*ast.File{file}, info)
+	if err != nil {
 		t.Fatalf("type-check: %v", err)
 	}
 	pkg := &packages.Package{
-		Name:      "handlers",
-		PkgPath:   "example.com/handlers",
-		Syntax:    []*ast.File{file},
+		Name:    "handlers",
+		PkgPath: "example.com/handlers",
+		// str-jeen.79: set Types so buildWrapperTarget can use pkg.Types.Path()
+		// ("handlers") for the qualifier comparison instead of pkg.PkgPath
+		// ("example.com/handlers"), which would mismatch the type checker's path.
+		Types:  tpkg,
+		Syntax: []*ast.File{file},
 		TypesInfo: info,
 	}
 
@@ -381,6 +387,106 @@ func (r Registry) DoIt() {}
 	if !strings.Contains(out, "_recv := DefaultRegistry()") {
 		t.Errorf("wrapper missing direct value-bind from DefaultRegistry():\n%s", out)
 	}
+}
+
+// TestWrapperGoType_SiblingPackageSameNamePreservesQualifier is the str-jeen.79
+// regression: when the current package and an imported sibling package share
+// the same short name (e.g. both named "mcp"), the qualifier function must NOT
+// strip the qualifier from sibling types. Pre-fix the comparison used
+// p.Name() == pkgName, which matched same-name imports and silently dropped
+// the qualifier, producing `undefined: Server` instead of `*mcp.Server`.
+//
+// Fix uses p.Path() == pkgPath (the full import path) so only the exact
+// current package is treated as "no qualifier needed".
+func TestWrapperGoType_SiblingPackageSameNamePreservesQualifier(t *testing.T) {
+	// Build a sibling package "example.com/sibling/mcp" with short name "mcp"
+	// that exports a Server struct. This is the sibling whose qualifier must
+	// be preserved even though the current package is also named "mcp".
+	siblingPkg := types.NewPackage("example.com/sibling/mcp", "mcp")
+	serverTypeName := types.NewTypeName(0, siblingPkg, "Server", nil)
+	serverType := types.NewNamed(serverTypeName, types.NewStruct(nil, nil), nil)
+	siblingPkg.Scope().Insert(serverTypeName)
+
+	imp := &fakeImporter{
+		packages: map[string]*types.Package{
+			"example.com/sibling/mcp": siblingPkg,
+		},
+	}
+
+	const src = `package mcp
+
+import extmcp "example.com/sibling/mcp"
+
+func UseServer(s *extmcp.Server) {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mcp.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: imp}
+	_, err = conf.Check("example.com/mcp", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+
+	// Locate the UseServer parameter type expression.
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == "UseServer" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil || fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+		t.Fatalf("UseServer not found or has no params")
+	}
+
+	importSet := make(map[string]struct{})
+	// pkgName="mcp" pkgPath="example.com/mcp" — same short name as the sibling.
+	typeStr := wrapperGoType(fn.Type.Params.List[0].Type, info, "mcp", "example.com/mcp", importSet)
+
+	// The type string must preserve the package qualifier ("mcp.Server"),
+	// not drop it ("Server"), even though both packages share the name "mcp".
+	if typeStr == "*Server" {
+		t.Errorf("wrapperGoType dropped qualifier for sibling mcp package (str-jeen.79): got %q, want %q", typeStr, "*mcp.Server")
+	}
+	if typeStr != "*mcp.Server" {
+		t.Errorf("wrapperGoType: got %q, want %q", typeStr, "*mcp.Server")
+	}
+
+	// The sibling mcp package import path must be collected (not skipped).
+	if _, ok := importSet["example.com/sibling/mcp"]; !ok {
+		t.Errorf("importSet missing sibling mcp package; got: %v", keysOf(importSet))
+	}
+
+	// The current package (example.com/mcp) must NOT be in importSet.
+	if _, ok := importSet["example.com/mcp"]; ok {
+		t.Errorf("importSet incorrectly contains current package path example.com/mcp")
+	}
+
+	// Sanity: serverType is referenced to avoid "declared and not used".
+	_ = serverType
+}
+
+// fakeImporter provides a fixed set of pre-built *types.Package values for
+// use in test type-checking. It implements types.Importer.
+type fakeImporter struct {
+	packages map[string]*types.Package
+}
+
+func (f *fakeImporter) Import(path string) (*types.Package, error) {
+	if pkg, ok := f.packages[path]; ok {
+		pkg.MarkComplete()
+		return pkg, nil
+	}
+	return nil, fmt.Errorf("package not found: %s", path)
 }
 
 func keysOf(m map[string]struct{}) []string {
@@ -560,7 +666,7 @@ func Mixed(a int, _ string, _ token.Pos) {}
 		if fn == nil {
 			t.Fatalf("decl %s not found", tc.funcName)
 		}
-		params := extractWrapperParams(fn, info, "x", nil)
+		params := extractWrapperParams(fn, info, "x", "", nil)
 		if len(params) != len(tc.wantNames) {
 			t.Errorf("%s: got %d params, want %d (%v)", tc.funcName, len(params), len(tc.wantNames), params)
 			continue

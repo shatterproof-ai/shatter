@@ -452,7 +452,18 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// statements (str-jeen.33). Result-only imports are intentionally omitted
 	// because the generated wrapper does not name result types (str-iylc).
 	importSet := make(map[string]struct{})
-	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, importSet)
+	// str-jeen.79: use the type-checker's actual package path (pkg.Types.Path())
+	// for the qualifier comparison so that same-name sibling packages are not
+	// mistaken for the current package. We prefer pkg.Types.Path() over
+	// pkg.PkgPath because test helpers sometimes set PkgPath to a different
+	// value than the path given to conf.Check, creating a mismatch. In
+	// production (packages.Load) both values are always the full import path.
+	// Fall back to pkg.PkgPath when pkg.Types is nil.
+	pkgTypesPath := pkg.PkgPath
+	if pkg.Types != nil {
+		pkgTypesPath = pkg.Types.Path()
+	}
+	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, pkgTypesPath, importSet)
 	// str-gxjs.1: bind runtime-value expressions for parameter types the
 	// planner's registry can satisfy (context.Context → context.Background(),
 	// http.ResponseWriter → httptest.NewRecorder(), …). The expression and
@@ -469,7 +480,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
-		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, nil)
+		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, pkgTypesPath, nil)
 		for _, field := range fn.Type.Results.List {
 			if len(field.Names) == 0 {
 				resultCount++
@@ -575,7 +586,7 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 	}
 }
 
-func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, importSet map[string]struct{}) []WrapperParam {
+func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath string, importSet map[string]struct{}) []WrapperParam {
 	if fn.Type.Params == nil {
 		return nil
 	}
@@ -593,7 +604,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, im
 			isVariadic = true
 			fieldType = ellipsis.Elt
 		}
-		elemType := wrapperGoType(fieldType, info, pkgName, importSet)
+		elemType := wrapperGoType(fieldType, info, pkgName, pkgPath, importSet)
 		goType := elemType
 		if isVariadic {
 			goType = "[]" + elemType
@@ -655,11 +666,44 @@ func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
 // would be printed by wrapperASTTypeString verbatim while the corresponding
 // package import (`net/http`) was silently dropped, producing a wrapper that
 // references an undefined package short name and fails to compile.
-func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string, importSet map[string]struct{}) string {
+// wrapperGoType returns the Go type string for use in the target package and,
+// as a side effect, records every external package referenced by the type
+// into importSet (keyed by import path). importSet may be nil. Cross-ref:
+// str-jeen.33 — without this, the generated wrapper file declares variables
+// of qualified types (`context.Context`, `*pgx.Conn`) without ever importing
+// the corresponding packages.
+//
+// str-qo1.13: when info.Types lacks an entry for expr (e.g. because the
+// caller initialized only Defs/Uses, or because the type checker did not
+// record this particular type expression), the function still walks the AST
+// for *ast.SelectorExpr nodes and consults info.Uses to recover package
+// imports. Without this, selector type expressions (e.g. http.ResponseWriter)
+// would be printed by wrapperASTTypeString verbatim while the corresponding
+// package import (`net/http`) was silently dropped, producing a wrapper that
+// references an undefined package short name and fails to compile.
+//
+// str-jeen.79: the qualifier compares p.Path() == pkgPath (the current
+// package's full import path) instead of p.Name() == pkgName. Comparing
+// by name alone incorrectly drops the qualifier for sibling packages that
+// share the current package's short name (e.g. both named "mcp"), producing
+// `undefined: Server` because the type `*mcp.Server` is emitted as `*Server`
+// with no import. pkgName is retained for cases where pkgPath is unavailable
+// (empty) to preserve backward-compatible behavior in test helpers that only
+// supply the package name.
+func wrapperGoType(expr ast.Expr, info *types.Info, pkgName, pkgPath string, importSet map[string]struct{}) string {
 	if info != nil {
 		if tv, ok := info.Types[expr]; ok && tv.Type != nil {
 			qualifier := func(p *types.Package) string {
-				if p == nil || p.Name() == pkgName {
+				if p == nil {
+					return ""
+				}
+				// str-jeen.79: compare by full import path when available to
+				// avoid stripping the qualifier for same-name sibling packages.
+				if pkgPath != "" {
+					if p.Path() == pkgPath {
+						return ""
+					}
+				} else if p.Name() == pkgName {
 					return ""
 				}
 				if importSet != nil {
