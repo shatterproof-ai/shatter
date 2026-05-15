@@ -33,4 +33,11 @@ type ConstructorCandidate struct {
 	// compile when the constructor returns a value (`cannot indirect`).
 	// See str-jeen.49.
 	ReturnsPointer bool
+	// ReturnsError is true when the constructor's signature includes a
+	// trailing error return: (T, error) or (*T, error). Wrapper generation
+	// must use a two-assignment form (_recv, _ := ctor()) instead of the
+	// single-assignment form (_recv := ctor()) to avoid:
+	//   assignment mismatch: 1 variable but ctor returns 2 values
+	// See str-jeen.78.
+	ReturnsError bool
 }

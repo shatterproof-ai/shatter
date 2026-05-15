@@ -415,6 +415,10 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 			TargetType:     candidate.TargetType,
 			HasParams:      len(candidate.Parameters) > 0,
 			ReturnsPointer: candidate.ReturnsPointer,
+			// str-jeen.78: propagate ReturnsError so wrapper generation can
+			// use the two-assignment form (_recv, _ := ctor()) for constructors
+			// that return (T, error) or (*T, error).
+			ReturnsError: candidate.ReturnsError,
 		}
 	}
 	return constructors

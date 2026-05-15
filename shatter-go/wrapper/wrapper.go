@@ -109,7 +109,14 @@ func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate)
 		if c.ReturnsPointer {
 			returnsPtr = "1"
 		}
-		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr
+		// str-jeen.78: include ReturnsError so that adding an error return to
+		// a constructor invalidates the cached wrapper (switching from
+		// single-assignment to two-assignment form).
+		returnsErr := "0"
+		if c.ReturnsError {
+			returnsErr = "1"
+		}
+		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr
 	}
 	sort.Strings(ctors)
 
@@ -256,14 +263,32 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			// Pre-fix every value-receiver case dereferenced the
 			// constructor result, which fails to compile when the
 			// constructor returns the value form (`cannot indirect`).
+			//
+			// str-jeen.78: when the constructor returns (T, error) or
+			// (*T, error), use the two-assignment form (_recv, _ := ctor())
+			// to avoid "assignment mismatch: 1 variable but ctor returns 2
+			// values". The error is intentionally discarded so that the
+			// wrapper still returns a result to the orchestrator; callers
+			// that need error propagation should not use a constructor-backed
+			// receiver kind.
 			switch {
+			case t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
 			case t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
+			case t.IsPointerRecv && !c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recvVal, _ := %s()\n", c.FuncName)
+				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case t.IsPointerRecv && !c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recvVal := %s()\n", c.FuncName)
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
+			case !t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recvPtr, _ := %s()\n", c.FuncName)
+				b.WriteString("\t\t\t_recv := *_recvPtr\n")
 			case !t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := *%s()\n", c.FuncName)
+			case c.ReturnsError: // !t.IsPointerRecv && !c.ReturnsPointer
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
 				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
 			}

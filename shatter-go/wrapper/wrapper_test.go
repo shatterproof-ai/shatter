@@ -284,6 +284,100 @@ func SafeDivide(a, b int) (int, error) {
 	}
 }
 
+// TestGeneratedWrapperCompilesErrorReturningConstructor is the str-jeen.78
+// regression: when a constructor returns (T, error) or (*T, error), the
+// generated wrapper must use the two-assignment form (_recv, _ := NewT())
+// not _recv := NewT(). The latter produces "assignment mismatch: 1 variable
+// but NewEventID returns 2 values". Observed in api/internal/typedid/typedid.go.
+func TestGeneratedWrapperCompilesErrorReturningConstructor(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package typedid2
+
+import "fmt"
+
+// EventID mirrors the kapow api/internal/typedid shape whose NewEventID
+// returns (EventID, error), triggering the str-jeen.78 arity mismatch.
+type EventID struct{ val string }
+
+// NewEventID is the constructor whose (T, error) return caused:
+// "assignment mismatch: 1 variable but NewEventID returns 2 values".
+func NewEventID() (EventID, error) {
+	return EventID{val: "default"}, fmt.Errorf("stub")
+}
+
+// String is the method target: the wrapper uses NewEventID as the receiver.
+func (e EventID) String() string { return e.val }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "typedid2.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write typedid2.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/typedid2\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:            "example.com/typedid2:(EventID).String",
+			SymbolName:    "String",
+			Kind:          wrapper.TargetKindMethod,
+			ReceiverType:  "EventID",
+			IsPointerRecv: false,
+			HasResult:     true,
+			ResultGoType:  "string",
+			ResultCount:   1,
+		},
+	}
+	ctors := []wrapper.ConstructorCandidate{
+		// ReturnsError=true is the bug trigger: previously the wrapper emitted
+		// "_recv := NewEventID()" which fails for a (T, error) return.
+		{FuncName: "NewEventID", TargetType: "EventID", ReturnsPointer: false, ReturnsError: true},
+	}
+
+	src := wrapper.GenerateWrapper("typedid2", targets, ctors)
+
+	// Static guard: must use two-assignment form.
+	if strings.Contains(src, "_recv := NewEventID()") {
+		t.Errorf("wrapper uses single-assignment for error-returning constructor (compile error)\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "_recv, _ := NewEventID()") {
+		t.Errorf("wrapper missing two-assignment form '_recv, _ := NewEventID()'\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "typedid2", targets, ctors)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, ctors)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
 func TestGeneratedWrapperCompilesGenericInstantiation(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go binary not found")
@@ -1671,11 +1765,22 @@ func scanConstructorCandidatesForTest(t *testing.T, pkg *packages.Package) []wra
 			if obj == nil || obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
 				continue
 			}
+			// str-jeen.78: detect whether the constructor returns an error as
+			// the second return value. The production scanner (ScanConstructors
+			// in protocol/) sets ReturnsError; mirror that here.
+			returnsError := false
+			if len(results.List) >= 2 {
+				lastField := results.List[len(results.List)-1]
+				if ident, ok := lastField.Type.(*ast.Ident); ok && ident.Name == "error" {
+					returnsError = true
+				}
+			}
 			ctors = append(ctors, wrapper.ConstructorCandidate{
 				FuncName:       name,
 				TargetType:     obj.Name(),
 				HasParams:      fn.Type.Params != nil && len(fn.Type.Params.List) > 0,
 				ReturnsPointer: returnsPointer,
+				ReturnsError:   returnsError,
 			})
 		}
 	}
