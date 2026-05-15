@@ -164,10 +164,9 @@ commands:
   teardown:
     status: optional
     notes: >
-      Go and Rust implement teardown. TypeScript relies on process-level cleanup
-      and does not advertise teardown (see allowed_divergences: ts-missing-teardown).
+      All three frontends implement and advertise teardown.
     frontends:
-      typescript: not_implemented
+      typescript: implemented
       go: implemented
       rust: implemented
 
@@ -704,7 +703,8 @@ allowed_divergences:
       rather than via an explicit teardown call.
     affected_frontends: [typescript]
     affected_commands: [teardown]
-    status: tracked
+    status: resolved
+    resolved_at: 2026-05-11
     owner: Ketan Gangatirkar
     tracking_issue: str-1hlk.13
     resolution_condition: >

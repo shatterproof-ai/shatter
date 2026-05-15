@@ -36,7 +36,7 @@ The remaining commands are advertised in handshake capabilities. Core checks the
 | `generate` | required | ✅ | ✅ | ✅ | All frontends implement |
 | `instrument` | optional | ✅ | ✅ | ✅ | Core gates on capability |
 | `setup` | optional | ✅ | ✅ | ✅ | Core gates on capability |
-| `teardown` | optional | ❌ | ✅ | ✅ | TypeScript does not advertise; core gates on capability (see divergence `ts-missing-teardown`) |
+| `teardown` | optional | ✅ | ✅ | ✅ | All frontends implement |
 
 ---
 
@@ -161,7 +161,9 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 **Affected commands:** teardown
 
-**Status:** tracked
+**Status:** resolved
+
+**Resolved at:** 2026-05-11
 
 **Owner:** Ketan Gangatirkar
 

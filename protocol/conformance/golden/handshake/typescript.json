@@ -14,7 +14,8 @@
     "generate",
     "instrument",
     "prepare",
-    "setup"
+    "setup",
+    "teardown"
   ],
   "status": "handshake"
 }
