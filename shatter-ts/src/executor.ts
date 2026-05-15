@@ -561,13 +561,19 @@ export function deleteCompiledScriptEntry(key: string): void {
 /**
  * Pre-warm the compiled script cache for the given instrumented source.
  * If the key is already cached, this is a no-op. Called by the prepare handler.
+ *
+ * `sourceFileName` must be the actual source file path (e.g. "/path/to/foo.tsx")
+ * so that ts.transpileModule can determine the correct ScriptKind (TSX vs TS).
+ * Do NOT pass the cache key here — it has a ":functionName" suffix that makes
+ * TypeScript fall back to ScriptKind.TS, silently skipping JSX stripping.
  */
 export function warmCompiledScriptCache(
   instrumentedSource: string,
   cacheKey: string,
+  sourceFileName: string,
 ): void {
   if (compiledScriptCache.has(cacheKey)) return;
-  const compiled = transpileAndCompile(instrumentedSource, cacheKey, cacheKey);
+  const compiled = transpileAndCompile(instrumentedSource, sourceFileName, cacheKey);
   compiledScriptCache.set(cacheKey, compiled);
 }
 

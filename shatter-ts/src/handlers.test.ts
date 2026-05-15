@@ -664,6 +664,46 @@ export function usesAlias(): number {
       );
       expect(execResp.status).toBe("execute");
     });
+
+    it("prepare succeeds for a .tsx file with JSX and interface types (str-jeen.68)", async () => {
+      // Regression: warmCompiledScriptCache previously passed the cache key
+      // (resolvedFilePath:functionName) as the fileName to ts.transpileModule.
+      // Since the key doesn't end in ".tsx", TypeScript would skip JSX stripping,
+      // and V8 would throw "Unexpected token <" — a compile_failed TranspileError.
+      const tsxFixture = path.resolve(__dirname, "__fixtures__", "type-syntax-coverage.tsx");
+      const source = fs.readFileSync(tsxFixture, "utf-8");
+
+      await handleRequest(makeRequest({ command: "instrument", file: tsxFixture, function: "classifyButton", mocks: [] }));
+      await handleRequest(makeRequest({ command: "instrument", file: tsxFixture, function: "HelloTsx", mocks: [] }));
+
+      const { response: prepResp1 } = await handleRequest(makeRequest({ command: "prepare", file: tsxFixture, function: "classifyButton", mocks: [] }));
+      expect(prepResp1.status).toBe("prepare");
+
+      const { response: prepResp2 } = await handleRequest(makeRequest({ command: "prepare", file: tsxFixture, function: "HelloTsx", mocks: [] }));
+      expect(prepResp2.status).toBe("prepare");
+
+      if (prepResp1.status !== "prepare" || prepResp2.status !== "prepare") return;
+
+      // Execute with the pre-warmed scripts — they must not fail with compile_failed.
+      const { response: execResp1 } = await handleRequest(makeRequest({
+        command: "execute",
+        function: `${tsxFixture}:classifyButton`,
+        inputs: [{ label: "hello" }],
+        mocks: [],
+        prepare_id: (prepResp1 as PrepareResponse).prepare_id,
+      }));
+      expect(execResp1.status).toBe("execute");
+
+      const { response: execResp2 } = await handleRequest(makeRequest({
+        command: "execute",
+        function: `${tsxFixture}:HelloTsx`,
+        inputs: [{ name: "world" }],
+        mocks: [],
+        prepare_id: (prepResp2 as PrepareResponse).prepare_id,
+      }));
+      expect(execResp2.status).toBe("execute");
+      void source;
+    });
   });
 
   describe("execute", () => {

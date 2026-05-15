@@ -539,7 +539,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       if (!preparedKeys.has(prepareId)) {
         const executor = await getExecutor();
         try {
-          executor.warmCompiledScriptCache(instrumentedSource, instrumentKey);
+          executor.warmCompiledScriptCache(instrumentedSource, instrumentKey, resolvedFile);
         } catch (e: unknown) {
           // TS transform/parse failures during prepare get classified as
           // compilation_error rather than instrumentation_failed (the
