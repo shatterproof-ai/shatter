@@ -475,6 +475,35 @@ describe("intra-package module resolution", () => {
   });
 });
 
+describe("relative TypeScript import resolution (str-xaao, str-jeen.70)", () => {
+  const relativeFixture = path.join(
+    FIXTURES_DIR,
+    "relative-ts-imports",
+    "src",
+    "entry.ts",
+  );
+  const extensionlessFixture = path.join(
+    FIXTURES_DIR,
+    "extensionless-ts-imports",
+    "src",
+    "entry.ts",
+  );
+
+  it("str-xaao: resolves sibling relative .ts imports without stub", async () => {
+    const result = await executeFunction(relativeFixture, "compute", [5]);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(6);
+  });
+
+  it("str-jeen.70: resolves extensionless relative imports to .ts files", async () => {
+    const result = await executeFunction(extensionlessFixture, "run", [
+      "world",
+    ]);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("hello world");
+  });
+});
+
 describe("resolver adapter chain", () => {
   beforeAll(() => {
     fs.writeFileSync(
