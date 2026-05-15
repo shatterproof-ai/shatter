@@ -201,8 +201,15 @@ func GenerateWrapper(
 	b.WriteString("\tGenericTypeArgs []string `json:\"generic_type_args,omitempty\"`\n")
 	b.WriteString("}\n\n")
 
+	// str-jeen.77: use _shatterInputs instead of inputs so that target
+	// functions whose parameters are named "inputs" do not shadow the outer
+	// slice. Pre-fix, a target func Resolve(inputs []ResolveInput) caused
+	// "var inputs []ResolveInput" inside the switch case to shadow the outer
+	// "inputs []json.RawMessage", making inputs[i] refer to a struct value
+	// instead of json.RawMessage and producing a "cannot use inputs[N]
+	// (variable of struct type ResolveInput) as []byte value" compile error.
 	b.WriteString("// ShatterInvoke executes the strategy in d against inputs and returns the result.\n")
-	b.WriteString("func ShatterInvoke(d PlanDescriptor, inputs []json.RawMessage) (any, error) {\n")
+	b.WriteString("func ShatterInvoke(d PlanDescriptor, _shatterInputs []json.RawMessage) (any, error) {\n")
 	b.WriteString("\tswitch d.TargetID {\n")
 
 	for _, t := range sorted {
@@ -282,8 +289,8 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			continue
 		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
-		fmt.Fprintf(b, "%sif %d < len(inputs) {\n", indent, i)
-		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(inputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
+		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, i)
+		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
 		fmt.Fprintf(b, "%s}\n", indent)

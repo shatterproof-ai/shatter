@@ -1414,6 +1414,100 @@ func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 // the production wire shape — in particular, ReturnsPointer carries the
 // pointer-ness of the first return so the wrapper case logic in
 // str-jeen.49 / str-9j2e can branch correctly.
+// TestGeneratedWrapperCompilesWhenParamNamedInputs is the str-jeen.77
+// regression: when a target function has a parameter named "inputs", the
+// generated wrapper's "var inputs T" declaration inside the switch case
+// shadows the outer "func ShatterInvoke(d PlanDescriptor, inputs
+// []json.RawMessage)" parameter. The shadowed "inputs" has type T (a struct),
+// so "json.Unmarshal(inputs[i], &p)" passes a struct value as the first
+// argument instead of []byte, producing "cannot use inputs[N] (variable of
+// struct type T) as []byte value in argument to json.Unmarshal".
+func TestGeneratedWrapperCompilesWhenParamNamedInputs(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package namematch
+
+// ResolveInput mirrors the kapow tools/kapow/internal/namematch shape
+// that triggered the str-jeen.77 bug.
+type ResolveInput struct {
+	Name string
+}
+
+// Resolve has a parameter named "inputs" — the same name as ShatterInvoke's
+// outer parameter. Pre-fix this shadowed the outer slice and caused
+// json.Unmarshal to receive a struct value instead of []byte.
+func Resolve(inputs []ResolveInput) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	return inputs[0].Name
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "namematch.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write namematch.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/namematch\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/namematch:Resolve",
+			SymbolName: "Resolve",
+			Kind:       wrapper.TargetKindFunction,
+			// Parameter named "inputs" — this is the shadow trigger.
+			Parameters:   []wrapper.WrapperParam{{Name: "inputs", GoType: "[]ResolveInput"}},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("namematch", targets, nil)
+
+	// The generated wrapper must use _shatterInputs for the outer parameter,
+	// not "inputs", so that the inner "var inputs []ResolveInput" doesn't shadow it.
+	if strings.Contains(src, "func ShatterInvoke(d PlanDescriptor, inputs []json.RawMessage)") {
+		t.Errorf("ShatterInvoke still uses 'inputs' as parameter name — will shadow target param named 'inputs'\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "func ShatterInvoke(d PlanDescriptor, _shatterInputs []json.RawMessage)") {
+		t.Errorf("ShatterInvoke does not use collision-safe '_shatterInputs' parameter name\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "namematch", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
 // TestVariadicForwardingWithIntermediateSlice is the str-jeen.76 regression:
 // when a package defines both a variadic helper (chipsHint ...string) and a
 // target function that builds a []string and passes it to the helper, the
