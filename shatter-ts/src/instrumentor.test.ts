@@ -185,6 +185,41 @@ describe("instrumentFunction", () => {
     expect(lines).toEqual([2, 3]);
   });
 
+  it("instruments expression-bodied arrow: reports instrumentable_line_count >= 1 (str-jeen.81)", () => {
+    const source = `const double = (x: number): number => x * 2;`;
+    const result = instrumentFunction(source, "double");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentableLineCount).toBeGreaterThanOrEqual(1);
+    expect(result.branchCount).toBe(0);
+    expect(result.instrumentedSource).toContain(RECORD_FUNCTION);
+    const lines = executeAndRecord(result.instrumentedSource, "double", [5]);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("expression-bodied arrow with array literal returns correct value (str-jeen.81)", () => {
+    const source = `const key = (id: string) => [id, "tag"];`;
+    const result = instrumentFunction(source, "key");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentableLineCount).toBeGreaterThanOrEqual(1);
+    const lines = executeAndRecord(result.instrumentedSource, "key", ["abc"]);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("expression-bodied arrow with string concat returns correct value (str-jeen.81)", () => {
+    const source = `const concat = (a: string, b: string): string => a + b;`;
+    const result = instrumentFunction(source, "concat");
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+
+    expect(result.instrumentableLineCount).toBeGreaterThanOrEqual(1);
+    const lines = executeAndRecord(result.instrumentedSource, "concat", ["hello", " world"]);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("instruments nested if/else-if chains", () => {
     const source = `function grade(score: number): string {
   if (score >= 90) {

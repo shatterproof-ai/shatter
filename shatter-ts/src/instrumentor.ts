@@ -1130,6 +1130,47 @@ function createInstrumentationTransformer(
                 return context.factory.updateVariableStatement(node, node.modifiers, newDeclList);
               }
 
+              if (ts.isArrowFunction(decl.initializer) && !ts.isBlock(decl.initializer.body)) {
+                // Expression-bodied arrow (e.g. `=> expr`): wrap in a block so
+                // we can inject a line probe. The expression becomes the return value.
+                ctx.nextLoopId = 0;
+                ctx.nextCallSiteId = 1;
+                const exprBody = decl.initializer.body as ts.Expression;
+                const lineNum = ctx.sourceFile.getLineAndCharacterOfPosition(
+                  exprBody.getStart(ctx.sourceFile),
+                ).line + 1;
+                ctx.instrumentableLines.add(lineNum);
+                branchState.nextBranchId = ctx.nextBranchId;
+                const newBlock = ctx.factory.createBlock(
+                  [
+                    createRecordCall(ctx.factory, lineNum),
+                    ctx.factory.createReturnStatement(exprBody),
+                  ],
+                  true,
+                );
+                const newArrow = context.factory.updateArrowFunction(
+                  decl.initializer,
+                  decl.initializer.modifiers,
+                  decl.initializer.typeParameters,
+                  decl.initializer.parameters,
+                  decl.initializer.type,
+                  decl.initializer.equalsGreaterThanToken,
+                  newBlock,
+                );
+                const newDecl = context.factory.updateVariableDeclaration(
+                  decl,
+                  decl.name,
+                  decl.exclamationToken,
+                  decl.type,
+                  newArrow,
+                );
+                const newDeclList = context.factory.updateVariableDeclarationList(
+                  node.declarationList,
+                  [newDecl],
+                );
+                return context.factory.updateVariableStatement(node, node.modifiers, newDeclList);
+              }
+
               if (ts.isFunctionExpression(decl.initializer) && decl.initializer.body) {
                 ctx.nextLoopId = 0;
                 ctx.nextCallSiteId = 1;
