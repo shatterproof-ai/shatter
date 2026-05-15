@@ -40,6 +40,25 @@ func TestGeneratedRecorderContainsRequiredFunctions(t *testing.T) {
 	}
 }
 
+// TestGeneratedRecorderUsesNamespacedBoolPtr is the str-jeen.74 regression:
+// the recorder emits a bool-pointer helper at package scope. If the helper is
+// named "boolPtr", it collides with any same-named function the target package
+// already defines, producing "boolPtr redeclared in this block". The helper
+// must use the __shatter prefix so it is collision-safe.
+func TestGeneratedRecorderUsesNamespacedBoolPtr(t *testing.T) {
+	src := generateRecorder("main")
+	if strings.Contains(src, "func boolPtr(") {
+		t.Errorf("recorder emits 'func boolPtr(' — must use '__shatterBoolPtr' to avoid collisions with user code\nsource snippet:\n%s", src)
+	}
+	if !strings.Contains(src, "func __shatterBoolPtr(") {
+		t.Errorf("recorder missing 'func __shatterBoolPtr(' — helper must be namespaced\nsource snippet:\n%s", src)
+	}
+	// All call sites must also use the namespaced form.
+	if strings.Contains(src, "boolPtr(") && !strings.Contains(src, "__shatterBoolPtr(") {
+		t.Errorf("recorder call site still uses un-namespaced boolPtr()")
+	}
+}
+
 func TestGeneratedRecorderContainsTraceTypes(t *testing.T) {
 	src := generateRecorder("main")
 	for _, typeName := range []string{

@@ -128,7 +128,7 @@ func __shatter_mcdc_record(branchID, line int, operator string, constraints []st
 			val := thunk()
 			outcomes[i] = __shatterConditionOutcome{
 				ConditionIndex: i,
-				Value:          boolPtr(val),
+				Value:          __shatterBoolPtr(val),
 				ConstraintJSON: safeConstraint(constraints, i),
 			}
 			if !val {
@@ -152,7 +152,7 @@ func __shatter_mcdc_record(branchID, line int, operator string, constraints []st
 			val := thunk()
 			outcomes[i] = __shatterConditionOutcome{
 				ConditionIndex: i,
-				Value:          boolPtr(val),
+				Value:          __shatterBoolPtr(val),
 				ConstraintJSON: safeConstraint(constraints, i),
 			}
 			if val {
@@ -165,7 +165,10 @@ func __shatter_mcdc_record(branchID, line int, operator string, constraints []st
 	return __shatterMcdcResult{decision: decision, conditions: outcomes}
 }
 
-func boolPtr(b bool) *bool { return &b }
+// __shatterBoolPtr wraps a bool in a pointer. The __shatter prefix avoids
+// collisions with package-level boolPtr helpers in instrumented packages
+// (str-jeen.74).
+func __shatterBoolPtr(b bool) *bool { return &b }
 
 func safeConstraint(constraints []string, i int) string {
 	if i < len(constraints) {
