@@ -165,14 +165,31 @@ func GenerateWrapper(
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
-	if hasGenericTargets(sorted) {
+	// str-jeen.73: collect extra imports first so we can determine whether
+	// "strings" is needed from either generic-target generated code OR from
+	// parameter types that reference the strings package (e.g. io.Reader whose
+	// runtimeval candidate uses strings.NewReader, or strings.Builder params).
+	// Previously "strings" was hard-excluded from collectExtraImports as a
+	// "core import" and only added conditionally for generic targets, silently
+	// dropping it when non-generic targets needed it.
+	extraImports := collectExtraImports(sorted)
+	needsStrings := hasGenericTargets(sorted)
+	filteredExtra := make([]string, 0, len(extraImports))
+	for _, imp := range extraImports {
+		if imp == "strings" {
+			needsStrings = true
+		} else {
+			filteredExtra = append(filteredExtra, imp)
+		}
+	}
+	if needsStrings {
 		b.WriteString("\t\"strings\"\n")
 	}
 	// str-jeen.33: union the per-target Imports lists and emit one entry per
 	// distinct import path. Without this, qualified parameter or return types
 	// like context.Context, *pgx.Conn, slog.Logger would leave the generated
 	// wrapper file referencing undefined package short names.
-	for _, importPath := range collectExtraImports(sorted) {
+	for _, importPath := range filteredExtra {
 		fmt.Fprintf(&b, "\t%q\n", importPath)
 	}
 	b.WriteString(")\n\n")
@@ -702,10 +719,15 @@ func wrapperASTTypeString(expr ast.Expr) string {
 // they are never duplicated. The output is deterministic so GenerateWrapper
 // remains byte-stable across calls. See str-jeen.33.
 func collectExtraImports(targets []WrapperTarget) []string {
+	// str-jeen.73: only exclude the always-emitted core imports (encoding/json
+	// and fmt). "strings" is NOT excluded here — it is conditionally emitted
+	// by GenerateWrapper when either generic targets require it OR when target
+	// parameter types reference the strings package (e.g. io.Reader runtime
+	// value uses strings.NewReader). GenerateWrapper merges the two sources and
+	// emits "strings" exactly once.
 	const (
-		coreImportJSON    = "encoding/json"
-		coreImportFmt     = "fmt"
-		coreImportStrings = "strings"
+		coreImportJSON = "encoding/json"
+		coreImportFmt  = "fmt"
 	)
 	seen := make(map[string]struct{})
 	for _, t := range targets {
@@ -715,7 +737,7 @@ func collectExtraImports(targets []WrapperTarget) []string {
 				continue
 			}
 			switch trimmed {
-			case coreImportJSON, coreImportFmt, coreImportStrings:
+			case coreImportJSON, coreImportFmt:
 				continue
 			}
 			seen[trimmed] = struct{}{}

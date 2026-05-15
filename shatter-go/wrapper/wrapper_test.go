@@ -424,8 +424,8 @@ func TestGenerateWrapperEmitsTargetImports(t *testing.T) {
 }
 
 // TestGenerateWrapperOmitsCoreImportsFromTargetImports guards against
-// double-emitting `encoding/json`, `fmt`, or `strings` when a target's
-// Imports list happens to include them — collectExtraImports filters them.
+// double-emitting `encoding/json` or `fmt` when a target's Imports list
+// happens to include them — collectExtraImports filters them.
 func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 	targets := []wrapper.WrapperTarget{
 		{
@@ -433,8 +433,11 @@ func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 			SymbolName: "F",
 			Kind:       wrapper.TargetKindFunction,
 			Parameters: []wrapper.WrapperParam{{Name: "x", GoType: "int"}},
-			// Deliberately include the always-emitted core imports.
-			Imports:      []string{"encoding/json", "fmt", "strings", "context"},
+			// Deliberately include the always-emitted core imports to verify
+			// deduplication. "strings" is omitted here because the param type
+			// is int — including strings for an int param would produce a
+			// "imported and not used" compile error. See str-jeen.73.
+			Imports:      []string{"encoding/json", "fmt", "context"},
 			HasResult:    true,
 			ResultGoType: "int",
 			ResultCount:  1,
@@ -451,6 +454,101 @@ func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 	}
 	if !strings.Contains(src, `"context"`) {
 		t.Error("non-core import context missing from generated source")
+	}
+}
+
+// TestGenerateWrapperEmitsStringsForIOReaderParam is the str-jeen.73
+// regression: a non-generic target whose parameter type resolves to a
+// runtime-value candidate that uses strings.NewReader (io.Reader, io.ReadCloser)
+// must include "strings" in the generated import block. Pre-fix, "strings" was
+// unconditionally excluded from collectExtraImports as a "core import" and only
+// added for generic targets, leaving non-generic wrappers with a bare
+// strings.NewReader("") expression but no import "strings".
+func TestGenerateWrapperEmitsStringsForIOReaderParam(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package ioreader
+
+import "io"
+
+// ReadAll is a non-generic function whose io.Reader parameter resolves to
+// strings.NewReader("") via the runtime-value registry, requiring the
+// "strings" import in the generated wrapper even though there are no
+// generic targets.
+func ReadAll(r io.Reader) int {
+	buf := make([]byte, 128)
+	n, _ := r.Read(buf)
+	return n
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "ioreader.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write ioreader.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/ioreader\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/ioreader:ReadAll",
+			SymbolName: "ReadAll",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				// Runtime-value candidate for io.Reader is strings.NewReader(""),
+				// which requires "strings". The generated wrapper must import it.
+				{Name: "r", GoType: "io.Reader", RuntimeValueExpr: `strings.NewReader("")`},
+			},
+			Imports:      []string{"io", "strings"},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ioreader", targets, nil)
+
+	// Both "io" and "strings" must appear exactly once — no duplicates and no
+	// missing imports.
+	for _, imp := range []string{"io", "strings"} {
+		quoted := `"` + imp + `"`
+		if got := strings.Count(src, quoted); got != 1 {
+			t.Errorf("import %s appears %d times in generated source (want 1)\nfull source:\n%s",
+				quoted, got, src)
+		}
+	}
+
+	// The generated wrapper must compile against the target package.
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "ioreader", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
 	}
 }
 
