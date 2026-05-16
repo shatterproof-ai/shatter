@@ -119,10 +119,20 @@ shatter explore --concolic --spec-json --spec-out shipping-spec.json shipping.ts
 
 ## 5. Scan More Than One File
 
-Once the single-function flow works, move up to a directory:
+For a handful of specific files, pass a quoted glob to `explore` (or
+`properties`) — it expands against the filesystem and filters to supported
+source extensions:
+
+```bash
+shatter explore 'src/**/*.ts'
+```
+
+For repository-wide discovery, point `shatter scan` at a directory and narrow
+the file set with `--include` / `--exclude` (repeatable glob patterns):
 
 ```bash
 shatter scan src/
+shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/
 ```
 
 Useful follow-ons:
@@ -132,6 +142,9 @@ shatter scan --changed src/
 shatter scan --language rust crates/my-crate/src/
 shatter diff snapshots/shipping.json current/shipping.json
 ```
+
+Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
+`<file>` or `<file>:<function>` and reject wildcard inputs.
 
 ## 6. Know Where To Look Next
 

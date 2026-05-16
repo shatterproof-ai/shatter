@@ -48,7 +48,8 @@ pub(crate) async fn run_properties(
         None => ScopeConfig::default(),
     };
 
-    let parsed: Vec<Target> = targets
+    let expanded_targets = expand_target_args(targets)?;
+    let parsed: Vec<Target> = expanded_targets
         .iter()
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;

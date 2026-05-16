@@ -26,6 +26,7 @@ pub(crate) async fn run_revalidate(
     log_level: LogLevel,
     project_dir: Option<&Path>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    reject_glob_target(source)?;
     let target = parse_target(source)?;
     let file_str = target.file.to_string_lossy();
     let project_root_str = resolve_project_root(project_dir, &target.file);
