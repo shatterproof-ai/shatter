@@ -629,9 +629,7 @@ async fn main() -> ExitCode {
                 &genetic_config,
                 parallelism_bounds,
                 require_rust,
-                shatter_core::scan_orchestrator::ScanFailurePolicy::from_cli_flag(
-                    fail_on_failures,
-                ),
+                shatter_core::scan_orchestrator::ScanFailurePolicy::from_cli_flag(fail_on_failures),
             )
             .await
         }
@@ -794,14 +792,19 @@ async fn main() -> ExitCode {
                 Ok(report) => {
                     if json {
                         match serde_json::to_string_pretty(&report) {
-                            Ok(s) => println!("{s}"),
+                            Ok(s) => {
+                                crate::helpers::print_stdout(&s);
+                                crate::helpers::print_stdout("\n");
+                            }
                             Err(e) => {
                                 eprintln!("Error serializing report: {e}");
                                 return ExitCode::FAILURE;
                             }
                         }
                     } else {
-                        print!("{}", shatter_core::strace_discovery::format_report(&report));
+                        crate::helpers::print_stdout(
+                            &shatter_core::strace_discovery::format_report(&report),
+                        );
                     }
                     Ok(())
                 }
