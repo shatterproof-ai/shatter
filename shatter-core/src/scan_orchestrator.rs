@@ -1606,6 +1606,17 @@ pub async fn scan(
             }
         }
 
+        // str-jeen.50: consult the planner before building ExploreConfig so
+        // method targets carry a `default_execute_plan` into the executor —
+        // see `fetch_default_execute_plan_for_method` for the no-op cases.
+        let default_execute_plan = fetch_default_execute_plan_for_method(
+            frontend,
+            analysis,
+            &file,
+            config.project_root.as_deref(),
+        )
+        .await;
+
         let explore_config = ExploreConfig {
             file,
             max_iterations: Some(config.max_iterations_per_function),
@@ -1635,7 +1646,7 @@ pub async fn scan(
             budget_surplus: None,
             claim_policy: ClaimPolicy::default(),
             planner: None,
-            default_execute_plan: None,
+            default_execute_plan,
         };
 
         let exploration =
@@ -4253,6 +4264,81 @@ fn build_layers(order_entries: &[TestOrderEntry], call_graph: &CallGraph) -> Vec
     layers
 }
 
+/// Detect Go-style method targets from a function-analysis name. The Go
+/// frontend emits methods as receiver-decorated qualified names —
+/// `(*Type).Method` for pointer receivers, `(Type).Method` for value
+/// receivers (str-fuhw.1.1) — while free functions stay bare. The leading
+/// `(` is the cheapest reliable signal that does not require type lookup.
+fn is_method_target_name(name: &str) -> bool {
+    name.starts_with('(')
+}
+
+/// Consult the frontend's invocation planner for a method target and return
+/// the first `InvocationPlan` it emits, suitable for attaching to
+/// [`ExploreConfig::default_execute_plan`]. Returns `None` for free
+/// functions, frontends without `get_invocation_plan` capability,
+/// transport failures, and method targets the planner cannot satisfy.
+///
+/// Without this wiring the launcher wrapper's switch on
+/// `Command::Execute.plan.receiver_kind` falls into its default arm and
+/// emits `"shatter: unknown receiver kind"`. Mirrors the per-target
+/// planner consultation the `explore` CLI command performs before
+/// dispatch (see `shatter-cli/src/commands/explore.rs`
+/// `fetch_planner_extra_seeds`).
+async fn fetch_default_execute_plan_for_method(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    file: &str,
+    project_root: Option<&str>,
+) -> Option<crate::protocol::InvocationPlan> {
+    if !is_method_target_name(&analysis.name) {
+        return None;
+    }
+    if !frontend
+        .capabilities()
+        .iter()
+        .any(|cap| cap == "get_invocation_plan")
+    {
+        return None;
+    }
+
+    // Prime the analysis cache so the frontend's get_invocation_plan
+    // target_id lookup resolves. Mirrors the explore CLI pattern.
+    let _ = frontend
+        .send(crate::protocol::Command::Analyze {
+            file: file.to_string(),
+            function: Some(analysis.name.clone()),
+            project_root: project_root.map(str::to_string),
+            execution_profile: None,
+        })
+        .await;
+
+    let target_id = format!(":{}", analysis.name);
+    match crate::planner_consumer::fetch_planner_seeds(frontend, &target_id, &analysis.params).await
+    {
+        Ok(bundle) => {
+            if !bundle.unsatisfied.is_empty() {
+                log::debug!(
+                    "[scan] planner unsatisfied for {}: {:?}",
+                    analysis.name,
+                    bundle.unsatisfied,
+                );
+            }
+            bundle
+                .plans
+                .into_iter()
+                .find(|p| !p.receiver_kind.is_empty())
+        }
+        Err(e) => {
+            log::debug!(
+                "[scan] planner fetch failed for {}: {e}",
+                analysis.name,
+            );
+            None
+        }
+    }
+}
+
 /// Explore a single function and build its result.
 ///
 /// This is the core work unit for both sequential and parallel scanning.
@@ -4270,6 +4356,25 @@ async fn explore_single_function(
     genetic_config: &crate::config::GeneticConfig,
     cache: &Option<Arc<BehaviorMapCache>>,
 ) -> Result<FunctionResult, ScanError> {
+    // str-jeen.50: when scanning a method target, consult the frontend's
+    // invocation planner so the launcher wrapper's receiver-kind switch has
+    // a real `receiver_kind` to dispatch on. Without this the wrapper falls
+    // into its default arm and surfaces "shatter: unknown receiver kind".
+    // No-op for free functions, frontends without `get_invocation_plan`,
+    // and callers that already attached a plan upstream.
+    let mut effective_config = explore_config.clone();
+    if effective_config.default_execute_plan.is_none()
+        && let Some(plan) = fetch_default_execute_plan_for_method(
+            frontend,
+            analysis,
+            &effective_config.file,
+            effective_config.project_root.as_deref(),
+        )
+        .await
+    {
+        effective_config.default_execute_plan = Some(plan);
+    }
+    let explore_config = &effective_config;
     let exploration =
         explorer::explore_function(frontend, analysis, explore_config, None, None).await?;
 

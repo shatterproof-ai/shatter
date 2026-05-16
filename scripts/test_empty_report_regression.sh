@@ -77,12 +77,20 @@ if ! grep -q "$FUNCTION_NAME" "$REPORT"; then
     exit 1
 fi
 
-# --- Assertion 3: report contains an expected failure status or thrown error ---
-if ! grep -qE '`(build_failed|unsupported|runtime_failed)`|throws `function_error:' "$REPORT"; then
-    echo "[FAIL] a4: report does not contain an expected failure status or thrown runtime error" >&2
+# --- Assertion 3: report contains an honest outcome heading ---
+#
+# str-jeen.50 refinement: pre-fix, an internal-method target without a
+# planner-attached plan failed at the launcher with "unknown receiver kind"
+# (surfaced as `runtime_failed`). Post-fix the executor synthesizes a
+# `zero_value` receiver and the method completes, so the report carries a
+# real exploration outcome (path count, return values, coverage) instead of
+# a failure status. Accept either shape — what we guard against is the
+# original A3 regression: a silent empty / placeholder report.
+if ! grep -qE '`(build_failed|unsupported|runtime_failed|completed)`|throws `function_error:|paths?\)|returns `' "$REPORT"; then
+    echo "[FAIL] a4: report does not contain an honest outcome heading or exploration evidence" >&2
     echo "       report contents:" >&2
     cat "$REPORT" >&2
     exit 1
 fi
 
-echo "[ok] a4: empty-report regression — report non-empty, contains '$FUNCTION_NAME', outcome is an honest failure"
+echo "[ok] a4: empty-report regression — report non-empty, contains '$FUNCTION_NAME', outcome is honest"

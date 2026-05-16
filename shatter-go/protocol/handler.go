@@ -26,6 +26,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/setup"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
+	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
 const frontendVersion = "0.1.0"
@@ -838,6 +839,32 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		requestGenericTypeArgs = append([]string{}, req.Plan.GenericTypeArgs...)
 	}
 
+	// Synthesize a default receiver_kind for method targets that arrive
+	// without a usable plan (str-jeen.50). Pre-fix, these requests reached
+	// the wrapper's default arm with an empty receiver_kind, surfaced as a
+	// misleading `runtime_failed` "unknown receiver kind" error, and were
+	// then counted as completed exploration by the broad-scan reporter.
+	// Now: methods with a constructible receiver get a valid receiver_kind
+	// threaded through; methods with no constructible receiver short-circuit
+	// to an `unsupported` outcome before the launcher runs.
+	if requestReceiverKind == "" {
+		synthKind, unsat := h.synthesizeExecuteReceiverKind(file, *req.Function)
+		if unsat != nil {
+			reason := receiverUnsupportedReason(unsat)
+			resp.Status = "execute"
+			resp.Outcome = &InvocationOutcome{
+				Status:      OutcomeStatusUnsupported,
+				ShortReason: &reason,
+				ThrownError: &ErrorInfo{
+					ErrorType: "method_not_supported",
+					Message:   reason,
+				},
+			}
+			return finalizeResponse(resp, timing)
+		}
+		requestReceiverKind = synthKind
+	}
+
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
 		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
@@ -922,6 +949,20 @@ func failureOutcome(err error) *InvocationOutcome {
 	case strings.Contains(msg, "receiver planning"):
 		status = OutcomeStatusUnsupported
 		reason = "method invocation requires receiver planning (Phase E)"
+		errInfo.ErrorType = "method_not_supported"
+	case strings.Contains(msg, "unknown receiver kind"):
+		// Defense-in-depth (str-jeen.50): the wrapper's default arm
+		// emits this when a method target reaches it with an empty or
+		// unrecognised receiver_kind. handleExecute now synthesizes a
+		// default receiver_kind before invocation, so this arm should
+		// rarely fire — but if a caller bypasses synthesis (e.g. by
+		// hand-crafting a Plan with a bogus receiver_kind), classify
+		// the failure as `unsupported` rather than `runtime_failed`.
+		// The pre-str-jeen.50 default of runtime_failed caused these
+		// wrapper-level structural errors to be counted as successful
+		// completed exploration outcomes.
+		status = OutcomeStatusUnsupported
+		reason = "method invocation reached wrapper with no constructible receiver"
 		errInfo.ErrorType = "method_not_supported"
 	case strings.Contains(msg, "function not found"):
 		status = OutcomeStatusUnsupported
@@ -1513,6 +1554,100 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 		ctx.Constructors = matched
 	}
 	return ctx
+}
+
+// synthesizeExecuteReceiverKind selects a default receiver_kind for an
+// Execute request that names a method target but did not carry an
+// InvocationPlan (str-jeen.50). It returns:
+//
+//   - ("", nil) when the target is a free function — the caller should keep
+//     the empty receiver_kind and let the wrapper's free-function arm fire.
+//   - (kind, nil) when synthesis succeeded; kind is a wrapper-facing token
+//     ("zero_value" or "constructor:<FuncName>") that matches one of the
+//     cases the wrapper emits for this target.
+//   - ("", unsat) when the receiver has no constructible strategy (interface
+//     receiver, generic-unconstrained, etc.). The caller should short-circuit
+//     with an `unsupported` outcome instead of invoking the launcher; without
+//     this guard the wrapper's default arm would emit "unknown receiver kind"
+//     and the failure would be misclassified as a completed exploration.
+//
+// On any cache miss or package-load failure synthesize returns ("", nil) so
+// the caller proceeds with the legacy empty-receiver path; that path now
+// surfaces a clean `unsupported` outcome via failureOutcome's
+// "unknown receiver kind" arm rather than a misclassified `runtime_failed`.
+func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (string, *UnsatisfiedRequirement) {
+	if file == "" || function == "" {
+		return "", nil
+	}
+	if _, _, err := h.ensureExecutionLoader(file); err != nil || h.loader == nil {
+		return "", nil
+	}
+	pkg, err := loadPackageForAnalysis(h.loader, file)
+	if err != nil || pkg == nil || pkg.Fset == nil {
+		return "", nil
+	}
+	fn := findFuncDeclByBareName(pkg, function)
+	if fn == nil {
+		return "", nil
+	}
+	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
+	if target.Receiver == nil {
+		return "", nil
+	}
+	if target.Receiver.IsInterface {
+		return "", &UnsatisfiedRequirement{
+			Kind:     UnsatisfiedRequirementKindInterfaceReceiver,
+			TargetID: target.ID,
+			Detail:   fmt.Sprintf("receiver type %s is an interface", target.Receiver.TypeName),
+		}
+	}
+	if target.HasTypeParams && len(target.TypeParams) == 0 {
+		return "", &UnsatisfiedRequirement{
+			Kind:     UnsatisfiedRequirementKindGenericUnconstrained,
+			TargetID: target.ID,
+			Detail:   "method has type parameters but no constraints were discovered",
+		}
+	}
+	// Prefer a parameterless same-package constructor when one exists; this
+	// matches the receiver planner's priority order (str-hy9b.H5) and gives
+	// the method a non-zero receiver state when the package author exposed
+	// one. Parameterful constructors are skipped because the wrapper has no
+	// way to synthesize their arguments (str-qo1.14).
+	for _, c := range ScanConstructors(pkg) {
+		if c.TargetType != target.Receiver.TypeName {
+			continue
+		}
+		if len(c.Parameters) > 0 {
+			continue
+		}
+		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
+	}
+	// Final fallback mirrors the receiver planner's fallback_zero_value
+	// strategy: the wrapper always emits a `zero_value` case for method
+	// targets so this token is guaranteed to dispatch. Runtime behavior
+	// (whether the zero-value receiver crashes inside the method body)
+	// is now surfaced as a real `runtime_failed` outcome with the actual
+	// panic message instead of the misleading "unknown receiver kind".
+	return wrapper.WrapperKindZeroValue, nil
+}
+
+// receiverUnsupportedReason renders an UnsatisfiedRequirement as a
+// human-readable short_reason for the unsupported-outcome short-circuit.
+func receiverUnsupportedReason(unsat *UnsatisfiedRequirement) string {
+	if unsat == nil {
+		return "method has no constructible receiver"
+	}
+	if unsat.Detail != "" {
+		return unsat.Detail
+	}
+	switch unsat.Kind {
+	case UnsatisfiedRequirementKindInterfaceReceiver:
+		return "method receiver is an interface and cannot be constructed"
+	case UnsatisfiedRequirementKindGenericUnconstrained:
+		return "method receiver requires generic type arguments that could not be inferred"
+	default:
+		return "method has no constructible receiver"
+	}
 }
 
 // findFuncDeclByBareName scans every syntax file in pkg for the FuncDecl
