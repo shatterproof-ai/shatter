@@ -165,6 +165,7 @@ pub(crate) async fn run_properties(
             file_spec_bundles.push(FileSpecBundle {
                 file: file_str.to_string(),
                 functions: file_specs,
+                ..FileSpecBundle::default()
             });
         }
     }

@@ -205,16 +205,45 @@ pub struct SpecClass {
     pub invariants: Vec<ClassifiedInvariant>,
 }
 
+/// Status of a [`FileSpecBundle`] — distinguishes a normal run from one
+/// that produced no executable targets.
+///
+/// When absent (default), the bundle is a normal spec output. When set to
+/// `NoTargets`, the file was analyzed but had no discoverable targets
+/// (e.g., a TS `.d.ts` declaration-only file or a Go file with no functions);
+/// batch tooling can use this marker to classify the result as
+/// `skipped`/`no-target` instead of inferring `partial` from a missing
+/// spec file (str-jeen.67).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileSpecBundleStatus {
+    /// Default — the bundle contains explored function specs.
+    Ok,
+    /// The file had no executable targets to explore.
+    NoTargets,
+}
+
 /// Per-file spec bundle: all function specs from a single source file.
 ///
 /// Used by `--output` to write a single JSON file containing specs for every
 /// explored function in a source file, keyed by file path.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FileSpecBundle {
     /// Source file path (e.g., "src/math.ts").
     pub file: String,
     /// Specs for each explored function in this file.
     pub functions: Vec<FunctionSpec>,
+    /// Status of the discovery process for this file. Absent for normal
+    /// runs that produced at least one function spec. Set to
+    /// `Some(NoTargets)` so batch tooling can unambiguously classify
+    /// no-target outcomes instead of treating missing spec files as
+    /// partial failures (str-jeen.67).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<FileSpecBundleStatus>,
+    /// Closed-taxonomy reason populated when `status == NoTargets`.
+    /// Mirrors `ExploreSummary.no_target_reason` (str-jeen.21 schema).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_target_reason: Option<crate::protocol::NoTargetReason>,
 }
 
 /// Complete behavioral specification of a function.
@@ -610,6 +639,10 @@ struct FunctionSpecYaml<'a> {
 struct FileSpecBundleYaml<'a> {
     file: &'a str,
     functions: Vec<FunctionSpecYaml<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<FileSpecBundleStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    no_target_reason: Option<crate::protocol::NoTargetReason>,
 }
 
 fn to_spec_class_yaml(c: &SpecClass) -> SpecClassYaml<'_> {
@@ -660,6 +693,8 @@ pub fn format_file_spec_yaml(bundles: &[FileSpecBundle]) -> Result<String, serde
         .map(|b| FileSpecBundleYaml {
             file: &b.file,
             functions: b.functions.iter().map(to_function_spec_yaml).collect(),
+            status: b.status,
+            no_target_reason: b.no_target_reason,
         })
         .collect();
     serde_yaml::to_string(&views)
@@ -811,6 +846,7 @@ pub fn merge_file_spec_bundles(
     FileSpecBundle {
         file: existing.file.clone(),
         functions: merged,
+        ..FileSpecBundle::default()
     }
 }
 
@@ -1683,6 +1719,7 @@ mod tests {
         let bundle = FileSpecBundle {
             file: "src/math.ts".to_string(),
             functions: vec![spec],
+            ..FileSpecBundle::default()
         };
         let bundles = vec![bundle];
         let json = format_file_spec_json(&bundles).expect("serialize");
@@ -1713,6 +1750,7 @@ mod tests {
                 Some("src/math.ts:1".to_string()),
                 Some("abc123".to_string()),
             )],
+            ..FileSpecBundle::default()
         };
 
         write_file_spec_bundle(&bundle, &path).expect("write");
@@ -1734,6 +1772,7 @@ mod tests {
         let bundle = FileSpecBundle {
             file: "src/lib.ts".to_string(),
             functions: vec![],
+            ..FileSpecBundle::default()
         };
 
         write_file_spec_bundle(&bundle, &path).expect("write with nested dirs");
@@ -1763,6 +1802,63 @@ mod tests {
         assert!(
             matches!(err, SpecIoError::Json(_)),
             "expected Json error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn no_targets_bundle_round_trip() {
+        // str-jeen.67: a bundle written for a file with no executable targets
+        // carries an explicit machine-readable status + reason so batch tooling
+        // can classify the outcome as no-target instead of inferring "partial"
+        // from a missing spec file.
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("no_targets.json");
+
+        let bundle = FileSpecBundle {
+            file: "src/types.d.ts".to_string(),
+            functions: vec![],
+            status: Some(FileSpecBundleStatus::NoTargets),
+            no_target_reason: Some(crate::protocol::NoTargetReason::DeclarationOnly),
+        };
+
+        write_file_spec_bundle(&bundle, &path).expect("write");
+        let loaded = read_file_spec_bundle(&path).expect("read");
+        assert_eq!(loaded.status, Some(FileSpecBundleStatus::NoTargets));
+        assert_eq!(
+            loaded.no_target_reason,
+            Some(crate::protocol::NoTargetReason::DeclarationOnly)
+        );
+        assert!(loaded.functions.is_empty());
+
+        // Serialized JSON should use the documented snake_case tokens so
+        // external batch tooling can match on them without depending on
+        // Rust enum names.
+        let raw = std::fs::read_to_string(&path).expect("read raw");
+        assert!(
+            raw.contains("\"status\": \"no_targets\""),
+            "expected snake_case status token, got: {raw}"
+        );
+        assert!(
+            raw.contains("\"no_target_reason\": \"declaration_only\""),
+            "expected snake_case reason token, got: {raw}"
+        );
+    }
+
+    #[test]
+    fn default_bundle_omits_status_fields() {
+        // Backwards-compatibility: bundles without an explicit status (the
+        // pre-jeen.67 shape) must serialize without the new fields so existing
+        // golden artifacts and tooling are unaffected.
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![],
+            ..FileSpecBundle::default()
+        };
+        let raw = serde_json::to_string(&bundle).expect("serialize");
+        assert!(!raw.contains("status"), "unexpected status field: {raw}");
+        assert!(
+            !raw.contains("no_target_reason"),
+            "unexpected reason field: {raw}"
         );
     }
 
@@ -1846,6 +1942,7 @@ mod tests {
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
             functions: vec![make_spec_with_fingerprint("add", Some(fp))],
+            ..FileSpecBundle::default()
         };
 
         let plan = compute_incremental_plan(
@@ -1879,6 +1976,7 @@ mod tests {
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
             functions: vec![make_spec_with_fingerprint("add", Some("old_fp_mismatch"))],
+            ..FileSpecBundle::default()
         };
 
         let plan = compute_incremental_plan(
@@ -1908,6 +2006,7 @@ mod tests {
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
             functions: vec![make_spec_with_fingerprint("add", None)],
+            ..FileSpecBundle::default()
         };
 
         let plan = compute_incremental_plan(
@@ -1938,6 +2037,7 @@ mod tests {
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
             functions: vec![],
+            ..FileSpecBundle::default()
         };
 
         let plan = compute_incremental_plan(
@@ -1996,6 +2096,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 "detectServerKey",
                 Some(&deep_fps["detectServerKey"]),
             )],
+            ..FileSpecBundle::default()
         };
 
         let plan = compute_incremental_plan(
@@ -2043,6 +2144,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 make_spec_with_fingerprint("add", Some("old")),
                 make_spec_with_fingerprint("removed_fn", Some("old2")),
             ],
+            ..FileSpecBundle::default()
         };
 
         let analysis = make_analysis("add", 1, 4);
@@ -2104,6 +2206,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 make_spec_with_fingerprint("leaf", Some(&deep_fps_v1["leaf"])),
                 make_spec_with_fingerprint("caller", Some(&deep_fps_v1["caller"])),
             ],
+            ..FileSpecBundle::default()
         };
 
         // V2: leaf returns 2 (changed), caller unchanged
@@ -2144,6 +2247,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 make_spec_with_fingerprint("stale_fn", Some("fp2")),
                 make_spec_with_fingerprint("removed_fn", Some("fp3")),
             ],
+            ..FileSpecBundle::default()
         };
 
         let new_stale_spec = make_spec_with_fingerprint("stale_fn", Some("fp2_new"));
@@ -2189,6 +2293,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
         let existing = FileSpecBundle {
             file: "test.ts".to_string(),
             functions: vec![],
+            ..FileSpecBundle::default()
         };
 
         let new_spec = make_spec_with_fingerprint("add", Some("fp1"));
@@ -2207,6 +2312,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 make_spec_with_fingerprint("fn1", Some("fp1")),
                 make_spec_with_fingerprint("fn2", Some("fp2")),
             ],
+            ..FileSpecBundle::default()
         };
 
         let current_names: HashSet<String> = ["fn1", "fn2"].iter().map(|s| s.to_string()).collect();
@@ -2559,6 +2665,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
                 FileSpecBundle {
                     file: "test.ts".to_string(),
                     functions: specs,
+                    ..FileSpecBundle::default()
                 }
             })
         }
