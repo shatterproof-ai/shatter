@@ -309,7 +309,7 @@ function createImportMetaEnvFactory(): RuntimeHookFactory {
                 | { env?: Record<string, string | boolean> }
                 | undefined;
               if (meta) {
-                meta.env = { ...mergedEnv, ...meta.env };
+                meta.env = { ...meta.env, ...mergedEnv };
               }
             },
           },

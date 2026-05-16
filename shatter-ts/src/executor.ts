@@ -37,6 +37,7 @@ import type {
   InvocationOutcome,
 } from "./protocol.js";
 import { detectRuntimeHints } from "./runtime-hints.js";
+import { WEB_GLOBALS, DEFAULT_IMPORT_META_ENV } from "./web-globals.js";
 import type {
   SandboxProvider,
   InvocationHook,
@@ -868,6 +869,7 @@ function loadModule(
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
+    ...WEB_GLOBALS,
     module: moduleObj,
     exports: moduleExports,
     require: targetRequire,
@@ -883,7 +885,7 @@ function loadModule(
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
     __shatter_import: createShatterImport(targetRequire),
-    __shatter_import_meta: { url: "", env: {} },
+    __shatter_import_meta: { url: "", env: { ...DEFAULT_IMPORT_META_ENV } },
   });
 
   if (sandboxProviders) {
@@ -2492,6 +2494,7 @@ export async function executeInstrumented(
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
+    ...WEB_GLOBALS,
     module: moduleObj,
     exports: moduleExports,
     require: sandboxRequire,
@@ -2516,7 +2519,10 @@ export async function executeInstrumented(
     [MOCK_CALL_FUNCTION]: mockCallFn,
     [CRYPTO_BOUNDARY_FUNCTION]: cryptoBoundaryFn,
     __shatter_import: createShatterImport(sandboxRequire),
-    __shatter_import_meta: { url: sourceFilePath ?? "", env: {} },
+    __shatter_import_meta: {
+      url: sourceFilePath ?? "",
+      env: { ...DEFAULT_IMPORT_META_ENV },
+    },
   });
 
   if (sandboxProviders) {

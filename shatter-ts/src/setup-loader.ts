@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { SetupLevel, SetupContextStack, GeneratorKind } from "./protocol.js";
 import { createAdapterAwareRequire, transformDynamicImports, createShatterImport, type ResolverAdapter } from "./executor.js";
+import { WEB_GLOBALS, DEFAULT_IMPORT_META_ENV } from "./web-globals.js";
 
 /** Default setup timeout in milliseconds (30 seconds). */
 const DEFAULT_SETUP_TIMEOUT_MS = 30_000;
@@ -69,6 +70,7 @@ function loadAndTranspile(filePath: string, resolverAdapters: ResolverAdapter[] 
   const moduleObj = { exports: moduleExports };
 
   const sandbox = vm.createContext({
+    ...WEB_GLOBALS,
     module: moduleObj,
     exports: moduleExports,
     require: targetRequire,
@@ -79,9 +81,15 @@ function loadAndTranspile(filePath: string, resolverAdapters: ResolverAdapter[] 
     clearTimeout,
     setInterval,
     clearInterval,
+    AbortController,
+    AbortSignal,
     __filename: absolutePath,
     __dirname: path.dirname(absolutePath),
     __shatter_import: createShatterImport(targetRequire),
+    __shatter_import_meta: {
+      url: absolutePath,
+      env: { ...DEFAULT_IMPORT_META_ENV },
+    },
   });
 
   vm.runInContext(transformDynamicImports(result.outputText), sandbox, { filename: absolutePath });
