@@ -4133,7 +4133,8 @@ pub(crate) async fn run_explore(
             .ok()
     };
 
-    let mut parsed: Vec<Target> = targets
+    let expanded_targets = expand_target_args(targets)?;
+    let mut parsed: Vec<Target> = expanded_targets
         .iter()
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
