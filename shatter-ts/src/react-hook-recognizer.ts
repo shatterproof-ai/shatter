@@ -52,6 +52,39 @@ export function isHookName(name: string): boolean {
   return name.length > 3 && name.startsWith("use") && name[3]! >= "A" && name[3]! <= "Z";
 }
 
+/**
+ * Returns true if `name` looks like a React function component:
+ * starts with an uppercase ASCII letter. Component names are PascalCase
+ * by React convention; lowercase names are reserved for host elements
+ * and ordinary helpers.
+ */
+export function isComponentName(name: string): boolean {
+  if (name.length === 0) return false;
+  const c = name[0]!;
+  return c >= "A" && c <= "Z";
+}
+
+/**
+ * Walk a function body and return true if it contains any JSX syntax.
+ */
+function bodyContainsJsx(body: ts.Node): boolean {
+  let found = false;
+  function visit(node: ts.Node): void {
+    if (found) return;
+    if (
+      ts.isJsxElement(node) ||
+      ts.isJsxSelfClosingElement(node) ||
+      ts.isJsxFragment(node)
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(body);
+  return found;
+}
+
 /** Collected import-level information about React hooks in a source file. */
 interface ReactImportContext {
   /** Names imported from React modules that are builtin hooks. */
@@ -133,7 +166,14 @@ function scanFunctionForHookCalls(
       }
 
       if (calleeName) {
-        if (importCtx.importedBuiltinHooks.has(calleeName)) {
+        const isImportedBuiltin =
+          importCtx.importedBuiltinHooks.has(calleeName) ||
+          (ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            importCtx.allReactImports.has(callee.expression.text) &&
+            BUILTIN_REACT_HOOKS.has(calleeName));
+
+        if (isImportedBuiltin) {
           builtinHookCalls.push(calleeName);
         } else if (isHookName(calleeName) && !BUILTIN_REACT_HOOKS.has(calleeName)) {
           customHookCalls.push(calleeName);
@@ -236,8 +276,21 @@ export function recognizeReactHooks(
     const hasCustomCalls = customHookCalls.length > 0;
     const hasHookName = isHookName(fn.name);
 
+    // Strong signal: a PascalCase function whose body contains JSX is a
+    // React function component. These cannot run raw — their JSX children
+    // call hooks that require a React dispatcher.
+    const isJsxComponent =
+      !hasBuiltinCalls &&
+      !hasCustomCalls &&
+      isComponentName(fn.name) &&
+      bodyContainsJsx(body);
+
+    if (isJsxComponent) {
+      reasons.push("Returns JSX (PascalCase function component)");
+    }
+
     // Name signal alone is not sufficient
-    if (!hasBuiltinCalls && !hasCustomCalls) {
+    if (!hasBuiltinCalls && !hasCustomCalls && !isJsxComponent) {
       return undefined;
     }
 
@@ -245,7 +298,7 @@ export function recognizeReactHooks(
       reasons.push("Follows useXxx naming convention");
     }
 
-    const confidence = hasBuiltinCalls ? "high" : "medium";
+    const confidence = hasBuiltinCalls || isJsxComponent ? "high" : "medium";
 
     return {
       adapter: { id: REACT_HOOK_ADAPTER_ID, apply: "auto" },

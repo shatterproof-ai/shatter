@@ -648,7 +648,7 @@ export function getCurrentJsxRuntimeOptions(): JsxRuntimeOptions {
 function getDefaultResolverAdapters(
   filePath: string | undefined,
 ): ResolverAdapter[] {
-  if (!filePath || !filePath.endsWith(".tsx")) return [];
+  if (!filePath || !/\.[cm]?tsx?$/.test(filePath)) return [];
   // When the project configures a non-default `jsxImportSource` (e.g.
   // "preact"), the automatic JSX transform emits
   // `require("<source>/jsx-runtime")` and `require("<source>/jsx-dev-runtime")`.
@@ -929,8 +929,9 @@ function loadModule(
  * the private `loadModule` for use by adapter InvocationHooks that need
  * to load the target module themselves (e.g. the react-hook adapter).
  *
- * For `.tsx` files the default resolver adapters automatically inject
- * React shims so hooks execute without a real React runtime.
+ * For `.ts` / `.tsx` (and `.mts` / `.cts`) files the default resolver
+ * adapters automatically inject React shims so hooks execute without a
+ * real React runtime.
  */
 export function loadModuleExports(
   filePath: string,

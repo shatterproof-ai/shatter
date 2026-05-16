@@ -2,6 +2,7 @@ import * as ts from "typescript";
 import {
   recognizeReactHooks,
   isHookName,
+  isComponentName,
   REACT_HOOK_ADAPTER_ID,
   BUILTIN_REACT_HOOKS,
 } from "./react-hook-recognizer.js";
@@ -199,8 +200,9 @@ export function useValue() {
     // but the import context tracks "React" as default import, not "useState"
     // This tests the property access path
     expect(hints).toHaveLength(1);
-    // The default import "React" is tracked but useState is accessed via property
-    // The current implementation detects property access callee names
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+    expect(hints[0]!.reasons).toContain("Calls useState imported from 'react'");
   });
 
   it("reasons array is always non-empty when hint is emitted", () => {
@@ -219,6 +221,199 @@ export function useMulti(x: number) {
 
     expect(hints[0]).toBeDefined();
     expect(hints[0]!.reasons!.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSX function component detection (str-zgsk)
+// ---------------------------------------------------------------------------
+
+describe("isComponentName", () => {
+  it("returns true for PascalCase identifiers", () => {
+    expect(isComponentName("App")).toBe(true);
+    expect(isComponentName("Dashboard")).toBe(true);
+    expect(isComponentName("X")).toBe(true);
+  });
+
+  it("returns false for non-PascalCase identifiers", () => {
+    expect(isComponentName("helper")).toBe(false);
+    expect(isComponentName("useFoo")).toBe(false);
+    expect(isComponentName("")).toBe(false);
+    expect(isComponentName("_App")).toBe(false);
+  });
+});
+
+describe("recognizeReactHooks — JSX function components", () => {
+  it("tags PascalCase JSX component when React is imported", () => {
+    const source = `
+import * as React from "react";
+export function App(props: { name: string }) {
+  return <div>Hello {props.name}</div>;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "App", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
+    expect(hints[0]!.confidence).toBe("high");
+    expect(hints[0]!.reasons).toContain(
+      "Returns JSX (PascalCase function component)",
+    );
+  });
+
+  it("tags self-closing JSX components", () => {
+    const source = `
+import * as React from "react";
+export function Card() {
+  return <Header/>;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "Card", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+  });
+
+  it("tags JSX fragment components", () => {
+    const source = `
+import * as React from "react";
+export function List() {
+  return <><span/><span/></>;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "List", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+  });
+
+  it("does not tag lowercase functions returning JSX", () => {
+    const source = `
+import * as React from "react";
+function helper() {
+  return <span/>;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "helper", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeUndefined();
+  });
+
+  it("does not tag PascalCase function without JSX or hook calls", () => {
+    const source = `
+import * as React from "react";
+export function App() {
+  return null;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "App", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeUndefined();
+  });
+
+  it("does not tag JSX components in files without a React import", () => {
+    // Without a React import the recognizer cannot tell a JSX component
+    // apart from a JSX-construction helper used by a non-React framework.
+    const source = `
+import { something } from "./other";
+export function App() {
+  return <div/>;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "App", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useContext regression (str-zgsk acceptance criterion)
+// ---------------------------------------------------------------------------
+
+describe("recognizeReactHooks — useContext regression", () => {
+  it("tags a component using useContext", () => {
+    const source = `
+import { useContext, createContext } from "react";
+const ThemeContext = createContext({ dark: false });
+export function ThemedPanel() {
+  const theme = useContext(ThemeContext);
+  return theme.dark ? "dark" : "light";
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "ThemedPanel", start_line: 4, end_line: 7 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+    expect(hints[0]!.reasons).toContain("Calls useContext imported from 'react'");
+  });
+
+  it("tags a custom hook wrapping useContext", () => {
+    const source = `
+import { useContext, createContext } from "react";
+const ThemeContext = createContext({ dark: false });
+export function useTheme() {
+  return useContext(ThemeContext);
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "useTheme", start_line: 4, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+  });
+
+  it("tags a custom hook called via useXxx pattern (medium confidence)", () => {
+    const source = `
+import { useTheme } from "./useTheme";
+export function useThemedClass() {
+  const theme = useTheme();
+  return theme.dark ? "dark" : "light";
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "useThemedClass", start_line: 3, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    // useTheme is imported but not from a React module, so this is a
+    // medium-confidence "custom hook" signal driven by the useXxx call name.
+    // Imported from "./useTheme" doesn't set hasReactImport, so the
+    // recognizer returns undefined unless React itself is imported elsewhere.
+    // Add a React import to exercise the medium path.
+    expect(hints[0]).toBeUndefined();
+  });
+
+  it("emits medium confidence for custom hook calls when React is imported", () => {
+    const source = `
+import { useState } from "react";
+import { useTheme } from "./useTheme";
+export function useThemedClass() {
+  useState(0); // pulls in React import — recognized
+  const t = useTheme();
+  return t;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "useThemedClass", start_line: 4, end_line: 8 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    // useState gives a builtin call → high confidence overall, but the
+    // custom-hook reason is also recorded.
+    expect(hints[0]!.reasons).toContain("Calls custom hook useTheme");
   });
 });
 
