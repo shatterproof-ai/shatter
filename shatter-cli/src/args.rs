@@ -1611,6 +1611,153 @@ pub(crate) fn validate_targets(targets: &[Target]) -> Result<(), String> {
     Ok(())
 }
 
+/// Characters that mark a positional target as a glob pattern.
+pub(crate) fn contains_glob_chars(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Directories never descended into during native glob expansion.
+const GLOB_WALK_EXCLUDE_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".shatter",
+    "dist",
+    "build",
+];
+
+/// Expand wildcard positional target arguments to concrete file paths.
+///
+/// Each input argument is treated as either:
+/// - a literal `<file>` or `<file>:<function>` target (passed through unchanged), or
+/// - a glob pattern over file paths (no function suffix), expanded against the
+///   filesystem. Matches are filtered to supported source extensions
+///   (see [`Language::from_extension`]).
+///
+/// Results across all arguments are deduplicated and sorted deterministically.
+/// A glob that contains glob chars in the `<function>` portion or in a
+/// `<file>:<function>` form returns an actionable error. A glob that matches
+/// no supported files also returns an error before any frontend startup.
+pub(crate) fn expand_target_args(args: &[String]) -> Result<Vec<String>, String> {
+    use std::collections::BTreeSet;
+
+    let mut literal: Vec<String> = Vec::new();
+    let mut glob_matches: BTreeSet<String> = BTreeSet::new();
+    let mut seen_literals: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for arg in args {
+        let (file_part, func_part) = match arg.rsplit_once(':') {
+            Some((f, fn_)) if !fn_.is_empty() => (f, Some(fn_)),
+            _ => (arg.as_str(), None),
+        };
+
+        if let Some(fn_) = func_part
+            && contains_glob_chars(fn_)
+        {
+            return Err(format!(
+                "function-name globs are not supported: '{arg}'"
+            ));
+        }
+
+        if !contains_glob_chars(file_part) {
+            if seen_literals.insert(arg.clone()) {
+                literal.push(arg.clone());
+            }
+            continue;
+        }
+
+        if func_part.is_some() {
+            return Err(format!(
+                "glob patterns are not supported in '<file>:<function>' targets: '{arg}'"
+            ));
+        }
+
+        let matched = expand_glob_pattern(file_part)?;
+        if matched.is_empty() {
+            return Err(format!(
+                "no supported source files matched glob pattern: '{file_part}'"
+            ));
+        }
+        glob_matches.extend(matched);
+    }
+
+    let mut out = literal;
+    for m in glob_matches {
+        if seen_literals.insert(m.clone()) {
+            out.push(m);
+        }
+    }
+    // Sort the full result for determinism while preserving the
+    // "literals first, globs sorted" reading was overly subtle; a single
+    // deterministic sort across the whole list is simpler and stable.
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn expand_glob_pattern(pattern: &str) -> Result<Vec<String>, String> {
+    let matcher = globset::Glob::new(pattern)
+        .map_err(|e| format!("invalid glob pattern '{pattern}': {e}"))?
+        .compile_matcher();
+
+    let mut walk_root = PathBuf::new();
+    for component in std::path::Path::new(pattern).components() {
+        let raw = component.as_os_str().to_string_lossy().into_owned();
+        if contains_glob_chars(&raw) {
+            break;
+        }
+        walk_root.push(component);
+    }
+    if walk_root.as_os_str().is_empty() {
+        walk_root = PathBuf::from(".");
+    }
+
+    let mut results: Vec<String> = Vec::new();
+    walk_for_glob(&walk_root, &matcher, &mut results);
+
+    results.retain(|p| {
+        std::path::Path::new(p)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Language::from_extension)
+            .is_some()
+    });
+    results.sort();
+    results.dedup();
+    Ok(results)
+}
+
+fn walk_for_glob(dir: &std::path::Path, matcher: &globset::GlobMatcher, results: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if GLOB_WALK_EXCLUDE_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
+            walk_for_glob(&path, matcher, results);
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let path_str = path.to_string_lossy();
+        let stripped = path_str.strip_prefix("./").unwrap_or(&path_str);
+        if matcher.is_match(stripped) {
+            results.push(stripped.to_string());
+        }
+    }
+}
+
 /// Parse a `--loop-buckets` CLI string into `LoopBuckets`.
 /// Accepts "none" (disables bucketing) or comma-separated u32 values like "0,1,2,5".
 pub(crate) fn parse_loop_buckets(
@@ -1771,6 +1918,97 @@ mod tests {
         }];
         assert!(validate_targets(&targets).is_ok());
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn expand_target_args_passes_literal_through() {
+        let out = expand_target_args(&["src/app.ts".into(), "pkg/m.go:Add".into()]).unwrap();
+        assert_eq!(out, vec!["pkg/m.go:Add", "src/app.ts"]);
+    }
+
+    #[test]
+    fn expand_target_args_rejects_glob_in_file_function_form() {
+        let err = expand_target_args(&["src/*.ts:foo".into()]).unwrap_err();
+        assert!(
+            err.contains("glob patterns are not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_target_args_rejects_function_name_glob() {
+        let err = expand_target_args(&["src/app.ts:foo*".into()]).unwrap_err();
+        assert!(
+            err.contains("function-name globs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_target_args_expands_quoted_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("lib");
+        std::fs::create_dir(&sub).unwrap();
+        for name in ["a.ts", "b.ts", "c.txt"] {
+            std::fs::write(sub.join(name), "").unwrap();
+        }
+        let pattern = format!("{}/*.ts", sub.display());
+        let out = expand_target_args(&[pattern]).unwrap();
+        assert_eq!(out.len(), 2, "got {out:?}");
+        assert!(out[0].ends_with("a.ts"), "got {out:?}");
+        assert!(out[1].ends_with("b.ts"), "got {out:?}");
+    }
+
+    #[test]
+    fn expand_target_args_filters_unsupported_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.ts", "b.py", "c.md"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let pattern = format!("{}/*", dir.path().display());
+        let out = expand_target_args(&[pattern]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].ends_with("a.ts"));
+    }
+
+    #[test]
+    fn expand_target_args_errors_on_empty_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let pattern = format!("{}/*.ts", dir.path().display());
+        let err = expand_target_args(&[pattern]).unwrap_err();
+        assert!(
+            err.contains("no supported source files matched"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_target_args_dedupes_explicit_and_glob_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.ts");
+        std::fs::write(&path, "").unwrap();
+        let explicit = path.to_string_lossy().to_string();
+        let pattern = format!("{}/*.ts", dir.path().display());
+        let out = expand_target_args(&[explicit.clone(), pattern]).unwrap();
+        assert_eq!(out.len(), 1, "got {out:?}");
+        assert_eq!(out[0], explicit);
+    }
+
+    #[test]
+    fn expand_target_args_deterministic_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["zeta.ts", "alpha.ts", "mid.ts"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let pattern = format!("{}/*.ts", dir.path().display());
+        let a = expand_target_args(std::slice::from_ref(&pattern)).unwrap();
+        let b = expand_target_args(&[pattern]).unwrap();
+        assert_eq!(a, b);
+        let names: Vec<&str> = a
+            .iter()
+            .map(|p| p.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha.ts", "mid.ts", "zeta.ts"]);
     }
 
     #[test]
