@@ -361,6 +361,11 @@ pub struct ScanResult {
     pub skipped_functions: Vec<SkippedFunction>,
     /// Sampling context (populated when --core-sample is active).
     pub sampling: Option<SamplingContext>,
+    /// Source-file snapshots from the run-start manifest (str-jeen.60/63).
+    /// Used by `generate_report_from_scan` to build `SourceSetSummary` from
+    /// the discovered source set rather than from completed function rows.
+    /// Empty when the scan ran without a manifest (e.g. synthetic test runs).
+    pub source_files: Vec<crate::run_manifest::SourceFileSnapshot>,
 }
 
 /// Errors that can occur during a scan.
@@ -1792,6 +1797,7 @@ pub async fn scan(
         test_order,
         skipped_functions,
         sampling: None,
+        source_files: run_manifest.source_files.clone(),
     };
 
     // Write the scan summary artifact, with end-of-run source-set
@@ -1847,6 +1853,11 @@ pub struct ParallelScanResult {
     pub workers_reaped: usize,
     /// Sampling context (populated when --core-sample is active).
     pub sampling: Option<SamplingContext>,
+    /// Source-file snapshots from the run-start manifest (str-jeen.60/63).
+    /// Used by `generate_report` to build `SourceSetSummary` from the
+    /// discovered source set rather than from completed function rows.
+    /// Empty when the scan ran without a manifest (e.g. synthetic test runs).
+    pub source_files: Vec<crate::run_manifest::SourceFileSnapshot>,
 }
 
 impl ParallelScanResult {
@@ -4184,6 +4195,7 @@ pub async fn parallel_scan_with_progress(
         workers_used: peak_workers,
         workers_reaped: total_reaped,
         sampling: None,
+        source_files: run_manifest.source_files,
     })
 }
 
@@ -5233,6 +5245,7 @@ mod tests {
             ],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -5282,6 +5295,7 @@ mod tests {
             }],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -5331,6 +5345,7 @@ mod tests {
                 },
             ],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -5382,6 +5397,7 @@ mod tests {
                 },
             ],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -5437,6 +5453,7 @@ mod tests {
             }],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -5489,6 +5506,7 @@ mod tests {
                 closure_functions: 3,
                 strata_summary: vec![],
             }),
+            source_files: vec![],
         };
         let report = format_scan_report(&result);
         assert!(
@@ -5538,6 +5556,7 @@ mod tests {
             }],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
         let report = format_scan_report(&result);
         assert!(
@@ -5665,6 +5684,7 @@ mod tests {
             workers_used: 4,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_parallel_scan_report(&result);
@@ -5721,6 +5741,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_parallel_scan_report(&result);
@@ -9203,6 +9224,7 @@ mod tests {
             ],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
 
         let report = format_scan_report(&result);
@@ -9507,6 +9529,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         assert!(
             result.has_scan_failure(),
@@ -9527,6 +9550,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         assert!(
             !result.has_scan_failure(),
@@ -9547,6 +9571,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         assert!(
             result
@@ -9569,6 +9594,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let reason = result.evaluate_failure_policy(ScanFailurePolicy {
             fail_on_failures: true,
@@ -9598,6 +9624,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         assert!(
             result
@@ -9636,6 +9663,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let reason = result.evaluate_failure_policy(ScanFailurePolicy {
             fail_on_failures: false,
@@ -9669,6 +9697,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let counts = result.counts();
         assert_eq!(counts.completed, 1);
@@ -9686,6 +9715,7 @@ mod tests {
             workers_used: 0,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         assert!(
             !result.has_scan_failure(),
@@ -9860,6 +9890,7 @@ mod tests {
             test_order: vec!["fn_a".into(), "fn_b".into(), "fn_c".into()],
             skipped_functions: skipped,
             sampling: None,
+            source_files: vec![],
         };
         let summary =
             build_summary_from_scan_result("scan-1", &scan_result, Duration::from_secs(10));

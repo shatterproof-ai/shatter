@@ -572,6 +572,29 @@ fn build_source_set_summary(functions: &[FunctionReport]) -> SourceSetSummary {
     summary
 }
 
+/// Build a [`SourceSetSummary`] from the run-start source snapshot
+/// (str-jeen.60/63). Each `SourceFileSnapshot` contributes one file to
+/// its bucket and its whole-file `line_count` to the line total. Unlike
+/// `build_source_set_summary`, this function counts ALL discovered files
+/// regardless of function execution outcome (completed, failed, skipped,
+/// unsupported) and uses whole-file line counts rather than function span
+/// line counts — matching the accounting used by `status_export` for
+/// run-status.json.
+fn build_source_set_summary_from_snapshot(
+    source_files: &[crate::run_manifest::SourceFileSnapshot],
+) -> SourceSetSummary {
+    let mut summary = SourceSetSummary::default();
+    for sf in source_files {
+        let bucket = classify_path(&sf.path);
+        let slot = summary.slot_mut(bucket);
+        slot.file_count = slot.file_count.saturating_add(1);
+        slot.line_count = slot
+            .line_count
+            .saturating_add(u64::from(sf.line_count.unwrap_or(0)));
+    }
+    summary
+}
+
 /// A function the scan attempted to explore but did not complete.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FailedFunctionReport {
@@ -861,7 +884,11 @@ pub fn generate_report(
 
     let cumulative = batch_state.map(build_cumulative_report);
 
-    let source_set = build_source_set_summary(&functions);
+    let source_set = if result.source_files.is_empty() {
+        build_source_set_summary(&functions)
+    } else {
+        build_source_set_summary_from_snapshot(&result.source_files)
+    };
     let productionish_source_lines = source_set.production_ish.line_count;
 
     let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
@@ -926,7 +953,11 @@ pub fn generate_report_from_scan(
     let counts =
         ScanOutcomeCounts::from_split(result.function_results.len(), &result.skipped_functions);
 
-    let source_set = build_source_set_summary(&functions);
+    let source_set = if result.source_files.is_empty() {
+        build_source_set_summary(&functions)
+    } else {
+        build_source_set_summary_from_snapshot(&result.source_files)
+    };
     let productionish_source_lines = source_set.production_ish.line_count;
 
     let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
@@ -1964,6 +1995,7 @@ mod tests {
             workers_used: 2,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -2058,6 +2090,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -2281,6 +2314,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let mut file_map = HashMap::new();
         for i in 0..3 {
@@ -2314,6 +2348,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -2370,6 +2405,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let file_map = HashMap::new();
         let report = generate_report(&parallel_result, &file_map, None);
@@ -2438,6 +2474,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let file_map = HashMap::new();
         let report = generate_report(&parallel_result, &file_map, None);
@@ -2494,6 +2531,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2519,6 +2557,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2544,6 +2583,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2562,6 +2602,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2586,6 +2627,7 @@ mod tests {
             workers_used: 2,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -2607,6 +2649,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2735,6 +2778,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         let mut file_map = HashMap::new();
         let go_path = "examples/go/error-only-completion/error_only_completion.go";
@@ -2851,6 +2895,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2886,6 +2931,7 @@ mod tests {
             test_order: vec!["a".into(), "b".into()],
             skipped_functions: vec![],
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -2915,6 +2961,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -2939,6 +2986,7 @@ mod tests {
             workers_used: 2,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -3034,6 +3082,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let report = generate_report(&parallel_result, &file_map, None);
@@ -3235,6 +3284,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -3276,6 +3326,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let file_map = HashMap::new();
@@ -3442,6 +3493,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
 
         let mut file_map = HashMap::new();
@@ -3514,6 +3566,7 @@ mod tests {
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
+            source_files: vec![],
         };
         // Add a skipped function with special chars in reason
         parallel_result.skipped.push(SkippedFunction {
