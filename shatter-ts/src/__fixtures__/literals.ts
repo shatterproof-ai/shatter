@@ -37,7 +37,10 @@ export function greetWithDefault(name: string = "World"): string {
 }
 
 export function noLiterals(x: number): number {
-  return x + x;
+  // References MAX_RETRIES so the file-level const is relevance-eligible
+  // under the revised extractLiterals rule (str-jeen.82) even though the
+  // function body itself contains no inline literals.
+  return x + MAX_RETRIES;
 }
 
 export const classifyArrow = (s: string): string => {
@@ -63,7 +66,13 @@ export function goDirection(dir: "north" | "south" | "east"): string {
 }
 
 export function useFileConsts(x: number): number {
-  return x * MAX_RETRIES;
+  // References MAX_RETRIES, PREFIX, and THRESHOLD so all three file-level
+  // consts are relevance-eligible under the revised extractLiterals rule
+  // (str-jeen.82). Tests assert their values flow into this function's
+  // literal set.
+  const label = PREFIX;
+  if (x > THRESHOLD) return x * MAX_RETRIES;
+  return label.length;
 }
 
 export function clampToFinite(x: 1e308 | 42 | 3.14): number {

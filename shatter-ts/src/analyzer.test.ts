@@ -609,6 +609,37 @@ describe("analyzeFile", () => {
       // 1e308 must NOT be tagged as int
       expect(intValues).not.toContain(1e308);
     });
+
+    // str-jeen.82: extractLiterals previously walked every file-level const
+    // initializer (except function-valued consts), which swept strings out of
+    // unrelated object-literal method bodies (e.g. an exported API object's
+    // route strings) into every peer function's literal set. The relevance
+    // rule is now: only harvest from file-level consts whose declared name is
+    // referenced inside the function body / parameter defaults.
+    it("does not leak strings from unrelated module-level object literals (str-jeen.82)", () => {
+      const results = analyzeFile(path.join(fixtures, "literal-leak.ts"), "tagsQueryKey");
+      const fn = results[0]!;
+      const strs = (fn.literals ?? [])
+        .filter((l): l is { type: "str"; value: string } => l.type === "str")
+        .map((l) => l.value);
+      expect(strs).toContain("tags");
+      // Strings from the unrelated pickpackitApi object's method bodies
+      // must not appear in tagsQueryKey's literals.
+      expect(strs).not.toContain("/api/workspaces");
+      expect(strs).not.toContain("POST");
+      expect(strs).not.toContain("DELETE");
+      expect(strs).not.toContain("PATCH");
+      expect(strs).not.toContain("stringify");
+    });
+
+    it("still harvests referenced file-level consts (str-jeen.82)", () => {
+      const results = analyzeFile(path.join(fixtures, "literal-leak.ts"), "usesRetries");
+      const fn = results[0]!;
+      const ints = (fn.literals ?? [])
+        .filter((l): l is { type: "int"; value: number } => l.type === "int")
+        .map((l) => l.value);
+      expect(ints).toContain(3); // MAX_RETRIES is referenced
+    });
   });
 
   describe("function expression patterns", () => {

@@ -1924,6 +1924,14 @@ function extractLiterals(
     }
   }
 
+  // Identifiers referenced from the function's own body / parameter defaults.
+  // Used to gate which file-level consts are relevance-eligible: previously
+  // (str-jeen.82) every non-function-valued file-level const was walked,
+  // which leaked strings out of unrelated module-level object literals
+  // (e.g. an exported API object's route + method strings) into every peer
+  // function's literal set.
+  const referencedNames = new Set<string>();
+
   function walk(n: ts.Node): void {
     if (ts.isStringLiteral(n)) {
       add({ type: "str", value: n.text });
@@ -1943,6 +1951,9 @@ function extractLiterals(
     } else if (ts.isPropertyAccessExpression(n)) {
       // Extract property access keys as candidate string inputs
       add({ type: "str", value: n.name.text });
+      if (ts.isIdentifier(n.expression)) {
+        referencedNames.add(n.expression.text);
+      }
     } else if (
       ts.isElementAccessExpression(n) &&
       n.argumentExpression &&
@@ -1950,6 +1961,8 @@ function extractLiterals(
     ) {
       // Extract bracket-access string keys: obj["key"]
       add({ type: "str", value: n.argumentExpression.text });
+    } else if (ts.isIdentifier(n)) {
+      referencedNames.add(n.text);
     }
     ts.forEachChild(n, walk);
   }
@@ -1966,7 +1979,10 @@ function extractLiterals(
     walk(node.body);
   }
 
-  // Extract file-level const declarations
+  // Extract file-level const declarations — but only those actually
+  // referenced by name from the function. This prevents unrelated
+  // module-level object literals (whose method bodies contain strings)
+  // from leaking into peer functions' literal sets (str-jeen.82).
   ts.forEachChild(sourceFile, (child) => {
     if (ts.isVariableStatement(child)) {
       const isConst =
@@ -1980,6 +1996,8 @@ function extractLiterals(
           ts.isFunctionExpression(decl.initializer)
         )
           continue;
+        if (!ts.isIdentifier(decl.name)) continue;
+        if (!referencedNames.has(decl.name.text)) continue;
         walk(decl.initializer);
       }
     }
