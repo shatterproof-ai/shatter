@@ -7,7 +7,7 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::pipeline::{self, ObserveStageOutput};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 
-use crate::args::parse_target;
+use crate::args::{parse_target, reject_glob_target};
 use crate::helpers::{
     apply_project_storage, frontend_config, resolve_project_root, shutdown_frontend,
 };
@@ -29,6 +29,7 @@ pub(crate) async fn run_observe(
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    reject_glob_target(target)?;
     let parsed = parse_target(target)?;
 
     // The observe command requires a specific function name.

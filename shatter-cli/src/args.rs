@@ -268,8 +268,11 @@ impl From<TimingFormatArg> for TimingFormat {
 pub(crate) enum CliCommand {
     /// Explore functions by analyzing their branches and generating test inputs.
     Explore {
-        /// Targets to explore: <file>:<function> for a single function, or just
-        /// <file> to explore all exported functions.
+        /// Targets to explore: <file>:<function> for a single function, just
+        /// <file> to explore all exported functions, or a quoted glob over
+        /// file paths (e.g. 'src/**/*.ts') which is expanded against the
+        /// filesystem and filtered to supported source extensions. Globs in
+        /// the <function> portion are rejected.
         /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
         #[arg(required = true)]
         targets: Vec<String>,
@@ -631,7 +634,10 @@ pub(crate) enum CliCommand {
     /// ObserveStageOutput JSON to a file or stdout. Use `shatter analyze` to process
     /// the output offline, or `shatter specify` to build a behavioral spec.
     Observe {
-        /// Target: <file>:<function>. The function name is required.
+        /// Target: <file>:<function>. The function name is required. Must be
+        /// a concrete file path — wildcards are rejected; use `explore` or
+        /// `properties` for glob targets, or `scan --include` for repository
+        /// discovery.
         #[arg(required = true, value_name = "TARGET")]
         target: String,
 
@@ -1030,6 +1036,9 @@ pub(crate) enum CliCommand {
     /// then outputs the behavioral spec enriched with property descriptions.
     Properties {
         /// Target files or functions (e.g. src/math.ts or src/math.ts:add).
+        /// Quoted glob patterns over file paths (e.g. 'src/**/*.ts') are
+        /// expanded against the filesystem and filtered to supported source
+        /// extensions; globs in the <function> portion are rejected.
         #[arg(required = true)]
         targets: Vec<String>,
 
@@ -1249,7 +1258,9 @@ pub(crate) enum CliCommand {
     /// Untracked functions are reported but do not affect the exit code unless
     /// `--strict` is passed (full-file coverage mode).
     Stale {
-        /// Source file to analyze (e.g., "src/math.ts").
+        /// Source file to analyze (e.g., "src/math.ts"). Must be a concrete
+        /// file path — wildcards are rejected; use `explore`/`properties` for
+        /// glob targets, or `scan --include` for repository discovery.
         #[arg(required = true)]
         source: String,
 
@@ -1304,7 +1315,10 @@ pub(crate) enum CliCommand {
     /// frontend to replay each recorded input, and compares the observed behavior
     /// against the cached expectation. Exit code 0 = no regressions, 1 = issues found.
     Revalidate {
-        /// Source file whose cached behaviors to revalidate.
+        /// Source file whose cached behaviors to revalidate. Must be a
+        /// concrete file path — wildcards are rejected; use `explore`/
+        /// `properties` for glob targets, or `scan --include` for repository
+        /// discovery.
         #[arg(required = true)]
         source: String,
 
@@ -1614,6 +1628,19 @@ pub(crate) fn validate_targets(targets: &[Target]) -> Result<(), String> {
 /// Characters that mark a positional target as a glob pattern.
 pub(crate) fn contains_glob_chars(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Reject wildcard inputs for single-target commands that require a concrete
+/// `<file>` or `<file>:<function>`. Returns an actionable error before the
+/// frontend is spawned so the user gets a clear diagnostic instead of a
+/// downstream "file not found".
+pub(crate) fn reject_glob_target(target: &str) -> Result<(), String> {
+    if contains_glob_chars(target) {
+        return Err(format!(
+            "'{target}': this command requires a concrete file path; use explore/properties for glob targets or scan --include for repository discovery"
+        ));
+    }
+    Ok(())
 }
 
 /// Directories never descended into during native glob expansion.
@@ -2009,6 +2036,37 @@ mod tests {
             .map(|p| p.rsplit('/').next().unwrap())
             .collect();
         assert_eq!(names, vec!["alpha.ts", "mid.ts", "zeta.ts"]);
+    }
+
+    #[test]
+    fn reject_glob_target_passes_concrete_paths() {
+        assert!(reject_glob_target("src/app.ts").is_ok());
+        assert!(reject_glob_target("pkg/m.go:Add").is_ok());
+    }
+
+    #[test]
+    fn reject_glob_target_rejects_star() {
+        let err = reject_glob_target("src/**/*.ts").unwrap_err();
+        assert!(
+            err.contains("concrete file path"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("explore/properties") && err.contains("scan --include"),
+            "error should suggest alternatives: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_glob_target_rejects_question_mark() {
+        let err = reject_glob_target("src/file?.ts").unwrap_err();
+        assert!(err.contains("concrete file path"));
+    }
+
+    #[test]
+    fn reject_glob_target_rejects_bracket_class() {
+        let err = reject_glob_target("src/file[12].ts").unwrap_err();
+        assert!(err.contains("concrete file path"));
     }
 
     #[test]

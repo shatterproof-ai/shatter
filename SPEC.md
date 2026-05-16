@@ -69,7 +69,7 @@ are tracked as parity limitations, not absence of frontend support.
 
 **Syntax**: `shatter explore [OPTIONS] <TARGETS>...`
 
-**Targets**: `<file>:<function>` or `<file>` (all exported functions). Language determined by file extension.
+**Targets**: One or more positional targets, each either `<file>:<function>` or `<file>` (all exported functions). Quoted glob patterns over file paths are accepted (e.g. `'src/**/*.ts'`) and expanded against the filesystem; matches are filtered to supported source extensions, deduped, and sorted. Language is determined by file extension. Globs in the `<function>` portion or in `<file>:<function>` form are rejected with an actionable error.
 
 **Behavior**:
 1. Spawn the appropriate language frontend subprocess.
@@ -105,7 +105,7 @@ are tracked as parity limitations, not absence of frontend support.
 | `--spec-json` | false | Output behavioral specification (JSON) |
 | `--invariants` | false | Enable Daikon-style invariant detection |
 | `--no-boundary-values` | false | Disable built-in boundary value seeding |
-| `--scope PATH` | — | Scope configuration YAML for mocking/inclusion |
+| `--scope PATH` | — | Scope configuration YAML controlling mocking policy and call-graph inclusion during exploration. Does not select positional file targets — use the positional `<TARGETS>` (or quoted globs) for file selection. |
 
 **Output formats**:
 - Default: Human-readable exploration report showing paths discovered, coverage, and exemplar inputs.
@@ -118,7 +118,9 @@ are tracked as parity limitations, not absence of frontend support.
 
 **Purpose**: Explore multiple functions in dependency order, using behavior maps from already-explored callees as mocks for callers.
 
-**Syntax**: `shatter scan [OPTIONS] <TARGETS>...`
+**Syntax**: `shatter scan [OPTIONS] <DIRECTORY>`
+
+**Scope**: The single positional `<DIRECTORY>` argument is the root that `scan` walks for source files. Use `--include` / `--exclude` (repeatable glob patterns, e.g. `--include '**/*.ts' --exclude '**/vendor/**'`) to narrow the discovered file set. `scan` does not accept positional file targets or glob targets — use `explore` (or `properties`) when you want to select specific files.
 
 **Behavior**:
 1. Analyze all target functions.

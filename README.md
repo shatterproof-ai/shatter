@@ -185,6 +185,26 @@ export function calculateShipping(weight: number, country: string): number {
 shatter explore shipping.ts:calculateShipping
 ```
 
+`explore` and `properties` also accept quoted glob patterns over file paths,
+which are expanded against the filesystem and filtered to supported source
+extensions:
+
+```bash
+shatter explore 'src/**/*.ts'
+```
+
+For repository-wide discovery, point `shatter scan` at a directory and narrow
+the file set with `--include` / `--exclude`:
+
+```bash
+shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/
+```
+
+Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
+`<file>` or `<file>:<function>` and reject wildcard inputs with an actionable
+error — use `explore`/`properties` for glob targets and `scan --include` for
+repository discovery.
+
 ## Core Commands
 
 Use `shatter --help` and `shatter <command> --help` for the current CLI surface. The commands most users start with are:
