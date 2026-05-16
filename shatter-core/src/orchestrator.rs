@@ -388,6 +388,30 @@ pub struct ExploreResult {
     pub opaque_suggestions: Vec<crate::executability::OpaqueSuggestion>,
     /// Module names that could not be resolved and were replaced with stubs.
     pub stubbed_modules: Vec<String>,
+    /// True when the per-function wall-clock budget (`config.timeout_explore`)
+    /// was exceeded at any checkpoint — main loop, pre-loop float-probe phase,
+    /// or post-loop refine/shrink phases. Set whenever the orchestrator
+    /// detects the deadline has been crossed, independent of which
+    /// `termination_reason` recorded the loop's exit. str-jeen.65: prevents
+    /// timed-out functions from being silently reported as `ok` when a tail
+    /// phase (Z3, refine, shrink) runs past the deadline after the loop
+    /// terminated for an unrelated reason (WorklistExhausted, MaxIterations,
+    /// CoveragePlateau, McdcComplete).
+    pub timed_out: bool,
+}
+
+/// Effective per-Z3-query timeout: the configured `solver_timeout_ms` capped by
+/// the configured per-function `timeout_explore`. A single Z3 call shouldn't be
+/// allowed to outlive the entire function budget, so when both are set we use
+/// whichever is smaller. str-jeen.65.
+fn effective_solver_timeout_ms(config: &ExploreConfig) -> Option<u64> {
+    match (config.solver_timeout_ms, config.timeout_explore) {
+        (Some(s), Some(t)) => {
+            let t_ms = u64::try_from(t.as_millis()).unwrap_or(u64::MAX).max(1);
+            Some(s.min(t_ms))
+        }
+        (s, _) => s,
+    }
 }
 
 /// Solver feedback execution mode for the concolic loop.
@@ -1664,7 +1688,8 @@ fn solve_and_generate(
                 loops,
                 param_infos,
                 param_names,
-                config.solver_timeout_ms,
+                // str-jeen.65: cap by per-function budget.
+                effective_solver_timeout_ms(config),
             ) {
                 output.candidates.push(WorklistEntry {
                     inputs,
@@ -1941,7 +1966,9 @@ pub async fn explore(
         prior_discovery_inputs.clone(),
         param_infos,
         loops,
-        config.solver_timeout_ms,
+        // str-jeen.65: cap per-Z3-query timeout by per-function budget so a
+        // single solver call cannot outlive the function deadline.
+        effective_solver_timeout_ms(config),
         config.meta_config.clone(),
     );
     let strategy_ctx = StrategyContext {
@@ -1974,11 +2001,25 @@ pub async fn explore(
         vec![]
     };
 
+    // str-jeen.65: anchor the per-function wall-clock budget at the START of
+    // explore (before the float-probe pre-pass) so every phase — float-probe,
+    // main loop, refine, shrink — counts against `timeout_explore`. Previously
+    // `explore_start` was anchored just before the main loop (below), so a
+    // long float-probe phase could silently consume the entire budget.
+    let explore_start = Instant::now();
+    let deadline: Option<Instant> = config.timeout_explore.map(|d| explore_start + d);
+    let deadline_crossed = || deadline.is_some_and(|d| Instant::now() >= d);
+    let mut timed_out_overall = false;
+
     // --- Float probe phase ---
     let float_indices = crate::float_probe::float_param_indices(param_infos);
     let mut float_probe_results: Vec<crate::float_probe::FloatProbeResult> = Vec::new();
     if !float_indices.is_empty() {
-        for &idx in &float_indices {
+        'float_probe: for &idx in &float_indices {
+            if deadline_crossed() {
+                timed_out_overall = true;
+                break 'float_probe;
+            }
             let pairs = crate::float_probe::generate_probe_pairs(
                 param_infos,
                 idx,
@@ -1990,6 +2031,10 @@ pub async fn explore(
             let mut divergent_values = Vec::new();
 
             for (float_inputs, floor_inputs) in pairs {
+                if deadline_crossed() {
+                    timed_out_overall = true;
+                    break 'float_probe;
+                }
                 let float_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
@@ -2047,7 +2092,8 @@ pub async fn explore(
         }
     }
 
-    let explore_start = Instant::now();
+    // str-jeen.65: `explore_start` is now established above, before the
+    // float-probe phase. The main loop continues to read it via `budget`.
     let mut plateau_counter: usize = 0;
     // Periodic progress reporting state (parity with explorer.rs random path).
     // Tracks the 15-second cadence for ExploreProgressSnapshot emission and the
@@ -2549,7 +2595,8 @@ pub async fn explore(
                                 &goal.condition_exprs,
                                 &goal.observed_values,
                                 goal.target_condition_index,
-                                config.solver_timeout_ms,
+                                // str-jeen.65: cap by per-function budget.
+                                effective_solver_timeout_ms(config),
                                 param_infos,
                             ) {
                                 Ok(SolveResult::Sat(values)) => {
@@ -2638,8 +2685,22 @@ pub async fn explore(
         }
     }
 
+    // str-jeen.65: capture whether the main loop exited via the wall-clock
+    // budget so subsequent post-loop phases can skip cleanly.
+    if matches!(termination_reason, TerminationReason::TimeoutExplore) || deadline_crossed() {
+        timed_out_overall = true;
+    }
+
     // --- Refinement phase: binary-search between witness pairs ---
-    let boundary_results = if let Some(budget) = config.refine_budget {
+    // str-jeen.65: skip refinement entirely once the deadline has passed —
+    // refine_boundaries_async issues many execute() calls per boundary and is
+    // unbounded relative to `timeout_explore`.
+    let boundary_results = if timed_out_overall || deadline_crossed() {
+        if deadline_crossed() {
+            timed_out_overall = true;
+        }
+        Vec::new()
+    } else if let Some(budget) = config.refine_budget {
         if budget > 0 {
             refine_boundaries_async(
                 frontend,
@@ -2657,12 +2718,17 @@ pub async fn explore(
     } else {
         Vec::new()
     };
+    if deadline_crossed() {
+        timed_out_overall = true;
+    }
     // -- Witness shrinking phase --
     // For each unique path, try to shrink the witness to simpler inputs.
     let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     let mut shrink_stats = crate::shrink::ShrinkStats::default();
-    if config.shrink_budget > 0 {
+    // str-jeen.65: skip shrink entirely once the wall-clock budget is gone —
+    // each candidate path issues up to `witness_budget` execute() calls.
+    if config.shrink_budget > 0 && !timed_out_overall && !deadline_crossed() {
         // Collect the lowest-complexity witness per unique path.
         // Starting from the simplest witness reduces shrink iterations needed.
         let mut path_witnesses: std::collections::HashMap<
@@ -2709,6 +2775,12 @@ pub async fn explore(
         };
 
         for (ph, witness, witness_mocks) in &to_shrink {
+            // str-jeen.65: bail out of remaining shrink targets once the
+            // per-function deadline has passed.
+            if deadline_crossed() {
+                timed_out_overall = true;
+                break;
+            }
             let effective_mocks = if witness_mocks.is_empty() {
                 config.mocks.clone()
             } else {
@@ -2846,6 +2918,13 @@ pub async fn explore(
         );
     }
 
+    // str-jeen.65: a final deadline check covers any phase between shrink and
+    // here (drain_pending_feedback, opaque suggestions, etc.) so the returned
+    // result accurately reflects whether the wall-clock budget was crossed.
+    if deadline_crossed() {
+        timed_out_overall = true;
+    }
+
     feedback_scheduler.drain_pending_feedback().await?;
     let pipeline_overlaps = feedback_scheduler.pipeline_overlaps();
     let unique_paths = covered_paths.len();
@@ -2889,6 +2968,14 @@ pub async fn explore(
             abandoned_frontiers,
             opaque_suggestions,
             stubbed_modules,
+            // str-jeen.65: surface the wall-clock budget verdict to the
+            // pipeline conversion (see `pipeline.rs`) so any timeout — whether
+            // observed by the main loop, the float-probe pre-pass, or a
+            // post-loop refine/shrink phase — propagates as
+            // `ObservationOutput.timed_out=true` instead of silently being
+            // bucketed as a normal completion.
+            timed_out: timed_out_overall
+                || matches!(termination_reason, TerminationReason::TimeoutExplore),
         },
         output_state,
     ))
@@ -4788,6 +4875,70 @@ mod tests {
         // Should terminate due to timeout, not max_executions or max_iterations.
         assert_eq!(result.termination_reason, TerminationReason::TimeoutExplore);
         assert!(result.total_executions < 10000);
+        // str-jeen.65: the new `timed_out` field must reflect the wall-clock
+        // verdict — when the loop itself exited via TimeoutExplore the flag
+        // is unambiguously true.
+        assert!(
+            result.timed_out,
+            "TerminationReason::TimeoutExplore must surface as ExploreResult.timed_out=true"
+        );
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-jeen.65: when the wall-clock budget is exceeded but the loop
+    /// terminates "naturally" first (worklist exhausted with no candidates
+    /// remaining), the `timed_out` flag must still be set so the CLI does
+    /// not silently report the function as `ok`. The regression scenario:
+    /// the explore loop returns quickly with WorklistExhausted, but the
+    /// per-function budget was zero (or already crossed), so by the time
+    /// the orchestrator reaches its final deadline check, the deadline is
+    /// behind us.
+    #[tokio::test]
+    async fn explore_marks_timed_out_when_deadline_crossed_with_natural_termination() {
+        let config = config_for_script("noop-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let explore_config = ExploreConfig {
+            max_iterations: Some(1000),
+            max_executions: Some(10000),
+            plateau_threshold: 0,
+            // A zero-duration budget means `deadline_crossed()` returns true
+            // immediately, so even a fast-completing explore must report
+            // `timed_out=true`.
+            timeout_explore: Some(Duration::from_millis(0)),
+            ..Default::default()
+        };
+
+        let seeds: Vec<Vec<serde_json::Value>> = vec![vec![serde_json::json!(0)]];
+
+        let (result, _) = explore(
+            &mut frontend,
+            "stub",
+            seeds,
+            vec![],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            &explore_config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("explore failed");
+
+        assert!(
+            result.timed_out,
+            "wall-clock budget crossed (deadline in the past) must set \
+             ExploreResult.timed_out=true regardless of termination_reason; \
+             got termination_reason={:?}",
+            result.termination_reason,
+        );
 
         frontend.shutdown().await.expect("shutdown failed");
     }

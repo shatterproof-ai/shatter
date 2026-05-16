@@ -783,12 +783,21 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
         // str-gz8j: lift the orchestrator's per-function timeout signal into
         // ObservationOutput.timed_out so the CLI explore command can route
         // the function into the TimedOut bucket instead of treating it as
-        // Completed. Other termination reasons (worklist exhausted, plateau,
-        // max-iterations, etc.) are normal completions.
-        let timed_out = matches!(
-            r.termination_reason,
-            crate::orchestrator::TerminationReason::TimeoutExplore
-        );
+        // Completed.
+        //
+        // str-jeen.65: trust the orchestrator's `timed_out` flag directly —
+        // it captures wall-clock budget violations from any phase (main loop,
+        // float-probe, refine, shrink) and folds in
+        // `termination_reason == TimeoutExplore` itself. Keying solely on
+        // `termination_reason` silently mis-bucketed timed-out functions as
+        // `ok` whenever a tail phase (Z3, refine, shrink) overshot the
+        // deadline after the loop exited via WorklistExhausted /
+        // MaxIterations / CoveragePlateau / McdcComplete.
+        let timed_out = r.timed_out
+            || matches!(
+                r.termination_reason,
+                crate::orchestrator::TerminationReason::TimeoutExplore
+            );
         Self {
             function_name: r.function_name,
             iterations: r.total_executions as u32,
@@ -1282,6 +1291,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            timed_out: false,
         };
 
         let output: ObservationOutput = concolic.into();
@@ -1328,11 +1338,58 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            timed_out: true,
         };
         let output: ObservationOutput = concolic.into();
         assert!(
             output.timed_out,
             "TerminationReason::TimeoutExplore must propagate as ObservationOutput.timed_out=true"
+        );
+    }
+
+    /// str-jeen.65: the regression case — a function whose main loop exited
+    /// via `WorklistExhausted` (a "normal" termination) but whose overall
+    /// wall-clock budget was crossed during a post-loop phase (refine /
+    /// shrink). The orchestrator sets `ExploreResult.timed_out=true` in that
+    /// case and the conversion must surface it as
+    /// `ObservationOutput.timed_out=true` so the CLI reports the function as
+    /// `timed_out` rather than `ok`.
+    #[test]
+    fn observation_output_marks_timed_out_when_post_loop_phase_overshot_deadline() {
+        let concolic = crate::orchestrator::ExploreResult {
+            function_name: "tail_overshoot".into(),
+            total_lines: 5,
+            executions: vec![],
+            unique_paths: 1,
+            total_executions: 8,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            // Loop terminated "naturally" — but a post-loop phase overran the
+            // budget, so the orchestrator flipped `timed_out` to true.
+            termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
+            raw_results: vec![],
+            discoveries: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: true,
+        };
+        let output: ObservationOutput = concolic.into();
+        assert!(
+            output.timed_out,
+            "ExploreResult.timed_out=true must propagate to ObservationOutput \
+             even when termination_reason != TimeoutExplore (str-jeen.65)",
         );
     }
 
