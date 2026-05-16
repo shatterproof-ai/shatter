@@ -2515,6 +2515,97 @@ describe("import.meta polyfill", () => {
   });
 });
 
+describe("web/fetch/crypto globals available by default (str-ysnp + str-jeen.71)", () => {
+  const fixture = path.join(FIXTURES_DIR, "web-globals.ts");
+
+  it("executeFunction provides Headers", async () => {
+    const result = await executeFunction(fixture, "buildHeaders", ["abc"]);
+    expect(result.return_value).toBe("Bearer abc");
+  });
+
+  it("executeFunction provides Request", async () => {
+    const result = await executeFunction(fixture, "buildRequest", [
+      "https://example.com/x",
+    ]);
+    expect(result.return_value).toBe("POST");
+  });
+
+  it("executeFunction provides Response", async () => {
+    const result = await executeFunction(fixture, "buildResponse", ["hi"]);
+    expect(result.return_value).toBe("200");
+  });
+
+  it("executeFunction provides fetch", async () => {
+    const result = await executeFunction(fixture, "hasFetch", []);
+    expect(result.return_value).toBe(true);
+  });
+
+  it("executeFunction provides crypto (Web Crypto API)", async () => {
+    const result = await executeFunction(fixture, "randomUuidLength", []);
+    expect(result.return_value).toBe(36);
+  });
+
+  it("executeFunction surfaces Vite-style import.meta.env defaults", async () => {
+    const result = await executeFunction(fixture, "viteMode", []);
+    expect(typeof result.return_value).toBe("string");
+    expect(result.return_value).not.toBe("unknown");
+  });
+
+  it("executeFunction returns fallback for unknown import.meta.env keys without throwing", async () => {
+    const result = await executeFunction(fixture, "readVitePosthogKey", [
+      "fallback",
+    ]);
+    expect(result.return_value).toBe("fallback");
+  });
+
+  it("executeInstrumented provides Headers", async () => {
+    const source = fs.readFileSync(fixture, "utf-8");
+    const instrumentResult = instrumentFunction(source, "buildHeaders", fixture);
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "buildHeaders",
+      ["xyz"],
+    );
+    expect(result.return_value).toBe("Bearer xyz");
+  });
+
+  it("executeInstrumented provides crypto", async () => {
+    const source = fs.readFileSync(fixture, "utf-8");
+    const instrumentResult = instrumentFunction(
+      source,
+      "randomUuidLength",
+      fixture,
+    );
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "randomUuidLength",
+      [],
+    );
+    expect(result.return_value).toBe(36);
+  });
+
+  it("executeInstrumented surfaces import.meta.env defaults", async () => {
+    const source = fs.readFileSync(fixture, "utf-8");
+    const instrumentResult = instrumentFunction(source, "viteMode", fixture);
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "viteMode",
+      [],
+    );
+    expect(typeof result.return_value).toBe("string");
+    expect(result.return_value).not.toBe("unknown");
+  });
+});
+
 describe("executeAdapterOwned", () => {
   const adapterModel: AdapterInvocationModel = {
     kind: "adapter",
