@@ -717,6 +717,17 @@ function resolveModuleWithAdapters(
     };
   }
 
+  // If adapters rewrote the module ID to an absolute .ts/.tsx path (e.g. from
+  // tsconfig-paths), Node's native require cannot load it. Use loadModule() so
+  // the file is transpiled and run in a sandbox like any other TS source.
+  if (path.isAbsolute(currentModuleId) && /\.[cm]?tsx?$/.test(currentModuleId)) {
+    return {
+      moduleId: currentModuleId,
+      value: loadModule(currentModuleId, resolverAdapters),
+      stubbed: false,
+    };
+  }
+
   return {
     moduleId: currentModuleId,
     value: originalRequire(currentModuleId),
@@ -748,6 +759,22 @@ export function createAdapterAwareRequire(
       return resolved.value;
     } catch (err: unknown) {
       if (isModuleNotFoundError(err, modulePath)) {
+        // For relative imports, try adding .ts/.tsx extensions before stubbing.
+        // This handles extensionless imports (./client → ./client.ts) and
+        // ordinary relative imports in TS projects where Node can't load .ts.
+        if (modulePath.startsWith(".") && importerFile) {
+          const importerDir = path.dirname(importerFile);
+          const base = path.resolve(importerDir, modulePath);
+          if (!/\.[cm]?tsx?$/.test(modulePath)) {
+            for (const ext of [".ts", ".tsx", "/index.ts", "/index.tsx"]) {
+              const candidate = base + ext;
+              if (fs.existsSync(candidate)) {
+                onModuleResolved?.(candidate, false);
+                return loadModule(candidate, resolverAdapters);
+              }
+            }
+          }
+        }
         logger.warn(
           "module %s could not be resolved; returning stub",
           modulePath,

@@ -109,7 +109,14 @@ func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate)
 		if c.ReturnsPointer {
 			returnsPtr = "1"
 		}
-		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr
+		// str-jeen.78: include ReturnsError so that adding an error return to
+		// a constructor invalidates the cached wrapper (switching from
+		// single-assignment to two-assignment form).
+		returnsErr := "0"
+		if c.ReturnsError {
+			returnsErr = "1"
+		}
+		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr
 	}
 	sort.Strings(ctors)
 
@@ -165,14 +172,31 @@ func GenerateWrapper(
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
-	if hasGenericTargets(sorted) {
+	// str-jeen.73: collect extra imports first so we can determine whether
+	// "strings" is needed from either generic-target generated code OR from
+	// parameter types that reference the strings package (e.g. io.Reader whose
+	// runtimeval candidate uses strings.NewReader, or strings.Builder params).
+	// Previously "strings" was hard-excluded from collectExtraImports as a
+	// "core import" and only added conditionally for generic targets, silently
+	// dropping it when non-generic targets needed it.
+	extraImports := collectExtraImports(sorted)
+	needsStrings := hasGenericTargets(sorted)
+	filteredExtra := make([]string, 0, len(extraImports))
+	for _, imp := range extraImports {
+		if imp == "strings" {
+			needsStrings = true
+		} else {
+			filteredExtra = append(filteredExtra, imp)
+		}
+	}
+	if needsStrings {
 		b.WriteString("\t\"strings\"\n")
 	}
 	// str-jeen.33: union the per-target Imports lists and emit one entry per
 	// distinct import path. Without this, qualified parameter or return types
 	// like context.Context, *pgx.Conn, slog.Logger would leave the generated
 	// wrapper file referencing undefined package short names.
-	for _, importPath := range collectExtraImports(sorted) {
+	for _, importPath := range filteredExtra {
 		fmt.Fprintf(&b, "\t%q\n", importPath)
 	}
 	b.WriteString(")\n\n")
@@ -184,8 +208,15 @@ func GenerateWrapper(
 	b.WriteString("\tGenericTypeArgs []string `json:\"generic_type_args,omitempty\"`\n")
 	b.WriteString("}\n\n")
 
+	// str-jeen.77: use _shatterInputs instead of inputs so that target
+	// functions whose parameters are named "inputs" do not shadow the outer
+	// slice. Pre-fix, a target func Resolve(inputs []ResolveInput) caused
+	// "var inputs []ResolveInput" inside the switch case to shadow the outer
+	// "inputs []json.RawMessage", making inputs[i] refer to a struct value
+	// instead of json.RawMessage and producing a "cannot use inputs[N]
+	// (variable of struct type ResolveInput) as []byte value" compile error.
 	b.WriteString("// ShatterInvoke executes the strategy in d against inputs and returns the result.\n")
-	b.WriteString("func ShatterInvoke(d PlanDescriptor, inputs []json.RawMessage) (any, error) {\n")
+	b.WriteString("func ShatterInvoke(d PlanDescriptor, _shatterInputs []json.RawMessage) (any, error) {\n")
 	b.WriteString("\tswitch d.TargetID {\n")
 
 	for _, t := range sorted {
@@ -232,14 +263,32 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			// Pre-fix every value-receiver case dereferenced the
 			// constructor result, which fails to compile when the
 			// constructor returns the value form (`cannot indirect`).
+			//
+			// str-jeen.78: when the constructor returns (T, error) or
+			// (*T, error), use the two-assignment form (_recv, _ := ctor())
+			// to avoid "assignment mismatch: 1 variable but ctor returns 2
+			// values". The error is intentionally discarded so that the
+			// wrapper still returns a result to the orchestrator; callers
+			// that need error propagation should not use a constructor-backed
+			// receiver kind.
 			switch {
+			case t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
 			case t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
+			case t.IsPointerRecv && !c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recvVal, _ := %s()\n", c.FuncName)
+				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case t.IsPointerRecv && !c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recvVal := %s()\n", c.FuncName)
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
+			case !t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
+				fmt.Fprintf(b, "\t\t\t_recvPtr, _ := %s()\n", c.FuncName)
+				b.WriteString("\t\t\t_recv := *_recvPtr\n")
 			case !t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := *%s()\n", c.FuncName)
+			case c.ReturnsError: // !t.IsPointerRecv && !c.ReturnsPointer
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
 				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
 			}
@@ -265,8 +314,8 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			continue
 		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
-		fmt.Fprintf(b, "%sif %d < len(inputs) {\n", indent, i)
-		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(inputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
+		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, i)
+		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
 		fmt.Fprintf(b, "%s}\n", indent)
@@ -403,7 +452,18 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// statements (str-jeen.33). Result-only imports are intentionally omitted
 	// because the generated wrapper does not name result types (str-iylc).
 	importSet := make(map[string]struct{})
-	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, importSet)
+	// str-jeen.79: use the type-checker's actual package path (pkg.Types.Path())
+	// for the qualifier comparison so that same-name sibling packages are not
+	// mistaken for the current package. We prefer pkg.Types.Path() over
+	// pkg.PkgPath because test helpers sometimes set PkgPath to a different
+	// value than the path given to conf.Check, creating a mismatch. In
+	// production (packages.Load) both values are always the full import path.
+	// Fall back to pkg.PkgPath when pkg.Types is nil.
+	pkgTypesPath := pkg.PkgPath
+	if pkg.Types != nil {
+		pkgTypesPath = pkg.Types.Path()
+	}
+	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, pkgTypesPath, importSet)
 	// str-gxjs.1: bind runtime-value expressions for parameter types the
 	// planner's registry can satisfy (context.Context → context.Background(),
 	// http.ResponseWriter → httptest.NewRecorder(), …). The expression and
@@ -420,7 +480,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
-		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, nil)
+		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, pkgTypesPath, nil)
 		for _, field := range fn.Type.Results.List {
 			if len(field.Names) == 0 {
 				resultCount++
@@ -526,7 +586,7 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 	}
 }
 
-func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, importSet map[string]struct{}) []WrapperParam {
+func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath string, importSet map[string]struct{}) []WrapperParam {
 	if fn.Type.Params == nil {
 		return nil
 	}
@@ -544,7 +604,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName string, im
 			isVariadic = true
 			fieldType = ellipsis.Elt
 		}
-		elemType := wrapperGoType(fieldType, info, pkgName, importSet)
+		elemType := wrapperGoType(fieldType, info, pkgName, pkgPath, importSet)
 		goType := elemType
 		if isVariadic {
 			goType = "[]" + elemType
@@ -606,11 +666,44 @@ func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
 // would be printed by wrapperASTTypeString verbatim while the corresponding
 // package import (`net/http`) was silently dropped, producing a wrapper that
 // references an undefined package short name and fails to compile.
-func wrapperGoType(expr ast.Expr, info *types.Info, pkgName string, importSet map[string]struct{}) string {
+// wrapperGoType returns the Go type string for use in the target package and,
+// as a side effect, records every external package referenced by the type
+// into importSet (keyed by import path). importSet may be nil. Cross-ref:
+// str-jeen.33 — without this, the generated wrapper file declares variables
+// of qualified types (`context.Context`, `*pgx.Conn`) without ever importing
+// the corresponding packages.
+//
+// str-qo1.13: when info.Types lacks an entry for expr (e.g. because the
+// caller initialized only Defs/Uses, or because the type checker did not
+// record this particular type expression), the function still walks the AST
+// for *ast.SelectorExpr nodes and consults info.Uses to recover package
+// imports. Without this, selector type expressions (e.g. http.ResponseWriter)
+// would be printed by wrapperASTTypeString verbatim while the corresponding
+// package import (`net/http`) was silently dropped, producing a wrapper that
+// references an undefined package short name and fails to compile.
+//
+// str-jeen.79: the qualifier compares p.Path() == pkgPath (the current
+// package's full import path) instead of p.Name() == pkgName. Comparing
+// by name alone incorrectly drops the qualifier for sibling packages that
+// share the current package's short name (e.g. both named "mcp"), producing
+// `undefined: Server` because the type `*mcp.Server` is emitted as `*Server`
+// with no import. pkgName is retained for cases where pkgPath is unavailable
+// (empty) to preserve backward-compatible behavior in test helpers that only
+// supply the package name.
+func wrapperGoType(expr ast.Expr, info *types.Info, pkgName, pkgPath string, importSet map[string]struct{}) string {
 	if info != nil {
 		if tv, ok := info.Types[expr]; ok && tv.Type != nil {
 			qualifier := func(p *types.Package) string {
-				if p == nil || p.Name() == pkgName {
+				if p == nil {
+					return ""
+				}
+				// str-jeen.79: compare by full import path when available to
+				// avoid stripping the qualifier for same-name sibling packages.
+				if pkgPath != "" {
+					if p.Path() == pkgPath {
+						return ""
+					}
+				} else if p.Name() == pkgName {
 					return ""
 				}
 				if importSet != nil {
@@ -702,10 +795,15 @@ func wrapperASTTypeString(expr ast.Expr) string {
 // they are never duplicated. The output is deterministic so GenerateWrapper
 // remains byte-stable across calls. See str-jeen.33.
 func collectExtraImports(targets []WrapperTarget) []string {
+	// str-jeen.73: only exclude the always-emitted core imports (encoding/json
+	// and fmt). "strings" is NOT excluded here — it is conditionally emitted
+	// by GenerateWrapper when either generic targets require it OR when target
+	// parameter types reference the strings package (e.g. io.Reader runtime
+	// value uses strings.NewReader). GenerateWrapper merges the two sources and
+	// emits "strings" exactly once.
 	const (
-		coreImportJSON    = "encoding/json"
-		coreImportFmt     = "fmt"
-		coreImportStrings = "strings"
+		coreImportJSON = "encoding/json"
+		coreImportFmt  = "fmt"
 	)
 	seen := make(map[string]struct{})
 	for _, t := range targets {
@@ -715,7 +813,7 @@ func collectExtraImports(targets []WrapperTarget) []string {
 				continue
 			}
 			switch trimmed {
-			case coreImportJSON, coreImportFmt, coreImportStrings:
+			case coreImportJSON, coreImportFmt:
 				continue
 			}
 			seen[trimmed] = struct{}{}

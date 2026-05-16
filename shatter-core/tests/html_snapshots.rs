@@ -225,6 +225,7 @@ fn make_scan_report() -> shatter_core::report::ScanReport {
         workers_used: 2,
         workers_reaped: 0,
         sampling: None,
+        source_files: vec![],
     };
 
     let mut file_map = std::collections::HashMap::new();

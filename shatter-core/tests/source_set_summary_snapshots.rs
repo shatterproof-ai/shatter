@@ -9,12 +9,15 @@
 //! disk and the test passes. Subsequent runs assert byte-exact
 //! equality.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use shatter_core::report::{
     CodebaseReport, ConstraintStats, FunctionReport, SCAN_REPORT_SCHEMA_VERSION, ScanReport,
-    SourceSetBucketStats, SourceSetSummary, format_markdown_report,
+    SourceSetBucketStats, SourceSetSummary, format_markdown_report, generate_report,
 };
+use shatter_core::run_manifest::SourceFileSnapshot;
+use shatter_core::scan_orchestrator::{ParallelScanResult, SkipCategory, SkippedFunction};
 use shatter_core::source_bucket::SourceBucket;
 
 // ---------------------------------------------------------------------------
@@ -285,4 +288,118 @@ fn empty_report_emits_zeroed_source_set_table() {
             "missing zero-row for `{wire}`:\n{section}",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for str-jeen.60 and str-jeen.63
+// ---------------------------------------------------------------------------
+
+/// Helper: build a minimal SourceFileSnapshot with a known line count.
+fn make_source_file(path: &str, line_count: u32) -> SourceFileSnapshot {
+    SourceFileSnapshot {
+        path: path.to_string(),
+        size: line_count as u64 * 40,
+        mtime_ns: None,
+        content_hash: None,
+        line_count: Some(line_count),
+    }
+}
+
+/// str-jeen.60: When all production functions fail/skip, the source set
+/// must still reflect discovered files. Previously, production_ish showed
+/// 0/0 because SourceSetSummary was built from completed function rows only.
+#[test]
+fn source_set_counts_from_snapshot_not_from_completed_functions() {
+    let source_files = vec![
+        make_source_file("src/app.ts", 300),
+        make_source_file("src/utils.ts", 150),
+        make_source_file("src/models.ts", 200),
+        make_source_file("src/app.test.ts", 80),
+    ];
+
+    let parallel_result = ParallelScanResult {
+        function_results: vec![],
+        test_order: vec!["handleRequest".into(), "processData".into()],
+        skipped: vec![
+            SkippedFunction {
+                function_name: "handleRequest".into(),
+                reason: "timeout".into(),
+                category: SkipCategory::Error,
+            },
+            SkippedFunction {
+                function_name: "processData".into(),
+                reason: "unsupported parameter type".into(),
+                category: SkipCategory::Unsupported,
+            },
+        ],
+        workers_used: 2,
+        workers_reaped: 0,
+        sampling: None,
+        source_files,
+    };
+
+    let report = generate_report(&parallel_result, &HashMap::new(), None);
+
+    // Three production-ish files: src/app.ts, src/utils.ts, src/models.ts
+    assert_eq!(
+        report.codebase.source_set.production_ish.file_count,
+        3,
+        "production_ish file_count must reflect discovered source snapshot, not completed functions"
+    );
+    // 300 + 150 + 200 = 650 whole-file lines
+    assert_eq!(
+        report.codebase.source_set.production_ish.line_count,
+        650,
+        "production_ish line_count must use whole-file lines from manifest, not function spans"
+    );
+    // One test-spec file: src/app.test.ts
+    assert_eq!(
+        report.codebase.source_set.test_spec.file_count,
+        1,
+        "test_spec file_count must count test files from snapshot"
+    );
+    assert_eq!(
+        report.codebase.source_set.test_spec.line_count,
+        80,
+        "test_spec line_count must use whole-file lines"
+    );
+}
+
+/// str-jeen.63: Markdown source counts must come from the manifest snapshot,
+/// not from function-span lines. Previously, markdown showed function-span
+/// line totals while run-status.json showed whole-file line counts.
+#[test]
+fn markdown_source_counts_match_manifest_snapshot_not_function_spans() {
+    // Source files with known whole-file line counts.
+    let source_files = vec![
+        make_source_file("src/api.ts", 500),
+        make_source_file("src/db.ts", 233),
+    ];
+
+    // Function reports with intentionally small total_lines (function spans),
+    // to prove the markdown reads from the snapshot and not the function rows.
+    let parallel_result = ParallelScanResult {
+        function_results: vec![],
+        test_order: vec![],
+        skipped: vec![],
+        workers_used: 1,
+        workers_reaped: 0,
+        sampling: None,
+        source_files,
+    };
+
+    let report = generate_report(&parallel_result, &HashMap::new(), None);
+    let md = format_markdown_report(&report);
+    let section = extract_source_set_section(&md);
+
+    // Whole-file lines: 500 + 233 = 733 — must appear in the markdown table.
+    assert!(
+        section.contains("| `production_ish` | 2 | 733 |"),
+        "markdown must show whole-file line counts from manifest (2 files, 733 lines):\n{section}"
+    );
+    // productionish_source_lines bullet must also match.
+    assert!(
+        md.contains("**Production-ish source lines:** 733"),
+        "markdown production-ish lines bullet must match manifest line count:\n{md}"
+    );
 }

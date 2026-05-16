@@ -284,6 +284,100 @@ func SafeDivide(a, b int) (int, error) {
 	}
 }
 
+// TestGeneratedWrapperCompilesErrorReturningConstructor is the str-jeen.78
+// regression: when a constructor returns (T, error) or (*T, error), the
+// generated wrapper must use the two-assignment form (_recv, _ := NewT())
+// not _recv := NewT(). The latter produces "assignment mismatch: 1 variable
+// but NewEventID returns 2 values". Observed in api/internal/typedid/typedid.go.
+func TestGeneratedWrapperCompilesErrorReturningConstructor(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package typedid2
+
+import "fmt"
+
+// EventID mirrors the kapow api/internal/typedid shape whose NewEventID
+// returns (EventID, error), triggering the str-jeen.78 arity mismatch.
+type EventID struct{ val string }
+
+// NewEventID is the constructor whose (T, error) return caused:
+// "assignment mismatch: 1 variable but NewEventID returns 2 values".
+func NewEventID() (EventID, error) {
+	return EventID{val: "default"}, fmt.Errorf("stub")
+}
+
+// String is the method target: the wrapper uses NewEventID as the receiver.
+func (e EventID) String() string { return e.val }
+`
+	if err := os.WriteFile(filepath.Join(modDir, "typedid2.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write typedid2.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/typedid2\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:            "example.com/typedid2:(EventID).String",
+			SymbolName:    "String",
+			Kind:          wrapper.TargetKindMethod,
+			ReceiverType:  "EventID",
+			IsPointerRecv: false,
+			HasResult:     true,
+			ResultGoType:  "string",
+			ResultCount:   1,
+		},
+	}
+	ctors := []wrapper.ConstructorCandidate{
+		// ReturnsError=true is the bug trigger: previously the wrapper emitted
+		// "_recv := NewEventID()" which fails for a (T, error) return.
+		{FuncName: "NewEventID", TargetType: "EventID", ReturnsPointer: false, ReturnsError: true},
+	}
+
+	src := wrapper.GenerateWrapper("typedid2", targets, ctors)
+
+	// Static guard: must use two-assignment form.
+	if strings.Contains(src, "_recv := NewEventID()") {
+		t.Errorf("wrapper uses single-assignment for error-returning constructor (compile error)\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "_recv, _ := NewEventID()") {
+		t.Errorf("wrapper missing two-assignment form '_recv, _ := NewEventID()'\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "typedid2", targets, ctors)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, ctors)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
 func TestGeneratedWrapperCompilesGenericInstantiation(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go binary not found")
@@ -424,8 +518,8 @@ func TestGenerateWrapperEmitsTargetImports(t *testing.T) {
 }
 
 // TestGenerateWrapperOmitsCoreImportsFromTargetImports guards against
-// double-emitting `encoding/json`, `fmt`, or `strings` when a target's
-// Imports list happens to include them — collectExtraImports filters them.
+// double-emitting `encoding/json` or `fmt` when a target's Imports list
+// happens to include them — collectExtraImports filters them.
 func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 	targets := []wrapper.WrapperTarget{
 		{
@@ -433,8 +527,11 @@ func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 			SymbolName: "F",
 			Kind:       wrapper.TargetKindFunction,
 			Parameters: []wrapper.WrapperParam{{Name: "x", GoType: "int"}},
-			// Deliberately include the always-emitted core imports.
-			Imports:      []string{"encoding/json", "fmt", "strings", "context"},
+			// Deliberately include the always-emitted core imports to verify
+			// deduplication. "strings" is omitted here because the param type
+			// is int — including strings for an int param would produce a
+			// "imported and not used" compile error. See str-jeen.73.
+			Imports:      []string{"encoding/json", "fmt", "context"},
 			HasResult:    true,
 			ResultGoType: "int",
 			ResultCount:  1,
@@ -451,6 +548,101 @@ func TestGenerateWrapperOmitsCoreImportsFromTargetImports(t *testing.T) {
 	}
 	if !strings.Contains(src, `"context"`) {
 		t.Error("non-core import context missing from generated source")
+	}
+}
+
+// TestGenerateWrapperEmitsStringsForIOReaderParam is the str-jeen.73
+// regression: a non-generic target whose parameter type resolves to a
+// runtime-value candidate that uses strings.NewReader (io.Reader, io.ReadCloser)
+// must include "strings" in the generated import block. Pre-fix, "strings" was
+// unconditionally excluded from collectExtraImports as a "core import" and only
+// added for generic targets, leaving non-generic wrappers with a bare
+// strings.NewReader("") expression but no import "strings".
+func TestGenerateWrapperEmitsStringsForIOReaderParam(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package ioreader
+
+import "io"
+
+// ReadAll is a non-generic function whose io.Reader parameter resolves to
+// strings.NewReader("") via the runtime-value registry, requiring the
+// "strings" import in the generated wrapper even though there are no
+// generic targets.
+func ReadAll(r io.Reader) int {
+	buf := make([]byte, 128)
+	n, _ := r.Read(buf)
+	return n
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "ioreader.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write ioreader.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/ioreader\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/ioreader:ReadAll",
+			SymbolName: "ReadAll",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				// Runtime-value candidate for io.Reader is strings.NewReader(""),
+				// which requires "strings". The generated wrapper must import it.
+				{Name: "r", GoType: "io.Reader", RuntimeValueExpr: `strings.NewReader("")`},
+			},
+			Imports:      []string{"io", "strings"},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ioreader", targets, nil)
+
+	// Both "io" and "strings" must appear exactly once — no duplicates and no
+	// missing imports.
+	for _, imp := range []string{"io", "strings"} {
+		quoted := `"` + imp + `"`
+		if got := strings.Count(src, quoted); got != 1 {
+			t.Errorf("import %s appears %d times in generated source (want 1)\nfull source:\n%s",
+				quoted, got, src)
+		}
+	}
+
+	// The generated wrapper must compile against the target package.
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "ioreader", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
 	}
 }
 
@@ -1316,6 +1508,218 @@ func TestGeneratedWrapperContentByteIdentical(t *testing.T) {
 // the production wire shape — in particular, ReturnsPointer carries the
 // pointer-ness of the first return so the wrapper case logic in
 // str-jeen.49 / str-9j2e can branch correctly.
+// TestGeneratedWrapperCompilesWhenParamNamedInputs is the str-jeen.77
+// regression: when a target function has a parameter named "inputs", the
+// generated wrapper's "var inputs T" declaration inside the switch case
+// shadows the outer "func ShatterInvoke(d PlanDescriptor, inputs
+// []json.RawMessage)" parameter. The shadowed "inputs" has type T (a struct),
+// so "json.Unmarshal(inputs[i], &p)" passes a struct value as the first
+// argument instead of []byte, producing "cannot use inputs[N] (variable of
+// struct type T) as []byte value in argument to json.Unmarshal".
+func TestGeneratedWrapperCompilesWhenParamNamedInputs(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package namematch
+
+// ResolveInput mirrors the kapow tools/kapow/internal/namematch shape
+// that triggered the str-jeen.77 bug.
+type ResolveInput struct {
+	Name string
+}
+
+// Resolve has a parameter named "inputs" — the same name as ShatterInvoke's
+// outer parameter. Pre-fix this shadowed the outer slice and caused
+// json.Unmarshal to receive a struct value instead of []byte.
+func Resolve(inputs []ResolveInput) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	return inputs[0].Name
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "namematch.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write namematch.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/namematch\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/namematch:Resolve",
+			SymbolName: "Resolve",
+			Kind:       wrapper.TargetKindFunction,
+			// Parameter named "inputs" — this is the shadow trigger.
+			Parameters:   []wrapper.WrapperParam{{Name: "inputs", GoType: "[]ResolveInput"}},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("namematch", targets, nil)
+
+	// The generated wrapper must use _shatterInputs for the outer parameter,
+	// not "inputs", so that the inner "var inputs []ResolveInput" doesn't shadow it.
+	if strings.Contains(src, "func ShatterInvoke(d PlanDescriptor, inputs []json.RawMessage)") {
+		t.Errorf("ShatterInvoke still uses 'inputs' as parameter name — will shadow target param named 'inputs'\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "func ShatterInvoke(d PlanDescriptor, _shatterInputs []json.RawMessage)") {
+		t.Errorf("ShatterInvoke does not use collision-safe '_shatterInputs' parameter name\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "namematch", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
+// TestVariadicForwardingWithIntermediateSlice is the str-jeen.76 regression:
+// when a package defines both a variadic helper (chipsHint ...string) and a
+// target function that builds a []string and passes it to the helper, the
+// generated wrapper for chipsHint must forward the slice with `...` at the
+// call site (chipsHint(choices...)). Pre-fix observed in api/internal/fit
+// where 8 files failed with "cannot use choices (variable of type []string)
+// as string value in argument to chipsHint".
+func TestVariadicForwardingWithIntermediateSlice(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package fit
+
+// chipsHint is the variadic helper whose wrapper must use chipsHint(choices...).
+func chipsHint(choices ...string) string {
+	if len(choices) == 0 {
+		return ""
+	}
+	return choices[0]
+}
+
+// CostFit builds an intermediate []string and passes it to chipsHint via spread.
+// The wrapper for CostFit itself needs no special handling; the wrapper for
+// chipsHint must forward its []string param with "..." to avoid the
+// "cannot use choices (variable of type []string) as string value" error.
+func CostFit(x int) string {
+	choices := []string{"low", "medium", "high"}
+	return chipsHint(choices...)
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "fit.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write fit.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/fit\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+
+	// Confirm chipsHint's variadic parameter survived extraction.
+	var chipsHintTarget *wrapper.WrapperTarget
+	for i, tg := range targets {
+		if tg.SymbolName == "chipsHint" {
+			chipsHintTarget = &targets[i]
+			break
+		}
+	}
+	if chipsHintTarget == nil {
+		t.Fatalf("chipsHint target not found; targets: %+v", targets)
+	}
+	if len(chipsHintTarget.Parameters) != 1 {
+		t.Fatalf("chipsHint: expected 1 parameter, got %d", len(chipsHintTarget.Parameters))
+	}
+	param := chipsHintTarget.Parameters[0]
+	if !param.IsVariadic {
+		t.Errorf("chipsHint.Parameters[0].IsVariadic = false, want true (variadic detection regression)")
+	}
+	if param.GoType != "[]string" {
+		t.Errorf("chipsHint.Parameters[0].GoType = %q, want %q", param.GoType, "[]string")
+	}
+
+	src := wrapper.GenerateWrapper("fit", targets, nil)
+	// The generated call must spread the slice.
+	if !strings.Contains(src, "chipsHint(choices...)") {
+		t.Errorf("generated wrapper missing variadic spread call chipsHint(choices...)\nsource:\n%s", src)
+	}
+
+	// Verify the generated wrapper compiles against the unexported package targets.
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "fit", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	got, _ := os.ReadFile(wrapperPath)
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), got)
+	}
+}
+
 func scanConstructorCandidatesForTest(t *testing.T, pkg *packages.Package) []wrapper.ConstructorCandidate {
 	t.Helper()
 	if pkg == nil || pkg.TypesInfo == nil {
@@ -1361,11 +1765,22 @@ func scanConstructorCandidatesForTest(t *testing.T, pkg *packages.Package) []wra
 			if obj == nil || obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
 				continue
 			}
+			// str-jeen.78: detect whether the constructor returns an error as
+			// the second return value. The production scanner (ScanConstructors
+			// in protocol/) sets ReturnsError; mirror that here.
+			returnsError := false
+			if len(results.List) >= 2 {
+				lastField := results.List[len(results.List)-1]
+				if ident, ok := lastField.Type.(*ast.Ident); ok && ident.Name == "error" {
+					returnsError = true
+				}
+			}
 			ctors = append(ctors, wrapper.ConstructorCandidate{
 				FuncName:       name,
 				TargetType:     obj.Name(),
 				HasParams:      fn.Type.Params != nil && len(fn.Type.Params.List) > 0,
 				ReturnsPointer: returnsPointer,
+				ReturnsError:   returnsError,
 			})
 		}
 	}
