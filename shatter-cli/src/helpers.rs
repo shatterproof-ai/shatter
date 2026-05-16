@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 
 use shatter_core::cache::BehaviorMapCache;
@@ -257,12 +259,89 @@ impl Colors {
     }
 }
 
+/// Maximum number of `WouldBlock` retries before a stdout write is treated
+/// as fatal. Each retry yields briefly to let the consumer drain. This
+/// covers the common case where a PTY or `tee` pipe is momentarily full;
+/// a stuck consumer is bounded by `STDOUT_WRITE_RETRY_BUDGET` × the
+/// backoff sleep below.
+const STDOUT_WRITE_RETRY_BUDGET: usize = 1024;
+
+/// Write `buf` to `w` in full, retrying on `WouldBlock` and `Interrupted`.
+///
+/// Returns `Ok(())` once every byte is accepted, or an `io::Error` for any
+/// other failure (including the retry budget being exhausted, which
+/// surfaces as the last `WouldBlock` error).
+///
+/// Unlike `Write::write_all`, this tolerates a nonblocking stdout — the
+/// default `std::io::stdout()` lock panics on `WouldBlock`, which is the
+/// root cause of the EAGAIN panic during large report rendering when the
+/// CLI is run under a PTY or piped through `tee` (str-jeen.62).
+pub(crate) fn write_all_resilient<W: Write>(w: &mut W, mut buf: &[u8]) -> io::Result<()> {
+    let mut retries: usize = 0;
+    while !buf.is_empty() {
+        match w.write(buf) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            Ok(n) => {
+                buf = &buf[n..];
+                retries = 0;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if retries >= STDOUT_WRITE_RETRY_BUDGET {
+                    return Err(e);
+                }
+                retries += 1;
+                // Brief yield: lets the kernel drain the pipe / the PTY
+                // consumer catch up without busy-spinning.
+                thread::sleep(Duration::from_micros(100));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Write `s` to stdout with EAGAIN tolerance and clean BrokenPipe exit.
+///
+/// `BrokenPipe` exits the process with status 0 — the consumer is gone
+/// and we have nothing useful left to do, which matches the behavior of
+/// standard Unix CLIs like `head`/`less`. Any other I/O error is reported
+/// to stderr and the process exits with status 1. `WouldBlock` is
+/// retried via [`write_all_resilient`].
+pub(crate) fn print_stdout(s: &str) {
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    match write_all_resilient(&mut lock, s.as_bytes()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error writing to stdout: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Print Markdown to stdout, rendered with termimad formatting when `use_color` is true.
+///
+/// Both branches route through [`print_stdout`] so a nonblocking or closed
+/// stdout surfaces as a controlled CLI exit rather than a Rust panic
+/// inside the `print!` / `termimad::print_text` macros.
 pub(crate) fn print_markdown(md: &str, use_color: bool) {
     if use_color {
-        termimad::print_text(md);
+        // Render to a String via the FmtText `Display` impl so we control
+        // the write path. `termimad::print_text` writes to stdout
+        // internally and would panic on EAGAIN.
+        let rendered = format!("{}", termimad::term_text(md));
+        print_stdout(&rendered);
     } else {
-        print!("{md}");
+        print_stdout(md);
     }
 }
 
@@ -724,6 +803,100 @@ pub(crate) fn resolve_mcdc_budgets(
         } else {
             solver_timeout
         },
+    }
+}
+
+#[cfg(test)]
+mod stdout_write_tests {
+    //! Regression coverage for str-jeen.62: large scan report rendering
+    //! must not panic when stdout returns `WouldBlock` (PTY / `tee` /
+    //! nonblocking pipe) and must not panic on `BrokenPipe`.
+    use super::*;
+    use std::io::{self, Write};
+
+    /// A `Write` that returns `WouldBlock` for the first `n` calls, then
+    /// accepts writes normally into `sink`.
+    struct FlakyWriter {
+        remaining_wouldblock: usize,
+        sink: Vec<u8>,
+    }
+
+    impl Write for FlakyWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.remaining_wouldblock > 0 {
+                self.remaining_wouldblock -= 1;
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"));
+            }
+            self.sink.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `Write` that always returns `BrokenPipe`.
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_all_resilient_retries_on_wouldblock() {
+        let payload = b"large report payload";
+        let mut w = FlakyWriter {
+            remaining_wouldblock: 5,
+            sink: Vec::new(),
+        };
+        write_all_resilient(&mut w, payload).expect("should succeed after retries");
+        assert_eq!(w.sink, payload, "full payload must reach the sink");
+    }
+
+    #[test]
+    fn write_all_resilient_surfaces_broken_pipe() {
+        let mut w = BrokenPipeWriter;
+        let err = write_all_resilient(&mut w, b"x")
+            .expect_err("BrokenPipe must surface as Err so print_stdout can exit cleanly");
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn write_all_resilient_handles_large_chunked_payload() {
+        // Simulate a multi-KB report where every other write attempt
+        // returns WouldBlock — the realistic PTY-pressure case.
+        struct AlternatingWriter {
+            block_next: bool,
+            sink: Vec<u8>,
+        }
+        impl Write for AlternatingWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if self.block_next {
+                    self.block_next = false;
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "block"));
+                }
+                self.block_next = true;
+                // Only accept a small chunk at a time, like a real pipe.
+                let take = buf.len().min(64);
+                self.sink.extend_from_slice(&buf[..take]);
+                Ok(take)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let payload: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        let mut w = AlternatingWriter {
+            block_next: true,
+            sink: Vec::new(),
+        };
+        write_all_resilient(&mut w, &payload).expect("chunked + WouldBlock must succeed");
+        assert_eq!(w.sink, payload);
     }
 }
 

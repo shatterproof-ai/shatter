@@ -733,7 +733,7 @@ pub(crate) async fn run_scan(
             &scan_config,
         )
         .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
-        print!("{plan}");
+        crate::helpers::print_stdout(&plan);
         return Ok(());
     }
 
@@ -1067,10 +1067,11 @@ pub(crate) async fn run_scan(
                 // and add ANSI noise to text consumers.
                 match format {
                     crate::args::StdoutFormat::Json => {
-                        println!("{content}");
+                        crate::helpers::print_stdout(&content);
+                        crate::helpers::print_stdout("\n");
                     }
                     crate::args::StdoutFormat::Text => {
-                        print!("{content}");
+                        crate::helpers::print_stdout(&content);
                     }
                     _ => {
                         print_markdown(&content, use_color);
