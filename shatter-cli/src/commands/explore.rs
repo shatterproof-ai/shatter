@@ -3931,6 +3931,7 @@ fn finalize_explore(
                             .map(|a| a.file.clone())
                             .unwrap_or_default(),
                         functions: acc.file_specs.clone(),
+                        ..FileSpecBundle::default()
                     };
                     shatter_core::spec::write_file_spec_bundle(&bundle, path).map_err(|e| {
                         format!("failed to write spec bundle to '{}': {e}", path.display())
@@ -3958,25 +3959,73 @@ fn finalize_explore(
     }
 
     // Write spec bundle.
-    if let Some(out) = output_path
-        && !acc.file_specs.is_empty()
-    {
-        let bundle = FileSpecBundle {
-            file: artifacts
-                .first()
-                .map(|a| a.file.clone())
-                .unwrap_or_default(),
-            functions: acc.file_specs,
+    if let Some(out) = output_path {
+        let file_path = artifacts
+            .first()
+            .map(|a| a.file.clone())
+            .unwrap_or_default();
+        let bundle = if acc.file_specs.is_empty() {
+            // str-jeen.67: emit a machine-readable no-target marker bundle so
+            // batch tooling can distinguish "file analyzed, nothing to
+            // explore" from "spec output missing / pipeline crashed".
+            build_no_target_spec_bundle(&file_path, &summaries)
+        } else {
+            FileSpecBundle {
+                file: file_path,
+                functions: acc.file_specs,
+                ..FileSpecBundle::default()
+            }
         };
         shatter_core::spec::write_file_spec_bundle(&bundle, out)
             .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
-        log::info!("Wrote spec bundle to {}", out.display());
+        if matches!(bundle.status, Some(shatter_core::spec::FileSpecBundleStatus::NoTargets)) {
+            log::info!(
+                "Wrote no-target spec marker (reason={}) to {}",
+                bundle
+                    .no_target_reason
+                    .map(|r| r.as_token())
+                    .unwrap_or("unclassified"),
+                out.display()
+            );
+        } else {
+            log::info!("Wrote spec bundle to {}", out.display());
+        }
     }
 
     // str-960w: surface a nonzero exit when every attempted target failed,
     // even though reports/specs were written successfully above.
     decide_explore_exit_status(&summaries)?;
     Ok(())
+}
+
+/// Build a no-target spec bundle from collected per-file summaries (str-jeen.67).
+///
+/// Picks the file path and `no_target_reason` from the first summary the
+/// finalize/run path collected. Falls back to `Unclassified` when no
+/// summary carries a refined reason — same default as `ExploreSummary`
+/// (str-jeen.21) so producers and consumers agree on the wire format.
+fn build_no_target_spec_bundle(
+    file_path: &str,
+    summaries: &[ExploreSummary],
+) -> FileSpecBundle {
+    let reason = summaries
+        .iter()
+        .find_map(|s| s.no_target_reason)
+        .unwrap_or(shatter_core::protocol::NoTargetReason::Unclassified);
+    let bundle_file = if file_path.is_empty() {
+        summaries
+            .first()
+            .map(|s| s.file.clone())
+            .unwrap_or_default()
+    } else {
+        file_path.to_string()
+    };
+    FileSpecBundle {
+        file: bundle_file,
+        functions: Vec::new(),
+        status: Some(shatter_core::spec::FileSpecBundleStatus::NoTargets),
+        no_target_reason: Some(reason),
+    }
 }
 
 /// Run the explore command.
@@ -6253,6 +6302,7 @@ pub(crate) async fn run_explore(
                 FileSpecBundle {
                     file: file_str.clone(),
                     functions: file_specs,
+                    ..FileSpecBundle::default()
                 }
             };
 
@@ -6453,20 +6503,39 @@ pub(crate) async fn run_explore(
     }
 
     // Write collected file spec bundles to the output path as a single bundle.
-    if let Some(out) = output_path
-        && !file_spec_bundles.is_empty()
-    {
-        // Single-target is the primary Make use case; write the first bundle.
-        {
-            let _spec_write_span = tracing::info_span!("spec.write_bundle").entered();
-            shatter_core::spec::write_file_spec_bundle(&file_spec_bundles[0], out)
+    if let Some(out) = output_path {
+        let _spec_write_span = tracing::info_span!("spec.write_bundle").entered();
+        if let Some(bundle) = file_spec_bundles.first() {
+            // Single-target is the primary Make use case; write the first bundle.
+            shatter_core::spec::write_file_spec_bundle(bundle, out)
                 .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
+            log::info!(
+                "Wrote spec bundle ({} function(s)) to {}",
+                bundle.functions.len(),
+                out.display()
+            );
+        } else {
+            // str-jeen.67: no targets discovered — emit a machine-readable
+            // marker bundle so batch tooling can classify this run as
+            // skipped/no-target instead of inferring a partial failure from
+            // a missing spec file.
+            let file_path = parsed
+                .first()
+                .map(|t| t.file.display().to_string())
+                .unwrap_or_default();
+            let bundle = build_no_target_spec_bundle(&file_path, &report_summaries);
+            shatter_core::spec::write_file_spec_bundle(&bundle, out).map_err(|e| {
+                format!("failed to write no-target spec marker to {}: {e}", out.display())
+            })?;
+            log::info!(
+                "Wrote no-target spec marker (reason={}) to {}",
+                bundle
+                    .no_target_reason
+                    .map(|r| r.as_token())
+                    .unwrap_or("unclassified"),
+                out.display()
+            );
         }
-        log::info!(
-            "Wrote spec bundle ({} function(s)) to {}",
-            file_spec_bundles[0].functions.len(),
-            out.display()
-        );
     }
 
     // str-960w: a run that completed the full pipeline but where every
