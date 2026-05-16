@@ -6,11 +6,22 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tracing::Instrument;
+
+/// Maximum bytes of subprocess stderr retained for diagnostic surfacing
+/// when a frontend exits before producing a response. 16 KiB is enough
+/// to capture stack traces and module-init exceptions while bounding
+/// memory if the subprocess floods stderr.
+const STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
+
+/// Grace period to wait for the child to exit after stdout EOF so we
+/// can collect its exit status for the diagnostic message.
+const POST_EOF_WAIT: Duration = Duration::from_secs(2);
 
 use crate::protocol::{
     Command as ProtoCommand, PROTOCOL_VERSION, Request, Response, ResponseResult,
@@ -38,9 +49,20 @@ pub enum FrontendError {
     #[error("failed to read from frontend stdout: {0}")]
     Read(std::io::Error),
 
-    /// The frontend process closed its stdout unexpectedly.
-    #[error("frontend closed stdout unexpectedly")]
-    UnexpectedEof,
+    /// The frontend process closed its stdout before responding.
+    ///
+    /// Carries the captured stderr tail and exit status so callers can
+    /// classify the failure (e.g., module-init throw vs. clean exit)
+    /// rather than seeing only an opaque "closed stdout unexpectedly".
+    #[error("frontend subprocess exited before responding: {binary} ({exit_status}){stderr_section}",
+        binary = .binary.display(),
+        exit_status = exit_status_display(.exit_status.as_ref()),
+        stderr_section = stderr_section(.stderr_tail))]
+    SubprocessExited {
+        binary: PathBuf,
+        exit_status: Option<std::process::ExitStatus>,
+        stderr_tail: String,
+    },
 
     /// Failed to serialize a request to JSON.
     #[error("failed to serialize request: {0}")]
@@ -121,6 +143,9 @@ pub struct Frontend {
     request_timeout: Duration,
     language: Option<String>,
     capabilities: Vec<String>,
+    binary: PathBuf,
+    stderr_buf: Arc<Mutex<Vec<u8>>>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Frontend {
@@ -134,7 +159,7 @@ impl Frontend {
             cmd.args(&config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit());
+                .stderr(Stdio::piped());
             for (key, value) in &config.env_vars {
                 cmd.env(key, value);
             }
@@ -143,7 +168,11 @@ impl Frontend {
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
         let reader = BufReader::new(stdout);
+
+        let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_task = spawn_stderr_capture(stderr, Arc::clone(&stderr_buf));
 
         let mut frontend = Self {
             child,
@@ -153,6 +182,9 @@ impl Frontend {
             request_timeout: config.request_timeout,
             language: None,
             capabilities: Vec::new(),
+            binary: config.command.clone(),
+            stderr_buf,
+            stderr_task: Some(stderr_task),
         };
 
         frontend
@@ -233,7 +265,11 @@ impl Frontend {
                 .map_err(FrontendError::Read)?;
 
             if bytes_read == 0 {
-                return Err(FrontendError::UnexpectedEof);
+                return Err(FrontendError::SubprocessExited {
+                    binary: PathBuf::new(),
+                    exit_status: None,
+                    stderr_tail: String::new(),
+                });
             }
 
             let response: Response =
@@ -253,10 +289,11 @@ impl Frontend {
             Ok(response)
         };
 
-        tokio::time::timeout(self.request_timeout, write_and_read)
+        let outcome = tokio::time::timeout(self.request_timeout, write_and_read)
             .instrument(span)
             .await
-            .map_err(|_| FrontendError::Timeout(self.request_timeout))?
+            .map_err(|_| FrontendError::Timeout(self.request_timeout))?;
+        self.enrich_subprocess_exit(outcome).await
     }
 
     /// Send a raw JSON value as a request, auto-assigning an ID.
@@ -293,7 +330,11 @@ impl Frontend {
                 .map_err(FrontendError::Read)?;
 
             if bytes_read == 0 {
-                return Err(FrontendError::UnexpectedEof);
+                return Err(FrontendError::SubprocessExited {
+                    binary: PathBuf::new(),
+                    exit_status: None,
+                    stderr_tail: String::new(),
+                });
             }
 
             let response: Response =
@@ -309,10 +350,39 @@ impl Frontend {
             Ok(response)
         };
 
-        tokio::time::timeout(self.request_timeout, write_and_read)
+        let outcome = tokio::time::timeout(self.request_timeout, write_and_read)
             .instrument(span)
             .await
-            .map_err(|_| FrontendError::Timeout(self.request_timeout))?
+            .map_err(|_| FrontendError::Timeout(self.request_timeout))?;
+        self.enrich_subprocess_exit(outcome).await
+    }
+
+    /// If `outcome` is a `SubprocessExited` sentinel from the read loop,
+    /// wait briefly for the child to terminate and attach the exit status
+    /// plus captured stderr tail. Other errors and `Ok` pass through.
+    async fn enrich_subprocess_exit(
+        &mut self,
+        outcome: Result<Response, FrontendError>,
+    ) -> Result<Response, FrontendError> {
+        let Err(FrontendError::SubprocessExited { .. }) = &outcome else {
+            return outcome;
+        };
+        let exit_status = match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
+            Ok(Ok(status)) => Some(status),
+            _ => None,
+        };
+        // The stderr capture task only finishes once the child closes stderr,
+        // which `wait()` above guarantees. Awaiting the task ensures any
+        // buffered bytes have been copied into `stderr_buf` before we drain.
+        if let Some(handle) = self.stderr_task.take() {
+            let _ = tokio::time::timeout(POST_EOF_WAIT, handle).await;
+        }
+        let stderr_tail = drain_stderr(&self.stderr_buf);
+        Err(FrontendError::SubprocessExited {
+            binary: self.binary.clone(),
+            exit_status,
+            stderr_tail,
+        })
     }
 
     /// Request a graceful shutdown and wait for acknowledgment.
@@ -364,6 +434,50 @@ impl Frontend {
     /// Capabilities advertised by the frontend during handshake.
     pub fn capabilities(&self) -> &[String] {
         &self.capabilities
+    }
+}
+
+fn spawn_stderr_capture(
+    mut stderr: tokio::process::ChildStderr,
+    buf: Arc<Mutex<Vec<u8>>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    let mut guard = buf.lock().expect("stderr buffer mutex poisoned");
+                    let remaining = STDERR_CAPTURE_LIMIT.saturating_sub(guard.len());
+                    if remaining == 0 {
+                        continue;
+                    }
+                    let take = n.min(remaining);
+                    guard.extend_from_slice(&chunk[..take]);
+                }
+            }
+        }
+    })
+}
+
+fn drain_stderr(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    let mut guard = buf.lock().expect("stderr buffer mutex poisoned");
+    let bytes = std::mem::take(&mut *guard);
+    String::from_utf8_lossy(&bytes).trim_end().to_string()
+}
+
+fn exit_status_display(status: Option<&std::process::ExitStatus>) -> String {
+    match status {
+        Some(s) => s.to_string(),
+        None => "exit status unknown".to_string(),
+    }
+}
+
+fn stderr_section(tail: &str) -> String {
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!("\nstderr: {tail}")
     }
 }
 
@@ -708,6 +822,86 @@ mod tests {
         config.args = vec![slow_path.to_string_lossy().into_owned()];
         config.request_timeout = Duration::from_millis(100);
         config
+    }
+
+    fn crashing_frontend_config(script_body: &str) -> (FrontendConfig, tempfile::NamedTempFile) {
+        use std::io::Write as _;
+        let mut script = tempfile::Builder::new()
+            .prefix("shatter-crashing-frontend-")
+            .suffix(".sh")
+            .tempfile()
+            .expect("create temp script");
+        write!(script, "#!/usr/bin/env bash\n{script_body}").expect("write script");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![script.path().to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        (config, script)
+    }
+
+    #[tokio::test]
+    async fn handshake_subprocess_crash_surfaces_stderr_and_exit_status() {
+        // Simulate a frontend that throws during module initialization:
+        // emit the error to stderr and exit with code 1 before any stdout
+        // is written. The handshake send() should return a SubprocessExited
+        // diagnostic containing both signals — not an opaque "closed stdout".
+        let (config, _keep) = crashing_frontend_config(
+            "echo 'TypeError: Cannot read properties of undefined (reading \"foo\")' >&2\nexit 1\n",
+        );
+        match Frontend::spawn(&config).await {
+            Err(FrontendError::SubprocessExited {
+                exit_status,
+                stderr_tail,
+                binary,
+            }) => {
+                assert!(
+                    stderr_tail.contains("TypeError"),
+                    "stderr tail should preserve the thrown message, got: {stderr_tail:?}"
+                );
+                let status = exit_status.expect("exit status should be captured");
+                assert_eq!(status.code(), Some(1));
+                assert_eq!(binary, PathBuf::from("bash"));
+            }
+            Err(other) => panic!("expected SubprocessExited, got: {other:?}"),
+            Ok(_) => panic!("expected SubprocessExited, got Ok(Frontend)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subprocess_crash_after_handshake_surfaces_stderr() {
+        // Frontend completes handshake, then on the next request writes a
+        // panic-like trace to stderr and exits. The follow-up send() should
+        // surface the stderr tail instead of a bare EOF error.
+        let (config, _keep) = crashing_frontend_config(
+            "read -r line\n\
+             echo '{\"protocol_version\":\"0.1.0\",\"id\":1,\"status\":\"handshake\",\"frontend_version\":\"0.1.0\",\"language\":\"crash-ts\",\"capabilities\":[]}'\n\
+             read -r line\n\
+             echo 'fatal: out of memory during module init' >&2\n\
+             exit 137\n",
+        );
+        let mut frontend = Frontend::spawn(&config).await.expect("handshake should succeed");
+        let result = frontend
+            .send(ProtoCommand::Analyze {
+                file: "x.ts".into(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await;
+        match result {
+            Err(FrontendError::SubprocessExited {
+                exit_status,
+                stderr_tail,
+                ..
+            }) => {
+                assert!(
+                    stderr_tail.contains("fatal: out of memory"),
+                    "stderr tail should include the crash message, got: {stderr_tail:?}"
+                );
+                let status = exit_status.expect("exit status should be captured");
+                assert_eq!(status.code(), Some(137));
+            }
+            other => panic!("expected SubprocessExited, got: {other:?}"),
+        }
     }
 
     #[tokio::test]
