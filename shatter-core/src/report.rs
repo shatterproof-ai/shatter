@@ -207,6 +207,14 @@ pub struct MockUsageReport {
 /// means every discovered input triggered a thrown error (typically a
 /// wrapper or invocation-shape problem masquerading as completion).
 ///
+/// `DispatchFailed` (str-jeen.50) is a strict refinement of `ErrorOnly`
+/// reserved for outcomes where every recorded throw is the launcher
+/// wrapper's `"unknown receiver kind"` sentinel — the target was never
+/// actually executed. Distinguishing this from real `ErrorOnly` lets
+/// scan summaries exclude wrapper-default failures from the
+/// "exploration completed" count instead of inflating it with
+/// host-side dispatch failures.
+///
 /// `Behavioral` is the default for the empty-discovered-inputs edge
 /// case so the variant matches the conservative "we didn't see any
 /// invocation errors" reading.
@@ -216,9 +224,21 @@ pub enum CompletionOutcome {
     /// At least one discovered input returned without throwing.
     #[default]
     Behavioral,
-    /// At least one discovered input was recorded and every one threw.
+    /// At least one discovered input was recorded and every one threw a
+    /// real target error.
     ErrorOnly,
+    /// Every recorded input threw the launcher wrapper's
+    /// `"unknown receiver kind"` sentinel — the target was never
+    /// dispatched cleanly. str-jeen.50.
+    DispatchFailed,
 }
+
+/// Sentinel substring emitted by the Go launcher wrapper's default switch
+/// arm when a method-target Execute request omits a `plan` (or carries an
+/// invalid `receiver_kind`). Used by the completion classifier to
+/// distinguish host-side dispatch failures from real target errors.
+/// Source: `shatter-go/wrapper/wrapper.go` `unknown receiver kind` template.
+const UNKNOWN_RECEIVER_KIND_SENTINEL: &str = "unknown receiver kind";
 
 impl CompletionOutcome {
     /// Stable wire string for filtering machine-readable output.
@@ -227,21 +247,30 @@ impl CompletionOutcome {
         match self {
             CompletionOutcome::Behavioral => "behavioral",
             CompletionOutcome::ErrorOnly => "error_only",
+            CompletionOutcome::DispatchFailed => "dispatch_failed",
         }
     }
 
     /// Classify a function from its discovered-input list. A function
     /// with zero discovered inputs reads as `Behavioral` — the
     /// `ErrorOnly` bucket only fires when at least one input was
-    /// recorded and all of them threw.
+    /// recorded and all of them threw, and `DispatchFailed` only fires
+    /// when every throw carries the launcher wrapper sentinel.
     fn from_discovered_inputs(inputs: &[DiscoveredInput]) -> Self {
         if inputs.is_empty() {
             return CompletionOutcome::Behavioral;
         }
-        if inputs.iter().all(|d| d.thrown_error.is_some()) {
-            CompletionOutcome::ErrorOnly
+        if !inputs.iter().all(|d| d.thrown_error.is_some()) {
+            return CompletionOutcome::Behavioral;
+        }
+        if inputs.iter().all(|d| {
+            d.thrown_error
+                .as_deref()
+                .is_some_and(|msg| msg.contains(UNKNOWN_RECEIVER_KIND_SENTINEL))
+        }) {
+            CompletionOutcome::DispatchFailed
         } else {
-            CompletionOutcome::Behavioral
+            CompletionOutcome::ErrorOnly
         }
     }
 }
@@ -381,14 +410,25 @@ pub struct CodebaseReport {
     #[serde(default)]
     pub completed_with_behavior: usize,
     /// Subset of [`Self::completed_functions`] where every discovered
-    /// input threw (str-jeen.53). These functions completed in the
-    /// orchestrator-state sense but Shatter never observed real target
-    /// behavior — the inputs only exercised wrapper / invocation-shape
-    /// errors. Always equals
-    /// `completed_functions - completed_with_behavior`. Pre-str-jeen.53
-    /// reports lack the field and decode to `0`.
+    /// input threw a real target error (str-jeen.53, refined by
+    /// str-jeen.50). These functions completed in the orchestrator-state
+    /// sense but Shatter never observed real target behavior — the
+    /// inputs only exercised wrapper / invocation-shape errors. Always
+    /// equals `completed_functions - completed_with_behavior -
+    /// completed_dispatch_failed`. Pre-str-jeen.53 reports lack the
+    /// field and decode to `0`.
     #[serde(default)]
     pub completed_error_only: usize,
+    /// Subset of [`Self::completed_functions`] whose every discovered
+    /// input threw the launcher wrapper's `"unknown receiver kind"`
+    /// sentinel (str-jeen.50). These outcomes mean a method-target
+    /// Execute reached the launcher without a valid `receiver_kind` —
+    /// the wrapper's default switch arm fired and the target body was
+    /// never executed. Distinct from `completed_error_only`, which
+    /// captures real target-thrown errors. Pre-str-jeen.50 reports lack
+    /// the field and decode to `0`.
+    #[serde(default)]
+    pub completed_dispatch_failed: usize,
     /// Number of functions that were attempted and failed (timeouts,
     /// runtime errors, build failures). Each entry has a corresponding
     /// row in [`Self::failed`].
@@ -780,18 +820,21 @@ fn display_names_for_order(test_order: &[String]) -> Vec<String> {
 }
 
 /// Split per-function completion outcomes into `(behavioral_count,
-/// error_only_count)` totals (str-jeen.53). The two counts always sum
-/// to `functions.len()`.
-fn split_completion_outcomes(functions: &[FunctionReport]) -> (usize, usize) {
+/// error_only_count, dispatch_failed_count)` totals (str-jeen.53,
+/// extended in str-jeen.50). The three counts always sum to
+/// `functions.len()`.
+fn split_completion_outcomes(functions: &[FunctionReport]) -> (usize, usize, usize) {
     let mut behavioral = 0usize;
     let mut error_only = 0usize;
+    let mut dispatch_failed = 0usize;
     for func in functions {
         match func.completion_outcome {
             CompletionOutcome::Behavioral => behavioral += 1,
             CompletionOutcome::ErrorOnly => error_only += 1,
+            CompletionOutcome::DispatchFailed => dispatch_failed += 1,
         }
     }
-    (behavioral, error_only)
+    (behavioral, error_only, dispatch_failed)
 }
 
 /// Build a [`CumulativeReport`] from batch state.
@@ -845,7 +888,8 @@ pub fn generate_report(
     let source_set = build_source_set_summary(&functions);
     let productionish_source_lines = source_set.production_ish.line_count;
 
-    let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
+    let (completed_with_behavior, completed_error_only, completed_dispatch_failed) =
+        split_completion_outcomes(&functions);
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -855,6 +899,7 @@ pub fn generate_report(
             completed_functions: counts.completed,
             completed_with_behavior,
             completed_error_only,
+            completed_dispatch_failed,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped,
             unsupported_functions: counts.unsupported,
@@ -910,7 +955,8 @@ pub fn generate_report_from_scan(
     let source_set = build_source_set_summary(&functions);
     let productionish_source_lines = source_set.production_ish.line_count;
 
-    let (completed_with_behavior, completed_error_only) = split_completion_outcomes(&functions);
+    let (completed_with_behavior, completed_error_only, completed_dispatch_failed) =
+        split_completion_outcomes(&functions);
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -920,6 +966,7 @@ pub fn generate_report_from_scan(
             completed_functions: counts.completed,
             completed_with_behavior,
             completed_error_only,
+            completed_dispatch_failed,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped,
             unsupported_functions: counts.unsupported,
@@ -1135,9 +1182,10 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     );
     let _ = writeln!(out, "- **Functions attempted:** {}", cb.attempted_functions);
     let _ = writeln!(out, "- **Functions completed:** {}", cb.completed_functions);
-    // str-jeen.53: split completed totals so error-only completions
-    // (every discovered input threw) don't get counted alongside
-    // functions where Shatter actually exercised target behavior.
+    // str-jeen.53 / str-jeen.50: split completed totals so error-only
+    // completions and wrapper-default dispatch failures don't get counted
+    // alongside functions where Shatter actually exercised target
+    // behavior.
     if cb.completed_functions > 0 {
         let _ = writeln!(
             out,
@@ -1149,6 +1197,13 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
             "  - **error-only (all discovered inputs threw):** {}",
             cb.completed_error_only,
         );
+        if cb.completed_dispatch_failed > 0 {
+            let _ = writeln!(
+                out,
+                "  - **dispatch-failed (unknown receiver kind):** {}",
+                cb.completed_dispatch_failed,
+            );
+        }
     }
     if cb.failed_functions > 0 {
         let _ = writeln!(out, "- **Functions failed:** {}", cb.failed_functions);
@@ -2641,16 +2696,18 @@ mod tests {
             "function whose every discovered input throws must classify error_only",
         );
 
-        // Codebase rollup splits the completed total into the two
+        // Codebase rollup splits the completed total into the three
         // distinct outcomes; total still adds up to completed_functions.
         let cb = &report.codebase;
         assert_eq!(cb.completed_functions, 2);
         assert_eq!(cb.completed_with_behavior, 1);
         assert_eq!(cb.completed_error_only, 1);
+        assert_eq!(cb.completed_dispatch_failed, 0);
         assert_eq!(
-            cb.completed_with_behavior + cb.completed_error_only,
+            cb.completed_with_behavior + cb.completed_error_only + cb.completed_dispatch_failed,
             cb.completed_functions,
-            "completed_with_behavior + completed_error_only must equal completed_functions",
+            "completed_with_behavior + completed_error_only + completed_dispatch_failed \
+             must equal completed_functions",
         );
 
         // Machine-readable JSON exposes the per-function field as a
@@ -2686,6 +2743,104 @@ mod tests {
         assert!(
             md.contains("| error_only | `AlwaysPanic`"),
             "function summary row must label AlwaysPanic error_only: {md}",
+        );
+    }
+
+    /// str-jeen.50 regression: a function whose every recorded outcome
+    /// is the launcher wrapper's `"unknown receiver kind"` sentinel must
+    /// classify as `DispatchFailed` (not `ErrorOnly` and not
+    /// `Behavioral`). Mixed inputs — one wrapper-default error and one
+    /// real target panic — must NOT classify as `DispatchFailed`; they
+    /// fall back to `ErrorOnly` because the all-sentinel invariant fails.
+    /// And a single real target throw classifies as `ErrorOnly`, not
+    /// `DispatchFailed`, even though both are "all-throwing" outcomes.
+    #[test]
+    fn dispatch_failed_classifier_distinguishes_wrapper_default_from_real_errors() {
+        let unknown = "shatter: unknown receiver kind for example.com/x:(*Counter).Classify: ";
+        let real_panic = "panic: runtime error: index out of range";
+
+        // All sentinel: should classify as DispatchFailed.
+        let all_sentinel = vec![
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(1)],
+                return_value: None,
+                thrown_error: Some(unknown.to_string()),
+                lines_executed: vec![],
+            },
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(-1)],
+                return_value: None,
+                thrown_error: Some(unknown.to_string()),
+                lines_executed: vec![],
+            },
+        ];
+        assert_eq!(
+            CompletionOutcome::from_discovered_inputs(&all_sentinel),
+            CompletionOutcome::DispatchFailed,
+            "all wrapper-default sentinel throws must classify as DispatchFailed",
+        );
+
+        // Mixed: one sentinel + one real panic. All-thrown but not
+        // all-sentinel — must fall back to ErrorOnly.
+        let mixed = vec![
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(1)],
+                return_value: None,
+                thrown_error: Some(unknown.to_string()),
+                lines_executed: vec![],
+            },
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(2)],
+                return_value: None,
+                thrown_error: Some(real_panic.to_string()),
+                lines_executed: vec![],
+            },
+        ];
+        assert_eq!(
+            CompletionOutcome::from_discovered_inputs(&mixed),
+            CompletionOutcome::ErrorOnly,
+            "mixed real + sentinel throws must classify as ErrorOnly, not DispatchFailed",
+        );
+
+        // All real panics: ErrorOnly per str-jeen.53 contract.
+        let all_real = vec![DiscoveredInput {
+            inputs: vec![serde_json::json!(0)],
+            return_value: None,
+            thrown_error: Some(real_panic.to_string()),
+            lines_executed: vec![],
+        }];
+        assert_eq!(
+            CompletionOutcome::from_discovered_inputs(&all_real),
+            CompletionOutcome::ErrorOnly,
+            "real-only target throws must classify as ErrorOnly",
+        );
+
+        // At least one non-throwing input: Behavioral wins regardless of
+        // any sentinel siblings.
+        let mixed_with_success = vec![
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(1)],
+                return_value: Some(serde_json::json!("ok")),
+                thrown_error: None,
+                lines_executed: vec![1],
+            },
+            DiscoveredInput {
+                inputs: vec![serde_json::json!(2)],
+                return_value: None,
+                thrown_error: Some(unknown.to_string()),
+                lines_executed: vec![],
+            },
+        ];
+        assert_eq!(
+            CompletionOutcome::from_discovered_inputs(&mixed_with_success),
+            CompletionOutcome::Behavioral,
+            "any non-throwing input must classify as Behavioral",
+        );
+
+        // The wire string is stable for filtering machine-readable output.
+        assert_eq!(
+            CompletionOutcome::DispatchFailed.as_wire_str(),
+            "dispatch_failed",
         );
     }
 

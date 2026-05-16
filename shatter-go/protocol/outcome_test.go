@@ -237,18 +237,16 @@ func (s *Service) Compute(n int) int {
 	}
 }
 
-// TestExecuteMethodTargetWithoutPlanEmitsRuntimeFailure verifies the H5
-// (str-hy9b.H5) contract: a method target now goes through the launcher's
-// receiver-aware dispatch path. Calling Execute on a method without supplying
-// a `plan` field produces a runtime failure (the wrapper's receiver-kind
-// switch emits "unknown receiver kind" because the default plan carries an
-// empty receiver_kind), NOT the pre-H5 `unsupported` outcome with
-// `method_not_supported`. The C4 unsupported gate has been deliberately
-// removed: a planner-aware caller (str-hy9b.H5) should pass `plan` so the
-// receiver_kind dispatches into a real constructor; callers that omit the
-// plan get a clean `runtime_failed` outcome instead of a hard rejection,
-// keeping pipeline behavior uniform regardless of plan presence.
-func TestExecuteMethodTargetWithoutPlanEmitsRuntimeFailure(t *testing.T) {
+// TestExecuteMethodTargetWithoutPlanSynthesizesPointerReceiverZeroValue
+// verifies str-jeen.50: an Execute request that names a method but omits the
+// `plan` field no longer falls through to the wrapper's `unknown receiver
+// kind` default — the handler now synthesizes a default receiver_kind
+// (here "zero_value" for a pointer receiver with no constructor) so the
+// invocation completes. This reverses the pre-str-jeen.50 H5 behaviour that
+// surfaced `runtime_failed` with "unknown receiver kind" for plan-less
+// method targets; that misleading classification was being counted by the
+// broad-scan as a successful completed exploration result.
+func TestExecuteMethodTargetWithoutPlanSynthesizesPointerReceiverZeroValue(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "service.go")
 	src := `package main
 
@@ -265,13 +263,72 @@ func (s *Service) Compute(n int) int { return s.value + n }
 	if resp.Outcome == nil {
 		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
 	}
-	if resp.Outcome.Status != OutcomeStatusRuntimeFailed {
-		t.Errorf("outcome.Status = %q, want runtime_failed (H5: method without plan should fall through to runtime error, response: %+v)", resp.Outcome.Status, resp)
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		var detail string
+		if resp.Outcome.ShortReason != nil {
+			detail = " short_reason=" + *resp.Outcome.ShortReason
+		}
+		if resp.Outcome.ThrownError != nil {
+			detail += " thrown_error=" + resp.Outcome.ThrownError.Message
+		}
+		t.Errorf("outcome.Status = %q, want completed (str-jeen.50: plan-less method execute should synthesize zero_value receiver and complete;%s)", resp.Outcome.Status, detail)
 	}
-	if resp.Outcome.ThrownError == nil {
-		t.Fatalf("expected ThrownError populated for runtime_failed outcome (response: %+v)", resp)
+	if resp.Outcome.ThrownError != nil &&
+		strings.Contains(resp.Outcome.ThrownError.Message, "unknown receiver kind") {
+		t.Errorf("str-jeen.50: 'unknown receiver kind' must not leak through synthesis path, got %q", resp.Outcome.ThrownError.Message)
 	}
-	if !strings.Contains(resp.Outcome.ThrownError.Message, "unknown receiver kind") {
-		t.Errorf("ThrownError.Message should mention 'unknown receiver kind' from wrapper switch, got %q", resp.Outcome.ThrownError.Message)
+}
+
+// TestExecuteMethodTargetWithoutPlanSynthesizesValueReceiverZeroValue
+// verifies the value-receiver companion to str-jeen.50 synthesis: a method
+// declared on a non-pointer struct receiver is invoked against the zero
+// value of the receiver type.
+func TestExecuteMethodTargetWithoutPlanSynthesizesValueReceiverZeroValue(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "calc.go")
+	src := `package main
+
+type Calc struct{}
+
+func (c Calc) Classify(n int) string {
+	if n > 0 {
+		return "positive"
+	}
+	return "non_positive"
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"Classify","inputs":[5]`, tmp))
+	resp := sendRecv(t, req)
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		t.Errorf("outcome.Status = %q, want completed (value receiver synthesis)", resp.Outcome.Status)
+	}
+	if resp.Outcome.ThrownError != nil &&
+		strings.Contains(resp.Outcome.ThrownError.Message, "unknown receiver kind") {
+		t.Errorf("'unknown receiver kind' must not leak through synthesis path, got %q", resp.Outcome.ThrownError.Message)
+	}
+}
+
+// TestFailureOutcomeClassifiesUnknownReceiverKindAsUnsupported is a
+// defense-in-depth check: even if the wrapper's `unknown receiver kind` error
+// reaches failureOutcome (e.g. a caller deliberately passes an invalid
+// receiver_kind that bypasses synthesis), the outcome must be classified as
+// `unsupported` / `method_not_supported`, not `runtime_failed`. Counting
+// these as "completed runtime failures" was the root cause of str-jeen.50.
+func TestFailureOutcomeClassifiesUnknownReceiverKindAsUnsupported(t *testing.T) {
+	outcome := failureOutcome(fmt.Errorf("shatter: unknown receiver kind for some-target: bogus"))
+	if outcome.Status != OutcomeStatusUnsupported {
+		t.Errorf("Status = %q, want unsupported", outcome.Status)
+	}
+	if outcome.ThrownError == nil {
+		t.Fatal("ThrownError must be populated")
+	}
+	if outcome.ThrownError.ErrorType != "method_not_supported" {
+		t.Errorf("ErrorType = %q, want method_not_supported", outcome.ThrownError.ErrorType)
 	}
 }

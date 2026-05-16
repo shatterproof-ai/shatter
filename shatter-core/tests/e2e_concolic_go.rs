@@ -540,3 +540,235 @@ async fn e2e_go_filters_main_entrypoints_from_scan() {
         frontend.shutdown().await.expect("frontend shutdown failed");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test 5: pointer-receiver method on a struct with no constructor.
+//
+// (*Counter).Classify(n int) string -- 2 paths:
+//   1. n > 0   -> "positive"
+//   2. n <= 0  -> "non-positive"
+//
+// str-jeen.50 regression: Zolem's broad scan dispatched method targets like
+// these without consulting the planner. The launcher wrapper's switch on
+// `d.ReceiverKind` then fell into its default arm and returned
+// `"shatter: unknown receiver kind"`. With a planner-attached plan the
+// receiver-aware fallback (`fallback_zero_value`, str-qo1.9) emits
+// `receiver_kind = "zero_value"`, which dispatches as `&Counter{}` through
+// the wrapper's zero-value case and exercises the method body cleanly.
+//
+// The negative assertion is the regression guard: no recorded execution
+// outcome may carry the "unknown receiver kind" sentinel.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_pointer_zero_receiver_no_unknown_receiver_kind() {
+    let file = repo_examples_go_dir()
+        .join("pointer-zero-receiver")
+        .join("counter.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("pointer-zero-receiver").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Classify").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "(*Counter).Classify takes 1 param"
+    );
+
+    instrument_function(&mut frontend, &file_str, "Classify").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    let execute_plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| !p.receiver_kind.is_empty() && p.argument_plans.len() == analysis.params.len())
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: planner returned no plan with non-empty receiver_kind for {target_id}; \
+                 unsatisfied={:?}",
+                bundle.unsatisfied
+            )
+        });
+    assert_eq!(
+        execute_plan.receiver_kind, "zero_value",
+        "pointer-receiver, no-constructor target must take the fallback_zero_value path; \
+         got receiver_kind={:?}",
+        execute_plan.receiver_kind
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        default_execute_plan: Some(execute_plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-1)]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        &analysis.name,
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    assert_no_unknown_receiver_kind(&result, "(*Counter).Classify");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"positive\"", "\"non-positive\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: value-receiver method on a constructor-less struct.
+//
+// (Calc).Sign(n int) string -- 3 paths:
+//   1. n > 0  -> "pos"
+//   2. n < 0  -> "neg"
+//   3. n == 0 -> "zero"
+//
+// Companion to test 5: value receivers take the wrapper's `var _recv T`
+// path (not `&T{}`). Same str-jeen.50 negative assertion applies — no
+// recorded outcome may surface "unknown receiver kind".
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_value_zero_receiver_no_unknown_receiver_kind() {
+    let file = repo_examples_go_dir()
+        .join("value-zero-receiver")
+        .join("calc.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("value-zero-receiver").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Sign").await;
+    assert_eq!(analysis.params.len(), 1, "(Calc).Sign takes 1 param");
+
+    instrument_function(&mut frontend, &file_str, "Sign").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    let execute_plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| !p.receiver_kind.is_empty() && p.argument_plans.len() == analysis.params.len())
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: planner returned no plan with non-empty receiver_kind for {target_id}; \
+                 unsatisfied={:?}",
+                bundle.unsatisfied
+            )
+        });
+    assert_eq!(
+        execute_plan.receiver_kind, "zero_value",
+        "value-receiver, no-constructor target must take a zero-value plan; \
+         got receiver_kind={:?}",
+        execute_plan.receiver_kind
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(25),
+        max_executions: Some(80),
+        plateau_threshold: 18,
+        default_execute_plan: Some(execute_plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!(3)],
+        vec![serde_json::json!(-2)],
+        vec![serde_json::json!(0)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        &analysis.name,
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    assert_no_unknown_receiver_kind(&result, "(Calc).Sign");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"pos\"", "\"neg\"", "\"zero\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 3,
+        "should have at least 3 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Negative regression assertion for str-jeen.50: no recorded execution
+/// outcome from `target` may carry the launcher wrapper's
+/// "unknown receiver kind" sentinel. Surfaces a precise diagnostic with
+/// the offending message verbatim so failures point at the dispatch path
+/// rather than the (unrelated) branch-discovery assertions below.
+fn assert_no_unknown_receiver_kind(result: &ExploreResult, target: &str) {
+    for exec in &result.executions {
+        if let Some(ref err) = exec.thrown_error
+            && err.message.contains("unknown receiver kind")
+        {
+            panic!(
+                "str-jeen.50 regression: {target} dispatch surfaced \
+                 \"unknown receiver kind\" — receiver plan was not threaded \
+                 into the wrapper. thrown_error.message={:?}",
+                err.message
+            );
+        }
+    }
+}
