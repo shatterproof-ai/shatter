@@ -976,6 +976,15 @@ func failureOutcome(err error) *InvocationOutcome {
 		status = OutcomeStatusTimedOut
 		reason = "execution exceeded the configured timeout"
 		errInfo.ErrorType = "execution_timeout"
+	case strings.Contains(msg, "subprocess exited"):
+		// str-jeen.80: launcher subprocess died before producing a
+		// response. The error message carries the binary path, exit
+		// status, and captured stderr — preserve it as the reason so
+		// the CLI report shows the underlying command and output
+		// rather than an opaque runtime failure.
+		status = OutcomeStatusRuntimeFailed
+		reason = "launcher subprocess exited before responding"
+		errInfo.ErrorType = "subprocess_crashed"
 	default:
 		status = OutcomeStatusRuntimeFailed
 		errInfo.ErrorType = "runtime_failed"

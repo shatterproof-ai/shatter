@@ -333,6 +333,41 @@ func TestFailureOutcomeClassifiesUnknownReceiverKindAsUnsupported(t *testing.T) 
 	}
 }
 
+// TestFailureOutcomeClassifiesSubprocessExitAsRuntimeCrash is the
+// classifier half of the str-jeen.80 regression. When the launcher
+// subprocess dies before producing a response, session.go now returns
+// an error containing the binary path, exit status, and captured
+// stderr. The outcome must be `runtime_failed` with the structured
+// short reason and `subprocess_crashed` error type so the broad-run
+// report shows the actionable cause instead of an opaque
+// runtime_failed bucket.
+func TestFailureOutcomeClassifiesSubprocessExitAsRuntimeCrash(t *testing.T) {
+	err := fmt.Errorf("launcher: subprocess exited unexpectedly: /tmp/launcher-bin: exit status 7\nstderr: fatal: bad config 12345")
+	outcome := failureOutcome(err)
+	if outcome.Status != OutcomeStatusRuntimeFailed {
+		t.Errorf("Status = %q, want runtime_failed", outcome.Status)
+	}
+	if outcome.ShortReason == nil || *outcome.ShortReason != "launcher subprocess exited before responding" {
+		got := "<nil>"
+		if outcome.ShortReason != nil {
+			got = *outcome.ShortReason
+		}
+		t.Errorf("ShortReason = %q, want \"launcher subprocess exited before responding\"", got)
+	}
+	if outcome.ThrownError == nil {
+		t.Fatal("ThrownError must be populated")
+	}
+	if outcome.ThrownError.ErrorType != "subprocess_crashed" {
+		t.Errorf("ErrorType = %q, want subprocess_crashed", outcome.ThrownError.ErrorType)
+	}
+	if !strings.Contains(outcome.ThrownError.Message, "fatal: bad config 12345") {
+		t.Errorf("Message = %q, must preserve captured stderr", outcome.ThrownError.Message)
+	}
+	if !strings.Contains(outcome.ThrownError.Message, "exit status 7") {
+		t.Errorf("Message = %q, must preserve exit status", outcome.ThrownError.Message)
+	}
+}
+
 // TestExecuteAsyncGoroutinePanicEmitsRuntimeFailure verifies str-1y6q: a target
 // that spawns a goroutine which panics (before or shortly after the target
 // returns) must not be reported as a successful invocation. The instrumented
