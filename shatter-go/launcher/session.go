@@ -5,14 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/sandbox"
 )
 
 const sessionBufferSize = 4 * 1024 * 1024
+
+// stderrCaptureLimit caps how much subprocess stderr is retained for
+// diagnostic surfacing. The cap protects against runaway subprocesses
+// that flood stderr; the tail is what callers see when classifying a
+// crash, and 16 KiB is enough to capture Go panic traces and typical
+// launcher complaint messages while bounding memory.
+const stderrCaptureLimit = 16 * 1024
 
 // LauncherRequest is the JSON request sent to a running launcher binary.
 // Plan selects the invocation strategy; Inputs are the argument values.
@@ -79,7 +87,40 @@ type LauncherSession struct {
 	sc                    *bufio.Scanner
 	stdin                 interface{ Close() error }
 	cleanup               func() error
+	stderr                *capturedStderr
+	binaryPath            string
+	waitOnce              sync.Once
+	waitErr               error
 	InvocationsDispatched int
+}
+
+// capturedStderr is a bounded io.Writer that buffers up to limit bytes of
+// subprocess stderr for diagnostic reporting. Writes beyond the cap are
+// discarded silently so the subprocess is never blocked by a full pipe.
+type capturedStderr struct {
+	mu    sync.Mutex
+	buf   []byte
+	limit int
+}
+
+func (c *capturedStderr) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	remaining := c.limit - len(c.buf)
+	if remaining > 0 {
+		if len(p) <= remaining {
+			c.buf = append(c.buf, p...)
+		} else {
+			c.buf = append(c.buf, p[:remaining]...)
+		}
+	}
+	return len(p), nil
+}
+
+func (c *capturedStderr) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.buf)
 }
 
 // SessionOptions configures launcher subprocess execution.
@@ -111,7 +152,8 @@ func OpenSessionWithOptions(binaryPath string, options SessionOptions) (*Launche
 	}
 	cleanup := prepared.Cleanup
 	cmd := prepared.Cmd
-	cmd.Stderr = os.Stderr
+	stderrBuf := &capturedStderr{limit: stderrCaptureLimit}
+	cmd.Stderr = stderrBuf
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -134,12 +176,40 @@ func OpenSessionWithOptions(binaryPath string, options SessionOptions) (*Launche
 	sc.Buffer(make([]byte, sessionBufferSize), sessionBufferSize)
 
 	return &LauncherSession{
-		cmd:     cmd,
-		enc:     json.NewEncoder(stdinPipe),
-		sc:      sc,
-		stdin:   stdinPipe,
-		cleanup: cleanup,
+		cmd:        cmd,
+		enc:        json.NewEncoder(stdinPipe),
+		sc:         sc,
+		stdin:      stdinPipe,
+		cleanup:    cleanup,
+		stderr:     stderrBuf,
+		binaryPath: binaryPath,
 	}, nil
+}
+
+// wait collects the subprocess exit status exactly once. Subsequent calls
+// return the same error so subprocessExitError and Close cannot race.
+func (s *LauncherSession) wait() error {
+	s.waitOnce.Do(func() { s.waitErr = s.cmd.Wait() })
+	return s.waitErr
+}
+
+// subprocessExitError builds the diagnostic returned when the subprocess
+// exits before producing a response. The message includes the binary path,
+// the exit status, and the tail of captured stderr so callers (and the
+// failureOutcome classifier in protocol/handler.go) can render a structured
+// non-panic diagnostic instead of an opaque "subprocess exited unexpectedly"
+// (str-jeen.80).
+func (s *LauncherSession) subprocessExitError() error {
+	exitErr := s.wait()
+	exitStatus := "exit status 0"
+	if exitErr != nil {
+		exitStatus = exitErr.Error()
+	}
+	stderr := strings.TrimRight(s.stderr.String(), "\n")
+	if stderr == "" {
+		return fmt.Errorf("launcher: subprocess exited unexpectedly: %s: %s", s.binaryPath, exitStatus)
+	}
+	return fmt.Errorf("launcher: subprocess exited unexpectedly: %s: %s\nstderr: %s", s.binaryPath, exitStatus, stderr)
 }
 
 // Invoke sends one request to the launcher binary and returns the response.
@@ -182,14 +252,14 @@ func (s *LauncherSession) InvokeWithTimeout(req LauncherRequest, timeout time.Du
 			if r.err != nil {
 				return LauncherResponse{}, fmt.Errorf("launcher: read response: %w", r.err)
 			}
-			return LauncherResponse{}, fmt.Errorf("launcher: subprocess exited unexpectedly")
+			return LauncherResponse{}, s.subprocessExitError()
 		}
 	case <-timerC:
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
 		<-done
-		_ = s.cmd.Wait()
+		_ = s.wait()
 		return LauncherResponse{}, fmt.Errorf("launcher: execution timed out after %s", timeout)
 	}
 
@@ -205,7 +275,7 @@ func (s *LauncherSession) InvokeWithTimeout(req LauncherRequest, timeout time.Du
 // binary to exit; Wait collects the exit status.
 func (s *LauncherSession) Close() error {
 	_ = s.stdin.Close()
-	err := s.cmd.Wait()
+	err := s.wait()
 	cleanupErr := s.runCleanup()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -226,7 +296,7 @@ func (s *LauncherSession) Kill() error {
 	if err := s.cmd.Process.Kill(); err != nil {
 		return err
 	}
-	err := s.cmd.Wait()
+	err := s.wait()
 	cleanupErr := s.runCleanup()
 	if err != nil {
 		return err
