@@ -2797,8 +2797,19 @@ pub fn pool_to_candidate_inputs_for_callees(
     pool: &crate::interesting_pool::InterestingPool,
     callees: &std::collections::HashSet<String>,
 ) -> Vec<Vec<Value>> {
-    if callees.is_empty() || params.is_empty() {
-        return pool_to_candidate_inputs(params, pool);
+    if params.is_empty() {
+        return Vec::new();
+    }
+    // str-jeen.83: Without a call graph relevance signal, every same-type pool
+    // value would become a candidate, flooding leaf/no-callee targets (e.g. a
+    // branchless `id => ["tag", id]` helper turns each unrelated pool string
+    // into a distinct behavior cluster). Cap to NON_CALLEE_SEED_CAP so leaf
+    // targets still get pool exposure without being drowned by unrelated
+    // values.
+    if callees.is_empty() {
+        let mut candidates = pool_to_candidate_inputs(params, pool);
+        candidates.truncate(NON_CALLEE_SEED_CAP);
+        return candidates;
     }
 
     let defaults: Vec<Value> = params
@@ -4743,6 +4754,41 @@ mod tests {
         assert_eq!(candidates.len(), 11);
         // First row is the callee-sourced value.
         assert_eq!(candidates[0][0], json!(1));
+    }
+
+    /// str-jeen.83: For leaf/no-callee targets, the pool must not flood the
+    /// candidate set with every unrelated same-type value. Without a relevance
+    /// signal from the call graph, unrelated pool seeds are capped.
+    #[test]
+    fn callgraph_pool_no_callees_caps_unrelated_seeds() {
+        use crate::interesting_pool::Severity;
+        let mut pool = crate::interesting_pool::InterestingPool::default();
+        // 60 unrelated string pool values from various unrelated functions —
+        // mimics a real pool after scanning a project with many string-producing
+        // functions.
+        for i in 0..60 {
+            pool.insert(make_pool_entry(
+                json!(format!("v{i}")),
+                TypeInfo::Str,
+                &format!("unrelated_{i}"),
+                Severity::RarePath,
+            ));
+        }
+
+        let params = vec![ParamInfo {
+            name: "id".into(),
+            typ: TypeInfo::Str,
+            type_name: None,
+        }];
+        let empty_callees: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let candidates = pool_to_candidate_inputs_for_callees(&params, &pool, &empty_callees);
+        assert!(
+            candidates.len() <= NON_CALLEE_SEED_CAP,
+            "leaf/no-callee targets must cap pool seeds; got {} (cap={})",
+            candidates.len(),
+            NON_CALLEE_SEED_CAP
+        );
     }
 
     #[test]
