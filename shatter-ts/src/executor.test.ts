@@ -978,12 +978,19 @@ describe("React component execution", () => {
     expect(el.$$typeof).toBe(Symbol.for("react.element"));
   });
 
-  it("does not inject React shim for non-tsx files", async () => {
+  it("keeps ordinary .ts execution unchanged", async () => {
     // Regular .ts fixture should work exactly as before
     const tsFixture = path.join(FIXTURES_DIR, "primitives.ts");
     const result = await executeFunction(tsFixture, "add", [3, 4]);
     expect(result.return_value).toBe(7);
     expect(result.thrown_error).toBeNull();
+  });
+
+  it("injects React shim for hook-only .ts files", async () => {
+    const tsHookFixture = path.join(FIXTURES_DIR, "react-hooks-plain.ts");
+    const result = await executeFunction(tsHookFixture, "useThemeLabel", []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("contrast");
   });
 });
 

@@ -381,13 +381,15 @@ export function analyzeFile(
       }
     }
 
-    // Derive invocation_model from high-confidence react-hook hints.
+    // Derive invocation_model from react-hook hints at any confidence.
     // This converts detection signals into an execution strategy that the
-    // execute handler dispatches through the adapter-owned path.
+    // execute handler dispatches through the adapter-owned path. Even
+    // medium-confidence custom-hook hits cannot run raw — they call
+    // `useXxx` functions that require a React dispatcher.
     for (const fn of results) {
       if (fn.invocation_model) continue;
       const reactHint = fn.adapter_hints?.find(
-        (h) => h.adapter.id === REACT_HOOK_ADAPTER_ID && h.confidence === "high",
+        (h) => h.adapter.id === REACT_HOOK_ADAPTER_ID,
       );
       if (reactHint) {
         fn.invocation_model = {

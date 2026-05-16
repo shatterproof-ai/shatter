@@ -947,6 +947,27 @@ describe("analyzeFile", () => {
       expect(fn.adapter_hints![0]!.confidence).toBe("high");
     });
 
+    it("routes a function component using context and a custom hook through the React adapter", () => {
+      const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "ContextPanel");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.adapter_hints).toBeDefined();
+      expect(fn.adapter_hints).toHaveLength(1);
+      expect(fn.adapter_hints![0]!.adapter.id).toBe("react-hook");
+      expect(fn.adapter_hints![0]!.confidence).toBe("high");
+      expect(fn.adapter_hints![0]!.reasons).toEqual(
+        expect.arrayContaining([
+          "Calls useContext imported from 'react'",
+          "Calls custom hook useAccentLabel",
+        ]),
+      );
+      expect(fn.invocation_model).toEqual({
+        kind: "adapter",
+        adapter_id: "react-hook",
+        scenario_schema: { kind: "hook_callable_return" },
+      });
+    });
+
     it("does not emit hint for useFormatting (name only, no hook calls)", () => {
       const results = analyzeFile(path.join(fixtures, "react-hooks.tsx"), "useFormatting");
       expect(results).toHaveLength(1);
