@@ -669,7 +669,32 @@ pub(crate) async fn run_run(
     if budget_failed {
         return Err("coverage budget gates failed".into());
     }
+    if let Some(reason) = run_invalidity_failure(&run_summary) {
+        eprintln!(
+            "\nERROR: shatter run produced an invalid report ({reason}). \
+             Exiting nonzero; do not treat this run as successful."
+        );
+        return Err(format!("invalid run: {reason}").into());
+    }
     Ok(())
+}
+
+/// str-jeen.84: a run is considered invalid for exit-code purposes when
+/// the report is explicitly stale-source-set (the snapshot the run was
+/// classified against drifted) or when exploration was attempted but
+/// zero functions completed. Either shape is dangerous to treat as
+/// success in CI, so `shatter run` exits nonzero unconditionally.
+pub(crate) fn run_invalidity_failure(summary: &RunSummary) -> Option<&'static str> {
+    if summary.report_validity == ReportValidity::StaleSourceSet {
+        return Some("report_validity is stale-source-set");
+    }
+    let attempted = summary.completed_functions
+        + summary.failed_functions
+        + summary.skipped_functions;
+    if attempted > 0 && summary.completed_functions == 0 {
+        return Some("attempted functions nonzero but completed=0");
+    }
+    None
 }
 
 /// Write full run report with per-function files to output directory.
@@ -2224,6 +2249,104 @@ mod tests {
         );
         assert_eq!(summary.completed_functions, 0);
         assert_eq!(summary.failed_functions, 10);
+    }
+
+    /// str-jeen.84: a run with zero completed but nonzero attempted
+    /// functions must signal exit-nonzero. Mirrors the pickpackit
+    /// regression where `shatter run` exited 0 despite
+    /// `completed_functions=0, failed_functions=183`.
+    #[test]
+    fn run_invalidity_failure_flags_zero_complete_nonzero_attempted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("only.go"), "package a\nfunc A() {}\n").expect("write");
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-zc",
+            "cfg-h",
+            &["only.go".to_string()],
+            Some(root),
+        );
+        let mut summary = build_run_summary("scan-zc", &manifest, 0, 183, 0, &[]);
+        // Validity left at the default `High` to isolate the
+        // zero-complete trigger from the stale-source-set trigger.
+        summary.report_validity = ReportValidity::High;
+
+        let reason = run_invalidity_failure(&summary)
+            .expect("zero-complete nonzero-attempted run must fail exit code");
+        assert!(
+            reason.contains("completed=0"),
+            "reason must explain the zero-completed signal, got: {reason}"
+        );
+    }
+
+    /// str-jeen.84: `stale-source-set` validity must trigger nonzero
+    /// exit regardless of completed/attempted counts. The pickpackit
+    /// case carried both signals; this isolates the stale-source-set
+    /// branch so it cannot regress independently.
+    #[test]
+    fn run_invalidity_failure_flags_stale_source_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("only.go"), "package a\nfunc A() {}\n").expect("write");
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-ss",
+            "cfg-h",
+            &["only.go".to_string()],
+            Some(root),
+        );
+        // Successful-looking counts: completed > 0, no failures. The
+        // failure trigger here is purely the validity verdict.
+        let mut summary = build_run_summary("scan-ss", &manifest, 5, 0, 0, &[]);
+        summary.report_validity = ReportValidity::StaleSourceSet;
+
+        let reason = run_invalidity_failure(&summary)
+            .expect("stale-source-set run must fail exit code");
+        assert!(
+            reason.contains("stale-source-set"),
+            "reason must name the stale-source-set signal, got: {reason}"
+        );
+    }
+
+    /// str-jeen.84: a healthy run (high validity, completed>0) must
+    /// not trip the new exit-code policy. This pins the baseline so
+    /// the new failure conditions don't accidentally fire on
+    /// successful runs.
+    #[test]
+    fn run_invalidity_failure_passes_healthy_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("only.go"), "package a\nfunc A() {}\n").expect("write");
+        let manifest = shatter_core::run_manifest::capture(
+            "scan-ok",
+            "cfg-h",
+            &["only.go".to_string()],
+            Some(root),
+        );
+        let mut summary = build_run_summary("scan-ok", &manifest, 10, 0, 0, &[]);
+        summary.report_validity = ReportValidity::High;
+
+        assert!(
+            run_invalidity_failure(&summary).is_none(),
+            "healthy run must not trip exit-code failure"
+        );
+    }
+
+    /// str-jeen.84: an empty-discovery run (zero attempted, zero
+    /// completed) must not trip the new exit-code policy — the
+    /// command already special-cases this path and we only want to
+    /// flag runs that actually attempted exploration.
+    #[test]
+    fn run_invalidity_failure_passes_zero_attempted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let manifest = shatter_core::run_manifest::capture("scan-empty", "cfg-h", &[], Some(root));
+        let mut summary = build_run_summary("scan-empty", &manifest, 0, 0, 0, &[]);
+        summary.report_validity = ReportValidity::High;
+
+        assert!(
+            run_invalidity_failure(&summary).is_none(),
+            "zero-attempted run must not trip exit-code failure"
+        );
     }
 
     /// `write_run_summary_json` round-trips through `run.json` so
