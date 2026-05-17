@@ -22,6 +22,7 @@ import {
   TIMEOUT_PATTERNS,
   buildRuntimeCryptoBoundary,
   createUnresolvableModuleStub,
+  createAdapterAwareRequire,
   transformDynamicImports,
   createShatterImport,
   setProjectRoot,
@@ -502,7 +503,137 @@ describe("relative TypeScript import resolution (str-xaao, str-jeen.70)", () => 
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("hello world");
   });
+
+  it("str-lu2.10: resolves sibling .tsx relative imports without stub", async () => {
+    const shellFixture = path.join(
+      FIXTURES_DIR,
+      "local-tsx-imports",
+      "src",
+      "components",
+      "Shell.tsx",
+    );
+    const source = fs.readFileSync(shellFixture, "utf-8");
+    const instrumentResult = instrumentFunction(
+      source,
+      "renderShell",
+      shellFixture,
+    );
+    if ("error" in instrumentResult) {
+      throw new Error(`Instrumentation failed: ${instrumentResult.error}`);
+    }
+    const result = await executeInstrumented(
+      instrumentResult.instrumentedSource,
+      "renderShell",
+      ["alice"],
+      [],
+      shellFixture,
+    );
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("[button:ok] <menu user=alice>");
+    const localStubs = result.discovered_dependencies.filter(
+      (d) =>
+        d.kind === "stubbed_import" &&
+        (d.source_module.startsWith(".") || d.source_module.startsWith("/")),
+    );
+    expect(localStubs).toEqual([]);
+  });
 });
+
+// Exercises the production fallback (`createAdapterAwareRequire`) directly so
+// the test is not masked by ts-jest's transparent .tsx require hook.
+describe("str-lu2.10: createAdapterAwareRequire fallback for local TS/TSX imports", () => {
+  function makeFakeRequire(): NodeRequire {
+    const fn = ((modulePath: string) => {
+      const err = new Error(`Cannot find module '${modulePath}'`) as Error & {
+        code: string;
+      };
+      err.code = "MODULE_NOT_FOUND";
+      throw err;
+    }) as unknown as NodeRequire;
+    fn.resolve = ((id: string) => id) as NodeRequire["resolve"];
+    fn.cache = {} as NodeRequire["cache"];
+    fn.extensions = {} as NodeRequire["extensions"];
+    return fn;
+  }
+
+  const shellFixture = path.join(
+    FIXTURES_DIR,
+    "local-tsx-imports",
+    "src",
+    "components",
+    "Shell.tsx",
+  );
+
+  it("resolves extensionless ./Name to sibling Name.tsx", () => {
+    const req = createAdapterAwareRequireForTest(makeFakeRequire(), shellFixture);
+    const mod = req("./primitives") as { Button: (s: string) => string };
+    expect(typeof mod.Button).toBe("function");
+    expect(mod.Button("ok")).toBe("[button:ok]");
+  });
+
+  it("resolves explicit ./Name.tsx to the sibling file", () => {
+    const req = createAdapterAwareRequireForTest(makeFakeRequire(), shellFixture);
+    const mod = req("./primitives.tsx") as { Button: (s: string) => string };
+    expect(typeof mod.Button).toBe("function");
+    expect(mod.Button("ok")).toBe("[button:ok]");
+  });
+
+  it("resolves NodeNext-style ./Name.js to sibling Name.tsx", () => {
+    const req = createAdapterAwareRequireForTest(makeFakeRequire(), shellFixture);
+    const mod = req("./primitives.js") as { Button: (s: string) => string };
+    expect(typeof mod.Button).toBe("function");
+    expect(mod.Button("ok")).toBe("[button:ok]");
+  });
+
+  it("reports unresolved local imports as a distinct kind in discovered_dependencies", async () => {
+    const sourceWithBadImport = path.join(
+      FIXTURES_DIR,
+      "local-tsx-imports",
+      "src",
+      "components",
+      "BadImport.tsx",
+    );
+    fs.writeFileSync(
+      sourceWithBadImport,
+      `import { Missing } from "./does-not-exist";
+export function callMissing(): unknown {
+  return Missing;
+}
+`,
+    );
+    try {
+      const source = fs.readFileSync(sourceWithBadImport, "utf-8");
+      const ir = instrumentFunction(source, "callMissing", sourceWithBadImport);
+      if ("error" in ir) throw new Error(ir.error);
+      const result = await executeInstrumented(
+        ir.instrumentedSource,
+        "callMissing",
+        [],
+        [],
+        sourceWithBadImport,
+      );
+      // Local-source stubs must be reported (distinguishable from external
+      // stubs by the leading "." in source_module).
+      const localStubs = result.discovered_dependencies.filter(
+        (d) =>
+          d.kind === "stubbed_import" &&
+          (d.source_module.startsWith(".") ||
+            d.source_module.startsWith("/")),
+      );
+      expect(localStubs.length).toBeGreaterThan(0);
+      expect(localStubs[0]!.source_module).toBe("./does-not-exist");
+    } finally {
+      fs.unlinkSync(sourceWithBadImport);
+    }
+  });
+});
+
+function createAdapterAwareRequireForTest(
+  base: NodeRequire,
+  importer: string,
+): NodeRequire {
+  return createAdapterAwareRequire(base, importer, []);
+}
 
 describe("resolver adapter chain", () => {
   beforeAll(() => {
