@@ -205,6 +205,7 @@ func planMethod(
 	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
 		SamePackageConstructors:        ctx.Constructors,
 		ReceiverIsCompositeLiteralSafe: false,
+		ReceiverRequiresConstruction:   ctx.ReceiverRequiresConstruction,
 		MaxPlans:                       opts.MaxReceiverPlans,
 	})
 	if receiverUnsat != nil {

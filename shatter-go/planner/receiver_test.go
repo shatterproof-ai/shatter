@@ -371,6 +371,63 @@ func TestPlanReceivers_PriorityAndCapInvariants(t *testing.T) {
 	})
 }
 
+// str-g7h7: when the caller signals the receiver type requires constructor
+// initialization and no real strategy applies, the planner refuses the
+// fallback zero-value plan and returns requires_construction so callers
+// classify the method `unsupported` rather than silently exploring on a
+// nil-state receiver.
+func TestPlanReceivers_RequiresConstruction_NoStrategy_Unsatisfied(t *testing.T) {
+	target := methodTarget("LocalControlPlane", true)
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		ReceiverRequiresConstruction: true,
+	})
+	if plans != nil {
+		t.Fatalf("plans = %+v, want nil", plans)
+	}
+	if unsat == nil {
+		t.Fatalf("unsat = nil, want requires_construction")
+	}
+	if unsat.Kind != protocol.UnsatisfiedRequirementKindRequiresConstruction {
+		t.Errorf("unsat.Kind = %v, want %v", unsat.Kind, protocol.UnsatisfiedRequirementKindRequiresConstruction)
+	}
+	if unsat.Detail == "" {
+		t.Errorf("unsat.Detail empty; want a reason naming the receiver type")
+	}
+}
+
+// str-g7h7: requires_construction only short-circuits when no real strategy
+// applies. A parameterless same-package constructor still wins — it provides
+// the very initialization the flag was warning about.
+func TestPlanReceivers_RequiresConstruction_ParameterlessConstructor_Wins(t *testing.T) {
+	target := methodTarget("LocalControlPlane", true)
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		SamePackageConstructors:      []protocol.ConstructorCandidate{ctor("DefaultLocalControlPlane", "LocalControlPlane")},
+		ReceiverRequiresConstruction: true,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) != 1 || plans[0].Kind != planner.ReceiverPlanKindSamePackageConstructor {
+		t.Fatalf("plans = %+v, want single same_package_constructor plan", plans)
+	}
+}
+
+// str-g7h7: an operator hint also satisfies the flag — the operator has
+// supplied the construction strategy explicitly.
+func TestPlanReceivers_RequiresConstruction_HintSatisfies(t *testing.T) {
+	target := methodTarget("LocalControlPlane", true)
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		Hint:                         &planner.ReceiverHint{ReceiverKind: "constructor:NewLocalControlPlane", Label: "operator_hint"},
+		ReceiverRequiresConstruction: true,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) != 1 || plans[0].Kind != planner.ReceiverPlanKindHint {
+		t.Fatalf("plans = %+v, want single hint plan", plans)
+	}
+}
+
 func adapterHintOrNil(rt *rapid.T) *planner.ReceiverHint {
 	if rapid.Bool().Draw(rt, "hasAdapter") {
 		return &planner.ReceiverHint{ReceiverKind: "adapter:x"}
