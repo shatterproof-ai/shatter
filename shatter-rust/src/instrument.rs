@@ -271,6 +271,34 @@ impl VisitMut for Instrumentor {
             return;
         }
 
+        // `if let PAT = EXPR { ... }` and let-chains (`if let PAT = EXPR && cond { ... }`)
+        // cannot be instrumented by wrapping the condition: `let` is only valid directly
+        // inside an `if`/`while` head, and pattern bindings need to stay in scope for the
+        // then-branch. Instead, insert branch_hit statements at the top of each branch
+        // body where the bindings (if any) are live.
+        if contains_let_expr(&node.cond) {
+            let line = self.line_of(&node.cond);
+            let constraint_json = format!(
+                r#"{{"kind":"unknown","hint":"if let: {}"}}"#,
+                escape_json_string(&node.cond.to_token_stream().to_string()),
+            );
+            let then_hit = self.branch_hit_stmt(line, &constraint_json);
+            node.then_branch.stmts.insert(0, then_hit);
+
+            if let Some((_, else_expr)) = &mut node.else_branch {
+                let else_constraint = format!(
+                    r#"{{"kind":"unknown","hint":"if let (else): {}"}}"#,
+                    escape_json_string(&node.cond.to_token_stream().to_string()),
+                );
+                let else_hit = self.branch_hit_stmt(line, &else_constraint);
+                insert_stmt_into_else(else_expr, else_hit);
+            }
+
+            // Recurse so nested ifs / matches inside the bodies are still instrumented.
+            syn::visit_mut::visit_expr_if_mut(self, node);
+            return;
+        }
+
         // Wrap the condition
         let wrapped = self.wrap_condition(&node.cond);
         *node.cond = wrapped;
@@ -347,6 +375,45 @@ impl VisitMut for Instrumentor {
         }
 
         syn::visit_mut::visit_expr_match_mut(self, node);
+    }
+}
+
+/// Returns true if `expr` is or syntactically contains an `Expr::Let`
+/// (i.e. an `if let` head or a let-chain joined by `&&`).
+fn contains_let_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Let(_) => true,
+        Expr::Binary(bin) => {
+            matches!(bin.op, syn::BinOp::And(_))
+                && (contains_let_expr(&bin.left) || contains_let_expr(&bin.right))
+        }
+        Expr::Paren(p) => contains_let_expr(&p.expr),
+        _ => false,
+    }
+}
+
+/// Insert a branch_hit statement at the top of an else branch. The else expression
+/// is normally a Block (`else { ... }`) but may be another `if` (`else if ...`).
+fn insert_stmt_into_else(else_expr: &mut Expr, stmt: Stmt) {
+    match else_expr {
+        Expr::Block(block) => {
+            block.block.stmts.insert(0, stmt);
+        }
+        other => {
+            // `else if ...` — wrap it in a synthesised block so we can record the
+            // false-taken branch hit without disturbing the inner if (which gets
+            // instrumented separately on recursion).
+            let inner = other.clone();
+            let tokens: TokenStream = quote! {
+                {
+                    #stmt
+                    #inner
+                }
+            };
+            if let Ok(new_expr) = syn::parse2::<Expr>(tokens) {
+                *other = new_expr;
+            }
+        }
     }
 }
 
@@ -746,6 +813,106 @@ impl Foo {
         let result = instrument(source);
         assert!(result.branch_count >= 1);
         assert!(result.source.contains("branch_hit"));
+    }
+
+    /// Compile-check instrumented source via rustc with a stub runtime.
+    /// Returns Ok(()) if rustc accepts the source, Err(stderr) otherwise.
+    fn rustc_check(instrumented: &str) -> Result<(), String> {
+        use std::io::Write;
+        let stub = r#"
+#[allow(dead_code)]
+mod shatter_rust_runtime {
+    pub fn branch_hit(_id: u32, _line: u32, _cond: bool, _json: &str) {}
+    pub fn loop_enter(_id: u32) {}
+    pub fn mock_call<T>(_name: &str, real: impl FnOnce() -> T) -> T { real() }
+}
+"#;
+        let combined = format!("{stub}\n{instrumented}\n");
+        let dir = std::env::temp_dir().join(format!(
+            "shatter_iflet_check_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = dir.join("check.rs");
+        let mut f = std::fs::File::create(&src_path).unwrap();
+        f.write_all(combined.as_bytes()).unwrap();
+        drop(f);
+        let out = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("--emit=metadata")
+            .arg("--crate-type=lib")
+            .arg("-o")
+            .arg(dir.join("out.rmeta"))
+            .arg(&src_path)
+            .arg("-A")
+            .arg("warnings")
+            .output()
+            .expect("rustc should be available");
+        let _ = std::fs::remove_dir_all(&dir);
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "rustc rejected instrumented source:\n--- stderr ---\n{}\n--- source ---\n{}",
+                String::from_utf8_lossy(&out.stderr),
+                combined,
+            ))
+        }
+    }
+
+    #[test]
+    fn if_let_some_is_instrumented_and_parses() {
+        let source = r#"
+fn extract(opt: Option<i32>) -> i32 {
+    if let Some(x) = opt {
+        x
+    } else {
+        0
+    }
+}
+"#;
+        let result = instrument(source);
+        assert!(
+            result.branch_count >= 1,
+            "if let should produce a branch, got {}",
+            result.branch_count
+        );
+        rustc_check(&result.source).expect("instrumented if let must compile");
+    }
+
+    #[test]
+    fn if_let_ok_is_instrumented_and_parses() {
+        let source = r#"
+fn handle(r: Result<String, ()>) -> String {
+    if let Ok(s) = r {
+        s
+    } else {
+        String::new()
+    }
+}
+"#;
+        let result = instrument(source);
+        assert!(result.branch_count >= 1);
+        rustc_check(&result.source).expect("instrumented if let Ok must compile");
+    }
+
+    #[test]
+    fn if_let_in_async_with_await_is_instrumented_and_parses() {
+        let source = r#"
+async fn fetch<F: std::future::Future<Output = Result<Option<String>, ()>>>(future: F) -> String {
+    if let Some(message) = future.await.unwrap_or(None) {
+        message
+    } else {
+        String::from("empty")
+    }
+}
+"#;
+        let result = instrument(source);
+        assert!(result.branch_count >= 1);
+        rustc_check(&result.source).expect("instrumented async if let must compile");
     }
 
     #[test]
