@@ -760,19 +760,32 @@ export function createAdapterAwareRequire(
       return resolved.value;
     } catch (err: unknown) {
       if (isModuleNotFoundError(err, modulePath)) {
-        // For relative imports, try adding .ts/.tsx extensions before stubbing.
-        // This handles extensionless imports (./client → ./client.ts) and
-        // ordinary relative imports in TS projects where Node can't load .ts.
+        // For relative imports, try resolving against the importer's directory
+        // before stubbing. Covers three cases Node's loader rejects:
+        //   1. extensionless imports (./client → ./client.ts/.tsx, ./client/index.ts)
+        //   2. explicit TS extensions Node can't load (./Shell.tsx)
+        //   3. NodeNext-style .js/.jsx imports that map to .ts/.tsx on disk
         if (modulePath.startsWith(".") && importerFile) {
           const importerDir = path.dirname(importerFile);
           const base = path.resolve(importerDir, modulePath);
-          if (!/\.[cm]?tsx?$/.test(modulePath)) {
+          const tsExtMatch = modulePath.match(/\.[cm]?tsx?$/);
+          const jsExtMatch = modulePath.match(/\.[cm]?jsx?$/);
+          const candidates: string[] = [];
+          if (tsExtMatch) {
+            candidates.push(base);
+          } else if (jsExtMatch) {
+            const stem = base.slice(0, base.length - jsExtMatch[0].length);
+            const tsExt = jsExtMatch[0].replace("j", "t");
+            candidates.push(stem + tsExt, stem + ".ts", stem + ".tsx");
+          } else {
             for (const ext of [".ts", ".tsx", "/index.ts", "/index.tsx"]) {
-              const candidate = base + ext;
-              if (fs.existsSync(candidate)) {
-                onModuleResolved?.(candidate, false);
-                return loadModule(candidate, resolverAdapters);
-              }
+              candidates.push(base + ext);
+            }
+          }
+          for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) {
+              onModuleResolved?.(candidate, false);
+              return loadModule(candidate, resolverAdapters);
             }
           }
         }
@@ -2452,11 +2465,17 @@ export async function executeInstrumented(
     sourceFilePath,
     activeResolverAdapters,
     (moduleId, stubbed) => {
-      if (
-        moduleId.startsWith(".") ||
-        moduleId.startsWith("/") ||
-        seenDiscoveredModules.has(moduleId)
-      ) {
+      const isLocal =
+        moduleId.startsWith(".") || moduleId.startsWith("/");
+      // Resolved local imports are part of the project's own source and don't
+      // need to surface as dependencies. Stubbed local imports DO surface so
+      // reports can flag unexpected local-source stubs distinctly from
+      // intentional external stubs (callers discriminate on `source_module`'s
+      // leading "." or "/").
+      if (isLocal && !stubbed) {
+        return;
+      }
+      if (seenDiscoveredModules.has(moduleId)) {
         return;
       }
       seenDiscoveredModules.add(moduleId);
