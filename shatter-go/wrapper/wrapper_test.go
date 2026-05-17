@@ -1290,6 +1290,133 @@ func (s *Server) Send(args ...string) int { return len(args) }
 	}
 }
 
+// TestVariadicDoesNotPoisonUnrelatedTargets is the str-adff regression. The
+// Zolem `internal/ollama` package combined a variadic helper
+// `func runCommand(ctx context.Context, binaryPath string, args ...string)
+// ([]byte, error)` with several unrelated targets (Detect, Generate,
+// SelectedModel, HTTPChatCompletion, ...). A pre-fix wrapper emitted
+// `runCommand(ctx, binaryPath, args)` — missing the `args...` spread — which
+// failed to compile and poisoned every other target's switch case in the
+// same generated file. This test pins the invariant that even when the
+// package contains a `...string` variadic function, the unrelated free
+// functions in the same package still get switch cases and the whole
+// wrapper file compiles.
+func TestVariadicDoesNotPoisonUnrelatedTargets(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package ollama
+
+import "context"
+
+// runCommand is the variadic helper that, pre-fix, generated a
+// non-compiling call site and poisoned every other target in the package.
+func runCommand(ctx context.Context, binaryPath string, args ...string) ([]byte, error) {
+	_ = ctx
+	_ = binaryPath
+	_ = args
+	return nil, nil
+}
+
+// Detect is an unrelated target in the same package; it must still get
+// its own switch case and the package wrapper must compile.
+func Detect(name string) bool { return name != "" }
+
+// SelectedModel is an unrelated target returning a string.
+func SelectedModel() string { return "default" }
+
+// Generate is an unrelated target taking a context and returning two values.
+func Generate(ctx context.Context, prompt string) (string, error) {
+	_ = ctx
+	return prompt, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "ollama.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/ollama\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	gotSymbols := make(map[string]bool)
+	for _, tg := range targets {
+		gotSymbols[tg.SymbolName] = true
+	}
+	for _, want := range []string{"runCommand", "Detect", "SelectedModel", "Generate"} {
+		if !gotSymbols[want] {
+			t.Errorf("missing target %q (got %v)", want, gotSymbols)
+		}
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "ollama", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	src, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+
+	// Every target must get a switch case; the variadic call site must spread.
+	mustContain := []string{
+		`case "example.com/ollama:runCommand":`,
+		`case "example.com/ollama:Detect":`,
+		`case "example.com/ollama:SelectedModel":`,
+		`case "example.com/ollama:Generate":`,
+		"runCommand(ctx, binaryPath, args...)",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("generated wrapper missing %q\nsource:\n%s", want, src)
+		}
+	}
+	// Negative check: the pre-fix shape must not appear.
+	if strings.Contains(string(src), "runCommand(ctx, binaryPath, args)") {
+		t.Errorf("generated wrapper emitted non-spread variadic call (pre-fix shape)\nsource:\n%s", src)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s",
+			err, stderr.String(), src)
+	}
+}
+
 // TestPointerWrapperEndToEndFromPackagesLoad is the str-9j2e regression. It
 // drives the full path that production prepare hits — packages.Load →
 // BuildWrapperTargets → WriteWrapperFile → `go build` — for the two zolem
