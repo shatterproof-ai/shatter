@@ -156,6 +156,16 @@ const (
 	// UnsatisfiedRequirementKindComplexType means the parameter type is too
 	// complex for the planner to synthesize a value for.
 	UnsatisfiedRequirementKindComplexType UnsatisfiedRequirementKind = "complex_type"
+	// UnsatisfiedRequirementKindRequiresConstruction means the receiver type's
+	// zero value would not exercise meaningful behavior — the struct carries
+	// unexported reference-typed fields (maps, channels, interfaces, function
+	// values, or pointers) that a constructor is expected to initialize, and
+	// no parameterless constructor or operator-supplied hint is available
+	// (str-g7h7). Reporting zero-value-only nil-pointer panics for such
+	// methods would not reflect real call sites; this kind signals that the
+	// method should be classified `unsupported` until receiver setup is
+	// configured.
+	UnsatisfiedRequirementKindRequiresConstruction UnsatisfiedRequirementKind = "requires_construction"
 )
 
 // UnsatisfiedRequirement records a planning failure for one target, describing

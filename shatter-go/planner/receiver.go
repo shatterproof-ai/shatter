@@ -110,6 +110,15 @@ type PlanOptions struct {
 	// Hint is a caller-supplied receiver-kind override; lowest-priority
 	// fallback other than no-plan.
 	Hint *ReceiverHint
+	// ReceiverRequiresConstruction signals that the receiver type's zero
+	// value is not meaningful — the struct holds unexported reference-typed
+	// fields a constructor is expected to initialize. When set and no real
+	// strategy (adapter, parameterless constructor, composite-literal-safe
+	// shape, useful zero value, or operator hint) applies, PlanReceivers
+	// returns UnsatisfiedRequirementKindRequiresConstruction instead of the
+	// fallback zero-value plan, so the method is classified `unsupported`
+	// rather than silently explored on a nil-state receiver (str-g7h7).
+	ReceiverRequiresConstruction bool
 	// MaxPlans caps the returned slice. Zero means DefaultMaxReceiverPlans.
 	MaxPlans int
 }
@@ -231,6 +240,20 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		})
 	}
 
+	// When no real strategy fired and the caller has signalled that the
+	// receiver type holds unexported reference-typed fields a constructor is
+	// expected to initialize, refuse to emit the fallback zero-value plan.
+	// Reporting zero-value-only nil-pointer panics for such methods would
+	// not reflect call sites; the method is classified `unsupported` with
+	// a specific reason instead (str-g7h7).
+	if len(plans) == 0 && opts.ReceiverRequiresConstruction {
+		return nil, &protocol.UnsatisfiedRequirement{
+			Kind:     protocol.UnsatisfiedRequirementKindRequiresConstruction,
+			TargetID: t.ID,
+			Detail:   requiresConstructionDetail(t.Receiver),
+		}
+	}
+
 	// Last-resort fallback: when no strategy fired, but the receiver type
 	// is non-interface and non-generic-unconstrained, the wrapper's
 	// `zero_value` switch case always compiles. Emit a fallback zero-value
@@ -253,6 +276,13 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		}
 	}
 	return plans, nil
+}
+
+func requiresConstructionDetail(r *protocol.ReceiverShape) string {
+	if r == nil || r.TypeName == "" {
+		return "receiver requires constructor initialization (no parameterless constructor or hint available)"
+	}
+	return fmt.Sprintf("receiver type %s holds unexported reference-typed fields requiring constructor initialization; no parameterless constructor or hint available", r.TypeName)
 }
 
 // isParameterful reports whether c carries any function parameters. The

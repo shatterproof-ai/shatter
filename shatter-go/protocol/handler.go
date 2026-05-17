@@ -1561,6 +1561,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 			}
 		}
 		ctx.Constructors = matched
+		ctx.ReceiverRequiresConstruction = ReceiverRequiresConstruction(pkg, &target)
 	}
 	return ctx
 }
@@ -1631,6 +1632,19 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 		}
 		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
 	}
+	// When the receiver type carries unexported reference-typed fields a
+	// constructor is expected to initialize and no parameterless constructor
+	// is available, refuse the zero-value fallback: reporting nil-pointer
+	// panics for such methods would not reflect real call sites (str-g7h7).
+	// Caller short-circuits to OutcomeStatusUnsupported with the kind's
+	// detail as short_reason.
+	if ReceiverRequiresConstruction(pkg, &target) {
+		return "", &UnsatisfiedRequirement{
+			Kind:     UnsatisfiedRequirementKindRequiresConstruction,
+			TargetID: target.ID,
+			Detail:   fmt.Sprintf("receiver type %s requires constructor initialization; no parameterless constructor available", target.Receiver.TypeName),
+		}
+	}
 	// Final fallback mirrors the receiver planner's fallback_zero_value
 	// strategy: the wrapper always emits a `zero_value` case for method
 	// targets so this token is guaranteed to dispatch. Runtime behavior
@@ -1654,6 +1668,8 @@ func receiverUnsupportedReason(unsat *UnsatisfiedRequirement) string {
 		return "method receiver is an interface and cannot be constructed"
 	case UnsatisfiedRequirementKindGenericUnconstrained:
 		return "method receiver requires generic type arguments that could not be inferred"
+	case UnsatisfiedRequirementKindRequiresConstruction:
+		return "method receiver requires constructor initialization; no parameterless constructor or hint available"
 	default:
 		return "method has no constructible receiver"
 	}

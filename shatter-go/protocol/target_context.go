@@ -28,4 +28,12 @@ type TargetContext struct {
 	// Target by the handler's TargetContext builder; nil for free
 	// functions and when no matching constructors are in scope.
 	Constructors []ConstructorCandidate
+
+	// ReceiverRequiresConstruction is set by the handler's TargetContext
+	// builder when the method target's receiver type holds unexported
+	// reference-typed fields (maps, channels, interfaces, function values,
+	// pointers) a constructor is expected to initialize. The planner reads
+	// this flag and refuses the fallback zero-value receiver plan when no
+	// real strategy applies (str-g7h7).
+	ReceiverRequiresConstruction bool
 }
