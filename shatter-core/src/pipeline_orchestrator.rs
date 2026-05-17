@@ -500,11 +500,12 @@ async fn run_concolic_observe(
     .await?;
 
     let mut obs: explorer::ObservationOutput = result.into();
-    obs.total_lines = input
-        .analysis
-        .end_line
-        .saturating_sub(input.analysis.start_line)
-        + 1;
+    crate::observe::reconcile_observation_coverage(
+        &mut obs,
+        input.analysis.start_line,
+        input.analysis.end_line,
+        None,
+    );
     Ok((obs, Some(resume_state)))
 }
 

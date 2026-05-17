@@ -1366,6 +1366,9 @@ pub async fn explore_function(
 
     let total_lines = instrumentable_line_count
         .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
+    let reconcile_start = analysis.start_line;
+    let reconcile_end = analysis.end_line;
+    let reconcile_instrumentable = instrumentable_line_count;
 
     // -- Witness shrinking phase --
     let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
@@ -1563,7 +1566,7 @@ pub async fn explore_function(
         &std::collections::HashMap::new(),
     );
     let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
-    Ok(aggregator.into_observation_output(
+    let mut output = aggregator.into_observation_output(
         analysis.name.clone(),
         total_lines,
         timed_out_due_to_budget,
@@ -1576,7 +1579,14 @@ pub async fn explore_function(
         vec![],
         opaque_suggestions,
         stubbed_modules,
-    ))
+    );
+    crate::observe::reconcile_observation_coverage(
+        &mut output,
+        reconcile_start,
+        reconcile_end,
+        reconcile_instrumentable,
+    );
+    Ok(output)
 }
 
 struct ObserverJob {
@@ -1962,7 +1972,7 @@ async fn explore_function_with_observer_pool(
     );
     let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
 
-    Ok(aggregator.into_observation_output(
+    let mut output = aggregator.into_observation_output(
         analysis.name.clone(),
         total_lines,
         timed_out_due_to_budget,
@@ -1975,7 +1985,14 @@ async fn explore_function_with_observer_pool(
         vec![],
         opaque_suggestions,
         stubbed_modules,
-    ))
+    );
+    crate::observe::reconcile_observation_coverage(
+        &mut output,
+        analysis.start_line,
+        analysis.end_line,
+        instrumentable_line_count,
+    );
+    Ok(output)
 }
 
 async fn run_observer_worker(

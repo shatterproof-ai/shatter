@@ -100,6 +100,63 @@ impl From<&crate::explorer::ExploreConfig> for ObserveConfig {
     }
 }
 
+/// Reconcile raw observed line numbers against the function's source range so
+/// that `lines_covered ≤ total_lines` always holds in the resulting report.
+///
+/// Two corrections happen here:
+///
+/// 1. Out-of-range lines are dropped. Frontends can emit `lines_executed`
+///    entries outside `[start_line, end_line]` (inlined helpers, runtime
+///    callbacks, off-by-some accounting). Per-function coverage must reflect
+///    only that function's source lines.
+/// 2. The denominator is bumped when the instrumentor undercounts. If the
+///    frontend reported fewer instrumentable lines than we actually observed
+///    in range, trust the observation: raise `total_lines` to the observed
+///    count instead of silently clamping the numerator.
+///
+/// Returns `(lines_covered, total_lines)` ready for assignment into
+/// `ObservationOutput` / `FunctionReport`. See str-uabz.
+pub fn reconcile_line_coverage<I>(
+    observed_lines: I,
+    start_line: u32,
+    end_line: u32,
+    instrumentable_line_count: Option<u32>,
+) -> (usize, u32)
+where
+    I: IntoIterator<Item = u32>,
+{
+    let span = end_line.saturating_sub(start_line).saturating_add(1);
+    let in_range: HashSet<u32> = observed_lines
+        .into_iter()
+        .filter(|&line| line >= start_line && line <= end_line)
+        .collect();
+    let covered = in_range.len();
+    let denom = instrumentable_line_count
+        .unwrap_or(span)
+        .max(covered as u32);
+    (covered, denom)
+}
+
+/// Apply [`reconcile_line_coverage`] to an `ObservationOutput`, rewriting its
+/// `lines_covered` and `total_lines` so the invariant holds. Pulls the raw
+/// observed lines from `output.raw_results` rather than requiring the caller
+/// to hold a separate set.
+pub fn reconcile_observation_coverage(
+    output: &mut ObservationOutput,
+    start_line: u32,
+    end_line: u32,
+    instrumentable_line_count: Option<u32>,
+) {
+    let observed = output
+        .raw_results
+        .iter()
+        .flat_map(|(_, _, r)| r.lines_executed.iter().copied());
+    let (covered, total) =
+        reconcile_line_coverage(observed, start_line, end_line, instrumentable_line_count);
+    output.lines_covered = covered;
+    output.total_lines = total;
+}
+
 /// Raw observation results from executing a batch of inputs.
 /// Lighter-weight than `ObservationOutput` — no function metadata or summary.
 #[derive(Debug, Serialize, Deserialize)]
@@ -420,15 +477,19 @@ pub async fn observe_function(
         send_teardown(frontend, &analysis.name, config.setup_level).await?;
     }
 
-    let total_lines = instrumentable_line_count
-        .unwrap_or_else(|| analysis.end_line.saturating_sub(analysis.start_line) + 1);
+    let (lines_covered, total_lines) = reconcile_line_coverage(
+        batch.lines_covered.iter().copied(),
+        analysis.start_line,
+        analysis.end_line,
+        instrumentable_line_count,
+    );
 
     let stubbed_modules = crate::explorer::collect_stubbed_modules(&batch.raw_results);
     Ok(ObservationOutput {
         function_name: analysis.name.clone(),
         iterations: total_input_count,
         unique_paths: batch.unique_path_hashes.len(),
-        lines_covered: batch.lines_covered.len(),
+        lines_covered,
         total_lines,
         new_path_executions: batch.new_path_executions,
         raw_results: batch.raw_results,
@@ -607,6 +668,55 @@ mod tests {
         assert_eq!(discoveries.len(), 4);
         let ids: HashSet<u32> = discoveries.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, HashSet::from([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn reconcile_filters_out_of_range_lines() {
+        // Observed lines outside [start_line, end_line] (e.g. inlined helpers,
+        // runtime callbacks) must not count toward this function's coverage.
+        let observed = [10, 20, 30, 100, 200];
+        let (covered, total) = reconcile_line_coverage(observed, 10, 30, Some(3));
+        assert_eq!(covered, 3, "only in-range lines should count");
+        assert_eq!(total, 3);
+        assert!(covered <= total as usize);
+    }
+
+    #[test]
+    fn reconcile_bumps_denominator_when_observed_exceeds_instrumentable() {
+        // str-uabz: Zolem-style overcount. Frontend reported 1 instrumentable
+        // line; runtime reported 2 distinct in-range lines executed. Bump the
+        // denominator instead of clamping the numerator.
+        let observed = [10, 11];
+        let (covered, total) = reconcile_line_coverage(observed, 10, 20, Some(1));
+        assert_eq!(covered, 2);
+        assert_eq!(total, 2, "denominator must rise to keep invariant");
+        assert!(covered <= total as usize);
+    }
+
+    #[test]
+    fn reconcile_invariant_holds_for_zolem_style_overcount() {
+        // The exact shape from the issue: NewFakerGenerator 2/1, Generate
+        // 20/12, UpsertProfile 36/11. After reconciliation, lines_covered
+        // must never exceed total_lines.
+        for (observed_lines, instrumentable, start, end) in [
+            (vec![1u32, 2], 1u32, 1u32, 10u32),
+            ((1..=20).collect::<Vec<_>>(), 12, 1, 25),
+            ((1..=36).collect::<Vec<_>>(), 11, 1, 40),
+        ] {
+            let (covered, total) =
+                reconcile_line_coverage(observed_lines, start, end, Some(instrumentable));
+            assert!(
+                covered <= total as usize,
+                "invariant broken: covered={covered} total={total}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_uses_span_when_instrumentable_unknown() {
+        let (covered, total) = reconcile_line_coverage([10u32, 11, 12], 10, 20, None);
+        assert_eq!(covered, 3);
+        assert_eq!(total, 11, "denominator falls back to span when frontend silent");
     }
 
     #[test]
