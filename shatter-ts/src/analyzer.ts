@@ -688,6 +688,35 @@ export function convertType(
     return { kind: "array", element };
   }
 
+  // Tuple types are arrays at runtime but not reported by isArrayType.
+  // Convert to {kind:"array", element: union<...elements>} so the core
+  // generator emits a real array rather than `{}` (str-yb7q).
+  if (checker.isTupleType(type)) {
+    const typeArgs = (type as ts.TypeReference).typeArguments ?? [];
+    const variants = typeArgs.map((t) =>
+      convertType(t, checker, sourceFile, seen),
+    );
+    // Dedupe so a homogeneous tuple like [number, number] becomes
+    // array<float>, not array<union<float, float>>.
+    const seenKeys = new Set<string>();
+    const unique: TypeInfo[] = [];
+    for (const v of variants) {
+      const key = JSON.stringify(v);
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        unique.push(v);
+      }
+    }
+    const element: TypeInfo =
+      unique.length === 0
+        ? { kind: "unknown" }
+        : unique.length === 1
+          ? unique[0]!
+          : { kind: "union", variants: unique };
+    seen.delete(type);
+    return { kind: "array", element };
+  }
+
   // Check for enum types
   if (flags & ts.TypeFlags.Enum || flags & ts.TypeFlags.EnumLiteral) {
     seen.delete(type);
@@ -739,6 +768,19 @@ export function convertType(
   if (flags & ts.TypeFlags.ESSymbol || flags & ts.TypeFlags.UniqueESSymbol) {
     seen.delete(type);
     return { kind: "complex", complex_kind: "symbol" };
+  }
+
+  // Generic type parameters: follow the upper-bound constraint so e.g.
+  // `function f<T extends Row[]>(rows: T)` reports `array<Row>` instead of
+  // degrading to `unknown` and being generated as a random primitive
+  // (str-yb7q).
+  if (flags & ts.TypeFlags.TypeParameter) {
+    const constraint = (type as ts.TypeParameter).getConstraint?.();
+    if (constraint && constraint !== type) {
+      const result = convertType(constraint, checker, sourceFile, seen);
+      seen.delete(type);
+      return result;
+    }
   }
 
   seen.delete(type);
@@ -1687,7 +1729,30 @@ function convertObjectType(
   }
 
   const properties = type.getProperties();
+
+  // Array-like shapes: numeric index signature, with at most a `length`
+  // property (e.g. `ArrayLike<T>`, `{ [n: number]: T; length: number }`).
+  // Treat as array<T> so generation produces a real array instead of an empty
+  // object (str-yb7q).
+  const numberIndex = type.getNumberIndexType();
+  const propsBeyondLength = properties.filter((p) => p.name !== "length");
+  if (numberIndex && propsBeyondLength.length === 0) {
+    return {
+      kind: "array",
+      element: convertType(numberIndex, checker, undefined, seen),
+    };
+  }
+
   if (properties.length === 0) {
+    // Record<string, T> / { [k: string]: T } — synthesize one sample field so
+    // input_gen produces a structurally non-empty object whose values match
+    // the index type (str-yb7q). Without this the generator emits `{}` and
+    // any `Object.values(x).filter(...)` / `x.someKey.map(...)` crashes.
+    const stringIndex = type.getStringIndexType();
+    if (stringIndex) {
+      const valueType = convertType(stringIndex, checker, undefined, seen);
+      return { kind: "object", fields: [["key", valueType]] };
+    }
     return { kind: "object", fields: [] };
   }
 

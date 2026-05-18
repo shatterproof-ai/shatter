@@ -135,6 +135,120 @@ describe("analyzeFile", () => {
     });
   });
 
+  describe("structural type recovery (str-yb7q)", () => {
+    // These types previously degraded to {kind: "unknown"} or empty objects,
+    // causing the core input generator to produce primitives or `{}` and the
+    // function under test to fail with `*.filter is not a function` etc.
+
+    it("treats a fixed tuple as an array of the union of element types", () => {
+      const results = analyzeFile(path.join(fixtures, "typed-shapes.ts"), "sumPair");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      // Both tuple slots are number; convertType de-dupes via single-element shortcut.
+      expect(fn.params[0]!.type).toEqual({
+        kind: "array",
+        element: { kind: "float" },
+      });
+    });
+
+    it("treats a readonly tuple with mixed element types as an array union", () => {
+      const results = analyzeFile(path.join(fixtures, "typed-shapes.ts"), "labelTuple");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "array",
+        element: {
+          kind: "union",
+          variants: [{ kind: "str" }, { kind: "float" }],
+        },
+      });
+    });
+
+    it("synthesizes a sample field for Record<string, T> index signatures", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "typed-shapes.ts"),
+        "countRowsByKey",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "object",
+        fields: [
+          [
+            "key",
+            {
+              kind: "array",
+              element: {
+                kind: "object",
+                fields: [["id", { kind: "float" }]],
+              },
+            },
+          ],
+        ],
+      });
+    });
+
+    it("treats ArrayLike<T> (numeric index signature) as array<T>", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "typed-shapes.ts"),
+        "arrayLikeLength",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "array",
+        element: { kind: "float" },
+      });
+    });
+
+    it("follows the constraint of a generic type parameter", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "typed-shapes.ts"),
+        "constrainedGeneric",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "array",
+        element: { kind: "float" },
+      });
+    });
+
+    it("preserves nested array fields (regression guard)", () => {
+      const results = analyzeFile(path.join(fixtures, "typed-shapes.ts"), "nestedRows");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "object",
+        fields: [
+          [
+            "rows",
+            {
+              kind: "array",
+              element: {
+                kind: "object",
+                fields: [["id", { kind: "float" }]],
+              },
+            },
+          ],
+        ],
+      });
+    });
+
+    it("preserves nested array-of-arrays (regression guard)", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "typed-shapes.ts"),
+        "nestedArrays",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "array",
+        element: { kind: "array", element: { kind: "float" } },
+      });
+    });
+  });
+
   describe("union and nullable types", () => {
     it("extracts string | number union", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "format");
