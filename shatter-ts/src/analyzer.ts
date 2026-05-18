@@ -8,6 +8,7 @@
 import * as ts from "typescript";
 import * as path from "node:path";
 import { refineIntegerParams } from "./integer-heuristic.js";
+import { refineParamShapesFromBody } from "./param-shape-inference.js";
 import { recognizeBrowserGlobals } from "./browser-globals-recognizer.js";
 import { recognizeReactHooks, REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
 import type {
@@ -414,7 +415,8 @@ function analyzeFunctionDeclaration(
 
   const name = node.name.text;
   const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
-  const params = refineIntegerParams(rawParams, node.body, sourceFile);
+  const intRefined = refineIntegerParams(rawParams, node.body, sourceFile);
+  const params = refineParamShapesFromBody(intRefined, node.body);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -453,7 +455,9 @@ function analyzeArrowFunction(
   exported: boolean,
 ): FunctionAnalysis {
   const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
-  const params = refineIntegerParams(rawParams, ts.isBlock(node.body) ? node.body : undefined, sourceFile);
+  const arrowBody = ts.isBlock(node.body) ? node.body : undefined;
+  const intRefined = refineIntegerParams(rawParams, arrowBody, sourceFile);
+  const params = refineParamShapesFromBody(intRefined, arrowBody);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -492,7 +496,8 @@ function analyzeFunctionDeclarationUnnamed(
   sourceFile: ts.SourceFile,
 ): FunctionAnalysis {
   const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
-  const params = refineIntegerParams(rawParams, node.body, sourceFile);
+  const intRefined = refineIntegerParams(rawParams, node.body, sourceFile);
+  const params = refineParamShapesFromBody(intRefined, node.body);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
@@ -531,7 +536,8 @@ function analyzeFunctionExpression(
   exported: boolean,
 ): FunctionAnalysis {
   const rawParams = node.parameters.map((p) => analyzeParameter(p, checker, sourceFile));
-  const params = refineIntegerParams(rawParams, node.body, sourceFile);
+  const intRefined = refineIntegerParams(rawParams, node.body, sourceFile);
+  const params = refineParamShapesFromBody(intRefined, node.body);
   const paramNames = new Set(params.map((p) => p.name));
 
   const sig = checker.getSignatureFromDeclaration(node);
