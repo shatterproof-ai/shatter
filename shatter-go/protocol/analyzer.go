@@ -1130,8 +1130,12 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 		// Go's rune is an alias for int32
 		return TypeInfo{Kind: "int"}
 	case types.Uint8:
-		// Go's byte is an alias for uint8
-		return TypeInfo{Kind: "int"}
+		// Go's byte is an alias for uint8. Reporting it as plain `int` lets
+		// the core's int generator produce values outside [0, 255] (negative,
+		// i64::MAX, …) that fail `json.Unmarshal` into a `byte` / `[]byte`
+		// parameter before the target ever runs. The `go_byte` complex kind
+		// constrains generation to a raw u8 number that unmarshals cleanly.
+		return TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
 	}
 	switch {
 	case b.Info()&types.IsInteger != 0:
@@ -1184,9 +1188,13 @@ func typeInfoFromAST(expr ast.Expr) TypeInfo {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		switch e.Name {
+		case "byte", "uint8":
+			// See `basicTypeInfo` for rationale: byte / uint8 maps to the
+			// `go_byte` complex kind so generated values stay in [0, 255].
+			return TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
 		case "int", "int8", "int16", "int32", "int64",
-			"uint", "uint8", "uint16", "uint32", "uint64",
-			"byte", "rune":
+			"uint", "uint16", "uint32", "uint64",
+			"rune":
 			return TypeInfo{Kind: "int"}
 		case "float32", "float64":
 			return TypeInfo{Kind: "float"}

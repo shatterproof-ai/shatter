@@ -129,6 +129,17 @@ pub fn generate_random_value(
             metadata,
             inner,
         } => {
+            // str-ieuc: GoByte emits a raw JSON integer in [0, 255] with no
+            // `__complex_type` wrapper, so it needs no frontend
+            // reconstruction step. Always generate it regardless of caps so
+            // that mutation paths (mutate_array, array_mutation) that don't
+            // thread caps still produce valid byte elements rather than
+            // falling through to `generate_unknown`, which can emit booleans
+            // or strings that `json.Unmarshal` into `byte` / `[]byte`
+            // rejects.
+            if matches!(kind, ComplexKind::GoByte) {
+                return generate_go_byte(rng);
+            }
             if caps.is_some_and(|c| c.supports_complex(*kind)) {
                 generate_complex_value(*kind, metadata, inner.as_deref(), rng)
             } else {
@@ -583,7 +594,12 @@ fn generate_char(rng: &mut impl Rng) -> Value {
     json!({"__complex_type": "char", "value": ch, "codepoint": cp})
 }
 
-/// Generate a Go byte value.
+/// Generate a Go byte value as a raw JSON number in [0, 255].
+///
+/// Emitted as a plain integer (not a `__complex_type`-tagged object) so that
+/// the Go wrapper's `json.Unmarshal` into a `byte` / `uint8` / `[]byte`
+/// parameter succeeds — Go's encoding/json rejects negative values, values
+/// above 255, and tagged-object shapes when the target type is `uint8`.
 fn generate_go_byte(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..5);
     let v: u8 = match choice {
@@ -593,7 +609,7 @@ fn generate_go_byte(rng: &mut impl Rng) -> Value {
         3 => 255,
         _ => rng.random_range(0..=255),
     };
-    json!({"__complex_type": "go_byte", "value": v})
+    json!(v)
 }
 
 /// Generate an Email value.
@@ -2045,13 +2061,10 @@ fn mutate_char(value: &Value, rng: &mut impl Rng) -> Value {
     json!({"__complex_type": "char", "value": ch.to_string(), "codepoint": new_cp})
 }
 
-/// Mutate a GoByte by applying delta or boundary.
+/// Mutate a GoByte by applying delta or boundary. Wire format is a raw
+/// JSON number in [0, 255]; see `generate_go_byte` for the rationale.
 fn mutate_go_byte(value: &Value, rng: &mut impl Rng) -> Value {
-    let v = value
-        .as_object()
-        .and_then(|o| o.get("value"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u8;
+    let v = value.as_u64().unwrap_or(0) as u8;
     let op: u8 = rng.random_range(0..3);
     let new_v = match op {
         0 => v.wrapping_add(rng.random_range(1..=10)),
@@ -2061,7 +2074,7 @@ fn mutate_go_byte(value: &Value, rng: &mut impl Rng) -> Value {
             boundaries[rng.random_range(0..boundaries.len())]
         }
     };
-    json!({"__complex_type": "go_byte", "value": new_v})
+    json!(new_v)
 }
 
 /// Mutate a complex type that wraps a string field (URL, Email, Path, RegExp, etc.).
@@ -5682,6 +5695,50 @@ mod tests {
             }
 
             // -----------------------------------------------------------------
+            // GoByte (str-ieuc): generation/mutation stay in [0, 255] and use
+            // raw JSON numbers so Go's json.Unmarshal into byte / []byte succeeds.
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn go_byte_generation_in_byte_range(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = generate_go_byte(&mut rng);
+                let n = v.as_u64().expect("go_byte must be a raw JSON number");
+                prop_assert!(n <= 255, "go_byte produced out-of-range value {n}");
+            }
+
+            #[test]
+            fn go_byte_mutation_in_byte_range(seed in 0..100_000u64, start in 0u8..=255) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = mutate_go_byte(&json!(start), &mut rng);
+                let n = v.as_u64().expect("mutated go_byte must be a raw JSON number");
+                prop_assert!(n <= 255, "go_byte mutation produced out-of-range value {n}");
+            }
+
+            #[test]
+            fn go_byte_array_elements_in_byte_range(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let elem = TypeInfo::Complex {
+                    kind: ComplexKind::GoByte,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Array { element: Box::new(elem) };
+                let caps = FrontendCapabilities {
+                    complex_types: [ComplexKind::GoByte].into_iter().collect(),
+                    ..Default::default()
+                };
+                let arr = generate_random_value(&typ, &mut rng, Some(&caps));
+                let items = arr.as_array().expect("byte slice should generate a JSON array");
+                for item in items {
+                    let n = item.as_u64().unwrap_or_else(|| {
+                        panic!("byte slice element must be a raw JSON number, got {item:?}");
+                    });
+                    prop_assert!(n <= 255, "byte slice element out of range: {n}");
+                }
+            }
+
+            // -----------------------------------------------------------------
             // shrink_candidates: int shrinks toward zero
             // -----------------------------------------------------------------
 
@@ -5893,7 +5950,6 @@ mod tests {
                     Just(ComplexKind::Complex),
                     Just(ComplexKind::Rational),
                     Just(ComplexKind::Char),
-                    Just(ComplexKind::GoByte),
                     Just(ComplexKind::Url),
                     Just(ComplexKind::Email),
                     Just(ComplexKind::Path),
@@ -5938,7 +5994,6 @@ mod tests {
                     Just(ComplexKind::Complex),
                     Just(ComplexKind::Rational),
                     Just(ComplexKind::Char),
-                    Just(ComplexKind::GoByte),
                 ],
             ) {
                 let metadata = serde_json::Map::new();
