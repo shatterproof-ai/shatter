@@ -450,6 +450,7 @@ frontends:
       - rational
       - big_decimal
       - error
+      - go_byte
     default_exec_timeout_s: 5
 
   rust:

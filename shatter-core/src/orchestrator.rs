@@ -918,6 +918,19 @@ pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
         ConcreteValue::Str(s) => serde_json::json!(s),
         ConcreteValue::Bool(b) => serde_json::json!(*b),
         ConcreteValue::Complex { kind, repr } => {
+            // str-ieuc: GoByte serializes as a plain JSON integer (clamped to
+            // [0, 255]) rather than a __complex_type wrapper, so the Go
+            // wrapper's `json.Unmarshal` into byte / []byte / [N]byte
+            // succeeds. The repr is an Int from the solver; clamp before
+            // emitting so unconstrained / out-of-range solver outputs don't
+            // make it to the wire.
+            if matches!(kind, ComplexKind::GoByte) {
+                let n = match repr.as_ref() {
+                    ConcreteValue::Int(i) => i.rem_euclid(256),
+                    _ => 0,
+                };
+                return serde_json::json!(n);
+            }
             // Serialize the kind to its snake_case name for the wire format
             let kind_str = serde_json::to_value(kind)
                 .ok()

@@ -6,6 +6,7 @@
     "complex_type:date",
     "complex_type:duration",
     "complex_type:error",
+    "complex_type:go_byte",
     "complex_type:ip_address",
     "complex_type:rational",
     "complex_type:reg_exp",

@@ -432,10 +432,14 @@ complex_type_capabilities:
   go_byte:
     status: optional
     language_affinity: [go]
-    notes: "Go byte (uint8); not applicable to TypeScript or Rust."
+    notes: |
+      Go byte (uint8); not applicable to TypeScript or Rust. Wire format is a
+      plain JSON integer in [0, 255] (no __complex_type wrapper) so that the
+      Go wrapper's json.Unmarshal into byte / []byte / [N]byte parameters
+      succeeds without a reconstruction step.
     frontends:
       typescript: not_supported
-      go: not_supported
+      go: supported
       rust: not_supported
 
 # --- Side effect capture capabilities ---
