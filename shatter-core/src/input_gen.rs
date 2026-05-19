@@ -151,6 +151,68 @@ pub fn generate_random_value(
     }
 }
 
+/// Repair a value whose JSON shape disagrees with the declared `TypeInfo`.
+///
+/// Returns the value unchanged when its JSON shape matches `typ`; otherwise
+/// returns a fresh value generated for `typ`. For arrays, also repairs each
+/// element against the declared element type so that off-type elements
+/// inherited from upstream seed corpora (literal pools, cross-function
+/// interesting pool, pre-str-ieuc legacy entries) cannot survive into
+/// downstream explorer iterations.
+///
+/// Motivating case (str-jeen.85): explorer crossover/mutation preserved
+/// strings / bools / floats in `Array<Complex<GoByte>>` slots because
+/// `crossover_array`'s splice and `mutate_array`'s Shuffle/Remove/Add ops
+/// don't consult the declared element type. After str-ieuc fixed the
+/// numeric range, those off-type elements still reached the Go wrapper and
+/// failed `json.Unmarshal` into `uint8`.
+///
+/// The shape checks here are intentionally narrow — only enough to plug the
+/// GoByte leak surface. Complex kinds other than GoByte and structural
+/// types (Object/Union/Nullable) keep their current pass-through behavior
+/// to avoid changing behavior outside the reported bug class.
+fn coerce_value_to_type(value: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> Value {
+    if value_matches_type_shape(value, typ) {
+        if let (Value::Array(items), TypeInfo::Array { element }) = (value, typ) {
+            // Element-level repair for arrays. The outer shape matched, but a
+            // recursive pass catches off-type elements (the actual bug locus).
+            let repaired: Vec<Value> = items
+                .iter()
+                .map(|item| coerce_value_to_type(item, element, rng))
+                .collect();
+            return Value::Array(repaired);
+        }
+        value.clone()
+    } else {
+        generate_random_value(typ, rng, None)
+    }
+}
+
+/// Shallow shape check used by `coerce_value_to_type`. Returns `true` when
+/// the JSON shape of `value` is acceptable for `typ` at the top level
+/// (element-level repair is the caller's job).
+fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
+    match typ {
+        TypeInfo::Int => value.is_i64() || value.is_u64(),
+        TypeInfo::Float => value.is_number(),
+        TypeInfo::Bool => value.is_boolean(),
+        TypeInfo::Str => value.is_string(),
+        TypeInfo::Array { .. } => value.is_array(),
+        TypeInfo::Object { .. } => value.is_object(),
+        TypeInfo::Nullable { inner } => value.is_null() || value_matches_type_shape(value, inner),
+        TypeInfo::Union { variants } => variants
+            .iter()
+            .any(|v| value_matches_type_shape(value, v)),
+        TypeInfo::Complex {
+            kind: ComplexKind::GoByte,
+            ..
+        } => value.as_u64().is_some_and(|n| n <= 255),
+        // Other complex kinds and Opaque/Unknown keep current pass-through
+        // behavior — narrowing this gate is out of scope for str-jeen.85.
+        TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
+    }
+}
+
 /// Generate a random integer, biased toward boundary values.
 fn generate_int(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..10);
@@ -1497,6 +1559,14 @@ fn mutate_array(
         Some(a) => a.clone(),
         None => return generate_array(element, rng, None),
     };
+    // str-jeen.85: repair any off-type elements before applying ops. The
+    // Shuffle/Remove/Add ops below don't touch existing element values, so
+    // wrong-typed elements inherited from the seed corpus would otherwise
+    // survive untouched.
+    let arr: Vec<Value> = arr
+        .into_iter()
+        .map(|v| coerce_value_to_type(&v, element, rng))
+        .collect();
     let op: u8 = if arr.is_empty() {
         1 // Can only add
     } else if arr.len() < 2 {
@@ -2319,7 +2389,7 @@ pub fn crossover_inputs(
 fn crossover_value(a: &Value, b: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> (Value, Value) {
     match typ {
         TypeInfo::Object { fields } => crossover_object(a, b, fields, rng),
-        TypeInfo::Array { .. } => crossover_array(a, b, rng),
+        TypeInfo::Array { element } => crossover_array(a, b, element, rng),
         TypeInfo::Str => crossover_string(a, b, rng),
         _ => {
             if rng.random_bool(0.5) {
@@ -2382,16 +2452,34 @@ fn crossover_object(
 }
 
 /// Single-point crossover for arrays: pick a crossover point, swap tails.
-fn crossover_array(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) {
+///
+/// str-jeen.85: `element_type` is threaded from `crossover_value` so the
+/// splice output can be sanitized against the declared element type.
+/// Without this, off-type elements inherited from either parent (e.g. a
+/// string in a `[]byte` slot) would propagate to both children and survive
+/// downstream mutation ops that don't touch existing element values.
+fn crossover_array(
+    a: &Value,
+    b: &Value,
+    element_type: &TypeInfo,
+    rng: &mut impl Rng,
+) -> (Value, Value) {
     let arr_a = a.as_array();
     let arr_b = b.as_array();
 
     let (Some(arr_a), Some(arr_b)) = (arr_a, arr_b) else {
-        return if rng.random_bool(0.5) {
+        // Either parent isn't actually an array — fall back to uniform swap,
+        // but repair both sides so a non-array (or array containing off-type
+        // elements) doesn't escape as a child.
+        let (c1, c2) = if rng.random_bool(0.5) {
             (a.clone(), b.clone())
         } else {
             (b.clone(), a.clone())
         };
+        return (
+            coerce_value_to_type(&c1, &TypeInfo::Array { element: Box::new(element_type.clone()) }, rng),
+            coerce_value_to_type(&c2, &TypeInfo::Array { element: Box::new(element_type.clone()) }, rng),
+        );
     };
 
     if arr_a.is_empty() && arr_b.is_empty() {
@@ -2404,11 +2492,32 @@ fn crossover_array(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) {
 
     // child1 = arr_a[..point] ++ arr_b[point..]
     // child2 = arr_b[..point] ++ arr_a[point..]
-    let mut c1: Vec<Value> = arr_a.iter().take(point).cloned().collect();
-    c1.extend(arr_b.iter().skip(point).cloned());
+    // Repair each spliced element against the declared element type so the
+    // splice cannot launder a wrong-typed element from one parent into the
+    // other's slot.
+    let mut c1: Vec<Value> = arr_a
+        .iter()
+        .take(point)
+        .map(|v| coerce_value_to_type(v, element_type, rng))
+        .collect();
+    c1.extend(
+        arr_b
+            .iter()
+            .skip(point)
+            .map(|v| coerce_value_to_type(v, element_type, rng)),
+    );
 
-    let mut c2: Vec<Value> = arr_b.iter().take(point).cloned().collect();
-    c2.extend(arr_a.iter().skip(point).cloned());
+    let mut c2: Vec<Value> = arr_b
+        .iter()
+        .take(point)
+        .map(|v| coerce_value_to_type(v, element_type, rng))
+        .collect();
+    c2.extend(
+        arr_a
+            .iter()
+            .skip(point)
+            .map(|v| coerce_value_to_type(v, element_type, rng)),
+    );
 
     (json!(c1), json!(c2))
 }
@@ -5213,6 +5322,48 @@ mod tests {
             }
         }
 
+        /// Build a JSON array that *models the str-jeen.85 bug input*: a byte
+        /// array whose elements are a mix of integers (in or out of [0,255]),
+        /// strings, bools, floats, objects, and nulls. When `pollute` is
+        /// false the array is well-typed bytes.
+        fn polluted_byte_array(rng: &mut StdRng, pollute: bool) -> Value {
+            let len = rng.random_range(0..=6);
+            let items: Vec<Value> = (0..len)
+                .map(|_| {
+                    if !pollute {
+                        return json!(rng.random_range(0u64..=255));
+                    }
+                    match rng.random_range(0..8u8) {
+                        0 => json!(rng.random_range(0u64..=255)), // valid byte
+                        1 => json!("true"),
+                        2 => json!(true),
+                        3 => json!(-9.0_f64),
+                        4 => json!(rng.random_range(i64::MIN..=-1)), // out of range int
+                        5 => json!(rng.random_range(256u64..=10_000)), // out of range int
+                        6 => json!(null),
+                        _ => json!({"__complex_type": "go_byte", "value": 42}),
+                    }
+                })
+                .collect();
+            json!(items)
+        }
+
+        /// Assert every element of `value` is a raw JSON integer in [0, 255].
+        fn assert_byte_array(value: &Value) {
+            let items = value
+                .as_array()
+                .unwrap_or_else(|| panic!("expected JSON array, got {value:?}"));
+            for (i, item) in items.iter().enumerate() {
+                let n = item.as_u64().unwrap_or_else(|| {
+                    panic!("element {i} not a raw JSON number: {item:?} (full: {value:?})")
+                });
+                assert!(
+                    n <= 255,
+                    "element {i} out of [0,255]: {n} (full: {value:?})"
+                );
+            }
+        }
+
         proptest! {
             /// Call-graph-aware pool seeding produces valid-length rows with
             /// type-matched values, and callee-sourced values precede others.
@@ -5736,6 +5887,80 @@ mod tests {
                     });
                     prop_assert!(n <= 255, "byte slice element out of range: {n}");
                 }
+            }
+
+            // -----------------------------------------------------------------
+            // GoByte explorer-path repair (str-jeen.85): crossover and mutation
+            // must never propagate non-integer elements into a `[]byte` slot,
+            // even when the seed corpus they receive contains strings, bools,
+            // floats, objects, or nulls.
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn crossover_array_byte_slot_only_yields_bytes(
+                seed in 0..100_000u64,
+                pollute_a in any::<bool>(),
+                pollute_b in any::<bool>(),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let element = TypeInfo::Complex {
+                    kind: ComplexKind::GoByte,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Array { element: Box::new(element.clone()) };
+                let param = crate::types::ParamInfo {
+                    name: "b".to_string(),
+                    typ: typ.clone(),
+                    type_name: None,
+                };
+
+                let parent_a = polluted_byte_array(&mut rng, pollute_a);
+                let parent_b = polluted_byte_array(&mut rng, pollute_b);
+                let (c1, c2) = crossover_inputs(
+                    &[parent_a],
+                    &[parent_b],
+                    std::slice::from_ref(&param),
+                    1.0,
+                    &mut rng,
+                );
+                for child in [&c1[0], &c2[0]] {
+                    assert_byte_array(child);
+                }
+            }
+
+            #[test]
+            fn mutate_array_byte_slot_only_yields_bytes(
+                seed in 0..100_000u64,
+                pollute in any::<bool>(),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let element = TypeInfo::Complex {
+                    kind: ComplexKind::GoByte,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Array { element: Box::new(element) };
+                let polluted = polluted_byte_array(&mut rng, pollute);
+                let mutated = mutate_value(&polluted, &typ, &[], &mut rng);
+                assert_byte_array(&mutated);
+            }
+
+            #[test]
+            fn havoc_mutate_byte_array_only_yields_bytes(
+                seed in 0..100_000u64,
+                pollute in any::<bool>(),
+            ) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let element = TypeInfo::Complex {
+                    kind: ComplexKind::GoByte,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Array { element: Box::new(element) };
+                let polluted = polluted_byte_array(&mut rng, pollute);
+                let mutated = havoc_mutate_value(&polluted, &typ, &[], &mut rng);
+                assert_byte_array(&mutated);
             }
 
             // -----------------------------------------------------------------
