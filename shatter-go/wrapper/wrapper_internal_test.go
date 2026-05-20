@@ -748,3 +748,99 @@ func NoVariadic(xs []string) int { return len(xs) }
 	check("CallU32", "args", "[]uint64", true)
 	check("NoVariadic", "xs", "[]string", false)
 }
+
+// str-4cqz: function-typed parameters have no JSON representation. The
+// wrapper must bake `nil` as a deterministic stub so the generated source
+// compiles and runs without trying to json.Unmarshal a JSON value into a
+// `func(...)` slot, which produced "param fn: json: cannot unmarshal X
+// into Go value of type func(...)" error clusters on every iteration.
+func TestGenerateWrapper_FuncParamStubbedAsNil(t *testing.T) {
+	const src = `package cb
+
+func ApplyCallback(s string, fn func(string) error) int {
+	if fn == nil {
+		return len(s)
+	}
+	if err := fn(s); err != nil {
+		return -1
+	}
+	return 1
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cb.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("cb", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "cb",
+		PkgPath:   "example.com/cb",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if len(target.Parameters) != 2 {
+		t.Fatalf("len(parameters) = %d, want 2", len(target.Parameters))
+	}
+	// The string parameter still flows through json.Unmarshal.
+	if target.Parameters[0].RuntimeValueExpr != "" {
+		t.Errorf("string param RuntimeValueExpr = %q, want empty",
+			target.Parameters[0].RuntimeValueExpr)
+	}
+	// The func-typed parameter must be deterministically stubbed with nil.
+	if target.Parameters[1].RuntimeValueExpr != "nil" {
+		t.Errorf("func param RuntimeValueExpr = %q, want %q",
+			target.Parameters[1].RuntimeValueExpr, "nil")
+	}
+
+	out := GenerateWrapper("cb", targets, nil)
+	if !strings.Contains(out, "func(string) error = nil") {
+		t.Errorf("wrapper missing func-param nil assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(_shatterInputs[1], &fn)") {
+		t.Errorf("wrapper still decodes fn from inputs; func-param stub should bypass json.Unmarshal; source:\n%s", out)
+	}
+}
+
+// TestIsFuncTypeSpelling covers the shape-based detector used by
+// applyRuntimeValueBindings to recognise function-typed parameters whose
+// exact Go-source spelling varies per signature.
+func TestIsFuncTypeSpelling(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"func()", true},
+		{"func(string) error", true},
+		{"func(int) (T, error)", true},
+		{"  func(int) bool", true},
+		{"function", false},
+		{"funcation", false},
+		{"*func()", false},
+		{"", false},
+		{"chan func()", false},
+		{"map[string]func()", false},
+	}
+	for _, tc := range cases {
+		got := isFuncTypeSpelling(tc.in)
+		if got != tc.want {
+			t.Errorf("isFuncTypeSpelling(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
