@@ -353,9 +353,19 @@ fn test_file_fixtures_classify_correctly() {
             label: "tests/ directory marker",
         },
         Fixture {
-            path: "spec/features/login.ts",
+            path: "spec/features/login.spec.ts",
             expected: SourceBucket::TestSpec,
-            label: "spec/ directory marker",
+            label: ".spec.ts suffix in spec/ dir",
+        },
+        Fixture {
+            path: "spec/features/login.ts",
+            expected: SourceBucket::ProductionIsh,
+            label: "spec/ dir alone does not mark as test (str-9awj)",
+        },
+        Fixture {
+            path: "internal/specs/loader.go",
+            expected: SourceBucket::ProductionIsh,
+            label: "specs/ dir alone does not mark as test (str-9awj)",
         },
     ];
     check_fixtures("test_files", &fixtures);
