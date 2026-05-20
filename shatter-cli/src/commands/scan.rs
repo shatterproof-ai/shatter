@@ -487,6 +487,25 @@ pub(crate) async fn run_scan(
         analyzable_files.len(),
     );
 
+    // str-z06h: log the visibility split so the omission policy is visible in
+    // the scan log even when callers consume `format_scan_report` output
+    // rather than `print_summary_report`. The actual filter runs inside
+    // `rebuild_analyses_from_registry` below; this is purely informational.
+    let exported_total = registry.exported_functions().len();
+    let unexported_total = registry.len().saturating_sub(exported_total);
+    if unexported_total > 0 {
+        if all_functions {
+            log::info!(
+                "Including {unexported_total} unexported function(s) in scan scope (--all set)"
+            );
+        } else {
+            log::info!(
+                "Omitting {unexported_total} unexported function(s) by default; \
+                 re-run with --all to include them"
+            );
+        }
+    }
+
     // Collect analyses and file map from the registry. Pulls full analyses
     // (branches/literals/loops/source_file/adapter_hints/invocation_model)
     // from the registry rather than rebuilding empty placeholders — see
@@ -1181,6 +1200,10 @@ pub(crate) fn rebuild_analyses_from_registry(
 }
 
 /// Print a markdown-style summary report to stdout, rendered with termimad when `use_color` is true.
+///
+/// `all_functions` reflects the CLI `--all` flag (see `shatter-cli/src/args.rs`)
+/// and is reported faithfully in the summary so the reader can tell whether
+/// unexported functions were included or intentionally omitted (str-z06h).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_summary_report(
     root: &Path,
@@ -1194,6 +1217,7 @@ pub(crate) fn print_summary_report(
     exploration_results: &[(String, explorer::ObservationOutput)],
     elapsed: Duration,
     use_color: bool,
+    all_functions: bool,
 ) {
     use std::fmt::Write;
     let mut md = String::new();
@@ -1228,12 +1252,20 @@ pub(crate) fn print_summary_report(
     writeln!(md).unwrap();
     writeln!(md, "- **Total functions**: {}", registry.len()).unwrap();
     writeln!(md, "- **Total branches**: {total_branches}").unwrap();
-    writeln!(
-        md,
-        "- **Exported functions**: {}",
-        registry.exported_functions().len()
-    )
-    .unwrap();
+    let exported_count = registry.exported_functions().len();
+    let unexported_count = registry.len().saturating_sub(exported_count);
+    writeln!(md, "- **Exported functions**: {exported_count}").unwrap();
+    // str-z06h: report unexported counts so readers can tell whether private
+    // functions were explored or intentionally omitted. The filter lives in
+    // `rebuild_analyses_from_registry` and is controlled by the `--all` CLI flag.
+    writeln!(md, "- **Unexported functions**: {unexported_count}").unwrap();
+    if unexported_count > 0 && !all_functions {
+        writeln!(
+            md,
+            "  - _Omitted from this run. Re-run with `--all` to include them._",
+        )
+        .unwrap();
+    }
     writeln!(md).unwrap();
 
     // Call graph summary
@@ -1433,6 +1465,53 @@ mod tests {
         // graph in `behavior::CallGraph::from_analyses` can produce
         // qualified node IDs.
         assert_eq!(rebuilt[0].source_file.as_deref(), Some(GO_FILE_PATH),);
+    }
+
+    /// str-z06h: the visibility filter inside `rebuild_analyses_from_registry`
+    /// drops unexported functions when `all_functions = false` and keeps them
+    /// when `all_functions = true`. This is the seam that enforces the
+    /// documented Go private-function opt-in policy
+    /// (see `docs/go-frontend-scope-limits.md`).
+    #[test]
+    fn rebuild_analyses_visibility_filter_honors_all_functions_flag() {
+        fn make_entry(name: &str, exported: bool) -> FunctionEntry {
+            FunctionEntry {
+                file_path: PathBuf::from(format!("/src/{name}.go")),
+                name: name.into(),
+                exported,
+                params: vec![],
+                return_type: TypeInfo::Int,
+                dependencies: vec![],
+                crypto_boundaries: vec![],
+                branch_count: 0,
+                start_line: 1,
+                end_line: 2,
+            }
+        }
+        let entries = vec![
+            make_entry("Exported", true),
+            make_entry("hidden", false),
+        ];
+        let mut index = HashMap::new();
+        index.insert("/src/Exported.go::Exported".to_string(), 0);
+        index.insert("/src/hidden.go::hidden".to_string(), 1);
+        let registry = FunctionRegistry::from_raw(entries, index);
+
+        let (default_run, _) = rebuild_analyses_from_registry(&registry, false);
+        let default_names: Vec<&str> = default_run.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            default_names,
+            vec!["Exported"],
+            "default scan must omit unexported functions",
+        );
+
+        let (opt_in_run, _) = rebuild_analyses_from_registry(&registry, true);
+        let opt_in_names: Vec<&str> = opt_in_run.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            opt_in_names,
+            vec!["Exported", "hidden"],
+            "--all scan must include unexported functions",
+        );
     }
 
     /// Registries built without analyses (e.g. via `FunctionRegistry::from_raw`)
