@@ -860,6 +860,42 @@ func TestAnalyzeFileWithoutFunctionReturnsAll(t *testing.T) {
 	}
 }
 
+// str-z06h: the Go analyzer surfaces both exported and unexported functions
+// with a faithful `Exported` tag. The visibility filter is the CLI's
+// concern (`--all` in `shatter-cli/src/commands/scan.rs`); the frontend's
+// job is to report what it found, not to gate.
+func TestAnalyzeFileReportsExportedAndUnexportedFunctions(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("basic.go"), "")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	byName := make(map[string]bool, len(results))
+	for _, r := range results {
+		byName[r.Name] = r.Exported
+	}
+	cases := []struct {
+		name     string
+		exported bool
+	}{
+		{"Add", true},
+		{"Greet", true},
+		{"Classify", true},
+		{"Max", true},
+		{"IsEven", true},
+		{"noExport", false},
+	}
+	for _, c := range cases {
+		got, ok := byName[c.name]
+		if !ok {
+			t.Errorf("function %q missing from analyzer results", c.name)
+			continue
+		}
+		if got != c.exported {
+			t.Errorf("function %q: Exported=%v, want %v", c.name, got, c.exported)
+		}
+	}
+}
+
 // --- Error handling ---
 
 func TestAnalyzeNonexistentFileFails(t *testing.T) {

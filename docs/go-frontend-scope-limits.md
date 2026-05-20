@@ -45,6 +45,20 @@ Shatter's concolic engine reasons symbolically using Z3, which does not extend a
 
 Shatter's charter is to *generate* tests for production code. Existing tests are not analysis targets: their purpose is to assert behavior, and re-analyzing them would produce tests-of-tests, which is not a goal of the tool. Skipping `_test.go` is intentional, not an oversight, and will not be revisited.
 
+## Unexported (package-local) functions
+
+**Implemented.** Tracking: `str-z06h`.
+
+The Go analyzer surfaces every top-level function declaration regardless of visibility — `FunctionAnalysis.Exported` and `DiscoveredTarget.Visibility` are honest tags, not gates. The filter is on the CLI side: `shatter scan` and `shatter run` skip unexported functions by default and include them when invoked with `--all` (`shatter-cli/src/args.rs`). The package-local wrapper code in `shatter-go/wrapper/` already calls unexported same-package targets, so the opt-in path is a one-flag change.
+
+Default behavior — omit. Unexported functions are usually intermediate helpers rather than independent public surfaces, and including them by default expands the explore budget without a clear acceptance signal. The scan summary reports both the exported count and the count of unexported functions intentionally omitted, with a hint to re-run with `--all`.
+
+Opt-in behavior — include. `shatter scan --all <path>` (and `shatter run --all <path>`) discovers, instruments, and explores every top-level function in the analyzed packages, exported or not. Coverage and branch reports list private targets alongside exported ones; the wrapper compiles them as same-package calls.
+
+Out of scope — exploring unexported functions **from outside their defining package**. Go's visibility model makes this impossible without source-level edits, and Shatter intentionally does not synthesize callers in foreign packages to defeat it.
+
+Fixture: `examples/go/private-funcs/`. See its README for the two invocation lines.
+
 ## Generated code
 
 **Implemented.** Generated files are skipped by default (str-1giz).

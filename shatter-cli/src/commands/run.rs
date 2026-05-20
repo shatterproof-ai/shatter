@@ -387,6 +387,9 @@ pub(crate) async fn run_run(
     );
 
     if analyze_only {
+        // str-z06h: `shatter run` does not filter by visibility — it includes
+        // every analyzed function. Pass `all_functions = true` so the summary
+        // does not falsely suggest unexported targets were omitted.
         print_summary_report(
             &root,
             &ts_files,
@@ -399,6 +402,7 @@ pub(crate) async fn run_run(
             &[],
             start.elapsed(),
             use_color,
+            true,
         );
 
         if let Some(dir) = output_dir {
@@ -589,7 +593,9 @@ pub(crate) async fn run_run(
     let validity_md = render_validity_markdown(validity_top, &reasons_top);
     print_markdown(&validity_md, use_color);
 
-    // Step 6: Print summary report
+    // Step 6: Print summary report. `shatter run` is the full-exploration
+    // path and does not filter by visibility (see analyze_only call above);
+    // pass `all_functions = true` so the unexported-omission hint doesn't fire.
     print_summary_report(
         &root,
         &ts_files,
@@ -602,6 +608,7 @@ pub(crate) async fn run_run(
         &exploration_results,
         start.elapsed(),
         use_color,
+        true,
     );
 
     let budget_failed;
