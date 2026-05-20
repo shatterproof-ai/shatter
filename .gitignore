@@ -148,6 +148,7 @@ dist
 !**/.shatter/seeds/
 !**/.shatter/seeds/*.json
 **/.shatter/seeds/*.lock
+**/.shatter/seeds/pool.json
 
 # Shatter tool cache (all ephemeral)
 .shatter-cache/
