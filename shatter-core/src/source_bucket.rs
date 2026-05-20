@@ -269,8 +269,11 @@ fn is_fixture_sample(segments: &[&str]) -> bool {
 
 /// Directory names that hold test files. `testdata` is intentionally
 /// absent — see [`FIXTURE_DIRS`] and the precedence rules in the module
-/// docs.
-const TEST_DIRS: &[&str] = &["__tests__", "tests", "test", "spec", "specs"];
+/// docs. `spec` and `specs` are intentionally absent: those names are used
+/// for API-specification directories in Go and other languages; supported
+/// test conventions are all filename-suffix-based (e.g. `_test.go`,
+/// `.spec.ts`) and covered by [`TEST_SUFFIXES`].
+const TEST_DIRS: &[&str] = &["__tests__", "tests", "test"];
 
 /// Filename suffixes that mark test or spec files.
 const TEST_SUFFIXES: &[&str] = &[
@@ -344,6 +347,30 @@ mod tests {
             classify_path("src/__tests__/util.ts"),
             SourceBucket::TestSpec
         );
+        assert_eq!(
+            classify_path("tests/integration/run.go"),
+            SourceBucket::TestSpec
+        );
+    }
+
+    #[test]
+    fn specs_dir_not_classified_as_test_spec() {
+        // Production files in an `internal/specs` or `pkg/specs` directory
+        // must not be mislabelled as TestSpec (str-9awj).
+        assert_eq!(
+            classify_path("internal/specs/loader.go"),
+            SourceBucket::ProductionIsh
+        );
+        assert_eq!(
+            classify_path("pkg/specs/openapi.go"),
+            SourceBucket::ProductionIsh
+        );
+        // A _test.go file inside a specs/ directory is still TestSpec via suffix.
+        assert_eq!(
+            classify_path("internal/specs/loader_test.go"),
+            SourceBucket::TestSpec
+        );
+        // The tests/ directory marker continues to work.
         assert_eq!(
             classify_path("tests/integration/run.go"),
             SourceBucket::TestSpec
