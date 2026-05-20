@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
-	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/module"
 )
 
 func TestGenerateLauncherMainIsDeterministic(t *testing.T) {
@@ -331,7 +329,11 @@ chmod +x "$out"
 	}
 }
 
-// str-jeen.61: launcher go.mod must use the target module's go version.
+// str-b7zh: the launcher no longer emits its own go.mod (the source lives
+// inside the target module), so the only go.mod helper that remains is the
+// target go.mod reader used by the harness-loop go.mod-overlay path. The
+// previous tests covering buildLauncherGoMod (version selection, local
+// replace propagation, version-pinned skip) were dropped with that helper.
 
 func TestReadTargetGoModVersion(t *testing.T) {
 	dir := t.TempDir()
@@ -355,82 +357,6 @@ func TestReadTargetGoModMissingFallback(t *testing.T) {
 	}
 }
 
-func TestBuildLauncherGoModUsesTargetVersion(t *testing.T) {
-	got := launcher.BuildLauncherGoModForTest(
-		"launcher/mod", "example.com/tgt", "/tmp/tgt",
-		false, "",
-		"1.26.3", nil,
-	)
-	if !strings.Contains(got, "go 1.26.3") {
-		t.Errorf("expected 'go 1.26.3' in go.mod, got:\n%s", got)
-	}
-}
-
-func TestBuildLauncherGoModFallsBackToDefault(t *testing.T) {
-	got := launcher.BuildLauncherGoModForTest(
-		"launcher/mod", "example.com/tgt", "/tmp/tgt",
-		false, "",
-		"", nil, // empty version triggers fallback
-	)
-	if !strings.Contains(got, "go 1.23.0") {
-		t.Errorf("expected fallback 'go 1.23.0' in go.mod, got:\n%s", got)
-	}
-}
-
-// str-jeen.75: local replace directives from target go.mod must be propagated.
-
-func TestBuildLauncherGoModPropagatesLocalReplace(t *testing.T) {
-	replaces := []*modfile.Replace{
-		{
-			Old: module.Version{Path: "github.com/foo/bar"},
-			New: module.Version{Path: "/abs/path/to/api"},
-		},
-	}
-	got := launcher.BuildLauncherGoModForTest(
-		"launcher/mod", "example.com/tgt", "/tmp/tgt",
-		false, "",
-		"1.24.0", replaces,
-	)
-	if !strings.Contains(got, "replace github.com/foo/bar => /abs/path/to/api") {
-		t.Errorf("expected local replace propagated in go.mod, got:\n%s", got)
-	}
-}
-
-func TestBuildLauncherGoModResolvesRelativeReplace(t *testing.T) {
-	replaces := []*modfile.Replace{
-		{
-			Old: module.Version{Path: "github.com/foo/bar"},
-			New: module.Version{Path: "../../api"},
-		},
-	}
-	got := launcher.BuildLauncherGoModForTest(
-		"launcher/mod", "example.com/tgt", "/project/tools/nleval",
-		false, "",
-		"1.24.0", replaces,
-	)
-	want := "replace github.com/foo/bar => /project/api"
-	if !strings.Contains(got, want) {
-		t.Errorf("expected relative path resolved to %q in go.mod, got:\n%s", want, got)
-	}
-}
-
-func TestBuildLauncherGoModSkipsVersionPinnedReplace(t *testing.T) {
-	replaces := []*modfile.Replace{
-		{
-			Old: module.Version{Path: "github.com/foo/bar", Version: "v1.0.0"},
-			New: module.Version{Path: "github.com/foo/barv2", Version: "v2.0.0"},
-		},
-	}
-	got := launcher.BuildLauncherGoModForTest(
-		"launcher/mod", "example.com/tgt", "/tmp/tgt",
-		false, "",
-		"1.24.0", replaces,
-	)
-	if strings.Contains(got, "github.com/foo/barv2") {
-		t.Errorf("version-pinned replace should NOT be propagated, got:\n%s", got)
-	}
-}
-
 func TestReadTargetGoModReplace(t *testing.T) {
 	dir := t.TempDir()
 	goModContent := "module example.com/tgt\n\ngo 1.24.0\n\nrequire github.com/foo/bar v0.1.0\n\nreplace github.com/foo/bar => ../../api\n"
@@ -449,5 +375,91 @@ func TestReadTargetGoModReplace(t *testing.T) {
 	}
 	if replaces[0].New.Path != "../../api" {
 		t.Errorf("replace new path = %q, want %q", replaces[0].New.Path, "../../api")
+	}
+}
+
+// TestBuildLauncherCleansTransientSourceDir is the str-b7zh cleanup contract:
+// after BuildLauncher succeeds, no `.shatter-launchers/` artefact must remain
+// in the target module. The build runs against a real `go` toolchain when
+// available; otherwise the test is skipped.
+func TestBuildLauncherCleansTransientSourceDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX paths")
+	}
+
+	modDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/clean\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "stub.go"), []byte("package clean\n"), 0o644); err != nil {
+		t.Fatalf("write stub.go: %v", err)
+	}
+
+	// Fake `go` that writes a no-op script and exits 0, independent of the
+	// real toolchain — we only care about the cleanup contract, not the
+	// build itself.
+	fakeBinDir := t.TempDir()
+	fakeGo := filepath.Join(fakeBinDir, "go")
+	const fakeGoScript = `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then shift; out="$1"; fi
+  shift || true
+done
+[ -n "$out" ] || exit 0
+mkdir -p "$(dirname "$out")"
+printf '#!/bin/sh\nexit 0\n' > "$out"
+chmod +x "$out"
+`
+	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workDir := t.TempDir()
+	_, _, err := launcher.BuildLauncher(launcher.BuildOptions{
+		TargetModulePath: "example.com/clean",
+		TargetModuleDir:  modDir,
+		TargetImportPath: "example.com/clean",
+		DiscoveryHash:    "cleanup-hash",
+		GeneratedDir:     filepath.Join(workDir, "generated"),
+		BinariesDir:      filepath.Join(workDir, "binaries"),
+	})
+	if err != nil {
+		t.Fatalf("BuildLauncher: %v", err)
+	}
+
+	residue := filepath.Join(modDir, ".shatter-launchers")
+	if _, statErr := os.Stat(residue); statErr == nil {
+		t.Errorf(".shatter-launchers directory not cleaned up: %s", residue)
+	} else if !os.IsNotExist(statErr) {
+		t.Errorf("stat .shatter-launchers: %v", statErr)
+	}
+}
+
+// TestInternalAnchorRel locks in the path-anchor logic that places the
+// launcher under the parent of the deepest `internal/` segment.
+func TestInternalAnchorRel(t *testing.T) {
+	// Use a small driver against the launcher package's internal helper via
+	// the same in-tree path computation BuildLauncher performs. We verify
+	// the resulting launcher dir suffix by introspecting OverlayPath and
+	// build args is overkill here; instead probe through the launcher
+	// directory naming used by tests above.
+	cases := []struct {
+		modulePath string
+		importPath string
+		wantSuffix string
+	}{
+		{"example.com/m", "example.com/m", ""},
+		{"example.com/m", "example.com/m/internal/x", ""},
+		{"example.com/m", "example.com/m/api/internal/handler", "api"},
+		{"example.com/m", "example.com/m/api/internal/handler/sub", "api"},
+		{"example.com/m", "example.com/m/a/b/internal/c/internal/d", filepath.Join("a", "b", "internal", "c")},
+	}
+	for _, tc := range cases {
+		got := launcher.InternalAnchorRelForTest(tc.modulePath, tc.importPath)
+		if got != tc.wantSuffix {
+			t.Errorf("anchor(%q, %q) = %q, want %q", tc.modulePath, tc.importPath, got, tc.wantSuffix)
+		}
 	}
 }

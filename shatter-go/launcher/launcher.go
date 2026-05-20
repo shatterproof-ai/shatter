@@ -10,11 +10,19 @@
 // <BinariesDir>/shatter_launcher_<DiscoveryHash>[.exe]. Subsequent calls
 // with the same DiscoveryHash return immediately without rebuilding.
 // Use wrapper.DiscoveryHash to derive the hash.
+//
+// Source placement (str-b7zh): the launcher is synthesized INSIDE the target
+// module under <TargetModuleDir>/.shatter-launchers/<hash>-<pid>/main.go.
+// `go build` then runs from the target module root, so the launcher and any
+// internal/ packages it imports live in the same module. The transient
+// source directory is removed after the build (the compiled binary is
+// retained in BinariesDir).
 package launcher
 
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,22 +37,29 @@ import (
 const (
 	launcherBuildLockPollInterval = 50 * time.Millisecond
 	launcherBuildLockStaleAfter   = 30 * time.Minute
+
+	// launchersDirName is the directory created inside the target module to
+	// hold transient launcher source packages. It is dot-prefixed so the Go
+	// tool skips it in `./...` wildcards and so common .gitignore filters
+	// already exclude it.
+	launchersDirName = ".shatter-launchers"
 )
 
 // BuildOptions are the inputs required to build a launcher binary.
 type BuildOptions struct {
 	// TargetModulePath is the Go module path of the target package
-	// (e.g. "example.com/targets"). Used for the replace directive in the
-	// launcher's go.mod.
+	// (e.g. "example.com/targets").
 	TargetModulePath string
 	// TargetModuleDir is the on-disk root of the target module. Must contain
-	// the module's go.mod and be accessible by the go toolchain.
+	// the module's go.mod and be writable so a transient
+	// `.shatter-launchers/<hash>-<pid>/` source directory can be created and
+	// torn down.
 	TargetModuleDir string
 	// TargetImportPath is the import path of the specific target package
 	// (often equal to TargetModulePath when the target is the root package).
 	TargetImportPath string
 	// DiscoveryHash is the 16-char hex hash from wrapper.DiscoveryHash.
-	// It determines the binary cache key and the launcher module name.
+	// It determines the binary cache key.
 	DiscoveryHash string
 	// WrapperRealPath is the on-disk path to the generated wrapper file
 	// (produced by wrapper.WriteWrapperFile).
@@ -53,16 +68,18 @@ type BuildOptions struct {
 	// wrapper file should appear during build
 	// (e.g. <targetPkgDir>/shatter_wrapper_<hash>.go).
 	WrapperInTreePath string
-	// GeneratedDir is the workspace area for generated launcher source files
-	// and overlay manifests. Subdirectories are created as needed.
+	// GeneratedDir is the workspace area for generated launcher-side
+	// artifacts (overlay manifests, augmented go.mod for the harness-loop
+	// case). Nothing is written into the target module here.
 	GeneratedDir string
 	// BinariesDir is the workspace area for compiled binaries.
 	// The binary is written to <BinariesDir>/shatter_launcher_<DiscoveryHash>.
 	BinariesDir string
 	// GoEnv overrides the environment for go build. Nil uses os.Environ().
 	GoEnv []string
-	// OverlayPath is an optional prebuilt overlay manifest. When set, it
-	// overrides the WrapperRealPath/WrapperInTreePath pair.
+	// OverlayPath is an optional prebuilt overlay manifest. When set, its
+	// entries are merged with any overlay entries the launcher itself
+	// requires (wrapper overlay, harness-runtime go.mod overlay).
 	OverlayPath string
 	// MainSource overrides the generated launcher entrypoint when non-empty.
 	// Useful for specialized launcher binaries such as adapter-owned handlers.
@@ -71,8 +88,10 @@ type BuildOptions struct {
 	// request/response bridge to the richer harness.RunLoop bridge that returns
 	// recorder-backed execution data.
 	UseHarnessLoop bool
-	// HarnessRuntimeDir is the replacement target for the shared shatter-harness
-	// module when UseHarnessLoop is enabled.
+	// HarnessRuntimeDir is the on-disk path of the shared shatter-harness
+	// runtime module when UseHarnessLoop is enabled. The target's go.mod is
+	// overlaid with a `require shatter-harness v0.0.0 / replace shatter-harness
+	// => HarnessRuntimeDir` augmentation for the duration of the build.
 	HarnessRuntimeDir string
 }
 
@@ -91,11 +110,6 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	}
 	if opts.TargetImportPath == "" {
 		return "", false, fmt.Errorf("launcher: TargetImportPath must not be empty")
-	}
-
-	launcherModuleName, err := computeLauncherModuleName(opts.TargetModulePath, opts.TargetImportPath, opts.DiscoveryHash)
-	if err != nil {
-		return "", false, err
 	}
 
 	binaryName := "shatter_launcher_" + opts.DiscoveryHash
@@ -123,10 +137,24 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return binaryPath, false, nil
 	}
 
-	launcherDir := filepath.Join(opts.GeneratedDir, opts.DiscoveryHash, "launcher")
-	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
-		return "", false, fmt.Errorf("launcher: create launcher dir: %w", err)
+	// Place launcher source INSIDE the target module so Go's internal/
+	// visibility rule treats it as same-module code. When the target
+	// import path itself contains `internal/` segments, anchor the
+	// launcher under the deepest such parent so the launcher's own import
+	// path satisfies the parent-of-internal prefix rule. The pid suffix
+	// keeps concurrent builds (different processes) from colliding on the
+	// same hash; the per-hash file lock above already serialises within a
+	// process.
+	anchorRel, err := internalAnchorRel(opts.TargetModulePath, opts.TargetImportPath)
+	if err != nil {
+		return "", false, err
 	}
+	launcherDirRel := filepath.Join(anchorRel, launchersDirName, fmt.Sprintf("%s-%d", opts.DiscoveryHash, os.Getpid()))
+	launcherDir := filepath.Join(opts.TargetModuleDir, launcherDirRel)
+	if err := writeLauncherSourceDir(launcherDir); err != nil {
+		return "", false, err
+	}
+	defer cleanupLauncherSourceDir(opts.TargetModuleDir, launcherDir)
 
 	mainSrc := opts.MainSource
 	if mainSrc == "" {
@@ -139,22 +167,11 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, fmt.Errorf("launcher: write main.go: %w", err)
 	}
 
-	targetGoVersion, targetReplaces := readTargetGoMod(opts.TargetModuleDir)
-	goMod := buildLauncherGoMod(
-		launcherModuleName,
-		opts.TargetModulePath,
-		opts.TargetModuleDir,
-		opts.UseHarnessLoop,
-		opts.HarnessRuntimeDir,
-		targetGoVersion,
-		targetReplaces,
-	)
-	if err := os.WriteFile(filepath.Join(launcherDir, "go.mod"), []byte(goMod), 0o644); err != nil {
-		return "", false, fmt.Errorf("launcher: write go.mod: %w", err)
-	}
-	if err := seedLauncherGoSum(opts.TargetModuleDir, launcherDir); err != nil {
+	overlayPath, overlayCleanup, err := buildCombinedOverlay(opts)
+	if err != nil {
 		return "", false, err
 	}
+	defer overlayCleanup()
 
 	// Build to a same-directory temp path and atomically rename to the
 	// final binaryPath on success. Concurrent BuildLauncher callers (in
@@ -172,24 +189,18 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	// or any ancestor contains a `.git` that the toolchain cannot probe
 	// (e.g. when shatter is run against a real module checkout from a
 	// generated workspace path). See str-qo1.15.
-	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false", "-o", tempBinaryPath}
-	if opts.OverlayPath != "" {
-		buildArgs = append(buildArgs, "-overlay", opts.OverlayPath)
-	} else if opts.WrapperRealPath != "" && opts.WrapperInTreePath != "" {
-		overlayPath, overlayErr := writeLauncherOverlay(launcherDir, opts.WrapperInTreePath, opts.WrapperRealPath)
-		if overlayErr != nil {
-			return "", false, overlayErr
-		}
+	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false"}
+	if overlayPath != "" {
 		buildArgs = append(buildArgs, "-overlay", overlayPath)
 	}
-	buildArgs = append(buildArgs, ".")
+	buildArgs = append(buildArgs, "-o", tempBinaryPath, "./"+filepath.ToSlash(launcherDirRel))
 
 	goEnv := opts.GoEnv
 	if goEnv == nil {
 		goEnv = os.Environ()
 	}
 	cmd := exec.Command("go", buildArgs...) //nolint:gosec
-	cmd.Dir = launcherDir
+	cmd.Dir = opts.TargetModuleDir
 	cmd.Env = goEnv
 	if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
 		_ = os.Remove(tempBinaryPath)
@@ -204,28 +215,171 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	return binaryPath, true, nil
 }
 
-func computeLauncherModuleName(targetModulePath, targetImportPath, discoveryHash string) (string, error) {
+// internalAnchorRel returns the path (relative to the target module root) at
+// which the launcher source directory should live. When the target import
+// path contains `internal/` segments, the anchor is the parent of the
+// deepest `internal/`; otherwise the anchor is the module root (empty
+// relative path). The launcher's own in-module import path is then
+// `<targetModulePath>/<anchorRel>/.shatter-launchers/<hash>-<pid>`, which
+// has the prefix Go's internal-package rule requires for an importer of
+// any internal/ package whose parent is at or above the anchor.
+func internalAnchorRel(targetModulePath, targetImportPath string) (string, error) {
 	if targetImportPath != targetModulePath && !strings.HasPrefix(targetImportPath, targetModulePath+"/") {
 		return "", fmt.Errorf(
 			"launcher: target import path %q is outside target module %q",
-			targetImportPath,
-			targetModulePath,
+			targetImportPath, targetModulePath,
 		)
 	}
-
-	anchorPath := targetModulePath
 	segments := strings.Split(targetImportPath, "/")
-	deepestInternalIndex := -1
-	for index, segment := range segments {
-		if segment == "internal" {
-			deepestInternalIndex = index
+	deepest := -1
+	for i, seg := range segments {
+		if seg == "internal" {
+			deepest = i
 		}
 	}
-	if deepestInternalIndex > 0 {
-		anchorPath = strings.Join(segments[:deepestInternalIndex], "/")
+	if deepest <= 0 {
+		return "", nil
+	}
+	anchorImport := strings.Join(segments[:deepest], "/")
+	moduleSegs := strings.Count(targetModulePath, "/") + 1
+	if deepest <= moduleSegs {
+		// internal/ is at or above the module root within the import path;
+		// the anchor coincides with the module root.
+		return "", nil
+	}
+	relSegs := segments[moduleSegs:deepest]
+	_ = anchorImport
+	return filepath.Join(relSegs...), nil
+}
+
+// writeLauncherSourceDir creates the transient launcher source directory.
+// If the directory already exists (e.g. a previous process crashed without
+// cleanup), it is removed and recreated. The pid-suffixed naming makes
+// genuine concurrent-process collisions vanishingly unlikely; observing a
+// stale directory therefore reflects a crash, not a live peer.
+func writeLauncherSourceDir(launcherDir string) error {
+	if _, statErr := os.Stat(launcherDir); statErr == nil {
+		if rmErr := os.RemoveAll(launcherDir); rmErr != nil {
+			return fmt.Errorf("launcher: remove stale source dir %q: %w", launcherDir, rmErr)
+		}
+	}
+	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
+		return fmt.Errorf("launcher: create launcher dir: %w", err)
+	}
+	return nil
+}
+
+// cleanupLauncherSourceDir removes the launcher's transient source directory
+// and, if it leaves the enclosing `.shatter-launchers/` directory empty,
+// removes that too. Errors are swallowed: cleanup is best-effort, and the
+// build's success/failure has already been determined.
+func cleanupLauncherSourceDir(targetModuleDir, launcherDir string) {
+	_ = os.RemoveAll(launcherDir)
+	parent := filepath.Dir(launcherDir)
+	if filepath.Base(parent) == launchersDirName && strings.HasPrefix(parent, targetModuleDir) {
+		entries, err := os.ReadDir(parent)
+		if err == nil && len(entries) == 0 {
+			_ = os.Remove(parent)
+		}
+	}
+}
+
+// buildCombinedOverlay assembles a single overlay manifest combining any
+// caller-supplied overlay entries, the wrapper-in-tree override, and (for
+// UseHarnessLoop) an augmented target go.mod that injects the shatter-harness
+// require/replace pair without modifying the target module on disk. Returns
+// an empty path when no overlay is needed.
+func buildCombinedOverlay(opts BuildOptions) (overlayPath string, cleanup func(), err error) {
+	noop := func() {}
+	replace := map[string]string{}
+
+	if opts.OverlayPath != "" {
+		data, readErr := os.ReadFile(opts.OverlayPath)
+		if readErr != nil {
+			return "", noop, fmt.Errorf("launcher: read overlay %q: %w", opts.OverlayPath, readErr)
+		}
+		var existing map[string]map[string]string
+		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
+			return "", noop, fmt.Errorf("launcher: parse overlay %q: %w", opts.OverlayPath, jsonErr)
+		}
+		maps.Copy(replace, existing["Replace"])
 	}
 
-	return anchorPath + "/shatter_launcher_" + discoveryHash, nil
+	if opts.OverlayPath == "" && opts.WrapperRealPath != "" && opts.WrapperInTreePath != "" {
+		replace[opts.WrapperInTreePath] = opts.WrapperRealPath
+	}
+
+	tempPaths := []string{}
+	addTemp := func(p string) { tempPaths = append(tempPaths, p) }
+
+	if opts.UseHarnessLoop {
+		augmentedGoMod, augErr := writeAugmentedGoMod(opts)
+		if augErr != nil {
+			return "", noop, augErr
+		}
+		addTemp(augmentedGoMod)
+		targetGoModPath := filepath.Join(opts.TargetModuleDir, "go.mod")
+		replace[targetGoModPath] = augmentedGoMod
+	}
+
+	if len(replace) == 0 {
+		return "", noop, nil
+	}
+
+	manifest := map[string]map[string]string{"Replace": replace}
+	data, marshalErr := json.MarshalIndent(manifest, "", "  ")
+	if marshalErr != nil {
+		return "", noop, fmt.Errorf("launcher: marshal overlay manifest: %w", marshalErr)
+	}
+	if err := os.MkdirAll(opts.GeneratedDir, 0o755); err != nil {
+		return "", noop, fmt.Errorf("launcher: create generated dir: %w", err)
+	}
+	overlayPath = filepath.Join(opts.GeneratedDir, "overlay-"+opts.DiscoveryHash+".json")
+	if err := os.WriteFile(overlayPath, data, 0o644); err != nil {
+		return "", noop, fmt.Errorf("launcher: write overlay manifest: %w", err)
+	}
+	addTemp(overlayPath)
+
+	cleanup = func() {
+		for _, p := range tempPaths {
+			_ = os.Remove(p)
+		}
+	}
+	return overlayPath, cleanup, nil
+}
+
+// writeAugmentedGoMod parses the target module's go.mod and writes an
+// augmented copy (in the workspace, not the target module) that adds
+// `require shatter-harness v0.0.0` and `replace shatter-harness =>
+// HarnessRuntimeDir`. Returns the path of the augmented file.
+func writeAugmentedGoMod(opts BuildOptions) (string, error) {
+	targetGoMod := filepath.Join(opts.TargetModuleDir, "go.mod")
+	data, err := os.ReadFile(targetGoMod)
+	if err != nil {
+		return "", fmt.Errorf("launcher: read target go.mod: %w", err)
+	}
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", fmt.Errorf("launcher: parse target go.mod: %w", err)
+	}
+	if err := f.AddRequire(instrument.HarnessRuntimeModuleName, "v0.0.0"); err != nil {
+		return "", fmt.Errorf("launcher: augment go.mod require: %w", err)
+	}
+	if err := f.AddReplace(instrument.HarnessRuntimeModuleName, "", opts.HarnessRuntimeDir, ""); err != nil {
+		return "", fmt.Errorf("launcher: augment go.mod replace: %w", err)
+	}
+	out, err := f.Format()
+	if err != nil {
+		return "", fmt.Errorf("launcher: format augmented go.mod: %w", err)
+	}
+	if err := os.MkdirAll(opts.GeneratedDir, 0o755); err != nil {
+		return "", fmt.Errorf("launcher: create generated dir: %w", err)
+	}
+	dest := filepath.Join(opts.GeneratedDir, "go-mod-overlay-"+opts.DiscoveryHash+".mod")
+	if err := os.WriteFile(dest, out, 0o644); err != nil {
+		return "", fmt.Errorf("launcher: write augmented go.mod: %w", err)
+	}
+	return dest, nil
 }
 
 func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool, err error) {
@@ -381,6 +535,9 @@ func GenerateHarnessLauncherMain(targetImportPath string) string {
 // readTargetGoMod parses the target module's go.mod and returns its go version
 // string and replace directives. On any read or parse error, both zero values
 // are returned and the caller falls back to defaults.
+//
+// Retained for export_test compatibility; the in-tree launcher no longer
+// writes its own go.mod, so the returned data is informational only.
 func readTargetGoMod(targetModuleDir string) (goVersion string, replaces []*modfile.Replace) {
 	data, err := os.ReadFile(filepath.Join(targetModuleDir, "go.mod"))
 	if err != nil {
@@ -394,75 +551,4 @@ func readTargetGoMod(targetModuleDir string) (goVersion string, replaces []*modf
 		goVersion = f.Go.Version
 	}
 	return goVersion, f.Replace
-}
-
-func buildLauncherGoMod(
-	moduleName,
-	targetModulePath,
-	targetModuleDir string,
-	useHarnessLoop bool,
-	harnessRuntimeDir string,
-	goVersion string,
-	targetReplaces []*modfile.Replace,
-) string {
-	if goVersion == "" {
-		goVersion = "1.23.0"
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "module %s\n\ngo %s\n\n", moduleName, goVersion)
-	fmt.Fprintf(&b, "require %s v0.0.0\n\n", targetModulePath)
-	fmt.Fprintf(&b, "replace %s => %s\n", targetModulePath, targetModuleDir)
-	// Propagate local replace directives from the target module (str-jeen.75).
-	// Go only honors replace from the main module, so the launcher must
-	// re-declare any local-path replaces the target depends on.
-	for _, r := range targetReplaces {
-		if r.New.Version != "" {
-			// Version-pinned replace: leave to normal module resolution.
-			continue
-		}
-		newPath := r.New.Path
-		if !filepath.IsAbs(newPath) {
-			newPath = filepath.Join(targetModuleDir, newPath)
-		}
-		if r.Old.Version != "" {
-			fmt.Fprintf(&b, "replace %s %s => %s\n", r.Old.Path, r.Old.Version, newPath)
-		} else {
-			fmt.Fprintf(&b, "replace %s => %s\n", r.Old.Path, newPath)
-		}
-	}
-	if useHarnessLoop {
-		fmt.Fprintf(&b, "\nrequire %s v0.0.0\n", instrument.HarnessRuntimeModuleName)
-		fmt.Fprintf(&b, "replace %s => %s\n", instrument.HarnessRuntimeModuleName, harnessRuntimeDir)
-	}
-	return b.String()
-}
-
-func writeLauncherOverlay(launcherDir, inTreePath, realPath string) (string, error) {
-	manifest := map[string]map[string]string{
-		"Replace": {inTreePath: realPath},
-	}
-	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("launcher: marshal overlay manifest: %w", err)
-	}
-	overlayPath := filepath.Join(launcherDir, "overlay.json")
-	if err := os.WriteFile(overlayPath, manifestJSON, 0o644); err != nil {
-		return "", fmt.Errorf("launcher: write overlay manifest: %w", err)
-	}
-	return overlayPath, nil
-}
-
-func seedLauncherGoSum(targetModuleDir, launcherDir string) error {
-	sourcePath := filepath.Join(targetModuleDir, "go.sum")
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("launcher: read target go.sum: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(launcherDir, "go.sum"), data, 0o644); err != nil {
-		return fmt.Errorf("launcher: write go.sum: %w", err)
-	}
-	return nil
 }
