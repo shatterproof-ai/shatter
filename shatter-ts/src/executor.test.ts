@@ -1179,6 +1179,87 @@ describe("React component execution", () => {
   });
 });
 
+describe("React.createContext shim (str-lu2.9)", () => {
+  const CONTEXT_FIXTURE = path.resolve(FIXTURES_DIR, "react-context.tsx");
+
+  it("executes a target that creates and reads a context without throwing", async () => {
+    const result = await executeFunction(CONTEXT_FIXTURE, "themedLabel", []);
+    expect(result.thrown_error).toBeNull();
+    // Default context value is "light" → branches to "plain".
+    expect(result.return_value).toBe("plain");
+  });
+
+  it("executes a hook target wrapping useContext without TypeError", async () => {
+    const result = await executeFunction(CONTEXT_FIXTURE, "useAuth", []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("plain");
+  });
+
+  it("executes a Provider target and returns a JSX element", async () => {
+    const result = await executeFunction(CONTEXT_FIXTURE, "AuthProvider", [
+      { value: "dark", children: "kid" },
+    ]);
+    expect(result.thrown_error).toBeNull();
+    const el = result.return_value as Record<string, unknown>;
+    expect(el.$$typeof).toBe(Symbol.for("react.element"));
+  });
+});
+
+describe("getReactShim createContext export (str-lu2.9)", () => {
+  // Direct shim-level checks — guard against the surface regressing even if
+  // the executor injection path changes.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getReactShim } = require("./react-shim.js") as typeof import("./react-shim.js");
+
+  it("exposes createContext as a function on the react module", () => {
+    const shim = getReactShim("react") as Record<string, unknown>;
+    expect(typeof shim.createContext).toBe("function");
+  });
+
+  it("creates a context whose _currentValue defaults to the argument", () => {
+    const shim = getReactShim("react") as Record<string, unknown>;
+    const createContext = shim.createContext as (v: unknown) => {
+      _currentValue: unknown;
+      Provider: (p: { value?: unknown; children?: unknown }) => unknown;
+      Consumer: (p: { children?: unknown }) => unknown;
+    };
+    const ctx = createContext("light");
+    expect(ctx._currentValue).toBe("light");
+    expect(typeof ctx.Provider).toBe("function");
+    expect(typeof ctx.Consumer).toBe("function");
+  });
+
+  it("Provider updates _currentValue and returns children", () => {
+    const shim = getReactShim("react") as Record<string, unknown>;
+    const createContext = shim.createContext as (v: unknown) => {
+      _currentValue: unknown;
+      Provider: (p: { value?: unknown; children?: unknown }) => unknown;
+    };
+    const ctx = createContext("light");
+    const out = ctx.Provider({ value: "dark", children: "kid" });
+    expect(ctx._currentValue).toBe("dark");
+    expect(out).toBe("kid");
+  });
+
+  it("Consumer invokes its render-prop child with the current value", () => {
+    const shim = getReactShim("react") as Record<string, unknown>;
+    const createContext = shim.createContext as (v: unknown) => {
+      _currentValue: unknown;
+      Consumer: (p: { children?: unknown }) => unknown;
+    };
+    const ctx = createContext("light");
+    const seen: unknown[] = [];
+    const out = ctx.Consumer({
+      children: (v: unknown) => {
+        seen.push(v);
+        return `saw:${String(v)}`;
+      },
+    });
+    expect(seen).toEqual(["light"]);
+    expect(out).toBe("saw:light");
+  });
+});
+
 describe("JSX runtime configuration (str-jeen.29)", () => {
   const JSX_IMPORT_SOURCE_DIR = path.join(FIXTURES_DIR, "jsx-import-source");
   const BADGE_FIXTURE = path.join(JSX_IMPORT_SOURCE_DIR, "badge.tsx");

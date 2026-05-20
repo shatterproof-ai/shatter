@@ -100,6 +100,40 @@ function useId(): string {
   return STATIC_USE_ID;
 }
 
+/**
+ * Stub of React.createContext. Returns an object exposing `_currentValue`
+ * (read by the `useContext` stub above), a `Provider` that updates
+ * `_currentValue` from its `value` prop and renders its children, and a
+ * `Consumer` that supports the render-prop form. Deterministic and
+ * side-effect-free, matching the rest of the shim — no subscriber
+ * notification, no fiber tree, no re-render scheduling.
+ */
+interface ReactContext<T> {
+  _currentValue: T;
+  Provider: (props: { value?: T; children?: unknown }) => unknown;
+  Consumer: (props: { children?: unknown }) => unknown;
+  displayName?: string;
+}
+
+function createContext<T>(defaultValue: T): ReactContext<T> {
+  const context: ReactContext<T> = {
+    _currentValue: defaultValue,
+    Provider: (props) => {
+      if (props && "value" in props) {
+        context._currentValue = props.value as T;
+      }
+      return props?.children;
+    },
+    Consumer: (props) => {
+      const children = props?.children;
+      return typeof children === "function"
+        ? (children as (v: T) => unknown)(context._currentValue)
+        : null;
+    },
+  };
+  return context;
+}
+
 /** Pass-through wrapper — returns the component unchanged. */
 function forwardRef(render: unknown): unknown {
   return render;
@@ -124,6 +158,7 @@ const reactModule = {
   useRef,
   useContext,
   useId,
+  createContext,
   createElement,
   Fragment,
   forwardRef,
