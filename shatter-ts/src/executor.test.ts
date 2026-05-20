@@ -238,6 +238,60 @@ describe("executeInstrumented private top-level targets (str-jeen.9)", () => {
   });
 });
 
+// str-jeen.69 regression: Kapow-shaped private targets in .tsx React
+// component files and Playwright-style .spec.ts files. The original
+// str-jeen.9 fixtures only covered string-returning helpers; they did
+// not exercise JSX-returning private React components or .spec.ts
+// files whose module body runs an external test-framework call at load
+// time. Both shapes are present in the 19 failing Kapow targets.
+describe("executeInstrumented private top-level targets (str-jeen.69)", () => {
+  const PRIVATE_REACT = path.join(FIXTURES_DIR, "private-react-component.tsx");
+  const PRIVATE_SPEC = path.join(FIXTURES_DIR, "private-spec-helper.spec.ts");
+
+  it("executes a private React function component returning JSX", async () => {
+    const source = fs.readFileSync(PRIVATE_REACT, "utf-8");
+    const instr = instrumentFunction(source, "CitationRow", PRIVATE_REACT);
+    if ("error" in instr) {
+      throw new Error(`Instrumentation failed: ${instr.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instr.instrumentedSource,
+      "CitationRow",
+      [{ citation: { label: "abc", year: 2024 } }],
+      [],
+      PRIVATE_REACT,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    // React element: any non-null return is acceptable; the
+    // regression is that the executor can resolve the target at all.
+    expect(result.return_value).not.toBeNull();
+  });
+
+  it("executes a private helper defined in a Playwright-style spec file", async () => {
+    const source = fs.readFileSync(PRIVATE_SPEC, "utf-8");
+    const instr = instrumentFunction(source, "loginAs", PRIVATE_SPEC);
+    if ("error" in instr) {
+      throw new Error(`Instrumentation failed: ${instr.error}`);
+    }
+
+    const result = await executeInstrumented(
+      instr.instrumentedSource,
+      "loginAs",
+      ["admin"],
+      [],
+      PRIVATE_SPEC,
+    );
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toEqual({
+      role: "admin",
+      perms: ["read", "write", "admin"],
+    });
+  });
+});
+
 const SIDE_EFFECTS_FIXTURE = path.resolve(FIXTURES_DIR, "side-effects.ts");
 
 describe("executeFunction side effect capture", () => {
