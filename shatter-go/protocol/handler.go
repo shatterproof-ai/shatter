@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -47,6 +48,14 @@ type Handler struct {
 	preparedTargets   map[string]string // "file\x00function\x00receiverKind" → current prepare_id for stale detection (str-oegu)
 	hookFactories     []RuntimeHookFactory
 	cachedAnalyses    map[string]*FunctionAnalysis // "file\x00function" → cached analysis
+
+	// Environment preflight state (str-1hlk.18.1). Once any project_root
+	// fails the missing-go.mod check, the failure is sticky and every
+	// subsequent analyze/instrument/prepare/execute/setup short-circuits
+	// with a single preflight_failed error instead of N noisy compilation
+	// or runtime errors. Mirrors shatter-ts/src/handlers.ts:148-230.
+	preflightFail         *preflightFailure
+	preflightCheckedRoots map[string]struct{}
 	// planRequirements, when non-nil, is dispatched from handleGetInvocationPlan.
 	// Injected at construction time by callers that link the planner package;
 	// keeping it a function pointer avoids a protocol→planner import cycle.
@@ -79,9 +88,10 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 		workspace:         workspace,
 		registry:          generators.NewRegistry(),
 		setupLoader:       setup.NewLoader(),
-		preparedHarnesses: make(map[string]preparedExecution),
-		preparedTargets:   make(map[string]string),
-		cachedAnalyses:    make(map[string]*FunctionAnalysis),
+		preparedHarnesses:     make(map[string]preparedExecution),
+		preparedTargets:       make(map[string]string),
+		cachedAnalyses:        make(map[string]*FunctionAnalysis),
+		preflightCheckedRoots: make(map[string]struct{}),
 	}
 	// Register built-in adapter factories.
 	h.RegisterHookFactory(createHTTPHandlerFactory())
@@ -308,6 +318,57 @@ func isTestFile(path string) bool {
 	return strings.HasSuffix(path, "_test.go")
 }
 
+// Environment preflight (str-1hlk.18.1).
+//
+// When a directory isn't a Go module (no `go.mod`), every per-target
+// execute fails during `go build` with `cannot find main module` and the
+// run report fills with N noisy compilation_error rows whose root cause
+// is a single env-setup miss. To surface the env failure
+// once and suppress the per-target noise, the frontend runs a one-shot
+// preflight on the first request that carries a `project_root`. If the
+// check fails, the failure is cached and every subsequent
+// analyze/instrument/prepare/execute/setup short-circuits with the same
+// error response. Mirrors shatter-ts/src/handlers.ts:148-230 (str-jeen.40).
+const (
+	preflightReasonMissingGoMod = "missing_go_mod"
+	preflightGoModFile          = "go.mod"
+)
+
+type preflightFailure struct {
+	reason string
+	detail string
+}
+
+// runPreflight is idempotent per project_root. Once any root fails the
+// failure is sticky — a later root with go.mod does not clear it, because
+// in a single run multiple targets share the same env and one failure is
+// authoritative.
+func (h *Handler) runPreflight(projectRoot *string) {
+	if h.preflightFail != nil || projectRoot == nil || *projectRoot == "" {
+		return
+	}
+	root := *projectRoot
+	if _, seen := h.preflightCheckedRoots[root]; seen {
+		return
+	}
+	h.preflightCheckedRoots[root] = struct{}{}
+	goModPath := filepath.Join(root, preflightGoModFile)
+	if _, err := os.Stat(goModPath); err != nil {
+		h.preflightFail = &preflightFailure{
+			reason: preflightReasonMissingGoMod,
+			detail: goModPath,
+		}
+	}
+}
+
+func (h *Handler) preflightErrorResponse(resp Response) Response {
+	f := h.preflightFail
+	resp.Status = "error"
+	resp.Code = ErrPreflightFailed
+	resp.Message = fmt.Sprintf("preflight_failed: %s: %s", f.reason, f.detail)
+	return resp
+}
+
 func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 	timing := h.maybeTimingCollector()
 	if req.File == "" {
@@ -329,6 +390,14 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		resp.Code = ErrFileNotFound
 		resp.Message = fmt.Sprintf("file not found: %s", req.File)
 		return resp
+	}
+
+	// file_not_found takes priority over env preflight — a typo'd path is
+	// more actionable, and TS/Rust agree on this ordering
+	// (shatter-ts/src/handlers.ts:382-400).
+	h.runPreflight(req.ProjectRoot)
+	if h.preflightFail != nil {
+		return h.preflightErrorResponse(resp)
 	}
 
 	if isGeneratedFile(req.File) {
@@ -517,6 +586,11 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 		return resp
 	}
 
+	h.runPreflight(req.ProjectRoot)
+	if h.preflightFail != nil {
+		return h.preflightErrorResponse(resp)
+	}
+
 	if isGeneratedFile(req.File) {
 		resp.Status = "error"
 		resp.Code = ErrNotSupported
@@ -599,6 +673,10 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		resp.Code = ErrInvalidRequest
 		resp.Message = "prepare command requires a function name"
 		return resp
+	}
+	h.runPreflight(req.ProjectRoot)
+	if h.preflightFail != nil {
+		return h.preflightErrorResponse(resp)
 	}
 	if _, err := os.Stat(file); err != nil {
 		resp.Status = "error"
@@ -711,6 +789,11 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		resp.Code = ErrInvalidRequest
 		resp.Message = "execute command requires a function name"
 		return resp
+	}
+
+	h.runPreflight(req.ProjectRoot)
+	if h.preflightFail != nil {
+		return h.preflightErrorResponse(resp)
 	}
 
 	if _, err := os.Stat(file); err != nil {
@@ -1316,6 +1399,11 @@ func (h *Handler) handleSetup(resp Response, req Request) Response {
 		resp.Code = ErrInvalidRequest
 		resp.Message = fmt.Sprintf("setup command requires a valid level, got %q", req.Level)
 		return resp
+	}
+
+	h.runPreflight(req.ProjectRoot)
+	if h.preflightFail != nil {
+		return h.preflightErrorResponse(resp)
 	}
 
 	if _, err := os.Stat(req.File); err != nil {
