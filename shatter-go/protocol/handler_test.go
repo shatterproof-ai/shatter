@@ -2557,3 +2557,140 @@ func TestPrepareTestFileReturnsNotSupported(t *testing.T) {
 		t.Errorf("code = %q, want %s", resp.Code, ErrNotSupported)
 	}
 }
+
+// --- Environment preflight (str-1hlk.18.1) ---
+
+// newPreflightHandler builds a Handler suitable for direct dispatch tests:
+// no real stdin/stdout traffic, just in-memory state.
+func newPreflightHandler() *Handler {
+	return NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+}
+
+// goFile writes a trivial valid .go file under dir and returns its path.
+func goFile(t *testing.T, dir string) string {
+	t.Helper()
+	p := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(p, []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestPreflightAnalyzeReturnsPreflightFailedWhenGoModMissing(t *testing.T) {
+	root := t.TempDir()
+	file := goFile(t, root)
+	h := newPreflightHandler()
+
+	resp := h.handleAnalyze(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Command:         "analyze",
+		File:            file,
+		ProjectRoot:     &root,
+	})
+
+	if resp.Status != "error" {
+		t.Fatalf("status = %q, want error (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.Code != ErrPreflightFailed {
+		t.Errorf("code = %q, want %s", resp.Code, ErrPreflightFailed)
+	}
+	wantPrefix := "preflight_failed: missing_go_mod: " + filepath.Join(root, "go.mod")
+	if resp.Message != wantPrefix {
+		t.Errorf("message = %q, want %q", resp.Message, wantPrefix)
+	}
+}
+
+func TestPreflightFailureIsStickyAcrossHandlers(t *testing.T) {
+	root := t.TempDir()
+	file := goFile(t, root)
+	h := newPreflightHandler()
+
+	// Trigger preflight via analyze.
+	r1 := h.handleAnalyze(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion, ID: 1, Command: "analyze", File: file, ProjectRoot: &root,
+	})
+	if r1.Code != ErrPreflightFailed {
+		t.Fatalf("analyze code = %q, want %s", r1.Code, ErrPreflightFailed)
+	}
+
+	// instrument on the same handler should also short-circuit.
+	r2 := h.handleInstrument(Response{ProtocolVersion: ProtocolVersion, ID: 2}, Request{
+		ProtocolVersion: ProtocolVersion, ID: 2, Command: "instrument", File: file, ProjectRoot: &root,
+	})
+	if r2.Code != ErrPreflightFailed {
+		t.Errorf("instrument code = %q, want %s (message: %s)", r2.Code, ErrPreflightFailed, r2.Message)
+	}
+
+	// execute should too. Use a dummy function pointer.
+	fnName := "Foo"
+	r3 := h.handleExecute(Response{ProtocolVersion: ProtocolVersion, ID: 3}, Request{
+		ProtocolVersion: ProtocolVersion, ID: 3, Command: "execute", File: file, Function: &fnName, ProjectRoot: &root,
+	})
+	if r3.Code != ErrPreflightFailed {
+		t.Errorf("execute code = %q, want %s (message: %s)", r3.Code, ErrPreflightFailed, r3.Message)
+	}
+}
+
+func TestPreflightCachedRootIsNotRecheckedOnSuccess(t *testing.T) {
+	root := t.TempDir()
+	file := goFile(t, root)
+	// Create go.mod so first check succeeds.
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newPreflightHandler()
+
+	h.runPreflight(&root)
+	if h.preflightFail != nil {
+		t.Fatalf("preflight should pass with go.mod present, got %+v", *h.preflightFail)
+	}
+	if _, seen := h.preflightCheckedRoots[root]; !seen {
+		t.Errorf("root should be cached as checked")
+	}
+
+	// Delete go.mod and call again — cached root means no re-check, so still pass.
+	os.Remove(filepath.Join(root, "go.mod"))
+	h.runPreflight(&root)
+	if h.preflightFail != nil {
+		t.Errorf("cached root should not be re-checked, but failure was recorded: %+v", *h.preflightFail)
+	}
+
+	// And handlers should not short-circuit.
+	resp := h.handleAnalyze(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion, ID: 1, Command: "analyze", File: file, ProjectRoot: &root,
+	})
+	if resp.Code == ErrPreflightFailed {
+		t.Errorf("cached-success root should not trigger preflight_failed")
+	}
+}
+
+func TestPreflightFileNotFoundTakesPriority(t *testing.T) {
+	// Parity with TS handlers.ts:382-400: file_not_found wins over preflight.
+	root := t.TempDir() // no go.mod
+	missing := filepath.Join(root, "does-not-exist.go")
+	h := newPreflightHandler()
+
+	resp := h.handleAnalyze(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion, ID: 1, Command: "analyze", File: missing, ProjectRoot: &root,
+	})
+	if resp.Code != ErrFileNotFound {
+		t.Errorf("code = %q, want %s (file_not_found must beat preflight_failed)", resp.Code, ErrFileNotFound)
+	}
+	if h.preflightFail != nil {
+		t.Errorf("preflight should not have been consulted when file is missing, got %+v", *h.preflightFail)
+	}
+}
+
+func TestPreflightNoProjectRootIsNoop(t *testing.T) {
+	h := newPreflightHandler()
+	h.runPreflight(nil)
+	if h.preflightFail != nil {
+		t.Errorf("nil project_root must not produce a preflight failure")
+	}
+	empty := ""
+	h.runPreflight(&empty)
+	if h.preflightFail != nil {
+		t.Errorf("empty project_root must not produce a preflight failure")
+	}
+}
