@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -258,6 +259,7 @@ impl CrateBridgeHarnessEntry {
         Self {
             harness,
             compatible_functions: HashSet::new(),
+            source_backup: None,
         }
     }
 }
@@ -267,6 +269,78 @@ pub struct CrateBridgeHarnessEntry {
     pub harness: PersistentHarness,
     /// Names of the functions exposed in the wrapper (dispatch table).
     compatible_functions: HashSet<String>,
+    /// Restores the user crate to its pre-injection state when the entry is
+    /// dropped (cache eviction, prune, shutdown, teardown). Always `Some` for
+    /// entries produced by `execute_function_crate_bridge`; `None` for test
+    /// fixtures via `new_test`. See str-31j.1.
+    pub source_backup: Option<BridgeSourceBackup>,
+}
+
+/// Snapshot of files in a user crate that `execute_function_crate_bridge`
+/// is about to modify (str-31j.1). Restoring the snapshot returns the
+/// user crate to its pre-injection state byte-for-byte: previously
+/// existing files are rewritten with their original contents; files that
+/// did not exist (e.g. the freshly created `src/__shatter.rs`) are deleted.
+///
+/// `restore()` is idempotent; `Drop` calls it as a safety net so panics
+/// and unwinds also leave the checkout clean. Restore errors are swallowed
+/// because the caller is usually already on a failure path and there is
+/// nothing useful to do with a write error during cleanup.
+pub struct BridgeSourceBackup {
+    entries: Vec<(PathBuf, Option<Vec<u8>>)>,
+    restored: AtomicBool,
+}
+
+impl BridgeSourceBackup {
+    /// Snapshot the contents (or non-existence) of each path. Returns an
+    /// error only if a path exists but cannot be read — in that case the
+    /// caller must abort before any mutations.
+    pub fn snapshot(paths: &[PathBuf]) -> io::Result<Self> {
+        let mut entries = Vec::with_capacity(paths.len());
+        for path in paths {
+            match std::fs::read(path) {
+                Ok(bytes) => entries.push((path.clone(), Some(bytes))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    entries.push((path.clone(), None));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Self { entries, restored: AtomicBool::new(false) })
+    }
+
+    /// Restore every tracked path. Errors from individual restores are
+    /// swallowed — we are usually on a failure path already and want to
+    /// best-effort recover every file we can rather than abort on the first
+    /// permission glitch.
+    pub fn restore(&self) {
+        if self.restored.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        for (path, original) in &self.entries {
+            match original {
+                Some(bytes) => {
+                    let _ = std::fs::write(path, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    /// Test helper: report whether `restore()` has run yet.
+    #[cfg(test)]
+    pub fn is_restored(&self) -> bool {
+        self.restored.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for BridgeSourceBackup {
+    fn drop(&mut self) {
+        // Drop must never panic; restore() already swallows write errors.
+        self.restore();
+    }
 }
 
 pub type CrateBridgeHarnessCache = Mutex<HashMap<CrateBridgeHarnessKey, CrateBridgeHarnessEntry>>;
@@ -2561,64 +2635,104 @@ fn execute_function_crate_bridge(
     let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let runtime_path = find_runtime_crate_path()?;
 
-    // Write the instrumented source back to the original file with the in-module
-    // wrapper appended. The wrapper is bracketed by markers and gets stripped on
-    // the next invocation (str-31j.3).
-    let mut target_contents = instr_result.source.clone();
-    if !target_contents.ends_with('\n') {
-        target_contents.push('\n');
-    }
-    target_contents.push_str(&in_module_wrapper);
-    std::fs::write(file_path, &target_contents)
-        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source: {e}"))))?;
-
-    // Write the FFI stub at crate root: `__shatter.rs` re-exports the entry symbol
-    // the in-module wrapper defines, so the driver binary's call path is unchanged.
+    // Resolve lib.rs and the to-be-created `__shatter.rs` path BEFORE the first
+    // write so we fail-fast on non-library crates without dirtying anything
+    // (str-31j.1).
+    let lib_rs = find_lib_rs(crate_root).ok_or_else(|| ExecuteError::NonExecutable(
+        "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
+    ))?;
     let shatter_module_path = crate_root.join("src").join("__shatter.rs");
-    std::fs::write(&shatter_module_path, &root_stub)
-        .map_err(ExecuteError::IoError)?;
 
-    // Inject mod declaration into lib.rs (idempotent).
-    if let Some(lib_rs) = find_lib_rs(crate_root) {
-        inject_lib_module_declaration(&lib_rs)?;
-    } else {
-        return Err(ExecuteError::NonExecutable(
-            "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
-        ));
-    }
-
-    // Inject feature + optional serde_json + shatter-rust-runtime into user Cargo.toml (idempotent).
-    inject_crate_bridge_feature(&user_cargo_toml_path, &runtime_path)?;
-
-    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
-    let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
-    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root, needs_tokio);
+    // Snapshot the four files we are about to touch BEFORE any mutation so we
+    // can restore on every failure path (timeout, build error, broken pipe,
+    // panic) and again on cache eviction after a successful run (str-31j.1).
+    let backup = BridgeSourceBackup::snapshot(&[
+        PathBuf::from(file_path),
+        user_cargo_toml_path.clone(),
+        lib_rs.clone(),
+        shatter_module_path.clone(),
+    ]).map_err(|e| ExecuteError::IoError(
+        io::Error::other(format!("cannot snapshot user crate before crate_bridge injection: {e}"))
+    ))?;
 
     let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
-    std::fs::create_dir_all(&harness_dir)?;
 
-    let mut harness = if let Some(timing) = timing {
-        timing.record("execute.build", |timing| {
-            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(timing))
-        })?
-    } else {
-        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
+    // Shadow `timing` as mutable so we can `take()` it inside the IIFE below
+    // (the pattern `if let Some(t) = timing` would otherwise require moving
+    // the binding into the closure).
+    let mut timing = timing;
+
+    // Run the mutating slow path. Any `Err` from this block triggers
+    // `backup.restore()` before returning, so the user crate ends up exactly
+    // as we found it (str-31j.1).
+    let slow_path_result: Result<(ExecuteResult, PersistentHarness), ExecuteError> = (|| {
+        // Write the instrumented source back to the original file with the in-module
+        // wrapper appended. The wrapper is bracketed by markers and gets stripped on
+        // the next invocation (str-31j.3).
+        let mut target_contents = instr_result.source.clone();
+        if !target_contents.ends_with('\n') {
+            target_contents.push('\n');
+        }
+        target_contents.push_str(&in_module_wrapper);
+        std::fs::write(file_path, &target_contents)
+            .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source: {e}"))))?;
+
+        // Write the FFI stub at crate root: `__shatter.rs` re-exports the entry symbol
+        // the in-module wrapper defines, so the driver binary's call path is unchanged.
+        std::fs::write(&shatter_module_path, &root_stub)
+            .map_err(ExecuteError::IoError)?;
+
+        // Inject mod declaration into lib.rs (idempotent).
+        inject_lib_module_declaration(&lib_rs)?;
+
+        // Inject feature + optional serde_json + shatter-rust-runtime into user Cargo.toml (idempotent).
+        inject_crate_bridge_feature(&user_cargo_toml_path, &runtime_path)?;
+
+        let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
+        let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
+        let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root, needs_tokio);
+
+        std::fs::create_dir_all(&harness_dir)?;
+
+        let mut harness = if let Some(t) = timing.take() {
+            t.record("execute.build", |t| {
+                build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(t))
+            })?
+        } else {
+            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
+        };
+
+        let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+        Ok((result, harness))
+    })();
+
+    let (result, harness) = match slow_path_result {
+        Ok(v) => v,
+        Err(e) => {
+            backup.restore();
+            return Err(e);
+        }
     };
-
-    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
 
     let timed_out = result.thrown_error.as_ref()
         .and_then(|e| e.get("error_type"))
         .and_then(|v| v.as_str()) == Some("timeout");
 
     if !timed_out {
+        // Success: hand the backup to the cached entry so the user crate is
+        // restored when the entry is evicted (teardown, shutdown, prune,
+        // explicit cache replacement). See str-31j.1.
         let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
         bridge_cache.lock().unwrap().insert(key, CrateBridgeHarnessEntry {
             harness,
             compatible_functions: compatible_set,
+            source_backup: Some(backup),
         });
     } else {
+        // Timeout: tear down the harness build dir and restore the source tree
+        // now — there is no cached entry to defer restore to.
         let _ = std::fs::remove_dir_all(&harness_dir);
+        backup.restore();
     }
 
     Ok(result)
@@ -5356,5 +5470,171 @@ fn enabled(config: Config) -> bool {
                 "private helper must either execute or be classified NonExecutable, got: {e:?}"
             ),
         }
+    }
+
+    // str-31j.1: BridgeSourceBackup invariants — restore must return touched
+    // files byte-for-byte and remove any path that did not exist before.
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("shatter-31j1-{tag}-{pid}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn backup_restores_modified_file_byte_for_byte() {
+        let dir = unique_tmp_dir("modified");
+        let file = dir.join("a.txt");
+        let original = b"original\n contents \xff\xfe binary tail\n";
+        std::fs::write(&file, original).unwrap();
+
+        let backup = BridgeSourceBackup::snapshot(std::slice::from_ref(&file)).unwrap();
+        std::fs::write(&file, b"trampled").unwrap();
+
+        backup.restore();
+        let after = std::fs::read(&file).unwrap();
+        assert_eq!(after, original, "modified file must be restored byte-for-byte");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_removes_files_created_after_snapshot() {
+        let dir = unique_tmp_dir("created");
+        let created = dir.join("__shatter.rs");
+        assert!(!created.exists());
+
+        let backup = BridgeSourceBackup::snapshot(std::slice::from_ref(&created)).unwrap();
+        std::fs::write(&created, b"injected").unwrap();
+        assert!(created.exists());
+
+        backup.restore();
+        assert!(!created.exists(), "files absent at snapshot must be removed on restore");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_restore_is_idempotent_and_drop_safe() {
+        let dir = unique_tmp_dir("idem");
+        let existed = dir.join("cargo.toml");
+        let created = dir.join("__shatter.rs");
+        std::fs::write(&existed, b"[package]\n").unwrap();
+
+        let backup = BridgeSourceBackup::snapshot(&[existed.clone(), created.clone()]).unwrap();
+        std::fs::write(&existed, b"trampled").unwrap();
+        std::fs::write(&created, b"injected").unwrap();
+
+        backup.restore();
+        assert!(backup.is_restored());
+        // Re-running restore must be a no-op even after we manually mutate again.
+        std::fs::write(&existed, b"mutated-after-restore").unwrap();
+        backup.restore();
+        assert_eq!(
+            std::fs::read(&existed).unwrap(),
+            b"mutated-after-restore",
+            "second restore must be a no-op (already-restored guard)"
+        );
+
+        // Drop after-the-fact must not double-restore either.
+        drop(backup);
+        assert_eq!(std::fs::read(&existed).unwrap(), b"mutated-after-restore");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_drop_restores_on_unwind() {
+        let dir = unique_tmp_dir("drop");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"original").unwrap();
+
+        {
+            let backup = BridgeSourceBackup::snapshot(std::slice::from_ref(&file)).unwrap();
+            std::fs::write(&file, b"trampled").unwrap();
+            drop(backup);
+        }
+
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            b"original",
+            "Drop impl must restore the snapshot",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// str-31j.1 regression: drive `execute_function_crate_bridge` against a
+    /// fixture crate whose source will be modified (Cargo.toml feature
+    /// injection, src/app.rs replacement, lib.rs mod insertion, src/__shatter.rs
+    /// creation). Force a failure on the slow path by setting a tiny timeout so
+    /// the harness build / dispatch cannot complete, and assert every touched
+    /// file is byte-for-byte identical to the pre-call state and that
+    /// `src/__shatter.rs` is gone.
+    #[test]
+    fn crate_bridge_failure_path_leaves_target_clean() {
+        let dir = unique_tmp_dir("regression-cleanup");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let cargo_toml = "[package]\nname = \"fixture-31j1\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n";
+        let lib_rs = "pub mod app;\n";
+        let app_rs = "pub fn classify(n: i32) -> &'static str {\n    if n < 0 { \"neg\" } else if n == 0 { \"zero\" } else { \"pos\" }\n}\n";
+        std::fs::write(dir.join("Cargo.toml"), cargo_toml).unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), lib_rs).unwrap();
+        let app_path = dir.join("src").join("app.rs");
+        std::fs::write(&app_path, app_rs).unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        // Force a failure: 1ms timeout cannot complete a real cargo build, so
+        // either build_and_spawn_crate_bridge_harness errors out or the dispatch
+        // result is a timeout. Either branch must restore the source tree.
+        let result = execute_function_with_timing(
+            app_path.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(1)],
+            &[],
+            1,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        drop(result);
+
+        // bridge_cache holds the backup on the happy path. Drop the cache so the
+        // backup's Drop impl runs even on the success-with-timeout branch where
+        // the cache might have already been cleared.
+        drop(bridge_cache);
+
+        assert_eq!(
+            std::fs::read(dir.join("Cargo.toml")).unwrap(),
+            cargo_toml.as_bytes(),
+            "Cargo.toml must be byte-for-byte unchanged after failed crate_bridge run",
+        );
+        assert_eq!(
+            std::fs::read(dir.join("src").join("lib.rs")).unwrap(),
+            lib_rs.as_bytes(),
+            "lib.rs must be byte-for-byte unchanged after failed crate_bridge run",
+        );
+        assert_eq!(
+            std::fs::read(&app_path).unwrap(),
+            app_rs.as_bytes(),
+            "src/app.rs must be byte-for-byte unchanged after failed crate_bridge run",
+        );
+        assert!(
+            !dir.join("src").join("__shatter.rs").exists(),
+            "src/__shatter.rs (created during injection) must be removed",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
