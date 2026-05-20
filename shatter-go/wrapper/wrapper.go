@@ -575,6 +575,18 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 		}
 		candidates := runtimeval.Lookup(params[i].GoType)
 		if len(candidates) == 0 {
+			// str-4cqz: function-typed parameters have no JSON
+			// representation; attempting to unmarshal a JSON input into
+			// a `func(...)` slot produces a "cannot unmarshal X into Go
+			// value of type func(...)" error cluster on every iteration.
+			// Bake `nil` as a deterministic stub so the wrapper compiles
+			// without a JSON slot for the parameter. Target bodies that
+			// invoke the nil callback surface as a regular panic, which
+			// the outcome classifier reports as `runtime_failed` —
+			// distinguishable from the prior structural unmarshal noise.
+			if isFuncTypeSpelling(params[i].GoType) {
+				params[i].RuntimeValueExpr = "nil"
+			}
 			continue
 		}
 		params[i].RuntimeValueExpr = candidates[0].Expression
@@ -584,6 +596,15 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 			}
 		}
 	}
+}
+
+// isFuncTypeSpelling reports whether goType is a Go function-type spelling
+// (e.g. "func()", "func(string) error", "func(int) (T, error)"). Pointer-
+// to-func (`*func(...)`) is intentionally excluded — that's a pointer
+// parameter and goes through the nullable path.
+func isFuncTypeSpelling(goType string) bool {
+	s := strings.TrimSpace(goType)
+	return strings.HasPrefix(s, "func(") || strings.HasPrefix(s, "func ")
 }
 
 func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath string, importSet map[string]struct{}) []WrapperParam {
