@@ -242,6 +242,16 @@ Resolution flow: `protocol/handler.go` populates `FunctionAnalysis.SourceFile` d
 
 `hint_config_v1` is declared as Go-only with no wire probe in `protocol/parity-matrix.yaml`; nothing here flows over the protocol boundary, so adding mock substitution in str-8v66 will not require a parity-matrix change.
 
+## Duration Parameter Wire Format (str-is5g)
+
+`time.Duration` is an int64 alias in nanoseconds. The canonical wire format for a `time.Duration` parameter is therefore an integer-nanosecond JSON literal — that is what the parameter's default `UnmarshalJSON` consumes. The Go planner's `classifyParamFamily` (`shatter-go/planner/param.go`) emits `durationFamily()` candidates of that shape (zero, 1ms in ns, 1s in ns, -1s in ns) when `ParamInfo.TypeName == "time.Duration"`.
+
+The Rust core's random input generator (`shatter-core/src/input_gen.rs::generate_duration`) emits the legacy shape `{"__complex_type":"duration","ms":N}` shared with the TypeScript frontend. To keep the random-explorer path working without crossing the crate boundary, the wrapper generator special-cases `time.Duration` parameters in `wrapper.writeDurationParamDeserialization`: it tries an integer-nanosecond decode first; on `UnmarshalTypeError` it retries against `{ "__complex_type": "duration", "ms": <int64> }` and converts milliseconds to nanoseconds (`time.Duration(ms) * time.Millisecond`). Any other object shape preserves the original integer-decode error so the failure message stays specific.
+
+`shatter-go/reconstruct/reconstruct.go` carries the same ms→ns conversion math at the `interface{}` level (historical, no current callers); the wrapper helper is the live path.
+
+Regression coverage: `shatter-go/wrapper/wrapper_duration_test.go` (static-source guards + compile + run with both wire shapes), `shatter-go/planner/param_test.go::TestPlanParam_Duration_IntegerNanosecondCandidates`, and `shatter-core/tests/e2e_concolic_go.rs::e2e_go_duration_param_categorize` (full pipeline against `examples/go/duration-param/duration.go`).
+
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 
 Every `go build` invoked from shatter-go pins `GOCACHE` to `<workspace>/cache/build` via `Workspace.GoEnv()`. Wiring lives in `instrument.applyGoBuildEnv` (for `instrument/` build sites) and `instrument.WorkspaceGoEnv()` (consumed by `setup/loader.go`). The handler installs the provider from its workspace handle in `newHandler()`; tests that construct a handler without a workspace fall back to the legacy `SHATTER_HARNESS_CACHE`-based cache hierarchy.

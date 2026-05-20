@@ -860,6 +860,113 @@ async fn e2e_go_value_zero_receiver_no_unknown_receiver_kind() {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+// ---------------------------------------------------------------------------
+// Test: time.Duration parameter (str-is5g).
+//
+// Categorize(timeout time.Duration) int -- 4 paths:
+//   1. timeout <  0           -> -1
+//   2. timeout == 0           ->  0
+//   3. 0 <  timeout <  1s     ->  1
+//   4. timeout >= 1s          ->  2
+//
+// Pre-fix the wrapper's plain `json.Unmarshal(rawJSON, &timeout)` failed
+// with "cannot unmarshal object into Go value of type time.Duration"
+// whenever the input was the Rust core's tagged duration object. This test
+// pins the full pipeline: analyze recognises `time.Duration`, the planner
+// emits integer-nanosecond seeds, the wrapper decodes them, and exploration
+// reaches all four arms including the negative one.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_duration_param_categorize() {
+    let file = repo_examples_go_dir()
+        .join("duration-param")
+        .join("duration.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("duration-param").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Categorize").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "Categorize takes 1 param (timeout time.Duration)"
+    );
+    assert!(
+        analysis.branches.len() >= 3,
+        "Categorize should have >= 3 branches; got {}",
+        analysis.branches.len()
+    );
+
+    instrument_function(&mut frontend, &file_str, "Categorize").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(80),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    // Seed with integer-nanosecond values covering each arm. The planner's
+    // duration family also emits its own integer-nanosecond candidates;
+    // seeding here keeps the test independent of the planner's exact seed
+    // set while still exercising the canonical wire format.
+    let seed_inputs = vec![
+        vec![serde_json::json!(-1_000_000_000_i64)], // -1s -> -1
+        vec![serde_json::json!(0_i64)],              //  0  ->  0
+        vec![serde_json::json!(500_000_000_i64)],    // .5s ->  1
+        vec![serde_json::json!(2_000_000_000_i64)],  //  2s ->  2
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "Categorize",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // No execution may carry the pre-fix decode error.
+    for exec in &result.executions {
+        if let Some(ref err) = exec.thrown_error {
+            assert!(
+                !err.message.contains("cannot unmarshal object into Go value of type time.Duration"),
+                "str-is5g regression: wrapper rejected duration object input; thrown_error={:?}",
+                err.message
+            );
+        }
+    }
+
+    let return_values = return_value_set(&result);
+    for expected in ["-1", "0", "1", "2"] {
+        assert!(
+            return_values.contains(expected),
+            "should discover branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 4,
+        "should have at least 4 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Negative regression assertion for str-jeen.50: no recorded execution
 /// outcome from `target` may carry the launcher wrapper's
 /// "unknown receiver kind" sentinel. Surfaces a precise diagnostic with

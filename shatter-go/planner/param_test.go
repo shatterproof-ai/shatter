@@ -318,3 +318,69 @@ func TestPlanParams_Invariants(t *testing.T) {
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && bytes.Contains([]byte(s), []byte(sub))
 }
+
+// str-is5g: time.Duration parameters must plan as a primitive family with
+// integer-nanosecond literal candidates covering zero, positive (sub-second
+// and second-scale), and negative durations. The wrapper unmarshals each
+// candidate directly into the parameter via time.Duration's default
+// int64 UnmarshalJSON path.
+func TestPlanParam_Duration_IntegerNanosecondCandidates(t *testing.T) {
+	typeName := "time.Duration"
+	param := protocol.ParamInfo{
+		Name:     "timeout",
+		Type:     protocol.TypeInfo{Kind: "int", Label: "time.Duration"},
+		TypeName: &typeName,
+	}
+	opts := planner.ParamPlanOptions{MaxPlansPerParam: 8}
+	plans, u := planner.PlanParam(testTargetID, 0, param, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) < 4 {
+		t.Fatalf("len(plans) = %d, want >= 4; plans=%+v", len(plans), plans)
+	}
+	for i, p := range plans {
+		if p.TypeHint != "time.Duration" {
+			t.Errorf("plans[%d].TypeHint = %q, want %q", i, p.TypeHint, "time.Duration")
+		}
+		if p.Kind == protocol.ValuePlanKindLiteral && !json.Valid(p.Literal) {
+			t.Errorf("plans[%d]: literal %q is not valid JSON", i, string(p.Literal))
+		}
+	}
+
+	// Collect literal values to check coverage of zero/positive/negative.
+	foundZero := false
+	foundPositive := false
+	foundNegative := false
+	for _, p := range plans {
+		if p.Kind == protocol.ValuePlanKindZero {
+			foundZero = true
+			continue
+		}
+		if p.Kind != protocol.ValuePlanKindLiteral {
+			continue
+		}
+		var n int64
+		if err := json.Unmarshal(p.Literal, &n); err != nil {
+			t.Errorf("literal %q must decode as int64: %v", string(p.Literal), err)
+			continue
+		}
+		switch {
+		case n > 0:
+			foundPositive = true
+		case n < 0:
+			foundNegative = true
+		case n == 0:
+			foundZero = true
+		}
+	}
+	if !foundZero {
+		t.Error("duration family missing a zero candidate")
+	}
+	if !foundPositive {
+		t.Error("duration family missing a positive-nanosecond candidate")
+	}
+	if !foundNegative {
+		t.Error("duration family missing a negative-nanosecond candidate")
+	}
+}
