@@ -179,6 +179,18 @@ const AXUM_EXTRACTOR_TYPES: &[&str] = &[
     "Multipart",
 ];
 
+/// Type-name markers that identify an Axum **middleware** signature
+/// (`async fn(..., Request, Next) -> Response`). These are recognized so the
+/// AxumHandlerRecognizer can fire on pure middleware (no other extractor
+/// types) and the function gets routed through the adapter path — which then
+/// reports a concise "axum middleware not supported" reason instead of
+/// falling through to Direct and failing during compilation.
+const AXUM_MIDDLEWARE_MARKER_TYPES: &[&str] = &[
+    "Request",
+    "Next",
+    "RequestParts",
+];
+
 /// Emits `rust/framework/axum-handler` at High confidence when the function
 /// is async, the file imports `axum::`, AND the function has axum extractor
 /// types in its parameters. Requires both signals — no framework guesses from
@@ -205,8 +217,28 @@ impl AdapterRecognizer for AxumHandlerRecognizer {
             .filter_map(|p| p.type_name.as_deref())
             .filter(|tn| AXUM_EXTRACTOR_TYPES.contains(tn))
             .collect();
-        if extractor_params.is_empty() {
+        let middleware_markers: Vec<&str> = analysis
+            .params
+            .iter()
+            .filter_map(|p| p.type_name.as_deref())
+            .filter(|tn| AXUM_MIDDLEWARE_MARKER_TYPES.contains(tn))
+            .collect();
+        if extractor_params.is_empty() && middleware_markers.is_empty() {
             return None;
+        }
+
+        let mut reasons = vec!["file imports axum".to_string()];
+        if !extractor_params.is_empty() {
+            reasons.push(format!(
+                "params use axum extractors: {}",
+                extractor_params.join(", ")
+            ));
+        }
+        if !middleware_markers.is_empty() {
+            reasons.push(format!(
+                "axum middleware shape (not executable): {}",
+                middleware_markers.join(", ")
+            ));
         }
 
         Some(AdapterHint {
@@ -216,13 +248,7 @@ impl AdapterRecognizer for AxumHandlerRecognizer {
                 options: None,
             },
             confidence: Confidence::High,
-            reasons: vec![
-                "file imports axum".to_string(),
-                format!(
-                    "params use axum extractors: {}",
-                    extractor_params.join(", ")
-                ),
-            ],
+            reasons,
             requirements: vec![],
             conflicts: vec![],
         })
@@ -357,6 +383,12 @@ pub enum AxumExtractorKind {
     Host,
     /// `OriginalUri` — full original request URI.
     OriginalUri,
+    /// Middleware-shape marker (`Request`, `Next`, `RequestParts`) — the
+    /// function is an Axum middleware layer, not a leaf handler. The Rust
+    /// frontend does not synthesise middleware invocations, so functions
+    /// with any Middleware-kind parameter are reported as non-executable
+    /// before any compilation attempt.
+    Middleware,
     /// Extractor type recognized but not yet supported for synthesis.
     Unsupported,
 }
@@ -394,6 +426,7 @@ pub fn classify_axum_extractors(params: &[crate::protocol::ParamInfo]) -> Vec<Ax
                 "RawQuery" => AxumExtractorKind::RawQuery,
                 "Host" => AxumExtractorKind::Host,
                 "OriginalUri" => AxumExtractorKind::OriginalUri,
+                "Request" | "Next" | "RequestParts" => AxumExtractorKind::Middleware,
                 _ => AxumExtractorKind::Unsupported,
             };
             AxumExtractorMapping {
@@ -453,6 +486,17 @@ pub fn execute_adapter_owned(
                 )
             })?;
             let mappings = classify_axum_extractors(&analysis.params);
+            let middleware: Vec<&str> = mappings
+                .iter()
+                .filter(|m| m.kind == AxumExtractorKind::Middleware)
+                .map(|m| m.type_name.as_str())
+                .collect();
+            if !middleware.is_empty() {
+                return Err(crate::executor::ExecuteError::NonExecutable(format!(
+                    "axum middleware not supported: {}",
+                    middleware.join(", ")
+                )));
+            }
             let unsupported: Vec<&str> = mappings
                 .iter()
                 .filter(|m| m.kind == AxumExtractorKind::Unsupported && !m.type_name.is_empty())
@@ -729,6 +773,34 @@ mod tests {
         assert!(AxumHandlerRecognizer
             .recognize(&analysis, &ctx)
             .is_none());
+    }
+
+    #[test]
+    fn axum_recognizer_fires_on_middleware_markers() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![
+            param_with_type_name("req", "Request"),
+            param_with_type_name("next", "Next"),
+        ];
+        let ctx = FileContext {
+            use_paths: vec!["axum::middleware::Next".into()],
+            has_tokio_macro: false,
+        };
+        let hint = AxumHandlerRecognizer
+            .recognize(&analysis, &ctx)
+            .expect("middleware-shape signature with axum import must match");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_AXUM_HANDLER);
+        assert!(
+            hint.reasons.iter().any(|r| r.contains("middleware shape")),
+            "reasons should call out middleware shape, got: {:?}",
+            hint.reasons
+        );
+        assert!(
+            hint.reasons.iter().any(|r| r.contains("Request") && r.contains("Next")),
+            "reasons should list Request and Next, got: {:?}",
+            hint.reasons
+        );
     }
 
     // ── with_builtins integration ──
@@ -1098,6 +1170,56 @@ mod tests {
         match result.unwrap_err() {
             crate::executor::ExecuteError::NonExecutable(msg) => {
                 assert!(msg.contains("requires cached function analysis"), "got: {msg}");
+            }
+            other => panic!("expected NonExecutable, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_middleware_markers_kind() {
+        let params = vec![
+            param_with_type_name("req", "Request"),
+            param_with_type_name("next", "Next"),
+            param_with_type_name("rp", "RequestParts"),
+        ];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 3);
+        for m in &mappings {
+            assert_eq!(m.kind, AxumExtractorKind::Middleware, "{:?}", m);
+        }
+    }
+
+    #[test]
+    fn execute_adapter_owned_axum_middleware_returns_concise_reason() {
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![
+            param_with_type_name("req", "Request"),
+            param_with_type_name("next", "Next"),
+        ];
+        let result = execute_adapter_owned(
+            ADAPTER_ID_AXUM_HANDLER,
+            "/tmp/test.rs",
+            "auth_layer",
+            &[],
+            &[],
+            5000,
+            Some(&analysis),
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::NonExecutable(msg) => {
+                assert!(
+                    msg.contains("axum middleware not supported"),
+                    "expected concise middleware reason, got: {msg}"
+                );
+                assert!(msg.contains("Request") && msg.contains("Next"), "got: {msg}");
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
         }

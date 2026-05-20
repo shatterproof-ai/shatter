@@ -396,6 +396,13 @@ enum FunctionOutcome {
         function_name: String,
         error: String,
     },
+    /// Frontend declined the target as not-supported (e.g. Axum middleware
+    /// signature). Mapped to `SkipCategory::Unsupported` in the scan report
+    /// rather than `SkipCategory::Error`. (str-31j.4)
+    Unsupported {
+        function_name: String,
+        reason: String,
+    },
 }
 
 /// Status for a live scan progress update.
@@ -2509,7 +2516,14 @@ async fn run_layer_batched(
                 );
             }
             Ok(Err(e)) => {
-                let reason = format!("error: {e}");
+                let unsupported_reason = match &e {
+                    ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                    _ => None,
+                };
+                let reason = match &unsupported_reason {
+                    Some(msg) => format!("unsupported: {msg}"),
+                    None => format!("error: {e}"),
+                };
                 if let Some(ref artifact_root) = artifact_root {
                     write_failed_scan_artifact(
                         Some(artifact_root),
@@ -2525,12 +2539,22 @@ async fn run_layer_batched(
                     task.progress_index,
                     total_functions,
                     scan_start.elapsed(),
-                    ScanProgressStatus::Failed,
+                    if unsupported_reason.is_some() {
+                        ScanProgressStatus::Skipped
+                    } else {
+                        ScanProgressStatus::Failed
+                    },
                 );
 
-                outcomes[batch_config.task_index] = Some(FunctionOutcome::Error {
-                    function_name: task.func_name.clone(),
-                    error: e.to_string(),
+                outcomes[batch_config.task_index] = Some(match unsupported_reason {
+                    Some(msg) => FunctionOutcome::Unsupported {
+                        function_name: task.func_name.clone(),
+                        reason: msg,
+                    },
+                    None => FunctionOutcome::Error {
+                        function_name: task.func_name.clone(),
+                        error: e.to_string(),
+                    },
                 });
 
                 scheduler.record_outcome(BatchOutcome {
@@ -2809,7 +2833,14 @@ async fn run_layer_function_mode(
                     FunctionOutcome::Success(Box::new(func_result))
                 }
                 Ok(Err(e)) => {
-                    let reason = format!("error: {e}");
+                    let unsupported_reason = match &e {
+                        ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                        _ => None,
+                    };
+                    let reason = match &unsupported_reason {
+                        Some(msg) => format!("unsupported: {msg}"),
+                        None => format!("error: {e}"),
+                    };
                     write_failed_scan_artifact(
                         artifact_root.as_deref(),
                         progress_index,
@@ -2823,11 +2854,21 @@ async fn run_layer_function_mode(
                         progress_index,
                         total_functions,
                         scan_start.elapsed(),
-                        ScanProgressStatus::Failed,
+                        if unsupported_reason.is_some() {
+                            ScanProgressStatus::Skipped
+                        } else {
+                            ScanProgressStatus::Failed
+                        },
                     );
-                    FunctionOutcome::Error {
-                        function_name: func_name,
-                        error: e.to_string(),
+                    match unsupported_reason {
+                        Some(msg) => FunctionOutcome::Unsupported {
+                            function_name: func_name,
+                            reason: msg,
+                        },
+                        None => FunctionOutcome::Error {
+                            function_name: func_name,
+                            error: e.to_string(),
+                        },
                     }
                 }
                 Err(_) => {
@@ -2988,6 +3029,9 @@ fn merge_replica_outcomes(
                 ref function_name, ..
             }
             | FunctionOutcome::Error {
+                ref function_name, ..
+            }
+            | FunctionOutcome::Unsupported {
                 ref function_name, ..
             } => {
                 // Keep the first failure; success from another replica overrides it.
@@ -4125,6 +4169,26 @@ pub async fn parallel_scan_with_progress(
                             function_name,
                             reason,
                             category: SkipCategory::Error,
+                        });
+                    }
+                    FunctionOutcome::Unsupported {
+                        function_name,
+                        reason,
+                    } => {
+                        let idx = fn_progress_index.get(&function_name).copied().unwrap_or(0);
+                        let report_reason = format!("unsupported: {reason}");
+                        summary_record_skipped(
+                            &mut summary,
+                            &function_name,
+                            idx,
+                            &report_reason,
+                            SkipCategory::Unsupported,
+                            scan_start.elapsed(),
+                        );
+                        skipped.push(SkippedFunction {
+                            function_name,
+                            reason: report_reason,
+                            category: SkipCategory::Unsupported,
                         });
                     }
                 }
@@ -8902,6 +8966,34 @@ mod tests {
         assert_eq!(merged.behavior_map.behaviors.len(), 1);
         // iterations = sum of replicas
         assert_eq!(merged.exploration.iterations, 2);
+    }
+
+    #[test]
+    fn merge_replica_outcomes_preserves_unsupported_variant() {
+        // str-31j.4: when every replica of a function reports the target as
+        // unsupported, the merged outcome must remain FunctionOutcome::Unsupported
+        // so the scan layer can route it to SkipCategory::Unsupported.
+        let analysis_owned = make_analysis("middleware_fn", vec![]);
+        let analysis_map: std::collections::HashMap<&str, &FunctionAnalysis> =
+            std::iter::once(("middleware_fn", &analysis_owned)).collect();
+
+        let outcomes = vec![FunctionOutcome::Unsupported {
+            function_name: "middleware_fn".into(),
+            reason: "axum middleware not supported: Request, Next".into(),
+        }];
+
+        let merged = merge_replica_outcomes(outcomes, &analysis_map);
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            FunctionOutcome::Unsupported {
+                function_name,
+                reason,
+            } => {
+                assert_eq!(function_name, "middleware_fn");
+                assert!(reason.contains("axum middleware not supported"), "got: {reason}");
+            }
+            other => panic!("expected Unsupported, got: {other:?}"),
+        }
     }
 
     #[test]

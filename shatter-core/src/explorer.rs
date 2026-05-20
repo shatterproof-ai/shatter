@@ -326,6 +326,11 @@ pub enum ExploreError {
     Frontend(#[from] FrontendError),
     #[error("unexpected response from frontend: {0}")]
     UnexpectedResponse(String),
+    /// Frontend reported the target as `not_supported` during execute. The
+    /// scan layer maps this to `SkipCategory::Unsupported` with a clean
+    /// reason instead of `SkipCategory::Error`. (str-31j.4)
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// Compute a hash representing the "path signature" of an execution.
@@ -1283,6 +1288,7 @@ pub async fn explore_function(
         .await
         .map_err(|e| match e {
             crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
+            crate::observe::ObserveError::Unsupported(msg) => ExploreError::Unsupported(msg),
             crate::observe::ObserveError::UnexpectedResponse(msg)
             | crate::observe::ObserveError::InstrumentationFailed(msg) => {
                 ExploreError::UnexpectedResponse(msg)
@@ -2138,6 +2144,9 @@ async fn run_observer_worker_inner(
         let exec_result = match response.result {
             ResponseResult::Execute(result) => *result,
             ResponseResult::Error { code, message, .. } => {
+                if code == crate::protocol::ErrorCode::NotSupported {
+                    return Err(ExploreError::Unsupported(message));
+                }
                 return Err(ExploreError::UnexpectedResponse(format!(
                     "execute error ({code:?}): {message}"
                 )));

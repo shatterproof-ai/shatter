@@ -40,6 +40,12 @@ pub enum ObserveError {
     UnexpectedResponse(String),
     #[error("instrumentation failed: {0}")]
     InstrumentationFailed(String),
+    /// Frontend declined the function as not_supported. Distinct from
+    /// [`Self::UnexpectedResponse`] so the scan layer can classify the
+    /// function as `SkipCategory::Unsupported` with a concise reason
+    /// rather than a noisy "execute error" line. (str-31j.4)
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 impl From<ExploreError> for ObserveError {
@@ -47,6 +53,7 @@ impl From<ExploreError> for ObserveError {
         match e {
             ExploreError::Frontend(fe) => Self::Frontend(fe),
             ExploreError::UnexpectedResponse(msg) => Self::UnexpectedResponse(msg),
+            ExploreError::Unsupported(msg) => Self::Unsupported(msg),
         }
     }
 }
@@ -260,6 +267,9 @@ pub async fn observe_single(
     let exec_result = match response.result {
         ResponseResult::Execute(result) => *result,
         ResponseResult::Error { code, message, .. } => {
+            if code == crate::protocol::ErrorCode::NotSupported {
+                return Err(ObserveError::Unsupported(message));
+            }
             return Err(ObserveError::UnexpectedResponse(format!(
                 "execute error ({code:?}): {message}"
             )));
@@ -839,6 +849,33 @@ mod tests {
         assert_eq!(state.seen_paths.len(), 2);
         assert_eq!(state.all_lines, HashSet::from([10, 20, 30]));
         assert_eq!(state.seen_branch_ids, HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn observe_error_unsupported_preserved_when_mapped_from_explore() {
+        // str-31j.4: ObserveError::Unsupported and ExploreError::Unsupported
+        // must round-trip — the scan layer relies on this to classify
+        // not_supported execute responses as SkipCategory::Unsupported
+        // rather than SkipCategory::Error.
+        let e = ExploreError::Unsupported("axum middleware not supported: Request, Next".into());
+        match ObserveError::from(e) {
+            ObserveError::Unsupported(msg) => {
+                assert!(msg.contains("axum middleware not supported"), "got: {msg}");
+                assert!(msg.contains("Request, Next"), "got: {msg}");
+            }
+            other => panic!("expected ObserveError::Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observe_error_unsupported_display_does_not_say_unexpected() {
+        // The original bug surfaced as "unexpected response from frontend:
+        // execute error (NotSupported): ..." — the new variant's Display
+        // must use the cleaner "unsupported: ..." form.
+        let e = ObserveError::Unsupported("axum middleware not supported".into());
+        let rendered = format!("{e}");
+        assert!(!rendered.contains("unexpected"), "got: {rendered}");
+        assert!(rendered.starts_with("unsupported:"), "got: {rendered}");
     }
 
     #[test]
