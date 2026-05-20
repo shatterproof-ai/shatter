@@ -42,9 +42,26 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
         worker_bundle_src.display()
     );
 
-    // Compute hash for cache-busting at runtime
+    // Compute hash for cache-busting at runtime. The cache-busting key must
+    // change whenever EITHER the main bundle or the worker bundle changes,
+    // because the runtime extracts both files into the same cache directory
+    // keyed off this hash. Hashing only the main bundle (str-jeen.9 fix's
+    // original setup) left worker.js stuck at the first hashless name a
+    // user ever extracted; a later release that touched only worker-side
+    // code (e.g. the str-jeen.9 trailer in instrumentor.ts, which bundles
+    // into worker-bundle.js) would ship a new main bundle whose runtime
+    // call to instrumentation in the worker still loaded the stale code.
+    // That mode regressed in str-jeen.69 — old workers were missing the
+    // private-target exposure trailer entirely. Combine both bundles into
+    // the hash so any worker-only change forces a new cache directory and
+    // a re-extraction of both files.
     let bundle_bytes = std::fs::read(&bundle_src).expect("failed to read bundle.js");
-    let hash = sha256_hex(&bundle_bytes);
+    let worker_bytes =
+        std::fs::read(&worker_bundle_src).expect("failed to read worker-bundle.js");
+    let mut combined = Vec::with_capacity(bundle_bytes.len() + worker_bytes.len());
+    combined.extend_from_slice(&bundle_bytes);
+    combined.extend_from_slice(&worker_bytes);
+    let hash = sha256_hex(&combined);
 
     // Copy bundles into OUT_DIR so include_bytes! can reference them
     let out_bundle = out_dir.join("frontend-bundle.js");

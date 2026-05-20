@@ -39,8 +39,20 @@ fn ensure_extracted_with_fallback(primary_cache: &Path) -> Result<PathBuf, Strin
 /// Extract the bundle to a specific cache directory. Returns the path to the bundle file.
 fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     let bundle_path = cache_dir.join(format!("frontend-{BUNDLE_HASH}.js"));
+    let worker_path = cache_dir.join("worker.js");
 
-    if !bundle_path.exists() {
+    // Track whether the main bundle was freshly extracted on this call. The
+    // worker bundle has a fixed filename (`worker.js`) because the main
+    // bundle resolves it via `path.join(__dirname, "worker.js")` and does
+    // not know any per-version filename. So whenever the main bundle hash
+    // changes (which happens precisely when either the main or worker
+    // source changes — see build.rs), force the worker bundle to be
+    // rewritten too. Without this, a stale `worker.js` from a prior
+    // install would silently run old instrumentation code (str-jeen.69:
+    // missing private-target exposure trailer surfaced as "Function X not
+    // found in instrumented module exports" against Kapow targets).
+    let bundle_freshly_extracted = !bundle_path.exists();
+    if bundle_freshly_extracted {
         fs::create_dir_all(cache_dir).map_err(|e| {
             format!(
                 "failed to create cache directory {}: {e}",
@@ -57,10 +69,16 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
         cleanup_old_bundles(cache_dir, &bundle_path);
     }
 
-    // Extract worker bundle alongside the main bundle. The main bundle's
-    // InstrumentationWorker resolves worker.js relative to __dirname.
-    let worker_path = cache_dir.join("worker.js");
-    if !worker_path.exists() {
+    // Extract worker bundle alongside the main bundle. Refresh whenever the
+    // main bundle was freshly extracted (their lifecycle is paired) or the
+    // file is missing.
+    if bundle_freshly_extracted || !worker_path.exists() {
+        fs::create_dir_all(cache_dir).map_err(|e| {
+            format!(
+                "failed to create cache directory {}: {e}",
+                cache_dir.display()
+            )
+        })?;
         write_atomic_file(cache_dir, &worker_path, WORKER_BUNDLE, "worker bundle")?;
     }
 
@@ -264,6 +282,75 @@ mod tests {
             path.exists(),
             "extracted bundle should exist at fallback location"
         );
+    }
+
+    #[test]
+    fn extract_to_writes_worker_bundle() {
+        let tmp = std::env::temp_dir().join("shatter-test-worker-extract");
+        let _ = fs::remove_dir_all(&tmp);
+
+        extract_to(&tmp).expect("extraction failed");
+
+        let worker_path = tmp.join("worker.js");
+        assert!(
+            worker_path.exists(),
+            "worker.js should be extracted alongside the main bundle"
+        );
+        assert_eq!(
+            fs::read(&worker_path).unwrap().len(),
+            WORKER_BUNDLE.len(),
+            "extracted worker bundle size mismatch"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// str-jeen.69 regression: when the main bundle hash changes (new
+    /// release), a stale `worker.js` left over from a prior install must be
+    /// refreshed. Otherwise the worker keeps running old instrumentation
+    /// code while the main bundle runs new code — surfacing as
+    /// "Function X not found in instrumented module exports" against
+    /// private TypeScript targets because the worker's instrumentor lacks
+    /// the str-jeen.9 private-target exposure trailer.
+    #[test]
+    fn extract_to_refreshes_stale_worker_when_bundle_hash_changes() {
+        let tmp = std::env::temp_dir().join("shatter-test-worker-refresh");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Simulate the state left by a prior install: a worker.js that does
+        // NOT match the current embedded worker bundle, paired with a
+        // main bundle file under a DIFFERENT (stale) hash.
+        let stale_worker = tmp.join("worker.js");
+        let stale_marker = b"// stale worker from a prior release\n";
+        fs::write(&stale_worker, stale_marker).unwrap();
+        let stale_bundle = tmp
+            .join("frontend-0000000000000000000000000000000000000000000000000000000000000000.js");
+        fs::write(&stale_bundle, b"stale bundle").unwrap();
+
+        let bundle_path = extract_to(&tmp).expect("extraction failed");
+
+        // Main bundle: new hashed file exists, stale one was cleaned up.
+        assert!(bundle_path.exists(), "current bundle must be extracted");
+        assert!(
+            !stale_bundle.exists(),
+            "stale bundle should have been cleaned up"
+        );
+
+        // Worker bundle: stale content was overwritten with the current
+        // embedded worker bundle.
+        let actual_worker = fs::read(&stale_worker).expect("worker.js must exist");
+        assert_ne!(
+            actual_worker, stale_marker,
+            "stale worker.js must be refreshed when bundle hash changes"
+        );
+        assert_eq!(
+            actual_worker.len(),
+            WORKER_BUNDLE.len(),
+            "refreshed worker.js must match embedded WORKER_BUNDLE size"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
