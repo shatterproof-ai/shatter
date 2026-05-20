@@ -19,6 +19,15 @@ const (
 	paramTypeHintFloat64   = "float64"
 	paramTypeHintBool      = "bool"
 	paramTypeHintByteSlice = "[]byte"
+	paramTypeHintDuration  = "time.Duration"
+)
+
+// Nanosecond literals used by durationFamily. time.Duration is an int64 alias
+// in nanoseconds; emitting these integer literals directly lets the wrapper's
+// json.Unmarshal consume them into the parameter without conversion.
+const (
+	durationOneMillisecondNanos = int64(1_000_000)
+	durationOneSecondNanos      = int64(1_000_000_000)
 )
 
 // ParamValueHint is an operator-supplied override for a single parameter.
@@ -193,6 +202,12 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 			family := intFamily()
 			family.typeHint = "int64"
 			return family, true
+		case "time.Duration":
+			// str-is5g: time.Duration is an int64 alias in nanoseconds. Emit
+			// integer-nanosecond literals so the wrapper's json.Unmarshal
+			// consumes them directly. Covers zero, positive (1ms, 1s), and
+			// negative (-1s) durations.
+			return durationFamily(), true
 		}
 	}
 	switch p.Type.Kind {
@@ -252,6 +267,18 @@ func boolFamily() paramFamily {
 		candidates: []paramCandidate{
 			{kind: protocol.ValuePlanKindZero},
 			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`true`)},
+		},
+	}
+}
+
+func durationFamily() paramFamily {
+	return paramFamily{
+		typeHint: paramTypeHintDuration,
+		candidates: []paramCandidate{
+			{kind: protocol.ValuePlanKindZero},
+			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(fmt.Sprintf("%d", durationOneSecondNanos))},
+			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(fmt.Sprintf("%d", durationOneMillisecondNanos))},
+			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(fmt.Sprintf("%d", -durationOneSecondNanos))},
 		},
 	}
 }

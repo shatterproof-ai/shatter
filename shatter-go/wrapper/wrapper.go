@@ -313,6 +313,10 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
 			continue
 		}
+		if p.GoType == "time.Duration" {
+			writeDurationParamDeserialization(b, p.Name, i, indent)
+			continue
+		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
 		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, i)
 		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
@@ -320,6 +324,33 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 		fmt.Fprintf(b, "%s\t}\n", indent)
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+// writeDurationParamDeserialization emits a time.Duration-specific decode
+// block (str-is5g). The canonical wire format is integer nanoseconds — that
+// is what time.Duration's default (int64) UnmarshalJSON consumes and what
+// the Go planner emits as ValuePlan literals. The Rust core's random input
+// generator emits the legacy `{"__complex_type":"duration","ms":N}` shape
+// shared with the TS frontend; rather than push canonicalisation across the
+// crate boundary, the wrapper accepts both forms here. An integer decode is
+// tried first; on UnmarshalTypeError (the object shape) it falls back to
+// reading `ms` from the tagged object and converting milliseconds to
+// nanoseconds. Any other shape preserves the original integer-decode error
+// so the failure message stays specific.
+func writeDurationParamDeserialization(b *strings.Builder, name string, idx int, indent string) {
+	fmt.Fprintf(b, "%svar %s time.Duration\n", indent, name)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
+	fmt.Fprintf(b, "%s\t\tvar _shatterDur struct {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tComplexType string `json:\"__complex_type\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tMs          *int64 `json:\"ms\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\tif _e2 := json.Unmarshal(_shatterInputs[%d], &_shatterDur); _e2 != nil || _shatterDur.Ms == nil || _shatterDur.ComplexType != \"duration\" {\n", indent, idx)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\t%s = time.Duration(*_shatterDur.Ms) * time.Millisecond\n", indent, name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
 }
 
 func writeGenericTargetCase(b *strings.Builder, t WrapperTarget) {
