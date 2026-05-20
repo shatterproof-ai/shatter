@@ -602,6 +602,13 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 // (e.g. "func()", "func(string) error", "func(int) (T, error)"). Pointer-
 // to-func (`*func(...)`) is intentionally excluded — that's a pointer
 // parameter and goes through the nullable path.
+//
+// Scope: this matches raw func-literal spellings only. Named func types
+// (e.g. `type Handler func(string) error` referenced as `Handler`,
+// `http.HandlerFunc`) appear with their alias name in `goType` and are
+// NOT caught here; they'd need either a runtimeval registry entry or
+// type-checker-driven detection. The str-4cqz issue is scoped to raw
+// `func(...)` shapes; named-func handling is deferred.
 func isFuncTypeSpelling(goType string) bool {
 	s := strings.TrimSpace(goType)
 	return strings.HasPrefix(s, "func(") || strings.HasPrefix(s, "func ")

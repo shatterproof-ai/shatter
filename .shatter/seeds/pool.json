@@ -895,6 +895,12 @@
             "function": "ClassifyAge",
             "mode": "branch",
             "severity": "rare_path"
+          },
+          {
+            "branch_id": 0,
+            "function": "(*Service).DoIt",
+            "mode": "branch",
+            "severity": "rare_path"
           }
         ],
         "discovered_epoch": 0,
