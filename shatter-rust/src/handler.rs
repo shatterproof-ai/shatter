@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader};
 
 use crate::generators::NativeRegistry;
 use crate::protocol::{
     self, ERR_COMPILATION_ERROR, ERR_FILE_NOT_FOUND, ERR_FUNCTION_NOT_FOUND, ERR_INTERNAL_ERROR,
-    ERR_INVALID_REQUEST, ERR_NOT_SUPPORTED, ERR_PARSE_ERROR, ERR_VERSION_MISMATCH,
-    FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION, Request, Response,
+    ERR_INVALID_REQUEST, ERR_NOT_SUPPORTED, ERR_PARSE_ERROR, ERR_PREFLIGHT_FAILED,
+    ERR_VERSION_MISMATCH, FRONTEND_LANGUAGE, FRONTEND_VERSION, PROTOCOL_VERSION, Request, Response,
 };
 use crate::timing::TimingCollector;
 use crate::wasm_generator::WasmCache;
@@ -316,6 +316,17 @@ impl Default for PersistentHarnessManager {
     }
 }
 
+/// Env-preflight reason: project_root has no `Cargo.toml`.
+const PREFLIGHT_REASON_MISSING_CARGO_TOML: &str = "missing_cargo_toml";
+/// Env-preflight reason: `cargo --version` is not available on PATH.
+const PREFLIGHT_REASON_CARGO_NOT_FOUND: &str = "cargo_not_found";
+
+/// Cached env-preflight failure. Sticky for the lifetime of the Handler.
+struct PreflightFailure {
+    reason: &'static str,
+    detail: String,
+}
+
 pub struct Handler<R, W, L> {
     reader: BufReader<R>,
     writer: W,
@@ -342,6 +353,16 @@ pub struct Handler<R, W, L> {
     adapter_registry: crate::adapters::AdapterRegistry,
     /// Cached FunctionAnalysis records keyed by "file:function_name".
     cached_analyses: HashMap<String, crate::protocol::FunctionAnalysis>,
+    /// Sticky env-preflight failure. Once set, every analyze/instrument/prepare/
+    /// execute/setup short-circuits with `preflight_failed`.
+    preflight_failure: Option<PreflightFailure>,
+    /// project_root values already checked (success or failure cached).
+    preflight_checked_roots: HashSet<String>,
+    /// One-shot guard for the `cargo --version` PATH probe.
+    preflight_cargo_checked: bool,
+    /// Latest project_root observed by any preflighted handler, so execute
+    /// (whose requests do not carry project_root) can inherit it.
+    last_project_root: Option<String>,
 }
 
 /// Stored info about a prepared harness, keyed by prepare_id.
@@ -370,6 +391,10 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             prepared_harnesses: HashMap::new(),
             adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
+            preflight_failure: None,
+            preflight_checked_roots: HashSet::new(),
+            preflight_cargo_checked: false,
+            last_project_root: None,
         }
     }
 
@@ -396,6 +421,10 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             prepared_harnesses: HashMap::new(),
             adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
+            preflight_failure: None,
+            preflight_checked_roots: HashSet::new(),
+            preflight_cargo_checked: false,
+            last_project_root: None,
         }
     }
 
@@ -418,6 +447,10 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             prepared_harnesses: HashMap::new(),
             adapter_registry: crate::adapters::AdapterRegistry::with_builtins(),
             cached_analyses: HashMap::new(),
+            preflight_failure: None,
+            preflight_checked_roots: HashSet::new(),
+            preflight_cargo_checked: false,
+            last_project_root: None,
         }
     }
 
@@ -525,6 +558,77 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         self.timing_enabled.then(TimingCollector::default)
     }
 
+    /// Run a one-shot env preflight for the supplied project root.
+    ///
+    /// Sticky: once `preflight_failure` is set, every subsequent call returns
+    /// immediately so analyze/instrument/prepare/execute/setup short-circuit
+    /// with the same cached error. Idempotent per root: a successful root is
+    /// remembered and not re-checked. The `cargo --version` PATH probe is
+    /// itself one-shot because cargo presence is process-global.
+    fn run_preflight(&mut self, project_root: Option<&str>) {
+        if self.preflight_failure.is_some() {
+            return;
+        }
+        let root = match project_root {
+            Some(r) if !r.is_empty() => r,
+            _ => return,
+        };
+        if self.preflight_checked_roots.contains(root) {
+            return;
+        }
+        self.preflight_checked_roots.insert(root.to_string());
+
+        let cargo_toml = std::path::Path::new(root).join("Cargo.toml");
+        if !cargo_toml.exists() {
+            self.preflight_failure = Some(PreflightFailure {
+                reason: PREFLIGHT_REASON_MISSING_CARGO_TOML,
+                detail: cargo_toml.display().to_string(),
+            });
+            return;
+        }
+
+        if !self.preflight_cargo_checked {
+            self.preflight_cargo_checked = true;
+            let cargo_ok = std::process::Command::new("cargo")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !cargo_ok {
+                self.preflight_failure = Some(PreflightFailure {
+                    reason: PREFLIGHT_REASON_CARGO_NOT_FOUND,
+                    detail: "cargo".to_string(),
+                });
+            }
+        }
+    }
+
+    /// Build the canonical error response for the cached preflight failure.
+    /// Wire-level code is `preflight_failed`; message keeps the structured
+    /// `preflight_failed: <reason>: <detail>` prefix used by TS so log
+    /// scrapers and run reports stay compatible across frontends.
+    fn preflight_error_response(&self, id: u64) -> Response {
+        let f = self
+            .preflight_failure
+            .as_ref()
+            .expect("preflight_error_response called without a cached failure");
+        let mut resp = Response::base(id);
+        resp.status = "error".to_string();
+        resp.code = Some(ERR_PREFLIGHT_FAILED.to_string());
+        resp.message = Some(format!("preflight_failed: {}: {}", f.reason, f.detail));
+        resp
+    }
+
+    /// Remember the most recent `project_root` so execute (whose requests do
+    /// not carry project_root) inherits it for its own preflight call.
+    fn remember_project_root(&mut self, project_root: Option<&str>) {
+        if let Some(r) = project_root.filter(|s| !s.is_empty()) {
+            self.last_project_root = Some(r.to_string());
+        }
+    }
+
     fn finalize_response(
         &self,
         mut resp: Response,
@@ -548,6 +652,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 return resp;
             }
         };
+
+        self.remember_project_root(req.project_root.as_deref());
+        self.run_preflight(req.project_root.as_deref());
+        if self.preflight_failure.is_some() {
+            return self.preflight_error_response(req.id);
+        }
 
         self.last_file = Some(file_path.clone());
 
@@ -617,6 +727,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
         };
 
+        self.remember_project_root(req.project_root.as_deref());
+        self.run_preflight(req.project_root.as_deref());
+        if self.preflight_failure.is_some() {
+            return self.preflight_error_response(req.id);
+        }
+
         self.last_file = Some(file_path.clone());
 
         let path = std::path::Path::new(file_path);
@@ -685,6 +801,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
     /// Returns a prepare_id that can be passed to subsequent execute calls.
     fn handle_prepare(&mut self, mut resp: Response, req: &Request) -> Response {
         let mut timing = self.maybe_timing_collector();
+
+        self.remember_project_root(req.project_root.as_deref());
+        self.run_preflight(req.project_root.as_deref());
+        if self.preflight_failure.is_some() {
+            return self.preflight_error_response(req.id);
+        }
 
         let file_path = match req.file.as_ref().or(self.last_file.as_ref()) {
             Some(f) => f.clone(),
@@ -781,8 +903,18 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_execute(&self, mut resp: Response, req: &Request) -> Response {
+    fn handle_execute(&mut self, mut resp: Response, req: &Request) -> Response {
         let mut timing = self.maybe_timing_collector();
+
+        self.remember_project_root(req.project_root.as_deref());
+        let preflight_root = req
+            .project_root
+            .clone()
+            .or_else(|| self.last_project_root.clone());
+        self.run_preflight(preflight_root.as_deref());
+        if self.preflight_failure.is_some() {
+            return self.preflight_error_response(req.id);
+        }
 
         // If a prepare_id is provided, look up the prepared harness info and use
         // its file/function/mocks. The harness is already compiled and cached.
@@ -957,8 +1089,15 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
         }
     }
 
-    fn handle_setup(&self, mut resp: Response, req: &Request) -> Response {
+    fn handle_setup(&mut self, mut resp: Response, req: &Request) -> Response {
         let mut timing = self.maybe_timing_collector();
+
+        self.remember_project_root(req.project_root.as_deref());
+        self.run_preflight(req.project_root.as_deref());
+        if self.preflight_failure.is_some() {
+            return self.preflight_error_response(req.id);
+        }
+
         let file_path = match &req.file {
             Some(f) => f,
             None => {
@@ -1276,6 +1415,95 @@ mod tests {
                     || msg.contains("Could not resolve host")
                     || msg.contains("Could not resolve hostname")
             })
+    }
+
+    #[test]
+    fn preflight_returns_preflight_failed_when_cargo_toml_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        let req = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{root}/missing.rs","project_root":"{root}"}}"#,
+            root = root
+        );
+        let resp = send_recv(&req);
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some(ERR_PREFLIGHT_FAILED));
+        let msg = resp.message.unwrap_or_default();
+        assert!(
+            msg.starts_with("preflight_failed: missing_cargo_toml: "),
+            "unexpected message: {msg}"
+        );
+        assert!(msg.contains("Cargo.toml"), "message missing Cargo.toml: {msg}");
+    }
+
+    #[test]
+    fn preflight_is_sticky_across_subsequent_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        let req1 = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{root}/missing.rs","project_root":"{root}"}}"#,
+            root = root
+        );
+        // Second request points at a *different* valid-looking project_root; the
+        // sticky failure must still short-circuit it.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
+        let req2 = format!(
+            r#"{{"protocol_version":"0.1.0","id":2,"command":"analyze","file":"{}/missing.rs","project_root":"{}"}}"#,
+            other.path().display(),
+            other.path().display()
+        );
+        let responses = conversation(&[&req1, &req2]);
+        assert_eq!(responses.len(), 2);
+        for r in &responses {
+            assert_eq!(r.status, "error");
+            assert_eq!(r.code.as_deref(), Some(ERR_PREFLIGHT_FAILED));
+        }
+        // Both responses carry the *first* root's detail because the failure is sticky.
+        let detail = format!("{}/Cargo.toml", root);
+        assert!(responses[1].message.as_deref().unwrap_or("").contains(&detail));
+    }
+
+    #[test]
+    fn preflight_short_circuits_execute_via_last_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        let analyze = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"{root}/missing.rs","project_root":"{root}"}}"#,
+            root = root
+        );
+        // Execute carries no project_root; it must inherit the sticky failure
+        // (and would inherit last_project_root anyway).
+        let execute = r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[]}"#;
+        let responses = conversation(&[&analyze, execute]);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].code.as_deref(), Some(ERR_PREFLIGHT_FAILED));
+        assert_eq!(responses[1].code.as_deref(), Some(ERR_PREFLIGHT_FAILED));
+    }
+
+    #[test]
+    fn preflight_skips_when_no_project_root() {
+        // No project_root and no prior project_root means preflight does
+        // nothing; analyze proceeds to its own file-not-found check.
+        let req = r#"{"protocol_version":"0.1.0","id":1,"command":"analyze","file":"/nonexistent/path/missing.rs"}"#;
+        let resp = send_recv(req);
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.code.as_deref(), Some(ERR_FILE_NOT_FOUND));
+    }
+
+    #[test]
+    fn preflight_succeeds_on_valid_cargo_root() {
+        // Drive run_preflight directly so success caches the root without
+        // depending on a full analyze flow.
+        let input: &[u8] = b"";
+        let mut output = Vec::new();
+        let mut handler = Handler::new(input, &mut output, io::sink());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
+        let root = dir.path().display().to_string();
+        handler.run_preflight(Some(&root));
+        assert!(handler.preflight_failure.is_none());
+        assert!(handler.preflight_checked_roots.contains(&root));
     }
 
     #[test]

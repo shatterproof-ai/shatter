@@ -864,7 +864,8 @@ allowed_divergences:
       later requires no core-side change.
     affected_frontends: [go, rust]
     affected_commands: [analyze, instrument, prepare, execute, setup]
-    status: tracked
+    status: resolved
+    resolved_at: 2026-05-18
     owner: Ketan Gangatirkar
     tracking_issue: str-1hlk.18
     resolution_condition: >
