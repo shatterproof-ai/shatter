@@ -65,7 +65,7 @@ jobs:
             go-binary: shatter-go
 
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
             cli-build-tool: cargo
             artifact-name: shatter-macos-x86_64
             cli-binary: target/x86_64-apple-darwin/release/shatter
@@ -194,9 +194,11 @@ jobs:
           short_sha="${GITHUB_SHA::12}"
           stamp="$(date -u '+%Y%m%d-%H%M')"
           tag="continuous-${stamp}-${short_sha}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${tag}"
+            echo "short_sha=${short_sha}"
+            echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -292,6 +294,7 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" \
             --repo "$REPO" \
+            --prerelease \
             --title "Continuous build $RELEASE_TAG" \
             --notes "Continuous Shatter build from main at ${SHORT_SHA}. These binaries are easy to consume and pin, but the build name does not imply semver compatibility." \
             artifacts/shatter-linux-x86_64.tar.gz \
