@@ -49,12 +49,18 @@ if [[ "$VERBOSE" -eq 1 ]]; then
     echo "[a4] binary  : $SHATTER_CMD"
 fi
 
-# Run explore; the exit code is 0 even when exploration fails.
+set +e
 $SHATTER_CMD explore \
     --max-iterations 1 \
     --timeout-explore 15 \
     --output "$REPORT" \
     "$TARGET" 2>&1 | { [[ "$VERBOSE" -eq 1 ]] && cat || cat > /dev/null; }
+explore_status=${PIPESTATUS[0]}
+set -e
+
+if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "[a4] explore exit: $explore_status"
+fi
 
 # --- Assertion 1: report is non-empty ---
 if [[ ! -s "$REPORT" ]]; then

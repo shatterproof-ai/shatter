@@ -17,7 +17,7 @@ jobs:
       contents: read
 
     env:
-      RESULTS_DIR: ${{ runner.temp }}/shatter-perf/${{ github.run_id }}
+      RESULTS_DIR: ${{ github.workspace }}/target/shatter-perf/${{ github.run_id }}
 
     steps:
       - uses: actions/checkout@v4
