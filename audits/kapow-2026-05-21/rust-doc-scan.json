@@ -1,0 +1,82 @@
+{
+  "version": 6,
+  "functions": [],
+  "codebase": {
+    "attempted_functions": 2,
+    "completed_functions": 0,
+    "completed_with_behavior": 0,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "failed_functions": 2,
+    "skipped_functions_count": 1,
+    "unsupported_functions": 1,
+    "total_discovered_functions": 3,
+    "total_branches": 0,
+    "overall_coverage": 0.0,
+    "productionish_source_lines": 48,
+    "source_set": {
+      "production_ish": {
+        "file_count": 1,
+        "line_count": 48
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "failed": [
+      {
+        "function_name": "contains",
+        "display_name": "contains",
+        "qualified_id": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::contains",
+        "file_path": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs",
+        "reason": "error: exploration error: unexpected response from frontend: execute error (CompilationError):     Updating crates.io index\n     Locking 13 packages to latest compatible versions\n    Checking shatter-exec-temp v0.1.0 (/tmp/shatter-audit-286392-1/harness/rust/harnesses/rust-harness-286426-1)\nerror[E0152]: found duplicate lang item `panic_impl`\n --> src/main.rs:6:294\n  |\n6 | ...schools in California\" ; # [panic_handler] pub fn panic (_ : & PanicInfo) -> ! { loop { } } # [export_name = \"match\"] pub unsafe exter...\n  |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n  = note: the lang item is first defined in crate `std` (which `shatter_exec_temp` depends on)\n  = note: first definition in `std` loaded from /home/ketan/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-8b70f92045177692.rlib\n  = note: second definition in the local crate (`shatter_exec_temp`)\n\nFor more information about this error, try `rustc --explain E0152`.\nerror: could not compile `shatter-exec-temp` (bin \"shatter-exec-temp\") due to 1 previous error\n"
+      },
+      {
+        "function_name": "zolem_match",
+        "display_name": "zolem_match",
+        "qualified_id": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::zolem_match",
+        "file_path": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs",
+        "reason": "error: exploration error: unsupported: bin_only harness incompatible with `zolem_match`:\n  - parameter `ptr` uses external type `*`: not available in isolated harness (only serde + serde_json)\n\nHint: use crate_bridge mode to execute within the original crate context"
+      }
+    ],
+    "skipped_functions": [
+      {
+        "function_name": "panic",
+        "display_name": "panic",
+        "qualified_id": "panic",
+        "reason": "param \"_\" → PanicInfo (opaque type — type cannot be automatically synthesized)",
+        "category": "unsupported"
+      }
+    ],
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::contains",
+    "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::zolem_match"
+  ],
+  "test_order_display_names": [
+    "contains",
+    "zolem_match"
+  ]
+}
