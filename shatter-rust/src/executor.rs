@@ -28,10 +28,17 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
     let mut file = syn::parse_file(source)
         .map_err(|e| ExecuteError::InstrumentError(format!("parse error: {e}")))?;
 
+    // Strip inner attributes that conflict with the std harness binary that
+    // wraps user source. `#![no_std]` / `#![no_main]` and the `panic_impl`
+    // lang item are the common collision sources for no_std user crates being
+    // compiled into our std harness. See str-xt4h.
+    file.attrs.retain(|a| !is_harness_incompatible_attr(a));
+
     // Build the `serde::Serialize` derive attribute to inject on structs/enums.
     let serialize_derive: syn::Attribute = syn::parse_quote!(#[derive(serde::Serialize)]);
 
     for item in &mut file.items {
+        strip_harness_incompatible_item_attrs(item);
         match item {
             syn::Item::Fn(f) => f.vis = syn::Visibility::Public(syn::token::Pub::default()),
             syn::Item::Struct(s) => {
@@ -59,6 +66,43 @@ fn wrap_in_module(source: &str) -> Result<String, ExecuteError> {
     Ok(format!(
         "#[allow(dead_code)]\nmod user_code {{\n{tokens}\n}}"
     ))
+}
+
+/// Attributes that must not survive being wrapped in our std harness binary.
+///
+/// `#[panic_handler]`, `#[lang = "..."]`, `#[start]`, `#[global_allocator]`,
+/// and `#[panic_implementation]` collide with the lang items `std` already
+/// provides; `#![no_std]` / `#![no_main]` flip compilation modes that don't
+/// apply to a wrapped module. See str-xt4h.
+fn is_harness_incompatible_attr(attr: &syn::Attribute) -> bool {
+    let path = attr.path();
+    path.is_ident("no_std")
+        || path.is_ident("no_main")
+        || path.is_ident("panic_handler")
+        || path.is_ident("panic_implementation")
+        || path.is_ident("lang")
+        || path.is_ident("start")
+        || path.is_ident("global_allocator")
+}
+
+/// Strip `#[panic_handler]`-style attributes from any item that supports them.
+fn strip_harness_incompatible_item_attrs(item: &mut syn::Item) {
+    let attrs: Option<&mut Vec<syn::Attribute>> = match item {
+        syn::Item::Fn(f) => Some(&mut f.attrs),
+        syn::Item::Static(s) => Some(&mut s.attrs),
+        syn::Item::Const(c) => Some(&mut c.attrs),
+        syn::Item::Mod(m) => Some(&mut m.attrs),
+        syn::Item::Struct(s) => Some(&mut s.attrs),
+        syn::Item::Enum(e) => Some(&mut e.attrs),
+        syn::Item::Type(t) => Some(&mut t.attrs),
+        syn::Item::Trait(t) => Some(&mut t.attrs),
+        syn::Item::Impl(i) => Some(&mut i.attrs),
+        syn::Item::Macro(m) => Some(&mut m.attrs),
+        _ => None,
+    };
+    if let Some(attrs) = attrs {
+        attrs.retain(|a| !is_harness_incompatible_attr(a));
+    }
 }
 
 /// Extract names of all `static mut` items from the top level of a Rust source file.
@@ -1129,6 +1173,11 @@ fn check_bin_only_compatibility(
                 "parameter `{name}` has trait object type `{ty}`: cannot be deserialized from JSON"
             ));
         }
+        if is_raw_pointer_or_extern_type(ty) {
+            issues.push(format!(
+                "parameter `{name}` has raw pointer / extern fn type `{ty}`: cannot be synthesised from JSON"
+            ));
+        }
     }
 
     // 3. Module-local crate/super paths — source is wrapped in `mod user_code`,
@@ -1236,6 +1285,26 @@ fn is_trait_object_type(ty: &str) -> bool {
     // Covers `&dyn Foo`, `Box<dyn Foo>`, `&mut dyn Foo + Bar`, etc.
     let normalized = ty.replace('\n', " ");
     normalized.contains("dyn ")
+}
+
+/// Returns true if the type string is a raw pointer or function pointer / extern
+/// fn type that the harness cannot synthesise from JSON inputs. See str-xt4h.
+fn is_raw_pointer_or_extern_type(ty: &str) -> bool {
+    let normalized = ty.replace('\n', " ");
+    // Collapse syn's token-stream spacing (`* const u8`) so substring matching
+    // works regardless of whether the source had `*const`, `* const`, etc.
+    let collapsed: String = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t = collapsed.as_str();
+    if t.contains("*const ") || t.contains("*mut ") || t.contains("* const ") || t.contains("* mut ") {
+        return true;
+    }
+    if t.starts_with("fn(") || t.contains(" fn(") {
+        return true;
+    }
+    if t.starts_with("extern ") || t.contains(" extern ") {
+        return true;
+    }
+    false
 }
 
 /// Map a reference parameter type to its owned equivalent for deserialization.
@@ -2519,6 +2588,15 @@ fn execute_function_crate_bridge(
     bridge_cache: &CrateBridgeHarnessCache,
     crate_root: &Path,
 ) -> Result<ExecuteResult, ExecuteError> {
+    // Canonicalise crate_root so the generated harness Cargo.toml carries an
+    // absolute `path = "..."` for the user crate. A relative crate_root (e.g.
+    // `api/`, when the user invoked Shatter from a workspace root) would
+    // otherwise be resolved by Cargo relative to the harness Cargo.toml, which
+    // lives in the per-project harness cache and contains no such subdir. See
+    // str-iqqo.
+    let crate_root_buf = std::fs::canonicalize(crate_root)
+        .unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
+    let crate_root = crate_root_buf.as_path();
     let raw_source = std::fs::read_to_string(file_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
     // Strip any wrapper left by a previous invocation so we re-parse a clean
@@ -2536,10 +2614,12 @@ fn execute_function_crate_bridge(
     let compatible_fns: Vec<CompatFn> = all_fn_ctxs
         .iter()
         .filter_map(|(name, ctx)| {
-            // Only block on generics and trait objects; allow external + module-path refs.
+            // Only block on generics, trait objects, and raw pointer/extern fn
+            // params; allow external + module-path refs.
             let has_generics = ctx.sig.has_generics;
             let has_dyn = ctx.sig.param_types.iter().any(|t| is_trait_object_type(t));
-            if has_generics || has_dyn {
+            let has_raw_ptr = ctx.sig.param_types.iter().any(|t| is_raw_pointer_or_extern_type(t));
+            if has_generics || has_dyn || has_raw_ptr {
                 None
             } else {
                 Some(CompatFn {
@@ -2564,6 +2644,11 @@ fn execute_function_crate_bridge(
             if ctx.sig.param_types.iter().any(|t| is_trait_object_type(t)) {
                 return Err(ExecuteError::NonExecutable(format!(
                     "crate_bridge: function `{function_name}` has trait object parameters — cannot deserialise from JSON"
+                )));
+            }
+            if ctx.sig.param_types.iter().any(|t| is_raw_pointer_or_extern_type(t)) {
+                return Err(ExecuteError::NonExecutable(format!(
+                    "crate_bridge: function `{function_name}` has raw pointer / extern fn parameters — cannot synthesise from JSON"
                 )));
             }
         }
@@ -2714,25 +2799,30 @@ fn execute_function_crate_bridge(
         }
     };
 
+    // The crate-bridge slow path mutates user source so cargo can compile the
+    // injected wrapper. Once the harness binary is built and spawned, the
+    // mutations are no longer load-bearing — execute calls drive the running
+    // subprocess via stdin, and the binary doesn't relink. Restore the user
+    // tree immediately so a successful explore run leaves no tracked-file
+    // edits behind (str-i02v). The cached entry no longer needs to carry the
+    // backup because there is nothing left to undo at eviction time.
+    backup.restore();
+
     let timed_out = result.thrown_error.as_ref()
         .and_then(|e| e.get("error_type"))
         .and_then(|v| v.as_str()) == Some("timeout");
 
     if !timed_out {
-        // Success: hand the backup to the cached entry so the user crate is
-        // restored when the entry is evicted (teardown, shutdown, prune,
-        // explicit cache replacement). See str-31j.1.
         let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
         bridge_cache.lock().unwrap().insert(key, CrateBridgeHarnessEntry {
             harness,
             compatible_functions: compatible_set,
-            source_backup: Some(backup),
+            source_backup: None,
         });
     } else {
-        // Timeout: tear down the harness build dir and restore the source tree
-        // now — there is no cached entry to defer restore to.
+        // Timeout: tear down the harness build dir — the source tree is
+        // already restored above.
         let _ = std::fs::remove_dir_all(&harness_dir);
-        backup.restore();
     }
 
     Ok(result)
@@ -4365,6 +4455,87 @@ fn compute(n: i32) -> MyResult { MyResult { value: n } }
             wrapped.contains("serde :: Serialize") || wrapped.contains("serde::Serialize"),
             "wrap_in_module must inject Serialize derive on structs\n\nwrapped:\n{wrapped}"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // is_harness_incompatible_attr tests (str-xt4h)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn harness_incompatible_attr_blocks_no_std() {
+        let attr: syn::Attribute = syn::parse_quote!(#![no_std]);
+        assert!(is_harness_incompatible_attr(&attr));
+    }
+
+    #[test]
+    fn harness_incompatible_attr_blocks_panic_handler() {
+        let attr: syn::Attribute = syn::parse_quote!(#[panic_handler]);
+        assert!(is_harness_incompatible_attr(&attr));
+    }
+
+    #[test]
+    fn harness_incompatible_attr_blocks_lang() {
+        let attr: syn::Attribute = syn::parse_quote!(#[lang = "eh_personality"]);
+        assert!(is_harness_incompatible_attr(&attr));
+    }
+
+    #[test]
+    fn harness_incompatible_attr_allows_derive() {
+        let attr: syn::Attribute = syn::parse_quote!(#[derive(Debug)]);
+        assert!(!is_harness_incompatible_attr(&attr));
+    }
+
+    #[test]
+    fn harness_incompatible_attr_allows_cfg() {
+        let attr: syn::Attribute = syn::parse_quote!(#[cfg(test)]);
+        assert!(!is_harness_incompatible_attr(&attr));
+    }
+
+    #[test]
+    fn wrap_in_module_strips_no_std_attr() {
+        let source = "#![no_std]\nfn add(a: i32, b: i32) -> i32 { a + b }";
+        let wrapped = wrap_in_module(source).unwrap();
+        assert!(
+            !wrapped.contains("no_std"),
+            "wrap_in_module must strip #![no_std]; got:\n{wrapped}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // is_raw_pointer_or_extern_type tests (str-xt4h)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn raw_pointer_type_detects_const_ptr() {
+        assert!(is_raw_pointer_or_extern_type("*const u8"));
+        assert!(is_raw_pointer_or_extern_type("* const u8"));
+    }
+
+    #[test]
+    fn raw_pointer_type_detects_mut_ptr() {
+        assert!(is_raw_pointer_or_extern_type("*mut T"));
+        assert!(is_raw_pointer_or_extern_type("* mut T"));
+    }
+
+    #[test]
+    fn raw_pointer_type_detects_fn_ptr() {
+        // Top-level fn pointers are caught; fn pointers inside generics (e.g.
+        // Option<fn(i32)>) are not — the check looks for ` fn(` or a leading
+        // `fn(`, so `<fn(` slips through as a known limitation.
+        assert!(is_raw_pointer_or_extern_type("fn(i32) -> bool"));
+    }
+
+    #[test]
+    fn raw_pointer_type_detects_extern_fn() {
+        assert!(is_raw_pointer_or_extern_type("extern \"C\" fn(i32)"));
+    }
+
+    #[test]
+    fn raw_pointer_type_allows_plain_types() {
+        assert!(!is_raw_pointer_or_extern_type("i32"));
+        assert!(!is_raw_pointer_or_extern_type("String"));
+        assert!(!is_raw_pointer_or_extern_type("Vec<u8>"));
+        assert!(!is_raw_pointer_or_extern_type("&str"));
     }
 
     // -------------------------------------------------------------------------
