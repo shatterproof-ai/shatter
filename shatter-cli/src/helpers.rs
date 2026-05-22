@@ -374,7 +374,9 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 /// search locations. Kept in one place so discovery-time precheck and
 /// spawn-time errors emit the same actionable message (str-bnsw).
 pub(crate) const RUST_FRONTEND_INSTALL_HINT: &str =
-    "install it on PATH or build with `cargo build --manifest-path shatter-rust/Cargo.toml`";
+    "run `cargo build --manifest-path shatter-rust/Cargo.toml` from the workspace root \
+     (the debug binary at shatter-rust/target/debug/shatter-rust is then auto-discovered \
+     when shatter runs from that root), or install a shatter-rust binary on PATH";
 
 /// Per-target status code emitted when a target file is skipped because its
 /// language frontend is unavailable on this host (str-jeen.13).
