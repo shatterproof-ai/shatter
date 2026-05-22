@@ -189,7 +189,17 @@ async fn main() -> ExitCode {
             parallelism_max,
             require_rust,
         } => {
-            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            // str-k9y5: clean external-audit runs (`--output <external>
+            // --no-cache --no-seeds`) must not write `.shatter/`,
+            // `.shatter-cache/`, or `shatter-artifacts/` into the audited
+            // project. Mirrors the scan guard above. Skip the implicit
+            // init in that case; run_explore reroutes harness storage to a
+            // tempdir for the same reason.
+            let explore_external_audit_mode =
+                !report_outputs.is_empty() && no_cache && no_seeds;
+            if !explore_external_audit_mode {
+                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            }
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
             let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
                 parallelism_min,
@@ -321,6 +331,7 @@ async fn main() -> ExitCode {
                 require_rust,
                 effective_observer_pool,
                 effective_candidate_queue_capacity,
+                explore_external_audit_mode,
             )
             .await
         }

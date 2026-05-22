@@ -4096,7 +4096,55 @@ pub(crate) async fn run_explore(
     require_rust: bool,
     observer_pool: usize,
     candidate_queue_capacity: Option<usize>,
+    external_audit_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // str-k9y5: clean external-audit runs (`--output <external> --no-cache
+    // --no-seeds`) reroute harness storage (cache/scratch/artifacts and the
+    // Go workspace root) under the OS temp dir so the CLI process, the
+    // spawned frontend subprocesses, and the explore-results writer all
+    // share the same out-of-project base. Mirrors scan's
+    // `apply_external_audit_storage` but applied at the CLI-process level
+    // so `explore_artifact_root` (CLI-side) also picks it up via the
+    // `SHATTER_ARTIFACT_DIR` env var.
+    let _audit_session: Option<std::path::PathBuf> = if external_audit_mode {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let session_id = format!(
+            "shatter-audit-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+        );
+        let base = std::env::temp_dir().join(&session_id);
+        let cache_root = base.join("harness");
+        let scratch_root = base.join("scratch");
+        let artifact_root = base.join("artifacts");
+        let go_workspace_root = base.join("go-workspace");
+        let storage = shatter_core::harness_storage::HarnessStorage::new(
+            cache_root,
+            scratch_root,
+            artifact_root,
+        );
+        // Safety: CLI is single-threaded at this point (before spawning
+        // any frontend or tokio worker task). Mirrors the SHATTER_SETUP_TIMEOUT
+        // pattern in main.rs.
+        unsafe {
+            for (k, v) in storage.env_vars() {
+                std::env::set_var(k, v);
+            }
+            std::env::set_var(
+                "SHATTER_GO_WORKSPACE_ROOT",
+                go_workspace_root.to_string_lossy().as_ref(),
+            );
+        }
+        log::debug!(
+            "explore: external audit mode active (-o + --no-cache + --no-seeds); \
+             redirecting harness storage to {}",
+            base.display(),
+        );
+        Some(base)
+    } else {
+        None
+    };
     if let Some(name) = planner
         && name != "go"
     {
