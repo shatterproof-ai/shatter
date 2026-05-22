@@ -842,8 +842,9 @@ pub(crate) enum CliCommand {
         core_sample: Option<String>,
 
         /// Seed for deterministic core sample selection.
+        /// Must be a non-negative integer (u64), e.g. `--seed 42`.
         /// Default: hash of (directory + git HEAD).
-        #[arg(long)]
+        #[arg(long, value_parser = parse_seed_flag)]
         seed: Option<u64>,
 
         /// Progressive batch index for core sample.
@@ -1805,6 +1806,17 @@ pub(crate) fn parse_loop_buckets(
 /// Clap value_parser for `--budget`: delegates to test_prioritization::parse_budget.
 pub(crate) fn parse_budget_flag(s: &str) -> Result<std::time::Duration, String> {
     shatter_core::test_prioritization::parse_budget(s).map_err(|e| e.to_string())
+}
+
+/// Clap value_parser for `--seed`: parses a non-negative integer with an
+/// actionable error message when the user supplies a string or signed value.
+pub(crate) fn parse_seed_flag(s: &str) -> Result<u64, String> {
+    s.parse::<u64>().map_err(|_| {
+        format!(
+            "seed must be a non-negative integer (e.g. --seed 42), got {:?}",
+            s
+        )
+    })
 }
 
 #[cfg(test)]
