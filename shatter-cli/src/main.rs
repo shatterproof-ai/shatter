@@ -84,8 +84,20 @@ async fn main() -> ExitCode {
         LogLevel::Debug => log::LevelFilter::Debug,
         LogLevel::Trace => log::LevelFilter::Trace,
     };
+    // Suppress noisy transport logs from the telemetry HTTP/TLS stack so that
+    // `--log-level debug` shows Shatter's own debug output, not PostHog request
+    // chatter from `ureq`/`rustls` after the command completes (str-xkyo).
+    let transport_filter = log_filter.min(log::LevelFilter::Warn);
     env_logger::Builder::new()
         .filter_level(log_filter)
+        .filter_module("ureq", transport_filter)
+        .filter_module("rustls", transport_filter)
+        .filter_module("rustls_pki_types", transport_filter)
+        .filter_module("rustls_webpki", transport_filter)
+        .filter_module("webpki", transport_filter)
+        .filter_module("hyper", transport_filter)
+        .filter_module("hyper_util", transport_filter)
+        .filter_module("h2", transport_filter)
         .format(|buf, record| {
             use std::io::Write;
             writeln!(
