@@ -421,6 +421,45 @@ export function useThemedClass() {
 // BUILTIN_REACT_HOOKS constant
 // ---------------------------------------------------------------------------
 
+describe("recognizeReactHooks — namespace imports (str-zgsk)", () => {
+  it("detects React.useState via `import * as React from \"react\"`", () => {
+    const source = `
+import * as React from "react";
+export function useCounter(initial: number) {
+  const [count, setCount] = React.useState(initial);
+  return count;
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "useCounter", start_line: 3, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
+    expect(hints[0]!.confidence).toBe("high");
+    expect(hints[0]!.reasons).toContain("Calls useState imported from 'react'");
+  });
+
+  it("detects React.useContext-only custom hooks via namespace import", () => {
+    // Reproduces pickpackit's `useTheme = () => React.useContext(Ctx)` pattern.
+    // Before namespace-import handling this returned undefined and the hook
+    // executed raw, producing "Invalid hook call" warnings.
+    const source = `
+import * as React from "react";
+const Ctx = React.createContext({ dark: false });
+export function useTheme() {
+  return React.useContext(Ctx);
+}
+`;
+    const sf = createSourceFile(source);
+    const fns = [stubAnalysis({ name: "useTheme", start_line: 4, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.reasons).toContain("Calls useContext imported from 'react'");
+  });
+});
+
 describe("BUILTIN_REACT_HOOKS", () => {
   it("contains all standard React hooks", () => {
     const expected = [

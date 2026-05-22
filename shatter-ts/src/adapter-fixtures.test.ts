@@ -531,3 +531,102 @@ describe("adapter-tsconfig-references fixture", () => {
     expect(analyzed[0]!.branches.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// adapter-react-context fixture (str-zgsk)
+//
+// Validates that a function component using a custom hook around
+// `useContext` is classified as a React hook target and executes through
+// the react-hook adapter without producing the "Invalid hook call" /
+// "Cannot read properties of null (reading 'useContext')" failure mode that
+// motivated str-zgsk.
+// ---------------------------------------------------------------------------
+
+describe("adapter-react-context fixture", () => {
+  const fixture = path.join(FIXTURES_DIR, "adapter-react-context.tsx");
+
+  it("analyzes all exported functions", () => {
+    const results = analyzeFile(fixture);
+    const names = results.map((fn) => fn.name);
+    expect(names).toContain("useThemeMode");
+    expect(names).toContain("ThemedLabel");
+    expect(names).toContain("NamespacePanel");
+  });
+
+  it("classifies every component/hook as a react-hook adapter target", () => {
+    const results = analyzeFile(fixture);
+    for (const fn of results) {
+      expect(fn.invocation_model).toBeDefined();
+      expect(fn.invocation_model!.kind).toBe("adapter");
+      if (fn.invocation_model!.kind === "adapter") {
+        expect(fn.invocation_model!.adapter_id).toBe(REACT_HOOK_ADAPTER_ID);
+      }
+    }
+  });
+
+  it("executes useThemeMode through the adapter without crashing", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      { adapters: [{ id: REACT_HOOK_ADAPTER_ID, apply: "required" }] },
+      { phase: "execute", entry_file: fixture },
+    );
+    const hook = runtimeHooks.invocation_hooks[0]!;
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: fixture,
+      functionName: "useThemeMode",
+      inputs: [],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    const rv = result.return_value as Record<string, unknown>;
+    expect(rv.mode).toBe("light");
+    expect(rv.accent).toBe("blue");
+  });
+
+  it("executes ThemedLabel (component calling custom hook) through the adapter", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      { adapters: [{ id: REACT_HOOK_ADAPTER_ID, apply: "required" }] },
+      { phase: "execute", entry_file: fixture },
+    );
+    const hook = runtimeHooks.invocation_hooks[0]!;
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: fixture,
+      functionName: "ThemedLabel",
+      inputs: [{ label: "hello" }],
+    });
+
+    expect(result.thrown_error).toBeNull();
+  });
+
+  it("executes NamespacePanel (React.useContext namespace import) through the adapter", async () => {
+    const runtimeHooks = resolveRuntimeHooks(
+      { adapters: [{ id: REACT_HOOK_ADAPTER_ID, apply: "required" }] },
+      { phase: "execute", entry_file: fixture },
+    );
+    const hook = runtimeHooks.invocation_hooks[0]!;
+    const result = await executeAdapterOwned({
+      hook,
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: fixture,
+      functionName: "NamespacePanel",
+      inputs: [{ title: "panel" }],
+    });
+
+    expect(result.thrown_error).toBeNull();
+  });
+});
