@@ -85,6 +85,56 @@ pub enum DiscoveryError {
     },
 }
 
+/// str-94cg: suggest a corrected `--include` pattern when the user-supplied
+/// pattern matched no files because it duplicates the scan root prefix.
+///
+/// Include patterns are evaluated against paths relative to the scan root,
+/// so an "absolute-looking" pattern such as `internal/runtime/*.go` will
+/// never match when the scan root is already `<repo>/internal/runtime/`.
+/// This helper returns the trailing fragment with the duplicate prefix
+/// stripped, or `None` when no fixup is obvious.
+///
+/// Handles two common shapes:
+/// - Pattern shares a suffix of the scan root's directory components
+///   (e.g. root `…/zolem/internal/runtime`, pattern `internal/runtime/*.go`
+///   → suggestion `*.go`).
+/// - Pattern is the scan root's absolute path joined with a glob
+///   (e.g. root `/x/y`, pattern `/x/y/*.go` → suggestion `*.go`).
+#[must_use]
+pub fn suggest_corrected_include_pattern(pattern: &str, scan_root: &Path) -> Option<String> {
+    // Absolute-path pattern: strip the scan root prefix.
+    if let Some(root_str) = scan_root.to_str() {
+        let with_slash = format!("{root_str}/");
+        if let Some(rest) = pattern.strip_prefix(&with_slash)
+            && !rest.is_empty()
+        {
+            return Some(rest.to_string());
+        }
+    }
+
+    // Relative pattern whose head matches a tail of the scan root.
+    let comps: Vec<&str> = scan_root
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    for start in 0..comps.len() {
+        let tail = comps[start..].join("/");
+        if tail.is_empty() {
+            continue;
+        }
+        let with_slash = format!("{tail}/");
+        if let Some(rest) = pattern.strip_prefix(&with_slash)
+            && !rest.is_empty()
+        {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 /// Discover source files under `root`, returning each file's path and detected language.
 ///
 /// Applies default exclusions, user-specified include/exclude patterns,
@@ -495,6 +545,62 @@ mod tests {
             fs::create_dir_all(parent).expect("create dirs");
         }
         fs::write(&path, "// placeholder").expect("write file");
+    }
+
+    // ── suggest_corrected_include_pattern tests (str-94cg) ──
+
+    #[test]
+    fn suggest_strips_repo_relative_prefix_matching_scan_root_tail() {
+        let root = Path::new("/home/u/proj/zolem/internal/runtime");
+        assert_eq!(
+            suggest_corrected_include_pattern("internal/runtime/*.go", root).as_deref(),
+            Some("*.go"),
+        );
+    }
+
+    #[test]
+    fn suggest_strips_single_component_tail() {
+        let root = Path::new("/x/y/runtime");
+        assert_eq!(
+            suggest_corrected_include_pattern("runtime/**/*.go", root).as_deref(),
+            Some("**/*.go"),
+        );
+    }
+
+    #[test]
+    fn suggest_strips_absolute_scan_root_prefix() {
+        let root = Path::new("/home/u/proj/zolem/internal/runtime");
+        assert_eq!(
+            suggest_corrected_include_pattern(
+                "/home/u/proj/zolem/internal/runtime/*.go",
+                root,
+            )
+            .as_deref(),
+            Some("*.go"),
+        );
+    }
+
+    #[test]
+    fn suggest_returns_none_when_pattern_is_unrelated() {
+        let root = Path::new("/x/y/runtime");
+        assert_eq!(
+            suggest_corrected_include_pattern("**/*.rs", root),
+            None
+        );
+        assert_eq!(
+            suggest_corrected_include_pattern("src/*.go", root),
+            None
+        );
+    }
+
+    #[test]
+    fn suggest_returns_none_when_stripping_leaves_empty() {
+        let root = Path::new("/x/runtime");
+        // Pattern is exactly the prefix with no trailing fragment → no useful suggestion.
+        assert_eq!(
+            suggest_corrected_include_pattern("runtime/", root),
+            None
+        );
     }
 
     #[test]
