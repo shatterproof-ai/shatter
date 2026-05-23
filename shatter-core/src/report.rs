@@ -1442,12 +1442,18 @@ fn write_md_summary_table(out: &mut String, report: &ScanReport) {
     );
 
     for func in &report.functions {
+        // str-4ad5: `FunctionReport` entries are by definition functions that
+        // *completed* exploration — actual execution failures live in
+        // `codebase.failed` / `skipped`. Reserve `FAIL` for execution
+        // failures and use a coverage-quality label (`PASS`/`WARN`/`LOW`)
+        // here so readers can distinguish "did not run" from
+        // "ran with low coverage".
         let status = if func.coverage_pct >= 100.0 {
             "PASS"
         } else if func.coverage_pct >= 50.0 {
             "WARN"
         } else {
-            "FAIL"
+            "LOW"
         };
 
         let outcome = func.completion_outcome.as_wire_str();
@@ -3305,6 +3311,35 @@ mod tests {
         assert!(
             md.contains("WARN"),
             "should contain WARN status for partial coverage"
+        );
+    }
+
+    /// str-4ad5: completed functions with low coverage must not be labeled
+    /// `FAIL` — that label conflates execution failure with coverage
+    /// quality. Use `LOW` for completed-but-low-coverage instead.
+    #[test]
+    fn markdown_report_low_coverage_completion_is_not_fail() {
+        // 1/10 lines = 10% — previously labelled FAIL, must now be LOW.
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("undercovered", 5, 1, 1, 10, vec![])],
+            test_order: vec!["undercovered".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+        let md = format_markdown_report(&report);
+
+        assert!(
+            md.contains("| LOW |"),
+            "low-coverage completed function must label `LOW`, not `FAIL`: {md}"
+        );
+        assert!(
+            !md.contains("| FAIL |"),
+            "completed function summary must not emit `FAIL` status: {md}"
         );
     }
 
