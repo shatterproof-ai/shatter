@@ -23,6 +23,7 @@ import {
   buildRuntimeCryptoBoundary,
   createUnresolvableModuleStub,
   createAdapterAwareRequire,
+  isModuleNotFoundError,
   transformDynamicImports,
   createShatterImport,
   setProjectRoot,
@@ -1608,6 +1609,47 @@ describe("execution-time dep gap detection", () => {
     `;
     const result = await executeInstrumented(source, "noop", [], []);
     expect(result.discovered_dependencies.length).toBe(0);
+  });
+});
+
+describe("str-arfz: isModuleNotFoundError recognizes CJS and ESM shapes", () => {
+  const moduleName = "some-missing-pkg";
+
+  it("recognizes the CommonJS MODULE_NOT_FOUND shape", () => {
+    const err = Object.assign(
+      new Error(`Cannot find module '${moduleName}'`),
+      { code: "MODULE_NOT_FOUND" },
+    );
+    expect(isModuleNotFoundError(err, moduleName)).toBe(true);
+  });
+
+  it("recognizes the ESM ERR_MODULE_NOT_FOUND shape", () => {
+    const err = Object.assign(
+      new Error(`Cannot find package '${moduleName}' imported from /tmp/x.js`),
+      { code: "ERR_MODULE_NOT_FOUND" },
+    );
+    expect(isModuleNotFoundError(err, moduleName)).toBe(true);
+  });
+
+  it("rejects unrelated error shapes", () => {
+    const err = Object.assign(new Error("boom"), { code: "EACCES" });
+    expect(isModuleNotFoundError(err, moduleName)).toBe(false);
+  });
+
+  it("rejects MODULE_NOT_FOUND for a different module (transitive dep)", () => {
+    const err = Object.assign(
+      new Error(`Cannot find module 'other-pkg'`),
+      { code: "MODULE_NOT_FOUND" },
+    );
+    expect(isModuleNotFoundError(err, moduleName)).toBe(false);
+  });
+
+  it("rejects ERR_MODULE_NOT_FOUND for a different package (transitive)", () => {
+    const err = Object.assign(
+      new Error(`Cannot find package 'other-pkg' imported from /tmp/x.js`),
+      { code: "ERR_MODULE_NOT_FOUND" },
+    );
+    expect(isModuleNotFoundError(err, moduleName)).toBe(false);
   });
 });
 
