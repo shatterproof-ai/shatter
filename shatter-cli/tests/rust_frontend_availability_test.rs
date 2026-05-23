@@ -105,6 +105,29 @@ fn scan_skips_rust_files_when_frontend_unavailable_and_other_languages_present()
         combined.contains("cargo build --manifest-path shatter-rust/Cargo.toml"),
         "skip status should include the install hint:\n{combined}"
     );
+
+    // str-difh: the warning must frame this as an expected state for a
+    // workspace-root build (so users don't read it as a broken install), give
+    // the `cargo install --path shatter-rust` alternative, and point at
+    // README.md for the full setup.
+    assert!(
+        combined.contains("expected"),
+        "warning should frame the missing frontend as expected after a \
+         workspace-root build; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("main CLI"),
+        "warning should clarify that the main CLI is working; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("cargo install --path shatter-rust"),
+        "warning should mention the `cargo install --path shatter-rust` \
+         alternative; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("README.md"),
+        "warning should point at README.md for setup details; got:\n{combined}"
+    );
 }
 
 // ---- str-jeen.13 regression: per-row classification + exit policy ----

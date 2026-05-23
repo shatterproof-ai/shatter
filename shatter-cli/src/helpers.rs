@@ -372,11 +372,20 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 
 /// Install hint surfaced when the Rust frontend cannot be found at any of the
 /// search locations. Kept in one place so discovery-time precheck and
-/// spawn-time errors emit the same actionable message (str-bnsw).
+/// spawn-time errors emit the same actionable message (str-bnsw, str-difh).
+///
+/// The message frames this as the EXPECTED state after a workspace-root
+/// `cargo build --release --bin shatter` (which intentionally only builds the
+/// main CLI) so users do not read it as a broken install, and gives the exact
+/// commands and binary placement needed to enable Rust scans.
 pub(crate) const RUST_FRONTEND_INSTALL_HINT: &str =
-    "run `cargo build --manifest-path shatter-rust/Cargo.toml` from the workspace root \
-     (the debug binary at shatter-rust/target/debug/shatter-rust is then auto-discovered \
-     when shatter runs from that root), or install a shatter-rust binary on PATH";
+    "this is the expected state after `cargo build --release --bin shatter` from the \
+     workspace root, which only builds the main CLI. To enable Rust scans, build the Rust \
+     frontend with `cargo build --manifest-path shatter-rust/Cargo.toml` (add --release for \
+     an optimized binary) and either run shatter from the workspace root (so \
+     shatter-rust/target/debug/shatter-rust or shatter-rust/target/release/shatter-rust is \
+     auto-discovered) or install it on PATH with `cargo install --path shatter-rust`. See \
+     README.md `Build from source` for full setup details";
 
 /// Per-target status code emitted when a target file is skipped because its
 /// language frontend is unavailable on this host (str-jeen.13).
@@ -1236,6 +1245,21 @@ mod cli_parity_tests {
         assert!(
             msg.contains("cargo build --manifest-path shatter-rust/Cargo.toml"),
             "message should include the build instructions: {msg}"
+        );
+        // str-difh: clarify that this is expected after a workspace-root
+        // build, and point at the README for full setup.
+        assert!(
+            msg.contains("expected") && msg.contains("main CLI"),
+            "message should frame the missing frontend as expected and \
+             clarify the main CLI is working: {msg}"
+        );
+        assert!(
+            msg.contains("cargo install --path shatter-rust"),
+            "message should include the `cargo install` alternative: {msg}"
+        );
+        assert!(
+            msg.contains("README.md"),
+            "message should point at README.md for setup details: {msg}"
         );
     }
 

@@ -387,10 +387,13 @@ pub(crate) async fn run_scan(
                     .map(|(p, _)| p)
                     .collect();
                 log::warn!(
-                    "skipping {} {:?} file(s): {} (run will continue with available languages; \
-                     pass --require-rust to fail instead)",
+                    "skipping {} {:?} file(s) — shatter-{} frontend not on PATH (the main \
+                     CLI is working; this is expected after a workspace-root build that only \
+                     built the main CLI binary): {} (run will continue with available \
+                     languages; pass --require-rust to fail instead)",
                     skipped.len(),
                     lang,
+                    cli_lang.label(),
                     msg,
                 );
                 let install_hint = match cli_lang {
