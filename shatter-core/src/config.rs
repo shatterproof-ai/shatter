@@ -1170,12 +1170,15 @@ fn resolve_from_merged(
         }
     }
 
-    // Resolution order: function config > defaults > CLI flags.
-    // Any layer that provides a concrete value wins; if all are None, stays unbounded.
+    // Resolution order: function config > CLI flag > project defaults.
+    // CLI flags must beat project `defaults.max_iterations` (str-4uem) —
+    // callers pass `cli_max_iterations: Some(_)` only when the user
+    // explicitly set `--max-iterations`. If all layers are None, callers
+    // apply the built-in fallback after resolution.
     let max_iterations = func_config
         .and_then(|fc| fc.max_iterations)
-        .or(config.defaults.max_iterations)
-        .or(cli_max_iterations);
+        .or(cli_max_iterations)
+        .or(config.defaults.max_iterations);
 
     let timeout = func_config
         .and_then(|fc| fc.timeout)
@@ -1867,6 +1870,9 @@ functions:
 
     #[test]
     fn resolve_function_config_falls_through_to_defaults() {
+        // str-4uem: when the user did not pass --max-iterations
+        // (cli_max_iterations = None), the project's `defaults.max_iterations`
+        // is applied.
         let config = ShatterConfig {
             defaults: DefaultsConfig {
                 max_iterations: Some(200),
@@ -1877,9 +1883,33 @@ functions:
             ..ShatterConfig::default()
         };
 
-        let resolved = resolve_function_config("some/func", &[config], Some(50), 30).unwrap();
+        let resolved = resolve_function_config("some/func", &[config], None, 30).unwrap();
         assert_eq!(resolved.max_iterations, Some(200)); // from config defaults
         assert_eq!(resolved.timeout, 30); // from CLI (config default is None)
+    }
+
+    #[test]
+    fn resolve_function_config_cli_beats_project_defaults() {
+        // str-4uem regression: `explore --max-iterations N` is ignored when
+        // `.shatter/config.yaml` defines `defaults.max_iterations`. CLI must
+        // win over project-level defaults; function-level configs still
+        // override CLI (covered by `resolve_function_config_uses_function_override`).
+        let config = ShatterConfig {
+            defaults: DefaultsConfig {
+                max_iterations: Some(100),
+                timeout: None,
+                ..DefaultsConfig::default()
+            },
+            functions: HashMap::new(),
+            ..ShatterConfig::default()
+        };
+
+        let resolved = resolve_function_config("some/func", &[config], Some(3), 30).unwrap();
+        assert_eq!(
+            resolved.max_iterations,
+            Some(3),
+            "explicit --max-iterations must override defaults.max_iterations"
+        );
     }
 
     #[test]
@@ -2046,8 +2076,13 @@ functions:
         assert_eq!(merged.defaults.max_iterations, Some(500)); // nearest
         assert_eq!(merged.defaults.timeout, Some(30)); // falls through
 
+        // str-4uem: pass `None` for cli_max_iterations to exercise the
+        // sub-project defaults fall-through. When the user does not pass
+        // `--max-iterations`, callers send `None` here; `defaults.max_iterations`
+        // from the nearest config wins. (CLI > project defaults is covered by
+        // `resolve_function_config_cli_beats_project_defaults`.)
         let resolved =
-            resolve_function_config("src/auth/login.ts:validateToken", &configs, Some(100), 60)
+            resolve_function_config("src/auth/login.ts:validateToken", &configs, None, 60)
                 .unwrap();
         assert_eq!(resolved.max_iterations, Some(500)); // from sub defaults
         assert_eq!(resolved.timeout, 120); // from function pattern

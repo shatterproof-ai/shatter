@@ -550,7 +550,9 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         stdout: bool,
 
-        /// Format for stdout output. One of: markdown (default), json, html, text.
+        /// Format for stdout output. One of: markdown (default), html, text.
+        /// JSON is not a stdout format for `explore`; use `-o <file>.json`
+        /// to write a spec bundle.
         #[arg(long, default_value = "markdown")]
         format: StdoutFormat,
 

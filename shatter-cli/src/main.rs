@@ -253,6 +253,20 @@ async fn main() -> ExitCode {
             let budgets =
                 resolve_mcdc_budgets(max_iterations, per_function_timeout, solver_timeout, mcdc);
 
+            // str-4uem: raw user-supplied --max-iterations, separate from the
+            // post-budget fallback. Only `Some(_)` when the user explicitly
+            // passed --max-iterations N (with N>0). Threaded through to the
+            // per-function config resolver so CLI flags beat
+            // `defaults.max_iterations` in `.shatter/config.yaml`.
+            // `--max-iterations 0` (opt-in to unbounded) collapses to `None`
+            // here so the resolver falls back to project defaults; the
+            // post-budget `budgets.max_iterations = None` already encodes
+            // the unbounded intent downstream.
+            let user_max_iterations: Option<u32> = match max_iterations {
+                Some(0) | None => None,
+                Some(n) => Some(n),
+            };
+
             // str-frc.6: resolve concurrency knobs with CLI > project-config >
             // built-in default precedence. The project config is rooted at
             // --project-dir when set, otherwise the current working directory.
@@ -282,6 +296,7 @@ async fn main() -> ExitCode {
             commands::explore::run_explore(
                 &targets,
                 budgets.max_iterations,
+                user_max_iterations,
                 budgets.timeout,
                 timeout_explore,
                 scope.as_deref(),
