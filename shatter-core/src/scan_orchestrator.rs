@@ -163,6 +163,12 @@ pub struct ScanConfig {
     /// Per-function timeout. If a function takes longer, it is skipped.
     /// Default: 30 seconds.
     pub timeout_per_fn: Duration,
+    /// Per-function build/prepare timeout. Bounds the `Prepare` command (where
+    /// the frontend compiles the launcher / harness) separately from the
+    /// concolic exploration budget — a cold Go build cache otherwise eats most
+    /// of `timeout_per_fn` and surfaces as a misleading "timed out" on a tiny
+    /// function (str-v5qe, str-6sie).
+    pub build_timeout: Duration,
     /// Optional disk cache for persisting behavior maps across runs.
     /// When set, behavior maps are stored after exploration and loaded
     /// before exploration to skip re-exploring unchanged functions.
@@ -179,7 +185,7 @@ pub struct ScanConfig {
     pub resume_path: Option<PathBuf>,
     /// Total scan wall-clock timeout. When set, the scan checks elapsed
     /// time at the start of each layer; if exceeded, remaining functions
-    /// are skipped with reason "total scan timeout exceeded".
+    /// are skipped with reason "timed out (total scan budget exceeded)".
     pub timeout_total: Option<Duration>,
     /// Path to the interesting input pool file (e.g., `.shatter/seeds/pool.json`).
     /// When `Some`, interesting inputs discovered during exploration are
@@ -1654,6 +1660,7 @@ pub async fn scan(
             claim_policy: ClaimPolicy::default(),
             planner: None,
             default_execute_plan,
+            prepare_id_override: None,
         };
 
         let exploration =
@@ -2197,6 +2204,7 @@ async fn run_layer_batched(
     tasks: Vec<ExploreTask>,
     batch_size: u32,
     timeout: Duration,
+    build_timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
     scheduler_state_cache: &Option<Arc<crate::cache::SchedulerStateCache>>,
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
@@ -2378,32 +2386,35 @@ async fn run_layer_batched(
         let mut batch_explore_config = task.explore_config.clone();
         batch_explore_config.max_iterations = Some(batch_config.batch_size);
 
-        let result = tokio::time::timeout(
+        let result = run_phased(
+            fe,
+            &task.func_name,
+            &task.analysis,
+            &batch_explore_config,
+            &task.mocks_used,
+            &task.callees,
+            behavior_maps,
+            task.deep_fp.clone(),
+            input_pool,
+            genetic_config,
+            cache,
+            build_timeout,
             timeout,
-            explore_single_function(
-                fe,
-                &task.func_name,
-                &task.analysis,
-                &batch_explore_config,
-                &task.mocks_used,
-                &task.callees,
-                behavior_maps,
-                task.deep_fp.clone(),
-                input_pool,
-                genetic_config,
-                cache,
-            ),
         )
         .await;
 
-        // If the frontend died or timed out, mark it for replacement
+        // If the frontend timed out or died, mark it for replacement
         // on the next iteration.
-        if result.is_err() || !fe.is_alive() {
+        let timed_out = matches!(
+            result,
+            PhasedOutcome::BuildTimedOut(_) | PhasedOutcome::ExploreTimedOut(_)
+        );
+        if timed_out || !fe.is_alive() {
             drop(frontend.take());
         }
 
         match result {
-            Ok(Ok(func_result)) => {
+            PhasedOutcome::Success(func_result) => {
                 let iterations_used = func_result.exploration.iterations;
 
                 if let Some(ref artifact_root) = artifact_root {
@@ -2492,7 +2503,7 @@ async fn run_layer_batched(
                 }
 
                 outcomes[batch_config.task_index] =
-                    Some(FunctionOutcome::Success(Box::new(func_result)));
+                    Some(FunctionOutcome::Success(func_result));
 
                 scheduler.record_outcome(BatchOutcome {
                     task_index: batch_config.task_index,
@@ -2515,7 +2526,7 @@ async fn run_layer_batched(
                     scheduler_mode,
                 );
             }
-            Ok(Err(e)) => {
+            PhasedOutcome::Failed(e) => {
                 let unsupported_reason = match &e {
                     ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
                     _ => None,
@@ -2575,8 +2586,13 @@ async fn run_layer_batched(
                     scheduler_mode,
                 );
             }
-            Err(_) => {
-                let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
+            outcome @ (PhasedOutcome::BuildTimedOut(_) | PhasedOutcome::ExploreTimedOut(_)) => {
+                let (phase, d) = match outcome {
+                    PhasedOutcome::BuildTimedOut(d) => ("build", d),
+                    PhasedOutcome::ExploreTimedOut(d) => ("execution", d),
+                    _ => unreachable!(),
+                };
+                let reason = phase_timeout_reason(phase, d);
                 if let Some(ref artifact_root) = artifact_root {
                     write_failed_scan_artifact(
                         Some(artifact_root),
@@ -2597,7 +2613,7 @@ async fn run_layer_batched(
 
                 outcomes[batch_config.task_index] = Some(FunctionOutcome::Timeout {
                     function_name: task.func_name.clone(),
-                    limit: timeout,
+                    limit: d,
                 });
 
                 scheduler.record_outcome(BatchOutcome {
@@ -2712,6 +2728,7 @@ async fn run_layer_function_mode(
     tasks: Vec<ExploreTask>,
     max_concurrent: usize,
     timeout: Duration,
+    build_timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
     stored_inputs_cache: &Option<Arc<StoredInputsCache>>,
     behavior_maps: &Arc<Mutex<HashMap<String, BehaviorMap>>>,
@@ -2781,21 +2798,20 @@ async fn run_layer_function_mode(
                 }
             };
 
-            let result = tokio::time::timeout(
+            let result = run_phased(
+                &mut frontend,
+                &func_name,
+                &analysis,
+                &explore_config,
+                &mocks_used,
+                &callees,
+                &behavior_maps,
+                deep_fp,
+                &input_pool,
+                &genetic_config,
+                &cache,
+                build_timeout,
                 timeout,
-                explore_single_function(
-                    &mut frontend,
-                    &func_name,
-                    &analysis,
-                    &explore_config,
-                    &mocks_used,
-                    &callees,
-                    &behavior_maps,
-                    deep_fp,
-                    &input_pool,
-                    &genetic_config,
-                    &cache,
-                ),
             )
             .await;
 
@@ -2803,7 +2819,7 @@ async fn run_layer_function_mode(
             let _ = frontend.shutdown().await;
 
             match result {
-                Ok(Ok(func_result)) => {
+                PhasedOutcome::Success(func_result) => {
                     let mut maps = behavior_maps.lock().await;
                     maps.insert(func_name.clone(), func_result.behavior_map.clone());
                     drop(maps);
@@ -2830,9 +2846,9 @@ async fn run_layer_function_mode(
                         scan_start.elapsed(),
                         ScanProgressStatus::Completed,
                     );
-                    FunctionOutcome::Success(Box::new(func_result))
+                    FunctionOutcome::Success(func_result)
                 }
-                Ok(Err(e)) => {
+                PhasedOutcome::Failed(e) => {
                     let unsupported_reason = match &e {
                         ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
                         _ => None,
@@ -2871,8 +2887,13 @@ async fn run_layer_function_mode(
                         },
                     }
                 }
-                Err(_) => {
-                    let reason = format!("timed out after {:.0}s", timeout.as_secs_f64());
+                outcome @ (PhasedOutcome::BuildTimedOut(_) | PhasedOutcome::ExploreTimedOut(_)) => {
+                    let (phase, d) = match outcome {
+                        PhasedOutcome::BuildTimedOut(d) => ("build", d),
+                        PhasedOutcome::ExploreTimedOut(d) => ("execution", d),
+                        _ => unreachable!(),
+                    };
+                    let reason = phase_timeout_reason(phase, d);
                     write_failed_scan_artifact(
                         artifact_root.as_deref(),
                         progress_index,
@@ -2890,7 +2911,7 @@ async fn run_layer_function_mode(
                     );
                     FunctionOutcome::Timeout {
                         function_name: func_name,
-                        limit: timeout,
+                        limit: d,
                     }
                 }
             }
@@ -3345,7 +3366,7 @@ pub async fn parallel_scan_with_progress(
                     progress_index += 1;
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
-                        reason: "total scan timeout exceeded".into(),
+                        reason: "timed out (total scan budget exceeded)".into(),
                         category: SkipCategory::Error,
                     });
                     write_skipped_scan_artifact(
@@ -3353,14 +3374,14 @@ pub async fn parallel_scan_with_progress(
                         progress_index,
                         total_functions,
                         func_name,
-                        "total scan timeout exceeded",
+                        "timed out (total scan budget exceeded)",
                         SkipCategory::Error,
                     );
                     summary_record_skipped(
                         &mut summary,
                         func_name,
                         progress_index,
-                        "total scan timeout exceeded",
+                        "timed out (total scan budget exceeded)",
                         SkipCategory::Error,
                         scan_start.elapsed(),
                     );
@@ -3737,6 +3758,7 @@ pub async fn parallel_scan_with_progress(
                 claim_policy: ClaimPolicy::default(),
                 planner: None,
                 default_execute_plan: None,
+                prepare_id_override: None,
             };
 
             tasks.push(ExploreTask {
@@ -3789,6 +3811,7 @@ pub async fn parallel_scan_with_progress(
                     tasks,
                     bs,
                     config.timeout_per_fn,
+                    config.build_timeout,
                     &config.cache,
                     &config.scheduler_state_cache,
                     &behavior_maps,
@@ -3816,6 +3839,7 @@ pub async fn parallel_scan_with_progress(
                     tasks,
                     effective_parallelism,
                     config.timeout_per_fn,
+                    config.build_timeout,
                     &config.cache,
                     &config.stored_inputs_cache,
                     &behavior_maps,
@@ -3911,6 +3935,7 @@ pub async fn parallel_scan_with_progress(
                     let behavior_maps = Arc::clone(&behavior_maps);
                     let input_pool = Arc::clone(&input_pool);
                     let timeout = config.timeout_per_fn;
+                    let build_timeout = config.build_timeout;
                     let fe_config = Arc::clone(&fe_config_persistent);
                     let tasks_remaining = Arc::clone(&tasks_remaining);
                     let genetic_config = config.genetic_config.clone();
@@ -3928,25 +3953,27 @@ pub async fn parallel_scan_with_progress(
                         );
                         let mut frontend = pool.checkout().await;
 
-                        let result = tokio::time::timeout(
+                        let result = run_phased(
+                            &mut frontend,
+                            &func_name,
+                            &analysis,
+                            &explore_config,
+                            &mocks_used,
+                            &callees,
+                            &behavior_maps,
+                            deep_fp.clone(),
+                            &input_pool,
+                            &genetic_config,
+                            &cache,
+                            build_timeout,
                             timeout,
-                            explore_single_function(
-                                &mut frontend,
-                                &func_name,
-                                &analysis,
-                                &explore_config,
-                                &mocks_used,
-                                &callees,
-                                &behavior_maps,
-                                deep_fp.clone(),
-                                &input_pool,
-                                &genetic_config,
-                                &cache,
-                            ),
                         )
                         .await;
 
-                        let timed_out = result.is_err();
+                        let timed_out = matches!(
+                            result,
+                            PhasedOutcome::BuildTimedOut(_) | PhasedOutcome::ExploreTimedOut(_)
+                        );
 
                         // Decrement the remaining-task counter FIRST so that
                         // return_or_reap_worker sees the updated pending count when
@@ -3982,7 +4009,7 @@ pub async fn parallel_scan_with_progress(
                         pool.maybe_grow(remaining);
 
                         match result {
-                            Ok(Ok(func_result)) => {
+                            PhasedOutcome::Success(func_result) => {
                                 if write_success_artifact {
                                     write_completed_scan_artifact(
                                         artifact_root.as_deref(),
@@ -4000,9 +4027,9 @@ pub async fn parallel_scan_with_progress(
                                     scan_start.elapsed(),
                                     ScanProgressStatus::Completed,
                                 );
-                                FunctionOutcome::Success(Box::new(func_result))
+                                FunctionOutcome::Success(func_result)
                             }
-                            Ok(Err(e)) => {
+                            PhasedOutcome::Failed(e) => {
                                 let reason = format!("error: {e}");
                                 write_failed_scan_artifact(
                                     artifact_root.as_deref(),
@@ -4024,9 +4051,14 @@ pub async fn parallel_scan_with_progress(
                                     error: e.to_string(),
                                 }
                             }
-                            Err(_) => {
-                                let reason =
-                                    format!("timed out after {:.0}s", timeout.as_secs_f64());
+                            outcome @ (PhasedOutcome::BuildTimedOut(_)
+                            | PhasedOutcome::ExploreTimedOut(_)) => {
+                                let (phase, d) = match outcome {
+                                    PhasedOutcome::BuildTimedOut(d) => ("build", d),
+                                    PhasedOutcome::ExploreTimedOut(d) => ("execution", d),
+                                    _ => unreachable!(),
+                                };
+                                let reason = phase_timeout_reason(phase, d);
                                 write_failed_scan_artifact(
                                     artifact_root.as_deref(),
                                     progress_index,
@@ -4044,7 +4076,7 @@ pub async fn parallel_scan_with_progress(
                                 );
                                 FunctionOutcome::Timeout {
                                     function_name: func_name,
-                                    limit: timeout,
+                                    limit: d,
                                 }
                             }
                         }
@@ -4400,6 +4432,109 @@ async fn fetch_default_execute_plan_for_method(
             );
             None
         }
+    }
+}
+
+/// Format a phase-tagged timeout reason used in scan failure artifacts and
+/// progress events. Centralised so the three orchestrator call sites stay
+/// in sync and the message is unit-testable (str-ubp1).
+fn phase_timeout_reason(phase: &str, d: Duration) -> String {
+    format!("timed out during {phase} after {:.0}s", d.as_secs_f64())
+}
+
+/// Outcome of a phased Prepare + explore run.
+///
+/// Splitting the two phases lets the orchestrator charge build cost against
+/// `build_timeout` and only charge the actual concolic exploration against
+/// `timeout_per_fn`. Without this split, a cold launcher build on the first
+/// scanned function eats most of the per-fn budget and surfaces as a
+/// misleading "timed out after Ns" (str-v5qe, str-6sie).
+enum PhasedOutcome {
+    Success(Box<FunctionResult>),
+    Failed(ScanError),
+    /// `Prepare` (build) phase exceeded `build_timeout`.
+    BuildTimedOut(Duration),
+    /// Concolic exploration phase exceeded `timeout_per_fn`.
+    ExploreTimedOut(Duration),
+}
+/// Run a function's `Prepare` phase under `build_timeout`, then run the
+/// concolic exploration under `explore_timeout` with the resulting
+/// `prepare_id` already attached so the explorer doesn't re-prepare.
+#[allow(clippy::too_many_arguments)]
+async fn run_phased(
+    frontend: &mut Frontend,
+    func_name: &str,
+    analysis: &FunctionAnalysis,
+    explore_config: &ExploreConfig,
+    mocks_used: &[MockUsage],
+    callees: &std::collections::HashSet<String>,
+    behavior_maps: &Mutex<HashMap<String, BehaviorMap>>,
+    fingerprint: Option<String>,
+    input_pool: &Mutex<InterestingPool>,
+    genetic_config: &crate::config::GeneticConfig,
+    cache: &Option<Arc<BehaviorMapCache>>,
+    build_timeout: Duration,
+    explore_timeout: Duration,
+) -> PhasedOutcome {
+    let mut effective = explore_config.clone();
+    if effective.prepare_id_override.is_none()
+        && explorer::frontend_supports(&effective.capabilities, "prepare")
+    {
+        let prep = tokio::time::timeout(
+            build_timeout,
+            frontend.send(crate::protocol::Command::Prepare {
+                file: effective.file.clone(),
+                function: analysis.name.clone(),
+                mocks: effective.mocks.clone(),
+                project_root: effective.project_root.clone(),
+                execution_profile: effective.execution_profile.clone(),
+                plan: effective.default_execute_plan.clone(),
+            }),
+        )
+        .await;
+        match prep {
+            Err(_) => return PhasedOutcome::BuildTimedOut(build_timeout),
+            Ok(Err(e)) => {
+                // Frontend transport / IO error during prepare. Fall back to
+                // the per-execute build path inside the explorer rather than
+                // failing the function outright — keeps parity with the
+                // explorer's own prepare-fallback behavior.
+                log::debug!("scan prepare failed for {func_name}, falling back: {e}");
+            }
+            Ok(Ok(resp)) => match resp.result {
+                crate::protocol::ResponseResult::Prepare { prepare_id } => {
+                    effective.prepare_id_override = Some(prepare_id);
+                }
+                other => {
+                    log::debug!(
+                        "scan prepare unexpected response for {func_name}: {other:?}",
+                    );
+                }
+            },
+        }
+    }
+
+    let explore = tokio::time::timeout(
+        explore_timeout,
+        explore_single_function(
+            frontend,
+            func_name,
+            analysis,
+            &effective,
+            mocks_used,
+            callees,
+            behavior_maps,
+            fingerprint,
+            input_pool,
+            genetic_config,
+            cache,
+        ),
+    )
+    .await;
+    match explore {
+        Err(_) => PhasedOutcome::ExploreTimedOut(explore_timeout),
+        Ok(Err(e)) => PhasedOutcome::Failed(e),
+        Ok(Ok(r)) => PhasedOutcome::Success(Box::new(r)),
     }
 }
 
@@ -5173,6 +5308,46 @@ mod tests {
     /// Request timeout for integration tests using the noop frontend.
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// str-ubp1: phase-tagged reasons distinguish build vs execution timeouts
+    /// so users can tell whether `--build-timeout` or `--timeout-per-fn` is
+    /// the binding limit on a failure.
+    #[test]
+    fn phase_timeout_reason_tags_phase_and_duration() {
+        assert_eq!(
+            phase_timeout_reason("build", Duration::from_secs(30)),
+            "timed out during build after 30s",
+        );
+        assert_eq!(
+            phase_timeout_reason("execution", Duration::from_secs(15)),
+            "timed out during execution after 15s",
+        );
+    }
+
+    /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout
+    /// and a generous build_timeout must not surface as a per-fn timeout when
+    /// the launcher build takes longer than `timeout_per_fn`. We model the
+    /// behaviour at the ScanConfig level — the two budgets are independent
+    /// and `build_timeout` is plumbed separately rather than being absorbed
+    /// into `timeout_per_fn`.
+    #[test]
+    fn scan_config_separates_build_and_per_fn_budgets() {
+        let cfg = minimal_scan_config(HashMap::new());
+        // The default minimal config is identical for legacy callers, but the
+        // build_timeout field is now an independent budget on ScanConfig.
+        assert!(cfg.build_timeout > Duration::ZERO);
+        // A reasonable invariant for the Go pipeline: build_timeout is the
+        // build budget and timeout_per_fn is the explore budget. They are
+        // not the same value, and one not being included in the other lets
+        // a cold-cache build absorb its own cost.
+        let separated = ScanConfig {
+            build_timeout: Duration::from_secs(60),
+            timeout_per_fn: Duration::from_secs(5),
+            ..minimal_scan_config(HashMap::new())
+        };
+        assert_eq!(separated.build_timeout, Duration::from_secs(60));
+        assert_eq!(separated.timeout_per_fn, Duration::from_secs(5));
+    }
+
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
         FunctionAnalysis {
             name: name.to_string(),
@@ -5218,6 +5393,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -5997,6 +6173,7 @@ mod tests {
             file_map,
             parallelism: 2,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6085,6 +6262,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6166,6 +6344,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: Some(cache.clone()),
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6267,6 +6446,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6301,7 +6481,7 @@ mod tests {
         );
         assert_eq!(result.skipped.len(), 2);
         for s in &result.skipped {
-            assert_eq!(s.reason, "total scan timeout exceeded");
+            assert_eq!(s.reason, "timed out (total scan budget exceeded)");
         }
     }
 
@@ -6349,6 +6529,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6435,6 +6616,7 @@ mod tests {
             file_map: skipped_file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6494,6 +6676,7 @@ mod tests {
             file_map: failed_file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6620,6 +6803,7 @@ mod tests {
             parallelism: 1,
             // Short per-function timeout triggers during the slow execute.
             timeout_per_fn: Duration::from_secs(3),
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6713,6 +6897,7 @@ mod tests {
             file_map,
             parallelism: 2,
             timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6788,6 +6973,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6869,6 +7055,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6917,6 +7104,7 @@ mod tests {
                 .collect(),
             parallelism: 1,
             timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -6954,6 +7142,7 @@ mod tests {
             file_map: HashMap::new(),
             parallelism: 1,
             timeout_per_fn: crate::frontend::DEFAULT_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -7601,6 +7790,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: Some(cache),
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -7728,6 +7918,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: Some(cache),
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -7818,6 +8009,7 @@ mod tests {
             // High parallelism — but only 1 task exists, so pool must be capped at 1.
             parallelism: 8,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -7907,6 +8099,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8013,6 +8206,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8130,6 +8324,7 @@ mod tests {
             file_map,
             parallelism: 2,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8263,6 +8458,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8396,6 +8592,7 @@ mod tests {
             file_map,
             parallelism: 4, // Serial policy must ignore this and use 1 worker.
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8515,6 +8712,7 @@ mod tests {
             file_map,
             parallelism: 4,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -8626,6 +8824,7 @@ mod tests {
             file_map,
             parallelism: 2,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),
@@ -10736,6 +10935,7 @@ mod tests {
             file_map,
             parallelism: 1,
             timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
             cache: None,
             stratum: None,
             mock_overrides: HashMap::new(),

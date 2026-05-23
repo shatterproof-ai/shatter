@@ -181,6 +181,11 @@ pub struct ExploreConfig {
     /// Set from the first plan returned by the planner; `None` when not using
     /// `--planner` or when the frontend returned no plans.
     pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
+    /// When `Some`, the explorer skips its own `Prepare` lifecycle and uses
+    /// this `prepare_id` on every Execute. Set by the scan orchestrator after
+    /// it has already issued a Prepare under the build timeout, so the
+    /// per-function exploration timeout doesn't absorb cold build cost.
+    pub prepare_id_override: Option<String>,
 }
 
 /// Default interval between periodic progress summaries.
@@ -938,8 +943,13 @@ pub async fn explore_function(
 
     // --- Prepare lifecycle ---
     // When the frontend supports `prepare`, pre-build the harness once so all
-    // subsequent Execute calls can skip the compile phase.
-    let prepare_id: Option<String> = if frontend_supports(&config.capabilities, "prepare") {
+    // subsequent Execute calls can skip the compile phase. When the orchestrator
+    // has already issued a Prepare (under its build_timeout) it passes the id
+    // via `prepare_id_override` so we don't pay the build cost against the
+    // per-function exploration budget.
+    let prepare_id: Option<String> = if let Some(id) = config.prepare_id_override.clone() {
+        Some(id)
+    } else if frontend_supports(&config.capabilities, "prepare") {
         match frontend
             .send(ProtoCommand::Prepare {
                 file: config.file.clone(),
@@ -2074,7 +2084,9 @@ async fn run_observer_worker_inner(
         .await?;
     }
 
-    let prepare_id: Option<String> = if frontend_supports(&config.capabilities, "prepare") {
+    let prepare_id: Option<String> = if let Some(id) = config.prepare_id_override.clone() {
+        Some(id)
+    } else if frontend_supports(&config.capabilities, "prepare") {
         match frontend
             .send(ProtoCommand::Prepare {
                 file: config.file.clone(),
@@ -4092,6 +4104,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
@@ -4197,6 +4210,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
@@ -4264,6 +4278,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
@@ -4339,6 +4354,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
@@ -4411,6 +4427,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
@@ -4460,6 +4477,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4515,6 +4533,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4567,6 +4586,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4610,6 +4630,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4652,6 +4673,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4698,6 +4720,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4740,6 +4763,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4781,6 +4805,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4840,6 +4865,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
@@ -4906,6 +4932,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await

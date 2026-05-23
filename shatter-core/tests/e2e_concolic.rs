@@ -1009,6 +1009,7 @@ async fn explorer_explore_function_with_setup() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
         default_execute_plan: None,
+        prepare_id_override: None,
     };
 
     let mut mgr = SetupManager::from_env();
@@ -1240,6 +1241,7 @@ async fn concolic_mock_status_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
         default_execute_plan: None,
+        prepare_id_override: None,
     };
 
     let result =
@@ -1332,6 +1334,7 @@ async fn concolic_mock_result_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
         default_execute_plan: None,
+        prepare_id_override: None,
     };
 
     let result =
@@ -1431,6 +1434,7 @@ async fn concolic_mock_loop_branches_discovered() {
         claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
         planner: None,
         default_execute_plan: None,
+        prepare_id_override: None,
     };
 
     let result =

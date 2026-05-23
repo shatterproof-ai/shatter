@@ -719,6 +719,7 @@ pub(crate) async fn run_scan(
             file_map: file_map.clone(),
             parallelism: effective_parallelism,
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
+            build_timeout: Duration::from_secs(build_timeout),
             cache: None,
             stratum: if stratum_pre_applied {
                 None
@@ -893,6 +894,7 @@ pub(crate) async fn run_scan(
         file_map,
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),
+        build_timeout: Duration::from_secs(build_timeout),
         cache,
         stratum: if stratum_pre_applied {
             None
