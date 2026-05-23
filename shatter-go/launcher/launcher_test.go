@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -461,5 +462,82 @@ func TestInternalAnchorRel(t *testing.T) {
 		if got != tc.wantSuffix {
 			t.Errorf("anchor(%q, %q) = %q, want %q", tc.modulePath, tc.importPath, got, tc.wantSuffix)
 		}
+	}
+}
+
+// str-bni0: signal-induced process exit bypasses Go's defers, so a normal
+// scan that is Ctrl-C'd would otherwise leave the target project with a
+// stray `.shatter-launchers/<hash>-<pid>/` directory. SweepActive is the
+// hook that the Go frontend's signal handler invokes to remove every
+// in-flight transient launcher source directory before exit.
+func TestSweepActiveRemovesRegisteredLauncherDirsAndEmptyParents(t *testing.T) {
+	modDir := t.TempDir()
+	launchersParent := filepath.Join(modDir, launcher.LaunchersDirNameForTest())
+	dirA := filepath.Join(launchersParent, "hashA-12345")
+	dirB := filepath.Join(launchersParent, "hashB-12345")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write main.go in %s: %v", d, err)
+		}
+		launcher.RegisterActiveLauncherDirForTest(d)
+	}
+
+	launcher.SweepActive()
+
+	for _, d := range []string{dirA, dirB} {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("SweepActive did not remove %s", d)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", d, err)
+		}
+	}
+	if _, err := os.Stat(launchersParent); err == nil {
+		t.Errorf("SweepActive did not remove empty parent %s", launchersParent)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("stat parent %s: %v", launchersParent, err)
+	}
+}
+
+// str-bni0: SweepActive must be safe to call when nothing is registered,
+// since the signal handler fires unconditionally on SIGTERM/SIGINT even when
+// no build is in flight.
+func TestSweepActiveOnEmptyRegistryIsNoop(t *testing.T) {
+	launcher.SweepActive() // must not panic
+}
+
+// str-bni0: if a previous shatter-go process died from a signal (defers
+// skipped) and left behind `.shatter-launchers/<hash>-<old-pid>/`, a fresh
+// BuildLauncher run must sweep those orphans so they do not accumulate in
+// the target project tree. Pids of currently-live processes must be
+// preserved (a concurrent peer is still using its dir).
+func TestSweepOrphanedLauncherDirsRemovesDeadPidsKeepsLive(t *testing.T) {
+	modDir := t.TempDir()
+	launchersParent := filepath.Join(modDir, launcher.LaunchersDirNameForTest())
+
+	// Use a pid known to be dead: 2^31 - 1 exceeds typical pid_max on Linux
+	// and macOS, so os.FindProcess + signal-zero returns an error.
+	deadPid := 2147483646
+	livePid := os.Getpid()
+
+	deadDir := filepath.Join(launchersParent, "hashDead-"+strconv.Itoa(deadPid))
+	liveDir := filepath.Join(launchersParent, "hashLive-"+strconv.Itoa(livePid))
+	for _, d := range []string{deadDir, liveDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	launcher.SweepOrphanedLauncherDirsForTest(launchersParent)
+
+	if _, err := os.Stat(deadDir); err == nil {
+		t.Errorf("orphan sweep failed to remove dead-pid dir %s", deadDir)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("stat deadDir: %v", err)
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Errorf("orphan sweep should preserve live-pid dir %s, got: %v", liveDir, err)
 	}
 }
