@@ -65,6 +65,36 @@ cargo build --release
 ./target/release/shatter --help
 ```
 
+#### Enabling Rust scans from a source build
+
+The `shatter-rust` frontend is a separate binary that is **not** built by
+`cargo build --release` or `cargo build --release --bin shatter` at the
+workspace root. After a workspace-root build, scanning Rust files will print a
+warning and skip them. This is expected — the main CLI is working; the Rust
+frontend just has not been built yet.
+
+To enable Rust scans, build the frontend explicitly:
+
+```bash
+cargo build --release --manifest-path shatter-rust/Cargo.toml
+```
+
+Then make the binary discoverable in one of these ways:
+
+- Run `shatter` from the workspace root. Shatter auto-discovers
+  `shatter-rust/target/release/shatter-rust` (and the debug equivalent) relative
+  to the current directory.
+- Add the build output to `PATH`, e.g.
+  `export PATH="$(pwd)/shatter-rust/target/release:$PATH"`.
+- Install it on `PATH` system-wide:
+
+  ```bash
+  cargo install --path shatter-rust
+  ```
+
+To make a single Rust-frontend-missing target a hard error (for CI), pass
+`--require-rust` to `shatter scan` or `shatter explore`.
+
 Shatter's demo, smoke, and E2E flows fetch the separate
 `https://github.com/shatterproof-ai/examples` repository into `/tmp` on demand.
 Set `SHATTER_EXAMPLES_DIR` if you want those flows to use an existing checkout
