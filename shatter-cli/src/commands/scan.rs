@@ -18,6 +18,19 @@ use shatter_core::scan_orchestrator::{self, ScanConfig, SkippedFunction};
 
 use crate::helpers::*;
 
+/// Derive the source language of a function from its `source_file` path.
+///
+/// Used to partition analyses for per-language scan passes (str-14en); the
+/// scan loop calls one frontend per language so files are never dispatched
+/// to a parser for a different language.
+fn analysis_language(
+    analysis: &shatter_core::protocol::FunctionAnalysis,
+) -> Option<DiscoveryLanguage> {
+    let src = analysis.source_file.as_ref()?;
+    let ext = std::path::Path::new(src).extension()?.to_str()?;
+    DiscoveryLanguage::from_extension(ext)
+}
+
 fn compute_scan_id_from_file_map(file_map: &HashMap<String, String>) -> String {
     let targets: Vec<(&str, &str)> = file_map
         .iter()
@@ -793,29 +806,43 @@ pub(crate) async fn run_scan(
             .map(std::sync::Arc::new)
     };
 
-    // We need a single frontend config for parallel_scan. Pick from the first language.
-    let first_lang = needed_langs.iter().next().copied().unwrap();
-    let cli_lang = discovery_lang_to_cli_lang(first_lang)
-        .ok_or_else(|| format!("no frontend for {first_lang:?}"))?;
-    let mut fe_config = frontend_config(
-        cli_lang,
-        req_timeout,
-        log_level,
-        exec_timeout,
-        build_timeout,
-        memory_limit,
-        None,
-        false,
-        release,
-    )?;
-    if external_audit_mode {
-        apply_external_audit_storage(&mut fe_config);
-    } else {
-        apply_project_storage(&mut fe_config, project_root_str.as_deref());
+    // str-14en: build one frontend config per discovered language. The
+    // previous code picked a single config from `needed_langs.iter().next()`
+    // — a HashSet, so the choice was non-deterministic — and reused it for
+    // every file in `parallel_scan_with_progress`. Mixed Rust+TS scans then
+    // routed TS source through the Rust frontend's `syn::parse_file`,
+    // surfacing as `instrument error (ParseError): failed to parse file:
+    // cannot parse string into token stream`. The scan loop below now runs
+    // `parallel_scan` once per language with the matching frontend.
+    let mut lang_fe_configs: Vec<(DiscoveryLanguage, shatter_core::frontend::FrontendConfig)> =
+        Vec::with_capacity(needed_langs.len());
+    for &lang in &needed_langs {
+        let cli_lang = discovery_lang_to_cli_lang(lang)
+            .ok_or_else(|| format!("no frontend for {lang:?}"))?;
+        let mut cfg = frontend_config(
+            cli_lang,
+            req_timeout,
+            log_level,
+            exec_timeout,
+            build_timeout,
+            memory_limit,
+            None,
+            false,
+            release,
+        )?;
+        if external_audit_mode {
+            apply_external_audit_storage(&mut cfg);
+        } else {
+            apply_project_storage(&mut cfg, project_root_str.as_deref());
+        }
+        if no_cache {
+            disable_frontend_analysis_cache(&mut cfg);
+        }
+        lang_fe_configs.push((lang, cfg));
     }
-    if no_cache {
-        disable_frontend_analysis_cache(&mut fe_config);
-    }
+    // Deterministic order across runs so checkpoint/artifact writes don't
+    // depend on HashSet iteration order.
+    lang_fe_configs.sort_by_key(|(l, _)| l.as_registry_str());
 
     // Load mock overrides from --mock-config (or .shatter/config.yaml defaults).
     let mock_overrides = if let Some(mc_path) = mock_config {
@@ -926,14 +953,83 @@ pub(crate) async fn run_scan(
         }) as scan_orchestrator::ProgressHandler
     });
 
-    match scan_orchestrator::parallel_scan_with_progress(
-        &fe_config,
-        &all_analyses,
-        &scan_config,
-        progress_handler,
-    )
-    .await
-    {
+    // str-14en: group analyses by language and run parallel_scan once per
+    // language with the matching frontend config. For single-language scans
+    // the loop runs once, exactly as before. For mixed scans the previous
+    // code would dispatch every file through whichever frontend `needed_langs
+    // .iter().next()` happened to pick.
+    let mut analyses_by_lang: std::collections::BTreeMap<&'static str, Vec<shatter_core::protocol::FunctionAnalysis>> =
+        std::collections::BTreeMap::new();
+    let fallback_lang_key: Option<&'static str> = if lang_fe_configs.len() == 1 {
+        Some(lang_fe_configs[0].0.as_registry_str())
+    } else {
+        None
+    };
+    for analysis in all_analyses {
+        let lang = analysis_language(&analysis).map(|l| l.as_registry_str())
+            .or(fallback_lang_key);
+        match lang {
+            Some(key) => analyses_by_lang.entry(key).or_default().push(analysis),
+            None => {
+                log::warn!(
+                    "scan: dropping function '{}' — unknown language for source_file {:?}",
+                    analysis.name,
+                    analysis.source_file,
+                );
+            }
+        }
+    }
+
+    let merge_result = scan_orchestrator::ParallelScanResult {
+        function_results: Vec::new(),
+        test_order: Vec::new(),
+        skipped: Vec::new(),
+        workers_used: 0,
+        workers_reaped: 0,
+        sampling: None,
+        source_files: Vec::new(),
+    };
+    let mut merged_or_err: Result<scan_orchestrator::ParallelScanResult, String> = Ok(merge_result);
+
+    for (lang, lang_fe_config) in &lang_fe_configs {
+        let key = lang.as_registry_str();
+        let lang_analyses = match analyses_by_lang.remove(key) {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        log::debug!(
+            "scan: running {} function(s) through {} frontend",
+            lang_analyses.len(),
+            key,
+        );
+        let lang_result = scan_orchestrator::parallel_scan_with_progress(
+            lang_fe_config,
+            &lang_analyses,
+            &scan_config,
+            progress_handler.clone(),
+        )
+        .await;
+        match (lang_result, &mut merged_or_err) {
+            (Ok(lang_result), Ok(merged)) => {
+                merged.function_results.extend(lang_result.function_results);
+                merged.test_order.extend(lang_result.test_order);
+                merged.skipped.extend(lang_result.skipped);
+                merged.workers_used = merged.workers_used.max(lang_result.workers_used);
+                merged.workers_reaped += lang_result.workers_reaped;
+                if merged.sampling.is_none() {
+                    merged.sampling = lang_result.sampling;
+                }
+                merged.source_files.extend(lang_result.source_files);
+            }
+            (Err(e), _) => {
+                merged_or_err = Err(e.to_string());
+                break;
+            }
+            (_, Err(_)) => break,
+        }
+    }
+
+    match merged_or_err {
         Ok(mut result) => {
             result.sampling = sampling_context;
             // str-jeen.46: surface unsupported targets (filtered out
@@ -1369,6 +1465,58 @@ mod tests {
     use shatter_core::batch_analyze::{FunctionEntry, FunctionRegistry};
     use shatter_core::protocol::{BranchInfo, BranchType, FunctionAnalysis, InvocationModel};
     use shatter_core::types::{ParamInfo, TypeInfo};
+
+    fn analysis_with_source(source_file: Option<&str>) -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: "f".into(),
+            exported: true,
+            params: vec![],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 1,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: source_file.map(str::to_string),
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        }
+    }
+
+    /// str-14en regression: a mixed Rust + TypeScript scan previously
+    /// dispatched every file through whichever frontend
+    /// `needed_langs.iter().next()` happened to pick (a HashSet — order is
+    /// non-deterministic), so TS files were routinely fed to the Rust
+    /// frontend's `syn::parse_file` and surfaced as `cannot parse string
+    /// into token stream` errors. The scan loop now groups analyses by
+    /// `analysis_language` and runs one orchestrator pass per language.
+    /// This test pins the language-detection contract those groups rely on.
+    #[test]
+    fn analysis_language_classifies_by_source_extension() {
+        assert_eq!(
+            analysis_language(&analysis_with_source(Some("web/src/api/client.ts"))),
+            Some(DiscoveryLanguage::TypeScript),
+        );
+        assert_eq!(
+            analysis_language(&analysis_with_source(Some("ui/Shell.tsx"))),
+            Some(DiscoveryLanguage::TypeScript),
+        );
+        assert_eq!(
+            analysis_language(&analysis_with_source(Some("crates/foo/src/lib.rs"))),
+            Some(DiscoveryLanguage::Rust),
+        );
+        assert_eq!(
+            analysis_language(&analysis_with_source(Some("pkg/scan/scan.go"))),
+            Some(DiscoveryLanguage::Go),
+        );
+        assert_eq!(
+            analysis_language(&analysis_with_source(Some("notes.md"))),
+            None,
+        );
+        assert_eq!(analysis_language(&analysis_with_source(None)), None);
+    }
 
     /// str-jeen.45 regression: a Go function with a `range` loop + an `if`
     /// branch must report two branches in the dry-run plan, not zero. The
