@@ -578,14 +578,17 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         candidate_queue_capacity: Option<usize>,
 
-        /// Override the lower bound of the parallelism clamp (built-in
-        /// default: 4). Useful on tiny CI runners. See str-v01r.
+        /// Lower bound applied to auto-detected `--workers` (built-in
+        /// default: 4). Does NOT clamp an explicit `--workers N` request —
+        /// that value is honored as-is. Useful on tiny CI runners to
+        /// lower the auto-detect floor. See str-v01r / str-p2rz.
         #[arg(long)]
         parallelism_min: Option<usize>,
 
-        /// Override the upper bound of the parallelism clamp (built-in
-        /// default: 16). Useful on large dedicated machines with tuned
-        /// `GOMAXPROCS`. See str-v01r.
+        /// Upper bound on resolved `--workers` (built-in default: 16).
+        /// Applies to both auto-detected and explicit `--workers N`
+        /// values to cap per-worker toolchain fan-out. Raise on large
+        /// dedicated machines with tuned `GOMAXPROCS`. See str-v01r.
         #[arg(long)]
         parallelism_max: Option<usize>,
 
@@ -787,19 +790,28 @@ pub(crate) enum CliCommand {
         timeout_total: Option<u64>,
 
         /// Number of parallel frontend subprocesses for exploration.
-        /// Default: number of available CPUs (0 = auto-detect).
-        /// Overridden by shatter.config.json when not explicitly set.
+        /// Default: auto-detect from available CPUs (0 = auto-detect).
+        /// An explicit value (e.g. `--parallelism 1`) is honored as-is for
+        /// debugging or constrained environments; only the upper bound
+        /// (`--parallelism-max`, default 16) still applies, since that
+        /// guards against per-worker toolchain fork-bomb on large hosts.
+        /// The `--parallelism-min` floor only applies to the auto-detect
+        /// path. Overridden by shatter.config.json when not explicitly set.
         #[arg(long)]
         parallelism: Option<usize>,
 
-        /// Override the lower bound of the parallelism clamp (built-in
-        /// default: 4). Useful on tiny CI runners. May also be set via
+        /// Lower bound applied to auto-detected parallelism (built-in
+        /// default: 4). Does NOT clamp an explicit `--parallelism N`
+        /// request — that value is honored as-is. Useful on tiny CI
+        /// runners to lower the auto-detect floor. May also be set via
         /// `parallelism_min` in shatter.config.json.
         #[arg(long)]
         parallelism_min: Option<usize>,
 
-        /// Override the upper bound of the parallelism clamp (built-in
-        /// default: 16). Useful on large dedicated machines with tuned
+        /// Upper bound on resolved parallelism (built-in default: 16).
+        /// Applies to both auto-detected and explicit `--parallelism N`
+        /// values to cap per-worker toolchain fan-out (`go build`,
+        /// `cargo`). Raise on large dedicated machines with tuned
         /// `GOMAXPROCS`. May also be set via `parallelism_max` in
         /// shatter.config.json.
         #[arg(long)]
