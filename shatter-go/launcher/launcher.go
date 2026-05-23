@@ -27,7 +27,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
@@ -44,6 +47,112 @@ const (
 	// already exclude it.
 	launchersDirName = ".shatter-launchers"
 )
+
+// activeLauncherDirs tracks transient launcher source directories created by
+// in-flight BuildLauncher calls (str-bni0). The deferred cleanup inside
+// BuildLauncher handles the happy path and ordinary error returns, but a
+// signal-induced process exit (SIGTERM/SIGINT from the parent CLI) bypasses
+// Go's defers and would otherwise leave a `.shatter-launchers/` artefact in
+// the target project tree. The Go frontend's signal handler calls
+// SweepActive() to remove these dirs before the process exits.
+var (
+	activeLauncherDirsMu sync.Mutex
+	activeLauncherDirs   = map[string]struct{}{}
+)
+
+func registerActiveLauncherDir(dir string) {
+	activeLauncherDirsMu.Lock()
+	defer activeLauncherDirsMu.Unlock()
+	activeLauncherDirs[dir] = struct{}{}
+}
+
+func unregisterActiveLauncherDir(dir string) {
+	activeLauncherDirsMu.Lock()
+	defer activeLauncherDirsMu.Unlock()
+	delete(activeLauncherDirs, dir)
+}
+
+// SweepActive removes every transient launcher source directory currently
+// tracked as in-flight, along with its now-empty enclosing
+// `.shatter-launchers/` parent when possible. Best-effort: errors are
+// swallowed so the caller (typically a signal handler racing with process
+// exit) can continue tearing down.
+func SweepActive() {
+	activeLauncherDirsMu.Lock()
+	dirs := make([]string, 0, len(activeLauncherDirs))
+	for d := range activeLauncherDirs {
+		dirs = append(dirs, d)
+	}
+	activeLauncherDirs = map[string]struct{}{}
+	activeLauncherDirsMu.Unlock()
+
+	parents := map[string]struct{}{}
+	for _, d := range dirs {
+		_ = os.RemoveAll(d)
+		parent := filepath.Dir(d)
+		if filepath.Base(parent) == launchersDirName {
+			parents[parent] = struct{}{}
+		}
+	}
+	for parent := range parents {
+		entries, err := os.ReadDir(parent)
+		if err == nil && len(entries) == 0 {
+			_ = os.Remove(parent)
+		}
+	}
+}
+
+// sweepOrphanedLauncherDirs removes pid-suffixed subdirectories under a
+// target module's `.shatter-launchers/` whose pid no longer refers to a live
+// process. Called at BuildLauncher start so a previous run that died from a
+// signal (and skipped its defers) cannot leak its source dir across runs.
+// Best-effort; errors are swallowed.
+func sweepOrphanedLauncherDirs(launchersParent string) {
+	entries, err := os.ReadDir(launchersParent)
+	if err != nil {
+		return
+	}
+	myPid := os.Getpid()
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		dashIdx := strings.LastIndexByte(name, '-')
+		if dashIdx < 0 {
+			continue
+		}
+		pidStr := name[dashIdx+1:]
+		pid, parseErr := strconv.Atoi(pidStr)
+		if parseErr != nil || pid <= 0 || pid == myPid {
+			continue
+		}
+		if processIsAlive(pid) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(launchersParent, name))
+	}
+	// If the sweep emptied the parent, remove it so a clean tree is left
+	// behind for callers inspecting git status (str-bni0).
+	remaining, err := os.ReadDir(launchersParent)
+	if err == nil && len(remaining) == 0 {
+		_ = os.Remove(launchersParent)
+	}
+}
+
+// processIsAlive reports whether `pid` refers to a process this OS user can
+// signal. Uses signal 0 which performs the permission/existence check without
+// delivering a signal. On error, the pid is treated as dead so the cleanup
+// proceeds (the worst case is a false positive that removes a transient dir
+// owned by a process this user cannot signal — that build will fail at the
+// next file access, surfacing the conflict instead of silently leaking).
+func processIsAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
 
 // BuildOptions are the inputs required to build a launcher binary.
 type BuildOptions struct {
@@ -151,10 +260,21 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	}
 	launcherDirRel := filepath.Join(anchorRel, launchersDirName, fmt.Sprintf("%s-%d", opts.DiscoveryHash, os.Getpid()))
 	launcherDir := filepath.Join(opts.TargetModuleDir, launcherDirRel)
+
+	// str-bni0: sweep any pid-suffixed subdirectories left behind by a prior
+	// process that exited via a signal (defers don't run on signal-induced
+	// exit). This keeps `git status` clean across runs even when a previous
+	// scan was Ctrl-C'd.
+	sweepOrphanedLauncherDirs(filepath.Dir(launcherDir))
+
 	if err := writeLauncherSourceDir(launcherDir); err != nil {
 		return "", false, err
 	}
-	defer cleanupLauncherSourceDir(opts.TargetModuleDir, launcherDir)
+	registerActiveLauncherDir(launcherDir)
+	defer func() {
+		unregisterActiveLauncherDir(launcherDir)
+		cleanupLauncherSourceDir(opts.TargetModuleDir, launcherDir)
+	}()
 
 	mainSrc := opts.MainSource
 	if mainSrc == "" {

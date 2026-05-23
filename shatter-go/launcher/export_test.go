@@ -11,3 +11,17 @@ func InternalAnchorRelForTest(modulePath, importPath string) string {
 	}
 	return rel
 }
+
+// str-bni0 test hooks.
+
+func SweepOrphanedLauncherDirsForTest(launchersParent string) {
+	sweepOrphanedLauncherDirs(launchersParent)
+}
+
+func RegisterActiveLauncherDirForTest(dir string) {
+	registerActiveLauncherDir(dir)
+}
+
+func LaunchersDirNameForTest() string {
+	return launchersDirName
+}
