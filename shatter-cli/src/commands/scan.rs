@@ -129,56 +129,12 @@ pub(crate) async fn run_scan(
         .into());
     }
 
-    // str-tzbr / str-jeen.54: the dry-run plan is markdown-only. Two cases:
-    //
-    // 1. `--dry-run --stdout --format json` (and the equivalent default-
-    //    stdout case where `outputs` is empty): stdout is the only sink
-    //    and the user explicitly asked for JSON there. We cannot serve
-    //    that, so we **reject** with a message that names the exact
-    //    flags (`--dry-run`, `--stdout`, `--format json`) to change.
-    //    This preserves the str-tzbr contract that we never silently
-    //    ship Markdown on a JSON-tagged stdout.
-    //
-    // 2. `--dry-run -o <file>.json`: the JSON report file is simply not
-    //    written during dry-run (the markdown plan goes to stdout). Per
-    //    str-jeen.54 we **accept** this combo so projects whose normal
-    //    scan config includes a JSON `-o` report can still run dry-run
-    //    setup checks. We log a per-file warning that names the skipped
-    //    path so the user knows which `-o` flag / config field to drop
-    //    if they actually want JSON output (which requires running
-    //    without `--dry-run`).
-    let json_stdout_requested =
-        format == crate::args::StdoutFormat::Json && (stdout || outputs.is_empty());
-    let json_output_files: Vec<&std::path::PathBuf> = outputs
-        .iter()
-        .filter(|p| {
-            matches!(
-                crate::args::infer_output_format(p),
-                Ok(crate::args::StdoutFormat::Json)
-            )
-        })
-        .collect();
-    if dry_run && json_stdout_requested {
-        return Err(
-            "scan --dry-run cannot emit --format json on stdout: the dry-run \
-             plan is markdown-only. To fix, change one of: drop --format json \
-             (to keep the dry-run markdown plan), drop --stdout (and pass \
-             -o <file>.json instead — the file is then skipped during \
-             --dry-run), or drop --dry-run (to run the full scan and produce \
-             the JSON scan_report)."
-                .into(),
-        );
-    }
-    if dry_run && !json_output_files.is_empty() {
-        for p in &json_output_files {
-            log::warn!(
-                "scan --dry-run: skipping JSON report output '{}' (the dry-run \
-                 plan is markdown-only, written to stdout). Drop this -o flag \
-                 or run without --dry-run to produce the JSON scan_report.",
-                p.display(),
-            );
-        }
-    }
+    // str-nnty: `--dry-run` supports both markdown and JSON output. JSON
+    // emits a machine-readable scan plan (function inventory, layers,
+    // estimated time, config, skipped reasons) so agents and CI can
+    // estimate scan scope without running exploration. Routing happens
+    // at the dry-run branch below — both stdout and `-o file.{json,md}`
+    // honor the requested format.
 
     // Resolve directory.
     let root = PathBuf::from(directory);
@@ -762,13 +718,21 @@ pub(crate) async fn run_scan(
             coverage_mode: shatter_core::interesting_pool::CoverageMode::Branch,
             write_artifacts: !external_audit_mode,
         };
-        let plan = scan_orchestrator::format_dry_run_plan(
+        // str-nnty: emit JSON or markdown per requested format. JSON
+        // mode covers both `--format json --stdout` and `-o file.json`;
+        // markdown mode keeps the existing human-readable plan path.
+        emit_dry_run_plan(
             &all_analyses,
             &skipped_for_executability,
             &scan_config,
-        )
-        .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
-        crate::helpers::print_stdout(&plan);
+            &registry,
+            outputs,
+            stdout,
+            format,
+            use_color,
+            effective_parallelism,
+            timeout_per_fn,
+        )?;
         return Ok(());
     }
 
@@ -1223,8 +1187,295 @@ pub(crate) async fn run_scan(
 }
 
 /// Rebuild full `FunctionAnalysis` records from a [`FunctionRegistry`] for
-/// scan-orchestrator consumption.
+/// str-nnty: route the dry-run plan to the requested sink(s).
 ///
+/// JSON output covers `--format json --stdout` (and the default-stdout
+/// case where no `-o` is given) and `-o <file>.json`. Markdown output
+/// covers the same flag/file shapes with `.md` / `--format markdown`.
+/// If both JSON and Markdown sinks are requested simultaneously (e.g.
+/// `-o plan.json -o plan.md`), both are written.
+#[allow(clippy::too_many_arguments)]
+fn emit_dry_run_plan(
+    analyses: &[shatter_core::protocol::FunctionAnalysis],
+    skipped: &[SkippedFunction],
+    scan_config: &ScanConfig,
+    registry: &shatter_core::batch_analyze::FunctionRegistry,
+    outputs: &[std::path::PathBuf],
+    stdout: bool,
+    format: crate::args::StdoutFormat,
+    use_color: bool,
+    effective_parallelism: usize,
+    timeout_per_fn: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::args::StdoutFormat;
+
+    let json_files: Vec<&std::path::PathBuf> = outputs
+        .iter()
+        .filter(|p| {
+            matches!(
+                crate::args::infer_output_format(p),
+                Ok(StdoutFormat::Json)
+            )
+        })
+        .collect();
+    let md_files: Vec<&std::path::PathBuf> = outputs
+        .iter()
+        .filter(|p| {
+            matches!(
+                crate::args::infer_output_format(p),
+                Ok(StdoutFormat::Markdown)
+            )
+        })
+        .collect();
+
+    // Stdout target uses --format when --stdout is set or when no -o
+    // sinks are given (the default-stdout case).
+    let stdout_target = if stdout || outputs.is_empty() {
+        Some(format)
+    } else {
+        None
+    };
+    let want_json = !json_files.is_empty() || matches!(stdout_target, Some(StdoutFormat::Json));
+    let want_md = !md_files.is_empty() || matches!(stdout_target, Some(StdoutFormat::Markdown));
+
+    if want_json {
+        let plan = build_dry_run_plan_json(
+            analyses,
+            skipped,
+            scan_config,
+            registry,
+            effective_parallelism,
+            timeout_per_fn,
+        );
+        let serialized = serde_json::to_string_pretty(&plan)
+            .map_err(|e| format!("failed to serialize dry-run plan: {e}"))?;
+        for path in &json_files {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!("failed to create output directory '{}': {e}", parent.display())
+                })?;
+            }
+            std::fs::write(path, &serialized).map_err(|e| {
+                format!("failed to write dry-run plan to '{}': {e}", path.display())
+            })?;
+            log::info!("Wrote dry-run plan to {}", path.display());
+        }
+        if matches!(stdout_target, Some(StdoutFormat::Json)) {
+            crate::helpers::print_stdout(&serialized);
+            crate::helpers::print_stdout("\n");
+        }
+    }
+
+    if want_md {
+        let plan = scan_orchestrator::format_dry_run_plan(analyses, skipped, scan_config)
+            .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
+        for path in &md_files {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!("failed to create output directory '{}': {e}", parent.display())
+                })?;
+            }
+            std::fs::write(path, &plan).map_err(|e| {
+                format!("failed to write dry-run plan to '{}': {e}", path.display())
+            })?;
+            log::info!("Wrote dry-run plan to {}", path.display());
+        }
+        if matches!(stdout_target, Some(StdoutFormat::Markdown)) {
+            print_markdown(&plan, use_color);
+        }
+    }
+
+    // Unsupported stdout formats for dry-run (HTML, Text) fall back to
+    // markdown so callers don't silently get an empty stream.
+    if let Some(fmt) = stdout_target
+        && !matches!(fmt, StdoutFormat::Json | StdoutFormat::Markdown)
+    {
+        let plan = scan_orchestrator::format_dry_run_plan(analyses, skipped, scan_config)
+            .map_err(|e| format!("failed to build dry-run plan: {e}"))?;
+        print_markdown(&plan, use_color);
+    }
+
+    Ok(())
+}
+
+/// str-nnty: build a machine-readable JSON representation of the dry-run
+/// scan plan. Mirrors the markdown plan's content — function inventory,
+/// topological layers, skipped functions, estimated time, and selected
+/// config values — but as a stable, parseable structure for agents and CI.
+fn build_dry_run_plan_json(
+    analyses: &[shatter_core::protocol::FunctionAnalysis],
+    skipped: &[SkippedFunction],
+    scan_config: &ScanConfig,
+    registry: &shatter_core::batch_analyze::FunctionRegistry,
+    effective_parallelism: usize,
+    timeout_per_fn: u64,
+) -> serde_json::Value {
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    // Topological layers from the registry-wide call graph. Filter each
+    // layer to the analyses actually in scope (post unexported / opaque
+    // skips) so the plan reflects what scan would run.
+    let cg = CallGraph::from_registry(registry);
+    let raw_layers = cg.topological_layers();
+
+    // Build a qualified-id index over the in-scope analyses so we can
+    // surface the rich per-function record (signature, branches, file)
+    // even though the call graph keys are qualified ids.
+    let analysis_qids: Vec<String> = analyses
+        .iter()
+        .map(shatter_core::behavior::node_id_for_analysis)
+        .collect();
+    let analysis_by_qid: HashMap<&str, &shatter_core::protocol::FunctionAnalysis> = analysis_qids
+        .iter()
+        .zip(analyses.iter())
+        .map(|(qid, a)| (qid.as_str(), a))
+        .collect();
+    let scope_set: HashSet<&str> = analysis_qids.iter().map(String::as_str).collect();
+
+    let mut layers_json: Vec<serde_json::Value> = Vec::new();
+    let mut selected_function_count = 0usize;
+    for (idx, layer) in raw_layers.iter().enumerate() {
+        let in_scope: Vec<&str> = layer
+            .iter()
+            .filter(|qid| scope_set.contains(qid.as_str()))
+            .map(String::as_str)
+            .collect();
+        if in_scope.is_empty() {
+            continue;
+        }
+        selected_function_count += in_scope.len();
+
+        let funcs_json: Vec<serde_json::Value> = in_scope
+            .iter()
+            .filter_map(|qid| {
+                let analysis = analysis_by_qid.get(qid)?;
+                let (file_part, bare) = shatter_core::behavior::split_qualified_id(qid);
+                let params: Vec<serde_json::Value> = analysis
+                    .params
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "name": p.name,
+                            "type": format_type_label(&p.typ),
+                        })
+                    })
+                    .collect();
+                let internal_deps: Vec<&str> = cg
+                    .callees_of(qid)
+                    .into_iter()
+                    .filter(|c| scope_set.contains(c))
+                    .collect();
+                Some(json!({
+                    "qualified_id": qid,
+                    "name": bare,
+                    "file": file_part,
+                    "params": params,
+                    "return_type": format_type_label(&analysis.return_type),
+                    "branches": analysis.branches.len(),
+                    "internal_deps": internal_deps,
+                    "external_deps": analysis
+                        .dependencies
+                        .iter()
+                        .map(|d| json!({
+                            "symbol": d.symbol,
+                            "source_module": d.source_module,
+                        }))
+                        .collect::<Vec<_>>(),
+                }))
+            })
+            .collect();
+
+        layers_json.push(json!({
+            "index": idx,
+            "parallelizable": funcs_json.len() > 1,
+            "functions": funcs_json,
+        }));
+    }
+
+    // Estimated time: each layer is sequential, functions inside run in
+    // parallel up to `parallelism` workers.
+    let workers = effective_parallelism.max(1);
+    let mut estimated_seconds: u64 = 0;
+    for layer in &layers_json {
+        let n = layer["functions"].as_array().map_or(0, |a| a.len()) as u64;
+        let batches = n.div_ceil(workers as u64);
+        estimated_seconds += batches * timeout_per_fn;
+    }
+
+    let file_count = scan_config
+        .file_map
+        .values()
+        .collect::<HashSet<_>>()
+        .len();
+    let exported_total = registry.exported_functions().len();
+    let unexported_total = registry.len().saturating_sub(exported_total);
+
+    let skipped_json: Vec<serde_json::Value> = skipped
+        .iter()
+        .map(|s| {
+            json!({
+                "function": s.function_name,
+                "reason": s.reason,
+                "category": "unsupported",
+            })
+        })
+        .collect();
+
+    json!({
+        "schema_version": 1,
+        "kind": "scan_dry_run_plan",
+        "summary": {
+            "total_functions_discovered": analyses.len() + skipped.len(),
+            "included_functions": analyses.len(),
+            "skipped_unsupported_functions": skipped.len(),
+            "omitted_unexported_functions": unexported_total,
+            "exported_functions_in_registry": exported_total,
+            "file_count": file_count,
+            "layer_count": layers_json.len(),
+            "selected_function_count": selected_function_count,
+            "workers": workers,
+            "timeout_per_function_seconds": timeout_per_fn,
+            "estimated_total_seconds": estimated_seconds,
+        },
+        "config": {
+            "parallelism": workers,
+            "timeout_per_function_seconds": timeout_per_fn,
+            "max_iterations_per_function": scan_config.max_iterations_per_function,
+            "capture_side_effects": scan_config.capture_side_effects,
+            "workers_per_function": scan_config.workers_per_fn,
+            "isolation": format!("{:?}", scan_config.isolation),
+            "coverage_mode": format!("{:?}", scan_config.coverage_mode),
+            "write_artifacts": scan_config.write_artifacts,
+            "stratum": scan_config.stratum.as_ref().map(|s| format!("{s:?}")),
+        },
+        "layers": layers_json,
+        "skipped": skipped_json,
+    })
+}
+
+/// Render a TypeInfo as a short label for the dry-run JSON plan.
+fn format_type_label(t: &shatter_core::types::TypeInfo) -> String {
+    use shatter_core::types::TypeInfo;
+    match t {
+        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Float => "float".to_string(),
+        TypeInfo::Str => "string".to_string(),
+        TypeInfo::Bool => "bool".to_string(),
+        TypeInfo::Array { .. } => "array".to_string(),
+        TypeInfo::Object { .. } => "object".to_string(),
+        TypeInfo::Union { .. } => "union".to_string(),
+        TypeInfo::Nullable { .. } => "nullable".to_string(),
+        TypeInfo::Complex { kind, .. } => format!("{kind:?}"),
+        TypeInfo::Opaque { label, .. } => label.clone(),
+        TypeInfo::Unknown => "unknown".to_string(),
+    }
+}
+
 /// `FunctionEntry` is a summary view: it stores `branch_count` but discards
 /// the underlying `branches`, `literals`, `loops`, `source_file`,
 /// `adapter_hints`, and `invocation_model` from the original
