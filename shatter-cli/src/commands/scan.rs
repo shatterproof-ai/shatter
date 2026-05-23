@@ -381,7 +381,34 @@ pub(crate) async fn run_scan(
     };
 
     if analyzable_files.is_empty() {
-        log::info!("No supported source files found in {}", root.display());
+        // str-94cg: when the user passed `--include` patterns, explain
+        // that patterns are evaluated relative to the scan root and
+        // (where possible) suggest a corrected pattern with the
+        // duplicated scan-root prefix stripped. Without this hint users
+        // see only "No supported source files found" and have no idea
+        // their `internal/runtime/*.go` pattern never matched because
+        // the scan root is already `<repo>/internal/runtime`.
+        if !include_patterns.is_empty() {
+            for pat in include_patterns {
+                let suggestion = discovery::suggest_corrected_include_pattern(pat, &effective_root);
+                match suggestion {
+                    Some(corrected) => log::warn!(
+                        "--include '{pat}' matched 0 files. \
+                         Patterns are evaluated relative to scan root: {}. \
+                         Try: --include '{corrected}'",
+                        effective_root.display(),
+                    ),
+                    None => log::warn!(
+                        "--include '{pat}' matched 0 files. \
+                         Patterns are evaluated relative to scan root: {} \
+                         (not the repo root). Try a pattern like '*.go' or '**/*.go'.",
+                        effective_root.display(),
+                    ),
+                }
+            }
+        } else {
+            log::info!("No supported source files found in {}", root.display());
+        }
         return Ok(());
     }
 
