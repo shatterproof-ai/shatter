@@ -736,7 +736,16 @@ fn decide_explore_exit_status(summaries: &[ExploreSummary]) -> Result<(), Explor
     for summary in summaries {
         let attempted_in_target =
             summary.completed + summary.build_failed + summary.runtime_failed + summary.timed_out;
-        if attempted_in_target == 0 {
+        // str-ni32: surface analyze/preflight failures via the same exit-code
+        // path that already covers build_failed/runtime_failed/timed_out. A
+        // file that never reached the exploration loop has zero counts in
+        // each bucket, but its summary carries a `parser_failure:` status —
+        // count it as an attempted-and-failed target so `explore -o
+        // file.json` against e.g. a missing `go.mod` exits nonzero instead
+        // of looking like a no-op success.
+        let analyze_failed_in_target =
+            attempted_in_target == 0 && summary.status.starts_with("parser_failure");
+        if attempted_in_target == 0 && !analyze_failed_in_target {
             continue;
         }
         attempted_targets += 1;
@@ -4035,6 +4044,7 @@ fn build_no_target_spec_bundle(
 pub(crate) async fn run_explore(
     targets: &[String],
     max_iterations: Option<u32>,
+    user_max_iterations: Option<u32>,
     timeout: u64,
     timeout_explore: Option<f64>,
     scope_path: Option<&Path>,
@@ -4746,16 +4756,24 @@ pub(crate) async fn run_explore(
 
             let function_id = format!("{}:{}", file_str, func.name);
 
-            // Resolve per-function config
-            let resolved = shatter_config::resolve_function_config_with_inputs(
+            // Resolve per-function config. Passing `user_max_iterations`
+            // (only Some(_) when the user set --max-iterations explicitly)
+            // ensures CLI flags beat `defaults.max_iterations` in
+            // `.shatter/config.yaml` (str-4uem). The post-budget
+            // `max_iterations` is used below as the fallback when neither
+            // CLI nor config supplied a value.
+            let mut resolved = shatter_config::resolve_function_config_with_inputs(
                 &function_id,
                 target.file.parent().unwrap_or(Path::new(".")),
                 inputs_path,
-                max_iterations,
+                user_max_iterations,
                 timeout,
                 set_overrides,
             )
             .map_err(|e| format!("config resolution error for {}: {e}", func.name))?;
+            if resolved.max_iterations.is_none() {
+                resolved.max_iterations = max_iterations;
+            }
 
             // Run adapter selection policy: merge config profile with frontend hints.
             let adapter_selection_result = adapter_selection::select_adapters(
@@ -6530,6 +6548,32 @@ pub(crate) async fn run_explore(
                         |e| format!("failed to write spec bundle to '{}': {e}", path.display()),
                     )?;
                     log::info!("Wrote spec bundle to {}", path.display());
+                } else {
+                    // str-ni32: analyze/preflight failed before any spec was
+                    // produced. Mirror the --spec-out branch below by
+                    // writing a machine-readable no-target marker bundle so
+                    // `-o file.json` always yields a file on disk, and let
+                    // `decide_explore_exit_status` (extended in str-ni32)
+                    // surface the failure via a nonzero exit.
+                    let file_path = parsed
+                        .first()
+                        .map(|t| t.file.display().to_string())
+                        .unwrap_or_default();
+                    let bundle = build_no_target_spec_bundle(&file_path, &report_summaries);
+                    shatter_core::spec::write_file_spec_bundle(&bundle, path).map_err(|e| {
+                        format!(
+                            "failed to write no-target spec marker to '{}': {e}",
+                            path.display()
+                        )
+                    })?;
+                    log::info!(
+                        "Wrote no-target spec marker (reason={}) to {}",
+                        bundle
+                            .no_target_reason
+                            .map(|r| r.as_token())
+                            .unwrap_or("unclassified"),
+                        path.display()
+                    );
                 }
             }
             Err(e) => {
@@ -6915,6 +6959,26 @@ mod tests {
             summary_with_buckets("b_test.ts", 0, 0, 0, 0),
         ];
         assert!(decide_explore_exit_status(&summaries).is_ok());
+    }
+
+    #[test]
+    fn decide_exit_status_err_when_only_parser_failure_summary() {
+        // str-ni32: when the explore pipeline never reaches the per-function
+        // loop because Analyze returned an error (parser/preflight failure),
+        // the run still has zero {completed,build_failed,runtime_failed,
+        // timed_out} but it is *not* a no-target skip — it is a hard
+        // analyze failure and must surface a nonzero exit.
+        let summaries = vec![ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "parser_failure: PreflightFailed".to_string(),
+            file: "broken.go".to_string(),
+            ..Default::default()
+        }];
+        let err = decide_explore_exit_status(&summaries).expect_err("should fail");
+        let ExploreFailure::AllAttemptedTargetsFailed {
+            attempted_targets, ..
+        } = err;
+        assert_eq!(attempted_targets, 1);
     }
 
     #[test]

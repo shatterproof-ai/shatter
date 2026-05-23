@@ -169,3 +169,56 @@ fn explore_from_artifacts_exits_zero_when_some_target_succeeded() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+#[test]
+fn explore_from_artifacts_exits_nonzero_when_only_parser_failure_summary() {
+    // str-ni32 regression: when the only per-file summary is a
+    // `parser_failure:` (Analyze response was an error, e.g. PreflightFailed
+    // for a missing go.mod), the run never reached the per-function loop so
+    // every bucket counter is zero. Previously `decide_explore_exit_status`
+    // skipped these rows and the process exited 0 — masking the failure for
+    // CI and agents. The fix counts parser-failure rows as attempted-and-
+    // failed so the exit code reflects reality.
+    let tmp = tempfile::tempdir().expect("create tempdir for artifact root");
+    let artifact_root = tmp.path();
+    let target_dir = artifact_root.join("missing_gomod");
+    std::fs::create_dir_all(&target_dir).expect("create target dir");
+    std::fs::write(
+        target_dir.join("summary.json"),
+        serde_json::to_string_pretty(&json!({
+            "version": 2,
+            "status": "parser_failure: PreflightFailed",
+            "file": "missing.go",
+            "total_functions": 0,
+            "completed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "elapsed_secs": 0.0,
+            "build_failed": 0,
+            "runtime_failed": 0,
+            "timed_out": 0,
+            "unsupported": 0,
+            "skipped_by_policy": 0,
+            "produced_coverage": 0,
+            "functions": []
+        }))
+        .unwrap(),
+    )
+    .expect("write parser-failure summary");
+
+    let output = Command::new(shatter_binary())
+        .arg("explore")
+        .arg("--from-artifacts")
+        .arg(artifact_root)
+        .arg("placeholder.go")
+        .output()
+        .expect("invoke shatter explore");
+
+    assert!(
+        !output.status.success(),
+        "explore must exit nonzero when the only summary is a parser_failure; \
+         status={:?}\nstderr=\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
