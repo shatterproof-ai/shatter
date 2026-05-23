@@ -134,6 +134,7 @@ pub(crate) async fn run_properties(
             claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
 
         // Explore each function and build specs enriched with invariants

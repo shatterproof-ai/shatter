@@ -4985,6 +4985,7 @@ pub(crate) async fn run_explore(
                 claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
                 planner: planner.map(str::to_string),
                 default_execute_plan: None,
+            prepare_id_override: None,
             };
 
             // Build concolic-specific config if needed.

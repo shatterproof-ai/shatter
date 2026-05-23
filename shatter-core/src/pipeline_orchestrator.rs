@@ -1285,6 +1285,7 @@ mod tests {
             claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
             planner: None,
             default_execute_plan: None,
+            prepare_id_override: None,
         };
         let mut concolic_config = Some(crate::orchestrator::ExploreConfig {
             default_execute_plan: None,
