@@ -161,14 +161,20 @@ export interface ResolverAdapter {
  * `instanceof` because errors that cross a VM context boundary lose their
  * prototype chain (the VM's `Error` is a different constructor).
  */
-function isModuleNotFoundError(err: unknown, requestedModule: string): boolean {
+export function isModuleNotFoundError(
+  err: unknown,
+  requestedModule: string,
+): boolean {
   if (typeof err !== "object" || err === null) return false;
   const errObj = err as Record<string, unknown>;
   const code = typeof errObj["code"] === "string" ? errObj["code"] : undefined;
   const message =
     typeof errObj["message"] === "string" ? errObj["message"] : String(err);
-  const hasCode = code === "MODULE_NOT_FOUND";
-  const hasMessage = message.startsWith("Cannot find module");
+  const hasCode =
+    code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
+  const hasMessage =
+    message.startsWith("Cannot find module") ||
+    message.startsWith("Cannot find package");
   if (!hasCode && !hasMessage) return false;
   // Ensure the error is for the direct require, not a transitive dep
   return message.includes(requestedModule);
