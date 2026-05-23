@@ -224,23 +224,140 @@ pub struct SkipReason {
 impl SkipReason {
     /// Formats a human-readable one-line description.
     ///
-    /// Format: `<path> → <label> (<category label> — <reason>)`
+    /// Format: `<path> → <label> (<category label> — <reason>)`, optionally
+    /// followed by `; hint: <actionable next step>` when [`Self::guidance`]
+    /// returns a suggestion for the opaque label.
     ///
     /// # Examples
     /// - `param "sock" → net.Socket (network handle — requires live network binding)`
     /// - `param "config" → field "db" → pg.Client (database connection — requires live database connection)`
+    /// - `param "pool" → PgPool (opaque type — type cannot be automatically synthesized); hint: ...`
     pub fn format_human(&self) -> String {
         let path = format_nesting_path(&self.nesting_path);
         let reason_text = self
             .user_reason
             .as_deref()
             .unwrap_or_else(|| self.category.reason());
-        format!(
+        let base = format!(
             "{path} → {} ({} — {reason_text})",
             self.opaque_label,
             self.category.label()
-        )
+        );
+        match self.guidance() {
+            Some(hint) => format!("{base}; hint: {hint}"),
+            None => base,
+        }
     }
+
+    /// Returns an actionable next-step hint for this opaque type, if one is
+    /// known. Covers common Rust ecosystem types (SQLx pools, Axum extractors,
+    /// Chrono date/time types) and falls back to a generic pointer at the
+    /// `generators` config mechanism for unknown user-defined types.
+    pub fn guidance(&self) -> Option<&'static str> {
+        guidance_for_opaque_label(&self.opaque_label, &self.category)
+    }
+}
+
+/// Returns an actionable hint string for a known opaque type label.
+///
+/// Covers common Rust ecosystem types that are frequently skipped:
+/// - **SQLx pools** (`PgPool`, `SqlitePool`, `MySqlPool`, `Pool<…>`) — point
+///   at `sqlx::PgPool::connect` and the `generators` config.
+/// - **Axum extractors** (`State`, `Request`, `Next`, `Extension`, `Json`,
+///   `Path`, `Query`, `Form`, …) — point at `generators` config and the
+///   refactor-to-pure-function workaround.
+/// - **Chrono date/time** (`NaiveDate`, `DateTime<…>`, `NaiveDateTime`, …)
+///   — point at the standard constructors and `generators` config.
+///
+/// Returns `None` for labels with no specific recipe except when the
+/// category is [`OpaqueCategory::Unknown`], in which case a generic
+/// pointer at the `generators` config is returned so users always get a
+/// next step.
+#[must_use]
+pub fn guidance_for_opaque_label(
+    label: &str,
+    category: &OpaqueCategory,
+) -> Option<&'static str> {
+    // SQLx pools.
+    if matches!(label, "PgPool" | "SqlitePool" | "MySqlPool" | "AnyPool")
+        || label.starts_with("Pool<")
+        || label.starts_with("PoolConnection<")
+        || label == "Transaction"
+        || label.starts_with("Transaction<")
+    {
+        return Some(
+            "construct via `sqlx::PgPool::connect(\"postgres://...\")` (or a test pool) and \
+             register it under `generators` in `.shatter/config.yaml`; or mark the type \
+             non-synthesizable under `opaque_types`",
+        );
+    }
+
+    // Axum extractors. Match both bare names (when generic args are
+    // stripped by the analyzer) and `Name<…>` forms.
+    if matches!(
+        label,
+        "State"
+            | "Request"
+            | "Next"
+            | "Extension"
+            | "Json"
+            | "Path"
+            | "Query"
+            | "Form"
+            | "TypedHeader"
+            | "Multipart"
+            | "WebSocketUpgrade"
+            | "ConnectInfo"
+            | "Host"
+    ) || label.starts_with("State<")
+        || label.starts_with("Extension<")
+        || label.starts_with("Json<")
+        || label.starts_with("Path<")
+        || label.starts_with("Query<")
+        || label.starts_with("Form<")
+        || label.starts_with("ConnectInfo<")
+        || label.starts_with("TypedHeader<")
+    {
+        return Some(
+            "Axum extractor — wire a constructor via `generators` in `.shatter/config.yaml`, \
+             or refactor the handler body into a pure function that takes the unwrapped value \
+             so Shatter can drive that directly",
+        );
+    }
+
+    // Chrono date / time types.
+    if matches!(
+        label,
+        "NaiveDate"
+            | "NaiveDateTime"
+            | "NaiveTime"
+            | "Date"
+            | "DateTime"
+            | "Time"
+            | "Duration"
+    ) || label.starts_with("DateTime<")
+        || label.starts_with("Date<")
+    {
+        return Some(
+            "chrono — construct with `NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()`, \
+             `Utc::now()`, or `DateTime::<Utc>::from_timestamp(…)`; register a custom \
+             constructor under `generators` in `.shatter/config.yaml` for repeated use",
+        );
+    }
+
+    // Generic fallback for domain structs the analyzer could not introspect.
+    // Only emitted for [`OpaqueCategory::Unknown`] so existing categorized
+    // messages (network handles, db connections, etc.) stay focused on the
+    // category-specific reason text.
+    if matches!(category, OpaqueCategory::Unknown) {
+        return Some(
+            "register a constructor for this type under `generators` in \
+             `.shatter/config.yaml` (e.g. `generators: { TypeName: ./generators/typename.rs }`), \
+             or list it under `opaque_types` to silence this warning",
+        );
+    }
+
+    None
 }
 
 /// Maps a [`StaticOpacityReason`] to the corresponding [`OpaqueCategory`].
@@ -1124,6 +1241,113 @@ mod tests {
             reason.format_human(),
             r#"param "pool" → DatabasePool (user-configured opaque type — marked as non-synthesizable)"#
         );
+    }
+
+    // ── guidance / format_human-with-guidance tests (str-s3vv) ──
+
+    #[test]
+    fn guidance_for_sqlx_pgpool() {
+        let reason = SkipReason {
+            param_name: "pool".into(),
+            opaque_label: "PgPool".into(),
+            category: OpaqueCategory::Unknown,
+            nesting_path: vec![PathSegment::Param("pool".into())],
+            user_reason: None,
+        };
+        let out = reason.format_human();
+        assert!(out.contains("PgPool"), "{out}");
+        assert!(out.contains("hint:"), "{out}");
+        assert!(out.contains("sqlx::PgPool::connect"), "{out}");
+        assert!(out.contains("`generators`"), "{out}");
+    }
+
+    #[test]
+    fn guidance_for_sqlx_generic_pool() {
+        assert!(guidance_for_opaque_label("Pool<Postgres>", &OpaqueCategory::Unknown)
+            .unwrap()
+            .contains("sqlx::PgPool::connect"));
+    }
+
+    #[test]
+    fn guidance_for_axum_state_bare() {
+        let hint = guidance_for_opaque_label("State", &OpaqueCategory::Unknown).unwrap();
+        assert!(hint.contains("Axum extractor"));
+        assert!(hint.contains("`generators`"));
+    }
+
+    #[test]
+    fn guidance_for_axum_state_generic() {
+        let hint = guidance_for_opaque_label("State<AppState>", &OpaqueCategory::Unknown)
+            .unwrap();
+        assert!(hint.contains("Axum extractor"));
+    }
+
+    #[test]
+    fn guidance_for_axum_request_and_next() {
+        assert!(guidance_for_opaque_label("Request", &OpaqueCategory::Unknown)
+            .unwrap()
+            .contains("Axum extractor"));
+        assert!(guidance_for_opaque_label("Next", &OpaqueCategory::Unknown)
+            .unwrap()
+            .contains("Axum extractor"));
+        assert!(guidance_for_opaque_label("Json<Payload>", &OpaqueCategory::Unknown)
+            .unwrap()
+            .contains("Axum extractor"));
+    }
+
+    #[test]
+    fn guidance_for_chrono_naivedate() {
+        let hint = guidance_for_opaque_label("NaiveDate", &OpaqueCategory::Unknown).unwrap();
+        assert!(hint.contains("chrono"));
+        assert!(hint.contains("from_ymd_opt"));
+    }
+
+    #[test]
+    fn guidance_for_chrono_datetime_generic() {
+        let hint = guidance_for_opaque_label("DateTime<Utc>", &OpaqueCategory::Unknown).unwrap();
+        assert!(hint.contains("chrono"));
+    }
+
+    #[test]
+    fn guidance_unknown_label_falls_back_to_generators_pointer() {
+        let hint = guidance_for_opaque_label("Config", &OpaqueCategory::Unknown).unwrap();
+        assert!(
+            hint.contains("`generators`"),
+            "expected generic generators-config pointer, got: {hint}"
+        );
+        assert!(hint.contains("`opaque_types`"), "{hint}");
+    }
+
+    #[test]
+    fn guidance_skipped_for_categorized_non_unknown_label() {
+        // Known categorized opaque types (network handles, db connections,
+        // user-configured) already carry a category-specific reason; we
+        // don't pile on a generic generators hint for them.
+        assert_eq!(
+            guidance_for_opaque_label("net.Socket", &OpaqueCategory::NetworkHandle),
+            None
+        );
+        assert_eq!(
+            guidance_for_opaque_label("HttpClient", &OpaqueCategory::UserConfigured),
+            None
+        );
+    }
+
+    #[test]
+    fn format_human_appends_hint_when_guidance_present() {
+        let reason = SkipReason {
+            param_name: "starts_on".into(),
+            opaque_label: "NaiveDate".into(),
+            category: OpaqueCategory::Unknown,
+            nesting_path: vec![PathSegment::Param("starts_on".into())],
+            user_reason: None,
+        };
+        let out = reason.format_human();
+        assert!(
+            out.starts_with(r#"param "starts_on" → NaiveDate (opaque type"#),
+            "{out}"
+        );
+        assert!(out.contains("; hint: chrono"), "{out}");
     }
 
     // ── build_opaque_suggestions tests ──
