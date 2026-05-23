@@ -123,9 +123,15 @@ pub(crate) fn resolve_parallelism(requested: usize) -> usize {
 /// Resolve effective parallelism using caller-supplied bounds (str-v01r).
 ///
 /// `requested == 0` means "auto-detect": query `available_parallelism()` and
-/// clamp into `[bounds.floor, bounds.ceiling]`. An explicit non-zero value is
-/// also clamped to the same range, with a warning logged when the clamp
-/// changes the value so the user knows the bound is in effect.
+/// clamp into `[bounds.floor, bounds.ceiling]` so default behavior remains
+/// predictable across hosts.
+///
+/// An explicit non-zero `requested` honors the user's intent — the floor is
+/// NOT applied (the floor exists to keep auto-detected defaults comparable
+/// across hosts, not to override an explicit request). The ceiling still
+/// applies because it guards against fork-bombing the host via per-worker
+/// toolchain subprocesses (see `PARALLELISM_CEILING`). A warning is logged
+/// only when the ceiling actually clamps the value (str-p2rz).
 pub(crate) fn resolve_parallelism_with_bounds(
     requested: usize,
     bounds: ParallelismBounds,
@@ -136,15 +142,15 @@ pub(crate) fn resolve_parallelism_with_bounds(
             .unwrap_or(1);
         return detected.clamp(bounds.floor, bounds.ceiling);
     }
-    let clamped = requested.clamp(bounds.floor, bounds.ceiling);
-    if clamped != requested {
+    if requested > bounds.ceiling {
         log::warn!(
-            "--parallelism {requested} clamped to {clamped} (range [{floor}, {ceiling}])",
-            floor = bounds.floor,
+            "--parallelism {requested} clamped to {ceiling} (ceiling [{ceiling}] caps per-worker \
+             toolchain fan-out; raise with --parallelism-max)",
             ceiling = bounds.ceiling,
         );
+        return bounds.ceiling;
     }
-    clamped
+    requested
 }
 
 /// Per-language ceiling on auto-detected parallelism. Multi-process toolchains
@@ -1317,12 +1323,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parallelism_clamps_explicit_below_floor() {
-        assert_eq!(resolve_parallelism(1), PARALLELISM_FLOOR);
-        assert_eq!(
-            resolve_parallelism(PARALLELISM_FLOOR - 1),
-            PARALLELISM_FLOOR
-        );
+    fn resolve_parallelism_honors_explicit_below_floor() {
+        // str-p2rz: explicit values below the auto-detect floor are honored
+        // as-is so users can intentionally run with low parallelism for
+        // debugging, small CI runners, or small targets.
+        assert_eq!(resolve_parallelism(1), 1);
+        assert_eq!(resolve_parallelism(PARALLELISM_FLOOR - 1), PARALLELISM_FLOOR - 1);
     }
 
     #[test]
@@ -1455,8 +1461,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parallelism_for_langs_explicit_value_still_clamps_to_global() {
-        // Explicit values must still pass through the [4, 16] clamp from str-eam2.
+    fn resolve_parallelism_for_langs_explicit_value_still_capped_by_ceiling() {
+        // Explicit values exceeding the ceiling are clamped down (fork-bomb
+        // guard), but values below the floor are honored as-is (str-p2rz:
+        // the floor only governs auto-detected defaults).
         let langs = [DiscoveryLanguage::Go];
         assert_eq!(
             resolve_parallelism_for_langs(32, &langs, ParallelismBounds::defaults()),
@@ -1464,7 +1472,13 @@ mod tests {
         );
         assert_eq!(
             resolve_parallelism_for_langs(1, &langs, ParallelismBounds::defaults()),
-            PARALLELISM_FLOOR
+            1,
+            "explicit --parallelism 1 must be honored (str-p2rz)"
+        );
+        assert_eq!(
+            resolve_parallelism_for_langs(2, &langs, ParallelismBounds::defaults()),
+            2,
+            "explicit --parallelism 2 must be honored (str-p2rz)"
         );
     }
 
@@ -1556,23 +1570,45 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parallelism_with_bounds_explicit_clamps_to_custom_range() {
+    fn resolve_parallelism_with_bounds_explicit_capped_by_ceiling_only() {
+        // Explicit user-supplied values are honored as long as they fit
+        // under the ceiling. The floor governs the auto-detect path only
+        // (str-p2rz).
         let bounds = ParallelismBounds::from_overrides(Some(2), Some(32)).unwrap();
         // Above custom ceiling: clamped down.
         assert_eq!(resolve_parallelism_with_bounds(64, bounds), 32);
-        // Below custom floor: clamped up.
-        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 2);
+        // Below custom floor: still honored as-is.
+        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 1);
         // In range: passes through.
         assert_eq!(resolve_parallelism_with_bounds(20, bounds), 20);
     }
 
     #[test]
-    fn resolve_parallelism_with_bounds_pinned_value() {
-        // min == max pins the value regardless of input.
+    fn resolve_parallelism_with_bounds_pinned_floor_only_applies_to_autodetect() {
+        // min == max still applies on the auto-detect path, but an explicit
+        // request is honored even if it lies outside the pinned range.
         let bounds = ParallelismBounds::from_overrides(Some(7), Some(7)).unwrap();
+        // Auto-detect: pinned.
         assert_eq!(resolve_parallelism_with_bounds(0, bounds), 7);
-        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 7);
+        // Explicit below the pinned floor: honored.
+        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 1);
+        // Explicit above the pinned ceiling: clamped to ceiling.
         assert_eq!(resolve_parallelism_with_bounds(100, bounds), 7);
+    }
+
+    #[test]
+    fn resolve_parallelism_with_bounds_explicit_low_value_honored_by_default_bounds() {
+        // Direct regression for str-p2rz: --parallelism 1 / 2 with the
+        // built-in [4, 16] bounds must produce 1 / 2, not 4.
+        let bounds = ParallelismBounds::defaults();
+        assert_eq!(resolve_parallelism_with_bounds(1, bounds), 1);
+        assert_eq!(resolve_parallelism_with_bounds(2, bounds), 2);
+        assert_eq!(resolve_parallelism_with_bounds(3, bounds), 3);
+        // At and above the floor: unchanged.
+        assert_eq!(resolve_parallelism_with_bounds(4, bounds), 4);
+        assert_eq!(resolve_parallelism_with_bounds(8, bounds), 8);
+        // Above the ceiling: clamped to ceiling.
+        assert_eq!(resolve_parallelism_with_bounds(64, bounds), PARALLELISM_CEILING);
     }
 
     #[test]
@@ -1608,7 +1644,8 @@ mod tests {
         let langs = [DiscoveryLanguage::Go];
         assert_eq!(resolve_parallelism_for_langs(64, &langs, bounds), 32);
         assert_eq!(resolve_parallelism_for_langs(20, &langs, bounds), 20);
-        assert_eq!(resolve_parallelism_for_langs(1, &langs, bounds), 2);
+        // Explicit value below the custom floor is honored as-is (str-p2rz).
+        assert_eq!(resolve_parallelism_for_langs(1, &langs, bounds), 1);
     }
 
     #[test]
