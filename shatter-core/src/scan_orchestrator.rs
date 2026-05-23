@@ -3943,6 +3943,14 @@ pub async fn parallel_scan_with_progress(
                     let progress_handler = progress_handler.clone();
                     let artifact_root = artifact_root.clone();
                     let handle = tokio::spawn(async move {
+                        // str-poyv: emit `started` only after we actually
+                        // acquire a worker from the pool. Emitting on spawn
+                        // (before checkout) made every queued task fire
+                        // `started` at the same elapsed_ms — visible as a
+                        // burst of `started` events even under
+                        // `--scheduler-policy serial`, where the pool size
+                        // is 1 and execution is strictly sequential.
+                        let mut frontend = pool.checkout().await;
                         emit_progress(
                             progress_handler.as_ref(),
                             &func_name,
@@ -3951,7 +3959,6 @@ pub async fn parallel_scan_with_progress(
                             scan_start.elapsed(),
                             ScanProgressStatus::Started,
                         );
-                        let mut frontend = pool.checkout().await;
 
                         let result = run_phased(
                             &mut frontend,
@@ -8633,6 +8640,146 @@ mod tests {
             result.workers_used, 1,
             "serial policy must use exactly 1 worker"
         );
+    }
+
+    /// str-poyv: `--scheduler-policy serial` must not emit overlapping
+    /// `Started` events. Before the fix, all queued tasks called
+    /// `emit_progress(Started)` immediately after `tokio::spawn` and
+    /// before `pool.checkout().await`, so a 4-function layer scanned
+    /// under Serial would emit four `Started` events in rapid
+    /// succession (all at the same elapsed_ms) followed by four
+    /// `Completed` events. The fix moves the emission to AFTER
+    /// checkout, which serializes Started/Completed pairs.
+    #[tokio::test]
+    async fn serial_policy_does_not_overlap_started_events() {
+        use crate::frontend::FrontendConfig;
+        use crate::scheduler_policy::SchedulerPolicy;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+
+        // Four independent leaf functions land in the same layer; under
+        // Serial the pool size is 1 so they must execute strictly one
+        // after another.
+        let make_leaf = |name: &str| FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        };
+        let analyses: Vec<FunctionAnalysis> = ["alpha", "beta", "gamma", "delta"]
+            .iter()
+            .map(|n| make_leaf(n))
+            .collect();
+
+        let mut file_map = HashMap::new();
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            file_map.insert(name.to_string(), "test.ts".to_string());
+        }
+
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(7),
+            file_map,
+            parallelism: 4,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: SchedulerPolicy::Serial,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let progress = Arc::new(move |update: ScanProgressUpdate| {
+            sink.lock().unwrap().push(update);
+        }) as ProgressHandler;
+
+        parallel_scan_with_progress(&fe_config, &analyses, &config, Some(progress))
+            .await
+            .expect("serial scan should succeed");
+
+        let events = events.lock().unwrap();
+
+        // Invariant: at any point in the stream, the number of Started
+        // events without a matching terminal event must be ≤ 1. Under
+        // the old behavior all four Started events fired upfront and
+        // the in-flight count peaked at 4.
+        let mut in_flight: i64 = 0;
+        let mut peak: i64 = 0;
+        for ev in events.iter() {
+            match ev.status {
+                ScanProgressStatus::Started => in_flight += 1,
+                ScanProgressStatus::Completed
+                | ScanProgressStatus::Failed
+                | ScanProgressStatus::Skipped => in_flight -= 1,
+            }
+            peak = peak.max(in_flight);
+            assert!(
+                in_flight >= 0,
+                "terminal event without matching Started; events={:?}",
+                events
+                    .iter()
+                    .map(|e| (e.status.as_str(), e.function_name.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(
+            peak,
+            1,
+            "serial policy must emit at most one Started in flight at a time; \
+             got peak={peak}. events={:?}",
+            events
+                .iter()
+                .map(|e| (e.status.as_str(), e.function_name.as_str()))
+                .collect::<Vec<_>>(),
+        );
+
+        // Sanity: every function emitted a Started + terminal pair.
+        let started_count = events
+            .iter()
+            .filter(|e| e.status == ScanProgressStatus::Started)
+            .count();
+        assert_eq!(started_count, 4, "expected 4 Started events");
     }
 
     /// LayerParallel is the default policy.
