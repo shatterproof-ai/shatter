@@ -345,7 +345,7 @@ async fn main() -> ExitCode {
                 cli.render,
                 &report_outputs,
                 stdout,
-                format,
+                format.into(),
                 workers,
                 genetic,
                 genetic_population,

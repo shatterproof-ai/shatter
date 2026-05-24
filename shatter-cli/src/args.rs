@@ -56,6 +56,30 @@ pub(crate) enum StdoutFormat {
     Text,
 }
 
+/// Stdout format for `explore`. Excludes `json` because the explore command
+/// has no stable JSON-on-stdout shape; JSON output is available only via
+/// `-o <file>.json`, which writes a spec bundle. See str-mpwp / str-tzbr.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ExploreStdoutFormat {
+    /// Markdown (default).
+    #[default]
+    Markdown,
+    /// Self-contained HTML.
+    Html,
+    /// Plain text (markdown with formatting stripped).
+    Text,
+}
+
+impl From<ExploreStdoutFormat> for StdoutFormat {
+    fn from(value: ExploreStdoutFormat) -> Self {
+        match value {
+            ExploreStdoutFormat::Markdown => StdoutFormat::Markdown,
+            ExploreStdoutFormat::Html => StdoutFormat::Html,
+            ExploreStdoutFormat::Text => StdoutFormat::Text,
+        }
+    }
+}
+
 /// Infer the output format from a file's extension.
 ///
 /// Returns an error if the extension is unsupported or missing.
@@ -548,10 +572,8 @@ pub(crate) struct ExploreArgs {
     pub(crate) stdout: bool,
 
     /// Format for stdout output. One of: markdown (default), html, text.
-    /// JSON is not a stdout format for `explore`; use `-o <file>.json`
-    /// to write a spec bundle.
     #[arg(long, default_value = "markdown")]
-    pub(crate) format: StdoutFormat,
+    pub(crate) format: ExploreStdoutFormat,
 
     /// Maximum number of parallel exploration workers.
     /// Each worker spawns its own frontend process.
@@ -925,7 +947,6 @@ pub(crate) struct ScanArgs {
 pub(crate) enum CliCommand {
     /// Explore functions by analyzing their branches and generating test inputs.
     Explore(Box<ExploreArgs>),
-
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
     /// coverage metrics, and optional behavioral specification. No frontend or solver
     /// required — pure offline computation on serialized observation data.
