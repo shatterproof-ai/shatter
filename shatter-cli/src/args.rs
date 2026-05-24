@@ -287,6 +287,24 @@ impl From<TimingFormatArg> for TimingFormat {
     }
 }
 
+/// CLI overrides for the LLM seed oracle. Boxed and `#[command(flatten)]`-ed
+/// into explore-level arg structs to avoid inflating the clap derive stack
+/// (see memory note about `Box<LlmOverrides>`).
+#[derive(Clone, Debug, Default, Args)]
+pub(crate) struct LlmOverrides {
+    /// Enable LLM oracle (adapter and settings from config; overrides llm.enabled).
+    #[arg(long)]
+    pub(crate) llm: bool,
+
+    /// LLM adapter to use, overrides llm.adapter in config.
+    #[arg(long, value_name = "ADAPTER")]
+    pub(crate) llm_adapter: Option<String>,
+
+    /// Cumulative token cap, overrides llm.max_token_budget in config.
+    #[arg(long, value_name = "TOKENS")]
+    pub(crate) llm_token_budget: Option<u32>,
+}
+
 #[derive(Args, Debug)]
 pub(crate) struct ExploreArgs {
     /// Targets to explore: <file>:<function> for a single function, just
@@ -627,6 +645,10 @@ pub(crate) struct ExploreArgs {
     /// broad runs continue with available languages (str-jeen.13).
     #[arg(long)]
     pub(crate) require_rust: bool,
+
+    /// LLM seed-oracle overrides (--llm, --llm-adapter, --llm-token-budget).
+    #[command(flatten)]
+    pub(crate) llm: Box<LlmOverrides>,
 }
 
 #[derive(Args, Debug)]

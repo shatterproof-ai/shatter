@@ -1287,6 +1287,86 @@ mod cli_parity_tests {
     }
 }
 
+/// Construct an LLM adapter from config, wrapped with rate-limiting.
+///
+/// Factored out of [`build_oracle_bundle`] so the match-on-adapter
+/// block compiles cleanly in both test and non-test builds without
+/// triggering unreachable-code warnings.
+fn build_oracle_adapter(
+    config: &shatter_core::config::LlmConfig,
+) -> Result<std::sync::Arc<dyn shatter_core::oracle::SeedOracle>, Box<dyn std::error::Error>> {
+    #[allow(unused_imports)]
+    use std::sync::Arc;
+
+    match config.adapter.as_str() {
+        #[cfg(test)]
+        "mock" => {
+            let adapter = shatter_llm::MockSeedOracle::scripted(vec![]);
+            let wrapped = shatter_llm::RateLimitedOracle::new(adapter, config.max_retries);
+            Ok(Arc::new(wrapped))
+        }
+        #[cfg(not(test))]
+        "mock" => Err("adapter 'mock' is only available in test builds".into()),
+        other => Err(format!("adapter '{other}' not yet available").into()),
+    }
+}
+
+/// Build an [`shatter_core::oracle::OracleBundle`] from CLI overrides.
+///
+/// Returns `Ok(Some(bundle))` when the oracle is enabled, `Ok(None)` when
+/// disabled, or `Err` when the requested adapter is unavailable.
+pub(crate) fn build_oracle_bundle(
+    overrides: &crate::args::LlmOverrides,
+) -> Result<Option<shatter_core::oracle::OracleBundle>, Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+
+    use shatter_core::config::LlmConfig;
+    use shatter_core::oracle::OracleBundle;
+
+    if !overrides.llm {
+        return Ok(None);
+    }
+
+    // Start from defaults and apply CLI overrides.
+    let mut config = LlmConfig {
+        enabled: true,
+        ..LlmConfig::default()
+    };
+    if let Some(ref adapter) = overrides.llm_adapter {
+        config.adapter = adapter.clone();
+    }
+    if let Some(budget) = overrides.llm_token_budget {
+        config.max_token_budget = budget;
+    }
+
+    // Select adapter by name. Each match arm constructs the concrete
+    // adapter, wraps it with RateLimitedOracle, and erases the type into
+    // Arc<dyn SeedOracle> for the bundle.
+    //
+    // Currently only "mock" is available under cfg(test). All other
+    // adapter names (including the default "anthropic") return an error
+    // until concrete provider adapters land in follow-up issues.
+    let oracle: Arc<dyn shatter_core::oracle::SeedOracle> =
+        build_oracle_adapter(&config)?;
+
+    // Build a dedicated tokio runtime for background oracle queries. The
+    // CLI's main runtime is multi-threaded; the oracle runtime is a
+    // lightweight single-threaded fallback that the OracleSlotMap can
+    // spawn background queries onto without blocking the explore loop.
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("failed to build oracle runtime: {e}"))?,
+    );
+
+    Ok(Some(OracleBundle {
+        oracle,
+        config,
+        runtime,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

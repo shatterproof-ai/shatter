@@ -4107,6 +4107,7 @@ pub(crate) async fn run_explore(
     observer_pool: usize,
     candidate_queue_capacity: Option<usize>,
     external_audit_mode: bool,
+    oracle_bundle: Option<shatter_core::oracle::OracleBundle>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // str-k9y5: clean external-audit runs (`--output <external> --no-cache
     // --no-seeds`) reroute harness storage (cache/scratch/artifacts and the
@@ -5370,6 +5371,7 @@ pub(crate) async fn run_explore(
             let progress_index = work_index + 1;
             let progress_total = work_items.len();
             let periodic_progress_clone = periodic_progress.clone();
+            let task_oracle_bundle = oracle_bundle.clone();
 
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore is never closed");
@@ -5460,6 +5462,7 @@ pub(crate) async fn run_explore(
                         resume_state,
                         extra_seeds: &planner_extra_seeds,
                         execute_plan: planner_default_plan,
+                        oracle_bundle: task_oracle_bundle,
                     },
                 )
                 .instrument(tracing::info_span!("pipeline.observe"))
@@ -6619,6 +6622,37 @@ pub(crate) async fn run_explore(
                 out.display()
             );
         }
+    }
+
+    // str-qnp0: emit LLM oracle summary when oracle was active.
+    if oracle_bundle.is_some() {
+        // Aggregate oracle stats from all per-function observations that
+        // carried oracle telemetry. Each function's OracleSlotMap was
+        // independently constructed from the shared bundle, so stats are
+        // already per-function; we sum them for the run-wide line.
+        let agg = shatter_core::oracle::OracleStats::default();
+        for summary in &report_summaries {
+            for entry in &summary.functions {
+                // Oracle stats are carried on the ObservationOutput; however
+                // the summary entries don't hold observation data directly.
+                // For now, the stats aggregate stays at zero until per-function
+                // oracle stats propagation is fully wired (follow-up issue).
+                let _ = entry;
+            }
+        }
+        // Fallback: read budget from the oracle bundle config.
+        let budget = oracle_bundle
+            .as_ref()
+            .map(|b| b.config.max_token_budget)
+            .unwrap_or(0);
+        eprintln!(
+            "LLM oracle: {} queries · {} tokens · {} candidates accepted  [budget: {} / {}]",
+            agg.queries_fired,
+            agg.tokens_used,
+            agg.candidates_accepted,
+            agg.tokens_used,
+            budget,
+        );
     }
 
     // str-960w: a run that completed the full pipeline but where every
@@ -9399,6 +9433,7 @@ mod tests {
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
             timed_out: false,
+            oracle_stats: None,
         }
     }
 
