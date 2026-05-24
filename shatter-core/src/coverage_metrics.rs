@@ -32,6 +32,8 @@ pub enum DiscoveryMethod {
     McdcTarget,
     /// Found by coverage-guided fuzzing on an opaque-constraint frontier.
     Fuzzed,
+    /// Found via an LLM seed-oracle candidate.
+    LlmOracle,
 }
 
 /// Percentage breakdown of discovery methods.
@@ -152,6 +154,9 @@ impl CoverageMetrics {
                 | DiscoveryMethod::BoundarySearch => random_found += 1,
                 DiscoveryMethod::UserProvided => user_provided += 1,
                 DiscoveryMethod::Fuzzed => fuzz_found += 1,
+                // LLM oracle is a guided, non-random discovery path; group it
+                // alongside Z3 in the bucketed coverage breakdown.
+                DiscoveryMethod::LlmOracle => z3_solved += 1,
             }
         }
 
@@ -724,6 +729,7 @@ mod tests {
             DiscoveryMethod::BoundarySearch,
             DiscoveryMethod::McdcTarget,
             DiscoveryMethod::Fuzzed,
+            DiscoveryMethod::LlmOracle,
         ];
         for method in methods {
             let json = serde_json::to_string(&method).expect("serialize");
