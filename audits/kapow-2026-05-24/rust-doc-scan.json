@@ -1,0 +1,82 @@
+{
+  "version": 6,
+  "functions": [],
+  "codebase": {
+    "attempted_functions": 2,
+    "completed_functions": 0,
+    "completed_with_behavior": 0,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "failed_functions": 2,
+    "skipped_functions_count": 1,
+    "unsupported_functions": 1,
+    "total_discovered_functions": 3,
+    "total_branches": 0,
+    "overall_coverage": 0.0,
+    "productionish_source_lines": 48,
+    "source_set": {
+      "production_ish": {
+        "file_count": 1,
+        "line_count": 48
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "failed": [
+      {
+        "function_name": "contains",
+        "display_name": "contains",
+        "qualified_id": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::contains",
+        "file_path": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "zolem_match",
+        "display_name": "zolem_match",
+        "qualified_id": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::zolem_match",
+        "file_path": "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs",
+        "reason": "error: exploration error: unsupported: bin_only harness incompatible with `zolem_match`:\n  - parameter `ptr` has raw pointer / extern fn type `* const u8`: cannot be synthesised from JSON\n  - parameter `ptr` uses external type `*`: not available in isolated harness (only serde + serde_json)\n\nHint: use crate_bridge mode to execute within the original crate context"
+      }
+    ],
+    "skipped_functions": [
+      {
+        "function_name": "panic",
+        "display_name": "panic",
+        "qualified_id": "panic",
+        "reason": "param \"_\" → PanicInfo (opaque type — type cannot be automatically synthesized); hint: register a constructor for this type under `generators` in `.shatter/config.yaml` (e.g. `generators: { TypeName: ./generators/typename.rs }`), or list it under `opaque_types` to silence this warning",
+        "category": "unsupported"
+      }
+    ],
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::contains",
+    "/home/ketan/project/kapow/docs/demo/zolem-fixtures/openai-top-50-technology-california/match.rs::zolem_match"
+  ],
+  "test_order_display_names": [
+    "contains",
+    "zolem_match"
+  ]
+}

@@ -1,0 +1,735 @@
+{
+  "version": 6,
+  "functions": [
+    {
+      "function_name": "usePostHogIdentify",
+      "display_name": "usePostHogIdentify",
+      "qualified_id": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+      "file_path": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 2,
+      "branches_covered": 0,
+      "coverage_pct": 33.33333333333333,
+      "discovered_inputs": [
+        {
+          "inputs": [],
+          "return_value": null,
+          "thrown_error": null,
+          "lines_executed": [
+            20,
+            21,
+            23
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [],
+          "return_value": null,
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 3,
+      "total_lines": 9,
+      "mocks_used": [
+        {
+          "name": "useEffect",
+          "display_name": "useEffect",
+          "qualified_id": "useEffect",
+          "source": "type_stub"
+        },
+        {
+          "name": "useRef",
+          "display_name": "useRef",
+          "qualified_id": "useRef",
+          "source": "type_stub"
+        }
+      ],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "sanitizeProfile",
+      "display_name": "sanitizeProfile",
+      "qualified_id": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::sanitizeProfile",
+      "file_path": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 4,
+      "branches_covered": 4,
+      "coverage_pct": 60.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            {}
+          ],
+          "return_value": {},
+          "thrown_error": null,
+          "lines_executed": [
+            43,
+            44,
+            47,
+            50,
+            53,
+            59
+          ]
+        },
+        {
+          "inputs": [
+            null
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'gpa')",
+          "lines_executed": [
+            43,
+            44
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            {}
+          ],
+          "return_value": {},
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            {
+              "act": null,
+              "classRankPct": null,
+              "gpa": null,
+              "sat": 10.263678779481666
+            }
+          ],
+          "return_value": {},
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            null
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'gpa')"
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            {
+              "act": null,
+              "classRankPct": 854.6384311490215,
+              "gpa": null,
+              "sat": 0.5
+            }
+          ],
+          "return_value": {},
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            {
+              "act": -991.7307741288175,
+              "classRankPct": null,
+              "gpa": -669.3347469319577,
+              "sat": -177.49514128907992
+            }
+          ],
+          "return_value": {},
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 16,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 6,
+      "total_lines": 10,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "useStudentProfile",
+      "display_name": "useStudentProfile",
+      "qualified_id": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+      "file_path": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 1,
+      "branches_covered": 0,
+      "coverage_pct": 30.0,
+      "discovered_inputs": [
+        {
+          "inputs": [],
+          "return_value": {
+            "isEmpty": true,
+            "profile": {}
+          },
+          "thrown_error": null,
+          "lines_executed": [
+            110,
+            112,
+            127,
+            133,
+            141,
+            146
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [],
+          "return_value": {
+            "isEmpty": true,
+            "profile": {}
+          },
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 6,
+      "total_lines": 20,
+      "mocks_used": [
+        {
+          "name": "useCallback",
+          "display_name": "useCallback",
+          "qualified_id": "useCallback",
+          "source": "type_stub"
+        },
+        {
+          "name": "useEffect",
+          "display_name": "useEffect",
+          "qualified_id": "useEffect",
+          "source": "type_stub"
+        },
+        {
+          "name": "useState",
+          "display_name": "useState",
+          "qualified_id": "useState",
+          "source": "type_stub"
+        }
+      ],
+      "refactoring_recommendations": [
+        {
+          "symbol": "useCallback",
+          "source_module": "@types/react",
+          "line": 127,
+          "reason": "closure_callback",
+          "suggestion": "extract_to_parameter"
+        },
+        {
+          "symbol": "useCallback",
+          "source_module": "@types/react",
+          "line": 127,
+          "reason": "multi_layer_indirection",
+          "suggestion": "move_behind_interface"
+        }
+      ],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "fitSessionKeyForTab",
+      "display_name": "fitSessionKeyForTab",
+      "qualified_id": "/home/ketan/project/kapow/web/src/lib/fit/fitTabId.ts::fitSessionKeyForTab",
+      "file_path": "/home/ketan/project/kapow/web/src/lib/fit/fitTabId.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 0,
+      "branches_covered": 0,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            ""
+          ],
+          "return_value": "fitSession:",
+          "thrown_error": null,
+          "lines_executed": [
+            90
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            ""
+          ],
+          "return_value": "fitSession:",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            " "
+          ],
+          "return_value": "fitSession: ",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            "550e8400-e29b-41d4-a716-446655440000"
+          ],
+          "return_value": "fitSession:550e8400-e29b-41d4-a716-446655440000",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            "a"
+          ],
+          "return_value": "fitSession:a",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 1,
+      "total_lines": 1,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "useQuery",
+      "display_name": "useQuery",
+      "qualified_id": "/home/ketan/project/kapow/web/src/lib/graphql.ts::useQuery",
+      "file_path": "/home/ketan/project/kapow/web/src/lib/graphql.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 0,
+      "branches_covered": 0,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            {}
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')",
+          "lines_executed": [
+            50
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            {}
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')"
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            null
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')"
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            {
+              "context": "null",
+              "pause": true,
+              "query": {
+                "definitions": {},
+                "kind": "0"
+              },
+              "requestPolicy": "yiceukoxi",
+              "variables": {
+                "key": false
+              }
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')"
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            {
+              "context": 2.0,
+              "pause": false,
+              "query": {
+                "definitions": {},
+                "kind": "qgtuatojzk"
+              },
+              "requestPolicy": null,
+              "variables": null
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')"
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            {
+              "context": null,
+              "pause": false,
+              "query": {
+                "definitions": {},
+                "kind": " "
+              },
+              "requestPolicy": "true",
+              "variables": null
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: Cannot read properties of null (reading 'useContext')"
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 1,
+      "total_lines": 1,
+      "mocks_used": [
+        {
+          "name": "_useQuery",
+          "display_name": "_useQuery",
+          "qualified_id": "_useQuery",
+          "source": "type_stub"
+        }
+      ],
+      "completion_outcome": "error_only"
+    },
+    {
+      "function_name": "backendNLAvailable",
+      "display_name": "backendNLAvailable",
+      "qualified_id": "/home/ketan/project/kapow/web/src/lib/nl-search/config.ts::backendNLAvailable",
+      "file_path": "/home/ketan/project/kapow/web/src/lib/nl-search/config.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 1,
+      "branches_covered": 0,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            true
+          ],
+          "return_value": true,
+          "thrown_error": null,
+          "lines_executed": [
+            5
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            true
+          ],
+          "return_value": true,
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            false
+          ],
+          "return_value": false,
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 1,
+      "total_lines": 1,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "actToSat",
+      "display_name": "actToSat",
+      "qualified_id": "/home/ketan/project/kapow/web/src/lib/satActConcordance.ts::actToSat",
+      "file_path": "/home/ketan/project/kapow/web/src/lib/satActConcordance.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 2,
+      "branches_covered": 2,
+      "coverage_pct": 80.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            36.0
+          ],
+          "return_value": 1590,
+          "thrown_error": null,
+          "lines_executed": [
+            61,
+            62,
+            63,
+            64,
+            64
+          ]
+        },
+        {
+          "inputs": [
+            1590.0
+          ],
+          "return_value": null,
+          "thrown_error": null,
+          "lines_executed": [
+            61,
+            61
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            36.0
+          ],
+          "return_value": 1590,
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            1590.0
+          ],
+          "return_value": null,
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            0.0
+          ],
+          "return_value": null,
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            35.0
+          ],
+          "return_value": 1540,
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            -0.0
+          ],
+          "return_value": null,
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 7,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 4,
+      "total_lines": 5,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "typedIdDefinitionForPrefix",
+      "display_name": "typedIdDefinitionForPrefix",
+      "qualified_id": "/home/ketan/project/kapow/web/src/lib/typed-id.ts::typedIdDefinitionForPrefix",
+      "file_path": "/home/ketan/project/kapow/web/src/lib/typed-id.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 1,
+      "branches_covered": 0,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            " "
+          ],
+          "return_value": null,
+          "thrown_error": null,
+          "lines_executed": [
+            124
+          ]
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            " "
+          ],
+          "return_value": null,
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            ""
+          ],
+          "return_value": null,
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            "get"
+          ],
+          "return_value": null,
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            "map"
+          ],
+          "return_value": null,
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 0,
+        "solver_guided_inputs": 0
+      },
+      "iterations": 5,
+      "lines_covered": 1,
+      "total_lines": 1,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    }
+  ],
+  "codebase": {
+    "attempted_functions": 8,
+    "completed_functions": 8,
+    "completed_with_behavior": 7,
+    "completed_error_only": 1,
+    "completed_dispatch_failed": 0,
+    "failed_functions": 0,
+    "skipped_functions_count": 0,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 8,
+    "total_branches": 11,
+    "overall_coverage": 54.54545454545454,
+    "productionish_source_lines": 1794,
+    "source_set": {
+      "production_ish": {
+        "file_count": 23,
+        "line_count": 1794
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "skipped_functions": [],
+    "dependency_graph": [
+      {
+        "caller": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+        "caller_display_name": "usePostHogIdentify",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+        "callee": "useEffect",
+        "callee_display_name": "useEffect",
+        "callee_qualified_id": "useEffect"
+      },
+      {
+        "caller": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+        "caller_display_name": "usePostHogIdentify",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+        "callee": "useRef",
+        "callee_display_name": "useRef",
+        "callee_qualified_id": "useRef"
+      },
+      {
+        "caller": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "caller_display_name": "useStudentProfile",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "callee": "useCallback",
+        "callee_display_name": "useCallback",
+        "callee_qualified_id": "useCallback"
+      },
+      {
+        "caller": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "caller_display_name": "useStudentProfile",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "callee": "useEffect",
+        "callee_display_name": "useEffect",
+        "callee_qualified_id": "useEffect"
+      },
+      {
+        "caller": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "caller_display_name": "useStudentProfile",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+        "callee": "useState",
+        "callee_display_name": "useState",
+        "callee_qualified_id": "useState"
+      },
+      {
+        "caller": "/home/ketan/project/kapow/web/src/lib/graphql.ts::useQuery",
+        "caller_display_name": "useQuery",
+        "caller_qualified_id": "/home/ketan/project/kapow/web/src/lib/graphql.ts::useQuery",
+        "callee": "_useQuery",
+        "callee_display_name": "_useQuery",
+        "callee_qualified_id": "_useQuery"
+      }
+    ]
+  },
+  "test_order": [
+    "/home/ketan/project/kapow/web/src/hooks/usePostHog.ts::usePostHogIdentify",
+    "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::sanitizeProfile",
+    "/home/ketan/project/kapow/web/src/hooks/useStudentProfile.ts::useStudentProfile",
+    "/home/ketan/project/kapow/web/src/lib/fit/fitTabId.ts::fitSessionKeyForTab",
+    "/home/ketan/project/kapow/web/src/lib/graphql.ts::useQuery",
+    "/home/ketan/project/kapow/web/src/lib/nl-search/config.ts::backendNLAvailable",
+    "/home/ketan/project/kapow/web/src/lib/satActConcordance.ts::actToSat",
+    "/home/ketan/project/kapow/web/src/lib/typed-id.ts::typedIdDefinitionForPrefix"
+  ],
+  "test_order_display_names": [
+    "usePostHogIdentify",
+    "sanitizeProfile",
+    "useStudentProfile",
+    "fitSessionKeyForTab",
+    "useQuery",
+    "backendNLAvailable",
+    "actToSat",
+    "typedIdDefinitionForPrefix"
+  ]
+}

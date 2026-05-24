@@ -1,0 +1,137 @@
+{
+  "version": 6,
+  "functions": [],
+  "codebase": {
+    "attempted_functions": 9,
+    "completed_functions": 0,
+    "completed_with_behavior": 0,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "failed_functions": 9,
+    "skipped_functions_count": 0,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 9,
+    "total_branches": 0,
+    "overall_coverage": 0.0,
+    "productionish_source_lines": 6290,
+    "source_set": {
+      "production_ish": {
+        "file_count": 17,
+        "line_count": 6290
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "failed": [
+      {
+        "function_name": "IsFieldSearchable",
+        "display_name": "IsFieldSearchable",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/access.go::IsFieldSearchable",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/access.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*FieldSearchability).UnmarshalGQL",
+        "display_name": "(*FieldSearchability).UnmarshalGQL",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*FieldSearchability).UnmarshalGQL",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "ExpandQuery",
+        "display_name": "ExpandQuery",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/synonym.go::ExpandQuery",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/synonym.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*GeoField).BuildSQL",
+        "display_name": "(*GeoField).BuildSQL",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*GeoField).BuildSQL",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*GeoField).Descriptor",
+        "display_name": "(*GeoField).Descriptor",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*GeoField).Descriptor",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*NumericRangeField).BuildSQL",
+        "display_name": "(*NumericRangeField).BuildSQL",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*NumericRangeField).BuildSQL",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*SingleEnumField).Descriptor",
+        "display_name": "(*SingleEnumField).Descriptor",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*SingleEnumField).Descriptor",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "BuildCountQuery",
+        "display_name": "BuildCountQuery",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/sql.go::BuildCountQuery",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/sql.go",
+        "reason": "timed out after 8s"
+      },
+      {
+        "function_name": "(*FullTextSearchField).BuildSQL",
+        "display_name": "(*FullTextSearchField).BuildSQL",
+        "qualified_id": "/home/ketan/project/kapow/api/internal/search/field.go::(*FullTextSearchField).BuildSQL",
+        "file_path": "/home/ketan/project/kapow/api/internal/search/field.go",
+        "reason": "timed out after 30s"
+      }
+    ],
+    "skipped_functions": [],
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/home/ketan/project/kapow/api/internal/search/access.go::IsFieldSearchable",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*FieldSearchability).UnmarshalGQL",
+    "/home/ketan/project/kapow/api/internal/search/synonym.go::ExpandQuery",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*GeoField).BuildSQL",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*GeoField).Descriptor",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*NumericRangeField).BuildSQL",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*SingleEnumField).Descriptor",
+    "/home/ketan/project/kapow/api/internal/search/sql.go::BuildCountQuery",
+    "/home/ketan/project/kapow/api/internal/search/field.go::(*FullTextSearchField).BuildSQL"
+  ],
+  "test_order_display_names": [
+    "IsFieldSearchable",
+    "(*FieldSearchability).UnmarshalGQL",
+    "ExpandQuery",
+    "(*GeoField).BuildSQL",
+    "(*GeoField).Descriptor",
+    "(*NumericRangeField).BuildSQL",
+    "(*SingleEnumField).Descriptor",
+    "BuildCountQuery",
+    "(*FullTextSearchField).BuildSQL"
+  ]
+}
