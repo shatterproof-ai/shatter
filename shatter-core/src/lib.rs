@@ -54,6 +54,7 @@ pub mod mock_value_space;
 pub mod nondeterminism;
 pub mod observation_aggregator;
 pub mod observe;
+pub mod oracle;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod pipeline_orchestrator;

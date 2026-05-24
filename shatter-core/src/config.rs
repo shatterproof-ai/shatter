@@ -174,6 +174,115 @@ pub struct ShatterConfig {
     pub mock_fixtures: Option<MockFixtureConfig>,
 }
 
+/// Configuration for the LLM seed-oracle (str-7vs).
+///
+/// Controls whether and how the concolic explorer calls an LLM to propose
+/// candidate input vectors for branch conditions the solver cannot satisfy.
+/// Disabled by default; opt in via `.shatter/config.yaml` under the `llm:` key.
+///
+/// Wiring `llm: LlmConfig` onto [`ShatterConfig`] and the per-function
+/// override path is deliberately deferred to a follow-up issue — this struct
+/// only defines the schema and defaults so the oracle slot machinery in
+/// [`crate::oracle`] can consume it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct LlmConfig {
+    /// Whether the seed oracle is enabled. Default: `false`.
+    #[serde(default = "llm_default_enabled")]
+    pub enabled: bool,
+
+    /// Adapter identifier. Default: `"anthropic"`.
+    #[serde(default = "llm_default_adapter")]
+    pub adapter: String,
+
+    /// Number of candidate input vectors to request per query. Default: 3.
+    #[serde(default = "llm_default_candidates_per_query")]
+    pub candidates_per_query: u32,
+
+    /// Maximum oracle queries per function. Default: 10.
+    #[serde(default = "llm_default_max_queries_per_function")]
+    pub max_queries_per_function: u32,
+
+    /// Maximum concurrent in-flight oracle requests. Default: 4.
+    #[serde(default = "llm_default_max_concurrent_requests")]
+    pub max_concurrent_requests: u32,
+
+    /// Total token budget across all oracle queries. Default: 50_000.
+    #[serde(default = "llm_default_max_token_budget")]
+    pub max_token_budget: u32,
+
+    /// Maximum tokens per individual oracle query. Default: 1_024.
+    #[serde(default = "llm_default_max_tokens_per_query")]
+    pub max_tokens_per_query: u32,
+
+    /// Sampling temperature. Default: 0.7.
+    #[serde(default = "llm_default_temperature")]
+    pub temperature: f64,
+
+    /// Request timeout in seconds. Default: 30.
+    #[serde(default = "llm_default_timeout_seconds")]
+    pub timeout_seconds: u32,
+
+    /// Maximum retries per failed request. Default: 2.
+    #[serde(default = "llm_default_max_retries")]
+    pub max_retries: u32,
+
+    /// Number of source lines of context to include in each query. Default: 50.
+    #[serde(default = "llm_default_context_lines")]
+    pub context_lines: u32,
+}
+
+fn llm_default_enabled() -> bool {
+    false
+}
+fn llm_default_adapter() -> String {
+    "anthropic".to_string()
+}
+fn llm_default_candidates_per_query() -> u32 {
+    3
+}
+fn llm_default_max_queries_per_function() -> u32 {
+    10
+}
+fn llm_default_max_concurrent_requests() -> u32 {
+    4
+}
+fn llm_default_max_token_budget() -> u32 {
+    50_000
+}
+fn llm_default_max_tokens_per_query() -> u32 {
+    1_024
+}
+fn llm_default_temperature() -> f64 {
+    0.7
+}
+fn llm_default_timeout_seconds() -> u32 {
+    30
+}
+fn llm_default_max_retries() -> u32 {
+    2
+}
+fn llm_default_context_lines() -> u32 {
+    50
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: llm_default_enabled(),
+            adapter: llm_default_adapter(),
+            candidates_per_query: llm_default_candidates_per_query(),
+            max_queries_per_function: llm_default_max_queries_per_function(),
+            max_concurrent_requests: llm_default_max_concurrent_requests(),
+            max_token_budget: llm_default_max_token_budget(),
+            max_tokens_per_query: llm_default_max_tokens_per_query(),
+            temperature: llm_default_temperature(),
+            timeout_seconds: llm_default_timeout_seconds(),
+            max_retries: llm_default_max_retries(),
+            context_lines: llm_default_context_lines(),
+        }
+    }
+}
+
 /// Filename for the project-level configuration file.
 pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
 
