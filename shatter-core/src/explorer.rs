@@ -318,6 +318,10 @@ pub struct ObservationOutput {
     /// `#[serde(default)]` keeps legacy artifacts loadable as `false`.
     #[serde(default)]
     pub timed_out: bool,
+    /// Aggregate LLM seed-oracle telemetry. `None` when no oracle was active
+    /// during this function's exploration (str-qnp0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_stats: Option<crate::oracle::OracleStats>,
 }
 
 /// Type alias for pipeline composability. `ObserveResult` is the output of

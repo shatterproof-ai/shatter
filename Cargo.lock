@@ -1972,6 +1972,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shatter-core",
+ "shatter-llm",
  "tempfile",
  "termimad",
  "tokio",

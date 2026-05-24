@@ -342,6 +342,7 @@ impl ObservationAggregator {
             opaque_suggestions,
             stubbed_modules,
             timed_out,
+            oracle_stats: None,
         }
     }
 }

@@ -191,6 +191,10 @@ pub struct ObserveStageOptions<'a> {
     /// `ExploreConfig.default_execute_plan` on the concolic config before
     /// exploration starts (str-yi9y).
     pub execute_plan: Option<crate::protocol::InvocationPlan>,
+    /// Shared oracle components. When `Some`, the concolic path builds a
+    /// per-function [`crate::oracle::OracleSlotMap`] and calls
+    /// [`orchestrator::explore_with_oracle`] instead of [`orchestrator::explore`].
+    pub oracle_bundle: Option<crate::oracle::OracleBundle>,
 }
 
 /// Outputs from a single Observe-stage execution.
@@ -484,7 +488,21 @@ async fn run_concolic_observe(
     let user_inputs = options.concolic_user_inputs.to_vec();
     let prepare_id = resolve_prepare_id(input, options.instrument_mocks).await;
 
-    let (result, resume_state) = orchestrator::explore(
+    // When an oracle bundle is provided, build a per-function OracleSlotMap
+    // and call explore_with_oracle so the concolic loop can drain LLM-proposed
+    // candidates (str-qnp0).
+    let mut oracle_slot_map;
+    let oracle_handle = if let Some(ref bundle) = options.oracle_bundle {
+        oracle_slot_map = bundle.build_slot_map();
+        Some(orchestrator::OracleHandle {
+            slot_map: &mut oracle_slot_map,
+            function_source: String::new(), // TODO(str-qnp0): populate with trimmed source
+        })
+    } else {
+        None
+    };
+
+    let (result, resume_state) = orchestrator::explore_with_oracle(
         input.frontend,
         &input.function_name,
         seed_inputs,
@@ -496,6 +514,7 @@ async fn run_concolic_observe(
         input.analysis.loops.clone(),
         options.progress_hints,
         options.resume_state.clone(),
+        oracle_handle,
     )
     .await?;
 

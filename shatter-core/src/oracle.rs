@@ -66,7 +66,7 @@ pub struct OracleResponse {
 }
 
 /// Aggregate telemetry surfaced to the orchestrator/reporter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OracleStats {
     pub queries_fired: u32,
     pub tokens_used: u32,
@@ -252,6 +252,31 @@ impl OracleSlotMap {
             tokens_used: self.tokens_used,
             candidates_accepted: self.accepted,
         }
+    }
+}
+
+/// Shared oracle components for constructing per-function [`OracleSlotMap`]s.
+///
+/// Passed through the pipeline so each concurrent function-exploration task
+/// can build its own [`OracleSlotMap`] from the shared adapter and config.
+#[derive(Clone)]
+pub struct OracleBundle {
+    /// The LLM adapter (shared via `Arc`).
+    pub oracle: Arc<dyn SeedOracle>,
+    /// Oracle configuration (budget, adapter name, etc.).
+    pub config: LlmConfig,
+    /// Tokio runtime for background oracle queries.
+    pub runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl OracleBundle {
+    /// Create a fresh [`OracleSlotMap`] from this bundle's shared components.
+    pub fn build_slot_map(&self) -> OracleSlotMap {
+        OracleSlotMap::new(
+            Arc::clone(&self.oracle),
+            self.config.clone(),
+            Arc::clone(&self.runtime),
+        )
     }
 }
 

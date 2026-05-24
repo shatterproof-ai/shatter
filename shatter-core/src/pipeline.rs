@@ -817,6 +817,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             opaque_suggestions: r.opaque_suggestions,
             stubbed_modules: r.stubbed_modules,
             timed_out,
+            oracle_stats: r.oracle_stats,
         }
     }
 }
