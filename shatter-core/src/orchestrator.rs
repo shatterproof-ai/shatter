@@ -15,7 +15,7 @@
 //! worklist exhaustion).
 
 use contracts::requires;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
+use crate::oracle::{ConditionId, FailedCondition, InputVector, OracleContext, OracleSlotMap, OracleStats};
 use crate::drilling;
 use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
@@ -217,18 +218,22 @@ pub enum InputSource {
     Seed = 0,
     /// Low priority: fuzzed from concrete values of unknown constraints.
     Fuzzed = 1,
+    /// LLM seed-oracle candidate. Drained at priority 4 in the input-selection
+    /// loop — above the random/fuzzed fallback but below Z3, drilling, and
+    /// boundary search.
+    LlmOracle = 2,
     /// Between fuzz and drill: interpolated between true/false witnesses.
-    BoundarySearch = 2,
+    BoundarySearch = 3,
     /// Medium priority: targeted mutation of blocking params on a stalled frontier.
-    Drilled = 3,
+    Drilled = 4,
     /// MC/DC-targeted: Z3 solved with condition-independence constraint.
     /// Ranks between Drilled and Z3Solved — MC/DC refines coverage within
     /// already-visited branches, while Z3Solved discovers new branch paths.
-    McdcTarget = 4,
+    McdcTarget = 5,
     /// High priority: Z3-solved inputs targeting a specific branch.
-    Z3Solved = 5,
+    Z3Solved = 6,
     /// Highest priority: user-provided candidate inputs from `.shatter/` config.
-    UserProvided = 6,
+    UserProvided = 7,
 }
 
 /// An entry in the exploration worklist.
@@ -398,6 +403,139 @@ pub struct ExploreResult {
     /// terminated for an unrelated reason (WorklistExhausted, MaxIterations,
     /// CoveragePlateau, McdcComplete).
     pub timed_out: bool,
+    /// Aggregate LLM seed-oracle telemetry when an oracle was wired into
+    /// `explore_with_oracle`. `None` when no oracle was provided.
+    pub oracle_stats: Option<OracleStats>,
+}
+
+/// Caller-supplied bundle wiring an [`OracleSlotMap`] into the orchestrator.
+///
+/// `function_source` is the (already-trimmed) source window the orchestrator
+/// passes into every [`OracleContext`]. It is the caller's responsibility to
+/// honor `LlmConfig::context_lines` when preparing this string.
+pub struct OracleHandle<'a> {
+    pub slot_map: &'a mut OracleSlotMap,
+    pub function_source: String,
+}
+
+/// Drain at most one ready LLM-oracle candidate, polling each unsolved
+/// frontier in turn until one yields an input vector that survives type
+/// validation and dedup against `attempted_by_condition`.
+///
+/// Returns `Some((inputs, condition_id))` on the first successful drain,
+/// `None` when no oracle is wired in or none of the frontiers had a ready
+/// candidate this tick.
+#[allow(clippy::too_many_arguments)]
+fn poll_oracle_for_frontier(
+    oracle: Option<&mut OracleHandle<'_>>,
+    frontier_set: &FrontierSet,
+    seen_branch_sides: &HashSet<(u32, bool)>,
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
+    param_infos: &[ParamInfo],
+    attempted_by_condition: &HashMap<ConditionId, VecDeque<InputVector>>,
+    _function_name: &str,
+    function_source: &str,
+) -> Option<(InputVector, ConditionId)> {
+    let handle = oracle?;
+
+    for frontier in frontier_set.iter() {
+        // Skip frontiers whose opposite side has already been observed —
+        // those conditions are effectively solved.
+        if seen_branch_sides.contains(&(frontier.branch_id, true))
+            && seen_branch_sides.contains(&(frontier.branch_id, false))
+        {
+            continue;
+        }
+        let condition_id = ConditionId::from(frontier.branch_id);
+
+        // Look up the most recent execution that observed this branch to
+        // recover a human-readable predicate/location for OracleContext.
+        let mut predicate = String::new();
+        let mut location = format!("branch:{}", frontier.branch_id);
+        for (_, _, result) in raw_results.iter().rev() {
+            if let Some(decision) = result
+                .branch_path
+                .iter()
+                .find(|d| d.branch_id == frontier.branch_id)
+            {
+                location = format!("branch:{}:line:{}", decision.branch_id, decision.line);
+                if let crate::execution_record::SymConstraint::Expr { expr } = &decision.constraint
+                {
+                    predicate = format!("{expr:?}");
+                } else if let crate::execution_record::SymConstraint::Unknown { hint } =
+                    &decision.constraint
+                {
+                    predicate = hint.clone();
+                }
+                break;
+            }
+        }
+
+        let attempted = attempted_by_condition
+            .get(&condition_id)
+            .map(|q| q.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let ctx = OracleContext {
+            function_source: function_source.to_string(),
+            param_types: param_infos.to_vec(),
+            condition: FailedCondition {
+                predicate,
+                location,
+            },
+            attempted,
+        };
+
+        let candidate = handle.slot_map.poll(condition_id, ctx)?;
+
+        // Type-validate against param_infos — drop mismatches with no coercion.
+        if !candidate_matches_params(&candidate, param_infos) {
+            continue;
+        }
+
+        // Deduplicate against attempted_by_condition[condition_id].
+        let already_attempted = attempted_by_condition
+            .get(&condition_id)
+            .is_some_and(|q| q.iter().any(|prev| prev == &candidate));
+        if already_attempted {
+            continue;
+        }
+
+        return Some((candidate, condition_id));
+    }
+    None
+}
+
+/// Type-validate a candidate input vector against parameter type info.
+///
+/// Returns true only when arity matches and every value is plausibly of the
+/// declared parameter type. Performs no coercion — mismatched candidates are
+/// dropped so the orchestrator can poll the slot again on a future tick.
+fn candidate_matches_params(candidate: &[serde_json::Value], params: &[ParamInfo]) -> bool {
+    if candidate.len() != params.len() {
+        return false;
+    }
+    for (val, param) in candidate.iter().zip(params.iter()) {
+        if !json_value_matches_type(val, &param.typ) {
+            return false;
+        }
+    }
+    true
+}
+
+fn json_value_matches_type(value: &serde_json::Value, typ: &crate::types::TypeInfo) -> bool {
+    use crate::types::TypeInfo;
+    match typ {
+        TypeInfo::Bool => value.is_boolean(),
+        TypeInfo::Int => value.is_i64() || value.is_u64(),
+        TypeInfo::Float => value.is_f64() || value.is_i64() || value.is_u64(),
+        TypeInfo::Str => value.is_string(),
+        TypeInfo::Array { .. } => value.is_array(),
+        TypeInfo::Object { .. } => value.is_object(),
+        TypeInfo::Nullable { inner } => value.is_null() || json_value_matches_type(value, inner),
+        // Permissive for the remaining variants (Union, Complex, Opaque, Unknown).
+        _ => true,
+    }
 }
 
 /// Effective per-Z3-query timeout: the configured `solver_timeout_ms` capped by
@@ -1907,6 +2045,44 @@ pub async fn explore(
     progress_hints: Option<crate::explorer::ProgressHints<'_>>,
     resume_state: Option<ExploreState>,
 ) -> Result<(ExploreResult, ExploreState), ExploreError> {
+    explore_with_oracle(
+        frontend,
+        function_name,
+        seed_inputs,
+        user_inputs,
+        param_infos,
+        config,
+        setup_context,
+        prepare_id,
+        loops,
+        progress_hints,
+        resume_state,
+        None,
+    )
+    .await
+}
+
+/// Same as [`explore`] but allows the caller to wire in an [`OracleHandle`]
+/// so the concolic loop can drain LLM-proposed candidates at priority 4
+/// (between drilling/boundary search and the random/fuzz fallback).
+///
+/// When `oracle` is `None`, this function behaves identically to [`explore`]
+/// and no oracle-related code path executes.
+#[allow(clippy::too_many_arguments)]
+pub async fn explore_with_oracle(
+    frontend: &mut Frontend,
+    function_name: &str,
+    seed_inputs: Vec<Vec<serde_json::Value>>,
+    user_inputs: Vec<Vec<serde_json::Value>>,
+    param_infos: &[ParamInfo],
+    config: &ExploreConfig,
+    setup_context: Option<SetupContextStack>,
+    prepare_id: Option<String>,
+    loops: Vec<crate::protocol::LoopInfo>,
+    progress_hints: Option<crate::explorer::ProgressHints<'_>>,
+    resume_state: Option<ExploreState>,
+    mut oracle: Option<OracleHandle<'_>>,
+) -> Result<(ExploreResult, ExploreState), ExploreError> {
     let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
     // supplementary: priority queue for drilling, boundary search, and MC/DC candidates.
     // These are generated in-loop after new-path observations and need to be consumed
@@ -1943,6 +2119,15 @@ pub async fn explore(
     let mut triage_state = TriageState::new(param_names.clone());
     let mut triage_skipped: usize = 0;
     let mut triage_mispredictions: usize = 0;
+
+    // LLM seed-oracle integration state. Only populated when `oracle` is Some.
+    // `attempted_by_condition` is the rolling buffer (capped at 5 entries per
+    // condition) that we feed back into OracleContext.attempted so the oracle
+    // can avoid proposing duplicates.
+    let mut attempted_by_condition: HashMap<ConditionId, VecDeque<InputVector>> = HashMap::new();
+    // Set of condition IDs we have queried this run — used so retire() can be
+    // called when the corresponding branch is finally covered by *any* strategy.
+    let mut oracle_queried_conditions: HashSet<ConditionId> = HashSet::new();
 
     // Per-dependency LiveFirst state (mirrors explorer.rs parity).
     let mut live_first_states: HashMap<String, LiveFirstState> = HashMap::new();
@@ -2155,10 +2340,49 @@ pub async fn explore(
             }
         }
 
-        // Priority: supplementary (drilling/boundary/MC-DC) > MetaStrategy.
+        // Priority 4: LLM seed-oracle drain. Sits between supplementary
+        // (drilling/boundary/MC-DC) and the MetaStrategy/random fallback.
+        // When `oracle` is None this entire branch is skipped.
+        let oracle_candidate: Option<(InputVector, ConditionId)> = if supplementary.is_empty()
+            && let Some(handle) = oracle.as_mut()
+        {
+            // Snapshot the function-source view once so it doesn't conflict
+            // with the simultaneous mutable borrow of `slot_map`.
+            let function_source: String = handle.function_source.clone();
+            poll_oracle_for_frontier(
+                Some(handle),
+                &frontier_set,
+                &seen_branch_sides,
+                &raw_results,
+                param_infos,
+                &attempted_by_condition,
+                function_name,
+                &function_source,
+            )
+        } else {
+            None
+        };
+
+        // The condition id this iteration's entry is attempting (if any), used
+        // for record_accepted / retire / attempted_by_condition bookkeeping.
+        let mut oracle_condition_id: Option<ConditionId> = None;
+
+        // Priority: supplementary (drilling/boundary/MC-DC) > LLM oracle > MetaStrategy.
         let (mut entry, strategy_idx) = if let Some(e) = supplementary.pop() {
             let _special_case = SpecialCandidatePath::OrchestratorSupplementaryQueue;
             (e, None)
+        } else if let Some((inputs, condition_id)) = oracle_candidate {
+            oracle_condition_id = Some(condition_id);
+            oracle_queried_conditions.insert(condition_id);
+            (
+                WorklistEntry {
+                    inputs,
+                    source: InputSource::LlmOracle,
+                    fitness: None,
+                    mock_values: vec![],
+                },
+                None,
+            )
         } else if let Some((inputs, idx, kind)) = feedback_scheduler
             .next_meta_candidate(&strategy_ctx, &mut rng)
             .await?
@@ -2459,11 +2683,33 @@ pub async fn explore(
 
         if !obs.is_new_path {
             plateau_counter += 1;
+            // Oracle bookkeeping: the proposed candidate did not reach a new
+            // equivalence class. Buffer it in attempted_by_condition (cap 5)
+            // so the next OracleContext can deduplicate. Leave the slot to
+            // transition back to Idle on its next poll.
+            if let Some(cid) = oracle_condition_id {
+                let buf = attempted_by_condition.entry(cid).or_default();
+                buf.push_back(obs.inputs.clone());
+                while buf.len() > 5 {
+                    buf.pop_front();
+                }
+            }
             continue;
         }
 
         // New path discovered — reset plateau counter.
         plateau_counter = 0;
+
+        // Oracle bookkeeping for new-path observations originating from the
+        // LLM oracle: count the accepted candidate and retire the slot so a
+        // fresh query can be issued for the next unsolved condition.
+        if let Some(cid) = oracle_condition_id
+            && let Some(handle) = oracle.as_mut()
+        {
+            handle.slot_map.record_accepted();
+            handle.slot_map.retire(cid);
+            oracle_queried_conditions.remove(&cid);
+        }
 
         // Capture this input for resume state — frontier-adjacent seeds
         // help subsequent batches start from productive regions.
@@ -2478,6 +2724,7 @@ pub async fn explore(
             InputSource::BoundarySearch => DiscoveryMethod::BoundarySearch,
             InputSource::Seed => DiscoveryMethod::Random,
             InputSource::Fuzzed => DiscoveryMethod::Fuzzed,
+            InputSource::LlmOracle => DiscoveryMethod::LlmOracle,
         };
         for decision in &obs.result.branch_path {
             if seen_branch_ids.insert(decision.branch_id) {
@@ -2494,6 +2741,16 @@ pub async fn explore(
             if opposite_seen {
                 frontier_set.remove(decision.branch_id);
                 target_branches.remove(&decision.branch_id);
+                // Any strategy just solved this condition — retire the oracle
+                // slot so its budget isn't spent re-proposing for a covered
+                // branch.
+                let cid = ConditionId::from(decision.branch_id);
+                if oracle_queried_conditions.remove(&cid)
+                    && let Some(handle) = oracle.as_mut()
+                {
+                    handle.slot_map.retire(cid);
+                }
+                attempted_by_condition.remove(&cid);
             } else {
                 target_branches.insert(decision.branch_id);
                 // Reset stall count to 0: this frontier just produced a new
@@ -2989,6 +3246,7 @@ pub async fn explore(
             // bucketed as a normal completion.
             timed_out: timed_out_overall
                 || matches!(termination_reason, TerminationReason::TimeoutExplore),
+            oracle_stats: oracle.as_ref().map(|h| h.slot_map.stats()),
         },
         output_state,
     ))

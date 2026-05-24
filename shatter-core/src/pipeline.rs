@@ -1292,6 +1292,7 @@ mod tests {
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
             timed_out: false,
+            oracle_stats: None,
         };
 
         let output: ObservationOutput = concolic.into();
@@ -1339,6 +1340,7 @@ mod tests {
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
             timed_out: true,
+            oracle_stats: None,
         };
         let output: ObservationOutput = concolic.into();
         assert!(
@@ -1384,6 +1386,7 @@ mod tests {
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
             timed_out: true,
+            oracle_stats: None,
         };
         let output: ObservationOutput = concolic.into();
         assert!(
