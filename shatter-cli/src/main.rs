@@ -135,7 +135,8 @@ async fn main() -> ExitCode {
     };
 
     let result = match cli.command {
-        CliCommand::Explore {
+        CliCommand::Explore(__args) => {
+            let ExploreArgs {
             targets,
             max_iterations,
             per_function_timeout,
@@ -200,7 +201,8 @@ async fn main() -> ExitCode {
             parallelism_min,
             parallelism_max,
             require_rust,
-        } => {
+        } = *__args;
+
             // str-k9y5: clean external-audit runs (`--output <external>
             // --no-cache --no-seeds`) must not write `.shatter/`,
             // `.shatter-cache/`, or `shatter-artifacts/` into the audited
@@ -430,7 +432,8 @@ async fn main() -> ExitCode {
             output_path: output.as_deref(),
             use_color,
         }),
-        CliCommand::Scan {
+        CliCommand::Scan(__args) => {
+            let ScanArgs {
             directory,
             language,
             include,
@@ -487,7 +490,8 @@ async fn main() -> ExitCode {
             parallelism_max,
             require_rust,
             fail_on_failures,
-        } => {
+        } = *__args;
+
             // str-1wcl: clean external-audit runs (`-o <external> --no-cache
             // --no-seeds`) must not write `.shatter/` into the audited
             // project. Skip the implicit init in that case; the scan

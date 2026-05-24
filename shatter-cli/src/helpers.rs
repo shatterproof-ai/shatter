@@ -997,7 +997,7 @@ mod cli_parity_tests {
     use clap::Parser;
 
     use super::*;
-    use crate::args::{Cli, CliCommand};
+    use crate::args::{Cli, CliCommand, ExploreArgs, ScanArgs};
 
     /// CLI parity contract: the canonical list of environment variables the CLI must
     /// set for every frontend invocation, with their expected default values when the
@@ -1085,11 +1085,13 @@ mod cli_parity_tests {
     fn explore_defaults_match_parity_contract() {
         let cli = Cli::parse_from(["shatter", "explore", "dummy.ts"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 exec_timeout,
                 build_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(
                     exec_timeout, CLI_EXEC_TIMEOUT_DEFAULT_SECS,
                     "`explore --exec-timeout` default ({exec_timeout}s) diverges from \
@@ -1115,11 +1117,13 @@ mod cli_parity_tests {
     fn scan_defaults_match_parity_contract() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 exec_timeout,
                 build_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 // exec_timeout is None when not explicitly passed; the built-in
                 // default (resolved at runtime) matches the parity contract.
                 assert_eq!(

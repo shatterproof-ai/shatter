@@ -263,352 +263,668 @@ impl From<TimingFormatArg> for TimingFormat {
     }
 }
 
+#[derive(Args, Debug)]
+pub(crate) struct ExploreArgs {
+    /// Targets to explore: <file>:<function> for a single function, just
+    /// <file> to explore all exported functions, or a quoted glob over
+    /// file paths (e.g. 'src/**/*.ts') which is expanded against the
+    /// filesystem and filtered to supported source extensions. Globs in
+    /// the <function> portion are rejected.
+    /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
+    #[arg(required = true)]
+    pub(crate) targets: Vec<String>,
+
+    /// Maximum number of iterations per function [default: 100].
+    /// Pass 0 for unbounded exploration (run until timeout or interrupt).
+    #[arg(long)]
+    pub(crate) max_iterations: Option<u32>,
+
+    /// Per-function default exploration timeout in seconds (applied when no
+    /// .shatter/config.yaml per-function timeout is set). For the per-function
+    /// wall-clock cap, see --timeout-explore. For the whole-run wall-clock cap,
+    /// see --time-limit.
+    #[arg(long)]
+    pub(crate) per_function_timeout: Option<u64>,
+
+    /// Per-function exploration wall-clock timeout in seconds. If both
+    /// --max-iterations and --timeout-explore are set, whichever triggers
+    /// first stops exploration for that function.
+    #[arg(long)]
+    pub(crate) timeout_explore: Option<f64>,
+
+    /// Total wall-clock time limit in seconds for the entire explore run.
+    /// Stops launching new functions once this limit is reached.
+    /// Unlike --timeout-explore (per-function), this bounds the whole run.
+    #[arg(long, value_name = "SECONDS")]
+    pub(crate) time_limit: Option<f64>,
+
+    /// Stop exploration when aggregate branch coverage reaches this
+    /// percentage (0.0–100.0). Checked after each function completes.
+    #[arg(long, value_name = "PERCENT")]
+    pub(crate) coverage_threshold: Option<f64>,
+
+    /// Maximum total execute calls across all functions. Unlike
+    /// --max-iterations (per-function iteration cap), this is a global
+    /// budget shared across the entire explore run.
+    #[arg(long, value_name = "COUNT")]
+    pub(crate) max_executions: Option<u64>,
+
+    /// Path to a scope configuration YAML file (shatter.scope.yaml).
+    #[arg(long)]
+    pub(crate) scope: Option<PathBuf>,
+
+    /// Only run the analyze phase (skip exploration).
+    #[arg(long)]
+    pub(crate) analyze_only: bool,
+
+    /// Show behavior clusters after exploration.
+    #[arg(long)]
+    pub(crate) show_clusters: bool,
+
+    /// Directory for caching behavior maps across runs.
+    /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
+    #[arg(long, env = "SHATTER_CACHE_DIR")]
+    pub(crate) cache_dir: Option<PathBuf>,
+
+    /// Disable behavior map caching entirely.
+    #[arg(long)]
+    pub(crate) no_cache: bool,
+
+    /// Per-request timeout in seconds (how long to wait for a single frontend response).
+    #[arg(long, default_value_t = 30)]
+    pub(crate) request_timeout: u64,
+
+    /// Path to a candidate inputs JSON file (overrides .shatter/ config inputs).
+    #[arg(long)]
+    pub(crate) inputs: Option<PathBuf>,
+
+    /// Execution timeout in seconds for each function invocation in the frontend
+    /// (e.g., how long a single Go function call may run). Default: 10s.
+    #[arg(long, default_value_t = 10)]
+    pub(crate) exec_timeout: u64,
+
+    /// Build timeout in seconds for compiling instrumented code in the frontend.
+    /// Default: 30s.
+    #[arg(long, default_value_t = 30)]
+    pub(crate) build_timeout: u64,
+
+    /// Compile harnesses in release mode (optimized but slower compilation).
+    /// Default is debug mode for faster compilation.
+    #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+    pub(crate) release: bool,
+
+    /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
+    #[arg(long = "config")]
+    pub(crate) config_path: Option<PathBuf>,
+
+    /// Write per-file spec JSON to a file (implies --spec-json).
+    #[arg(long = "spec-out")]
+    pub(crate) spec_out: Option<PathBuf>,
+
+    /// Output a behavioral specification (markdown by default, JSON with --spec-json).
+    #[arg(long)]
+    pub(crate) spec: bool,
+
+    /// Output the behavioral specification as JSON instead of markdown.
+    #[arg(long)]
+    pub(crate) spec_json: bool,
+
+    /// Disable built-in boundary values as seed inputs.
+    #[arg(long)]
+    pub(crate) no_boundary_values: bool,
+
+    /// Enable Daikon-style invariant detection on explored functions.
+    #[arg(long)]
+    pub(crate) invariants: bool,
+
+    /// Use the concolic (Z3-backed) explorer instead of the random explorer.
+    #[arg(long)]
+    pub(crate) concolic: bool,
+
+    /// Enable the genetic algorithm explorer.
+    #[arg(long)]
+    pub(crate) genetic: bool,
+
+    /// Population size for the genetic algorithm (default: 50).
+    #[arg(long)]
+    pub(crate) genetic_population: Option<u32>,
+
+    /// Maximum generations for the genetic algorithm (default: 100).
+    #[arg(long)]
+    pub(crate) genetic_generations: Option<u32>,
+
+    /// Timeout in seconds for the genetic algorithm (default: 300).
+    #[arg(long)]
+    pub(crate) genetic_timeout: Option<u32>,
+
+    /// Disable adaptive strategy scoring (use round-robin instead).
+    #[arg(long)]
+    pub(crate) no_adaptive: bool,
+
+    /// Sliding window size for strategy outcome scoring.
+    #[arg(long)]
+    pub(crate) score_window: Option<usize>,
+
+    /// Minimum candidates before a strategy can be deprioritized.
+    #[arg(long)]
+    pub(crate) cold_start: Option<u64>,
+
+    /// Minimum allocation fraction per strategy (0.0–1.0).
+    #[arg(long)]
+    pub(crate) strategy_floor: Option<f64>,
+
+    /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
+    #[arg(long)]
+    pub(crate) strategy_weights: Option<String>,
+
+    /// Select a frontend-provided invocation planner by name. When set to
+    /// `go`, consults the Go frontend's invocation planner
+    /// (get_invocation_plan) before exploring each target. The returned
+    /// InvocationPlan is fed as seeds and attached to every Execute request
+    /// so method targets dispatch into a real constructor.
+    #[arg(long)]
+    pub(crate) planner: Option<String>,
+
+    /// Z3 solver timeout in seconds per query. Default: no limit.
+    #[arg(long)]
+    pub(crate) solver_timeout: Option<u64>,
+
+    /// Memory limit in MB for the frontend process. For TS, sets --max-old-space-size; for Go, sets GOMEMLIMIT.
+    #[arg(long)]
+    pub(crate) memory_limit: Option<u64>,
+
+    /// Force full re-exploration. Ignores any existing spec file (no
+    /// incremental reuse) and discards prior explore artifacts (per-target
+    /// `summary.json` and per-function JSON / resume-state sidecars under
+    /// `shatter-artifacts/explore-results/`) for the targets being explored
+    /// so resume detection cannot reuse stale results. Artifacts for other
+    /// targets are untouched.
+    #[arg(long)]
+    pub(crate) clean: bool,
+
+    /// Analyze and compare fingerprints, print stale/fresh/removed functions, then exit
+    /// without exploring. Requires --output.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Loop iteration bucket boundaries for path hashing (comma-separated).
+    /// Controls how loop iteration counts affect path identity.
+    /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
+    /// Use "none" to disable bucketing (only branch profiles matter).
+    #[arg(long, default_value = "0,1,2,5")]
+    pub(crate) loop_buckets: String,
+
+    /// Directory for cross-function seed pool (default: .shatter/seeds/).
+    /// Falls back to SHATTER_SEEDS_DIR env var.
+    #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
+    pub(crate) seeds_dir: PathBuf,
+
+    /// Disable loading and saving the cross-function seed pool.
+    #[arg(long)]
+    pub(crate) no_seeds: bool,
+
+    /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
+    /// env var before spawning frontends.
+    #[arg(long)]
+    pub(crate) setup_timeout: Option<u64>,
+
+    /// Treat setup failures as fatal errors (abort exploration immediately).
+    #[arg(long)]
+    pub(crate) fail_on_setup_error: bool,
+
+    /// Record external dependency I/O (passthrough mode). Saves observed
+    /// call data to shatter-artifacts/recorded-mocks/ as seed fixtures for future runs.
+    #[arg(long)]
+    pub(crate) record: bool,
+
+    /// Write raw observation data (Stage 1 output) to a directory for offline
+    /// analysis with `shatter analyze`. One JSON file per function.
+    #[arg(long)]
+    pub(crate) observe_output: Option<PathBuf>,
+
+    /// Persist canonical stage JSON artifacts for each explored function.
+    /// Writes `observe.json`, `analyze.json`, `solve.json`, and `specify.json`
+    /// under a per-function directory so later CLI runs can reuse them.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) persist_stages: Option<PathBuf>,
+
+    /// Replay previously recorded mock fixtures from shatter-artifacts/recorded-mocks/.
+    /// When set, auto-detects recorded mocks for each file+function pair and
+    /// uses observed return values as seed mock configs.
+    #[arg(long)]
+    pub(crate) replay_recorded: bool,
+
+    /// Disable auto-detection of recorded mocks (overrides --replay-recorded).
+    #[arg(long)]
+    pub(crate) no_replay: bool,
+
+    /// Per-boundary refinement budget (number of executions). After discovery,
+    /// binary-searches between witness pairs to find precise transition points.
+    /// Set to 0 to disable. Default: 20.
+    #[arg(long, default_value_t = 20)]
+    pub(crate) refine_budget: usize,
+
+    /// Cap total shrink attempts per witness. Set to 0 to disable. Default: 20.
+    #[arg(long, default_value_t = 20)]
+    pub(crate) shrink_budget: usize,
+
+    /// Disable the shrink phase entirely (equivalent to --shrink-budget 0).
+    #[arg(long)]
+    pub(crate) no_shrink: bool,
+
+    /// Enable MC/DC (Modified Condition/Decision Coverage) analysis.
+    /// Decomposes compound boolean decisions into individual conditions
+    /// and targets condition-independence witnesses. Implies increased
+    /// iteration/execution/plateau budgets.
+    #[arg(long)]
+    pub(crate) mcdc: bool,
+
+    /// Execution isolation level.
+    ///
+    /// - none     (default): executions share a single frontend process; assumes
+    ///   functions are side-effect-safe and stateless.
+    /// - function: each function invocation gets a fresh execution context.
+    /// - serial:  functions run sequentially (no parallelism) in a shared process.
+    #[arg(long, value_enum, default_value = "none")]
+    pub(crate) isolation: IsolationModeArg,
+
+    /// Enable rich side-effect capture during exploration.
+    ///
+    /// When set, the frontend records console output, file writes, network
+    /// requests, environment reads, global mutations, and thrown errors for
+    /// each execution. Disabled by default because capture adds overhead on
+    /// every execute call; enable only when you need the side-effect data.
+    #[arg(long, default_value_t = false)]
+    pub(crate) capture_side_effects: bool,
+
+    /// Write exploration report to file; format inferred from extension (.html, .md, .json, .txt).
+    /// May be repeated to write multiple formats simultaneously.
+    #[arg(long = "output", short = 'o', value_name = "PATH")]
+    pub(crate) report_outputs: Vec<PathBuf>,
+
+    /// Write report to stdout in addition to any -o files.
+    /// When no -o flags are given, stdout is the default output.
+    #[arg(long)]
+    pub(crate) stdout: bool,
+
+    /// Format for stdout output. One of: markdown (default), html, text.
+    /// JSON is not a stdout format for `explore`; use `-o <file>.json`
+    /// to write a spec bundle.
+    #[arg(long, default_value = "markdown")]
+    pub(crate) format: StdoutFormat,
+
+    /// Maximum number of parallel exploration workers.
+    /// Each worker spawns its own frontend process.
+    /// Default: number of available CPUs (0 = auto-detect).
+    #[arg(long, short = 'w', default_value_t = 0, alias = "jobs")]
+    pub(crate) workers: usize,
+
+    /// Number of observer subprocesses the random explorer uses to fan
+    /// candidate executions out *within a single function*. Each slot is
+    /// an independent frontend subprocess (frontends remain serial per
+    /// process). `1` (default) preserves the legacy single-process
+    /// exploration path. Distinct from `--workers`, which controls
+    /// across-function parallelism. Overrides `observer_pool` from
+    /// `shatter.config.json`. See str-frc.3 / str-frc.6.
+    #[arg(long)]
+    pub(crate) observer_pool: Option<usize>,
+
+    /// Override the bounded candidate queue capacity that sits between
+    /// the candidate generator and the observer pool (str-frc.5). When
+    /// unset, the capacity is auto-derived from `--observer-pool` and
+    /// `--max-iterations`. Has no effect when `--observer-pool` is `1`.
+    /// Overrides `candidate_queue_capacity` from `shatter.config.json`.
+    #[arg(long)]
+    pub(crate) candidate_queue_capacity: Option<usize>,
+
+    /// Lower bound applied to auto-detected `--workers` (built-in
+    /// default: 4). Does NOT clamp an explicit `--workers N` request —
+    /// that value is honored as-is. Useful on tiny CI runners to
+    /// lower the auto-detect floor. See str-v01r / str-p2rz.
+    #[arg(long)]
+    pub(crate) parallelism_min: Option<usize>,
+
+    /// Upper bound on resolved `--workers` (built-in default: 16).
+    /// Applies to both auto-detected and explicit `--workers N`
+    /// values to cap per-worker toolchain fan-out. Raise on large
+    /// dedicated machines with tuned `GOMAXPROCS`. See str-v01r.
+    #[arg(long)]
+    pub(crate) parallelism_max: Option<usize>,
+
+    /// Finalize a previous explore run from saved artifacts on disk.
+    /// Skips exploration and produces reports/specs from saved per-function
+    /// result files. Use when a prior run wrote artifacts but crashed before
+    /// final assembly.
+    #[arg(long)]
+    pub(crate) from_artifacts: Option<PathBuf>,
+
+    /// Treat an unavailable Rust frontend as a hard failure even when
+    /// other-language targets remain runnable. Without this flag, Rust
+    /// targets are skipped with a `skipped_by_unavailable_frontend` status
+    /// when shatter-rust is missing from the host so mixed-language
+    /// broad runs continue with available languages (str-jeen.13).
+    #[arg(long)]
+    pub(crate) require_rust: bool,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct ScanArgs {
+    /// Directory to scan for source files.
+    #[arg(required = true)]
+    pub(crate) directory: String,
+
+    /// Language to scan: typescript, go. Auto-detected from file extensions if omitted.
+    #[arg(long)]
+    pub(crate) language: Option<String>,
+
+    /// Glob patterns for files to include (e.g. "**/*.ts"). May be repeated.
+    #[arg(long)]
+    pub(crate) include: Vec<String>,
+
+    /// Glob patterns for files to exclude (e.g. "**/vendor/**"). May be repeated.
+    #[arg(long)]
+    pub(crate) exclude: Vec<String>,
+
+    /// Scan only files with uncommitted changes (staged + unstaged).
+    #[arg(long, conflicts_with = "since")]
+    pub(crate) changed: bool,
+
+    /// Scan only files changed between <ref> and HEAD.
+    #[arg(long, conflicts_with = "changed")]
+    pub(crate) since: Option<String>,
+
+    /// End boundary for --since range. Analyzes files as they existed at
+    /// this ref instead of the current working tree. Defaults to HEAD.
+    #[arg(long, requires = "since")]
+    pub(crate) until: Option<String>,
+
+    /// Include untracked files when using --changed.
+    #[arg(long, requires = "changed")]
+    pub(crate) include_untracked: bool,
+
+    /// Scan all functions, including non-exported ones.
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// Maximum directory traversal depth.
+    #[arg(long)]
+    pub(crate) max_depth: Option<usize>,
+
+    /// Per-function exploration timeout in seconds. Functions exceeding this
+    /// limit are skipped without aborting the scan. Default: 30s.
+    /// Overridden by .shatter/config.yaml `defaults.timeout` when not explicitly set.
+    #[arg(long)]
+    pub(crate) timeout_per_fn: Option<u64>,
+
+    /// Total scan timeout in seconds. Default: 300s.
+    /// Overridden by shatter.config.json when not explicitly set.
+    #[arg(long)]
+    pub(crate) timeout_total: Option<u64>,
+
+    /// Number of parallel frontend subprocesses for exploration.
+    /// Default: auto-detect from available CPUs (0 = auto-detect).
+    /// An explicit value (e.g. `--parallelism 1`) is honored as-is for
+    /// debugging or constrained environments; only the upper bound
+    /// (`--parallelism-max`, default 16) still applies, since that
+    /// guards against per-worker toolchain fork-bomb on large hosts.
+    /// The `--parallelism-min` floor only applies to the auto-detect
+    /// path. Overridden by shatter.config.json when not explicitly set.
+    #[arg(long)]
+    pub(crate) parallelism: Option<usize>,
+
+    /// Lower bound applied to auto-detected parallelism (built-in
+    /// default: 4). Does NOT clamp an explicit `--parallelism N`
+    /// request — that value is honored as-is. Useful on tiny CI
+    /// runners to lower the auto-detect floor. May also be set via
+    /// `parallelism_min` in shatter.config.json.
+    #[arg(long)]
+    pub(crate) parallelism_min: Option<usize>,
+
+    /// Upper bound on resolved parallelism (built-in default: 16).
+    /// Applies to both auto-detected and explicit `--parallelism N`
+    /// values to cap per-worker toolchain fan-out (`go build`,
+    /// `cargo`). Raise on large dedicated machines with tuned
+    /// `GOMAXPROCS`. May also be set via `parallelism_max` in
+    /// shatter.config.json.
+    #[arg(long)]
+    pub(crate) parallelism_max: Option<usize>,
+
+    /// Path to a mock configuration YAML file.
+    #[arg(long)]
+    pub(crate) mock_config: Option<PathBuf>,
+
+    /// Write report to file; format inferred from extension (.html, .md, .json, .txt).
+    /// May be repeated to write multiple formats simultaneously.
+    #[arg(long = "output", short = 'o', value_name = "PATH")]
+    pub(crate) outputs: Vec<PathBuf>,
+
+    /// Write report to stdout in addition to any -o files.
+    /// When no -o flags are given, stdout is the default output.
+    #[arg(long)]
+    pub(crate) stdout: bool,
+
+    /// Format for stdout output. One of: markdown (default), json, html, text.
+    #[arg(long, default_value = "markdown")]
+    pub(crate) format: StdoutFormat,
+
+    /// Show what would be scanned without executing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Resume a previous scan from a checkpoint file, or pass "auto" to
+    /// discover the checkpoint from the scan artifact directory.
+    #[arg(long)]
+    pub(crate) resume: Option<String>,
+
+    /// Emit progress events to stderr during scan.
+    #[arg(long)]
+    pub(crate) progress: bool,
+
+    /// Select a representative core sample of functions to explore.
+    /// Accepts a percentage (e.g. "50%") or absolute count (e.g. "20").
+    #[arg(long)]
+    pub(crate) core_sample: Option<String>,
+
+    /// Seed for deterministic core sample selection.
+    /// Must be a non-negative integer (u64), e.g. `--seed 42`.
+    /// Default: hash of (directory + git HEAD).
+    #[arg(long, value_parser = parse_seed_flag)]
+    pub(crate) seed: Option<u64>,
+
+    /// Progressive batch index for core sample.
+    /// "0" (first batch), "next" (auto-detect), "0-2" (run batches 0 through 2).
+    /// Requires --core-sample.
+    #[arg(long)]
+    pub(crate) batch: Option<String>,
+
+    /// Stratum filter: explore only specific call graph layers.
+    /// Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
+    #[arg(long)]
+    pub(crate) stratum: Option<String>,
+
+    /// Maximum number of iterations per function [default: 100].
+    /// Pass 0 for unbounded exploration (run until timeout or interrupt).
+    /// Overridden by .shatter/config.yaml `defaults.max_iterations` when not explicitly set.
+    #[arg(long)]
+    pub(crate) max_iterations: Option<u32>,
+
+    /// Per-function exploration wall-clock timeout in seconds. If both
+    /// --max-iterations and --timeout-explore are set, whichever triggers
+    /// first stops exploration for that function.
+    #[arg(long)]
+    pub(crate) timeout_explore: Option<f64>,
+
+    /// Directory for caching behavior maps across runs.
+    /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
+    #[arg(long, env = "SHATTER_CACHE_DIR")]
+    pub(crate) cache_dir: Option<PathBuf>,
+
+    /// Disable all on-disk caches read or written by the scan command:
+    /// the behavior-map cache, the cross-file fingerprint analysis cache,
+    /// and the stored-inputs cache. Combined with explicit external `-o`
+    /// outputs and `--no-seeds`, this also suppresses project-local
+    /// `shatter-artifacts/` writes for clean external-audit runs
+    /// (str-1wcl).
+    #[arg(long)]
+    pub(crate) no_cache: bool,
+
+    /// Per-request timeout in seconds (how long to wait for a single frontend response).
+    #[arg(long, default_value_t = 30)]
+    pub(crate) request_timeout: u64,
+
+    /// Execution timeout in seconds for each function invocation in the frontend.
+    /// Default: 10s. Overridden by shatter.config.json when not explicitly set.
+    #[arg(long)]
+    pub(crate) exec_timeout: Option<u64>,
+
+    /// Build timeout in seconds for compiling instrumented code in the frontend.
+    /// Default: 30s.
+    #[arg(long, default_value_t = 30)]
+    pub(crate) build_timeout: u64,
+
+    /// Compile harnesses in release mode (optimized but slower compilation).
+    /// Default is debug mode for faster compilation.
+    #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
+    pub(crate) release: bool,
+
+    /// Enable the genetic algorithm explorer.
+    #[arg(long)]
+    pub(crate) genetic: bool,
+
+    /// Population size for the genetic algorithm (default: 50).
+    #[arg(long)]
+    pub(crate) genetic_population: Option<u32>,
+
+    /// Maximum generations for the genetic algorithm (default: 100).
+    #[arg(long)]
+    pub(crate) genetic_generations: Option<u32>,
+
+    /// Timeout in seconds for the genetic algorithm (default: 300).
+    #[arg(long)]
+    pub(crate) genetic_timeout: Option<u32>,
+
+    /// Disable adaptive strategy scoring (use round-robin instead).
+    #[arg(long)]
+    pub(crate) no_adaptive: bool,
+
+    /// Sliding window size for strategy outcome scoring.
+    #[arg(long)]
+    pub(crate) score_window: Option<usize>,
+
+    /// Minimum candidates before a strategy can be deprioritized.
+    #[arg(long)]
+    pub(crate) cold_start: Option<u64>,
+
+    /// Minimum allocation fraction per strategy (0.0–1.0).
+    #[arg(long)]
+    pub(crate) strategy_floor: Option<f64>,
+
+    /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
+    #[arg(long)]
+    pub(crate) strategy_weights: Option<String>,
+
+    /// Z3 solver timeout in seconds per query. Default: no limit.
+    #[arg(long)]
+    pub(crate) solver_timeout: Option<u64>,
+
+    /// Memory limit in MB for the frontend process.
+    #[arg(long)]
+    pub(crate) memory_limit: Option<u64>,
+
+    /// Loop iteration bucket boundaries for path hashing (comma-separated).
+    /// Controls how loop iteration counts affect path identity.
+    /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
+    /// Use "none" to disable bucketing (only branch profiles matter).
+    #[arg(long, default_value = "0,1,2,5")]
+    pub(crate) loop_buckets: String,
+
+    /// Directory for cross-function seed pool (default: .shatter/seeds/).
+    /// Falls back to SHATTER_SEEDS_DIR env var.
+    #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
+    pub(crate) seeds_dir: PathBuf,
+
+    /// Disable loading and saving the cross-function seed pool.
+    #[arg(long)]
+    pub(crate) no_seeds: bool,
+
+    /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
+    /// env var before spawning frontends.
+    #[arg(long)]
+    pub(crate) setup_timeout: Option<u64>,
+
+    /// Treat setup failures as fatal errors (abort scan immediately).
+    #[arg(long)]
+    pub(crate) fail_on_setup_error: bool,
+
+    /// Scheduling policy: controls which exploration tasks may overlap.
+    /// "layer-parallel" (default): functions within the same topological
+    /// layer run concurrently. "serial": one function at a time.
+    #[arg(long, default_value = "layer-parallel")]
+    pub(crate) scheduler_policy: String,
+
+    /// Execution isolation level.
+    ///
+    /// - none     (default): executions share a single frontend process; assumes
+    ///   functions are side-effect-safe and stateless.
+    /// - function: each function invocation gets a fresh execution context.
+    /// - serial:  functions run sequentially (no parallelism) in a shared process.
+    #[arg(long, value_enum, default_value = "none")]
+    pub(crate) isolation: IsolationModeArg,
+
+    /// Enable rich side-effect capture during scan.
+    ///
+    /// When set, the frontend records console output, file writes, network
+    /// requests, environment reads, global mutations, and thrown errors for
+    /// each execution. Disabled by default because capture adds overhead on
+    /// every execute call; enable only when you need the side-effect data.
+    #[arg(long, default_value_t = false)]
+    pub(crate) capture_side_effects: bool,
+
+    /// Number of workers to assign per function in shared-pool mode (--isolation none).
+    ///
+    /// When > 1, each function is explored by this many workers simultaneously,
+    /// each with a different random seed derived from the base seed. The total
+    /// iteration budget is split evenly across workers so exploration effort stays
+    /// constant. Useful when the layer has fewer functions than `--parallelism`,
+    /// allowing idle workers to contribute to the same function. Default: 1.
+    #[arg(long, default_value_t = 1)]
+    pub(crate) workers_per_fn: usize,
+
+    /// Treat an unavailable Rust frontend as a hard failure even when
+    /// other-language sources remain runnable. Without this flag, Rust
+    /// files are skipped with a `skipped_by_unavailable_frontend` status
+    /// when shatter-rust is missing from the host so mixed-language scans
+    /// continue with available languages (str-jeen.13).
+    #[arg(long)]
+    pub(crate) require_rust: bool,
+
+    /// Exit nonzero on attempted-function failures (str-izhn).
+    ///
+    /// Without a value, any failed attempt makes the run exit nonzero.
+    /// With `=<PERCENT>` (0-100), the run exits nonzero only when the
+    /// failure rate strictly exceeds that percentage — useful for "fail
+    /// the build only when more than 20% of attempts failed."
+    /// Omitted entirely, partial-failure scans still exit 0 for
+    /// backwards compatibility.
+    #[arg(
+        long,
+        value_name = "PERCENT",
+        num_args = 0..=1,
+        default_missing_value = "0",
+    )]
+    pub(crate) fail_on_failures: Option<u32>,
+}
+
 #[derive(Subcommand, Debug)]
-#[allow(clippy::large_enum_variant)] // CLI command enums are parsed once, size is not a concern
+// The Cli enum lives close to the clap-derive stack budget: variants with many
+// fields generate deep parsing call trees that have caused SIGABRT on test
+// threads (2 MB stack) in the past (str-izhn). The two biggest variants
+// (`Explore` and `Scan`) are extracted into `ExploreArgs`/`ScanArgs` structs
+// and held by `Box`. New large variants should follow the same pattern; the
+// `cli_command_size_within_budget` test in this module guards the bound.
 pub(crate) enum CliCommand {
     /// Explore functions by analyzing their branches and generating test inputs.
-    Explore {
-        /// Targets to explore: <file>:<function> for a single function, just
-        /// <file> to explore all exported functions, or a quoted glob over
-        /// file paths (e.g. 'src/**/*.ts') which is expanded against the
-        /// filesystem and filtered to supported source extensions. Globs in
-        /// the <function> portion are rejected.
-        /// The file extension determines the language frontend (.ts = TypeScript, .go = Go).
-        #[arg(required = true)]
-        targets: Vec<String>,
-
-        /// Maximum number of iterations per function [default: 100].
-        /// Pass 0 for unbounded exploration (run until timeout or interrupt).
-        #[arg(long)]
-        max_iterations: Option<u32>,
-
-        /// Per-function default exploration timeout in seconds (applied when no
-        /// .shatter/config.yaml per-function timeout is set). For the per-function
-        /// wall-clock cap, see --timeout-explore. For the whole-run wall-clock cap,
-        /// see --time-limit.
-        #[arg(long)]
-        per_function_timeout: Option<u64>,
-
-        /// Per-function exploration wall-clock timeout in seconds. If both
-        /// --max-iterations and --timeout-explore are set, whichever triggers
-        /// first stops exploration for that function.
-        #[arg(long)]
-        timeout_explore: Option<f64>,
-
-        /// Total wall-clock time limit in seconds for the entire explore run.
-        /// Stops launching new functions once this limit is reached.
-        /// Unlike --timeout-explore (per-function), this bounds the whole run.
-        #[arg(long, value_name = "SECONDS")]
-        time_limit: Option<f64>,
-
-        /// Stop exploration when aggregate branch coverage reaches this
-        /// percentage (0.0–100.0). Checked after each function completes.
-        #[arg(long, value_name = "PERCENT")]
-        coverage_threshold: Option<f64>,
-
-        /// Maximum total execute calls across all functions. Unlike
-        /// --max-iterations (per-function iteration cap), this is a global
-        /// budget shared across the entire explore run.
-        #[arg(long, value_name = "COUNT")]
-        max_executions: Option<u64>,
-
-        /// Path to a scope configuration YAML file (shatter.scope.yaml).
-        #[arg(long)]
-        scope: Option<PathBuf>,
-
-        /// Only run the analyze phase (skip exploration).
-        #[arg(long)]
-        analyze_only: bool,
-
-        /// Show behavior clusters after exploration.
-        #[arg(long)]
-        show_clusters: bool,
-
-        /// Directory for caching behavior maps across runs.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
-        #[arg(long, env = "SHATTER_CACHE_DIR")]
-        cache_dir: Option<PathBuf>,
-
-        /// Disable behavior map caching entirely.
-        #[arg(long)]
-        no_cache: bool,
-
-        /// Per-request timeout in seconds (how long to wait for a single frontend response).
-        #[arg(long, default_value_t = 30)]
-        request_timeout: u64,
-
-        /// Path to a candidate inputs JSON file (overrides .shatter/ config inputs).
-        #[arg(long)]
-        inputs: Option<PathBuf>,
-
-        /// Execution timeout in seconds for each function invocation in the frontend
-        /// (e.g., how long a single Go function call may run). Default: 10s.
-        #[arg(long, default_value_t = 10)]
-        exec_timeout: u64,
-
-        /// Build timeout in seconds for compiling instrumented code in the frontend.
-        /// Default: 30s.
-        #[arg(long, default_value_t = 30)]
-        build_timeout: u64,
-
-        /// Compile harnesses in release mode (optimized but slower compilation).
-        /// Default is debug mode for faster compilation.
-        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
-        release: bool,
-
-        /// Path to a .shatter/config.yaml file (bypasses hierarchical discovery).
-        #[arg(long = "config")]
-        config_path: Option<PathBuf>,
-
-        /// Write per-file spec JSON to a file (implies --spec-json).
-        #[arg(long = "spec-out")]
-        spec_out: Option<PathBuf>,
-
-        /// Output a behavioral specification (markdown by default, JSON with --spec-json).
-        #[arg(long)]
-        spec: bool,
-
-        /// Output the behavioral specification as JSON instead of markdown.
-        #[arg(long)]
-        spec_json: bool,
-
-        /// Disable built-in boundary values as seed inputs.
-        #[arg(long)]
-        no_boundary_values: bool,
-
-        /// Enable Daikon-style invariant detection on explored functions.
-        #[arg(long)]
-        invariants: bool,
-
-        /// Use the concolic (Z3-backed) explorer instead of the random explorer.
-        #[arg(long)]
-        concolic: bool,
-
-        /// Enable the genetic algorithm explorer.
-        #[arg(long)]
-        genetic: bool,
-
-        /// Population size for the genetic algorithm (default: 50).
-        #[arg(long)]
-        genetic_population: Option<u32>,
-
-        /// Maximum generations for the genetic algorithm (default: 100).
-        #[arg(long)]
-        genetic_generations: Option<u32>,
-
-        /// Timeout in seconds for the genetic algorithm (default: 300).
-        #[arg(long)]
-        genetic_timeout: Option<u32>,
-
-        /// Disable adaptive strategy scoring (use round-robin instead).
-        #[arg(long)]
-        no_adaptive: bool,
-
-        /// Sliding window size for strategy outcome scoring.
-        #[arg(long)]
-        score_window: Option<usize>,
-
-        /// Minimum candidates before a strategy can be deprioritized.
-        #[arg(long)]
-        cold_start: Option<u64>,
-
-        /// Minimum allocation fraction per strategy (0.0–1.0).
-        #[arg(long)]
-        strategy_floor: Option<f64>,
-
-        /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
-        #[arg(long)]
-        strategy_weights: Option<String>,
-
-        /// Select a frontend-provided invocation planner by name. When set to
-        /// `go`, consults the Go frontend's invocation planner
-        /// (get_invocation_plan) before exploring each target. The returned
-        /// InvocationPlan is fed as seeds and attached to every Execute request
-        /// so method targets dispatch into a real constructor.
-        #[arg(long)]
-        planner: Option<String>,
-
-        /// Z3 solver timeout in seconds per query. Default: no limit.
-        #[arg(long)]
-        solver_timeout: Option<u64>,
-
-        /// Memory limit in MB for the frontend process. For TS, sets --max-old-space-size; for Go, sets GOMEMLIMIT.
-        #[arg(long)]
-        memory_limit: Option<u64>,
-
-        /// Force full re-exploration. Ignores any existing spec file (no
-        /// incremental reuse) and discards prior explore artifacts (per-target
-        /// `summary.json` and per-function JSON / resume-state sidecars under
-        /// `shatter-artifacts/explore-results/`) for the targets being explored
-        /// so resume detection cannot reuse stale results. Artifacts for other
-        /// targets are untouched.
-        #[arg(long)]
-        clean: bool,
-
-        /// Analyze and compare fingerprints, print stale/fresh/removed functions, then exit
-        /// without exploring. Requires --output.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Loop iteration bucket boundaries for path hashing (comma-separated).
-        /// Controls how loop iteration counts affect path identity.
-        /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
-        /// Use "none" to disable bucketing (only branch profiles matter).
-        #[arg(long, default_value = "0,1,2,5")]
-        loop_buckets: String,
-
-        /// Directory for cross-function seed pool (default: .shatter/seeds/).
-        /// Falls back to SHATTER_SEEDS_DIR env var.
-        #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
-        seeds_dir: PathBuf,
-
-        /// Disable loading and saving the cross-function seed pool.
-        #[arg(long)]
-        no_seeds: bool,
-
-        /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
-        /// env var before spawning frontends.
-        #[arg(long)]
-        setup_timeout: Option<u64>,
-
-        /// Treat setup failures as fatal errors (abort exploration immediately).
-        #[arg(long)]
-        fail_on_setup_error: bool,
-
-        /// Record external dependency I/O (passthrough mode). Saves observed
-        /// call data to shatter-artifacts/recorded-mocks/ as seed fixtures for future runs.
-        #[arg(long)]
-        record: bool,
-
-        /// Write raw observation data (Stage 1 output) to a directory for offline
-        /// analysis with `shatter analyze`. One JSON file per function.
-        #[arg(long)]
-        observe_output: Option<PathBuf>,
-
-        /// Persist canonical stage JSON artifacts for each explored function.
-        /// Writes `observe.json`, `analyze.json`, `solve.json`, and `specify.json`
-        /// under a per-function directory so later CLI runs can reuse them.
-        #[arg(long, value_name = "DIR")]
-        persist_stages: Option<PathBuf>,
-
-        /// Replay previously recorded mock fixtures from shatter-artifacts/recorded-mocks/.
-        /// When set, auto-detects recorded mocks for each file+function pair and
-        /// uses observed return values as seed mock configs.
-        #[arg(long)]
-        replay_recorded: bool,
-
-        /// Disable auto-detection of recorded mocks (overrides --replay-recorded).
-        #[arg(long)]
-        no_replay: bool,
-
-        /// Per-boundary refinement budget (number of executions). After discovery,
-        /// binary-searches between witness pairs to find precise transition points.
-        /// Set to 0 to disable. Default: 20.
-        #[arg(long, default_value_t = 20)]
-        refine_budget: usize,
-
-        /// Cap total shrink attempts per witness. Set to 0 to disable. Default: 20.
-        #[arg(long, default_value_t = 20)]
-        shrink_budget: usize,
-
-        /// Disable the shrink phase entirely (equivalent to --shrink-budget 0).
-        #[arg(long)]
-        no_shrink: bool,
-
-        /// Enable MC/DC (Modified Condition/Decision Coverage) analysis.
-        /// Decomposes compound boolean decisions into individual conditions
-        /// and targets condition-independence witnesses. Implies increased
-        /// iteration/execution/plateau budgets.
-        #[arg(long)]
-        mcdc: bool,
-
-        /// Execution isolation level.
-        ///
-        /// - none     (default): executions share a single frontend process; assumes
-        ///   functions are side-effect-safe and stateless.
-        /// - function: each function invocation gets a fresh execution context.
-        /// - serial:  functions run sequentially (no parallelism) in a shared process.
-        #[arg(long, value_enum, default_value = "none")]
-        isolation: IsolationModeArg,
-
-        /// Enable rich side-effect capture during exploration.
-        ///
-        /// When set, the frontend records console output, file writes, network
-        /// requests, environment reads, global mutations, and thrown errors for
-        /// each execution. Disabled by default because capture adds overhead on
-        /// every execute call; enable only when you need the side-effect data.
-        #[arg(long, default_value_t = false)]
-        capture_side_effects: bool,
-
-        /// Write exploration report to file; format inferred from extension (.html, .md, .json, .txt).
-        /// May be repeated to write multiple formats simultaneously.
-        #[arg(long = "output", short = 'o', value_name = "PATH")]
-        report_outputs: Vec<PathBuf>,
-
-        /// Write report to stdout in addition to any -o files.
-        /// When no -o flags are given, stdout is the default output.
-        #[arg(long)]
-        stdout: bool,
-
-        /// Format for stdout output. One of: markdown (default), html, text.
-        /// JSON is not a stdout format for `explore`; use `-o <file>.json`
-        /// to write a spec bundle.
-        #[arg(long, default_value = "markdown")]
-        format: StdoutFormat,
-
-        /// Maximum number of parallel exploration workers.
-        /// Each worker spawns its own frontend process.
-        /// Default: number of available CPUs (0 = auto-detect).
-        #[arg(long, short = 'w', default_value_t = 0, alias = "jobs")]
-        workers: usize,
-
-        /// Number of observer subprocesses the random explorer uses to fan
-        /// candidate executions out *within a single function*. Each slot is
-        /// an independent frontend subprocess (frontends remain serial per
-        /// process). `1` (default) preserves the legacy single-process
-        /// exploration path. Distinct from `--workers`, which controls
-        /// across-function parallelism. Overrides `observer_pool` from
-        /// `shatter.config.json`. See str-frc.3 / str-frc.6.
-        #[arg(long)]
-        observer_pool: Option<usize>,
-
-        /// Override the bounded candidate queue capacity that sits between
-        /// the candidate generator and the observer pool (str-frc.5). When
-        /// unset, the capacity is auto-derived from `--observer-pool` and
-        /// `--max-iterations`. Has no effect when `--observer-pool` is `1`.
-        /// Overrides `candidate_queue_capacity` from `shatter.config.json`.
-        #[arg(long)]
-        candidate_queue_capacity: Option<usize>,
-
-        /// Lower bound applied to auto-detected `--workers` (built-in
-        /// default: 4). Does NOT clamp an explicit `--workers N` request —
-        /// that value is honored as-is. Useful on tiny CI runners to
-        /// lower the auto-detect floor. See str-v01r / str-p2rz.
-        #[arg(long)]
-        parallelism_min: Option<usize>,
-
-        /// Upper bound on resolved `--workers` (built-in default: 16).
-        /// Applies to both auto-detected and explicit `--workers N`
-        /// values to cap per-worker toolchain fan-out. Raise on large
-        /// dedicated machines with tuned `GOMAXPROCS`. See str-v01r.
-        #[arg(long)]
-        parallelism_max: Option<usize>,
-
-        /// Finalize a previous explore run from saved artifacts on disk.
-        /// Skips exploration and produces reports/specs from saved per-function
-        /// result files. Use when a prior run wrote artifacts but crashed before
-        /// final assembly.
-        #[arg(long)]
-        from_artifacts: Option<PathBuf>,
-
-        /// Treat an unavailable Rust frontend as a hard failure even when
-        /// other-language targets remain runnable. Without this flag, Rust
-        /// targets are skipped with a `skipped_by_unavailable_frontend` status
-        /// when shatter-rust is missing from the host so mixed-language
-        /// broad runs continue with available languages (str-jeen.13).
-        #[arg(long)]
-        require_rust: bool,
-    },
+    Explore(Box<ExploreArgs>),
 
     /// Analyze Stage 1 (Observe) output: produce equivalence classes, behavior map,
     /// coverage metrics, and optional behavioral specification. No frontend or solver
@@ -738,312 +1054,7 @@ pub(crate) enum CliCommand {
 
     /// Scan a directory for source files, analyze and explore all functions in
     /// dependency order, using behavior maps as mocks.
-    Scan {
-        /// Directory to scan for source files.
-        #[arg(required = true)]
-        directory: String,
-
-        /// Language to scan: typescript, go. Auto-detected from file extensions if omitted.
-        #[arg(long)]
-        language: Option<String>,
-
-        /// Glob patterns for files to include (e.g. "**/*.ts"). May be repeated.
-        #[arg(long)]
-        include: Vec<String>,
-
-        /// Glob patterns for files to exclude (e.g. "**/vendor/**"). May be repeated.
-        #[arg(long)]
-        exclude: Vec<String>,
-
-        /// Scan only files with uncommitted changes (staged + unstaged).
-        #[arg(long, conflicts_with = "since")]
-        changed: bool,
-
-        /// Scan only files changed between <ref> and HEAD.
-        #[arg(long, conflicts_with = "changed")]
-        since: Option<String>,
-
-        /// End boundary for --since range. Analyzes files as they existed at
-        /// this ref instead of the current working tree. Defaults to HEAD.
-        #[arg(long, requires = "since")]
-        until: Option<String>,
-
-        /// Include untracked files when using --changed.
-        #[arg(long, requires = "changed")]
-        include_untracked: bool,
-
-        /// Scan all functions, including non-exported ones.
-        #[arg(long)]
-        all: bool,
-
-        /// Maximum directory traversal depth.
-        #[arg(long)]
-        max_depth: Option<usize>,
-
-        /// Per-function exploration timeout in seconds. Functions exceeding this
-        /// limit are skipped without aborting the scan. Default: 30s.
-        /// Overridden by .shatter/config.yaml `defaults.timeout` when not explicitly set.
-        #[arg(long)]
-        timeout_per_fn: Option<u64>,
-
-        /// Total scan timeout in seconds. Default: 300s.
-        /// Overridden by shatter.config.json when not explicitly set.
-        #[arg(long)]
-        timeout_total: Option<u64>,
-
-        /// Number of parallel frontend subprocesses for exploration.
-        /// Default: auto-detect from available CPUs (0 = auto-detect).
-        /// An explicit value (e.g. `--parallelism 1`) is honored as-is for
-        /// debugging or constrained environments; only the upper bound
-        /// (`--parallelism-max`, default 16) still applies, since that
-        /// guards against per-worker toolchain fork-bomb on large hosts.
-        /// The `--parallelism-min` floor only applies to the auto-detect
-        /// path. Overridden by shatter.config.json when not explicitly set.
-        #[arg(long)]
-        parallelism: Option<usize>,
-
-        /// Lower bound applied to auto-detected parallelism (built-in
-        /// default: 4). Does NOT clamp an explicit `--parallelism N`
-        /// request — that value is honored as-is. Useful on tiny CI
-        /// runners to lower the auto-detect floor. May also be set via
-        /// `parallelism_min` in shatter.config.json.
-        #[arg(long)]
-        parallelism_min: Option<usize>,
-
-        /// Upper bound on resolved parallelism (built-in default: 16).
-        /// Applies to both auto-detected and explicit `--parallelism N`
-        /// values to cap per-worker toolchain fan-out (`go build`,
-        /// `cargo`). Raise on large dedicated machines with tuned
-        /// `GOMAXPROCS`. May also be set via `parallelism_max` in
-        /// shatter.config.json.
-        #[arg(long)]
-        parallelism_max: Option<usize>,
-
-        /// Path to a mock configuration YAML file.
-        #[arg(long)]
-        mock_config: Option<PathBuf>,
-
-        /// Write report to file; format inferred from extension (.html, .md, .json, .txt).
-        /// May be repeated to write multiple formats simultaneously.
-        #[arg(long = "output", short = 'o', value_name = "PATH")]
-        outputs: Vec<PathBuf>,
-
-        /// Write report to stdout in addition to any -o files.
-        /// When no -o flags are given, stdout is the default output.
-        #[arg(long)]
-        stdout: bool,
-
-        /// Format for stdout output. One of: markdown (default), json, html, text.
-        #[arg(long, default_value = "markdown")]
-        format: StdoutFormat,
-
-        /// Show what would be scanned without executing.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Resume a previous scan from a checkpoint file, or pass "auto" to
-        /// discover the checkpoint from the scan artifact directory.
-        #[arg(long)]
-        resume: Option<String>,
-
-        /// Emit progress events to stderr during scan.
-        #[arg(long)]
-        progress: bool,
-
-        /// Select a representative core sample of functions to explore.
-        /// Accepts a percentage (e.g. "50%") or absolute count (e.g. "20").
-        #[arg(long)]
-        core_sample: Option<String>,
-
-        /// Seed for deterministic core sample selection.
-        /// Must be a non-negative integer (u64), e.g. `--seed 42`.
-        /// Default: hash of (directory + git HEAD).
-        #[arg(long, value_parser = parse_seed_flag)]
-        seed: Option<u64>,
-
-        /// Progressive batch index for core sample.
-        /// "0" (first batch), "next" (auto-detect), "0-2" (run batches 0 through 2).
-        /// Requires --core-sample.
-        #[arg(long)]
-        batch: Option<String>,
-
-        /// Stratum filter: explore only specific call graph layers.
-        /// Examples: "0" (leaves), "0..3", "-2..-0" (top 3 layers), "3.."
-        #[arg(long)]
-        stratum: Option<String>,
-
-        /// Maximum number of iterations per function [default: 100].
-        /// Pass 0 for unbounded exploration (run until timeout or interrupt).
-        /// Overridden by .shatter/config.yaml `defaults.max_iterations` when not explicitly set.
-        #[arg(long)]
-        max_iterations: Option<u32>,
-
-        /// Per-function exploration wall-clock timeout in seconds. If both
-        /// --max-iterations and --timeout-explore are set, whichever triggers
-        /// first stops exploration for that function.
-        #[arg(long)]
-        timeout_explore: Option<f64>,
-
-        /// Directory for caching behavior maps across runs.
-        /// Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`.
-        #[arg(long, env = "SHATTER_CACHE_DIR")]
-        cache_dir: Option<PathBuf>,
-
-        /// Disable all on-disk caches read or written by the scan command:
-        /// the behavior-map cache, the cross-file fingerprint analysis cache,
-        /// and the stored-inputs cache. Combined with explicit external `-o`
-        /// outputs and `--no-seeds`, this also suppresses project-local
-        /// `shatter-artifacts/` writes for clean external-audit runs
-        /// (str-1wcl).
-        #[arg(long)]
-        no_cache: bool,
-
-        /// Per-request timeout in seconds (how long to wait for a single frontend response).
-        #[arg(long, default_value_t = 30)]
-        request_timeout: u64,
-
-        /// Execution timeout in seconds for each function invocation in the frontend.
-        /// Default: 10s. Overridden by shatter.config.json when not explicitly set.
-        #[arg(long)]
-        exec_timeout: Option<u64>,
-
-        /// Build timeout in seconds for compiling instrumented code in the frontend.
-        /// Default: 30s.
-        #[arg(long, default_value_t = 30)]
-        build_timeout: u64,
-
-        /// Compile harnesses in release mode (optimized but slower compilation).
-        /// Default is debug mode for faster compilation.
-        #[arg(long, env = "SHATTER_HARNESS_RELEASE")]
-        release: bool,
-
-        /// Enable the genetic algorithm explorer.
-        #[arg(long)]
-        genetic: bool,
-
-        /// Population size for the genetic algorithm (default: 50).
-        #[arg(long)]
-        genetic_population: Option<u32>,
-
-        /// Maximum generations for the genetic algorithm (default: 100).
-        #[arg(long)]
-        genetic_generations: Option<u32>,
-
-        /// Timeout in seconds for the genetic algorithm (default: 300).
-        #[arg(long)]
-        genetic_timeout: Option<u32>,
-
-        /// Disable adaptive strategy scoring (use round-robin instead).
-        #[arg(long)]
-        no_adaptive: bool,
-
-        /// Sliding window size for strategy outcome scoring.
-        #[arg(long)]
-        score_window: Option<usize>,
-
-        /// Minimum candidates before a strategy can be deprioritized.
-        #[arg(long)]
-        cold_start: Option<u64>,
-
-        /// Minimum allocation fraction per strategy (0.0–1.0).
-        #[arg(long)]
-        strategy_floor: Option<f64>,
-
-        /// Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2").
-        #[arg(long)]
-        strategy_weights: Option<String>,
-
-        /// Z3 solver timeout in seconds per query. Default: no limit.
-        #[arg(long)]
-        solver_timeout: Option<u64>,
-
-        /// Memory limit in MB for the frontend process.
-        #[arg(long)]
-        memory_limit: Option<u64>,
-
-        /// Loop iteration bucket boundaries for path hashing (comma-separated).
-        /// Controls how loop iteration counts affect path identity.
-        /// Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations.
-        /// Use "none" to disable bucketing (only branch profiles matter).
-        #[arg(long, default_value = "0,1,2,5")]
-        loop_buckets: String,
-
-        /// Directory for cross-function seed pool (default: .shatter/seeds/).
-        /// Falls back to SHATTER_SEEDS_DIR env var.
-        #[arg(long, default_value = ".shatter/seeds", env = "SHATTER_SEEDS_DIR")]
-        seeds_dir: PathBuf,
-
-        /// Disable loading and saving the cross-function seed pool.
-        #[arg(long)]
-        no_seeds: bool,
-
-        /// Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT
-        /// env var before spawning frontends.
-        #[arg(long)]
-        setup_timeout: Option<u64>,
-
-        /// Treat setup failures as fatal errors (abort scan immediately).
-        #[arg(long)]
-        fail_on_setup_error: bool,
-
-        /// Scheduling policy: controls which exploration tasks may overlap.
-        /// "layer-parallel" (default): functions within the same topological
-        /// layer run concurrently. "serial": one function at a time.
-        #[arg(long, default_value = "layer-parallel")]
-        scheduler_policy: String,
-
-        /// Execution isolation level.
-        ///
-        /// - none     (default): executions share a single frontend process; assumes
-        ///   functions are side-effect-safe and stateless.
-        /// - function: each function invocation gets a fresh execution context.
-        /// - serial:  functions run sequentially (no parallelism) in a shared process.
-        #[arg(long, value_enum, default_value = "none")]
-        isolation: IsolationModeArg,
-
-        /// Enable rich side-effect capture during scan.
-        ///
-        /// When set, the frontend records console output, file writes, network
-        /// requests, environment reads, global mutations, and thrown errors for
-        /// each execution. Disabled by default because capture adds overhead on
-        /// every execute call; enable only when you need the side-effect data.
-        #[arg(long, default_value_t = false)]
-        capture_side_effects: bool,
-
-        /// Number of workers to assign per function in shared-pool mode (--isolation none).
-        ///
-        /// When > 1, each function is explored by this many workers simultaneously,
-        /// each with a different random seed derived from the base seed. The total
-        /// iteration budget is split evenly across workers so exploration effort stays
-        /// constant. Useful when the layer has fewer functions than `--parallelism`,
-        /// allowing idle workers to contribute to the same function. Default: 1.
-        #[arg(long, default_value_t = 1)]
-        workers_per_fn: usize,
-
-        /// Treat an unavailable Rust frontend as a hard failure even when
-        /// other-language sources remain runnable. Without this flag, Rust
-        /// files are skipped with a `skipped_by_unavailable_frontend` status
-        /// when shatter-rust is missing from the host so mixed-language scans
-        /// continue with available languages (str-jeen.13).
-        #[arg(long)]
-        require_rust: bool,
-
-        /// Exit nonzero on attempted-function failures (str-izhn).
-        ///
-        /// Without a value, any failed attempt makes the run exit nonzero.
-        /// With `=<PERCENT>` (0-100), the run exits nonzero only when the
-        /// failure rate strictly exceeds that percentage — useful for "fail
-        /// the build only when more than 20% of attempts failed."
-        /// Omitted entirely, partial-failure scans still exit 0 for
-        /// backwards compatibility.
-        #[arg(
-            long,
-            value_name = "PERCENT",
-            num_args = 0..=1,
-            default_missing_value = "0",
-        )]
-        fail_on_failures: Option<u32>,
-    },
+    Scan(Box<ScanArgs>),
 
     /// Discover and export behavioral properties and invariants as a YAML spec.
     ///
@@ -1838,6 +1849,57 @@ mod tests {
     use super::*;
     use clap::error::ErrorKind;
 
+    /// Regression guard for the clap stack-overflow constraint discovered in
+    /// str-izhn and resolved in str-1414. Adding fields to flat struct-style
+    /// variants (especially the original `Explore`/`Scan` shapes) used to
+    /// generate enough on-stack clap parsing state to overflow the 2 MB test
+    /// thread stack and SIGABRT. Both variants are now extracted into
+    /// `ExploreArgs`/`ScanArgs` and held via `Box` so each variant's payload
+    /// fits in a single pointer.
+    ///
+    /// If this assertion starts failing because a *new* variant was added
+    /// with many fields, extract those fields into a `#[derive(Args)]` struct
+    /// and wrap it in `Box` (mirror `Explore(Box<ExploreArgs>)`). Do not
+    /// raise the bound without doing that first — the stack budget is real.
+    #[test]
+    fn cli_command_size_within_budget() {
+        // The pre-refactor size was 728 bytes (the SIGABRT trip point). After
+        // boxing `Explore` and `Scan`, the largest remaining variants are
+        // medium-sized struct variants like `Properties` and `Stale`. The
+        // current measured size on x86_64 is 176 bytes; we set the budget at
+        // 320 bytes to leave headroom for incremental growth before requiring
+        // another extraction.
+        const CLI_COMMAND_SIZE_BUDGET: usize = 320;
+        let actual = std::mem::size_of::<CliCommand>();
+        assert!(
+            actual <= CLI_COMMAND_SIZE_BUDGET,
+            "size_of::<CliCommand>() = {actual} exceeds budget {CLI_COMMAND_SIZE_BUDGET}. \
+             A new variant has bloated the enum and may push clap's generated parser \
+             past the 2 MB test-thread stack budget (see str-izhn, str-1414). \
+             Extract the new variant's fields into a `#[derive(Args)]` struct and \
+             wrap it with `Box`, mirroring `Explore(Box<ExploreArgs>)`."
+        );
+    }
+
+    #[test]
+    fn explore_and_scan_variants_are_boxed() {
+        // Ensure future contributors can't quietly "unbox" Explore/Scan and
+        // bring back the stack-overflow risk. The variant payload should be
+        // pointer-sized.
+        let ptr_size = std::mem::size_of::<usize>();
+        // Each variant payload should fit in 1-2 pointers (the discriminant
+        // adds a small amount; we check the whole-enum bound separately).
+        // We measure the size of a single Box pointer via the args struct.
+        assert!(
+            std::mem::size_of::<Box<ExploreArgs>>() <= 2 * ptr_size,
+            "Box<ExploreArgs> should be pointer-sized"
+        );
+        assert!(
+            std::mem::size_of::<Box<ScanArgs>>() <= 2 * ptr_size,
+            "Box<ScanArgs> should be pointer-sized"
+        );
+    }
+
     #[test]
     fn timing_defaults_to_off() {
         let cli = Cli::try_parse_from(["shatter", "explore", "file.ts:fn"]).unwrap();
@@ -2111,7 +2173,8 @@ mod tests {
     fn cli_parses_explore_subcommand() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 targets,
                 max_iterations,
                 per_function_timeout,
@@ -2124,7 +2187,8 @@ mod tests {
                 inputs,
                 config_path,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(targets, vec!["test.ts:myFunc"]);
                 assert_eq!(max_iterations, None);
                 assert_eq!(per_function_timeout, None);
@@ -2148,11 +2212,13 @@ mod tests {
     fn cli_explore_concurrency_knobs_default_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 observer_pool,
                 candidate_queue_capacity,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(observer_pool, None);
                 assert_eq!(candidate_queue_capacity, None);
             }
@@ -2175,11 +2241,13 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 observer_pool,
                 candidate_queue_capacity,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(observer_pool, Some(4));
                 assert_eq!(candidate_queue_capacity, Some(32));
             }
@@ -2197,7 +2265,9 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { scope, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { scope, .. } = *__args;
+
                 assert_eq!(scope, Some(PathBuf::from("shatter.scope.yaml")));
             }
             _ => panic!("expected Explore command"),
@@ -2218,7 +2288,8 @@ mod tests {
             "b.go:Fn2",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 targets,
                 max_iterations,
                 per_function_timeout,
@@ -2231,7 +2302,8 @@ mod tests {
                 inputs,
                 config_path,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(targets, vec!["a.ts:fn1", "b.go:Fn2"]);
                 assert_eq!(max_iterations, Some(50));
                 assert_eq!(per_function_timeout, Some(120));
@@ -2258,7 +2330,9 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore { cache_dir, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { cache_dir, .. } = *__args;
+
                 assert_eq!(cache_dir, Some(PathBuf::from("/tmp/foo")));
             }
             _ => panic!("expected Explore command"),
@@ -2269,7 +2343,9 @@ mod tests {
     fn cli_cache_dir_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { cache_dir, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { cache_dir, .. } = *__args;
+
                 assert!(cache_dir.is_none());
             }
             _ => panic!("expected Explore command"),
@@ -2286,9 +2362,11 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 request_timeout, ..
-            } => {
+            } = *__args;
+
                 assert_eq!(request_timeout, 10);
             }
             _ => panic!("expected Explore command"),
@@ -2305,11 +2383,13 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 inputs,
                 config_path,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(inputs, Some(PathBuf::from("candidates.json")));
                 assert!(config_path.is_none());
             }
@@ -2327,11 +2407,13 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 inputs,
                 config_path,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(inputs.is_none());
                 assert_eq!(config_path, Some(PathBuf::from(".shatter/config.yaml")));
             }
@@ -2351,11 +2433,13 @@ mod tests {
             "test_dir",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 request_timeout,
                 timeout_total,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(request_timeout, 15);
                 assert_eq!(timeout_total, Some(200));
             }
@@ -2429,11 +2513,13 @@ mod tests {
             "test.go:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 exec_timeout,
                 build_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(exec_timeout, 20);
                 assert_eq!(build_timeout, 45);
             }
@@ -2445,11 +2531,13 @@ mod tests {
     fn cli_explore_exec_timeout_defaults() {
         let cli = Cli::parse_from(["shatter", "explore", "test.go:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 exec_timeout,
                 build_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(exec_timeout, 10);
                 assert_eq!(build_timeout, 30);
             }
@@ -2461,7 +2549,9 @@ mod tests {
     fn cli_parses_explore_with_concolic_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--concolic", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { concolic, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { concolic, .. } = *__args;
+
                 assert!(concolic);
             }
             _ => panic!("expected Explore command"),
@@ -2472,7 +2562,9 @@ mod tests {
     fn cli_concolic_defaults_to_false() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { concolic, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { concolic, .. } = *__args;
+
                 assert!(!concolic);
             }
             _ => panic!("expected Explore command"),
@@ -2483,7 +2575,9 @@ mod tests {
     fn cli_parses_explore_with_record_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--record", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { record, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { record, .. } = *__args;
+
                 assert!(record);
             }
             _ => panic!("expected Explore command"),
@@ -2494,7 +2588,9 @@ mod tests {
     fn cli_record_defaults_to_false() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { record, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { record, .. } = *__args;
+
                 assert!(!record);
             }
             _ => panic!("expected Explore command"),
@@ -2505,11 +2601,13 @@ mod tests {
     fn cli_parses_explore_with_replay_recorded_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--replay-recorded", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 replay_recorded,
                 no_replay,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(replay_recorded);
                 assert!(!no_replay);
             }
@@ -2521,11 +2619,13 @@ mod tests {
     fn cli_parses_explore_with_no_replay_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--no-replay", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 replay_recorded,
                 no_replay,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(!replay_recorded);
                 assert!(no_replay);
             }
@@ -2537,11 +2637,13 @@ mod tests {
     fn cli_replay_recorded_defaults_to_false() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 replay_recorded,
                 no_replay,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(!replay_recorded);
                 assert!(!no_replay);
             }
@@ -2561,11 +2663,13 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 parallelism_min,
                 parallelism_max,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(parallelism_min, Some(2));
                 assert_eq!(parallelism_max, Some(32));
             }
@@ -2585,11 +2689,13 @@ mod tests {
             "test.ts:foo",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 parallelism_min,
                 parallelism_max,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(parallelism_min, Some(2));
                 assert_eq!(parallelism_max, Some(32));
             }
@@ -2601,11 +2707,13 @@ mod tests {
     fn cli_scan_parallelism_overrides_default_to_none() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 parallelism_min,
                 parallelism_max,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(parallelism_min, None);
                 assert_eq!(parallelism_max, None);
             }
@@ -2617,11 +2725,13 @@ mod tests {
     fn cli_parses_scan_with_exec_timeout() {
         let cli = Cli::parse_from(["shatter", "scan", "--exec-timeout", "15", "test_dir"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 exec_timeout,
                 build_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(exec_timeout, Some(15));
                 assert_eq!(build_timeout, 30);
             }
@@ -2647,7 +2757,8 @@ mod tests {
     fn cli_parses_scan_subcommand() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 directory,
                 max_iterations,
                 timeout_total,
@@ -2658,7 +2769,8 @@ mod tests {
                 dry_run,
                 progress,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(directory, "src/");
                 assert_eq!(max_iterations, None);
                 assert_eq!(timeout_total, None);
@@ -2695,7 +2807,8 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 directory,
                 max_iterations,
                 timeout_total,
@@ -2707,7 +2820,8 @@ mod tests {
                 max_depth,
                 no_cache,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(directory, "src/");
                 assert_eq!(max_iterations, Some(50));
                 assert_eq!(timeout_total, Some(600));
@@ -2727,7 +2841,9 @@ mod tests {
     fn cli_scan_output_flag() {
         let cli = Cli::parse_from(["shatter", "scan", "--output", "/tmp/report", "src/"]);
         match cli.command {
-            CliCommand::Scan { outputs, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { outputs, .. } = *__args;
+
                 assert_eq!(outputs, vec![PathBuf::from("/tmp/report")]);
             }
             _ => panic!("expected Scan command"),
@@ -2736,7 +2852,9 @@ mod tests {
         // Default: no outputs
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { outputs, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { outputs, .. } = *__args;
+
                 assert!(outputs.is_empty());
             }
             _ => panic!("expected Scan command"),
@@ -2755,7 +2873,9 @@ mod tests {
     fn cli_parses_explore_with_no_cache() {
         let cli = Cli::parse_from(["shatter", "explore", "--no-cache", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { no_cache, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { no_cache, .. } = *__args;
+
                 assert!(no_cache);
             }
             _ => panic!("expected Explore command"),
@@ -2766,7 +2886,9 @@ mod tests {
     fn cli_parses_scan_with_no_cache() {
         let cli = Cli::parse_from(["shatter", "scan", "--no-cache", "src/"]);
         match cli.command {
-            CliCommand::Scan { no_cache, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { no_cache, .. } = *__args;
+
                 assert!(no_cache);
             }
             _ => panic!("expected Scan command"),
@@ -2777,7 +2899,9 @@ mod tests {
     fn cli_no_cache_defaults_to_false_for_explore() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { no_cache, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { no_cache, .. } = *__args;
+
                 assert!(!no_cache);
             }
             _ => panic!("expected Explore command"),
@@ -2788,7 +2912,9 @@ mod tests {
     fn cli_no_cache_defaults_to_false_for_scan() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan { no_cache, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { no_cache, .. } = *__args;
+
                 assert!(!no_cache);
             }
             _ => panic!("expected Scan command"),
@@ -2993,12 +3119,14 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 progress,
                 resume,
                 mock_config,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(progress);
                 assert_eq!(resume, Some("/tmp/state.json".to_string()));
                 assert_eq!(mock_config, Some(PathBuf::from("/tmp/mocks.yaml")));
@@ -3020,7 +3148,9 @@ mod tests {
             "shatter", "scan", "--since", "HEAD~5", "--until", "HEAD~2", "src/",
         ]);
         match cli.command {
-            CliCommand::Scan { since, until, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { since, until, .. } = *__args;
+
                 assert_eq!(since, Some("HEAD~5".to_string()));
                 assert_eq!(until, Some("HEAD~2".to_string()));
             }
@@ -3032,7 +3162,9 @@ mod tests {
     fn cli_scan_since_without_until() {
         let cli = Cli::parse_from(["shatter", "scan", "--since", "HEAD~5", "src/"]);
         match cli.command {
-            CliCommand::Scan { since, until, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { since, until, .. } = *__args;
+
                 assert_eq!(since, Some("HEAD~5".to_string()));
                 assert!(until.is_none());
             }
@@ -3044,9 +3176,11 @@ mod tests {
     fn cli_parses_scan_with_core_sample() {
         let cli = Cli::parse_from(["shatter", "scan", "--core-sample", "50%", "src/"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 core_sample, seed, ..
-            } => {
+            } = *__args;
+
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert!(seed.is_none());
             }
@@ -3058,7 +3192,9 @@ mod tests {
     fn cli_parses_scan_with_core_sample_absolute() {
         let cli = Cli::parse_from(["shatter", "scan", "--core-sample", "20", "src/"]);
         match cli.command {
-            CliCommand::Scan { core_sample, .. } => {
+            CliCommand::Scan(__args) => {
+            let ScanArgs { core_sample, .. } = *__args;
+
                 assert_eq!(core_sample, Some("20".to_string()));
             }
             _ => panic!("expected Scan command"),
@@ -3077,9 +3213,11 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 core_sample, seed, ..
-            } => {
+            } = *__args;
+
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert_eq!(seed, Some(12345));
             }
@@ -3091,9 +3229,11 @@ mod tests {
     fn cli_core_sample_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "scan", "src/"]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 core_sample, seed, ..
-            } => {
+            } = *__args;
+
                 assert!(core_sample.is_none());
                 assert!(seed.is_none());
             }
@@ -3113,11 +3253,13 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 core_sample,
                 stratum,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(core_sample, Some("50%".to_string()));
                 assert_eq!(stratum, Some("0..2".to_string()));
             }
@@ -3135,7 +3277,9 @@ mod tests {
             "src/app.ts:foo",
         ]);
         match cli.command {
-            CliCommand::Explore { spec_out, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { spec_out, .. } = *__args;
+
                 assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
             }
             _ => panic!("expected Explore command"),
@@ -3152,7 +3296,9 @@ mod tests {
             "src/app.ts:foo",
         ]);
         match cli.command {
-            CliCommand::Explore { persist_stages, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { persist_stages, .. } = *__args;
+
                 assert_eq!(persist_stages, Some(PathBuf::from("stage-cache")));
             }
             _ => panic!("expected Explore command"),
@@ -3163,7 +3309,9 @@ mod tests {
     fn cli_persist_stages_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
         match cli.command {
-            CliCommand::Explore { persist_stages, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { persist_stages, .. } = *__args;
+
                 assert!(persist_stages.is_none());
             }
             _ => panic!("expected Explore command"),
@@ -3174,7 +3322,9 @@ mod tests {
     fn cli_spec_out_defaults_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
         match cli.command {
-            CliCommand::Explore { spec_out, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { spec_out, .. } = *__args;
+
                 assert!(spec_out.is_none());
             }
             _ => panic!("expected Explore command"),
@@ -3185,13 +3335,15 @@ mod tests {
     fn cli_parses_explore_with_genetic_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--genetic", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 genetic,
                 genetic_population,
                 genetic_generations,
                 genetic_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(genetic);
                 assert!(genetic_population.is_none());
                 assert!(genetic_generations.is_none());
@@ -3205,7 +3357,9 @@ mod tests {
     fn cli_genetic_defaults_to_false() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { genetic, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { genetic, .. } = *__args;
+
                 assert!(!genetic);
             }
             _ => panic!("expected Explore command"),
@@ -3227,13 +3381,15 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 genetic,
                 genetic_population,
                 genetic_generations,
                 genetic_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(genetic);
                 assert_eq!(genetic_population, Some(200));
                 assert_eq!(genetic_generations, Some(500));
@@ -3254,13 +3410,15 @@ mod tests {
             "test_dir",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 genetic,
                 genetic_population,
                 genetic_generations,
                 genetic_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(genetic);
                 assert_eq!(genetic_population, Some(100));
                 assert!(genetic_generations.is_none());
@@ -3274,7 +3432,9 @@ mod tests {
     fn cli_parses_explore_with_clean_flag() {
         let cli = Cli::parse_from(["shatter", "explore", "--clean", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { clean, dry_run, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { clean, dry_run, .. } = *__args;
+
                 assert!(clean);
                 assert!(!dry_run);
             }
@@ -3293,12 +3453,14 @@ mod tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 clean,
                 dry_run,
                 spec_out,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(!clean);
                 assert!(dry_run);
                 assert_eq!(spec_out, Some(PathBuf::from("spec.json")));
@@ -3311,7 +3473,9 @@ mod tests {
     fn cli_clean_and_dry_run_default_to_false() {
         let cli = Cli::parse_from(["shatter", "explore", "test.ts:myFunc"]);
         match cli.command {
-            CliCommand::Explore { clean, dry_run, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { clean, dry_run, .. } = *__args;
+
                 assert!(!clean);
                 assert!(!dry_run);
             }
@@ -3502,7 +3666,9 @@ mod tests {
     fn cli_parses_explore_with_no_adaptive() {
         let cli = Cli::parse_from(["shatter", "explore", "--no-adaptive", "src/app.ts:foo"]);
         match cli.command {
-            CliCommand::Explore { no_adaptive, .. } => {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs { no_adaptive, .. } = *__args;
+
                 assert!(no_adaptive);
             }
             _ => panic!("expected Explore command"),
@@ -3525,14 +3691,16 @@ mod tests {
             "src/app.ts:foo",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 score_window,
                 cold_start,
                 strategy_floor,
                 strategy_weights,
                 no_adaptive,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(!no_adaptive);
                 assert_eq!(score_window, Some(50));
                 assert_eq!(cold_start, Some(10));
@@ -3550,14 +3718,16 @@ mod tests {
     fn cli_strategy_flags_default_to_none() {
         let cli = Cli::parse_from(["shatter", "explore", "src/app.ts:foo"]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 no_adaptive,
                 score_window,
                 cold_start,
                 strategy_floor,
                 strategy_weights,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(!no_adaptive);
                 assert!(score_window.is_none());
                 assert!(cold_start.is_none());
@@ -3579,11 +3749,13 @@ mod tests {
             "src/",
         ]);
         match cli.command {
-            CliCommand::Scan {
+            CliCommand::Scan(__args) => {
+            let ScanArgs {
                 no_adaptive,
                 score_window,
                 ..
-            } => {
+            } = *__args;
+
                 assert!(no_adaptive);
                 assert_eq!(score_window, Some(200));
             }
@@ -3678,10 +3850,12 @@ mod output_format_tests {
             "test.ts:myFunc",
         ]);
         match cli.command {
-            CliCommand::Explore {
+            CliCommand::Explore(__args) => {
+            let ExploreArgs {
                 per_function_timeout,
                 ..
-            } => {
+            } = *__args;
+
                 assert_eq!(per_function_timeout, Some(75));
             }
             _ => panic!("expected Explore command"),
