@@ -616,6 +616,22 @@ feature_capabilities:
       go: supported
       rust: not_supported
 
+  invocation_plan_constructor_arg_plans:
+    status: optional
+    notes: >
+      str-9b1q: optional `constructor_arg_plans` field on InvocationPlan.
+      Emitted only by the Go frontend when a parameterized constructor
+      with primitive-satisfiable params is planned. The wrapper generates
+      hardcoded zero-value literals for each constructor argument at
+      codegen time — the core does NOT read this field for input generation
+      or execute dispatch. Core handles absence gracefully via
+      `#[serde(default, skip_serializing_if = "Vec::is_empty")]`.
+      TypeScript and Rust frontends do not emit this field.
+    frontends:
+      typescript: not_applicable
+      go: supported
+      rust: not_applicable
+
   adapter_http_nethttp:
     status: optional
     notes: >
