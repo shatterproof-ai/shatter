@@ -1849,6 +1849,20 @@ pub struct ProgressEvent {
     /// function is continuing to run without surfacing new coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iters_since_new_discovery: Option<u32>,
+    /// str-4oa1: language/phase label for mixed-language scans. Present only
+    /// when the scan spans multiple languages and per-phase denominators
+    /// differ from the global total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// str-4oa1: 1-based index within the current language phase. Present
+    /// only in mixed-language scans; `current`/`total` are the global
+    /// counters and `phase_current`/`phase_total` are the per-language
+    /// counters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_current: Option<usize>,
+    /// str-4oa1: total functions in the current language phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_total: Option<usize>,
 }
 
 impl ProgressEvent {
@@ -1869,6 +1883,9 @@ impl ProgressEvent {
             mcdc_total: None,
             mcdc_independent: None,
             iters_since_new_discovery: None,
+            language: None,
+            phase_current: None,
+            phase_total: None,
         }
     }
 
@@ -1930,6 +1947,22 @@ impl ProgressEvent {
     #[must_use]
     pub fn with_idle_iters(mut self, iters: u32) -> Self {
         self.iters_since_new_discovery = Some(iters);
+        self
+    }
+
+    /// str-4oa1: attach language phase context. When present, `current`/
+    /// `total` on this event represent global counters while
+    /// `phase_current`/`phase_total` represent per-language progress.
+    #[must_use]
+    pub fn with_language_phase(
+        mut self,
+        language: &str,
+        phase_current: usize,
+        phase_total: usize,
+    ) -> Self {
+        self.language = Some(language.to_string());
+        self.phase_current = Some(phase_current);
+        self.phase_total = Some(phase_total);
         self
     }
 
@@ -3725,6 +3758,18 @@ mod tests {
             !json.contains("iters_since_new_discovery"),
             "bare progress event should not emit iters_since_new_discovery: {json}"
         );
+        assert!(
+            !json.contains("language"),
+            "bare progress event should not emit language: {json}"
+        );
+        assert!(
+            !json.contains("phase_current"),
+            "bare progress event should not emit phase_current: {json}"
+        );
+        assert!(
+            !json.contains("phase_total"),
+            "bare progress event should not emit phase_total: {json}"
+        );
     }
 
     #[test]
@@ -3755,6 +3800,136 @@ mod tests {
         assert_eq!(event.mcdc_total, None);
         assert_eq!(event.mcdc_independent, None);
         assert_eq!(event.iters_since_new_discovery, None);
+        assert_eq!(event.language, None);
+        assert_eq!(event.phase_current, None);
+        assert_eq!(event.phase_total, None);
+    }
+
+    #[test]
+    fn progress_event_with_language_phase_round_trips() {
+        // str-4oa1: mixed-language progress events carry language and
+        // phase-local counters alongside global counters.
+        let event = ProgressEvent::with_qualified_status(
+            "src/lib.rs::process",
+            3,
+            24,
+            1500,
+            "started",
+        )
+        .with_language_phase("rust", 1, 2);
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(event, deserialized);
+        assert_eq!(deserialized.language.as_deref(), Some("rust"));
+        assert_eq!(deserialized.phase_current, Some(1));
+        assert_eq!(deserialized.phase_total, Some(2));
+        // Global counters remain in current/total.
+        assert_eq!(deserialized.current, 3);
+        assert_eq!(deserialized.total, 24);
+    }
+
+    #[test]
+    fn progress_event_single_language_omits_phase_fields() {
+        // str-4oa1: single-language scans must not emit language/phase
+        // fields — backward compatibility with existing consumers.
+        let event = ProgressEvent::with_qualified_status(
+            "src/lib.rs::process",
+            1,
+            5,
+            100,
+            "started",
+        );
+        let json = event.to_json().expect("serialize");
+        assert!(
+            !json.contains("language"),
+            "single-language event should not emit language: {json}"
+        );
+        assert!(
+            !json.contains("phase_current"),
+            "single-language event should not emit phase_current: {json}"
+        );
+        assert!(
+            !json.contains("phase_total"),
+            "single-language event should not emit phase_total: {json}"
+        );
+    }
+
+    #[test]
+    fn progress_event_mixed_language_global_total_never_resets() {
+        // str-4oa1: simulate a mixed Rust + TypeScript scan with 2 Rust
+        // and 22 TypeScript functions. Assert that global counters
+        // increase monotonically and phase counters are labeled.
+        let global_total = 24;
+        let mut events = Vec::new();
+
+        // Rust phase: 2 functions, global offset 0.
+        for i in 1..=2 {
+            events.push(
+                ProgressEvent::with_qualified_status(
+                    &format!("src/lib.rs::fn{i}"),
+                    i,          // global_current = offset(0) + phase_current
+                    global_total,
+                    i as u64 * 100,
+                    "started",
+                )
+                .with_language_phase("rust", i, 2),
+            );
+        }
+
+        // TypeScript phase: 22 functions, global offset 2.
+        for i in 1..=22 {
+            events.push(
+                ProgressEvent::with_qualified_status(
+                    &format!("src/app.ts::fn{i}"),
+                    2 + i,      // global_current = offset(2) + phase_current
+                    global_total,
+                    (2 + i) as u64 * 100,
+                    "started",
+                )
+                .with_language_phase("typescript", i, 22),
+            );
+        }
+
+        // Global `current` must increase monotonically.
+        let currents: Vec<usize> = events.iter().map(|e| e.current).collect();
+        for w in currents.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "global current must increase: {} -> {}",
+                w[0],
+                w[1]
+            );
+        }
+
+        // Global `total` must be constant.
+        assert!(events.iter().all(|e| e.total == global_total));
+
+        // Every event in a mixed scan must have language and phase.
+        for e in &events {
+            assert!(e.language.is_some(), "missing language on {}", e.function);
+            assert!(
+                e.phase_current.is_some(),
+                "missing phase_current on {}",
+                e.function
+            );
+            assert!(
+                e.phase_total.is_some(),
+                "missing phase_total on {}",
+                e.function
+            );
+        }
+
+        // Phase totals must match their language group size.
+        let rust_events: Vec<&ProgressEvent> =
+            events.iter().filter(|e| e.language.as_deref() == Some("rust")).collect();
+        let ts_events: Vec<&ProgressEvent> = events
+            .iter()
+            .filter(|e| e.language.as_deref() == Some("typescript"))
+            .collect();
+        assert_eq!(rust_events.len(), 2);
+        assert_eq!(ts_events.len(), 22);
+        assert!(rust_events.iter().all(|e| e.phase_total == Some(2)));
+        assert!(ts_events.iter().all(|e| e.phase_total == Some(22)));
     }
 
     #[test]

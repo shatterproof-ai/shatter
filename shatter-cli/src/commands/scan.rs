@@ -1003,21 +1003,6 @@ pub(crate) async fn run_scan(
         total_functions,
     );
 
-    let progress_handler = progress.then(|| {
-        Arc::new(|update: scan_orchestrator::ScanProgressUpdate| {
-            let event = report::ProgressEvent::with_qualified_status(
-                &update.function_name,
-                update.current,
-                update.total,
-                update.elapsed.as_millis() as u64,
-                update.status.as_str(),
-            );
-            if let Some(json) = event.to_json() {
-                eprintln!("{json}");
-            }
-        }) as scan_orchestrator::ProgressHandler
-    });
-
     // str-14en: group analyses by language and run parallel_scan once per
     // language with the matching frontend config. For single-language scans
     // the loop runs once, exactly as before. For mixed scans the previous
@@ -1045,6 +1030,12 @@ pub(crate) async fn run_scan(
         }
     }
 
+    // str-4oa1: track global progress offset across language phases so
+    // mixed-language scans report monotonically increasing global
+    // counters. Single-language scans skip phase labeling entirely.
+    let is_mixed_language = analyses_by_lang.len() > 1;
+    let global_offset = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let merge_result = scan_orchestrator::ParallelScanResult {
         function_results: Vec::new(),
         test_order: Vec::new(),
@@ -1067,15 +1058,63 @@ pub(crate) async fn run_scan(
             lang_analyses.len(),
             key,
         );
+
+        // str-4oa1: build a per-language progress handler that maps
+        // phase-local counters to global counters and labels the
+        // language phase. For single-language scans the handler emits
+        // the same shape as before (no language/phase fields).
+        let progress_handler: Option<scan_orchestrator::ProgressHandler> = if progress {
+            if is_mixed_language {
+                let offset = global_offset.clone();
+                let global_total = total_functions;
+                let lang_label = key.to_string();
+                Some(Arc::new(move |update: scan_orchestrator::ScanProgressUpdate| {
+                    let global_current =
+                        offset.load(std::sync::atomic::Ordering::Relaxed) + update.current;
+                    let event = report::ProgressEvent::with_qualified_status(
+                        &update.function_name,
+                        global_current,
+                        global_total,
+                        update.elapsed.as_millis() as u64,
+                        update.status.as_str(),
+                    )
+                    .with_language_phase(&lang_label, update.current, update.total);
+                    if let Some(json) = event.to_json() {
+                        eprintln!("{json}");
+                    }
+                }) as scan_orchestrator::ProgressHandler)
+            } else {
+                Some(Arc::new(|update: scan_orchestrator::ScanProgressUpdate| {
+                    let event = report::ProgressEvent::with_qualified_status(
+                        &update.function_name,
+                        update.current,
+                        update.total,
+                        update.elapsed.as_millis() as u64,
+                        update.status.as_str(),
+                    );
+                    if let Some(json) = event.to_json() {
+                        eprintln!("{json}");
+                    }
+                }) as scan_orchestrator::ProgressHandler)
+            }
+        } else {
+            None
+        };
+
+        let phase_count = lang_analyses.len();
         let lang_result = scan_orchestrator::parallel_scan_with_progress(
             lang_fe_config,
             &lang_analyses,
             &scan_config,
-            progress_handler.clone(),
+            progress_handler,
         )
         .await;
         match (lang_result, &mut merged_or_err) {
             (Ok(lang_result), Ok(merged)) => {
+                // str-4oa1: advance global offset so the next language
+                // phase's progress handler starts counting from the right
+                // global position.
+                global_offset.fetch_add(phase_count, std::sync::atomic::Ordering::Relaxed);
                 merged.function_results.extend(lang_result.function_results);
                 merged.test_order.extend(lang_result.test_order);
                 merged.skipped.extend(lang_result.skipped);
