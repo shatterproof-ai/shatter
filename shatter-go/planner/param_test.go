@@ -384,3 +384,82 @@ func TestPlanParam_Duration_IntegerNanosecondCandidates(t *testing.T) {
 		t.Error("duration family missing a negative-nanosecond candidate")
 	}
 }
+
+// str-cfsa: unsigned integer params (top-level) must never emit negative values.
+// The analyzer sets ComplexKind="go_uint" for uint/uint16/uint32/uint64 and the
+// AST fallback sets TypeName to the exact unsigned spelling. Both paths must map
+// to non-negative literal candidates only.
+func TestPlanParam_UnsignedInt_NeverNegative(t *testing.T) {
+	cases := []struct {
+		name  string
+		param protocol.ParamInfo
+	}{
+		{
+			name: "go_uint_complex_kind",
+			param: protocol.ParamInfo{
+				Name: "seq",
+				Type: protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"},
+			},
+		},
+		{
+			name: "uint64_type_name",
+			param: func() protocol.ParamInfo {
+				tn := "uint64"
+				return protocol.ParamInfo{
+					Name:     "seq",
+					Type:     protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"},
+					TypeName: &tn,
+				}
+			}(),
+		},
+		{
+			name: "uint_type_name",
+			param: func() protocol.ParamInfo {
+				tn := "uint"
+				return protocol.ParamInfo{
+					Name:     "n",
+					Type:     protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"},
+					TypeName: &tn,
+				}
+			}(),
+		},
+		{
+			name: "uint32_type_name",
+			param: func() protocol.ParamInfo {
+				tn := "uint32"
+				return protocol.ParamInfo{
+					Name:     "id",
+					Type:     protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"},
+					TypeName: &tn,
+				}
+			}(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plans, u := planner.PlanParam(testTargetID, 0, tc.param, planner.ParamPlanOptions{MaxPlansPerParam: 8})
+			if u != nil {
+				t.Fatalf("unexpected unsatisfied: %+v", u)
+			}
+			if len(plans) == 0 {
+				t.Fatal("expected at least one plan, got none")
+			}
+			for i, p := range plans {
+				if p.Kind != protocol.ValuePlanKindLiteral && p.Kind != protocol.ValuePlanKindZero {
+					t.Errorf("plans[%d].Kind = %q, want literal or zero", i, p.Kind)
+				}
+				if p.Kind != protocol.ValuePlanKindLiteral {
+					continue
+				}
+				var n int64
+				if err := json.Unmarshal(p.Literal, &n); err != nil {
+					t.Errorf("plans[%d]: literal %q cannot unmarshal as number: %v", i, string(p.Literal), err)
+					continue
+				}
+				if n < 0 {
+					t.Errorf("plans[%d]: literal %d is negative; unsigned params must never emit negative values", i, n)
+				}
+			}
+		})
+	}
+}

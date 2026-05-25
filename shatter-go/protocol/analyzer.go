@@ -1137,6 +1137,12 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 		// constrains generation to a raw u8 number that unmarshals cleanly.
 		return TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
 	}
+	// str-cfsa: unsigned integer types (excluding uint8/byte, handled above
+	// as GoByte) map to the go_uint complex kind so generated values stay
+	// non-negative and json.Unmarshal into uint/uint16/uint32/uint64 succeeds.
+	if k := b.Kind(); k == types.Uint || k == types.Uint16 || k == types.Uint32 || k == types.Uint64 {
+		return TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
+	}
 	switch {
 	case b.Info()&types.IsInteger != 0:
 		return TypeInfo{Kind: "int"}
@@ -1193,9 +1199,12 @@ func typeInfoFromAST(expr ast.Expr) TypeInfo {
 			// `go_byte` complex kind so generated values stay in [0, 255].
 			return TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
 		case "int", "int8", "int16", "int32", "int64",
-			"uint", "uint16", "uint32", "uint64",
 			"rune":
 			return TypeInfo{Kind: "int"}
+		case "uint", "uint16", "uint32", "uint64":
+			// str-cfsa: unsigned integers use go_uint complex kind so
+			// generated values stay non-negative.
+			return TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
 		case "float32", "float64":
 			return TypeInfo{Kind: "float"}
 		case "string":

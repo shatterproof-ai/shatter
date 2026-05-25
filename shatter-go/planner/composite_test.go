@@ -260,3 +260,61 @@ func genTypeInfo(rt *rapid.T, depth int, tag string) protocol.TypeInfo {
 	}
 	return protocol.TypeInfo{Kind: "int"}
 }
+
+// str-cfsa: struct fields of unsigned integer types must synthesize to zero (0),
+// not to a negative value. The analyzer emits ComplexKind="go_uint" for
+// uint/uint16/uint32/uint64 struct fields; PlanComposite must emit "0" for them.
+func TestPlanComposite_UnsignedIntField_EmitsZero(t *testing.T) {
+	goUint := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
+	req := objectType(
+		field("TemplateSeed", goUint),
+		field("Count", protocol.TypeInfo{Kind: "int"}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Fixture", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Fixture{TemplateSeed: 0, Count: 0}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}
+
+// str-cfsa: pointer to unsigned integer (*uint64, *uint, etc.) must not be
+// blocked by the nullable guard — nil is a valid value for *uint64 fields.
+func TestPlanComposite_PointerUnsignedIntField_EmitsNil(t *testing.T) {
+	goUint := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
+	req := objectType(
+		field("OptSeed", protocol.TypeInfo{Kind: "nullable", Inner: &goUint}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Fixture", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Fixture{OptSeed: nil}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}
+
+// str-cfsa: nested struct containing a uint64 field — models the Fixture.TemplateSeed
+// case from the bug report (param fixtures: json: cannot unmarshal number -11
+// into Go struct field Fixture.TemplateSeed of type uint64).
+func TestPlanComposite_NestedStructWithUintField_EmitsZero(t *testing.T) {
+	goUint := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
+	fixtureType := objectType(
+		field("Name", protocol.TypeInfo{Kind: "str"}),
+		field("TemplateSeed", goUint),
+	)
+	outer := objectType(
+		field("Fixture", fixtureType),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Req", "example.com/pkg", outer, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Req{Fixture: {Name: "", TemplateSeed: 0}}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}

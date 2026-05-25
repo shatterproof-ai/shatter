@@ -1069,6 +1069,18 @@ pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
                 };
                 return serde_json::json!(n);
             }
+            // str-cfsa: GoUint serializes as a plain non-negative JSON
+            // integer. Clamp solver outputs to [0, u64::MAX] so negative
+            // values from unconstrained solves don't reach the Go wrapper.
+            if matches!(kind, ComplexKind::GoUint) {
+                let n: u64 = match repr.as_ref() {
+                    ConcreteValue::Int(i) => {
+                        if *i < 0 { 0 } else { *i as u64 }
+                    }
+                    _ => 0,
+                };
+                return serde_json::json!(n);
+            }
             // Serialize the kind to its snake_case name for the wire format
             let kind_str = serde_json::to_value(kind)
                 .ok()
