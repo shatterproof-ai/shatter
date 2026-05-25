@@ -183,6 +183,163 @@ func main() {
 	}
 }
 
+// TestWrapper_StructWithDurationField is the str-n66n regression. A struct
+// parameter containing a time.Duration field must deserialize integer
+// nanoseconds via plain json.Unmarshal — the wrapper does not need the
+// top-level duration-specific decode block because the core emits
+// ComplexKind=go_duration (not generic Duration) for nested fields, so the
+// wire format is always a plain integer.
+func TestWrapper_StructWithDurationField(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package structdur
+
+import "time"
+
+func F(cfg struct{ Delay time.Duration }) int {
+	if cfg.Delay < 0 {
+		return -1
+	}
+	if cfg.Delay == 0 {
+		return 0
+	}
+	return 1
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "structdur.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write structdur.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/structdur\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/structdur:F",
+			SymbolName: "F",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "cfg", GoType: "struct{ Delay time.Duration }"},
+			},
+			HasResult:    true,
+			ResultGoType: "int",
+			ResultCount:  1,
+			Imports:      []string{"time"},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("structdur", targets, nil)
+
+	// The struct param must NOT trigger the duration-specific decode block
+	// (that's for top-level time.Duration params only). Instead, the struct
+	// is deserialized as a whole; since the core emits integer nanoseconds
+	// for go_duration fields, json.Unmarshal into struct{Delay time.Duration}
+	// succeeds.
+	if strings.Contains(src, "_shatterDur") {
+		t.Errorf("generated wrapper should NOT contain duration-specific decode block for struct param\nsource:\n%s", src)
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "structdur", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("go build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), got)
+	}
+
+	// Drive the generated wrapper: integer nanoseconds must unmarshal
+	// into the struct's time.Duration field correctly.
+	const runnerSrc = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	structdur "example.com/structdur"
+)
+
+func main() {
+	// Each input is a JSON object with a "Delay" field as integer nanoseconds.
+	inputs := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"Delay":0}` + "`" + `),
+		json.RawMessage(` + "`" + `{"Delay":1000000000}` + "`" + `),
+		json.RawMessage(` + "`" + `{"Delay":-1000000000}` + "`" + `),
+	}
+	want := []int{0, 1, -1}
+	for i, in := range inputs {
+		got, err := structdur.ShatterInvoke(structdur.PlanDescriptor{TargetID: "example.com/structdur:F"}, []json.RawMessage{in})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "case %d: ShatterInvoke error: %v\n", i, err)
+			os.Exit(1)
+		}
+		g, ok := got.(int)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "case %d: result type %T, want int\n", i, got)
+			os.Exit(1)
+		}
+		if g != want[i] {
+			fmt.Fprintf(os.Stderr, "case %d: got %d, want %d\n", i, g, want[i])
+			os.Exit(1)
+		}
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	runnerMod := "module example.com/structdurrunner\n\ngo 1.23.0\n\nrequire example.com/structdur v0.0.0\n\nreplace example.com/structdur => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\nwrapper:\n%s", err, buildErr.String(), got)
+	}
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want %q\nstderr: %s", got, "ok", runErr.String())
+	}
+}
+
 // TestWrapper_DurationParam_RejectsInvalidObject pins the error contract:
 // a JSON object that does not carry the duration tag must surface the
 // integer-decode error rather than silently producing a zero value.
