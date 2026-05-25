@@ -463,3 +463,64 @@ func TestPlanParam_UnsignedInt_NeverNegative(t *testing.T) {
 		})
 	}
 }
+
+// str-4v9h: PlanParam routes to PlanInterfaceImpls when
+// InterfaceImplsByParam contains candidates for the parameter.
+func TestPlanParam_InterfaceImplCandidates_ProducesRuntimeValuePlan(t *testing.T) {
+	p := opaqueParam("generator", "response.Generator")
+	opts := planner.ParamPlanOptions{
+		InterfaceImplsByParam: map[string][]protocol.InterfaceParamCandidate{
+			"generator": {
+				{
+					TypeName:    "FakerGenerator",
+					SamePackage: false,
+					Constructors: []protocol.ConstructorCandidate{
+						{FuncName: "response.NewFakerGenerator", TargetType: "FakerGenerator"},
+					},
+					ImportPath: "internal/response",
+				},
+			},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan")
+	}
+	if plans[0].Kind != protocol.ValuePlanKindRuntimeValue {
+		t.Errorf("plan.Kind = %q, want runtime_value", plans[0].Kind)
+	}
+	// The literal should contain the qualified constructor expression.
+	var expr string
+	if err := json.Unmarshal(plans[0].Literal, &expr); err != nil {
+		t.Fatalf("unmarshal literal: %v", err)
+	}
+	if expr != "response.NewFakerGenerator()" {
+		t.Errorf("expr = %q, want %q", expr, "response.NewFakerGenerator()")
+	}
+}
+
+// str-4v9h: when interface impl candidates have no constructors, PlanParam
+// falls through to the unsatisfied path.
+func TestPlanParam_InterfaceImplCandidates_NoConstructor_Unsatisfied(t *testing.T) {
+	p := opaqueParam("store", "db.Store")
+	opts := planner.ParamPlanOptions{
+		InterfaceImplsByParam: map[string][]protocol.InterfaceParamCandidate{
+			"store": {
+				{TypeName: "FileStore", SamePackage: false},
+			},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if plans != nil {
+		t.Errorf("expected nil plans, got %+v", plans)
+	}
+	if u == nil {
+		t.Fatal("expected unsatisfied, got nil")
+	}
+	if u.Kind != protocol.UnsatisfiedRequirementKindNoConstructor {
+		t.Errorf("u.Kind = %q, want no_constructor", u.Kind)
+	}
+}

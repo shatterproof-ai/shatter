@@ -1655,6 +1655,12 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 		ctx.Constructors = matched
 		ctx.ReceiverRequiresConstruction = ReceiverRequiresConstruction(pkg, &target)
 	}
+
+	// str-4v9h: discover interface implementation candidates for parameters
+	// typed as imported interfaces. The defining package must already be
+	// loaded in pkg.Imports (satisfied when the consumer imports the type).
+	ctx.InterfaceImplsByParam = discoverInterfaceImplCandidates(pkg, fn)
+
 	return ctx
 }
 
