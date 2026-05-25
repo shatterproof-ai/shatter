@@ -601,6 +601,47 @@ pub(crate) async fn run_scan(
         }
     });
 
+    // str-n10u: skip partial adapter helpers — functions that have
+    // medium-confidence adapter hints (e.g. only http.ResponseWriter without
+    // *http.Request) but no full adapter InvocationModel. These would pass
+    // the opaque executability check (the param type is "unknown", not
+    // "opaque") but fail at execution because the planner cannot synthesize
+    // the raw adapter-domain parameter without the adapter's full wiring.
+    all_analyses.retain(|func| {
+        if !matches!(func.invocation_model, shatter_core::protocol::InvocationModel::Direct) {
+            return true;
+        }
+        let partial_adapter = func.adapter_hints.iter().any(|h| {
+            h.confidence == shatter_core::nondeterminism::Confidence::Medium
+        });
+        if !partial_adapter {
+            return true;
+        }
+        let hint_reasons: Vec<String> = func
+            .adapter_hints
+            .iter()
+            .filter(|h| h.confidence == shatter_core::nondeterminism::Confidence::Medium)
+            .flat_map(|h| h.reasons.iter().cloned())
+            .collect();
+        let reason = if hint_reasons.is_empty() {
+            format!(
+                "partial adapter signature (not an exact {} handler)",
+                func.adapter_hints[0].adapter.id,
+            )
+        } else {
+            format!(
+                "partial adapter signature — {}; not an exact handler",
+                hint_reasons.join(", "),
+            )
+        };
+        skipped_for_executability.push(SkippedFunction {
+            function_name: func.name.clone(),
+            reason,
+            category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
+        });
+        false
+    });
+
     if !skipped_for_executability.is_empty() {
         log::info!(
             "Skipped {} function(s) (unexecutable parameter types):",
@@ -1860,7 +1901,10 @@ pub(crate) fn write_analysis_report(
 mod tests {
     use super::*;
     use shatter_core::batch_analyze::{FunctionEntry, FunctionRegistry};
-    use shatter_core::protocol::{BranchInfo, BranchType, FunctionAnalysis, InvocationModel};
+    use shatter_core::nondeterminism::Confidence;
+    use shatter_core::protocol::{
+        AdapterHint, BranchInfo, BranchType, ExecutionAdapter, FunctionAnalysis, InvocationModel,
+    };
     use shatter_core::types::{ParamInfo, TypeInfo};
 
     // ── str-bbyy: dry-run deadline helpers ──
@@ -2149,5 +2193,243 @@ mod tests {
         assert_eq!(rebuilt.len(), 1);
         assert!(rebuilt[0].branches.is_empty());
         assert_eq!(rebuilt[0].name, "raw");
+    }
+
+    // ── str-n10u: adapter executability filter tests ──
+
+    /// Adapter-owned functions must bypass the executability filter even when
+    /// their raw params contain opaque types.
+    #[test]
+    fn adapter_owned_function_bypasses_executability_filter() {
+        let adapter_func = FunctionAnalysis {
+            name: "handlePrivate".into(),
+            exported: false,
+            params: vec![ParamInfo {
+                name: "conn".into(),
+                typ: TypeInfo::Opaque {
+                    label: "net.Conn".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Adapter {
+                adapter_id: "go/http-handler".into(),
+                synthetic_params: vec![ParamInfo {
+                    name: "method".into(),
+                    typ: TypeInfo::Str,
+                    type_name: None,
+                }],
+                scenario_schema: None,
+            },
+        };
+
+        let direct_func = FunctionAnalysis {
+            name: "writeConn".into(),
+            exported: false,
+            params: vec![ParamInfo {
+                name: "conn".into(),
+                typ: TypeInfo::Opaque {
+                    label: "net.Conn".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 10,
+            end_line: 15,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        };
+
+        let mut analyses = vec![adapter_func, direct_func];
+        let mut skipped: Vec<SkippedFunction> = Vec::new();
+
+        analyses.retain(|func| {
+            if !matches!(func.invocation_model, InvocationModel::Direct) {
+                return true;
+            }
+            let reasons = executability::check_executability(&func.params, &[]);
+            if reasons.is_empty() {
+                true
+            } else {
+                skipped.push(SkippedFunction {
+                    function_name: func.name.clone(),
+                    reason: reasons.iter().map(|r| r.format_human()).collect::<Vec<_>>().join("; "),
+                    category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
+                });
+                false
+            }
+        });
+
+        assert_eq!(analyses.len(), 1, "adapter-owned function must survive the filter");
+        assert_eq!(analyses[0].name, "handlePrivate");
+        assert_eq!(skipped.len(), 1, "direct function with opaque param must be skipped");
+        assert_eq!(skipped[0].function_name, "writeConn");
+    }
+
+    /// Partial adapter helpers (medium-confidence hint, no full InvocationModel)
+    /// must be skipped with a descriptive reason.
+    #[test]
+    fn partial_adapter_helper_skipped_with_clear_reason() {
+        let partial_func = FunctionAnalysis {
+            name: "writePartial".into(),
+            exported: false,
+            params: vec![ParamInfo {
+                name: "w".into(),
+                typ: TypeInfo::Unknown,
+                type_name: Some("http.ResponseWriter".into()),
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![AdapterHint {
+                adapter: ExecutionAdapter {
+                    id: "go/http-handler".into(),
+                    apply: None,
+                    options: None,
+                },
+                confidence: Confidence::Medium,
+                reasons: vec!["Parameter w has type net/http.ResponseWriter".into()],
+                requirements: vec![],
+                conflicts: vec![],
+            }],
+            invocation_model: InvocationModel::Direct,
+        };
+
+        let exact_func = FunctionAnalysis {
+            name: "handleExact".into(),
+            exported: false,
+            params: vec![
+                ParamInfo {
+                    name: "w".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("http.ResponseWriter".into()),
+                },
+                ParamInfo {
+                    name: "r".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("*http.Request".into()),
+                },
+            ],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Int,
+            start_line: 10,
+            end_line: 15,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![AdapterHint {
+                adapter: ExecutionAdapter {
+                    id: "go/http-handler".into(),
+                    apply: None,
+                    options: None,
+                },
+                confidence: Confidence::High,
+                reasons: vec![
+                    "Parameter w has type net/http.ResponseWriter".into(),
+                    "Parameter r has type *net/http.Request".into(),
+                ],
+                requirements: vec![],
+                conflicts: vec![],
+            }],
+            invocation_model: InvocationModel::Adapter {
+                adapter_id: "go/http-handler".into(),
+                synthetic_params: vec![ParamInfo {
+                    name: "method".into(),
+                    typ: TypeInfo::Str,
+                    type_name: None,
+                }],
+                scenario_schema: None,
+            },
+        };
+
+        let mut analyses = vec![partial_func, exact_func];
+        let mut skipped: Vec<SkippedFunction> = Vec::new();
+
+        // Pass 1: adapter bypass + opaque check.
+        analyses.retain(|func| {
+            if !matches!(func.invocation_model, InvocationModel::Direct) {
+                return true;
+            }
+            let reasons = executability::check_executability(&func.params, &[]);
+            if reasons.is_empty() {
+                true
+            } else {
+                skipped.push(SkippedFunction {
+                    function_name: func.name.clone(),
+                    reason: reasons.iter().map(|r| r.format_human()).collect::<Vec<_>>().join("; "),
+                    category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
+                });
+                false
+            }
+        });
+        // Pass 2: partial adapter helpers.
+        analyses.retain(|func| {
+            if !matches!(func.invocation_model, InvocationModel::Direct) {
+                return true;
+            }
+            let partial = func.adapter_hints.iter().any(|h| h.confidence == Confidence::Medium);
+            if !partial {
+                return true;
+            }
+            let hint_reasons: Vec<String> = func
+                .adapter_hints
+                .iter()
+                .filter(|h| h.confidence == Confidence::Medium)
+                .flat_map(|h| h.reasons.iter().cloned())
+                .collect();
+            let reason = if hint_reasons.is_empty() {
+                format!("partial adapter signature (not an exact {} handler)", func.adapter_hints[0].adapter.id)
+            } else {
+                format!("partial adapter signature — {}; not an exact handler", hint_reasons.join(", "))
+            };
+            skipped.push(SkippedFunction {
+                function_name: func.name.clone(),
+                reason,
+                category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
+            });
+            false
+        });
+
+        assert_eq!(analyses.len(), 1, "exact handler must survive both filters");
+        assert_eq!(analyses[0].name, "handleExact");
+        assert_eq!(skipped.len(), 1, "partial helper must be skipped");
+        assert_eq!(skipped[0].function_name, "writePartial");
+        assert!(
+            skipped[0].reason.contains("partial adapter signature"),
+            "skip reason should mention partial adapter: {}",
+            skipped[0].reason,
+        );
+        assert!(
+            skipped[0].reason.contains("not an exact handler"),
+            "skip reason should explain it's not an exact handler: {}",
+            skipped[0].reason,
+        );
     }
 }
