@@ -2124,7 +2124,7 @@ fn resolve_cargo_toml_paths(content: &str, crate_root: &Path) -> String {
     // Add [workspace] if not present, to isolate the staging copy from
     // any workspace root above the original crate.
     if !has_workspace {
-        result.push_str("\n[workspace]\n");
+        result.push_str("\n[workspace]\nmembers = []\n");
     }
     result
 }
@@ -2544,6 +2544,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
+exclude = ["crate-shadow"]
 
 [dependencies]
 {crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
