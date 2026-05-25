@@ -146,6 +146,13 @@ pub fn generate_random_value(
             if matches!(kind, ComplexKind::GoUint) {
                 return generate_go_uint(rng);
             }
+            // str-n66n: GoDuration emits a raw JSON integer (nanoseconds).
+            // Go's time.Duration is an int64 alias; the generic Duration
+            // complex kind emits {"__complex_type":"duration","ms":…} which
+            // Go's json.Unmarshal rejects for time.Duration fields.
+            if matches!(kind, ComplexKind::GoDuration) {
+                return generate_go_duration(rng);
+            }
             if caps.is_some_and(|c| c.supports_complex(*kind)) {
                 generate_complex_value(*kind, metadata, inner.as_deref(), rng)
             } else {
@@ -217,6 +224,10 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
             kind: ComplexKind::GoUint,
             ..
         } => value.as_u64().is_some(),
+        TypeInfo::Complex {
+            kind: ComplexKind::GoDuration,
+            ..
+        } => value.as_i64().is_some(),
         // Other complex kinds and Opaque/Unknown keep current pass-through
         // behavior — narrowing this gate is out of scope for str-jeen.85.
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
@@ -378,6 +389,7 @@ fn generate_complex_value(
         ComplexKind::Char | ComplexKind::Rune => generate_char(rng),
         ComplexKind::GoByte => generate_go_byte(rng),
         ComplexKind::GoUint => generate_go_uint(rng),
+        ComplexKind::GoDuration => generate_go_duration(rng),
         ComplexKind::Email => generate_email(rng),
         ComplexKind::SemVer => generate_semver(rng),
         ComplexKind::Color => generate_color(rng),
@@ -703,6 +715,28 @@ fn generate_go_uint(rng: &mut impl Rng) -> Value {
         _ => rng.random_range(0..=1000),
     };
     json!(n)
+}
+
+/// Generate a Go `time.Duration` value as a raw JSON integer (nanoseconds).
+///
+/// Emitted as a plain integer (not a `__complex_type`-tagged object) so that
+/// the Go wrapper's `json.Unmarshal` into `time.Duration` (int64 alias)
+/// succeeds. The generic `Duration` complex kind uses the
+/// `{"__complex_type":"duration","ms":…}` format which Go rejects.
+fn generate_go_duration(rng: &mut impl Rng) -> Value {
+    const NS_PER_MS: i64 = 1_000_000;
+    const NS_PER_SEC: i64 = 1_000_000_000;
+    let choice: u8 = rng.random_range(0..7);
+    let ns: i64 = match choice {
+        0 => 0,                       // zero duration
+        1 => NS_PER_MS,               // 1ms
+        2 => NS_PER_SEC,              // 1s
+        3 => -NS_PER_SEC,             // -1s
+        4 => 5 * NS_PER_SEC,          // 5s
+        5 => 100 * NS_PER_MS,         // 100ms
+        _ => rng.random_range(-10 * NS_PER_SEC..=10 * NS_PER_SEC),
+    };
+    json!(ns)
 }
 
 /// Generate an Email value.
@@ -1755,6 +1789,7 @@ fn mutate_complex(
         ComplexKind::Char | ComplexKind::Rune => mutate_char(value, rng),
         ComplexKind::GoByte => mutate_go_byte(value, rng),
         ComplexKind::GoUint => mutate_go_uint(value, rng),
+        ComplexKind::GoDuration => mutate_go_duration(value, rng),
         ComplexKind::Url => mutate_string_complex(value, "url", "value", dictionary, rng),
         ComplexKind::Email => mutate_string_complex(value, "email", "value", dictionary, rng),
         ComplexKind::Path => mutate_string_complex(value, "path", "value", dictionary, rng),
@@ -2198,6 +2233,33 @@ fn mutate_go_uint(value: &Value, rng: &mut impl Rng) -> Value {
         _ => {
             // Boundary swap
             let boundaries: &[u64] = &[0, 1, u16::MAX as u64, u32::MAX as u64, u64::MAX];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+    };
+    json!(new_v)
+}
+
+/// Mutate a GoDuration by applying delta or boundary swap. Wire format is a
+/// raw JSON integer (nanoseconds); see `generate_go_duration` for rationale.
+fn mutate_go_duration(value: &Value, rng: &mut impl Rng) -> Value {
+    const NS_PER_MS: i64 = 1_000_000;
+    const NS_PER_SEC: i64 = 1_000_000_000;
+    let v = value.as_i64().unwrap_or(0);
+    let op: u8 = rng.random_range(0..3);
+    let new_v: i64 = match op {
+        0 => {
+            // Small upward delta (1-100ms)
+            let delta = rng.random_range(1..=100) * NS_PER_MS;
+            v.saturating_add(delta)
+        }
+        1 => {
+            // Small downward delta (1-100ms)
+            let delta = rng.random_range(1..=100) * NS_PER_MS;
+            v.saturating_sub(delta)
+        }
+        _ => {
+            // Boundary swap
+            let boundaries: &[i64] = &[0, NS_PER_MS, NS_PER_SEC, -NS_PER_SEC, 5 * NS_PER_SEC];
             boundaries[rng.random_range(0..boundaries.len())]
         }
     };
@@ -5987,6 +6049,50 @@ mod tests {
                     prop_assert!(
                         count.as_u64().is_some(),
                         "nested uint field must be non-negative, got {count:?}"
+                    );
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // GoDuration (str-n66n): generation/mutation produce plain JSON
+            // integers (nanoseconds) so Go's json.Unmarshal into time.Duration
+            // (int64 alias) succeeds.
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn go_duration_generation_is_integer(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = generate_go_duration(&mut rng);
+                prop_assert!(v.as_i64().is_some(), "go_duration must be a JSON integer, got {v:?}");
+            }
+
+            #[test]
+            fn go_duration_mutation_is_integer(seed in 0..100_000u64, start in -10_000_000_000i64..=10_000_000_000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = mutate_go_duration(&json!(start), &mut rng);
+                prop_assert!(v.as_i64().is_some(), "mutated go_duration must be an integer, got {v:?}");
+            }
+
+            #[test]
+            fn go_duration_struct_field_is_integer(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let dur_field = TypeInfo::Complex {
+                    kind: ComplexKind::GoDuration,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Object {
+                    fields: vec![
+                        ("name".to_string(), TypeInfo::Str),
+                        ("delay".to_string(), dur_field),
+                    ],
+                };
+                let v = generate_random_value(&typ, &mut rng, None);
+                let obj = v.as_object().expect("object should generate a JSON object");
+                if let Some(delay) = obj.get("delay") {
+                    prop_assert!(
+                        delay.as_i64().is_some(),
+                        "nested duration field must be a plain integer, got {delay:?}"
                     );
                 }
             }
