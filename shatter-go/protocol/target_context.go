@@ -36,4 +36,29 @@ type TargetContext struct {
 	// this flag and refuses the fallback zero-value receiver plan when no
 	// real strategy applies (str-g7h7).
 	ReceiverRequiresConstruction bool
+
+	// InterfaceImplsByParam maps parameter names to discovered interface
+	// implementation candidates. Populated when a parameter is typed as an
+	// imported interface whose defining package exports parameterless
+	// constructors for implementing types (str-4v9h). The planner routes
+	// these through PlanInterfaceImpls to produce runtime-value plans.
+	InterfaceImplsByParam map[string][]InterfaceParamCandidate
+}
+
+// InterfaceParamCandidate names a concrete type that implements a parameter's
+// interface type, together with its constructors. This is the protocol-level
+// representation consumed by the planner's interface-impl planning path.
+type InterfaceParamCandidate struct {
+	// TypeName is the bare name of the concrete implementor (e.g. "FakerGenerator").
+	TypeName string
+	// SamePackage is true when the implementor is defined in the same
+	// package as the target consuming the interface.
+	SamePackage bool
+	// Constructors lists the known constructor functions that produce
+	// TypeName. For cross-package constructors, FuncName is package-
+	// qualified (e.g. "response.NewFakerGenerator").
+	Constructors []ConstructorCandidate
+	// ImportPath is the package import path for cross-package constructors
+	// (e.g. "internal/response"). Empty for same-package candidates.
+	ImportPath string
 }

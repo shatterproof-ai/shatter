@@ -52,6 +52,12 @@ type ParamPlanOptions struct {
 	// generator before falling back to primitive families. This is the
 	// hint_config_v1 generators surface (str-hy9b.G3 AC3).
 	GeneratorsByName map[string]string
+	// InterfaceImplsByParam maps parameter names to discovered interface
+	// implementation candidates (str-4v9h). When a parameter is typed as an
+	// imported interface, the handler discovers constructors from the
+	// interface's defining package and passes them here. PlanParam routes
+	// these through PlanInterfaceImpls.
+	InterfaceImplsByParam map[string][]protocol.InterfaceParamCandidate
 	// MaxPlansPerParam caps each parameter's ValuePlan slice. Zero means
 	// DefaultMaxParamValuePlans.
 	MaxPlansPerParam int
@@ -127,6 +133,17 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 			return fbPlans, nil
 		} else if fbUnsat != nil {
 			return nil, fbUnsat
+		}
+		// str-4v9h: check for interface implementation candidates discovered
+		// by the handler from the interface's defining package.
+		if candidates, found := opts.InterfaceImplsByParam[p.Name]; found && len(candidates) > 0 {
+			implCands := protocolToImplCandidates(candidates)
+			interfaceName := paramTypeLabel(p)
+			return PlanInterfaceImpls(targetID, paramIndex, p, PlanInterfaceImplOptions{
+				InterfaceName: interfaceName,
+				Candidates:    implCands,
+				MaxImpls:      maxPlans,
+			})
 		}
 		return nil, &protocol.UnsatisfiedRequirement{
 			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
@@ -349,4 +366,18 @@ func paramTypeLabel(p protocol.ParamInfo) string {
 		return p.Type.Kind
 	}
 	return "unknown"
+}
+
+// protocolToImplCandidates converts protocol-level InterfaceParamCandidate
+// values to the planner's InterfaceImplCandidate type.
+func protocolToImplCandidates(pcs []protocol.InterfaceParamCandidate) []InterfaceImplCandidate {
+	out := make([]InterfaceImplCandidate, len(pcs))
+	for i, pc := range pcs {
+		out[i] = InterfaceImplCandidate{
+			TypeName:     pc.TypeName,
+			SamePackage:  pc.SamePackage,
+			Constructors: pc.Constructors,
+		}
+	}
+	return out
 }
