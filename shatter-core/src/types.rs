@@ -104,6 +104,13 @@ pub enum ComplexKind {
     Rune,
     /// Go byte (uint8 alias).
     GoByte,
+    /// Go unsigned integer (uint, uint16, uint32, uint64).
+    ///
+    /// Wire format is a plain non-negative JSON integer (no `__complex_type`
+    /// wrapper) so that Go's `encoding/json.Unmarshal` into unsigned types
+    /// succeeds. Analogous to `GoByte` for the [0, 255] range, but covers
+    /// the full u64 domain.
+    GoUint,
 }
 
 /// Describes the type of a value, as reported by a language frontend.

@@ -140,6 +140,12 @@ pub fn generate_random_value(
             if matches!(kind, ComplexKind::GoByte) {
                 return generate_go_byte(rng);
             }
+            // str-cfsa: GoUint emits a raw non-negative JSON integer (no
+            // `__complex_type` wrapper), same rationale as GoByte — Go's
+            // encoding/json rejects negative values for unsigned types.
+            if matches!(kind, ComplexKind::GoUint) {
+                return generate_go_uint(rng);
+            }
             if caps.is_some_and(|c| c.supports_complex(*kind)) {
                 generate_complex_value(*kind, metadata, inner.as_deref(), rng)
             } else {
@@ -207,6 +213,10 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
             kind: ComplexKind::GoByte,
             ..
         } => value.as_u64().is_some_and(|n| n <= 255),
+        TypeInfo::Complex {
+            kind: ComplexKind::GoUint,
+            ..
+        } => value.as_u64().is_some(),
         // Other complex kinds and Opaque/Unknown keep current pass-through
         // behavior — narrowing this gate is out of scope for str-jeen.85.
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
@@ -367,6 +377,7 @@ fn generate_complex_value(
         ComplexKind::Symbol => generate_symbol(rng),
         ComplexKind::Char | ComplexKind::Rune => generate_char(rng),
         ComplexKind::GoByte => generate_go_byte(rng),
+        ComplexKind::GoUint => generate_go_uint(rng),
         ComplexKind::Email => generate_email(rng),
         ComplexKind::SemVer => generate_semver(rng),
         ComplexKind::Color => generate_color(rng),
@@ -672,6 +683,26 @@ fn generate_go_byte(rng: &mut impl Rng) -> Value {
         _ => rng.random_range(0..=255),
     };
     json!(v)
+}
+
+/// Generate a Go unsigned integer value as a raw non-negative JSON number.
+///
+/// Emitted as a plain integer (not a `__complex_type`-tagged object) so that
+/// the Go wrapper's `json.Unmarshal` into `uint` / `uint16` / `uint32` /
+/// `uint64` succeeds — Go's encoding/json rejects negative values for
+/// unsigned integer types.
+fn generate_go_uint(rng: &mut impl Rng) -> Value {
+    let choice: u8 = rng.random_range(0..8);
+    let n: u64 = match choice {
+        0 => 0,
+        1 => 1,
+        2 => u64::MAX,
+        3 => u32::MAX as u64,
+        4 => u16::MAX as u64,
+        5 => 255, // u8 max, common boundary
+        _ => rng.random_range(0..=1000),
+    };
+    json!(n)
 }
 
 /// Generate an Email value.
@@ -1723,6 +1754,7 @@ fn mutate_complex(
         ComplexKind::Rational => mutate_rational(value, rng),
         ComplexKind::Char | ComplexKind::Rune => mutate_char(value, rng),
         ComplexKind::GoByte => mutate_go_byte(value, rng),
+        ComplexKind::GoUint => mutate_go_uint(value, rng),
         ComplexKind::Url => mutate_string_complex(value, "url", "value", dictionary, rng),
         ComplexKind::Email => mutate_string_complex(value, "email", "value", dictionary, rng),
         ComplexKind::Path => mutate_string_complex(value, "path", "value", dictionary, rng),
@@ -2141,6 +2173,31 @@ fn mutate_go_byte(value: &Value, rng: &mut impl Rng) -> Value {
         1 => v.wrapping_sub(rng.random_range(1..=10)),
         _ => {
             let boundaries: &[u8] = &[0, 1, 127, 128, 255];
+            boundaries[rng.random_range(0..boundaries.len())]
+        }
+    };
+    json!(new_v)
+}
+
+/// Mutate a GoUint by applying delta or boundary. Wire format is a raw
+/// non-negative JSON number; see `generate_go_uint` for the rationale.
+fn mutate_go_uint(value: &Value, rng: &mut impl Rng) -> Value {
+    let v = value.as_u64().unwrap_or(0);
+    let op: u8 = rng.random_range(0..3);
+    let new_v: u64 = match op {
+        0 => {
+            // Small upward delta
+            let delta = rng.random_range(1..=10_u64);
+            v.saturating_add(delta)
+        }
+        1 => {
+            // Small downward delta (clamped to 0)
+            let delta = rng.random_range(1..=10_u64);
+            v.saturating_sub(delta)
+        }
+        _ => {
+            // Boundary swap
+            let boundaries: &[u64] = &[0, 1, u16::MAX as u64, u32::MAX as u64, u64::MAX];
             boundaries[rng.random_range(0..boundaries.len())]
         }
     };
@@ -5886,6 +5943,51 @@ mod tests {
                         panic!("byte slice element must be a raw JSON number, got {item:?}");
                     });
                     prop_assert!(n <= 255, "byte slice element out of range: {n}");
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // GoUint (str-cfsa): generation/mutation produce non-negative raw
+            // JSON numbers so Go's json.Unmarshal into uint/uint16/uint32/uint64
+            // succeeds.
+            // -----------------------------------------------------------------
+
+            #[test]
+            fn go_uint_generation_non_negative(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = generate_go_uint(&mut rng);
+                prop_assert!(v.as_u64().is_some(), "go_uint must be a non-negative JSON number, got {v:?}");
+            }
+
+            #[test]
+            fn go_uint_mutation_non_negative(seed in 0..100_000u64, start in 0u64..=1_000_000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let v = mutate_go_uint(&json!(start), &mut rng);
+                prop_assert!(v.as_u64().is_some(), "mutated go_uint must be non-negative, got {v:?}");
+            }
+
+            #[test]
+            fn go_uint_struct_field_non_negative(seed in 0..100_000u64) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                // Simulate a struct with a uint64 field (nested)
+                let uint_field = TypeInfo::Complex {
+                    kind: ComplexKind::GoUint,
+                    metadata: serde_json::Map::new(),
+                    inner: None,
+                };
+                let typ = TypeInfo::Object {
+                    fields: vec![
+                        ("name".to_string(), TypeInfo::Str),
+                        ("count".to_string(), uint_field),
+                    ],
+                };
+                let v = generate_random_value(&typ, &mut rng, None);
+                let obj = v.as_object().expect("object should generate a JSON object");
+                if let Some(count) = obj.get("count") {
+                    prop_assert!(
+                        count.as_u64().is_some(),
+                        "nested uint field must be non-negative, got {count:?}"
+                    );
                 }
             }
 

@@ -18,6 +18,7 @@ const DefaultMaxCompositeDepth = 3
 const (
 	compositeZeroString     = `""`
 	compositeZeroInt        = "0"
+	compositeZeroUint       = "0"
 	compositeZeroFloat      = "0"
 	compositeZeroBool       = "false"
 	compositeZeroNilPointer = "nil"
@@ -165,10 +166,18 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 		// qualified type name that TypeInfo does not carry, and nil is a
 		// valid composite-literal field value. Opaque pointees still fail,
 		// preserving the "DB *sql.DB → unsatisfied" acceptance case.
+		// str-cfsa: go_uint and go_byte pointer fields are allowed (nil is
+		// valid for *uint64, *uint, etc.) and must not be blocked by the
+		// opaque/complex/unknown/union guard.
 		if t.Inner != nil {
 			switch t.Inner.Kind {
-			case "opaque", "complex", "unknown", "union":
+			case "opaque", "unknown", "union":
 				return "", fmt.Errorf("pointer to %s is not a supported composite field type", describeKind(t.Inner))
+			case "complex":
+				if t.Inner.ComplexKind != "go_uint" && t.Inner.ComplexKind != "go_byte" {
+					return "", fmt.Errorf("pointer to %s is not a supported composite field type", describeKind(t.Inner))
+				}
+				// *uint* / *byte: nil is valid.
 			}
 		}
 		return compositeZeroNilPointer, nil
@@ -177,7 +186,16 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 		// (Go allows `Outer{Inner: {X: 0}}` without naming Inner's type),
 		// at a cost of one further depth level.
 		return synthesizeStructBody(t, "nested struct", depth)
-	case "opaque", "complex", "unknown", "union":
+	case "complex":
+		// str-cfsa: go_uint covers uint/uint16/uint32/uint64 struct fields;
+		// emit zero (a valid non-negative value for any unsigned width).
+		// go_byte (uint8/byte) follows the same rule.
+		switch t.ComplexKind {
+		case "go_uint", "go_byte":
+			return compositeZeroUint, nil
+		}
+		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
+	case "opaque", "unknown", "union":
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	default:
 		return "", fmt.Errorf("unsupported field kind %q", t.Kind)

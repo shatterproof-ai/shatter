@@ -16,6 +16,7 @@ const DefaultMaxParamValuePlans = 4
 const (
 	paramTypeHintString    = "string"
 	paramTypeHintInt       = "int"
+	paramTypeHintUint      = "uint64"
 	paramTypeHintFloat64   = "float64"
 	paramTypeHintBool      = "bool"
 	paramTypeHintByteSlice = "[]byte"
@@ -202,6 +203,13 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 			family := intFamily()
 			family.typeHint = "int64"
 			return family, true
+		case "uint", "uint8", "uint16", "uint32", "uint64":
+			// str-cfsa: unsigned integer TypeName spellings map to uintFamily so
+			// generated values stay non-negative and json.Unmarshal into any
+			// uint width succeeds. TypeName carries the exact source spelling
+			// (e.g. "uint64") when the AST-based fallback path sets it; the
+			// type-checker path sets ComplexKind instead (handled below).
+			return uintFamily(), true
 		case "time.Duration":
 			// str-is5g: time.Duration is an int64 alias in nanoseconds. Emit
 			// integer-nanosecond literals so the wrapper's json.Unmarshal
@@ -219,6 +227,15 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 		return floatFamily(), true
 	case "bool":
 		return boolFamily(), true
+	case "complex":
+		// str-cfsa: go_uint is emitted by the type-checker path in
+		// basicTypeInfo for uint/uint16/uint32/uint64 (excluding uint8/byte
+		// which go through go_byte). Map it to uintFamily so generated values
+		// stay non-negative.
+		if p.Type.ComplexKind == "go_uint" {
+			return uintFamily(), true
+		}
+		return paramFamily{}, false
 	case "array":
 		// Without TypeName we can't distinguish []byte from []int; only treat
 		// an array family as []byte when the TypeName explicitly says so.
@@ -246,6 +263,20 @@ func intFamily() paramFamily {
 			{kind: protocol.ValuePlanKindZero},
 			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`1`)},
 			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`-1`)},
+		},
+	}
+}
+
+// uintFamily returns the paramFamily for Go unsigned integer types.
+// str-cfsa: candidates are non-negative only so json.Unmarshal into any
+// uint width (uint, uint8, uint16, uint32, uint64) succeeds.
+func uintFamily() paramFamily {
+	return paramFamily{
+		typeHint: paramTypeHintUint,
+		candidates: []paramCandidate{
+			{kind: protocol.ValuePlanKindZero},
+			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`1`)},
+			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`255`)},
 		},
 	}
 }
