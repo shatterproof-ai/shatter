@@ -252,6 +252,12 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 		if p.Type.ComplexKind == "go_uint" {
 			return uintFamily(), true
 		}
+		// str-n66n: go_duration is emitted by mapComplexKind for
+		// time.Duration. Map it to durationFamily so generated values are
+		// integer nanoseconds that json.Unmarshal into time.Duration succeeds.
+		if p.Type.ComplexKind == "go_duration" {
+			return durationFamily(), true
+		}
 		return paramFamily{}, false
 	case "array":
 		// Without TypeName we can't distinguish []byte from []int; only treat

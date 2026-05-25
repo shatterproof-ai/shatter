@@ -174,10 +174,10 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 			case "opaque", "unknown", "union":
 				return "", fmt.Errorf("pointer to %s is not a supported composite field type", describeKind(t.Inner))
 			case "complex":
-				if t.Inner.ComplexKind != "go_uint" && t.Inner.ComplexKind != "go_byte" {
+				if t.Inner.ComplexKind != "go_uint" && t.Inner.ComplexKind != "go_byte" && t.Inner.ComplexKind != "go_duration" {
 					return "", fmt.Errorf("pointer to %s is not a supported composite field type", describeKind(t.Inner))
 				}
-				// *uint* / *byte: nil is valid.
+				// *uint* / *byte / *time.Duration: nil is valid.
 			}
 		}
 		return compositeZeroNilPointer, nil
@@ -193,6 +193,9 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 		switch t.ComplexKind {
 		case "go_uint", "go_byte":
 			return compositeZeroUint, nil
+		case "go_duration":
+			// str-n66n: time.Duration is int64; emit 0 (zero duration).
+			return compositeZeroInt, nil
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "opaque", "unknown", "union":
