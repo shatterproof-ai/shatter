@@ -318,3 +318,56 @@ func TestPlanComposite_NestedStructWithUintField_EmitsZero(t *testing.T) {
 		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
 	}
 }
+
+// str-n66n: struct fields of time.Duration must synthesize to zero (0).
+func TestPlanComposite_DurationField_EmitsZero(t *testing.T) {
+	goDuration := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_duration"}
+	req := objectType(
+		field("Delay", goDuration),
+		field("Name", protocol.TypeInfo{Kind: "str"}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Config", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Config{Delay: 0, Name: ""}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}
+
+// str-n66n: *time.Duration must not be blocked by the nullable guard.
+func TestPlanComposite_PointerDurationField_EmitsNil(t *testing.T) {
+	goDuration := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_duration"}
+	req := objectType(
+		field("Timeout", protocol.TypeInfo{Kind: "nullable", Inner: &goDuration}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Config", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Config{Timeout: nil}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}
+
+// str-n66n: nested struct with time.Duration field — models WatcherConfig.Debounce.
+func TestPlanComposite_NestedStructWithDurationField_EmitsZero(t *testing.T) {
+	goDuration := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_duration"}
+	watcherCfg := objectType(
+		field("Path", protocol.TypeInfo{Kind: "str"}),
+		field("Debounce", goDuration),
+	)
+	outer := objectType(
+		field("Watcher", watcherCfg),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Req", "example.com/pkg", outer, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Req{Watcher: {Path: "", Debounce: 0}}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}

@@ -492,7 +492,6 @@ func TestPlanParam_InterfaceImplCandidates_ProducesRuntimeValuePlan(t *testing.T
 	if plans[0].Kind != protocol.ValuePlanKindRuntimeValue {
 		t.Errorf("plan.Kind = %q, want runtime_value", plans[0].Kind)
 	}
-	// The literal should contain the qualified constructor expression.
 	var expr string
 	if err := json.Unmarshal(plans[0].Literal, &expr); err != nil {
 		t.Fatalf("unmarshal literal: %v", err)
@@ -522,5 +521,32 @@ func TestPlanParam_InterfaceImplCandidates_NoConstructor_Unsatisfied(t *testing.
 	}
 	if u.Kind != protocol.UnsatisfiedRequirementKindNoConstructor {
 		t.Errorf("u.Kind = %q, want no_constructor", u.Kind)
+	}
+}
+
+// str-n66n: go_duration ComplexKind must emit integer-nanosecond candidates.
+func TestPlanParam_GoDuration_IntegerNanosecondCandidates(t *testing.T) {
+	param := protocol.ParamInfo{
+		Name: "delay",
+		Type: protocol.TypeInfo{Kind: "complex", ComplexKind: "go_duration"},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{MaxPlansPerParam: 8})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan, got none")
+	}
+	for i, p := range plans {
+		if p.Kind != protocol.ValuePlanKindLiteral && p.Kind != protocol.ValuePlanKindZero {
+			t.Errorf("plans[%d].Kind = %q, want literal or zero", i, p.Kind)
+		}
+		if p.Kind != protocol.ValuePlanKindLiteral {
+			continue
+		}
+		var n int64
+		if err := json.Unmarshal(p.Literal, &n); err != nil {
+			t.Errorf("plans[%d]: literal %q cannot unmarshal as integer: %v", i, string(p.Literal), err)
+		}
 	}
 }
