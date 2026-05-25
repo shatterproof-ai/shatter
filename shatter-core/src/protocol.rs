@@ -245,6 +245,12 @@ pub struct InvocationPlan {
     /// One `ValuePlan` per parameter, in declaration order.
     #[serde(default)]
     pub argument_plans: Vec<ValuePlan>,
+    /// Value plans for parameterized constructor arguments (str-9b1q).
+    /// When non-empty, the constructor named in `receiver_kind` takes these
+    /// as positional arguments. The inputs array sent to the wrapper prepends
+    /// constructor arg values before method param values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constructor_arg_plans: Vec<ValuePlan>,
     /// Relative ordering within a plan set; lower values are tried first.
     pub priority: i32,
     /// Optional human-readable name for this plan.
@@ -1443,6 +1449,7 @@ mod tests {
                         literal: None,
                         type_hint: "int".into(),
                     }],
+                    constructor_arg_plans: vec![],
                     priority: 1,
                     label: "constructor:New + x=0".into(),
                 }),
@@ -3569,6 +3576,7 @@ mod tests {
                     type_hint: "int".into(),
                 },
             ],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: "constructor_new_counter".into(),
         };
@@ -3631,6 +3639,7 @@ mod tests {
                         literal: None,
                         type_hint: "int".into(),
                     }],
+                    constructor_arg_plans: vec![],
                     priority: 1,
                     label: "zero_args".into(),
                 }],
@@ -3840,6 +3849,7 @@ mod tests {
                 literal: Some(serde_json::json!(7)),
                 type_hint: "int".into(),
             }],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: "ctor_new".into(),
         };

@@ -152,14 +152,14 @@ func GenerateWrapper(
 	sort.Slice(sortedCtors, func(i, j int) bool { return sortedCtors[i].FuncName < sortedCtors[j].FuncName })
 
 	// Index constructors by target type for receiver-kind enumeration.
-	// Skip constructors whose real signature takes parameters: the wrapper
-	// has no way to synthesise the arguments, and emitting `_recv :=
-	// NewFoo()` against a constructor that requires (e.g.) an
-	// http.ResponseWriter produces a package-wide build error that
-	// silently poisons every other target's wrapper case (str-qo1.14).
+	// Skip constructors whose real signature takes unsatisfiable parameters
+	// (str-qo1.14). Parameterized constructors with populated Parameters
+	// (str-9b1q) are allowed — the wrapper generates literal zero-value
+	// arguments for them.
 	ctorsByType := make(map[string][]ConstructorCandidate)
 	for _, c := range sortedCtors {
-		if c.HasParams {
+		if c.HasParams && len(c.Parameters) == 0 {
+			// HasParams but no Parameters = unsatisfiable (legacy filter).
 			continue
 		}
 		ctorsByType[c.TargetType] = append(ctorsByType[c.TargetType], c)
@@ -258,39 +258,37 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 		for _, c := range ctors {
 			recvKind := WrapperKindConstructorPrefix + c.FuncName
 			fmt.Fprintf(b, "\t\tcase %q:\n", recvKind)
+			// str-9b1q: parameterized constructors use hardcoded zero-value
+			// arguments. The planner verifies all params are satisfiable
+			// primitives; the wrapper generates the type's zero literal
+			// directly in the constructor call.
+			ctorArgs := constructorCallExpr(c)
 			// str-jeen.49: choose the call shape from the cross product
 			// of (target receiver kind) × (constructor return kind).
-			// Pre-fix every value-receiver case dereferenced the
-			// constructor result, which fails to compile when the
-			// constructor returns the value form (`cannot indirect`).
 			//
 			// str-jeen.78: when the constructor returns (T, error) or
-			// (*T, error), use the two-assignment form (_recv, _ := ctor())
-			// to avoid "assignment mismatch: 1 variable but ctor returns 2
-			// values". The error is intentionally discarded so that the
-			// wrapper still returns a result to the orchestrator; callers
-			// that need error propagation should not use a constructor-backed
-			// receiver kind.
+			// (*T, error), use the two-assignment form to avoid assignment
+			// mismatch.
 			switch {
 			case t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s(%s)\n", c.FuncName, ctorArgs)
 			case t.IsPointerRecv && c.ReturnsPointer:
-				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
 			case t.IsPointerRecv && !c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recvVal, _ := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recvVal, _ := %s(%s)\n", c.FuncName, ctorArgs)
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case t.IsPointerRecv && !c.ReturnsPointer:
-				fmt.Fprintf(b, "\t\t\t_recvVal := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recvVal := %s(%s)\n", c.FuncName, ctorArgs)
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case !t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recvPtr, _ := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recvPtr, _ := %s(%s)\n", c.FuncName, ctorArgs)
 				b.WriteString("\t\t\t_recv := *_recvPtr\n")
 			case !t.IsPointerRecv && c.ReturnsPointer:
-				fmt.Fprintf(b, "\t\t\t_recv := *%s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recv := *%s(%s)\n", c.FuncName, ctorArgs)
 			case c.ReturnsError: // !t.IsPointerRecv && !c.ReturnsPointer
-				fmt.Fprintf(b, "\t\t\t_recv, _ := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recv, _ := %s(%s)\n", c.FuncName, ctorArgs)
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
-				fmt.Fprintf(b, "\t\t\t_recv := %s()\n", c.FuncName)
+				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
 			}
 			writeParamDeserialization(b, t.Parameters, "\t\t\t")
 			writeCall(b, t, "_recv", nil, "\t\t\t")
@@ -323,6 +321,45 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
 		fmt.Fprintf(b, "%s}\n", indent)
+	}
+}
+
+
+// constructorCallExpr builds the argument expression string for a constructor
+// call (str-9b1q). For parameterless constructors returns "". For parameterized
+// constructors returns comma-separated Go zero-value literals matching each
+// parameter's type (e.g. `"", 0` for (string, int)).
+func constructorCallExpr(c ConstructorCandidate) string {
+	if len(c.Parameters) == 0 {
+		return ""
+	}
+	args := make([]string, len(c.Parameters))
+	for i, p := range c.Parameters {
+		args[i] = goZeroLiteral(p.GoType)
+	}
+	return strings.Join(args, ", ")
+}
+
+// goZeroLiteral returns the Go source zero literal for a type (str-9b1q).
+func goZeroLiteral(goType string) string {
+	switch goType {
+	case "string":
+		return `""`
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64":
+		return "0"
+	case "float32", "float64":
+		return "0.0"
+	case "bool":
+		return "false"
+	case "[]byte":
+		return "nil"
+	case "time.Duration":
+		return "0"
+	default:
+		// For unrecognized types, use the zero-value expression.
+		// This handles named types that are primitive aliases.
+		return `""`
 	}
 }
 

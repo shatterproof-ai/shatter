@@ -63,6 +63,11 @@ type ReceiverPlan struct {
 	// Priority is the zero-based rank within the returned plan slice.
 	// Lower values are tried first.
 	Priority int
+	// ConstructorParams holds the parameter info for parameterized
+	// constructors (str-9b1q). Non-nil only when the constructor requires
+	// arguments. The wrapper uses these to generate literal default values
+	// in the constructor call.
+	ConstructorParams []protocol.ParamInfo
 }
 
 // UsefulZeroValueTypes is the whitelist of receiver types whose zero value
@@ -185,33 +190,40 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		if len(plans) >= max {
 			break
 		}
-		// Skip constructors that take parameters: the wrapper has no way to
-		// synthesise their arguments and drops the matching switch case
-		// (str-qo1.14). Emitting a `constructor:NewFoo` plan that the
-		// wrapper cannot dispatch produces an "unknown receiver kind"
-		// runtime failure (str-qo1.9).
-		if isParameterful(c) {
+		// str-9b1q: allow parameterized constructors when all params are
+		// primitive-satisfiable. The wrapper generates literal default values
+		// for each constructor argument. Skip only when a param is not
+		// satisfiable (opaque type, interface, etc.).
+		if isParameterful(c) && !allParamsSatisfiable(c) {
 			continue
 		}
-		add(ReceiverPlan{
+		plan := ReceiverPlan{
 			Kind:         ReceiverPlanKindSamePackageConstructor,
 			ReceiverKind: WrapperReceiverKindConstructorPrefix + c.FuncName,
 			Label:        labelForConstructor(c),
-		})
+		}
+		if isParameterful(c) {
+			plan.ConstructorParams = c.Parameters
+		}
+		add(plan)
 	}
 
 	for _, c := range opts.NearbyPackageConstructors {
 		if len(plans) >= max {
 			break
 		}
-		if isParameterful(c) {
+		if isParameterful(c) && !allParamsSatisfiable(c) {
 			continue
 		}
-		add(ReceiverPlan{
+		plan := ReceiverPlan{
 			Kind:         ReceiverPlanKindNearbyPackageConstructor,
 			ReceiverKind: WrapperReceiverKindConstructorPrefix + c.FuncName,
 			Label:        labelForConstructor(c),
-		})
+		}
+		if isParameterful(c) {
+			plan.ConstructorParams = c.Parameters
+		}
+		add(plan)
 	}
 
 	if opts.ReceiverIsCompositeLiteralSafe && t.Receiver != nil && !t.Receiver.IsPointer {
@@ -291,6 +303,19 @@ func requiresConstructionDetail(r *protocol.ReceiverShape) string {
 // the wrapper switch in sync.
 func isParameterful(c protocol.ConstructorCandidate) bool {
 	return len(c.Parameters) > 0
+}
+
+// allParamsSatisfiable reports whether every parameter of c can be satisfied
+// by the primitive family classifier or the runtime-value registry (str-9b1q).
+// Used to permit parameterized constructors whose args are trivially
+// generatable (string, int, float, bool, []byte, duration, uint).
+func allParamsSatisfiable(c protocol.ConstructorCandidate) bool {
+	for _, p := range c.Parameters {
+		if !isParamSatisfiable(p) {
+			return false
+		}
+	}
+	return true
 }
 
 // fallbackZeroValueIsSafe reports whether a fallback zero-value receiver plan

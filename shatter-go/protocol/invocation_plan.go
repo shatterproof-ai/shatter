@@ -124,6 +124,12 @@ type InvocationPlan struct {
 	GenericTypeArgs []string `json:"generic_type_args,omitempty"`
 	// ArgumentPlans is one ValuePlan per parameter, in declaration order.
 	ArgumentPlans []ValuePlan `json:"argument_plans"`
+	// ConstructorArgPlans holds ValuePlans for parameterized constructor
+	// arguments (str-9b1q). When non-empty, the constructor named in
+	// ReceiverKind takes these as positional arguments. The inputs array
+	// sent to the wrapper prepends constructor arg values before method
+	// param values, so the wrapper can split them by count.
+	ConstructorArgPlans []ValuePlan `json:"constructor_arg_plans,omitempty"`
 	// Priority is the relative ordering of this plan within a plan set.
 	// Lower values are tried first.
 	Priority int `json:"priority"`

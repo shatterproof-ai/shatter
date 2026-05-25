@@ -140,10 +140,11 @@ func enumerateCandidates(
 	for _, recv := range receiverPlans {
 		partials := []composeCandidate{{
 			plan: protocol.InvocationPlan{
-				TargetID:      targetID,
-				ReceiverKind:  recv.ReceiverKind,
-				ArgumentPlans: []protocol.ValuePlan{},
-				Label:         labelForReceiver(recv, freeFunction),
+				TargetID:            targetID,
+				ReceiverKind:        recv.ReceiverKind,
+				ArgumentPlans:       []protocol.ValuePlan{},
+				ConstructorArgPlans: constructorArgPlansForReceiver(recv),
+				Label:               labelForReceiver(recv, freeFunction),
 			},
 			hintDepCount:     receiverHintDep(recv),
 			receiverPriority: recv.Priority,
@@ -235,4 +236,44 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// constructorArgPlansForReceiver generates ValuePlans for a parameterized
+// constructor's arguments (str-9b1q). Each param gets a Zero-kind plan with
+// a type hint, which the core materializes as the type's zero value.
+// Returns nil for parameterless receivers.
+func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
+	if len(recv.ConstructorParams) == 0 {
+		return nil
+	}
+	plans := make([]protocol.ValuePlan, len(recv.ConstructorParams))
+	for i, p := range recv.ConstructorParams {
+		typeHint := typeHintForParam(p)
+		plans[i] = protocol.ValuePlan{
+			Kind:       protocol.ValuePlanKindZero,
+			ParamIndex: i,
+			ParamName:  p.Name,
+			TypeHint:   typeHint,
+		}
+	}
+	return plans
+}
+
+// typeHintForParam returns the Go type hint string for a ParamInfo (str-9b1q).
+func typeHintForParam(p protocol.ParamInfo) string {
+	if p.TypeName != nil {
+		return *p.TypeName
+	}
+	switch p.Type.Kind {
+	case "str":
+		return "string"
+	case "int":
+		return "int"
+	case "float":
+		return "float64"
+	case "bool":
+		return "bool"
+	default:
+		return "string"
+	}
 }

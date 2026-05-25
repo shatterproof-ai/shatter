@@ -200,6 +200,7 @@ mod tests {
             receiver_kind: String::new(),
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7)), zero_plan(1, "b")],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -214,6 +215,7 @@ mod tests {
             receiver_kind: String::new(),
             generic_type_args: vec![],
             argument_plans: vec![zero_plan(0, "s")],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -234,6 +236,7 @@ mod tests {
                 literal: None,
                 type_hint: String::new(),
             }],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -259,6 +262,7 @@ mod tests {
                 literal: Some(json!("context.Background()")),
                 type_hint: "context.Context".into(),
             }],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -276,6 +280,7 @@ mod tests {
             receiver_kind: String::new(),
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7))],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -291,6 +296,7 @@ mod tests {
             receiver_kind: String::new(),
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(v))],
+            constructor_arg_plans: vec![],
             priority: 0,
             label: String::new(),
         };
