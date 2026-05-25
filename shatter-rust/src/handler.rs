@@ -218,13 +218,6 @@ impl PersistentHarnessManager {
                 .collect();
             for key in stale_keys {
                 if let Some(mut entry) = map.remove(&key) {
-                    // Restore the user crate before killing the harness so the
-                    // checkout is left clean even if subsequent steps panic
-                    // (str-31j.1). Drop would also restore, but explicit
-                    // ordering keeps cleanup predictable.
-                    if let Some(backup) = &entry.source_backup {
-                        backup.restore();
-                    }
                     let _ = entry.harness.child.kill();
                     let _ = entry.harness.child.wait();
                     // Preserve harness dir (stable cache).
@@ -282,11 +275,6 @@ impl PersistentHarnessManager {
                 .collect();
             for key in stale_keys {
                 if let Some(mut entry) = map.remove(&key) {
-                    // Restore source tree before killing the harness so the
-                    // user crate is clean even if kill/wait panics (str-31j.1).
-                    if let Some(backup) = &entry.source_backup {
-                        backup.restore();
-                    }
                     let _ = entry.harness.child.kill();
                     let _ = entry.harness.child.wait();
                 }
@@ -313,13 +301,10 @@ impl PersistentHarnessManager {
             // Do NOT remove harness_dir — it contains the stable compiled binary.
         }
         // Crate-bridge harnesses: kill subprocesses but preserve harness dirs (stable cache).
-        // Restore the user crate's source tree first so a clean shutdown leaves
-        // the target checkout exactly as it was before the run (str-31j.1).
+        // With the staging-copy approach (str-ja70), original source is never modified,
+        // so no restore is needed — just tear down the subprocess.
         let mut bridge_map = self.bridge_cache.lock().unwrap();
         for (_, mut entry) in bridge_map.drain() {
-            if let Some(backup) = &entry.source_backup {
-                backup.restore();
-            }
             let _ = entry.harness.child.kill();
             let _ = entry.harness.child.wait();
             // Do NOT remove harness_dir — it contains the stable compiled binary.

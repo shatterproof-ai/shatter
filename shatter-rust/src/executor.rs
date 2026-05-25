@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -303,7 +304,6 @@ impl CrateBridgeHarnessEntry {
         Self {
             harness,
             compatible_functions: HashSet::new(),
-            source_backup: None,
         }
     }
 }
@@ -313,28 +313,20 @@ pub struct CrateBridgeHarnessEntry {
     pub harness: PersistentHarness,
     /// Names of the functions exposed in the wrapper (dispatch table).
     compatible_functions: HashSet<String>,
-    /// Restores the user crate to its pre-injection state when the entry is
-    /// dropped (cache eviction, prune, shutdown, teardown). Always `Some` for
-    /// entries produced by `execute_function_crate_bridge`; `None` for test
-    /// fixtures via `new_test`. See str-31j.1.
-    pub source_backup: Option<BridgeSourceBackup>,
 }
 
-/// Snapshot of files in a user crate that `execute_function_crate_bridge`
-/// is about to modify (str-31j.1). Restoring the snapshot returns the
-/// user crate to its pre-injection state byte-for-byte: previously
-/// existing files are rewritten with their original contents; files that
-/// did not exist (e.g. the freshly created `src/__shatter.rs`) are deleted.
+/// Snapshot of files for test-only backup/restore assertions.
 ///
-/// `restore()` is idempotent; `Drop` calls it as a safety net so panics
-/// and unwinds also leave the checkout clean. Restore errors are swallowed
-/// because the caller is usually already on a failure path and there is
-/// nothing useful to do with a write error during cleanup.
+/// Previously used by `execute_function_crate_bridge` to restore user source
+/// after in-place mutation (str-31j.1). Superseded by the staging-copy
+/// approach (str-ja70) which never modifies original files.
+#[cfg(test)]
 pub struct BridgeSourceBackup {
     entries: Vec<(PathBuf, Option<Vec<u8>>)>,
     restored: AtomicBool,
 }
 
+#[cfg(test)]
 impl BridgeSourceBackup {
     /// Snapshot the contents (or non-existence) of each path. Returns an
     /// error only if a path exists but cannot be read — in that case the
@@ -380,6 +372,7 @@ impl BridgeSourceBackup {
     }
 }
 
+#[cfg(test)]
 impl Drop for BridgeSourceBackup {
     fn drop(&mut self) {
         // Drop must never panic; restore() already swallows write errors.
@@ -2017,6 +2010,125 @@ fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> Pat
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-crate-bridge-{key:016x}")))
 }
 
+/// Create an isolated staging copy of a user crate for crate_bridge compilation.
+///
+/// Copies the source tree, `Cargo.toml`, `build.rs`, and `.cargo/` to
+/// `staging_root` so the crate_bridge driver can compile the staging copy
+/// without ever touching the original files (str-ja70).
+///
+/// Returns the staging crate root path.
+fn create_crate_staging_copy(
+    crate_root: &Path,
+    staging_root: &Path,
+) -> io::Result<PathBuf> {
+    let staging_crate = staging_root.join("crate-shadow");
+    // Copy src/ tree recursively.
+    let src_dir = crate_root.join("src");
+    if src_dir.is_dir() {
+        copy_dir_recursive(&src_dir, &staging_crate.join("src"))?;
+    }
+    // Copy Cargo.toml with relative paths resolved to absolute.
+    let cargo_toml_path = crate_root.join("Cargo.toml");
+    if cargo_toml_path.exists() {
+        let content = std::fs::read_to_string(&cargo_toml_path)?;
+        let resolved = resolve_cargo_toml_paths(&content, crate_root);
+        std::fs::create_dir_all(&staging_crate)?;
+        std::fs::write(staging_crate.join("Cargo.toml"), resolved)?;
+    }
+    // Copy build.rs if it exists.
+    let build_rs = crate_root.join("build.rs");
+    if build_rs.exists() {
+        std::fs::copy(&build_rs, staging_crate.join("build.rs"))?;
+    }
+    // Copy .cargo/ config if it exists.
+    let dot_cargo = crate_root.join(".cargo");
+    if dot_cargo.is_dir() {
+        copy_dir_recursive(&dot_cargo, &staging_crate.join(".cargo"))?;
+    }
+    Ok(staging_crate)
+}
+
+/// Recursively copy a directory tree.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve relative `path = "..."` entries in a Cargo.toml to absolute paths
+/// based on `crate_root`, and inject `[workspace]` to prevent workspace
+/// auto-discovery from the staging location.
+fn resolve_cargo_toml_paths(content: &str, crate_root: &Path) -> String {
+    let mut result = String::with_capacity(content.len() + 256);
+    let mut has_workspace = false;
+    // Track whether we are inside a dependency section where `path = "..."`
+    // refers to a local crate dependency (should be absolutised) vs a
+    // non-dep section like `[lib]` or `[[bin]]` where `path` is a file
+    // relative to the crate root (should stay relative so the staging copy
+    // resolves its own copy).
+    let mut in_dep_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[workspace]" || trimmed.starts_with("[workspace]") {
+            has_workspace = true;
+        }
+        // Detect section headers.
+        if trimmed.starts_with('[') {
+            in_dep_section = trimmed.contains("dependencies");
+        }
+        // Resolve relative path deps: `path = "..."` or `path = '...'`
+        // Only inside [dependencies], [dev-dependencies], [build-dependencies],
+        // or inline dep tables — NOT in [lib], [[bin]], etc.
+        if in_dep_section
+            && let Some(idx) = trimmed.find("path") {
+                let after_path = trimmed[idx + 4..].trim();
+                if let Some(rest) = after_path.strip_prefix('=') {
+                    let rest = rest.trim();
+                    let (quote, path_val) = if let Some(s) = rest.strip_prefix('"') {
+                        ('"', s.split('"').next().unwrap_or(""))
+                    } else if let Some(s) = rest.strip_prefix('\'') {
+                        ('\'', s.split('\'').next().unwrap_or(""))
+                    } else {
+                        // Not a quoted path, pass through.
+                        result.push_str(line);
+                        result.push('\n');
+                        continue;
+                    };
+                    let dep_path = Path::new(path_val);
+                    if dep_path.is_relative() && !path_val.is_empty() {
+                        let abs = crate_root.join(dep_path);
+                        let abs_str = abs.display().to_string().replace('\\', "/");
+                        let new_line = line.replacen(
+                            &format!("{quote}{path_val}{quote}"),
+                            &format!("{quote}{abs_str}{quote}"),
+                            1,
+                        );
+                        result.push_str(&new_line);
+                        result.push('\n');
+                        continue;
+                    }
+                }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    // Add [workspace] if not present, to isolate the staging copy from
+    // any workspace root above the original crate.
+    if !has_workspace {
+        result.push_str("\n[workspace]\n");
+    }
+    result
+}
+
 /// Locate the `lib.rs` entry point for a crate.
 ///
 /// Checks `[lib] path` in Cargo.toml first, falls back to `src/lib.rs`.
@@ -2330,7 +2442,7 @@ fn strip_shatter_wrapper(source: &str) -> String {
     let mut rest = source;
     while let Some(b) = rest.find(SHATTER_WRAPPER_BEGIN) {
         out.push_str(
-            rest[..b].trim_end_matches(|c: char| c == '\n' || c == '\r' || c == ' ' || c == '\t'),
+            rest[..b].trim_end_matches(['\n', '\r', ' ', '\t']),
         );
         let after_begin = b + SHATTER_WRAPPER_BEGIN.len();
         if let Some(e_rel) = rest[after_begin..].find(SHATTER_WRAPPER_END) {
@@ -2712,7 +2824,8 @@ fn execute_function_crate_bridge(
         }
     }
 
-    // Slow path: inject wrapper into user crate and build driver binary.
+    // Slow path: build driver binary against an isolated staging copy of the
+    // user crate. The original source files are never modified (str-ja70).
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
@@ -2720,93 +2833,67 @@ fn execute_function_crate_bridge(
     let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let runtime_path = find_runtime_crate_path()?;
 
-    // Resolve lib.rs and the to-be-created `__shatter.rs` path BEFORE the first
-    // write so we fail-fast on non-library crates without dirtying anything
-    // (str-31j.1).
-    let lib_rs = find_lib_rs(crate_root).ok_or_else(|| ExecuteError::NonExecutable(
+    // Verify the user crate is a library before doing any I/O.
+    let _lib_rs = find_lib_rs(crate_root).ok_or_else(|| ExecuteError::NonExecutable(
         "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
-    ))?;
-    let shatter_module_path = crate_root.join("src").join("__shatter.rs");
-
-    // Snapshot the four files we are about to touch BEFORE any mutation so we
-    // can restore on every failure path (timeout, build error, broken pipe,
-    // panic) and again on cache eviction after a successful run (str-31j.1).
-    let backup = BridgeSourceBackup::snapshot(&[
-        PathBuf::from(file_path),
-        user_cargo_toml_path.clone(),
-        lib_rs.clone(),
-        shatter_module_path.clone(),
-    ]).map_err(|e| ExecuteError::IoError(
-        io::Error::other(format!("cannot snapshot user crate before crate_bridge injection: {e}"))
     ))?;
 
     let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
+    std::fs::create_dir_all(&harness_dir)?;
 
-    // Shadow `timing` as mutable so we can `take()` it inside the IIFE below
-    // (the pattern `if let Some(t) = timing` would otherwise require moving
-    // the binding into the closure).
+    // Create an isolated staging copy of the user crate. All mutations
+    // (instrumented source, wrapper module, Cargo.toml feature injection)
+    // happen inside this copy, leaving the original tree untouched (str-ja70).
+    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir)
+        .map_err(|e| ExecuteError::IoError(
+            io::Error::other(format!("cannot create staging copy: {e}"))
+        ))?;
+
+    // Map `file_path` from original crate to staging copy.
+    let rel_file = Path::new(file_path).strip_prefix(crate_root)
+        .unwrap_or(Path::new(file_path));
+    let staging_file = staging_crate.join(rel_file);
+    let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| ExecuteError::NonExecutable(
+        "crate_bridge: cannot find lib.rs in staging copy".to_string(),
+    ))?;
+    let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
+    let staging_cargo_toml = staging_crate.join("Cargo.toml");
+
+    // Write the instrumented source + in-module wrapper to the staging copy.
+    let mut target_contents = instr_result.source.clone();
+    if !target_contents.ends_with('\n') {
+        target_contents.push('\n');
+    }
+    target_contents.push_str(&in_module_wrapper);
+    std::fs::write(&staging_file, &target_contents)
+        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source to staging: {e}"))))?;
+
+    // Write the FFI stub at staging crate root.
+    std::fs::write(&staging_shatter_mod, &root_stub)
+        .map_err(ExecuteError::IoError)?;
+
+    // Inject mod declaration into staging lib.rs (idempotent).
+    inject_lib_module_declaration(&staging_lib_rs)?;
+
+    // Inject feature + deps into staging Cargo.toml (idempotent).
+    inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
+
+    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
+    let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
+    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, &staging_crate, needs_tokio);
+
+    // Shadow `timing` as mutable so we can `take()` it inside the branch.
     let mut timing = timing;
 
-    // Run the mutating slow path. Any `Err` from this block triggers
-    // `backup.restore()` before returning, so the user crate ends up exactly
-    // as we found it (str-31j.1).
-    let slow_path_result: Result<(ExecuteResult, PersistentHarness), ExecuteError> = (|| {
-        // Write the instrumented source back to the original file with the in-module
-        // wrapper appended. The wrapper is bracketed by markers and gets stripped on
-        // the next invocation (str-31j.3).
-        let mut target_contents = instr_result.source.clone();
-        if !target_contents.ends_with('\n') {
-            target_contents.push('\n');
-        }
-        target_contents.push_str(&in_module_wrapper);
-        std::fs::write(file_path, &target_contents)
-            .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source: {e}"))))?;
-
-        // Write the FFI stub at crate root: `__shatter.rs` re-exports the entry symbol
-        // the in-module wrapper defines, so the driver binary's call path is unchanged.
-        std::fs::write(&shatter_module_path, &root_stub)
-            .map_err(ExecuteError::IoError)?;
-
-        // Inject mod declaration into lib.rs (idempotent).
-        inject_lib_module_declaration(&lib_rs)?;
-
-        // Inject feature + optional serde_json + shatter-rust-runtime into user Cargo.toml (idempotent).
-        inject_crate_bridge_feature(&user_cargo_toml_path, &runtime_path)?;
-
-        let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
-        let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
-        let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, crate_root, needs_tokio);
-
-        std::fs::create_dir_all(&harness_dir)?;
-
-        let mut harness = if let Some(t) = timing.take() {
-            t.record("execute.build", |t| {
-                build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(t))
-            })?
-        } else {
-            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
-        };
-
-        let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
-        Ok((result, harness))
-    })();
-
-    let (result, harness) = match slow_path_result {
-        Ok(v) => v,
-        Err(e) => {
-            backup.restore();
-            return Err(e);
-        }
+    let mut harness = if let Some(t) = timing.take() {
+        t.record("execute.build", |t| {
+            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(t))
+        })?
+    } else {
+        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
     };
 
-    // The crate-bridge slow path mutates user source so cargo can compile the
-    // injected wrapper. Once the harness binary is built and spawned, the
-    // mutations are no longer load-bearing — execute calls drive the running
-    // subprocess via stdin, and the binary doesn't relink. Restore the user
-    // tree immediately so a successful explore run leaves no tracked-file
-    // edits behind (str-i02v). The cached entry no longer needs to carry the
-    // backup because there is nothing left to undo at eviction time.
-    backup.restore();
+    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
 
     let timed_out = result.thrown_error.as_ref()
         .and_then(|e| e.get("error_type"))
@@ -2817,11 +2904,8 @@ fn execute_function_crate_bridge(
         bridge_cache.lock().unwrap().insert(key, CrateBridgeHarnessEntry {
             harness,
             compatible_functions: compatible_set,
-            source_backup: None,
         });
     } else {
-        // Timeout: tear down the harness build dir — the source tree is
-        // already restored above.
         let _ = std::fs::remove_dir_all(&harness_dir);
     }
 
@@ -5740,13 +5824,12 @@ fn enabled(config: Config) -> bool {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// str-31j.1 regression: drive `execute_function_crate_bridge` against a
-    /// fixture crate whose source will be modified (Cargo.toml feature
-    /// injection, src/app.rs replacement, lib.rs mod insertion, src/__shatter.rs
-    /// creation). Force a failure on the slow path by setting a tiny timeout so
-    /// the harness build / dispatch cannot complete, and assert every touched
-    /// file is byte-for-byte identical to the pre-call state and that
-    /// `src/__shatter.rs` is gone.
+    /// str-31j.1 / str-ja70 regression: drive `execute_function_crate_bridge`
+    /// against a fixture crate. Force a failure on the slow path by setting a
+    /// tiny timeout so the harness build cannot complete. With the staging-copy
+    /// approach (str-ja70), original files are never modified — assert every
+    /// source file is byte-for-byte identical to its pre-call state and that
+    /// no `src/__shatter.rs` was created in the original tree.
     #[test]
     fn crate_bridge_failure_path_leaves_target_clean() {
         let dir = unique_tmp_dir("regression-cleanup");
@@ -5766,7 +5849,8 @@ fn enabled(config: Config) -> bool {
 
         // Force a failure: 1ms timeout cannot complete a real cargo build, so
         // either build_and_spawn_crate_bridge_harness errors out or the dispatch
-        // result is a timeout. Either branch must restore the source tree.
+        // result is a timeout. With the staging-copy approach, original files are
+        // never modified regardless of which branch is taken.
         let result = execute_function_with_timing(
             app_path.to_str().unwrap(),
             "classify",
@@ -5781,9 +5865,7 @@ fn enabled(config: Config) -> bool {
         );
         drop(result);
 
-        // bridge_cache holds the backup on the happy path. Drop the cache so the
-        // backup's Drop impl runs even on the success-with-timeout branch where
-        // the cache might have already been cleared.
+        // Drop the cache to release any held resources (harness dir, subprocess).
         drop(bridge_cache);
 
         assert_eq!(
@@ -5807,5 +5889,128 @@ fn enabled(config: Config) -> bool {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // str-ja70: staging-copy unit tests — verify the staging copy machinery
+    // works correctly and never modifies originals.
+
+    #[test]
+    fn staging_copy_preserves_original_files() {
+        let dir = unique_tmp_dir("staging-immutability");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let cargo_toml = "[package]\nname = \"fixture-ja70\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n";
+        let lib_rs = "pub mod app;\n";
+        let app_rs = "pub fn add(a: i32, b: i32) -> i32 { a + b }\n";
+        std::fs::write(dir.join("Cargo.toml"), cargo_toml).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), lib_rs).unwrap();
+        std::fs::write(dir.join("src/app.rs"), app_rs).unwrap();
+
+        // Snapshot originals before staging.
+        let orig_cargo = std::fs::read(dir.join("Cargo.toml")).unwrap();
+        let orig_lib = std::fs::read(dir.join("src/lib.rs")).unwrap();
+        let orig_app = std::fs::read(dir.join("src/app.rs")).unwrap();
+
+        let staging_root = unique_tmp_dir("staging-dest");
+        let staging_crate = create_crate_staging_copy(&dir, &staging_root).unwrap();
+
+        // Staging copy must exist with the expected structure.
+        assert!(staging_crate.join("src/lib.rs").exists(), "staging must have src/lib.rs");
+        assert!(staging_crate.join("src/app.rs").exists(), "staging must have src/app.rs");
+        assert!(staging_crate.join("Cargo.toml").exists(), "staging must have Cargo.toml");
+
+        // Mutate the staging copy to simulate instrumentation.
+        std::fs::write(staging_crate.join("src/app.rs"), "// mutated by shatter\n").unwrap();
+        std::fs::write(staging_crate.join("src/__shatter.rs"), "// stub\n").unwrap();
+
+        // Original files must be byte-for-byte unchanged.
+        assert_eq!(
+            std::fs::read(dir.join("Cargo.toml")).unwrap(), orig_cargo,
+            "Cargo.toml must be byte-for-byte unchanged after staging copy + mutation",
+        );
+        assert_eq!(
+            std::fs::read(dir.join("src/lib.rs")).unwrap(), orig_lib,
+            "lib.rs must be byte-for-byte unchanged after staging copy + mutation",
+        );
+        assert_eq!(
+            std::fs::read(dir.join("src/app.rs")).unwrap(), orig_app,
+            "src/app.rs must be byte-for-byte unchanged after staging copy + mutation",
+        );
+        assert!(
+            !dir.join("src/__shatter.rs").exists(),
+            "src/__shatter.rs must not appear in original tree",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn resolve_cargo_toml_paths_makes_relative_absolute() {
+        let crate_root = Path::new("/home/user/project/my-crate");
+        let input = r#"[package]
+name = "my-crate"
+version = "0.1.0"
+
+[dependencies]
+runtime = { path = "../runtime" }
+other = { path = '/abs/path' }
+"#;
+        let result = resolve_cargo_toml_paths(input, crate_root);
+        // Relative path must become absolute.
+        assert!(
+            result.contains("/home/user/project/my-crate/../runtime"),
+            "relative dep path must be resolved to absolute: {result}",
+        );
+        // Non-relative paths remain unchanged.
+        assert!(
+            result.contains("/abs/path"),
+            "absolute path must be preserved: {result}",
+        );
+        // [workspace] injected for isolation.
+        assert!(
+            result.contains("[workspace]"),
+            "must inject [workspace] for isolation: {result}",
+        );
+    }
+
+    #[test]
+    fn resolve_cargo_toml_paths_preserves_existing_workspace() {
+        let crate_root = Path::new("/tmp/crate");
+        let input = "[workspace]\nmembers = []\n\n[package]\nname = \"ws\"\n";
+        let result = resolve_cargo_toml_paths(input, crate_root);
+        // Must not double-inject [workspace].
+        assert_eq!(
+            result.matches("[workspace]").count(), 1,
+            "must not duplicate [workspace]: {result}",
+        );
+    }
+
+    /// str-ja70: [lib] path must not be absolutised — it is a source file path
+    /// relative to the staging crate root, not a crate dependency.
+    #[test]
+    fn resolve_cargo_toml_paths_does_not_absolutise_lib_path() {
+        let crate_root = Path::new("/home/user/project/my-crate");
+        let input = r#"[package]
+name = "my-crate"
+version = "0.1.0"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+runtime = { path = "../runtime" }
+"#;
+        let result = resolve_cargo_toml_paths(input, crate_root);
+        // [lib] path must remain relative so the staging copy uses its own file.
+        assert!(
+            result.contains(r#"path = "src/lib.rs""#),
+            "[lib] path must not be absolutised in staging copy: {result}",
+        );
+        // Dep path must be absolutised.
+        assert!(
+            result.contains("/home/user/project/my-crate/../runtime"),
+            "dep path must be absolutised: {result}",
+        );
     }
 }
