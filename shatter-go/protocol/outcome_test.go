@@ -181,6 +181,42 @@ func present() {}
 	if resp.Outcome.ShortReason == nil || strings.TrimSpace(*resp.Outcome.ShortReason) == "" {
 		t.Errorf("unsupported outcome must carry non-empty short_reason, got %v", resp.Outcome.ShortReason)
 	}
+	// str-adfp: Performance must be present so the core can deserialize the response.
+	if resp.Performance == nil {
+		t.Fatalf("performance field must be present on unsupported responses")
+	}
+}
+
+// TestNonCompletedOutcomeWireIncludesPerformance is the str-adfp wire-level
+// regression: serialized execute responses for unsupported/skipped_by_policy
+// MUST include a "performance" key, because the Rust core's ExecuteResponse
+// deserializer requires it (no serde(default) on that field).
+func TestNonCompletedOutcomeWireIncludesPerformance(t *testing.T) {
+	// Use a function absent from the file to trigger the unsupported path.
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+func present() {}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"absent","inputs":[]`, tmp))
+
+	input := strings.NewReader(req + "\n")
+	var output bytes.Buffer
+	handler := NewHandler(input, &output, io.Discard)
+	if err := handler.Run(); err != nil {
+		t.Fatalf("handler.Run: %v", err)
+	}
+	raw := strings.TrimSpace(output.String())
+	lines := strings.Split(raw, "\n")
+	if len(lines) == 0 {
+		t.Fatal("no response")
+	}
+	if !strings.Contains(lines[0], `"performance"`) {
+		t.Fatalf("str-adfp regression: wire response missing \"performance\" key\nraw: %s", lines[0])
+	}
 }
 
 // TestExecuteMethodTargetWithPlanCompletes verifies the H5 (str-hy9b.H5)
