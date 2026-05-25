@@ -4822,18 +4822,22 @@ pub(crate) async fn run_explore(
             }
 
             // Check for unexecutable parameter types (opaque types like net.Socket).
-            let skip_reasons = executability::check_executability(&func.params, &[]);
-            if !skip_reasons.is_empty() {
-                log::debug!("Skipping {} (unexecutable parameter types)", func.name);
-                // str-jeen.18: capture the function span so the discovered
-                // span-line denominator includes pre-skipped functions, not
-                // just attempted ones.
-                let span_lines = func
-                    .end_line
-                    .saturating_sub(func.start_line)
-                    .saturating_add(1);
-                skipped_unexecutable.push((func.name.clone(), span_lines, skip_reasons));
-                continue;
+            // str-n10u: adapter-owned functions bypass this — the adapter provides
+            // synthetic params that are always executable.
+            if matches!(func.invocation_model, shatter_core::protocol::InvocationModel::Direct) {
+                let skip_reasons = executability::check_executability(&func.params, &[]);
+                if !skip_reasons.is_empty() {
+                    log::debug!("Skipping {} (unexecutable parameter types)", func.name);
+                    // str-jeen.18: capture the function span so the discovered
+                    // span-line denominator includes pre-skipped functions, not
+                    // just attempted ones.
+                    let span_lines = func
+                        .end_line
+                        .saturating_sub(func.start_line)
+                        .saturating_add(1);
+                    skipped_unexecutable.push((func.name.clone(), span_lines, skip_reasons));
+                    continue;
+                }
             }
 
             // Generate mocks: passthrough in record mode, auto-mocks otherwise.

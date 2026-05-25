@@ -27,7 +27,25 @@ func WriteResponse(w http.ResponseWriter) {
 	fmt.Fprintf(w, "partial")
 }
 
+// handlePrivate is a private exact net/http handler — should get adapter
+// recognition just like an exported handler (str-n10u).
+func handlePrivate(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "private handler: %s", r.URL.Path)
+}
+
+// writePartial is a private partial helper — only ResponseWriter, not an
+// exact handler signature (str-n10u). Should be skipped with a clear reason.
+func writePartial(w http.ResponseWriter) {
+	fmt.Fprintf(w, "partial private")
+}
+
 // HelperFunc is not a handler.
 func HelperFunc(s string) int {
 	return len(s)
+}
+
+// init references private functions to prevent the linter from removing them.
+func init() {
+	_ = handlePrivate
+	_ = writePartial
 }
