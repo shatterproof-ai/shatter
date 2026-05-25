@@ -3752,7 +3752,7 @@ pub async fn parallel_scan_with_progress(
                 project_root: config.project_root.clone(),
                 // str-0x82: derive execution profile from invocation model
                 // (parallel path — mirrors serial path).
-                execution_profile: execution_profile_from_analysis(&analysis),
+                execution_profile: execution_profile_from_analysis(analysis),
                 loop_buckets: explorer::LoopBuckets::default(),
                 timeout_explore: config.timeout_explore,
                 meta_config: crate::strategy::MetaConfig::default(),
