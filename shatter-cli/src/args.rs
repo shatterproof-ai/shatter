@@ -657,7 +657,7 @@ pub(crate) struct ScanArgs {
     #[arg(required = true)]
     pub(crate) directory: String,
 
-    /// Language to scan: typescript, go. Auto-detected from file extensions if omitted.
+    /// Language to scan: typescript, go, rust. Auto-detected from file extensions if omitted.
     #[arg(long)]
     pub(crate) language: Option<String>,
 
