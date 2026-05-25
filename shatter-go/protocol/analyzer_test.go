@@ -213,8 +213,10 @@ func TestAnalyzeFormatValueAcceptsInterface(t *testing.T) {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	if fn.Params[0].Type.Kind != "unknown" {
-		t.Errorf("interface param type = %q, want unknown", fn.Params[0].Type.Kind)
+	// str-23mc: non-synthesizable interface params are opaque so the core
+	// does not send raw JSON scalars the wrapper can't unmarshal.
+	if fn.Params[0].Type.Kind != "opaque" {
+		t.Errorf("interface param type = %q, want opaque", fn.Params[0].Type.Kind)
 	}
 }
 
@@ -224,8 +226,10 @@ func TestAnalyzeFormatAnyAcceptsEmptyInterface(t *testing.T) {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	if fn.Params[0].Type.Kind != "unknown" {
-		t.Errorf("interface{} param type = %q, want unknown", fn.Params[0].Type.Kind)
+	// str-23mc: even the empty interface (interface{}/any) is opaque —
+	// the core cannot construct a meaningful concrete value for it.
+	if fn.Params[0].Type.Kind != "opaque" {
+		t.Errorf("interface{} param type = %q, want opaque", fn.Params[0].Type.Kind)
 	}
 }
 
@@ -1048,14 +1052,15 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 	}
 }
 
-func TestAnalyzePlainInterfaceStillReturnsUnknown(t *testing.T) {
+func TestAnalyzePlainInterfaceReturnsOpaque(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsPlainInterface")
 	if err != nil {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	if fn.Params[0].Type.Kind != "unknown" {
-		t.Errorf("plain interface type = %q, want unknown", fn.Params[0].Type.Kind)
+	// str-23mc: plain (non-synthesizable) interfaces are opaque.
+	if fn.Params[0].Type.Kind != "opaque" {
+		t.Errorf("plain interface type = %q, want opaque", fn.Params[0].Type.Kind)
 	}
 }
 
@@ -1712,7 +1717,7 @@ func TestStructTypeInfoFieldsNeverNull(t *testing.T) {
 // TestAnalyzeFile_MultiFileServiceFixture verifies that the persistent
 // examples/go/multi-file-service fixture loads correctly through the
 // packages-based analyzer. NewGreeter's return type is declared in iface.go;
-// it resolves to kind:"unknown" (interface), confirming sibling type info was
+// it resolves to kind:"opaque" (interface), confirming sibling type info was
 // available.
 func TestAnalyzeFile_MultiFileServiceFixture(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
@@ -1785,7 +1790,7 @@ func funcNames(results []FunctionAnalysis) []string {
 // acceptance criterion: a file in a multi-file package sees sibling type
 // declarations through the packages-based loader. Under the old single-file
 // typechecker, the return type of NewService (defined in service.go) would
-// be "unknown" because the Service interface lived in iface.go.
+// be "opaque" because the Service interface lived in iface.go.
 func TestAnalyzeFile_MultiFilePackage_ResolvesSiblingTypes(t *testing.T) {
 	moduleRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"),
@@ -1834,7 +1839,7 @@ func NewService(name string) Service {
 		t.Errorf("NewService param = %+v, want single str param", fa.Params)
 	}
 	// The return type is the Service interface declared in iface.go. The
-	// analyzer resolves interfaces to kind:"unknown", which is expected.
+	// analyzer resolves interfaces to kind:"opaque", which is expected.
 	// The key property is that analysis completes without error and the
 	// interface method set was resolvable — which is only possible when
 	// sibling files contribute type info.
