@@ -232,6 +232,10 @@ func TestExecute_DefaultPolicy_SkipsDatabaseTarget(t *testing.T) {
 	if resp.Outcome.ShortReason == nil || !strings.Contains(*resp.Outcome.ShortReason, "sql.DB") {
 		t.Errorf("reason should mention sql.DB component, got: %v", resp.Outcome.ShortReason)
 	}
+	// str-adfp: Performance must be present so the core can deserialize the response.
+	if resp.Performance == nil {
+		t.Fatalf("performance field must be present on skipped_by_policy responses")
+	}
 }
 
 // TestExecute_PolicyAllowOverride_RunsDatabaseTarget is the second

@@ -836,6 +836,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 				Status:      OutcomeStatusSkippedByPolicy,
 				ShortReason: &reason,
 			}
+			resp.Performance = &PerfMetrics{}
 			return finalizeResponse(resp, timing)
 		}
 	}
@@ -944,6 +945,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 					Message:   reason,
 				},
 			}
+			resp.Performance = &PerfMetrics{}
 			return finalizeResponse(resp, timing)
 		}
 		requestReceiverKind = synthKind
@@ -1005,6 +1007,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		}
 		resp.Message = err.Error()
 		resp.Outcome = failureOutcome(err)
+		resp.Performance = &PerfMetrics{}
 		return resp
 	}
 
