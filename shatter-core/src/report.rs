@@ -80,6 +80,76 @@ impl ScanOutcomeCounts {
     }
 }
 
+/// Derive a language label from a file path extension (str-4mmd).
+fn language_from_path(file_path: &str) -> Option<String> {
+    let ext = file_path.rsplit('.').next()?;
+    match ext {
+        "ts" | "tsx" => Some("typescript".into()),
+        "go" => Some("go".into()),
+        "rs" => Some("rust".into()),
+        _ => None,
+    }
+}
+
+/// Classify a failure reason string into `(error_type, error_message,
+/// failed_at)` (str-4mmd). The reason strings produced by
+/// `scan_orchestrator` follow a small number of patterns:
+///
+/// - `"timed out after Ns"` / `"timed out (total scan budget exceeded)"`
+/// - `"error: exploration error: frontend error: <msg>"`
+/// - `"error: exploration error: <msg>"`
+/// - `"error: <msg>"`
+/// - `"no analysis found"`
+/// - plain strings from the orchestrator
+fn classify_failure_reason(reason: &str) -> (String, String, String) {
+    if reason.starts_with("timed out") {
+        return (
+            "timeout".into(),
+            reason.into(),
+            "exploration".into(),
+        );
+    }
+
+    if let Some(rest) = reason.strip_prefix("error: exploration error: frontend error: ") {
+        return (
+            "frontend_error".into(),
+            rest.into(),
+            "frontend".into(),
+        );
+    }
+
+    if let Some(rest) = reason.strip_prefix("error: exploration error: ") {
+        return (
+            "exploration_error".into(),
+            rest.into(),
+            "exploration".into(),
+        );
+    }
+
+    if let Some(rest) = reason.strip_prefix("error: ") {
+        return (
+            "exploration_error".into(),
+            rest.into(),
+            "exploration".into(),
+        );
+    }
+
+    if reason == "no analysis found" {
+        return (
+            "build_error".into(),
+            reason.into(),
+            "analysis".into(),
+        );
+    }
+
+    // Fallback for unrecognized patterns.
+    (
+        "unknown".into(),
+        reason.into(),
+        "scan".into(),
+    )
+}
+
 /// Partition a flat skipped-function list into the structured `failed`
 /// array (entries with `SkipCategory::Error`) and the remaining
 /// `skipped_functions` entries (Expected + Unsupported). See str-jeen.46
@@ -112,12 +182,20 @@ fn split_skipped_into_failed(
             .unwrap_or_default();
         match s.category {
             SkipCategory::Error => {
+                let language = language_from_path(&file_path);
+                let (error_type, error_message, failed_at) =
+                    classify_failure_reason(&s.reason);
                 failed_out.push(FailedFunctionReport {
                     function_name: display_name.to_string(),
                     display_name: display_name.to_string(),
                     qualified_id: s.function_name.clone(),
                     file_path,
                     reason: s.reason.clone(),
+                    language,
+                    status: Some("failed".into()),
+                    error_type: Some(error_type),
+                    error_message: Some(error_message),
+                    failed_at: Some(failed_at),
                 });
             }
             SkipCategory::Expected => {
@@ -655,6 +733,29 @@ pub struct FailedFunctionReport {
     pub file_path: String,
     /// Human-readable failure reason as reported by the orchestrator.
     pub reason: String,
+    /// Language of the source file, derived from file extension
+    /// (str-4mmd). `None` when the file path is unknown or the
+    /// extension doesn't map to a supported frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Outcome status: always `"failed"` for entries in this array
+    /// (str-4mmd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Classified error type extracted from the failure reason
+    /// (str-4mmd). One of `"timeout"`, `"exploration_error"`,
+    /// `"frontend_error"`, `"build_error"`, or `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    /// Human-readable error message extracted from the failure reason
+    /// (str-4mmd). Strips classification prefixes so downstream
+    /// consumers get a clean message without parsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    /// Pipeline stage where the failure occurred (str-4mmd). One of
+    /// `"exploration"`, `"frontend"`, `"analysis"`, or `"scan"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3968,6 +4069,152 @@ mod tests {
         assert!(!json.contains("mock_coverage_pct"));
         assert!(!json.contains("mock_execution_count"));
     }
+
+    // -----------------------------------------------------------------
+    // str-4mmd: failed function entries carry error metadata
+    // -----------------------------------------------------------------
+
+    /// str-4mmd regression: every failed function entry in scan JSON
+    /// must have non-null `language`, `status`, `error_type`,
+    /// `error_message`, and `failed_at`. Covers the three main failure
+    /// patterns: timeout, frontend error chain, and unknown reason.
+    #[test]
+    fn failed_function_report_carries_error_metadata() {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result(
+                "src/lib.rs::healthy",
+                5,
+                1,
+                3,
+                5,
+                vec![],
+            )],
+            test_order: vec!["src/lib.rs::healthy".into()],
+            skipped: vec![
+                // Timeout
+                SkippedFunction {
+                    function_name: "src/catalog.rs::pickpackit_catalog".to_string(),
+                    reason: "timed out after 20s".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Error,
+                },
+                // Frontend error chain
+                SkippedFunction {
+                    function_name: "src/server.rs::run_devserver".to_string(),
+                    reason: "error: exploration error: frontend error: request timed out after 20s"
+                        .into(),
+                    category: crate::scan_orchestrator::SkipCategory::Error,
+                },
+                // Exploration error
+                SkippedFunction {
+                    function_name: "src/handler.go::Handle".to_string(),
+                    reason: "error: exploration error: solver returned UNSAT".into(),
+                    category: crate::scan_orchestrator::SkipCategory::Error,
+                },
+            ],
+            workers_used: 2,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            "src/lib.rs::healthy".to_string(),
+            "src/lib.rs".to_string(),
+        );
+        file_map.insert(
+            "src/catalog.rs::pickpackit_catalog".to_string(),
+            "src/catalog.rs".to_string(),
+        );
+        file_map.insert(
+            "src/server.rs::run_devserver".to_string(),
+            "src/server.rs".to_string(),
+        );
+        file_map.insert(
+            "src/handler.go::Handle".to_string(),
+            "src/handler.go".to_string(),
+        );
+
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        // Completed function is unaffected.
+        assert_eq!(report.functions.len(), 1);
+        assert_eq!(report.codebase.completed_functions, 1);
+        assert_eq!(report.codebase.failed_functions, 3);
+        assert_eq!(report.codebase.failed.len(), 3);
+
+        // Every failed entry must have non-None metadata.
+        for f in &report.codebase.failed {
+            assert!(
+                f.language.is_some(),
+                "language must be non-null for {}: got {:?}",
+                f.function_name,
+                f.language,
+            );
+            assert_eq!(
+                f.status.as_deref(),
+                Some("failed"),
+                "status must be \"failed\" for {}",
+                f.function_name,
+            );
+            assert!(
+                f.error_type.is_some(),
+                "error_type must be non-null for {}",
+                f.function_name,
+            );
+            assert!(
+                f.error_message.is_some(),
+                "error_message must be non-null for {}",
+                f.function_name,
+            );
+            assert!(
+                f.failed_at.is_some(),
+                "failed_at must be non-null for {}",
+                f.function_name,
+            );
+        }
+
+        // Timeout entry.
+        let timeout = &report.codebase.failed[0];
+        assert_eq!(timeout.function_name, "pickpackit_catalog");
+        assert_eq!(timeout.language.as_deref(), Some("rust"));
+        assert_eq!(timeout.error_type.as_deref(), Some("timeout"));
+        assert_eq!(timeout.error_message.as_deref(), Some("timed out after 20s"));
+        assert_eq!(timeout.failed_at.as_deref(), Some("exploration"));
+
+        // Frontend error chain.
+        let frontend = &report.codebase.failed[1];
+        assert_eq!(frontend.function_name, "run_devserver");
+        assert_eq!(frontend.language.as_deref(), Some("rust"));
+        assert_eq!(frontend.error_type.as_deref(), Some("frontend_error"));
+        assert_eq!(
+            frontend.error_message.as_deref(),
+            Some("request timed out after 20s"),
+        );
+        assert_eq!(frontend.failed_at.as_deref(), Some("frontend"));
+
+        // Go exploration error.
+        let go_err = &report.codebase.failed[2];
+        assert_eq!(go_err.function_name, "Handle");
+        assert_eq!(go_err.language.as_deref(), Some("go"));
+        assert_eq!(go_err.error_type.as_deref(), Some("exploration_error"));
+        assert_eq!(
+            go_err.error_message.as_deref(),
+            Some("solver returned UNSAT"),
+        );
+        assert_eq!(go_err.failed_at.as_deref(), Some("exploration"));
+
+        // Roundtrip: serialized JSON includes the new fields and
+        // deserializes back to the same struct.
+        let json = serde_json::to_string_pretty(&report).expect("serialize");
+        assert!(json.contains("\"language\""));
+        assert!(json.contains("\"status\""));
+        assert!(json.contains("\"error_type\""));
+        assert!(json.contains("\"error_message\""));
+        assert!(json.contains("\"failed_at\""));
+        let roundtrip: ScanReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(report.codebase.failed, roundtrip.codebase.failed);
+    }
 }
 
 /// One discovered target's outcome, ready for markdown rendering.
@@ -4228,5 +4475,39 @@ mod proptests {
             prop_assert!(report.mock_coverage_pct.is_none());
             prop_assert!(report.mock_execution_count.is_none());
         }
+    }
+
+
+    /// str-4mmd: `classify_failure_reason` handles edge cases.
+    #[test]
+    fn classify_failure_reason_patterns() {
+        // "no analysis found"
+        let (et, em, fa) = super::classify_failure_reason("no analysis found");
+        assert_eq!(et, "build_error");
+        assert_eq!(em, "no analysis found");
+        assert_eq!(fa, "analysis");
+
+        // plain error: prefix
+        let (et, em, fa) = super::classify_failure_reason("error: something broke");
+        assert_eq!(et, "exploration_error");
+        assert_eq!(em, "something broke");
+        assert_eq!(fa, "exploration");
+
+        // unrecognized fallback
+        let (et, em, fa) = super::classify_failure_reason("some weird reason");
+        assert_eq!(et, "unknown");
+        assert_eq!(em, "some weird reason");
+        assert_eq!(fa, "scan");
+    }
+
+    /// str-4mmd: language detection from file paths.
+    #[test]
+    fn language_from_path_coverage() {
+        assert_eq!(super::language_from_path("src/foo.ts"), Some("typescript".into()));
+        assert_eq!(super::language_from_path("src/bar.tsx"), Some("typescript".into()));
+        assert_eq!(super::language_from_path("pkg/handler.go"), Some("go".into()));
+        assert_eq!(super::language_from_path("src/lib.rs"), Some("rust".into()));
+        assert_eq!(super::language_from_path("Makefile"), None);
+        assert_eq!(super::language_from_path(""), None);
     }
 }
