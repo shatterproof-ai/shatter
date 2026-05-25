@@ -22,6 +22,12 @@ type ConstructorCandidate struct {
 	FuncName   string
 	TargetType string
 	HasParams  bool
+	// Parameters holds the Go type names for each constructor argument
+	// (str-9b1q). When non-empty, wrapper generation emits a call with
+	// arguments deserialized from _shatterInputs (offset before method
+	// params). When empty (parameterless), the wrapper emits a plain
+	// `NewFoo()` call.
+	Parameters []ConstructorParam
 	// ReturnsPointer reports whether the constructor's return type is the
 	// pointer form (`*T`) or the value form (`T`). Wrapper generation
 	// branches on the combination of receiver kind and this flag:
@@ -40,4 +46,13 @@ type ConstructorCandidate struct {
 	//   assignment mismatch: 1 variable but ctor returns 2 values
 	// See str-jeen.78.
 	ReturnsError bool
+}
+
+// ConstructorParam describes a single constructor argument for wrapper
+// code generation (str-9b1q).
+type ConstructorParam struct {
+	// Name is the declared parameter name.
+	Name string
+	// GoType is the Go source type spelling (e.g. "string", "int").
+	GoType string
 }

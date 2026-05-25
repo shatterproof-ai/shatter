@@ -442,3 +442,110 @@ func TestPlanRequirements_AggregatesAcrossRequirements(t *testing.T) {
 		t.Fatalf("expected one unsatisfied for Missing, got %+v", unsat)
 	}
 }
+
+// str-9b1q: a parameterized constructor with satisfiable primitive params
+// must produce a plan with non-empty ConstructorArgPlans.
+func TestPlanRequirements_ParameterizedConstructor_EmitsConstructorArgPlans(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Loader).WithNamespace"
+	analysis := &protocol.FunctionAnalysis{
+		Name:   "(*Loader).WithNamespace",
+		Params: []protocol.ParamInfo{{Name: "ns", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")}},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "WithNamespace",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Loader", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:       "NewLoader",
+		TargetType:     "Loader",
+		Parameters:     []protocol.ParamInfo{{Name: "dir", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")}},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan")
+	}
+
+	// Find the constructor-backed plan.
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:NewLoader" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:NewLoader found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected 1 ConstructorArgPlan, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	cap := ctorPlan.ConstructorArgPlans[0]
+	if cap.Kind != protocol.ValuePlanKindZero {
+		t.Errorf("expected Zero kind for ctor arg plan, got %s", cap.Kind)
+	}
+	if cap.TypeHint != "string" {
+		t.Errorf("expected type_hint=string, got %q", cap.TypeHint)
+	}
+}
+
+// str-9b1q: a constructor with unsatisfiable params (interface, complex types)
+// must NOT produce a constructor plan — fall back to zero value.
+func TestPlanRequirements_UnsatisfiableConstructorParams_FallsBack(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Server).Listen"
+	analysis := &protocol.FunctionAnalysis{
+		Name: "(*Server).Listen",
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Listen",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Server", IsPointer: true},
+	}
+	// Constructor with a complex/opaque param that is NOT satisfiable.
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:       "NewServer",
+		TargetType:     "Server",
+		Parameters:     []protocol.ParamInfo{{Name: "handler", Type: protocol.TypeInfo{Kind: "complex"}}},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	// Should have at least a fallback zero-value plan.
+	if len(plans) == 0 {
+		t.Fatal("expected at least a fallback plan")
+	}
+	// Must NOT have a constructor:NewServer plan.
+	for _, p := range plans {
+		if p.ReceiverKind == "constructor:NewServer" {
+			t.Fatalf("should not emit constructor:NewServer for unsatisfiable params; plans=%+v", plans)
+		}
+	}
+}

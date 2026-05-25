@@ -1075,7 +1075,23 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	case *types.Chan:
 		return TypeInfo{Kind: "opaque", Label: "chan " + typ.Elem().String()}
 	case *types.Interface:
-		return TypeInfo{Kind: "unknown"}
+		// str-23mc: non-synthesizable interface params must be opaque so
+		// check_executability skips the function. Synthesizable stdlib
+		// interfaces (io.Reader, context.Context, …) are already
+		// short-circuited above (line ~1005) and never reach this branch.
+		// Without this, the core's random input generator sends raw JSON
+		// scalars to the Go wrapper, which can't unmarshal them into an
+		// interface type.
+		label := "interface"
+		if named, ok := t.(*types.Named); ok {
+			obj := named.Obj()
+			if pkg := obj.Pkg(); pkg != nil {
+				label = pkg.Name() + "." + obj.Name()
+			} else {
+				label = obj.Name()
+			}
+		}
+		return TypeInfo{Kind: "opaque", Label: label}
 	case *types.Signature:
 		return TypeInfo{Kind: "unknown"}
 	case *types.Tuple:

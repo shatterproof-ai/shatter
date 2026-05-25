@@ -1649,7 +1649,10 @@ pub async fn scan(
             candidate_inputs,
             pool_seeds,
             project_root: config.project_root.clone(),
-            execution_profile: None,
+            // str-0x82: derive the execution profile from the analysis's
+            // invocation model so adapter targets (e.g. go/http-handler) get
+            // the correct profile in execute requests.
+            execution_profile: execution_profile_from_analysis(analysis),
             loop_buckets: explorer::LoopBuckets::default(),
             timeout_explore: config.timeout_explore,
             meta_config: crate::strategy::MetaConfig::default(),
@@ -3747,7 +3750,9 @@ pub async fn parallel_scan_with_progress(
                 candidate_inputs,
                 pool_seeds,
                 project_root: config.project_root.clone(),
-                execution_profile: None,
+                // str-0x82: derive execution profile from invocation model
+                // (parallel path — mirrors serial path).
+                execution_profile: execution_profile_from_analysis(&analysis),
                 loop_buckets: explorer::LoopBuckets::default(),
                 timeout_explore: config.timeout_explore,
                 meta_config: crate::strategy::MetaConfig::default(),
@@ -4439,6 +4444,32 @@ async fn fetch_default_execute_plan_for_method(
             );
             None
         }
+    }
+}
+
+/// Build an [`ExecutionProfile`] from a [`FunctionAnalysis`]'s invocation model.
+///
+/// When the frontend marks a target as `InvocationModel::Adapter`, the execute
+/// request must include an execution profile activating that adapter so the
+/// frontend can resolve the registered hook (e.g. `go/http-handler`). Without
+/// this, the execute request carries no profile and the frontend errors with
+/// "execution adapter not supported" (str-0x82).
+///
+/// Returns `None` for `InvocationModel::Direct` targets that need no adapter.
+fn execution_profile_from_analysis(
+    analysis: &crate::protocol::FunctionAnalysis,
+) -> Option<crate::protocol::ExecutionProfile> {
+    match &analysis.invocation_model {
+        crate::protocol::InvocationModel::Adapter { adapter_id, .. } => {
+            Some(crate::protocol::ExecutionProfile {
+                adapters: vec![crate::protocol::ExecutionAdapter {
+                    id: adapter_id.clone(),
+                    apply: None,
+                    options: None,
+                }],
+            })
+        }
+        crate::protocol::InvocationModel::Direct => None,
     }
 }
 
@@ -5328,6 +5359,29 @@ mod tests {
             phase_timeout_reason("execution", Duration::from_secs(15)),
             "timed out during execution after 15s",
         );
+    }
+
+    /// str-0x82: adapter-typed invocation models produce an execution profile
+    /// containing the adapter id. Direct models produce `None`. This ensures
+    /// scan-discovered adapter targets (e.g. go/http-handler) carry the correct
+    /// profile into execute requests.
+    #[test]
+    fn execution_profile_from_adapter_invocation_model() {
+        let mut analysis = make_analysis("handler", vec![]);
+        analysis.invocation_model = crate::protocol::InvocationModel::Adapter {
+            adapter_id: "go/http-handler".into(),
+            synthetic_params: vec![],
+            scenario_schema: None,
+        };
+        let profile = execution_profile_from_analysis(&analysis).expect("adapter must produce profile");
+        assert_eq!(profile.adapters.len(), 1);
+        assert_eq!(profile.adapters[0].id, "go/http-handler");
+    }
+
+    #[test]
+    fn execution_profile_from_direct_invocation_model_is_none() {
+        let analysis = make_analysis("plain_fn", vec![]);
+        assert!(execution_profile_from_analysis(&analysis).is_none());
     }
 
     /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout

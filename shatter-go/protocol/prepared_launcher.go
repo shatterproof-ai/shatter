@@ -414,6 +414,7 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 			FuncName:       candidate.FuncName,
 			TargetType:     candidate.TargetType,
 			HasParams:      len(candidate.Parameters) > 0,
+			Parameters:     toWrapperConstructorParams(candidate.Parameters),
 			ReturnsPointer: candidate.ReturnsPointer,
 			// str-jeen.78: propagate ReturnsError so wrapper generation can
 			// use the two-assignment form (_recv, _ := ctor()) for constructors
@@ -422,6 +423,37 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 		}
 	}
 	return constructors
+}
+
+// toWrapperConstructorParams converts protocol ParamInfo to wrapper
+// ConstructorParam (str-9b1q). Maps TypeInfo.Kind to the Go source type.
+func toWrapperConstructorParams(params []ParamInfo) []wrapper.ConstructorParam {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make([]wrapper.ConstructorParam, len(params))
+	for i, p := range params {
+		goType := "interface{}"
+		if p.TypeName != nil {
+			goType = *p.TypeName
+		} else {
+			switch p.Type.Kind {
+			case "str":
+				goType = "string"
+			case "int":
+				goType = "int"
+			case "float":
+				goType = "float64"
+			case "bool":
+				goType = "bool"
+			}
+		}
+		out[i] = wrapper.ConstructorParam{
+			Name:   p.Name,
+			GoType: goType,
+		}
+	}
+	return out
 }
 
 func packageDirForBuild(pkg *packages.Package) (string, error) {

@@ -71,10 +71,19 @@ func TestReceiverArity_ParameterfulConstructor_FallbackPlanCompiles(t *testing.T
 	if len(plans) == 0 {
 		t.Fatalf("PlanReceivers returned no plans for pointer receiver with parameterful constructor")
 	}
+	// str-9b1q: parameterized constructors with satisfiable primitive params
+	// ARE now emitted. Verify the plan includes constructor:NewAdapter.
+	foundCtorPlan := false
 	for _, p := range plans {
 		if p.ReceiverKind == "constructor:NewAdapter" {
-			t.Fatalf("planner emitted constructor:NewAdapter for a parameterful ctor; the wrapper drops this case (str-qo1.14) and dispatch would surface as runtime \"unknown receiver kind\"; plans=%+v", plans)
+			foundCtorPlan = true
+			if len(p.ConstructorParams) != 1 {
+				t.Fatalf("expected 1 constructor param, got %d", len(p.ConstructorParams))
+			}
 		}
+	}
+	if !foundCtorPlan {
+		t.Fatalf("planner did not emit constructor:NewAdapter for satisfiable parameterful ctor; plans=%+v", plans)
 	}
 
 	wrapperTarget := wrapper.WrapperTarget{
@@ -86,20 +95,27 @@ func TestReceiverArity_ParameterfulConstructor_FallbackPlanCompiles(t *testing.T
 		HasResult:     false,
 	}
 	wrapperCtors := []wrapper.ConstructorCandidate{
-		{FuncName: "NewAdapter", TargetType: "Adapter", HasParams: true},
+		{FuncName: "NewAdapter", TargetType: "Adapter", HasParams: true,
+			Parameters:     []wrapper.ConstructorParam{{Name: "endpoint", GoType: "string"}},
+			ReturnsPointer: true},
 	}
 
 	src := wrapper.GenerateWrapper("arity", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	// str-9b1q: the wrapper should emit NewAdapter("") — a call with the
+	// zero-value string literal, NOT NewAdapter() (arity mismatch).
 	if strings.Contains(src, "NewAdapter()") {
 		t.Errorf("wrapper emitted parameterless call to NewAdapter; source:\n%s", src)
 	}
-	if strings.Contains(src, "constructor:NewAdapter") {
-		t.Errorf("wrapper emitted constructor:NewAdapter case for parameterful ctor; source:\n%s", src)
+	if !strings.Contains(src, `NewAdapter("")`) {
+		t.Errorf("wrapper did not emit NewAdapter(\"\") for parameterized ctor; source:\n%s", src)
+	}
+	if !strings.Contains(src, "constructor:NewAdapter") {
+		t.Errorf("wrapper missing constructor:NewAdapter case; source:\n%s", src)
 	}
 	for _, p := range plans {
 		caseLiteral := "case \"" + p.ReceiverKind + "\""
 		if !strings.Contains(src, caseLiteral) {
-			t.Errorf("wrapper missing switch case for plan ReceiverKind=%q (would dispatch to default and fail at runtime); source:\n%s", p.ReceiverKind, src)
+			t.Errorf("wrapper missing switch case for plan ReceiverKind=%q; source:\n%s", p.ReceiverKind, src)
 		}
 	}
 

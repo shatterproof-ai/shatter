@@ -1,0 +1,8 @@
+[package]
+name = "shatter-fixture-immutability"
+version = "0.1.0"
+edition = "2021"
+
+# Fixture crate for str-ja70: verifying that shatter explore/scan never
+# modifies tracked source modules. The source files here should remain
+# byte-for-byte unchanged after any shatter operation.
