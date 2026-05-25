@@ -1121,7 +1121,8 @@ func complexKindFromNamed(named *types.Named) string {
 	case pkgPath == "time" && name == "Time":
 		return "date"
 	case pkgPath == "time" && name == "Duration":
-		return "duration"
+		// str-n66n: use go_duration so the core emits a plain nanosecond integer
+		return "go_duration"
 	case pkgPath == "net/url" && name == "URL":
 		return "url"
 	case pkgPath == "regexp" && name == "Regexp":
