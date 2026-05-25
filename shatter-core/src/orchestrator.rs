@@ -1200,8 +1200,12 @@ async fn observe_one(
         &entry.mock_values
     };
 
-    // Execute concretely via the frontend.
-    let response = frontend
+    // Execute concretely via the frontend. A per-request timeout is
+    // converted to a clean termination signal rather than propagated as
+    // an error — when the frontend is slow to respond (e.g., long compile
+    // times in the Rust harness), the orchestrator should stop scheduling
+    // new work and report a timeout, not a protocol ID mismatch.
+    let response = match frontend
         .send(Command::Execute {
             function: function_name.to_string(),
             inputs: entry.inputs.clone(),
@@ -1212,7 +1216,16 @@ async fn observe_one(
             execution_profile: config.execution_profile.clone(),
             plan: config.default_execute_plan.clone(),
         })
-        .await?;
+        .await
+    {
+        Ok(resp) => resp,
+        Err(FrontendError::Timeout(_)) => {
+            return Ok(ObserveOneResult::Terminated(
+                TerminationReason::TimeoutExplore,
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     let exec_result = match response.result {
         ResponseResult::Execute(result) => *result,
