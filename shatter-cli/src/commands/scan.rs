@@ -575,8 +575,14 @@ pub(crate) async fn run_scan(
     let (mut all_analyses, file_map) = rebuild_analyses_from_registry(&registry, all_functions);
 
     // Filter out functions with unexecutable parameter types.
+    // str-n10u: adapter-owned functions (e.g. go/http-handler) bypass the
+    // executability check — the adapter provides synthetic params that are
+    // always executable.
     let mut skipped_for_executability: Vec<SkippedFunction> = Vec::new();
     all_analyses.retain(|func| {
+        if !matches!(func.invocation_model, shatter_core::protocol::InvocationModel::Direct) {
+            return true;
+        }
         let reasons = executability::check_executability(&func.params, &[]);
         if reasons.is_empty() {
             true

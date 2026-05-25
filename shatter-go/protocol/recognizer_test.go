@@ -344,6 +344,92 @@ func TestAnalyzeFileHTTPHandler(t *testing.T) {
 	}
 }
 
+// str-n10u: verify that partial HTTP helpers emit the expected param type
+// so the Rust core's executability check can distinguish them from exact handlers.
+func TestAnalyzeFileHTTPHandler_PartialHelperParamType(t *testing.T) {
+	results := analyzeTestFile(t, "http_handler.go")
+
+	// Exported partial helper.
+	wr := findAnalysis(results, "WriteResponse")
+	if wr == nil {
+		t.Fatal("WriteResponse not found")
+	}
+	if len(wr.Params) != 1 {
+		t.Fatalf("expected 1 param on WriteResponse, got %d", len(wr.Params))
+	}
+	// http.ResponseWriter is in synthesizableStdlibTypes → Kind: "unknown".
+	if wr.Params[0].Type.Kind != "unknown" {
+		t.Errorf("WriteResponse param kind = %q, want %q", wr.Params[0].Type.Kind, "unknown")
+	}
+	// TypeName must be set for planner lookup.
+	if wr.Params[0].TypeName == nil || *wr.Params[0].TypeName != "http.ResponseWriter" {
+		t.Errorf("WriteResponse param type_name = %v, want %q", wr.Params[0].TypeName, "http.ResponseWriter")
+	}
+
+	// Private partial helper — same type classification.
+	wp := findAnalysis(results, "writePartial")
+	if wp == nil {
+		t.Fatal("writePartial not found")
+	}
+	if len(wp.Params) != 1 {
+		t.Fatalf("expected 1 param on writePartial, got %d", len(wp.Params))
+	}
+	if wp.Params[0].Type.Kind != "unknown" {
+		t.Errorf("writePartial param kind = %q, want %q", wp.Params[0].Type.Kind, "unknown")
+	}
+}
+
+// str-n10u: Private exact HTTP handlers must get the same adapter recognition
+// as exported handlers. The exportedness gate is the CLI's concern (--all),
+// not the frontend's.
+func TestAnalyzeFileHTTPHandler_PrivateExactHandler(t *testing.T) {
+	results := analyzeTestFile(t, "http_handler.go")
+
+	priv := findAnalysis(results, "handlePrivate")
+	if priv == nil {
+		t.Fatal("handlePrivate not found in analysis results")
+	}
+	if priv.Exported {
+		t.Error("handlePrivate should not be marked as exported")
+	}
+	// Exact private handler: must have InvocationModel set.
+	if priv.InvocationModel == nil {
+		t.Fatal("expected invocation_model on private exact HTTP handler")
+	}
+	if priv.InvocationModel.Kind != "adapter" {
+		t.Errorf("invocation_model.kind = %q, want %q", priv.InvocationModel.Kind, "adapter")
+	}
+	if priv.InvocationModel.AdapterID != HTTPHandlerAdapterID {
+		t.Errorf("invocation_model.adapter_id = %q, want %q", priv.InvocationModel.AdapterID, HTTPHandlerAdapterID)
+	}
+	// Must also have adapter hints.
+	if len(priv.AdapterHints) == 0 {
+		t.Fatal("expected adapter_hints on handlePrivate")
+	}
+	if priv.AdapterHints[0].Confidence != "high" {
+		t.Errorf("confidence = %q, want %q", priv.AdapterHints[0].Confidence, "high")
+	}
+
+	// Partial private helper: only ResponseWriter, no *Request.
+	partial := findAnalysis(results, "writePartial")
+	if partial == nil {
+		t.Fatal("writePartial not found in analysis results")
+	}
+	if partial.Exported {
+		t.Error("writePartial should not be marked as exported")
+	}
+	// Partial match: should have medium-confidence hint but NOT a full InvocationModel.
+	if partial.InvocationModel != nil {
+		t.Errorf("writePartial should not have InvocationModel (partial signature), got %+v", partial.InvocationModel)
+	}
+	if len(partial.AdapterHints) == 0 {
+		t.Fatal("expected medium-confidence adapter_hint on writePartial (partial match)")
+	}
+	if partial.AdapterHints[0].Confidence != "medium" {
+		t.Errorf("confidence = %q, want %q", partial.AdapterHints[0].Confidence, "medium")
+	}
+}
+
 func TestAnalyzeFileGinHandler(t *testing.T) {
 	results := analyzeTestFile(t, "gin_handler.go")
 
