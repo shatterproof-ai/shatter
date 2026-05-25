@@ -146,6 +146,20 @@ pub struct Frontend {
     binary: PathBuf,
     stderr_buf: Arc<Mutex<Vec<u8>>>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
+    /// Number of timed-out responses still pending in the subprocess stdout
+    /// pipe. When a request times out, the subprocess may still be processing
+    /// it and will eventually write a response. Before sending the next
+    /// request, we must drain these stale responses to keep request/response
+    /// ID pairing consistent.
+    pending_drain: u64,
+    /// Set to `true` after any request timeout.  Once tainted, all subsequent
+    /// `send()` / `send_raw()` calls return `FrontendError::Timeout`
+    /// immediately without touching the subprocess.  This prevents the
+    /// request/response ID sequence from becoming permanently misaligned: once
+    /// we miss a response the pipe is out-of-sync and no amount of draining
+    /// can safely recover it while new work keeps arriving.  Callers that need
+    /// to continue must drop this frontend and spawn a fresh one.
+    tainted: bool,
 }
 
 impl Frontend {
@@ -185,6 +199,8 @@ impl Frontend {
             binary: config.command.clone(),
             stderr_buf,
             stderr_task: Some(stderr_task),
+            pending_drain: 0,
+            tainted: false,
         };
 
         frontend
@@ -241,8 +257,20 @@ impl Frontend {
     /// Send a command to the frontend and wait for the response.
     ///
     /// Automatically assigns a request ID and enforces the configured timeout.
+    /// If previous requests timed out, their stale responses are drained from
+    /// the pipe before reading the response for the current request — this
+    /// prevents ID mismatch errors when the subprocess finishes processing a
+    /// timed-out request after the caller has moved on.
     pub async fn send(&mut self, command: ProtoCommand) -> Result<Response, FrontendError> {
         let span = request_span(&command);
+
+        // A tainted frontend has a misaligned request/response pipe — refuse
+        // further sends immediately so callers get a clean Timeout instead of
+        // an IdMismatch from a stale buffered response.
+        if self.tainted {
+            return Err(FrontendError::Timeout(self.request_timeout));
+        }
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -250,6 +278,19 @@ impl Frontend {
         let mut json = serde_json::to_string(&request).map_err(FrontendError::Serialize)?;
         json.push('\n');
 
+        // Phase 1: drain stale responses from previously timed-out requests.
+        // Each timed-out send() left one unread response in the pipe. We read
+        // and discard them before writing this request, using a generous
+        // per-response timeout (equal to request_timeout) since the subprocess
+        // may still be processing.
+        if self.pending_drain > 0 {
+            self.drain_stale_responses().await?;
+        }
+
+        // Phase 2: send the new request and read its response.
+        // Copy request_timeout before the async block to avoid holding a
+        // shared borrow on `self` while the block captures a mutable borrow.
+        let request_timeout = self.request_timeout;
         let write_and_read = async {
             self.stdin
                 .write_all(json.as_bytes())
@@ -257,43 +298,103 @@ impl Frontend {
                 .map_err(FrontendError::Write)?;
             self.stdin.flush().await.map_err(FrontendError::Write)?;
 
-            let mut line = String::new();
-            let bytes_read = self
-                .reader
-                .read_line(&mut line)
-                .await
-                .map_err(FrontendError::Read)?;
-
-            if bytes_read == 0 {
-                return Err(FrontendError::SubprocessExited {
-                    binary: PathBuf::new(),
-                    exit_status: None,
-                    stderr_tail: String::new(),
-                });
-            }
-
-            let response: Response =
-                serde_json::from_str(line.trim()).map_err(|e| deserialize_error(e, &line))?;
-
-            if response.id != id {
-                return Err(FrontendError::IdMismatch {
-                    request_id: id,
-                    response_id: response.id,
-                });
-            }
-
-            if let Some(timing) = &response.timing {
-                crate::timing::record_protocol_timing(timing);
-            }
-
-            Ok(response)
+            self.read_response(id).await
         };
 
-        let outcome = tokio::time::timeout(self.request_timeout, write_and_read)
+        let outcome = tokio::time::timeout(request_timeout, write_and_read)
             .instrument(span)
+            .await;
+
+        match outcome {
+            Ok(inner) => self.enrich_subprocess_exit(inner).await,
+            Err(_) => {
+                // Timeout fired. The request was likely written to stdin but
+                // the response was not read. Mark the frontend tainted so
+                // subsequent calls fail fast with Timeout rather than risking
+                // an IdMismatch from the stale buffered response.
+                self.tainted = true;
+                self.pending_drain += 1;
+                Err(FrontendError::Timeout(self.request_timeout))
+            }
+        }
+    }
+
+    /// Read and discard stale responses left by timed-out requests.
+    ///
+    /// Uses `request_timeout` as the deadline for each stale response. If a
+    /// stale response doesn't arrive within that window the subprocess is
+    /// considered stuck and we return a timeout error.
+    async fn drain_stale_responses(&mut self) -> Result<(), FrontendError> {
+        let count = self.pending_drain;
+        for i in 0..count {
+            let drain_one = async {
+                let mut stale_line = String::new();
+                let stale_bytes = self
+                    .reader
+                    .read_line(&mut stale_line)
+                    .await
+                    .map_err(FrontendError::Read)?;
+
+                if stale_bytes == 0 {
+                    return Err(FrontendError::SubprocessExited {
+                        binary: self.binary.clone(),
+                        exit_status: None,
+                        stderr_tail: String::new(),
+                    });
+                }
+                tracing::debug!(
+                    drain_index = i,
+                    total_drain = count,
+                    line_len = stale_line.len(),
+                    "drained stale response from timed-out request"
+                );
+                Ok(())
+            };
+
+            tokio::time::timeout(self.request_timeout, drain_one)
+                .await
+                .map_err(|_| FrontendError::Timeout(self.request_timeout))??;
+
+            // Successfully drained one response — decrement so that if a
+            // later drain or the main read times out, pending_drain is
+            // accurate.
+            self.pending_drain -= 1;
+        }
+        Ok(())
+    }
+
+    /// Read a single response line and validate its ID.
+    async fn read_response(&mut self, expected_id: u64) -> Result<Response, FrontendError> {
+        let mut line = String::new();
+        let bytes_read = self
+            .reader
+            .read_line(&mut line)
             .await
-            .map_err(|_| FrontendError::Timeout(self.request_timeout))?;
-        self.enrich_subprocess_exit(outcome).await
+            .map_err(FrontendError::Read)?;
+
+        if bytes_read == 0 {
+            return Err(FrontendError::SubprocessExited {
+                binary: PathBuf::new(),
+                exit_status: None,
+                stderr_tail: String::new(),
+            });
+        }
+
+        let response: Response =
+            serde_json::from_str(line.trim()).map_err(|e| deserialize_error(e, &line))?;
+
+        if response.id != expected_id {
+            return Err(FrontendError::IdMismatch {
+                request_id: expected_id,
+                response_id: response.id,
+            });
+        }
+
+        if let Some(timing) = &response.timing {
+            crate::timing::record_protocol_timing(timing);
+        }
+
+        Ok(response)
     }
 
     /// Send a raw JSON value as a request, auto-assigning an ID.
@@ -315,6 +416,20 @@ impl Frontend {
         let mut json = serde_json::to_string(&request).map_err(FrontendError::Serialize)?;
         json.push('\n');
 
+        // A tainted frontend must not be used again — return Timeout so the
+        // caller handles it as a clean termination rather than an IdMismatch.
+        if self.tainted {
+            return Err(FrontendError::Timeout(self.request_timeout));
+        }
+
+        // Drain stale responses from previously timed-out requests.
+        if self.pending_drain > 0 {
+            self.drain_stale_responses().await?;
+        }
+
+        // Copy request_timeout before the async block to avoid a shared/mutable
+        // borrow conflict on `self`.
+        let request_timeout = self.request_timeout;
         let write_and_read = async {
             self.stdin
                 .write_all(json.as_bytes())
@@ -322,39 +437,21 @@ impl Frontend {
                 .map_err(FrontendError::Write)?;
             self.stdin.flush().await.map_err(FrontendError::Write)?;
 
-            let mut line = String::new();
-            let bytes_read = self
-                .reader
-                .read_line(&mut line)
-                .await
-                .map_err(FrontendError::Read)?;
-
-            if bytes_read == 0 {
-                return Err(FrontendError::SubprocessExited {
-                    binary: PathBuf::new(),
-                    exit_status: None,
-                    stderr_tail: String::new(),
-                });
-            }
-
-            let response: Response =
-                serde_json::from_str(line.trim()).map_err(|e| deserialize_error(e, &line))?;
-
-            if response.id != id {
-                return Err(FrontendError::IdMismatch {
-                    request_id: id,
-                    response_id: response.id,
-                });
-            }
-
-            Ok(response)
+            self.read_response(id).await
         };
 
-        let outcome = tokio::time::timeout(self.request_timeout, write_and_read)
+        let outcome = tokio::time::timeout(request_timeout, write_and_read)
             .instrument(span)
-            .await
-            .map_err(|_| FrontendError::Timeout(self.request_timeout))?;
-        self.enrich_subprocess_exit(outcome).await
+            .await;
+
+        match outcome {
+            Ok(inner) => self.enrich_subprocess_exit(inner).await,
+            Err(_) => {
+                self.tainted = true;
+                self.pending_drain += 1;
+                Err(FrontendError::Timeout(self.request_timeout))
+            }
+        }
     }
 
     /// If `outcome` is a `SubprocessExited` sentinel from the read loop,
@@ -386,7 +483,18 @@ impl Frontend {
     }
 
     /// Request a graceful shutdown and wait for acknowledgment.
+    ///
+    /// If the frontend is tainted (a previous request timed out), the
+    /// subprocess is killed directly rather than attempting a graceful
+    /// shutdown over the corrupted pipe.
     pub async fn shutdown(mut self) -> Result<(), FrontendError> {
+        if self.tainted {
+            // Pipe is in an unknown state — skip the protocol exchange and
+            // force-kill so the subprocess does not linger.
+            let _ = self.child.kill().await;
+            return Ok(());
+        }
+
         let response = self.send(ProtoCommand::Shutdown).await?;
 
         match response.result {
@@ -424,6 +532,13 @@ impl Frontend {
     /// Returns `false` if the child has exited or `try_wait()` fails.
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Returns `true` if a previous request timed out and this frontend can
+    /// no longer be used safely.  Callers should drop this frontend and spawn
+    /// a fresh one rather than trying to send additional requests.
+    pub fn is_tainted(&self) -> bool {
+        self.tainted
     }
 
     /// The language reported by the frontend during handshake.
@@ -912,5 +1027,94 @@ mod tests {
             Err(other) => panic!("expected FrontendError::Timeout, got: {other:?}"),
             Ok(_) => panic!("expected timeout error from slow frontend"),
         }
+    }
+
+    fn slow_once_frontend_config() -> FrontendConfig {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script_path = manifest_dir.join("../protocol/slow-once-frontend.sh");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![script_path.to_string_lossy().into_owned()];
+        // Short timeout so the slow analyze request triggers a timeout quickly.
+        config.request_timeout = Duration::from_millis(300);
+        config
+    }
+
+    /// After a request times out, the frontend is tainted and subsequent sends
+    /// must return Timeout immediately rather than attempting to drain the stale
+    /// response and risking an IdMismatch.
+    #[tokio::test]
+    async fn timeout_taints_frontend_and_subsequent_send_returns_timeout() {
+        // slow-once-frontend.sh completes handshake (fast), then sleeps 2s on
+        // the first analyze, triggering our 300 ms request timeout.
+        let mut config = slow_once_frontend_config();
+        // Handshake must succeed — use a long timeout just for that step, then
+        // override to a short one for the subsequent slow request.
+        config.request_timeout = Duration::from_secs(5);
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn/handshake failed");
+
+        // Now shorten the timeout so the slow analyze triggers it.
+        frontend.request_timeout = Duration::from_millis(300);
+
+        // First send — the slow analyze should time out.
+        let first_result = frontend
+            .send(ProtoCommand::Analyze {
+                file: "test.ts".into(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await;
+        assert!(
+            matches!(first_result, Err(FrontendError::Timeout(_))),
+            "expected Timeout on slow analyze, got: {first_result:?}"
+        );
+        assert!(
+            frontend.is_tainted(),
+            "frontend should be tainted after a timeout"
+        );
+
+        // Second send — must return Timeout (from tainted guard), NOT IdMismatch.
+        let second_result = frontend
+            .send(ProtoCommand::Analyze {
+                file: "test.ts".into(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await;
+        assert!(
+            matches!(second_result, Err(FrontendError::Timeout(_))),
+            "second send after timeout should return Timeout, not IdMismatch; got: {second_result:?}"
+        );
+        assert!(
+            !matches!(second_result, Err(FrontendError::IdMismatch { .. })),
+            "IdMismatch must not appear after a timeout — tainted guard failed"
+        );
+    }
+
+    /// `is_tainted()` returns false on a fresh frontend and true after a timeout.
+    #[tokio::test]
+    async fn is_tainted_reflects_timeout_state() {
+        let mut config = slow_once_frontend_config();
+        // Start with long timeout for handshake.
+        config.request_timeout = Duration::from_secs(5);
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn/handshake failed");
+        assert!(!frontend.is_tainted(), "fresh frontend should not be tainted");
+
+        // Trigger a timeout.
+        frontend.request_timeout = Duration::from_millis(300);
+        let _ = frontend
+            .send(ProtoCommand::Analyze {
+                file: "test.ts".into(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await;
+
+        assert!(
+            frontend.is_tainted(),
+            "frontend should be tainted after a timeout"
+        );
     }
 }
