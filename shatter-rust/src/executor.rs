@@ -2866,6 +2866,10 @@ fn execute_function_crate_bridge(
         target_contents.push('\n');
     }
     target_contents.push_str(&in_module_wrapper);
+    if let Some(parent) = staging_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot create staging directories: {e}"))))?;
+    }
     std::fs::write(&staging_file, &target_contents)
         .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source to staging: {e}"))))?;
 
@@ -6013,5 +6017,51 @@ runtime = { path = "../runtime" }
             result.contains("/home/user/project/my-crate/../runtime"),
             "dep path must be absolutised: {result}",
         );
+    }
+
+    /// str-jx3r: writing instrumented source to a nested staging path must
+    /// succeed even when intermediate directories don't exist yet.
+    #[test]
+    fn staging_write_creates_parent_dirs_for_nested_files() {
+        let crate_root = unique_tmp_dir("staging-nested-src");
+        std::fs::create_dir_all(crate_root.join("api/src")).unwrap();
+
+        let cargo_toml = "[package]\nname = \"fixture-jx3r\"\nversion = \"0.0.1\"\nedition = \"2021\"\n";
+        let lib_rs = "pub mod nested;\n";
+        let nested_rs = "pub fn greet(n: i32) -> &'static str { if n > 0 { \"pos\" } else { \"non-pos\" } }\n";
+        std::fs::write(crate_root.join("Cargo.toml"), cargo_toml).unwrap();
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"), lib_rs).unwrap();
+
+        // Nested source lives outside `src/` — e.g. a workspace member path.
+        std::fs::write(crate_root.join("api/src/suggestions.rs"), nested_rs).unwrap();
+
+        let staging_root = unique_tmp_dir("staging-nested-dest");
+        let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
+
+        // The staging copy has src/ but NOT api/src/.
+        assert!(!staging_crate.join("api/src").exists(),
+            "staging copy should not have api/src before fix");
+
+        // Simulate the instrumented write path (post-fix): create parent dirs
+        // then write.
+        let rel_file = Path::new("api/src/suggestions.rs");
+        let staging_file = staging_crate.join(rel_file);
+        if let Some(parent) = staging_file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&staging_file, "// instrumented\n").unwrap();
+
+        assert!(staging_file.exists(), "nested staging file must exist after write");
+
+        // Original must be unchanged.
+        assert_eq!(
+            std::fs::read_to_string(crate_root.join("api/src/suggestions.rs")).unwrap(),
+            nested_rs,
+            "original nested source must be byte-for-byte unchanged",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
     }
 }
