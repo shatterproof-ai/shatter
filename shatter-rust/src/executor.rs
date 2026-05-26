@@ -2086,7 +2086,7 @@ fn find_workspace_root(crate_root: &Path) -> Option<PathBuf> {
                 }
             }
         }
-        if dir.parent().map_or(true, |p| p == dir) {
+        if dir.parent().is_none_or(|p| p == dir) {
             return None;
         }
         dir = dir.parent().unwrap();
