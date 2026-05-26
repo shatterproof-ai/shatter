@@ -272,6 +272,8 @@ pub enum UnsatisfiedRequirementKind {
     CgoDependency,
     /// Parameter type is too complex for the planner to synthesize.
     ComplexType,
+    /// Target requires receiver construction that the planner cannot satisfy.
+    RequiresConstruction,
 }
 
 /// Planning failure for one target.
@@ -3508,6 +3510,7 @@ mod tests {
             UnsatisfiedRequirementKind::GenericUnconstrained,
             UnsatisfiedRequirementKind::CgoDependency,
             UnsatisfiedRequirementKind::ComplexType,
+            UnsatisfiedRequirementKind::RequiresConstruction,
         ] {
             let json = serde_json::to_string(&kind).expect("serialize");
             let decoded: UnsatisfiedRequirementKind =
@@ -3809,6 +3812,56 @@ mod tests {
             UnsatisfiedRequirementKind::CgoDependency
         );
         assert_eq!(failure.target_id, "example.com/pkg:Native");
+    }
+
+    #[test]
+    fn go_unsatisfied_requires_construction_fixture_deserializes() {
+        let go_json = r#"{
+            "kind": "requires_construction",
+            "target_id": "example.com/pkg:(*Service).Run",
+            "detail": "receiver type *Service requires construction"
+        }"#;
+        let failure: UnsatisfiedRequirement =
+            serde_json::from_str(go_json).expect("deserialize");
+        assert_eq!(
+            failure.kind,
+            UnsatisfiedRequirementKind::RequiresConstruction
+        );
+        assert_eq!(
+            failure.target_id,
+            "example.com/pkg:(*Service).Run"
+        );
+    }
+
+    #[test]
+    fn go_response_requires_construction_in_invocation_plan() {
+        let go_json = r#"{
+            "protocol_version": "1.0.0",
+            "id": 5,
+            "status": "invocation_plan",
+            "invocation_plans": [],
+            "unsatisfied_requirements": [
+                {
+                    "kind": "requires_construction",
+                    "target_id": "example.com/pkg:(*Handler).Serve",
+                    "detail": "receiver needs construction"
+                }
+            ]
+        }"#;
+        let response: Response = serde_json::from_str(go_json).expect("deserialize");
+        match response.result {
+            ResponseResult::InvocationPlan {
+                unsatisfied_requirements,
+                ..
+            } => {
+                assert_eq!(unsatisfied_requirements.len(), 1);
+                assert_eq!(
+                    unsatisfied_requirements[0].kind,
+                    UnsatisfiedRequirementKind::RequiresConstruction
+                );
+            }
+            other => panic!("expected InvocationPlan, got: {other:?}"),
+        }
     }
 
     #[test]

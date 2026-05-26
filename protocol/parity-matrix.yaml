@@ -632,6 +632,22 @@ feature_capabilities:
       go: supported
       rust: not_applicable
 
+  unsatisfied_requirement_requires_construction:
+    status: optional
+    notes: >
+      str-ptjk: `requires_construction` variant of
+      `UnsatisfiedRequirementKind`. Emitted by the Go frontend when a
+      method target's receiver type requires construction that the
+      planner cannot satisfy. The Rust core deserializes the variant and
+      classifies the target as unsupported/skipped (not an error). Other
+      `UnsatisfiedRequirementKind` variants: `no_constructor`,
+      `interface_receiver`, `generic_unconstrained`, `cgo_dependency`,
+      `complex_type`.
+    frontends:
+      typescript: not_applicable
+      go: supported
+      rust: not_applicable
+
   adapter_http_nethttp:
     status: optional
     notes: >
