@@ -4,6 +4,7 @@
 
 pub mod anthropic;
 pub mod custom_http;
+pub mod google;
 pub mod local_model;
 pub mod mock;
 pub mod parse;
@@ -13,6 +14,7 @@ pub mod registry;
 
 pub use anthropic::AnthropicAdapter;
 pub use custom_http::CustomHttpAdapter;
+pub use google::GoogleAdapter;
 pub use local_model::LocalModelAdapter;
 pub use mock::MockSeedOracle;
 pub use parse::{parse_response, parse_response_structured};
