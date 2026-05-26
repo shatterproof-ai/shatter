@@ -2031,7 +2031,13 @@ fn create_crate_staging_copy(
     let cargo_toml_path = crate_root.join("Cargo.toml");
     if cargo_toml_path.exists() {
         let content = std::fs::read_to_string(&cargo_toml_path)?;
-        let resolved = resolve_cargo_toml_paths(&content, crate_root);
+        let ws_pkg = if has_workspace_inheritance(&content) {
+            find_workspace_root(crate_root)
+                .and_then(|ws| extract_workspace_package_section(&ws))
+        } else {
+            None
+        };
+        let resolved = resolve_cargo_toml_paths(&content, crate_root, ws_pkg.as_deref());
         std::fs::create_dir_all(&staging_crate)?;
         std::fs::write(staging_crate.join("Cargo.toml"), resolved)?;
     }
@@ -2064,10 +2070,67 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Walk up from `crate_root` to find the nearest workspace root — a directory
+/// whose `Cargo.toml` contains a `[workspace]` section.
+fn find_workspace_root(crate_root: &Path) -> Option<PathBuf> {
+    let mut dir = crate_root.parent()?;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                for line in content.lines() {
+                    let t = line.trim();
+                    if t == "[workspace]" || t.starts_with("[workspace]") {
+                        return Some(dir.to_path_buf());
+                    }
+                }
+            }
+        }
+        if !dir.parent().is_some_and(|p| p != dir) {
+            return None;
+        }
+        dir = dir.parent().unwrap();
+    }
+}
+
+/// Extract the `[workspace.package]` section from a workspace root Cargo.toml.
+/// Returns lines like `edition = "2021"\nrust-version = "1.70"\n`.
+fn extract_workspace_package_section(workspace_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
+    let mut in_section = false;
+    let mut result = String::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if t == "[workspace.package]" {
+            in_section = true;
+            continue;
+        }
+        if in_section {
+            if t.starts_with('[') {
+                break;
+            }
+            if !t.is_empty() {
+                result.push_str(line);
+                result.push('\n');
+            }
+        }
+    }
+    if result.is_empty() { None } else { Some(result) }
+}
+
+/// Check whether a Cargo.toml manifest uses `*.workspace = true` inheritance.
+fn has_workspace_inheritance(content: &str) -> bool {
+    content.lines().any(|line| {
+        let t = line.trim();
+        t.ends_with(".workspace = true") || t.contains("workspace = true")
+    })
+}
+
 /// Resolve relative `path = "..."` entries in a Cargo.toml to absolute paths
 /// based on `crate_root`, and inject `[workspace]` to prevent workspace
-/// auto-discovery from the staging location.
-fn resolve_cargo_toml_paths(content: &str, crate_root: &Path) -> String {
+/// auto-discovery from the staging location. When `ws_pkg_fields` is provided,
+/// includes a `[workspace.package]` section so inherited fields resolve.
+fn resolve_cargo_toml_paths(content: &str, crate_root: &Path, ws_pkg_fields: Option<&str>) -> String {
     let mut result = String::with_capacity(content.len() + 256);
     let mut has_workspace = false;
     // Track whether we are inside a dependency section where `path = "..."`
@@ -2124,7 +2187,12 @@ fn resolve_cargo_toml_paths(content: &str, crate_root: &Path) -> String {
     // Add [workspace] if not present, to isolate the staging copy from
     // any workspace root above the original crate.
     if !has_workspace {
-        result.push_str("\n[workspace]\nmembers = []\n");
+        if let Some(fields) = ws_pkg_fields {
+            result.push_str("\n[workspace]\nmembers = []\n\n[workspace.package]\n");
+            result.push_str(fields);
+        } else {
+            result.push_str("\n[workspace]\nmembers = []\n");
+        }
     }
     result
 }
@@ -5961,7 +6029,7 @@ version = "0.1.0"
 runtime = { path = "../runtime" }
 other = { path = '/abs/path' }
 "#;
-        let result = resolve_cargo_toml_paths(input, crate_root);
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
         // Relative path must become absolute.
         assert!(
             result.contains("/home/user/project/my-crate/../runtime"),
@@ -5983,7 +6051,7 @@ other = { path = '/abs/path' }
     fn resolve_cargo_toml_paths_preserves_existing_workspace() {
         let crate_root = Path::new("/tmp/crate");
         let input = "[workspace]\nmembers = []\n\n[package]\nname = \"ws\"\n";
-        let result = resolve_cargo_toml_paths(input, crate_root);
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
         // Must not double-inject [workspace].
         assert_eq!(
             result.matches("[workspace]").count(), 1,
@@ -6006,7 +6074,7 @@ path = "src/lib.rs"
 [dependencies]
 runtime = { path = "../runtime" }
 "#;
-        let result = resolve_cargo_toml_paths(input, crate_root);
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
         // [lib] path must remain relative so the staging copy uses its own file.
         assert!(
             result.contains(r#"path = "src/lib.rs""#),
@@ -6017,6 +6085,140 @@ runtime = { path = "../runtime" }
             result.contains("/home/user/project/my-crate/../runtime"),
             "dep path must be absolutised: {result}",
         );
+    }
+
+    #[test]
+    fn has_workspace_inheritance_detects_dotted_fields() {
+        assert!(has_workspace_inheritance("edition.workspace = true\n"));
+        assert!(has_workspace_inheritance("[package]\nedition.workspace = true\n"));
+        assert!(has_workspace_inheritance("rust-version.workspace = true\n"));
+        assert!(!has_workspace_inheritance("[package]\nedition = \"2021\"\n"));
+        assert!(!has_workspace_inheritance(""));
+    }
+
+    #[test]
+    fn resolve_cargo_toml_paths_injects_workspace_package_fields() {
+        let crate_root = Path::new("/tmp/member");
+        let input = r#"[package]
+name = "member"
+edition.workspace = true
+
+[dependencies]
+"#;
+        let ws_fields = "edition = \"2021\"\nrust-version = \"1.70\"\n";
+        let result = resolve_cargo_toml_paths(input, crate_root, Some(ws_fields));
+        assert!(
+            result.contains("[workspace.package]"),
+            "must inject [workspace.package]: {result}",
+        );
+        assert!(
+            result.contains("edition = \"2021\""),
+            "must include inherited edition: {result}",
+        );
+        assert!(
+            result.contains("rust-version = \"1.70\""),
+            "must include inherited rust-version: {result}",
+        );
+    }
+
+    #[test]
+    fn resolve_cargo_toml_paths_no_ws_fields_when_no_inheritance() {
+        let crate_root = Path::new("/tmp/standalone");
+        let input = "[package]\nname = \"standalone\"\nedition = \"2021\"\n";
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
+        assert!(
+            !result.contains("[workspace.package]"),
+            "must not inject [workspace.package] without inheritance: {result}",
+        );
+        assert!(
+            result.contains("[workspace]"),
+            "must still inject [workspace] for isolation: {result}",
+        );
+    }
+
+    /// str-n374: workspace member crate staging preserves workspace metadata.
+    #[test]
+    fn staging_copy_preserves_workspace_package_inheritance() {
+        let ws_root = unique_tmp_dir("ws-root-n374");
+        let member_root = ws_root.join("api");
+        std::fs::create_dir_all(member_root.join("src")).unwrap();
+
+        std::fs::write(ws_root.join("Cargo.toml"), r#"[workspace]
+members = ["api"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.70"
+"#).unwrap();
+
+        std::fs::write(member_root.join("Cargo.toml"), r#"[package]
+name = "api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+"#).unwrap();
+
+        std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-n374");
+        let staging_crate = create_crate_staging_copy(&member_root, &staging_root).unwrap();
+
+        let staged_toml = std::fs::read_to_string(staging_crate.join("Cargo.toml")).unwrap();
+        assert!(
+            staged_toml.contains("[workspace.package]"),
+            "staged Cargo.toml must have [workspace.package]: {staged_toml}",
+        );
+        assert!(
+            staged_toml.contains("edition = \"2021\""),
+            "staged Cargo.toml must resolve edition from workspace: {staged_toml}",
+        );
+        assert!(
+            staged_toml.contains("rust-version = \"1.70\""),
+            "staged Cargo.toml must resolve rust-version from workspace: {staged_toml}",
+        );
+
+        // Original files must not be mutated.
+        let orig_member = std::fs::read_to_string(member_root.join("Cargo.toml")).unwrap();
+        assert!(
+            orig_member.contains("edition.workspace = true"),
+            "original Cargo.toml must not be mutated",
+        );
+
+        let _ = std::fs::remove_dir_all(&ws_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    /// str-n374: root-level crates without workspace inheritance still work.
+    #[test]
+    fn staging_copy_works_for_non_workspace_crate() {
+        let crate_root = unique_tmp_dir("standalone-n374");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+
+        std::fs::write(crate_root.join("Cargo.toml"), r#"[package]
+name = "standalone"
+version = "0.1.0"
+edition = "2021"
+"#).unwrap();
+
+        std::fs::write(crate_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-standalone-n374");
+        let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
+
+        let staged_toml = std::fs::read_to_string(staging_crate.join("Cargo.toml")).unwrap();
+        assert!(
+            !staged_toml.contains("[workspace.package]"),
+            "standalone crate must not have [workspace.package]: {staged_toml}",
+        );
+        assert!(
+            staged_toml.contains("[workspace]"),
+            "standalone crate must still have [workspace] for isolation: {staged_toml}",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
     }
 
     /// str-jx3r: writing instrumented source to a nested staging path must
