@@ -7,6 +7,7 @@ use shatter_core::oracle::SeedOracle;
 
 use crate::anthropic::AnthropicAdapter;
 use crate::custom_http::CustomHttpAdapter;
+use crate::google::GoogleAdapter;
 use crate::local_model::LocalModelAdapter;
 use crate::rate_limit::RateLimitedOracle;
 
@@ -15,7 +16,9 @@ use crate::rate_limit::RateLimitedOracle;
 /// Recognized adapters:
 /// - `"custom"` → [`CustomHttpAdapter`]
 /// - `"local"`  → [`LocalModelAdapter`]
-/// - `"anthropic"` / `"openai"` / `"google"` → stub (not-yet-implemented)
+/// - `"anthropic"` → [`AnthropicAdapter`]
+/// - `"google"` → [`GoogleAdapter`]
+/// - `"openai"` → stub (not-yet-implemented)
 /// - `"none"` → error (oracle explicitly disabled)
 /// - anything else → error (unknown adapter)
 ///
@@ -37,10 +40,14 @@ pub fn build_oracle(config: &LlmConfig) -> anyhow::Result<Arc<dyn SeedOracle>> {
             let inner = AnthropicAdapter::new(config)?;
             Arc::new(RateLimitedOracle::new(inner, max_retries))
         }
-        "openai" | "google" => {
+        "google" => {
+            let inner = GoogleAdapter::new(config.clone())?;
+            Arc::new(RateLimitedOracle::new(inner, max_retries))
+        }
+        "openai" => {
             anyhow::bail!(
                 "adapter {:?} is not yet implemented — \
-                 see str-0o8 (OpenAI), str-w4c (Google)",
+                 see str-0o8 (OpenAI)",
                 config.adapter
             );
         }
@@ -114,7 +121,7 @@ mod tests {
 
     #[test]
     fn stub_adapters_return_not_implemented() {
-        for name in &["openai", "google"] {
+        for name in &["openai"] {
             let config = LlmConfig {
                 adapter: name.to_string(),
                 ..LlmConfig::default()
@@ -133,8 +140,21 @@ mod tests {
             adapter: "anthropic".into(),
             ..LlmConfig::default()
         };
-        // Without API key set, build_oracle should fail with an API key error.
         unsafe { std::env::remove_var("SHATTER_ANTHROPIC_API_KEY") };
+        let err = expect_err(&config);
+        assert!(
+            err.to_string().contains("API key"),
+            "expected API key error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn google_adapter_requires_api_key() {
+        unsafe { std::env::remove_var("SHATTER_GOOGLE_API_KEY") };
+        let config = LlmConfig {
+            adapter: "google".into(),
+            ..LlmConfig::default()
+        };
         let err = expect_err(&config);
         assert!(
             err.to_string().contains("API key"),

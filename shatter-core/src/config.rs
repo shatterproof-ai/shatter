@@ -241,6 +241,10 @@ pub struct LlmConfig {
     /// Anthropic adapter settings (used when `adapter = "anthropic"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic: Option<AnthropicAdapterConfig>,
+
+    /// Google Gemini adapter settings (used when `adapter = "google"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google: Option<GoogleAdapterConfig>,
 }
 
 /// Authentication mode for the custom HTTP adapter.
@@ -338,6 +342,31 @@ fn local_default_startup_timeout() -> u32 {
     60
 }
 
+/// Configuration for the Google Gemini adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GoogleAdapterConfig {
+    /// Gemini model name. Default: `"gemini-2.0-flash"`.
+    #[serde(default = "google_default_model")]
+    pub model: String,
+
+    /// API key. Falls back to `SHATTER_GOOGLE_API_KEY` env var at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+fn google_default_model() -> String {
+    "gemini-2.0-flash".to_string()
+}
+
+impl Default for GoogleAdapterConfig {
+    fn default() -> Self {
+        Self {
+            model: google_default_model(),
+            api_key: None,
+        }
+    }
+}
+
 fn llm_default_enabled() -> bool {
     false
 }
@@ -389,6 +418,7 @@ impl Default for LlmConfig {
             custom: None,
             local: None,
             anthropic: None,
+            google: None,
         }
     }
 }
