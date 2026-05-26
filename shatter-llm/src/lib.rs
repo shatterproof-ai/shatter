@@ -2,6 +2,7 @@
 //! parsing/validation, adapter implementations, a registry, a trait-level
 //! mock oracle for unit tests, and a rate-limiting wrapper.
 
+pub mod anthropic;
 pub mod custom_http;
 pub mod local_model;
 pub mod mock;
@@ -10,6 +11,7 @@ pub mod prompt;
 pub mod rate_limit;
 pub mod registry;
 
+pub use anthropic::AnthropicAdapter;
 pub use custom_http::CustomHttpAdapter;
 pub use local_model::LocalModelAdapter;
 pub use mock::MockSeedOracle;
