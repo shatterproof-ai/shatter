@@ -5,6 +5,7 @@ use std::sync::Arc;
 use shatter_core::config::LlmConfig;
 use shatter_core::oracle::SeedOracle;
 
+use crate::anthropic::AnthropicAdapter;
 use crate::custom_http::CustomHttpAdapter;
 use crate::local_model::LocalModelAdapter;
 use crate::rate_limit::RateLimitedOracle;
@@ -32,10 +33,14 @@ pub fn build_oracle(config: &LlmConfig) -> anyhow::Result<Arc<dyn SeedOracle>> {
             let inner = LocalModelAdapter::new(config.clone())?;
             Arc::new(RateLimitedOracle::new(inner, max_retries))
         }
-        "anthropic" | "openai" | "google" => {
+        "anthropic" => {
+            let inner = AnthropicAdapter::new(config)?;
+            Arc::new(RateLimitedOracle::new(inner, max_retries))
+        }
+        "openai" | "google" => {
             anyhow::bail!(
                 "adapter {:?} is not yet implemented — \
-                 see str-9w8 (Anthropic), str-0o8 (OpenAI), str-w4c (Google)",
+                 see str-0o8 (OpenAI), str-w4c (Google)",
                 config.adapter
             );
         }
@@ -109,7 +114,7 @@ mod tests {
 
     #[test]
     fn stub_adapters_return_not_implemented() {
-        for name in &["anthropic", "openai", "google"] {
+        for name in &["openai", "google"] {
             let config = LlmConfig {
                 adapter: name.to_string(),
                 ..LlmConfig::default()
@@ -120,6 +125,21 @@ mod tests {
                 "expected not-implemented error for {name}, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn anthropic_adapter_requires_api_key() {
+        let config = LlmConfig {
+            adapter: "anthropic".into(),
+            ..LlmConfig::default()
+        };
+        // Without API key set, build_oracle should fail with an API key error.
+        unsafe { std::env::remove_var("SHATTER_ANTHROPIC_API_KEY") };
+        let err = expect_err(&config);
+        assert!(
+            err.to_string().contains("API key"),
+            "expected API key error, got: {err}"
+        );
     }
 
     #[test]

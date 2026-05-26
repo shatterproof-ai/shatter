@@ -237,6 +237,10 @@ pub struct LlmConfig {
     /// Local subprocess adapter settings (used when `adapter = "local"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local: Option<LocalAdapterConfig>,
+
+    /// Anthropic adapter settings (used when `adapter = "anthropic"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<AnthropicAdapterConfig>,
 }
 
 /// Authentication mode for the custom HTTP adapter.
@@ -302,6 +306,31 @@ pub struct LocalAdapterConfig {
     pub startup_timeout_seconds: u32,
 }
 
+/// Configuration for the Anthropic (Claude) adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct AnthropicAdapterConfig {
+    /// Model to use. Default: `"claude-sonnet-4-6"`.
+    #[serde(default = "anthropic_default_model")]
+    pub model: String,
+
+    /// API key. Falls back to `SHATTER_ANTHROPIC_API_KEY` env var at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+impl Default for AnthropicAdapterConfig {
+    fn default() -> Self {
+        Self {
+            model: anthropic_default_model(),
+            api_key: None,
+        }
+    }
+}
+
+fn anthropic_default_model() -> String {
+    "claude-sonnet-4-6".to_string()
+}
+
 fn local_default_port() -> u16 {
     11434
 }
@@ -359,6 +388,7 @@ impl Default for LlmConfig {
             context_lines: llm_default_context_lines(),
             custom: None,
             local: None,
+            anthropic: None,
         }
     }
 }
