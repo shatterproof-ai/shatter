@@ -229,6 +229,84 @@ pub struct LlmConfig {
     /// Number of source lines of context to include in each query. Default: 50.
     #[serde(default = "llm_default_context_lines")]
     pub context_lines: u32,
+
+    /// Custom HTTP adapter settings (used when `adapter = "custom"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomAdapterConfig>,
+
+    /// Local subprocess adapter settings (used when `adapter = "local"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalAdapterConfig>,
+}
+
+/// Authentication mode for the custom HTTP adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomAuthMode {
+    /// `Authorization: Bearer <token>`.
+    Bearer(String),
+    /// Custom header name and key value (e.g. `x-api-key: <key>`).
+    ApiKey { header: String, key: String },
+    /// No authentication.
+    None,
+}
+
+/// Configuration for the generic custom HTTP POST adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CustomAdapterConfig {
+    /// Endpoint URL.
+    pub url: String,
+
+    /// Extra headers sent with every request.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+
+    /// Authentication mode. Default: `none`.
+    #[serde(default = "custom_default_auth")]
+    pub auth: CustomAuthMode,
+
+    /// JSONPath where the prompt is placed in the request body.
+    #[serde(default = "custom_default_request_path")]
+    pub request_path: String,
+
+    /// JSONPath where the response text is read from.
+    #[serde(default = "custom_default_response_path")]
+    pub response_path: String,
+}
+
+fn custom_default_auth() -> CustomAuthMode {
+    CustomAuthMode::None
+}
+fn custom_default_request_path() -> String {
+    "$.messages[0].content".to_string()
+}
+fn custom_default_response_path() -> String {
+    "$.choices[0].message.content".to_string()
+}
+
+/// Configuration for the local subprocess (OpenAI-compatible) adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct LocalAdapterConfig {
+    /// Command to start the local server (e.g. `["ollama", "serve"]`).
+    pub command: Vec<String>,
+
+    /// Model name to request.
+    pub model: String,
+
+    /// Port the server listens on. Default: 11434.
+    #[serde(default = "local_default_port")]
+    pub port: u16,
+
+    /// Seconds to wait for the server to become ready. Default: 60.
+    #[serde(default = "local_default_startup_timeout")]
+    pub startup_timeout_seconds: u32,
+}
+
+fn local_default_port() -> u16 {
+    11434
+}
+fn local_default_startup_timeout() -> u32 {
+    60
 }
 
 fn llm_default_enabled() -> bool {
@@ -279,6 +357,8 @@ impl Default for LlmConfig {
             timeout_seconds: llm_default_timeout_seconds(),
             max_retries: llm_default_max_retries(),
             context_lines: llm_default_context_lines(),
+            custom: None,
+            local: None,
         }
     }
 }
