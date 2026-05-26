@@ -2076,17 +2076,17 @@ fn find_workspace_root(crate_root: &Path) -> Option<PathBuf> {
     let mut dir = crate_root.parent()?;
     loop {
         let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                for line in content.lines() {
-                    let t = line.trim();
-                    if t == "[workspace]" || t.starts_with("[workspace]") {
-                        return Some(dir.to_path_buf());
-                    }
+        if cargo_toml.exists()
+            && let Ok(content) = std::fs::read_to_string(&cargo_toml)
+        {
+            for line in content.lines() {
+                let t = line.trim();
+                if t == "[workspace]" || t.starts_with("[workspace]") {
+                    return Some(dir.to_path_buf());
                 }
             }
         }
-        if !dir.parent().is_some_and(|p| p != dir) {
+        if dir.parent().map_or(true, |p| p == dir) {
             return None;
         }
         dir = dir.parent().unwrap();
