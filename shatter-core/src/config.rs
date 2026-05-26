@@ -242,6 +242,10 @@ pub struct LlmConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic: Option<AnthropicAdapterConfig>,
 
+    /// OpenAI adapter settings (used when `adapter = "openai"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai: Option<OpenAiAdapterConfig>,
+
     /// Google Gemini adapter settings (used when `adapter = "google"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google: Option<GoogleAdapterConfig>,
@@ -342,6 +346,37 @@ fn local_default_startup_timeout() -> u32 {
     60
 }
 
+/// Configuration for the OpenAI (GPT) adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct OpenAiAdapterConfig {
+    /// Model name to request. Default: `"gpt-4o"`.
+    #[serde(default = "openai_default_model")]
+    pub model: String,
+
+    /// API key. Falls back to `SHATTER_OPENAI_API_KEY` env var when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Custom base URL for OpenAI-compatible proxies (Ollama, Azure, etc.).
+    /// Default: `https://api.openai.com/v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+impl Default for OpenAiAdapterConfig {
+    fn default() -> Self {
+        Self {
+            model: openai_default_model(),
+            api_key: None,
+            base_url: None,
+        }
+    }
+}
+
+fn openai_default_model() -> String {
+    "gpt-4o".to_string()
+}
+
 /// Configuration for the Google Gemini adapter.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct GoogleAdapterConfig {
@@ -418,6 +453,7 @@ impl Default for LlmConfig {
             custom: None,
             local: None,
             anthropic: None,
+            openai: None,
             google: None,
         }
     }
