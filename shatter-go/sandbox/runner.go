@@ -309,6 +309,16 @@ func appendDirChain(args []string, path string) []string {
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// Defense-in-depth: entries that vanish between readdir and
+			// the walker's lstat (e.g. a concurrent launcher cleanup
+			// removing .shatter-launchers/) are silently skipped rather
+			// than failing the copy (str-17np).
+			if os.IsNotExist(walkErr) {
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			return fmt.Errorf("sandbox: walk project: %w", walkErr)
 		}
 		rel, err := filepath.Rel(src, path)
@@ -325,6 +335,11 @@ func copyTree(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		info, err := entry.Info()
 		if err != nil {
+			// Same defense-in-depth: entry disappeared between readdir
+			// and Info() stat.
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return fmt.Errorf("sandbox: stat project entry %q: %w", path, err)
 		}
 		mode := info.Mode()
@@ -378,7 +393,7 @@ func copyFile(src, dst string) error {
 
 func shouldSkipProjectDir(name string) bool {
 	switch name {
-	case ".git", ".shatter-cache", "shatter-artifacts", "node_modules", "target":
+	case ".git", ".shatter-cache", ".shatter-launchers", "shatter-artifacts", "node_modules", "target":
 		return true
 	default:
 		return false
