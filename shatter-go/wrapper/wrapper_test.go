@@ -130,6 +130,221 @@ func TestDiscoveryHashChangesWithTargetImports(t *testing.T) {
 	}
 }
 
+// str-5ac4: regression tests — DiscoveryHash must change when any
+// code-generation-relevant field changes, not just target IDs/imports.
+
+func TestDiscoveryHashChangesWithParamTypeChange(t *testing.T) {
+	before := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:ChipsHint",
+			SymbolName: "ChipsHint",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "choices", GoType: "string"},
+			},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+	}
+	after := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:ChipsHint",
+			SymbolName: "ChipsHint",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "choices", GoType: "[]string"},
+			},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(before, nil)
+	h2 := wrapper.DiscoveryHash(after, nil)
+	if h1 == h2 {
+		t.Errorf("hash should change when parameter type changes (string → []string), got %q both times", h1)
+	}
+}
+
+func TestDiscoveryHashChangesWithResultArityChange(t *testing.T) {
+	before := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:Compute",
+			SymbolName: "Compute",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "x", GoType: "int"}},
+			HasResult:  true, ResultGoType: "int", ResultCount: 1,
+		},
+	}
+	after := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:Compute",
+			SymbolName: "Compute",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "x", GoType: "int"}},
+			HasResult:  true, ResultGoType: "int", ResultCount: 2,
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(before, nil)
+	h2 := wrapper.DiscoveryHash(after, nil)
+	if h1 == h2 {
+		t.Errorf("hash should change when result count changes, got %q both times", h1)
+	}
+}
+
+func TestDiscoveryHashChangesWithRuntimeValueExpr(t *testing.T) {
+	before := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:Handle",
+			SymbolName: "Handle",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context"},
+			},
+			Imports: []string{"context"},
+		},
+	}
+	after := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/targets:Handle",
+			SymbolName: "Handle",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "ctx", GoType: "context.Context", RuntimeValueExpr: "context.Background()"},
+			},
+			Imports: []string{"context"},
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(before, nil)
+	h2 := wrapper.DiscoveryHash(after, nil)
+	if h1 == h2 {
+		t.Errorf("hash should change when RuntimeValueExpr is added, got %q both times", h1)
+	}
+}
+
+func TestDiscoveryHashChangesWithReceiverKind(t *testing.T) {
+	valuRecv := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:(Svc).Run", SymbolName: "Run",
+			Kind: wrapper.TargetKindMethod, ReceiverType: "Svc", IsPointerRecv: false,
+		},
+	}
+	ptrRecv := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:(Svc).Run", SymbolName: "Run",
+			Kind: wrapper.TargetKindMethod, ReceiverType: "Svc", IsPointerRecv: true,
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(valuRecv, nil)
+	h2 := wrapper.DiscoveryHash(ptrRecv, nil)
+	if h1 == h2 {
+		t.Errorf("hash should change when receiver pointer-ness changes, got %q both times", h1)
+	}
+}
+
+func TestDiscoveryHashChangesWithConstructorParamTypes(t *testing.T) {
+	targets := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:(*Svc).Run", SymbolName: "Run",
+			Kind: wrapper.TargetKindMethod, ReceiverType: "Svc", IsPointerRecv: true,
+		},
+	}
+	ctorBefore := []wrapper.ConstructorCandidate{
+		{
+			FuncName: "NewSvc", TargetType: "Svc", HasParams: true, ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{{Name: "name", GoType: "string"}},
+		},
+	}
+	ctorAfter := []wrapper.ConstructorCandidate{
+		{
+			FuncName: "NewSvc", TargetType: "Svc", HasParams: true, ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "name", GoType: "string"},
+				{Name: "port", GoType: "int"},
+			},
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(targets, ctorBefore)
+	h2 := wrapper.DiscoveryHash(targets, ctorAfter)
+	if h1 == h2 {
+		t.Errorf("hash should change when constructor param types change, got %q both times", h1)
+	}
+}
+
+func TestDiscoveryHashChangesWithVariadicFlag(t *testing.T) {
+	before := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:Sum", SymbolName: "Sum", Kind: wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "vals", GoType: "[]int", IsVariadic: false}},
+		},
+	}
+	after := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:Sum", SymbolName: "Sum", Kind: wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{{Name: "vals", GoType: "[]int", IsVariadic: true}},
+		},
+	}
+
+	h1 := wrapper.DiscoveryHash(before, nil)
+	h2 := wrapper.DiscoveryHash(after, nil)
+	if h1 == h2 {
+		t.Errorf("hash should change when variadic flag changes, got %q both times", h1)
+	}
+}
+
+// str-5ac4: WriteWrapperFile must regenerate the wrapper when the source
+// signature changes even though the target set is the same, because the
+// signature change produces a different DiscoveryHash.
+func TestWriteWrapperFileRegeneratesOnParamChange(t *testing.T) {
+	dir := t.TempDir()
+
+	before := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:ChipsHint", SymbolName: "ChipsHint",
+			Kind: wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "choices", GoType: "string"},
+			},
+			HasResult: true, ResultGoType: "string", ResultCount: 1,
+		},
+	}
+	after := []wrapper.WrapperTarget{
+		{
+			ID: "example.com/targets:ChipsHint", SymbolName: "ChipsHint",
+			Kind: wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "choices", GoType: "[]string"},
+			},
+			HasResult: true, ResultGoType: "string", ResultCount: 1,
+		},
+	}
+
+	path1, fresh1, err := wrapper.WriteWrapperFile(dir, "targets", before, nil)
+	if err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if !fresh1 {
+		t.Error("first call should be fresh")
+	}
+
+	path2, fresh2, err := wrapper.WriteWrapperFile(dir, "targets", after, nil)
+	if err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if !fresh2 {
+		t.Error("second call should be fresh (param type changed)")
+	}
+	if path1 == path2 {
+		t.Error("paths should differ because the hash changed")
+	}
+}
+
 func TestWriteWrapperFileSkipsRebuild(t *testing.T) {
 	dir := t.TempDir()
 	targets := threeTargets[:1]

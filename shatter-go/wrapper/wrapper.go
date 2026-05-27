@@ -82,47 +82,118 @@ const (
 	WrapperKindConstructorPrefix = "constructor:"
 )
 
+// generatorVersion is bumped whenever the wrapper code-generation logic
+// changes in a way that produces materially different output for the same
+// inputs (new code paths, changed deserialization templates, etc.).
+// Including it in DiscoveryHash ensures that stale cached wrappers from a
+// previous generator revision are never reused. str-5ac4.
+const generatorVersion = "gen-v2"
+
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
-// sorted target IDs, target type parameter signatures, target imports, and
-// sorted constructor function metadata. The hash is fully determined by the
-// discovery results so the wrapper filename is stable for the same set of
-// targets and constructors, and changes when newly discovered imports would
-// otherwise require regenerating an existing wrapper file.
+// full target signatures (parameters, results, receiver shape, imports,
+// type params), constructor metadata (including parameter types), and a
+// generator version constant. The hash is fully determined by the discovery
+// results plus the generator revision, so the wrapper filename is stable
+// for the same inputs and changes when any code-generation-relevant field
+// differs — including parameter type changes, result arity changes,
+// runtime-value bindings, and wrapper-generator code changes (str-5ac4).
 func DiscoveryHash(targets []WrapperTarget, constructors []ConstructorCandidate) string {
 	ids := make([]string, len(targets))
 	for i, t := range targets {
-		ids[i] = t.ID + ":" + typeParamSignature(t.TypeParams) + ":" + strings.Join(sortedStrings(t.Imports), ",")
+		ids[i] = targetSignature(t)
 	}
 	sort.Strings(ids)
 
 	ctors := make([]string, len(constructors))
 	for i, c := range constructors {
-		hasParams := "0"
-		if c.HasParams {
-			hasParams = "1"
-		}
-		// str-jeen.49: include ReturnsPointer in the hash so that a
-		// constructor whose return kind changes invalidates the cached
-		// wrapper file and triggers regeneration with the correct
-		// dereference shape.
-		returnsPtr := "0"
-		if c.ReturnsPointer {
-			returnsPtr = "1"
-		}
-		// str-jeen.78: include ReturnsError so that adding an error return to
-		// a constructor invalidates the cached wrapper (switching from
-		// single-assignment to two-assignment form).
-		returnsErr := "0"
-		if c.ReturnsError {
-			returnsErr = "1"
-		}
-		ctors[i] = c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr
+		ctors[i] = constructorSignature(c)
 	}
 	sort.Strings(ctors)
 
-	payload := strings.Join(ids, "\n") + "\n---\n" + strings.Join(ctors, "\n")
+	payload := generatorVersion + "\n" + strings.Join(ids, "\n") + "\n---\n" + strings.Join(ctors, "\n")
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// targetSignature returns a deterministic string encoding every field of a
+// WrapperTarget that influences the generated wrapper source. Any change
+// to parameter types, result shape, receiver kind, imports, or
+// runtime-value bindings produces a different signature, invalidating the
+// cached wrapper. str-5ac4.
+func targetSignature(t WrapperTarget) string {
+	var b strings.Builder
+	b.WriteString(t.ID)
+	b.WriteByte(':')
+	b.WriteString(string(t.Kind))
+	b.WriteByte(':')
+	b.WriteString(t.ReceiverType)
+	b.WriteByte(':')
+	if t.IsPointerRecv {
+		b.WriteByte('1')
+	} else {
+		b.WriteByte('0')
+	}
+	b.WriteByte(':')
+	b.WriteString(typeParamSignature(t.TypeParams))
+	b.WriteByte(':')
+	b.WriteString(strings.Join(sortedStrings(t.Imports), ","))
+	b.WriteByte(':')
+	// Parameter signatures: type, variadic flag, and runtime-value expression.
+	for pi, p := range t.Parameters {
+		if pi > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(p.Name)
+		b.WriteByte('/')
+		b.WriteString(p.GoType)
+		b.WriteByte('/')
+		if p.IsVariadic {
+			b.WriteByte('v')
+		}
+		b.WriteByte('/')
+		b.WriteString(p.RuntimeValueExpr)
+	}
+	b.WriteByte(':')
+	// Result signature.
+	if t.HasResult {
+		b.WriteByte('1')
+	} else {
+		b.WriteByte('0')
+	}
+	b.WriteByte('/')
+	b.WriteString(t.ResultGoType)
+	b.WriteByte('/')
+	fmt.Fprintf(&b, "%d", t.ResultCount)
+	return b.String()
+}
+
+// constructorSignature returns a deterministic string encoding every field
+// of a ConstructorCandidate that influences the generated wrapper source,
+// including parameter types (str-5ac4).
+func constructorSignature(c ConstructorCandidate) string {
+	hasParams := "0"
+	if c.HasParams {
+		hasParams = "1"
+	}
+	returnsPtr := "0"
+	if c.ReturnsPointer {
+		returnsPtr = "1"
+	}
+	returnsErr := "0"
+	if c.ReturnsError {
+		returnsErr = "1"
+	}
+	sig := c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr
+	// str-5ac4: include actual parameter types so that constructor
+	// signature changes invalidate the cached wrapper.
+	if len(c.Parameters) > 0 {
+		paramParts := make([]string, len(c.Parameters))
+		for i, p := range c.Parameters {
+			paramParts[i] = p.Name + "/" + p.GoType
+		}
+		sig += ":" + strings.Join(paramParts, ";")
+	}
+	return sig
 }
 
 // WrapperFilename returns the conventional filename for a wrapper given its
