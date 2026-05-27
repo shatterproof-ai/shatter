@@ -22,6 +22,14 @@ func RegisterActiveLauncherDirForTest(dir string) {
 	registerActiveLauncherDir(dir)
 }
 
+func UnregisterActiveLauncherDirForTest(dir string) {
+	unregisterActiveLauncherDir(dir)
+}
+
+func HasActiveLauncherDirsForTest() bool {
+	return hasActiveLauncherDirs()
+}
+
 func LaunchersDirNameForTest() string {
 	return launchersDirName
 }

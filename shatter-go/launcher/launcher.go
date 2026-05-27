@@ -390,18 +390,37 @@ func writeLauncherSourceDir(launcherDir string) error {
 }
 
 // cleanupLauncherSourceDir removes the launcher's transient source directory
-// and, if it leaves the enclosing `.shatter-launchers/` directory empty,
-// removes that too. Errors are swallowed: cleanup is best-effort, and the
-// build's success/failure has already been determined.
+// and, if it leaves the enclosing `.shatter-launchers/` directory empty AND
+// no other launcher dirs are tracked as active, removes that too. The active-
+// dir check prevents a race where one goroutine's cleanup removes the parent
+// while another goroutine is about to create a sibling subdirectory or while
+// a sandbox copyTree walk is traversing it (str-17np). Errors are swallowed:
+// cleanup is best-effort, and the build's success/failure has already been
+// determined.
 func cleanupLauncherSourceDir(targetModuleDir, launcherDir string) {
 	_ = os.RemoveAll(launcherDir)
 	parent := filepath.Dir(launcherDir)
 	if filepath.Base(parent) == launchersDirName && strings.HasPrefix(parent, targetModuleDir) {
+		// Only remove the parent if no other goroutine has an active
+		// launcher dir under ANY .shatter-launchers/ directory. This is
+		// conservative: it may leave the dir behind when peers are active
+		// in a different module, but SweepActive cleans it up at shutdown.
+		if hasActiveLauncherDirs() {
+			return
+		}
 		entries, err := os.ReadDir(parent)
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(parent)
 		}
 	}
+}
+
+// hasActiveLauncherDirs reports whether any launcher source directories are
+// currently tracked as in-flight (i.e. other goroutines are building).
+func hasActiveLauncherDirs() bool {
+	activeLauncherDirsMu.Lock()
+	defer activeLauncherDirsMu.Unlock()
+	return len(activeLauncherDirs) > 0
 }
 
 // buildCombinedOverlay assembles a single overlay manifest combining any
