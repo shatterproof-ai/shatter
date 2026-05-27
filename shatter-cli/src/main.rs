@@ -569,6 +569,19 @@ async fn main() -> ExitCode {
             let effective_timeout_per_fn = timeout_per_fn
                 .or(yaml_defaults.timeout)
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_TIMEOUT_PER_FN);
+            // str-7v73: when the user raises --timeout-per-fn above the
+            // default --build-timeout (30s) or --request-timeout (30s),
+            // the inner timeout fires first and the per-fn budget is never
+            // reached. The Prepare command goes through
+            // `tokio::time::timeout(build_timeout, frontend.send(…))` —
+            // the frontend's per-request timeout must also be at least as
+            // large, otherwise `send()` times out before the outer
+            // deadline. Raise both to match when they are at their
+            // defaults.
+            let effective_build_timeout =
+                crate::helpers::escalate_timeout(build_timeout, 30, effective_timeout_per_fn);
+            let effective_request_timeout =
+                crate::helpers::escalate_timeout(request_timeout, 30, effective_timeout_per_fn);
             let effective_exec_timeout = exec_timeout
                 .or_else(|| project_cfg.as_ref().and_then(|c| c.exec_timeout))
                 .unwrap_or(shatter_core::config::DEFAULT_SCAN_EXEC_TIMEOUT);
@@ -650,9 +663,9 @@ async fn main() -> ExitCode {
                 effective_timeout_total,
                 cache_dir.as_deref(),
                 effective_no_cache,
-                request_timeout,
+                effective_request_timeout,
                 effective_exec_timeout,
-                build_timeout,
+                effective_build_timeout,
                 release,
                 effective_parallelism,
                 effective_timeout_per_fn,

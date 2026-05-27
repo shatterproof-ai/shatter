@@ -1367,6 +1367,20 @@ pub(crate) fn build_oracle_bundle(
     }))
 }
 
+/// str-7v73: Escalate a secondary timeout (build or request) to at least
+/// `timeout_per_fn` when the secondary is at its clap default. The Prepare
+/// command and individual `frontend.send()` calls each carry their own
+/// timeouts; if they fire before the per-function exploration budget the
+/// user requested, the per-fn flag appears silently ignored. Returns the
+/// secondary value unchanged when it was explicitly set (i.e. != default).
+pub(crate) fn escalate_timeout(secondary: u64, secondary_default: u64, timeout_per_fn: u64) -> u64 {
+    if secondary == secondary_default && timeout_per_fn > secondary {
+        timeout_per_fn
+    } else {
+        secondary
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1943,5 +1957,19 @@ mod tests {
             discovery_lang_to_cli_lang(DiscoveryLanguage::Rust),
             Some(Language::Rust)
         );
+    }
+
+    /// str-7v73: escalate_timeout raises secondary timeouts when they are at
+    /// their default and timeout_per_fn exceeds them.
+    #[test]
+    fn escalate_timeout_raises_default_to_per_fn() {
+        // Default 30s with per-fn 180s → escalated to 180s
+        assert_eq!(escalate_timeout(30, 30, 180), 180);
+        // Explicitly set to 60s (not default) → unchanged
+        assert_eq!(escalate_timeout(60, 30, 180), 60);
+        // Default 30s with per-fn 30s → unchanged (no escalation needed)
+        assert_eq!(escalate_timeout(30, 30, 30), 30);
+        // Default 30s with per-fn 10s → unchanged (per-fn below secondary)
+        assert_eq!(escalate_timeout(30, 30, 10), 30);
     }
 }

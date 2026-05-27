@@ -95,13 +95,23 @@ fn language_from_path(file_path: &str) -> Option<String> {
 /// failed_at)` (str-4mmd). The reason strings produced by
 /// `scan_orchestrator` follow a small number of patterns:
 ///
-/// - `"timed out after Ns"` / `"timed out (total scan budget exceeded)"`
+/// - `"timed out during build after Ns"` / `"timed out during execution after Ns"`
+/// - `"timed out after Ns"` (legacy / total budget)
+/// - `"timed out (total scan budget exceeded)"`
 /// - `"error: exploration error: frontend error: <msg>"`
 /// - `"error: exploration error: <msg>"`
 /// - `"error: <msg>"`
 /// - `"no analysis found"`
 /// - plain strings from the orchestrator
 fn classify_failure_reason(reason: &str) -> (String, String, String) {
+    // str-7v73: phased timeout messages distinguish build from explore.
+    if reason.starts_with("timed out during build") {
+        return (
+            "build_timeout".into(),
+            reason.into(),
+            "build".into(),
+        );
+    }
     if reason.starts_with("timed out") {
         return (
             "timeout".into(),
@@ -4673,6 +4683,31 @@ mod proptests {
         assert_eq!(et, "unknown");
         assert_eq!(em, "some weird reason");
         assert_eq!(fa, "scan");
+    }
+
+    /// str-7v73: phased timeout reason strings are classified distinctly.
+    #[test]
+    fn classify_failure_reason_phased_timeout() {
+        // Build-phase timeout → build_timeout
+        let (et, em, fa) =
+            super::classify_failure_reason("timed out during build after 30s");
+        assert_eq!(et, "build_timeout");
+        assert_eq!(em, "timed out during build after 30s");
+        assert_eq!(fa, "build");
+
+        // Exploration-phase timeout → timeout (unchanged)
+        let (et, em, fa) =
+            super::classify_failure_reason("timed out during execution after 180s");
+        assert_eq!(et, "timeout");
+        assert_eq!(em, "timed out during execution after 180s");
+        assert_eq!(fa, "exploration");
+
+        // Legacy format (total budget) → timeout
+        let (et, em, fa) =
+            super::classify_failure_reason("timed out (total scan budget exceeded)");
+        assert_eq!(et, "timeout");
+        assert_eq!(em, "timed out (total scan budget exceeded)");
+        assert_eq!(fa, "exploration");
     }
 
     /// str-4mmd: language detection from file paths.
