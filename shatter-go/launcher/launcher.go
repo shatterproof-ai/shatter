@@ -390,18 +390,37 @@ func writeLauncherSourceDir(launcherDir string) error {
 }
 
 // cleanupLauncherSourceDir removes the launcher's transient source directory
-// and, if it leaves the enclosing `.shatter-launchers/` directory empty,
-// removes that too. Errors are swallowed: cleanup is best-effort, and the
-// build's success/failure has already been determined.
+// and, if it leaves the enclosing `.shatter-launchers/` directory empty AND
+// no other launcher dirs are tracked as active, removes that too. The active-
+// dir check prevents a race where one goroutine's cleanup removes the parent
+// while another goroutine is about to create a sibling subdirectory or while
+// a sandbox copyTree walk is traversing it (str-17np). Errors are swallowed:
+// cleanup is best-effort, and the build's success/failure has already been
+// determined.
 func cleanupLauncherSourceDir(targetModuleDir, launcherDir string) {
 	_ = os.RemoveAll(launcherDir)
 	parent := filepath.Dir(launcherDir)
 	if filepath.Base(parent) == launchersDirName && strings.HasPrefix(parent, targetModuleDir) {
+		// Only remove the parent if no other goroutine has an active
+		// launcher dir under ANY .shatter-launchers/ directory. This is
+		// conservative: it may leave the dir behind when peers are active
+		// in a different module, but SweepActive cleans it up at shutdown.
+		if hasActiveLauncherDirs() {
+			return
+		}
 		entries, err := os.ReadDir(parent)
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(parent)
 		}
 	}
+}
+
+// hasActiveLauncherDirs reports whether any launcher source directories are
+// currently tracked as in-flight (i.e. other goroutines are building).
+func hasActiveLauncherDirs() bool {
+	activeLauncherDirsMu.Lock()
+	defer activeLauncherDirsMu.Unlock()
+	return len(activeLauncherDirs) > 0
 }
 
 // buildCombinedOverlay assembles a single overlay manifest combining any
@@ -488,6 +507,25 @@ func writeAugmentedGoMod(opts BuildOptions) (string, error) {
 	if err := f.AddReplace(instrument.HarnessRuntimeModuleName, "", opts.HarnessRuntimeDir, ""); err != nil {
 		return "", fmt.Errorf("launcher: augment go.mod replace: %w", err)
 	}
+
+	// Ensure the augmented go directive is at least as high as the harness
+	// module's go directive. Without this, `go build -overlay` fails with
+	// "go: updates to go.mod needed, but go.mod is part of the overlay"
+	// because Go ≥1.22 enforces that a module's go directive is ≥ the
+	// highest go directive of its dependencies, and it cannot update an
+	// overlaid go.mod.
+	if minGoVer, err := harnessGoVersion(opts.HarnessRuntimeDir); err == nil && minGoVer != "" {
+		targetVer := ""
+		if f.Go != nil {
+			targetVer = f.Go.Version
+		}
+		if goVersionLess(targetVer, minGoVer) {
+			if err := f.AddGoStmt(minGoVer); err != nil {
+				return "", fmt.Errorf("launcher: bump go directive to %s: %w", minGoVer, err)
+			}
+		}
+	}
+
 	out, err := f.Format()
 	if err != nil {
 		return "", fmt.Errorf("launcher: format augmented go.mod: %w", err)
@@ -500,6 +538,53 @@ func writeAugmentedGoMod(opts BuildOptions) (string, error) {
 		return "", fmt.Errorf("launcher: write augmented go.mod: %w", err)
 	}
 	return dest, nil
+}
+
+// harnessGoVersion reads the harness module's go.mod and returns its go
+// directive version string (e.g. "1.23"). Returns ("", nil) if the
+// directive is absent.
+func harnessGoVersion(harnessDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(harnessDir, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", err
+	}
+	if f.Go != nil {
+		return f.Go.Version, nil
+	}
+	return "", nil
+}
+
+// goVersionLess reports whether version a is strictly less than version b.
+// Both must be bare Go version strings like "1.21" or "1.23.1".
+// Returns true when a is empty (no go directive) and b is not.
+func goVersionLess(a, b string) bool {
+	if a == "" {
+		return b != ""
+	}
+	if b == "" {
+		return false
+	}
+	aParts := strings.SplitN(a, ".", 3)
+	bParts := strings.SplitN(b, ".", 3)
+	// Pad to 3 components for uniform comparison.
+	for len(aParts) < 3 {
+		aParts = append(aParts, "0")
+	}
+	for len(bParts) < 3 {
+		bParts = append(bParts, "0")
+	}
+	for i := 0; i < 3; i++ {
+		ai, _ := strconv.Atoi(aParts[i])
+		bi, _ := strconv.Atoi(bParts[i])
+		if ai != bi {
+			return ai < bi
+		}
+	}
+	return false
 }
 
 func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool, err error) {
