@@ -167,9 +167,12 @@ fn explore_quiet_stdout_json_remains_rejected() {
         "explore --stdout --format json must be rejected even under --quiet",
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // The str-tzbr contract is enforced at the clap level — `json` is not a
+    // valid `--format` variant for explore. The rejection message comes from
+    // clap's own validation rather than a custom error handler.
     assert!(
-        stderr.contains("explore --format json"),
-        "expected JSON-stdout rejection reason on stderr; got:\n{stderr}",
+        stderr.contains("invalid value") && stderr.contains("json"),
+        "expected clap rejection for json format on stderr; got:\n{stderr}",
     );
     assert!(
         output.stdout.is_empty(),

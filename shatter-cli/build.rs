@@ -94,6 +94,22 @@ fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
         "cargo:rerun-if-changed={}",
         go_dir.join("wrapper").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("launcher").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("build").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("overlay").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("harness").display()
+    );
     println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
 
     let go_binary = out_dir.join("shatter-go");
