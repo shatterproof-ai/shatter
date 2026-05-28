@@ -1317,6 +1317,112 @@ struct OwnedTypeMapping {
     needs_slice_conversion: bool,
 }
 
+/// Classification of an Axum extractor wrapper type seen on a function parameter.
+///
+/// The wrapper-generation paths (`generate_harness`, `generate_dispatch_harness`,
+/// `generate_crate_bridge_wrapper`) cannot blindly call `serde_json::from_value`
+/// on Axum extractor wrappers because:
+/// - `axum::extract::Path<T>`, `Query<T>`, `Json<T>` are *not* `DeserializeOwned`
+///   themselves (only their inner `T` typically is), so the naïve emit produces
+///   `the trait bound \`Path<T>: DeserializeOwned\` is not satisfied`.
+/// - `axum::extract::State<T>` does not implement `Deserialize` at all — its
+///   value comes from the `Router::with_state()` plumbing, not from the request.
+///
+/// This classifier inspects the leaf path segment of the parameter type so it
+/// matches both `Json<T>` (when imported via `use axum::Json`) and
+/// `axum::extract::Json<T>` (fully qualified).
+#[derive(Debug, Clone, PartialEq)]
+enum AxumExtractor {
+    /// `Path<T>` — supported: deserialize inner `T`, then wrap.
+    Path(String),
+    /// `Query<T>` — supported: deserialize inner `T`, then wrap.
+    Query(String),
+    /// `Json<T>` — supported: deserialize inner `T`, then wrap.
+    Json(String),
+    /// `State<T>` — unsupported by generic wrappers (no `Deserialize` impl).
+    /// The wrapper must early-return with a clear "not supported" error instead
+    /// of emitting an uncompilable `serde_json::from_value::<State<T>>` call.
+    State,
+}
+
+fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
+    // Strip any leading reference (`&`, `&mut`) before parsing — extractors
+    // are usually passed by value but we don't want to fail on `&Path<T>`.
+    let parsed: syn::Type = syn::parse_str(ty).ok()?;
+    let path = match parsed {
+        syn::Type::Path(syn::TypePath { path, .. }) => path,
+        syn::Type::Reference(r) => match *r.elem {
+            syn::Type::Path(syn::TypePath { path, .. }) => path,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let seg = path.segments.last()?;
+    let name = seg.ident.to_string();
+    let inner_type = || -> Option<String> {
+        match &seg.arguments {
+            syn::PathArguments::AngleBracketed(args) => {
+                args.args.iter().find_map(|a| match a {
+                    syn::GenericArgument::Type(t) => {
+                        use quote::ToTokens;
+                        Some(t.to_token_stream().to_string())
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    };
+    match name.as_str() {
+        "Path" => inner_type().map(AxumExtractor::Path),
+        "Query" => inner_type().map(AxumExtractor::Query),
+        "Json" => inner_type().map(AxumExtractor::Json),
+        "State" => Some(AxumExtractor::State),
+        _ => None,
+    }
+}
+
+/// Returns the fully-qualified Axum constructor expression to wrap an inner
+/// deserialized value into the extractor type, e.g. `axum::extract::Path`.
+fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
+    match ext {
+        AxumExtractor::Path(_) => "axum::extract::Path",
+        AxumExtractor::Query(_) => "axum::extract::Query",
+        AxumExtractor::Json(_) => "axum::Json",
+        AxumExtractor::State => "", // unreachable: State doesn't get constructed here
+    }
+}
+
+/// If any parameter is an Axum `State<T>` extractor, return a message describing
+/// why this function isn't executable via the generic wrapper path.
+fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
+    let states: Vec<String> = param_types
+        .iter()
+        .filter_map(|ty| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::State) => Some(ty.clone()),
+            _ => None,
+        })
+        .collect();
+    if states.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "axum extractor `{}` not constructible without an app-state generator; \
+             configure a state generator or run via the Axum harness adapter",
+            states.join("`, `")
+        ))
+    }
+}
+
+/// True if any parameter is an Axum extractor (handler-shaped function).
+///
+/// Used to decide whether to skip Serialize-on-return-value capture, which
+/// would otherwise fail for `axum::Json<T>` and project error types that
+/// don't implement `Serialize`.
+fn is_axum_handler_shape(param_types: &[String]) -> bool {
+    param_types.iter().any(|ty| classify_axum_extractor(ty).is_some())
+}
+
 fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
     let normalized = ty.replace(' ', "");
     match normalized.as_str() {
@@ -1383,10 +1489,45 @@ fn generate_harness(
         h.push('\n');
     }
 
+    // If any parameter is an Axum `State<T>` we cannot synthesize it from JSON
+    // (it has no `Deserialize` impl). Emit an early return with a clear error
+    // rather than producing uncompilable `from_value::<State<T>>` code.
+    if let Some(reason) = axum_state_unsupported_reason(param_types) {
+        h.push_str(&format!(
+            "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0, vec![]);\n",
+            reason
+        ));
+        // Emit a dummy reference to silence unused-variable warnings on `inputs`.
+        h.push_str("        #[allow(unreachable_code)] { let _ = inputs; }\n");
+        h.push_str("    });\n");
+        h.push_str("}\n");
+        return Ok(h);
+    }
+
     // Deserialize each input parameter from the inputs array.
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-        if let Some(mapping) = owned_type_for_ref(ty) {
+        if let Some(ext) = classify_axum_extractor(ty) {
+            // Axum Path/Query/Json: deserialize inner T, then wrap with the
+            // extractor constructor. The wrapper types themselves are not
+            // `DeserializeOwned` so `from_value::<Path<T>>` would not compile.
+            let inner = match &ext {
+                AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                AxumExtractor::State => unreachable!("State handled above"),
+            };
+            let ctor = axum_extractor_constructor(&ext);
+            h.push_str(&format!(
+                "        let {clean_name}_inner: {inner} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
+            ));
+            h.push_str("            Ok(value) => value,\n");
+            h.push_str(&format!(
+                "            Err(__err) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0, vec![]),\n"
+            ));
+            h.push_str("        };\n");
+            h.push_str(&format!(
+                "        let {clean_name} = {ctor}({clean_name}_inner);\n"
+            ));
+        } else if let Some(mapping) = owned_type_for_ref(ty) {
             h.push_str(&format!(
                 "        let {clean_name}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                 mapping.deser_type
@@ -1484,10 +1625,21 @@ fn generate_harness(
     h.push_str("        let _ = std::fs::remove_file(&__stdout_path);\n");
     h.push_str("        let _ = std::fs::remove_file(&__stderr_path);\n\n");
 
-    // Map result to return_value / thrown_error
+    // Map result to return_value / thrown_error.
+    //
+    // For Axum-shaped handlers the return type may be `axum::Json<T>`,
+    // `Result<axum::Json<T>, ProjectError>`, `impl IntoResponse`, etc., which
+    // do not implement `Serialize` on the outer wrapper. Calling
+    // `serde_json::to_value` directly would fail to compile. The generic
+    // wrapper path can't synthesize an HTTP roundtrip, so we drop the return
+    // value (callers should use the Axum harness adapter for response capture).
+    let axum_shape = is_axum_handler_shape(param_types);
     h.push_str("        let (ret_val, err_val) = match result {\n");
-    if return_type.is_some() {
+    if return_type.is_some() && !axum_shape {
         h.push_str("            Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None),\n");
+    } else if return_type.is_some() {
+        // Axum-shaped handler: skip Serialize-bound return capture.
+        h.push_str("            Ok(_) => (Some(Value::Null), None),\n");
     } else {
         h.push_str("            Ok(()) => (Some(Value::Null), None),\n");
     }
@@ -1598,10 +1750,38 @@ fn generate_dispatch_harness(
         let param_types = &fn_info.param_types;
         let return_type = &fn_info.return_type;
         h.push_str(&format!("            {:?} => 'shatter_arm: {{\n", fn_name.as_str()));
+        // Axum `State<T>` short-circuits with a clear "not supported" before
+        // emitting any uncompilable `from_value::<State<T>>` code.
+        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+            h.push_str(&format!(
+                "                break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0);\n",
+                reason
+            ));
+            h.push_str("            }\n");
+            continue;
+        }
+        let axum_shape = is_axum_handler_shape(param_types);
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(mapping) = owned_type_for_ref(ty) {
+            if let Some(ext) = classify_axum_extractor(ty) {
+                let inner = match &ext {
+                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                    AxumExtractor::State => unreachable!("State handled above"),
+                };
+                let ctor = axum_extractor_constructor(&ext);
+                h.push_str(&format!(
+                    "                let {clean_name}_inner: {inner} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
+                ));
+                h.push_str("                    Ok(value) => value,\n");
+                h.push_str(&format!(
+                    "                    Err(__err) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}})), 0.0),\n"
+                ));
+                h.push_str("                };\n");
+                h.push_str(&format!(
+                    "                let {clean_name} = {ctor}({clean_name}_inner);\n"
+                ));
+            } else if let Some(mapping) = owned_type_for_ref(ty) {
                 h.push_str(&format!(
                     "                let {clean_name}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                     mapping.deser_type
@@ -1660,10 +1840,13 @@ fn generate_dispatch_harness(
             ));
             h.push_str("                }));\n");
         }
-        // Map result.
+        // Map result. Axum handlers commonly return wrappers without
+        // `Serialize`, so skip return-value capture for handler shapes.
         h.push_str("                match result {\n");
-        if return_type.is_some() {
+        if return_type.is_some() && !axum_shape {
             h.push_str("                    Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None, wt),\n");
+        } else if return_type.is_some() {
+            h.push_str("                    Ok(_) => (Some(Value::Null), None, wt),\n");
         } else {
             h.push_str("                    Ok(()) => (Some(Value::Null), None, wt),\n");
         }
@@ -2492,9 +2675,38 @@ fn generate_crate_bridge_wrapper(
             "pub fn shatter_wrap_{fn_name}(inputs: Vec<Value>) -> Value {{\n"
         ));
 
+        // Axum `State<T>` extractors are not constructible by the generic
+        // wrapper (no `Deserialize` impl). Short-circuit with a clear
+        // not-supported error instead of emitting `from_value::<State<T>>`.
+        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+            w.push_str("    let _ = inputs;\n");
+            w.push_str(&format!(
+                "    return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"not_supported\", \"message\": {:?}}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}});\n",
+                reason
+            ));
+            w.push_str("}\n\n");
+            continue;
+        }
+        let axum_shape = is_axum_handler_shape(param_types);
+
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(mapping) = owned_type_for_ref(ty) {
+            if let Some(ext) = classify_axum_extractor(ty) {
+                let inner = match &ext {
+                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                    AxumExtractor::State => unreachable!("State handled above"),
+                };
+                let ctor = axum_extractor_constructor(&ext);
+                w.push_str(&format!(
+                    "    let {clean}_inner: {inner} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
+                ));
+                w.push_str("        Ok(value) => value,\n");
+                w.push_str(&format!(
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                ));
+                w.push_str("    };\n");
+                w.push_str(&format!("    let {clean} = {ctor}({clean}_inner);\n"));
+            } else if let Some(mapping) = owned_type_for_ref(ty) {
                 w.push_str(&format!(
                     "    let {clean}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
                     mapping.deser_type
@@ -2555,9 +2767,15 @@ fn generate_crate_bridge_wrapper(
         w.push_str("    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
         w.push_str("    let obj = exec_result.as_object_mut().unwrap();\n");
 
-        if return_type.is_some() {
+        if return_type.is_some() && !axum_shape {
             w.push_str("    match result {\n");
             w.push_str("        Ok(ref ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
+        } else if return_type.is_some() {
+            // Axum handler shape: return type may be `axum::Json<T>` or
+            // `Result<Json<T>, ProjectError>` without a `Serialize` bound on
+            // the outer wrapper. Skip return capture and emit Null.
+            w.push_str("    match result {\n");
+            w.push_str("        Ok(_) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
         } else {
             w.push_str("    match result {\n");
             w.push_str("        Ok(()) => { obj.insert(\"return_value\".into(), Value::Null); }\n");
@@ -4045,6 +4263,219 @@ mod tests {
     }
 
     // ── Axum Cargo.toml generation ──
+
+    // ── Axum extractor classification + wrapper generation (str-q8do) ──
+
+    #[test]
+    fn classify_axum_path_extractor_extracts_inner() {
+        let ext = classify_axum_extractor("axum::extract::Path<Uuid>").unwrap();
+        assert_eq!(ext, AxumExtractor::Path("Uuid".to_string()));
+    }
+
+    #[test]
+    fn classify_axum_query_extractor_extracts_inner() {
+        let ext = classify_axum_extractor("Query<ListBundlesQuery>").unwrap();
+        assert_eq!(ext, AxumExtractor::Query("ListBundlesQuery".to_string()));
+    }
+
+    #[test]
+    fn classify_axum_json_extractor_extracts_inner() {
+        let ext = classify_axum_extractor("axum::Json<CreateBundle>").unwrap();
+        assert_eq!(ext, AxumExtractor::Json("CreateBundle".to_string()));
+    }
+
+    #[test]
+    fn classify_axum_state_extractor_returns_state() {
+        let ext = classify_axum_extractor("State<AppState>").unwrap();
+        assert_eq!(ext, AxumExtractor::State);
+    }
+
+    #[test]
+    fn classify_non_axum_type_returns_none() {
+        assert!(classify_axum_extractor("Vec<u8>").is_none());
+        assert!(classify_axum_extractor("i32").is_none());
+        assert!(classify_axum_extractor("String").is_none());
+    }
+
+    #[test]
+    fn generate_harness_axum_path_uses_inner_type_not_extractor() {
+        // Regression: str-q8do — wrapper used to call
+        // `serde_json::from_value::<Path<Uuid>>(...)`, which doesn't compile
+        // because `Path<T>` isn't `DeserializeOwned`.
+        let source =
+            "use axum::extract::Path;\nasync fn h(Path(id): Path<u64>) -> String { id.to_string() }";
+        let harness = generate_harness(
+            source,
+            "h",
+            &["id".to_string()],
+            &["Path<u64>".to_string()],
+            Some("String"),
+            "[]",
+            &[],
+            true,
+        )
+        .unwrap();
+        assert!(
+            !harness.contains("let id: Path<u64>"),
+            "wrapper must not declare param as the extractor type:\n{harness}"
+        );
+        assert!(
+            harness.contains("id_inner: u64"),
+            "wrapper must deserialize inner u64, not Path<u64>:\n{harness}"
+        );
+        assert!(
+            harness.contains("axum::extract::Path(id_inner)"),
+            "wrapper must reconstruct Path via inner value:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_harness_axum_state_emits_not_supported_early_return() {
+        let source = "use axum::extract::State;\nasync fn h(State(s): State<AppState>) {}";
+        let harness = generate_harness(
+            source,
+            "h",
+            &["s".to_string()],
+            &["State<AppState>".to_string()],
+            None,
+            "[]",
+            &[],
+            true,
+        )
+        .unwrap();
+        assert!(
+            !harness.contains("serde_json::from_value(inputs[0]"),
+            "wrapper must NOT try to deserialize State<AppState>:\n{harness}"
+        );
+        assert!(
+            harness.contains("not_supported"),
+            "wrapper must emit not_supported for State<T>:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_harness_axum_handler_skips_serialize_on_return() {
+        // axum::Json<T> doesn't impl Serialize on its outer wrapper; the
+        // generic generated wrapper must not require it for handler shapes.
+        let source =
+            "use axum::Json;\nasync fn h(Json(body): Json<String>) -> Json<String> { Json(body) }";
+        let harness = generate_harness(
+            source,
+            "h",
+            &["body".to_string()],
+            &["Json<String>".to_string()],
+            Some("Json<String>"),
+            "[]",
+            &[],
+            true,
+        )
+        .unwrap();
+        assert!(
+            !harness.contains("serde_json::to_value(v)"),
+            "axum handler must not call to_value on framework return wrapper:\n{harness}"
+        );
+        assert!(
+            harness.contains("Ok(_) => (Some(Value::Null), None)"),
+            "axum handler should null out return value capture:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_crate_bridge_wrapper_axum_path_uses_inner_type() {
+        let fns = vec![CompatFn {
+            name: "h".to_string(),
+            param_names: vec!["id".to_string()],
+            param_types: vec!["Path<Uuid>".to_string()],
+            return_type: Some("String".to_string()),
+            is_async: true,
+        }];
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(
+            !w.contains("let id: Path<Uuid>"),
+            "crate-bridge wrapper must not declare param as extractor:\n{w}"
+        );
+        assert!(
+            w.contains("id_inner: Uuid"),
+            "crate-bridge wrapper must deserialize inner Uuid:\n{w}"
+        );
+        assert!(
+            w.contains("axum::extract::Path(id_inner)"),
+            "crate-bridge wrapper must reconstruct Path:\n{w}"
+        );
+    }
+
+    #[test]
+    fn generate_crate_bridge_wrapper_axum_state_is_not_supported() {
+        let fns = vec![CompatFn {
+            name: "h".to_string(),
+            param_names: vec!["s".to_string(), "id".to_string()],
+            param_types: vec!["State<AppState>".to_string(), "Path<Uuid>".to_string()],
+            return_type: Some("Result<Json<Vec<u8>>, ApiError>".to_string()),
+            is_async: true,
+        }];
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(
+            !w.contains("serde_json::from_value(inputs[0]"),
+            "must not try to deserialize State<AppState>:\n{w}"
+        );
+        assert!(
+            w.contains("not_supported"),
+            "must emit not_supported error:\n{w}"
+        );
+        // And must NOT emit `serde_json::to_value(ret_val)` for the return,
+        // since `Result<Json<T>, ApiError>` need not be Serialize.
+        assert!(
+            !w.contains("serde_json::to_value(ret_val)"),
+            "must not require Serialize on framework return for handler shapes:\n{w}"
+        );
+    }
+
+    #[test]
+    fn generate_crate_bridge_wrapper_axum_handler_skips_serialize_on_return() {
+        // Return type `Result<Json<Vec<T>>, ApiError>` — neither variant is
+        // Serialize. Wrapper must skip the `to_value` call.
+        let fns = vec![CompatFn {
+            name: "h".to_string(),
+            param_names: vec!["body".to_string()],
+            param_types: vec!["Json<CreateBundle>".to_string()],
+            return_type: Some("Result<Json<Vec<BundleSummary>>, ApiError>".to_string()),
+            is_async: true,
+        }];
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(
+            !w.contains("serde_json::to_value(ret_val)"),
+            "axum handler return must not require Serialize:\n{w}"
+        );
+        assert!(
+            w.contains("Ok(_) => { obj.insert(\"return_value\".into(), Value::Null); }"),
+            "axum handler return must be nulled out:\n{w}"
+        );
+    }
+
+    #[test]
+    fn generate_dispatch_harness_axum_path_uses_inner_type() {
+        let fns = vec![CompatFn {
+            name: "h".to_string(),
+            param_names: vec!["id".to_string()],
+            param_types: vec!["Path<u64>".to_string()],
+            return_type: Some("String".to_string()),
+            is_async: true,
+        }];
+        let source = "use axum::extract::Path;\nasync fn h(Path(id): Path<u64>) -> String { id.to_string() }";
+        let h = generate_dispatch_harness(source, &fns, "[]", &[]).unwrap();
+        assert!(
+            !h.contains("let id: Path<u64>"),
+            "dispatch harness must not declare param as extractor:\n{h}"
+        );
+        assert!(
+            h.contains("id_inner: u64"),
+            "dispatch harness must deserialize inner u64:\n{h}"
+        );
+        assert!(
+            h.contains("axum::extract::Path(id_inner)"),
+            "dispatch harness must reconstruct Path:\n{h}"
+        );
+    }
 
     #[test]
     fn generate_cargo_toml_with_axum() {
