@@ -1287,6 +1287,33 @@ mod cli_parity_tests {
     }
 }
 
+/// Resolve the LLM config that applies to an explore run.
+///
+/// The oracle bundle is run-scoped, so this uses the explicit `--config` when
+/// present, otherwise the hierarchical `.shatter/config.yaml` stack nearest to
+/// the first expanded target file. `--set` overrides are inserted as the
+/// highest-priority YAML layer.
+pub(crate) fn resolve_llm_config(
+    config_path: Option<&Path>,
+    first_target_dir: Option<&Path>,
+    set_overrides: &[String],
+) -> Result<Option<shatter_core::config::LlmConfig>, shatter_core::config::ConfigError> {
+    let mut configs = if let Some(path) = config_path {
+        vec![shatter_core::config::parse_config(path)?]
+    } else if let Some(start_dir) = first_target_dir {
+        shatter_core::config::discover_configs(start_dir)?
+    } else {
+        Vec::new()
+    };
+
+    if !set_overrides.is_empty() {
+        let set_config = shatter_core::config::parse_set_overrides(set_overrides)?;
+        configs.insert(0, set_config);
+    }
+
+    Ok(shatter_core::config::merge_configs(&configs).llm)
+}
+
 /// Construct an LLM adapter from config, wrapped with rate-limiting.
 ///
 /// Factored out of [`build_oracle_bundle`] so the match-on-adapter
@@ -1324,33 +1351,31 @@ fn build_oracle_adapter(
 /// disabled, or `Err` when the requested adapter is unavailable.
 pub(crate) fn build_oracle_bundle(
     overrides: &crate::args::LlmOverrides,
+    config_file: Option<&shatter_core::config::LlmConfig>,
 ) -> Result<Option<shatter_core::oracle::OracleBundle>, Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
     use shatter_core::config::LlmConfig;
     use shatter_core::oracle::OracleBundle;
 
-    if !overrides.llm {
-        return Ok(None);
+    let mut config = config_file.cloned().unwrap_or_else(LlmConfig::default);
+    if overrides.llm {
+        config.enabled = true;
     }
-
-    // Start from defaults and apply CLI overrides.
-    let mut config = LlmConfig {
-        enabled: true,
-        ..LlmConfig::default()
-    };
     if let Some(ref adapter) = overrides.llm_adapter {
         config.adapter = adapter.clone();
     }
     if let Some(budget) = overrides.llm_token_budget {
         config.max_token_budget = budget;
     }
+    if !config.enabled {
+        return Ok(None);
+    }
 
     // Select adapter by name. build_oracle_adapter delegates to
     // shatter_llm::build_oracle for provider adapters (anthropic, openai,
     // google, custom, local) and handles the cfg(test) "mock" adapter inline.
-    let oracle: Arc<dyn shatter_core::oracle::SeedOracle> =
-        build_oracle_adapter(&config)?;
+    let oracle: Arc<dyn shatter_core::oracle::SeedOracle> = build_oracle_adapter(&config)?;
 
     // Build a dedicated tokio runtime for background oracle queries. The
     // CLI's main runtime is multi-threaded; the oracle runtime is a
@@ -1412,6 +1437,39 @@ mod tests {
         assert_eq!(resolve_candidate_queue_capacity(None, None), None);
         assert_eq!(resolve_candidate_queue_capacity(None, Some(16)), Some(16));
         assert_eq!(resolve_candidate_queue_capacity(Some(8), Some(16)), Some(8));
+    }
+
+    #[test]
+    fn resolve_llm_config_reads_explicit_config_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+llm:
+  enabled: true
+  adapter: local
+  local:
+    command: ["ollama", "serve"]
+    model: llama3.2
+    port: 11434
+    startup_timeout_seconds: 60
+"#,
+        )
+        .expect("write config");
+
+        let llm = resolve_llm_config(Some(&config_path), None, &[])
+            .expect("resolve llm config")
+            .expect("llm config");
+
+        assert!(llm.enabled);
+        assert_eq!(llm.adapter, "local");
+        let local = llm.local.expect("local adapter config");
+        assert_eq!(
+            local.command,
+            vec!["ollama".to_string(), "serve".to_string()]
+        );
+        assert_eq!(local.model, "llama3.2");
     }
 
     #[test]
@@ -1985,9 +2043,38 @@ mod tests {
             llm_adapter: None,
             llm_token_budget: None,
         };
-        let result = build_oracle_bundle(&overrides);
+        let result = build_oracle_bundle(&overrides, None);
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn build_oracle_bundle_uses_enabled_config_adapter() {
+        use shatter_core::config::{CustomAdapterConfig, CustomAuthMode, LlmConfig};
+        let overrides = crate::args::LlmOverrides {
+            llm: false,
+            llm_adapter: None,
+            llm_token_budget: None,
+        };
+        let config = LlmConfig {
+            enabled: true,
+            adapter: "custom".into(),
+            custom: Some(CustomAdapterConfig {
+                url: "http://localhost:8080/v1/chat".into(),
+                headers: Default::default(),
+                auth: CustomAuthMode::None,
+                request_path: "$.prompt".into(),
+                response_path: "$.text".into(),
+            }),
+            ..LlmConfig::default()
+        };
+
+        let result = build_oracle_bundle(&overrides, Some(&config));
+
+        assert!(result.is_ok());
+        let bundle = result.unwrap().expect("enabled config should build oracle");
+        assert_eq!(bundle.config.adapter, "custom");
+        assert_eq!(bundle.config.max_token_budget, config.max_token_budget);
     }
 
     #[test]
