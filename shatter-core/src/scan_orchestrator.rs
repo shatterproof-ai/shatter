@@ -396,6 +396,11 @@ enum FunctionOutcome {
     Timeout {
         function_name: String,
         limit: Duration,
+        /// Which phase timed out: `"build"` for `Prepare`, `"execution"`
+        /// for the concolic exploration loop.  Surfaced in the report so
+        /// the user can distinguish `--build-timeout` from
+        /// `--timeout-per-fn` (str-7v73).
+        phase: &'static str,
     },
     /// Exploration encountered an error.
     Error {
@@ -2617,6 +2622,7 @@ async fn run_layer_batched(
                 outcomes[batch_config.task_index] = Some(FunctionOutcome::Timeout {
                     function_name: task.func_name.clone(),
                     limit: d,
+                    phase,
                 });
 
                 scheduler.record_outcome(BatchOutcome {
@@ -2915,6 +2921,7 @@ async fn run_layer_function_mode(
                     FunctionOutcome::Timeout {
                         function_name: func_name,
                         limit: d,
+                        phase,
                     }
                 }
             }
@@ -4089,6 +4096,7 @@ pub async fn parallel_scan_with_progress(
                                 FunctionOutcome::Timeout {
                                     function_name: func_name,
                                     limit: d,
+                                    phase,
                                 }
                             }
                         }
@@ -4180,9 +4188,10 @@ pub async fn parallel_scan_with_progress(
                     FunctionOutcome::Timeout {
                         function_name,
                         limit,
+                        phase,
                     } => {
                         let idx = fn_progress_index.get(&function_name).copied().unwrap_or(0);
-                        let reason = format!("timed out after {:.0}s", limit.as_secs_f64());
+                        let reason = phase_timeout_reason(phase, limit);
                         summary_record_failed(
                             &mut summary,
                             &function_name,
