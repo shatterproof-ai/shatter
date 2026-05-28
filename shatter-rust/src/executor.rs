@@ -2051,7 +2051,158 @@ fn create_crate_staging_copy(
     if dot_cargo.is_dir() {
         copy_dir_recursive(&dot_cargo, &staging_crate.join(".cargo"))?;
     }
+    // str-gc0r: copy non-Rust compile-time assets referenced by macros like
+    // `include_str!`, `include_bytes!`, and `sqlx::migrate!`. Without these the
+    // shadow fails to compile even though the original crate compiles fine.
+    copy_compile_time_assets(crate_root, &staging_crate)?;
     Ok(staging_crate)
+}
+
+/// str-gc0r: scan all `.rs` files under the crate root for compile-time macros
+/// that pull in external files, and copy those files/directories into the
+/// staging crate at the same relative location.
+///
+/// Supported patterns:
+/// - `include_str!("path")` / `include_bytes!("path")` — relative to the `.rs` file
+/// - `sqlx::migrate!("./path")` / `sqlx::migrate!()` — relative to `CARGO_MANIFEST_DIR`
+///
+/// Paths that escape the crate root, that don't exist, or that already live
+/// under `src/` (already copied) are skipped silently.
+fn copy_compile_time_assets(crate_root: &Path, staging_crate: &Path) -> io::Result<()> {
+    let src_dir = crate_root.join("src");
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+    let crate_root_canon = crate_root.canonicalize().unwrap_or_else(|_| crate_root.to_path_buf());
+
+    let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut copy_asset = |abs: &Path| -> io::Result<()> {
+        // Canonicalize for escape check; if canonicalization fails (e.g. broken
+        // symlink) treat as absent and skip.
+        let canon = match abs.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        if !canon.starts_with(&crate_root_canon) {
+            return Ok(()); // escapes crate root — skip
+        }
+        let rel = match canon.strip_prefix(&crate_root_canon) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => return Ok(()),
+        };
+        // src/ already copied wholesale.
+        if rel.starts_with("src") {
+            return Ok(());
+        }
+        if !copied.insert(rel.clone()) {
+            return Ok(());
+        }
+        let dst = staging_crate.join(&rel);
+        if canon.is_dir() {
+            copy_dir_recursive(&canon, &dst)?;
+        } else if canon.is_file() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&canon, &dst)?;
+        }
+        Ok(())
+    };
+
+    // Walk all .rs files under src/.
+    let mut stack = vec![src_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let file_dir = path.parent().unwrap_or(&src_dir);
+                for asset in find_compile_time_asset_paths(&content) {
+                    let base = match asset.base {
+                        AssetBase::File => file_dir.to_path_buf(),
+                        AssetBase::Manifest => crate_root.to_path_buf(),
+                    };
+                    let abs = base.join(&asset.path);
+                    copy_asset(&abs)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetBase {
+    /// Path is relative to the file containing the macro (include_str!, include_bytes!).
+    File,
+    /// Path is relative to CARGO_MANIFEST_DIR (sqlx::migrate!).
+    Manifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssetRef {
+    path: String,
+    base: AssetBase,
+}
+
+/// Find compile-time asset path arguments in source text. Best-effort textual
+/// scan — handles the common shapes:
+///   include_str!("path")    include_bytes!("path")    sqlx::migrate!("path")
+///   sqlx::migrate!()        — implicit "./migrations"
+fn find_compile_time_asset_paths(content: &str) -> Vec<AssetRef> {
+    let mut out = Vec::new();
+    for (macro_name, base) in [
+        ("include_str!", AssetBase::File),
+        ("include_bytes!", AssetBase::File),
+        ("sqlx::migrate!", AssetBase::Manifest),
+    ] {
+        let mut search_from = 0;
+        while let Some(idx) = content[search_from..].find(macro_name) {
+            let abs_idx = search_from + idx;
+            search_from = abs_idx + macro_name.len();
+            // Skip if this is part of a longer identifier (e.g. `my_include_str!`).
+            if abs_idx > 0 {
+                let prev = content.as_bytes()[abs_idx - 1];
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    continue;
+                }
+            }
+            // After the macro name we expect optional whitespace then `(`.
+            let rest = &content[search_from..];
+            let rest = rest.trim_start();
+            let after_paren = match rest.strip_prefix('(') {
+                Some(s) => s,
+                None => continue,
+            };
+            let after_paren = after_paren.trim_start();
+            // sqlx::migrate!() with no arg defaults to "./migrations".
+            if after_paren.starts_with(')') && matches!(base, AssetBase::Manifest) {
+                out.push(AssetRef { path: "migrations".to_string(), base });
+                continue;
+            }
+            // Otherwise look for a double-quoted string literal.
+            let body = match after_paren.strip_prefix('"') {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Some(end) = body.find('"') {
+                let path = &body[..end];
+                if !path.is_empty() {
+                    out.push(AssetRef { path: path.to_string(), base });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Recursively copy a directory tree.
@@ -6265,5 +6416,85 @@ edition = "2021"
 
         let _ = std::fs::remove_dir_all(&crate_root);
         let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    // ─── str-gc0r: compile-time asset copying ────────────────────────────
+
+    #[test]
+    fn find_compile_time_asset_paths_basic() {
+        let src = r#"
+            const A: &str = include_str!("../fixtures/dev.json");
+            const B: &[u8] = include_bytes!("blob.bin");
+            static MIG: () = sqlx::migrate!("./migrations");
+            static MIG2: () = sqlx::migrate!();
+            // false positives:
+            fn my_include_str() {}
+            let x = "include_str!(\"not a macro\")";
+        "#;
+        let refs = find_compile_time_asset_paths(src);
+        let paths: Vec<(&str, AssetBase)> = refs.iter().map(|r| (r.path.as_str(), r.base)).collect();
+        assert!(paths.contains(&("../fixtures/dev.json", AssetBase::File)), "include_str path missing: {paths:?}");
+        assert!(paths.contains(&("blob.bin", AssetBase::File)), "include_bytes path missing: {paths:?}");
+        assert!(paths.contains(&("./migrations", AssetBase::Manifest)), "sqlx::migrate path missing: {paths:?}");
+        assert!(paths.contains(&("migrations", AssetBase::Manifest)), "sqlx::migrate!() default missing: {paths:?}");
+    }
+
+    #[test]
+    fn staging_copy_includes_compile_time_assets() {
+        let crate_root = unique_tmp_dir("staging-gc0r-assets");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(crate_root.join("fixtures")).unwrap();
+        std::fs::create_dir_all(crate_root.join("migrations")).unwrap();
+
+        std::fs::write(crate_root.join("Cargo.toml"),
+            "[package]\nname = \"gc0r-fix\"\nversion = \"0.0.1\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"),
+            "pub mod seed;\npub mod migrations;\n").unwrap();
+        std::fs::write(crate_root.join("src/seed.rs"),
+            "pub const DEV_FIXTURE: &str = include_str!(\"../fixtures/dev.json\");\n").unwrap();
+        std::fs::write(crate_root.join("src/migrations.rs"),
+            "pub fn run() { sqlx::migrate!(\"./migrations\"); }\n").unwrap();
+        std::fs::write(crate_root.join("fixtures/dev.json"), "{\"k\":1}\n").unwrap();
+        std::fs::write(crate_root.join("migrations/0001_init.sql"), "CREATE TABLE t (id INT);\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-gc0r-dest");
+        let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
+
+        assert!(staging_crate.join("fixtures/dev.json").exists(),
+            "fixtures/dev.json must be copied for include_str!");
+        assert!(staging_crate.join("migrations/0001_init.sql").exists(),
+            "migrations/ must be copied for sqlx::migrate!");
+
+        // Original tree must not be mutated.
+        assert!(crate_root.join("fixtures/dev.json").exists());
+        assert!(crate_root.join("migrations/0001_init.sql").exists());
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn staging_copy_skips_assets_escaping_crate_root() {
+        let crate_root = unique_tmp_dir("staging-gc0r-escape");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        // Asset outside the crate root.
+        let outside = crate_root.parent().unwrap().join("outside-gc0r.txt");
+        std::fs::write(&outside, "external\n").unwrap();
+
+        std::fs::write(crate_root.join("Cargo.toml"),
+            "[package]\nname = \"gc0r-esc\"\nversion = \"0.0.1\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"),
+            "pub const E: &str = include_str!(\"../outside-gc0r.txt\");\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-gc0r-escape-dest");
+        // Must not error — escaping paths are skipped silently.
+        let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
+        assert!(staging_crate.join("src/lib.rs").exists());
+        assert!(!staging_crate.join("outside-gc0r.txt").exists(),
+            "escaping asset must not appear in staging");
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+        let _ = std::fs::remove_file(&outside);
     }
 }
