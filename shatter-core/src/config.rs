@@ -172,6 +172,10 @@ pub struct ShatterConfig {
     /// User-defined mock fixtures with three-level scoped resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mock_fixtures: Option<MockFixtureConfig>,
+
+    /// Optional LLM seed-oracle settings for this config scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<LlmConfig>,
 }
 
 /// Configuration for the LLM seed-oracle (str-7vs).
@@ -179,11 +183,6 @@ pub struct ShatterConfig {
 /// Controls whether and how the concolic explorer calls an LLM to propose
 /// candidate input vectors for branch conditions the solver cannot satisfy.
 /// Disabled by default; opt in via `.shatter/config.yaml` under the `llm:` key.
-///
-/// Wiring `llm: LlmConfig` onto [`ShatterConfig`] and the per-function
-/// override path is deliberately deferred to a follow-up issue — this struct
-/// only defines the schema and defaults so the oracle slot machinery in
-/// [`crate::oracle`] can consume it.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct LlmConfig {
     /// Whether the seed oracle is enabled. Default: `false`.
@@ -1398,6 +1397,9 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
     // Mock fixtures: nearest non-None wins (no deep merge for now).
     let mock_fixtures = configs.iter().find_map(|c| c.mock_fixtures.clone());
 
+    // LLM configuration is global for an explore run, so nearest non-None wins.
+    let llm = configs.iter().find_map(|c| c.llm.clone());
+
     ShatterConfig {
         defaults: DefaultsConfig {
             max_iterations,
@@ -1419,6 +1421,7 @@ pub fn merge_configs(configs: &[ShatterConfig]) -> ShatterConfig {
         opaque_types,
         nondeterminism,
         mock_fixtures,
+        llm,
     }
 }
 
@@ -1725,6 +1728,36 @@ functions:
         assert_eq!(config.defaults.max_iterations, None);
         assert_eq!(config.defaults.timeout, None);
         assert!(config.functions.is_empty());
+    }
+
+    #[test]
+    fn parse_config_loads_top_level_llm_custom_adapter() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+llm:
+  enabled: true
+  adapter: custom
+  custom:
+    url: http://localhost:8080/v1/chat
+    auth: none
+    request_path: $.prompt
+    response_path: $.text
+"#,
+        )
+        .unwrap();
+
+        let config = parse_config(&config_path).unwrap();
+        let llm = config.llm.expect("top-level llm config should parse");
+        assert!(llm.enabled);
+        assert_eq!(llm.adapter, "custom");
+        let custom = llm.custom.expect("custom adapter config should parse");
+        assert_eq!(custom.url, "http://localhost:8080/v1/chat");
+        assert_eq!(custom.auth, CustomAuthMode::None);
+        assert_eq!(custom.request_path, "$.prompt");
+        assert_eq!(custom.response_path, "$.text");
     }
 
     #[test]

@@ -4107,7 +4107,7 @@ pub(crate) async fn run_explore(
     observer_pool: usize,
     candidate_queue_capacity: Option<usize>,
     external_audit_mode: bool,
-    oracle_bundle: Option<shatter_core::oracle::OracleBundle>,
+    llm_overrides: &crate::args::LlmOverrides,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // str-k9y5: clean external-audit runs (`--output <external> --no-cache
     // --no-seeds`) reroute harness storage (cache/scratch/artifacts and the
@@ -4237,6 +4237,10 @@ pub(crate) async fn run_explore(
         .map(|t| parse_target(t))
         .collect::<Result<Vec<_>, _>>()?;
     validate_targets(&parsed)?;
+    let first_target_dir = parsed.first().and_then(|target| target.file.parent());
+    let llm_config =
+        crate::helpers::resolve_llm_config(config_path, first_target_dir, set_overrides)?;
+    let oracle_bundle = crate::helpers::build_oracle_bundle(llm_overrides, llm_config.as_ref())?;
 
     let req_timeout = Duration::from_secs(request_timeout);
 

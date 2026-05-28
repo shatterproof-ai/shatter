@@ -148,6 +148,14 @@ fn scan_skips_rust_files_when_frontend_unavailable_and_other_languages_present()
 
 const STATUS_LINE_PREFIX: &str = "STATUS skipped_by_unavailable_frontend";
 
+fn path_with_go_without_shatter_rust() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").expect("PATH should be set for tests");
+    let go_dir = std::env::split_paths(&path)
+        .find(|dir| dir.join("go").is_file() && !dir.join("shatter-rust").is_file())
+        .expect("go must be on PATH for mixed Go/Rust availability test");
+    std::env::join_paths([go_dir]).expect("single PATH entry should join")
+}
+
 #[test]
 fn explore_mixed_rust_go_skips_rust_with_structured_status_and_exits_zero() {
     let binary = env!("CARGO_BIN_EXE_shatter");
@@ -170,7 +178,7 @@ fn explore_mixed_rust_go_skips_rust_with_structured_status_and_exits_zero() {
             go_file.to_str().expect("utf8 path"),
             rust_file.to_str().expect("utf8 path"),
         ])
-        .env("PATH", "")
+        .env("PATH", path_with_go_without_shatter_rust())
         .current_dir(tmp.path())
         .output()
         .expect("failed to run shatter explore");

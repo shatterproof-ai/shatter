@@ -296,15 +296,6 @@ async fn main() -> ExitCode {
                         .and_then(|c| c.candidate_queue_capacity),
                 );
 
-            // LLM seed-oracle wiring (str-qnp0).
-            let oracle_bundle = match crate::helpers::build_oracle_bundle(&llm_overrides) {
-                Ok(bundle) => bundle,
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-
             commands::explore::run_explore(
                 &targets,
                 budgets.max_iterations,
@@ -371,7 +362,7 @@ async fn main() -> ExitCode {
                 effective_observer_pool,
                 effective_candidate_queue_capacity,
                 explore_external_audit_mode,
-                oracle_bundle,
+                &llm_overrides,
             )
             .await
         }
