@@ -29,7 +29,7 @@ EXAMPLES_ROOT=""
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
 STEP_ERRORS=0
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" || true; }
+cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" "${TIA_DEMO_DIR:-}" || true; }
 trap cleanup EXIT
 
 if command -v gcc &>/dev/null; then
@@ -107,6 +107,42 @@ echo "${YELLOW}Cloning clean examples checkout...${RESET}"
 if ! EXAMPLES_ROOT="$(python3 "$REPO_ROOT/scripts/examples_checkout.py" --fresh)"; then
     echo "${RED}failed to prepare examples checkout${RESET}"; exit 1
 fi
+
+# ─── TIA demo project ────────────────────────────────────────────────
+# A minimal git project with a pre-built coverage map and a dirty file,
+# used by the `test --dry-run` walkthrough step.
+TIA_DEMO_DIR=""
+setup_tia_demo() {
+    local dir
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/shatter-tia-demo.XXXXXX")"
+    mkdir -p "$dir/src" "$dir/.shatter-cache/test-markers"
+    printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$dir/src/math.rs"
+    printf 'pub fn subtract(a: i32, b: i32) -> i32 { a - b }\n' > "$dir/src/ops.rs"
+    cat > "$dir/.shatter-cache/test-markers/coverage-map.yaml" <<'YAML'
+version: 1
+recorded_at: "2026-01-01T00:00:00Z"
+entries:
+  "math::tests::test_add":
+    files:
+      "src/math.rs": "abc001"
+  "math::tests::test_add_commutative":
+    files:
+      "src/math.rs": "abc001"
+  "ops::tests::test_subtract":
+    files:
+      "src/ops.rs": "def002"
+      "src/math.rs": "abc001"
+YAML
+    git -C "$dir" init -q
+    git -C "$dir" config user.email "demo@shatter"
+    git -C "$dir" config user.name "Shatter Demo"
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm "initial"
+    # Modify math.rs so TIA detects 1 changed file → 3 affected tests
+    printf '// optimised\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$dir/src/math.rs"
+    TIA_DEMO_DIR="$dir"
+}
+setup_tia_demo
 
 # ─── Step execution helpers ──────────────────────────────────────────
 
@@ -241,8 +277,11 @@ for i, step in enumerate(manifest["steps"], 1):
     if targets:
         full_cmd += " " + " ".join(targets)
 
+    # working_dir sentinel (empty = use default EXAMPLES_ROOT cwd)
+    working_dir = step.get("working_dir", "")
+
     # Use null byte as record separator to handle spaces in paths
-    print(f"{i}\t{total}\t{title}\t{desc}\t{full_cmd}", flush=True)
+    print(f"{i}\t{total}\t{title}\t{desc}\t{full_cmd}\t{working_dir}", flush=True)
 PY
 }
 
@@ -253,11 +292,18 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "${YELLOW}(dry-run mode: commands will not be executed)${RESET}"
 fi
 
-while IFS=$'\t' read -r num total title desc full_cmd; do
+while IFS=$'\t' read -r num total title desc full_cmd step_cwd; do
     CURRENT_STEP="$num"
     banner "$num" "$total" "$title" "$desc"
-    # shellcheck disable=SC2086
-    run_cmd $SHATTER $full_cmd
+    if [[ "${step_cwd:-}" == "tia_demo" ]]; then
+        pushd "$TIA_DEMO_DIR" >/dev/null
+        # shellcheck disable=SC2086
+        run_cmd $SHATTER $full_cmd
+        popd >/dev/null
+    else
+        # shellcheck disable=SC2086
+        run_cmd $SHATTER $full_cmd
+    fi
     pause
 done < <(read_manifest)
 

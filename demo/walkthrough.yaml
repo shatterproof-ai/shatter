@@ -77,6 +77,12 @@ steps:
     targets_first: walkthrough.typescript
     language: typescript
 
+  - id: test-dry-run
+    title: "Test Impact Analysis (Dry Run)"
+    description: "Show which tests would run for changed files without executing them"
+    command: "test --dry-run"
+    working_dir: tia_demo
+
   - id: properties
     title: "Properties Export"
     description: "Discover and export behavioral properties and invariants"
