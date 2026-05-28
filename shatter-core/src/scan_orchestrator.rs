@@ -2417,7 +2417,16 @@ async fn run_layer_batched(
             result,
             PhasedOutcome::BuildTimedOut(_) | PhasedOutcome::ExploreTimedOut(_)
         );
-        if timed_out || !fe.is_alive() {
+        // str-quhk: also drop tainted or frontend-error frontends to
+        // prevent cascading Timeout/IdMismatch across subsequent tasks.
+        let frontend_error = matches!(
+            result,
+            PhasedOutcome::Failed(ScanError::Explore(
+                ExploreError::Frontend(_),
+            )) | PhasedOutcome::Failed(ScanError::Frontend(_))
+        );
+        let poisoned = fe.is_tainted() || frontend_error;
+        if timed_out || !fe.is_alive() || poisoned {
             drop(frontend.take());
         }
 
@@ -4004,9 +4013,25 @@ pub async fn parallel_scan_with_progress(
                         // After a timeout the frontend's stdout buffer contains a
                         // stale response that would cause an ID mismatch on the next
                         // request.  Kill and respawn instead of returning to pool.
+                        // Also drop tainted frontends (str-quhk): when a Prepare
+                        // call times out via the frontend's own request_timeout,
+                        // `run_phased` falls through to explore which fails with
+                        // PhasedOutcome::Failed (not BuildTimedOut), so
+                        // `timed_out` is false. Without the tainted check the
+                        // poisoned frontend re-enters the pool and cascades
+                        // Timeout/IdMismatch errors across subsequent functions.
+                        // Similarly, an IdMismatch leaves the pipe misaligned with
+                        // a stale response; returning it would cascade the error.
                         // Skip replacement when the pool is already over-provisioned
                         // relative to remaining tasks — absorb the dead slot instead.
-                        if timed_out || !frontend.is_alive() {
+                        let frontend_error = matches!(
+                            result,
+                            PhasedOutcome::Failed(ScanError::Explore(
+                                ExploreError::Frontend(_),
+                            )) | PhasedOutcome::Failed(ScanError::Frontend(_))
+                        );
+                        let poisoned = frontend.is_tainted() || frontend_error;
+                        if timed_out || !frontend.is_alive() || poisoned {
                             // Drop the poisoned/dead frontend (kills the child process).
                             drop(frontend);
                             if pool.needs_replacement(remaining) {
@@ -4547,6 +4572,17 @@ async fn run_phased(
                 // failing the function outright — keeps parity with the
                 // explorer's own prepare-fallback behavior.
                 log::debug!("scan prepare failed for {func_name}, falling back: {e}");
+                // str-quhk: if the frontend's own request_timeout fired, the
+                // frontend is now tainted and all subsequent sends will
+                // return Timeout immediately. Continuing to explore would
+                // produce a PhasedOutcome::Failed that the pool handler used
+                // to treat as non-timeout, returning the tainted frontend to
+                // the pool and cascading errors across subsequent functions.
+                // Short-circuit to BuildTimedOut so the caller drops the
+                // frontend cleanly.
+                if frontend.is_tainted() {
+                    return PhasedOutcome::BuildTimedOut(build_timeout);
+                }
             }
             Ok(Ok(resp)) => match resp.result {
                 crate::protocol::ResponseResult::Prepare { prepare_id } => {
@@ -6921,6 +6957,154 @@ mod tests {
                 s.reason
             );
         }
+    }
+
+    /// Regression test (str-quhk): when a frontend's response pipe is
+    /// misaligned (e.g. from a duplicate response line), the poisoned frontend
+    /// must NOT be returned to the worker pool. Before the fix, the first
+    /// function to encounter an IdMismatch would return the frontend to the
+    /// pool, where every subsequent checkout would also read a stale response
+    /// and cascade IdMismatch errors across the entire scan.
+    ///
+    /// This test uses a mock frontend that injects a duplicate response line
+    /// after the first execute, triggering an IdMismatch. With two functions
+    /// sharing a single-worker pool, the second function must still get a
+    /// clean outcome (not an IdMismatch cascade from the first function's
+    /// poisoned frontend).
+    #[tokio::test]
+    async fn parallel_scan_drops_poisoned_frontend_instead_of_cascading() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mismatch_path = manifest_dir.join("../protocol/id-mismatch-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![mismatch_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = Duration::from_secs(10);
+        // Use a unique flag file per test run so the script only injects
+        // a duplicate on the FIRST spawned process (the one that poisons
+        // the pipe). Replacement workers spawned after the fix drops the
+        // poisoned frontend will see the flag file and behave normally.
+        let flag_file = std::env::temp_dir().join(format!(
+            "shatter-id-mismatch-injected-{}",
+            std::process::id()
+        ));
+        // Clean up from a previous run.
+        let _ = std::fs::remove_file(&flag_file);
+        fe_config.env_vars.push((
+            "SHATTER_MISMATCH_FLAG".to_string(),
+            flag_file.to_string_lossy().into_owned(),
+        ));
+
+        // Two functions in the same layer so both compete for pool workers.
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "fn_a".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
+            },
+            FunctionAnalysis {
+                name: "fn_b".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fn_a".to_string(), "test.ts".to_string());
+        file_map.insert("fn_b".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            seed: Some(42),
+            file_map,
+            // Single worker: forces pool reuse, exposing cascade if the fix
+            // doesn't drop the poisoned frontend.
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should succeed even when the first function hits IdMismatch");
+
+        // The first function hits an IdMismatch (from the duplicate response)
+        // and should be skipped/failed. The key assertion: the second function
+        // must NOT report "response id N does not match request id M" — the
+        // poisoned frontend must be dropped and replaced, so the second
+        // function gets a clean frontend.
+        let id_mismatch_count = result
+            .skipped
+            .iter()
+            .filter(|s| s.reason.contains("response id") && s.reason.contains("does not match"))
+            .count();
+
+        // At most one function can hit the injected IdMismatch (the one that
+        // used the poisoned frontend). The second function must NOT cascade.
+        assert!(
+            id_mismatch_count <= 1,
+            "IdMismatch should not cascade across pool workers; \
+             found {id_mismatch_count} IdMismatch skips: {:?}",
+            result
+                .skipped
+                .iter()
+                .map(|s| format!("{}: {}", s.function_name, s.reason))
+                .collect::<Vec<_>>()
+        );
     }
 
     // ── dry-run plan tests ──────────────────────────────────────────
