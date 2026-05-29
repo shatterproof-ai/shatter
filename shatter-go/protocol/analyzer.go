@@ -331,6 +331,9 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 			if results[i].InvocationModel != nil {
 				continue
 			}
+			if isReceiverQualifiedFunctionName(results[i].Name) {
+				continue
+			}
 			for _, hint := range results[i].AdapterHints {
 				if hint.Confidence == "high" {
 					results[i].InvocationModel = &InvocationModel{
@@ -348,6 +351,10 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		return nil, fmt.Errorf("function not found: %s", functionName)
 	}
 	return results, nil
+}
+
+func isReceiverQualifiedFunctionName(name string) bool {
+	return strings.HasPrefix(name, "(") && strings.Contains(name, ").")
 }
 
 // syntheticParamsForAdapter returns the synthetic parameter definitions for a
