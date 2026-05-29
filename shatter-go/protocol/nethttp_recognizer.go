@@ -12,6 +12,9 @@ const HTTPHandlerAdapterID = "go/http-handler"
 // func(http.ResponseWriter, *http.Request) and returns an InvocationModel
 // with synthetic HTTP request params if so. Returns nil for non-handlers.
 func recognizeHTTPHandler(fn *ast.FuncDecl, info *types.Info) *InvocationModel {
+	if fn.Recv != nil {
+		return nil
+	}
 	if fn.Type.Params == nil {
 		return nil
 	}

@@ -151,6 +151,16 @@ func TestExecuteAdapterViaLauncher_HTTPHandler(t *testing.T) {
 	}
 }
 
+func TestGenerateHTTPAdapterLauncherRejectsReceiverMethod(t *testing.T) {
+	_, err := generateAdapterLauncherMain(HTTPHandlerAdapterID, "example.com/app", "(*Server).Handle")
+	if err == nil {
+		t.Fatal("expected receiver method adapter launcher generation to fail")
+	}
+	if !strings.Contains(err.Error(), "receiver method") {
+		t.Fatalf("expected receiver method error, got %v", err)
+	}
+}
+
 func TestHTTPHandler_Execute_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

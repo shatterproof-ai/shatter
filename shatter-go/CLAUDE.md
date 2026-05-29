@@ -93,7 +93,14 @@ Go has the adapter substrate (registry, dispatch, invocation hooks) and two conc
 
 ### go/http-handler adapter
 
-Recognizes functions with signature `func(http.ResponseWriter, *http.Request)` (including method receivers and unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
+Recognizes package-level functions with signature `func(http.ResponseWriter, *http.Request)` (including unnamed params). Detection uses Go's type checker, not string matching. When recognized, `FunctionAnalysis.InvocationModel` is set to `{kind: "adapter", adapter_id: "go/http-handler"}` with 4 synthetic params (method, path, headers, body). At execute time, the adapter builds a specialized launcher entrypoint that runs the handler against `httptest.NewRequest`/`httptest.NewRecorder` and returns the HTTP response (status, headers, body) as `return_value`. Instrumentation fields (branch_path, lines_executed) are empty for adapter-owned calls.
+
+Receiver methods with handler-shaped signatures still receive `AdapterHints`,
+but they do not auto-promote to `InvocationModel` until the adapter launcher
+has a receiver-aware construction path. They execute through the normal method
+wrapper path instead; the adapter launcher defensively rejects receiver-shaped
+function names such as `(*Server).ServeHTTP` rather than emitting invalid
+`target.(*Server).ServeHTTP` source.
 
 Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapter.go` (factory/hook), `protocol/adapter_launcher.go` (launcher generation/execution).
 
@@ -101,10 +108,10 @@ Key files: `protocol/nethttp_recognizer.go` (detection), `protocol/nethttp_adapt
 
 `protocol/recognizer.go` adds hint-based recognizers that run as post-processing in `AnalyzeFileWithTiming` and emit `AdapterHint` values on `FunctionAnalysis.AdapterHints`. These complement the per-function `recognizeHTTPHandler` (which sets `InvocationModel` directly for exact matches) by also detecting partial matches and Gin handlers:
 
-- **net/http**: Detects `ResponseWriter`+`*Request` params (high confidence) and partial matches like `ResponseWriter`-only or `ServeHTTP` methods (medium/high). Uses `go/http-handler` adapter ID.
+- **net/http**: Detects `ResponseWriter`+`*Request` params (high confidence) and partial matches like `ResponseWriter`-only or `ServeHTTP` methods (medium/high). Uses `go/http-handler` adapter ID. Receiver-method hints are discovery signals only; they are not auto-promoted to adapter invocation models.
 - **Gin**: Detects `*gin.Context` params (high confidence) and characteristic API calls (`c.JSON`, `c.Param`, etc.) via AST fallback since the type checker cannot resolve third-party imports. Uses `go/gin` adapter ID.
 
-High-confidence hints auto-promote to `InvocationModel` (with `SyntheticParams` resolved via `syntheticParamsForAdapter()` in `analyzer.go`) when not already set by the per-function recognizer.
+High-confidence hints auto-promote to `InvocationModel` (with `SyntheticParams` resolved via `syntheticParamsForAdapter()` in `analyzer.go`) when not already set by the per-function recognizer, except for receiver-method targets, which stay on the receiver-aware wrapper path.
 
 ### go/gin adapter
 

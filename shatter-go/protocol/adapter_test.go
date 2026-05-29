@@ -392,6 +392,27 @@ func TestHandleExecute_AdapterDispatch(t *testing.T) {
 	}
 }
 
+func TestShouldForceDirectReceiverExecution(t *testing.T) {
+	analysis := &FunctionAnalysis{
+		Name: "(*Server).Handle",
+		InvocationModel: &InvocationModel{
+			Kind:      "adapter",
+			AdapterID: HTTPHandlerAdapterID,
+		},
+	}
+
+	if !shouldForceDirectReceiverExecution("(*Server).Handle", analysis) {
+		t.Fatal("expected receiver-qualified adapter model to force direct execution")
+	}
+	if shouldForceDirectReceiverExecution("Handle", analysis) {
+		t.Fatal("package-level adapter model should remain adapter-owned")
+	}
+	analysis.InvocationModel.Kind = "direct"
+	if shouldForceDirectReceiverExecution("(*Server).Handle", analysis) {
+		t.Fatal("direct invocation model should not be forced again")
+	}
+}
+
 func TestCachedAnalyses_ClearedOnShutdown(t *testing.T) {
 	input := strings.NewReader(
 		reqJSON(1, "shutdown") + "\n",

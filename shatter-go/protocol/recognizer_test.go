@@ -127,6 +127,24 @@ func TestRecognizeNetHTTP_ServeHTTPMethod(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFileHTTPHandler_MethodHasHintNotInvocationModel(t *testing.T) {
+	results := analyzeTestFile(t, "http_handler.go")
+
+	method := findAnalysis(results, "(*MyServer).ServeHTTP")
+	if method == nil {
+		t.Fatal("(*MyServer).ServeHTTP not found")
+	}
+	if len(method.AdapterHints) == 0 {
+		t.Fatal("expected adapter_hints on ServeHTTP method")
+	}
+	if method.AdapterHints[0].Adapter.ID != HTTPHandlerAdapterID {
+		t.Errorf("adapter ID = %q, want %q", method.AdapterHints[0].Adapter.ID, HTTPHandlerAdapterID)
+	}
+	if method.InvocationModel != nil {
+		t.Fatalf("method handler should not use adapter InvocationModel, got %+v", method.InvocationModel)
+	}
+}
+
 func TestRecognizeNetHTTP_PartialMatch(t *testing.T) {
 	fset, file, info := parseTestFile(t, "http_handler.go")
 	functions := analyzeTestFile(t, "http_handler.go")

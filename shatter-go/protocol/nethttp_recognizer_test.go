@@ -108,7 +108,7 @@ func Partial(w http.ResponseWriter, n int) {}
 	}
 }
 
-func TestRecognizeHTTPHandler_MethodReceiver(t *testing.T) {
+func TestRecognizeHTTPHandler_MethodReceiverDoesNotUseAdapterInvocation(t *testing.T) {
 	src := `package main
 
 import "net/http"
@@ -123,11 +123,8 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {}
 		t.Fatal("function Handle not found")
 	}
 	model := recognizeHTTPHandler(fn, info)
-	if model == nil {
-		t.Fatal("expected InvocationModel for method handler, got nil")
-	}
-	if model.AdapterID != HTTPHandlerAdapterID {
-		t.Fatalf("expected adapter_id %s, got %s", HTTPHandlerAdapterID, model.AdapterID)
+	if model != nil {
+		t.Fatalf("expected nil InvocationModel for method handler, got %+v", model)
 	}
 }
 

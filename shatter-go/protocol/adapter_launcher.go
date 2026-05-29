@@ -175,6 +175,9 @@ func rewritePackageFile(sourcePath, rewrittenPath, packageName string) error {
 }
 
 func generateAdapterLauncherMain(adapterID, targetImportPath, function string) (string, error) {
+	if isReceiverQualifiedFunctionName(function) {
+		return "", fmt.Errorf("adapter launcher does not support receiver method target %q", function)
+	}
 	switch adapterID {
 	case HTTPHandlerAdapterID:
 		return generateHTTPAdapterLauncherMain(targetImportPath, function), nil
