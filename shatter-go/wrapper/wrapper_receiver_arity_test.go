@@ -130,6 +130,66 @@ func (a *Adapter) Run() {}
 	compileWrapperFixture(t, "arity", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
 }
 
+func TestParameterizedConstructorZeroArgsCompileForNonStringTypes(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wrapperTarget := wrapper.WrapperTarget{
+		ID:            "example.com/ctorzero:(*Adapter).Run",
+		SymbolName:    "Run",
+		Kind:          wrapper.TargetKindMethod,
+		ReceiverType:  "Adapter",
+		IsPointerRecv: true,
+		HasResult:     false,
+	}
+	wrapperCtors := []wrapper.ConstructorCandidate{
+		{
+			FuncName:       "NewAdapter",
+			TargetType:     "Adapter",
+			HasParams:      true,
+			ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "opts", GoType: "Options"},
+				{Name: "runner", GoType: "*Runner"},
+				{Name: "payload", GoType: "[]byte"},
+				{Name: "fixtures", GoType: "[]Fixture"},
+				{Name: "headers", GoType: "map[string]string"},
+				{Name: "timeout", GoType: "time.Duration"},
+			},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ctorzero", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	bannedSubstrings := []string{
+		`NewAdapter("",`,
+		`, "",`,
+		`NewAdapter("", "", "", "", "", "")`,
+	}
+	for _, banned := range bannedSubstrings {
+		if strings.Contains(src, banned) {
+			t.Errorf("wrapper emitted string literal fallback for non-string constructor args %q; source:\n%s", banned, src)
+		}
+	}
+
+	const targetSrc = `package ctorzero
+
+import "time"
+
+type Options struct{}
+type Runner struct{}
+type Fixture struct{}
+type Adapter struct{}
+
+func NewAdapter(opts Options, runner *Runner, payload []byte, fixtures []Fixture, headers map[string]string, timeout time.Duration) *Adapter {
+	return &Adapter{}
+}
+
+func (a *Adapter) Run() {}
+`
+	compileWrapperFixture(t, "ctorzero", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+}
+
 // TestReceiverArity_PointerReceiverNoCtor_FallbackPlanCompiles regresses the
 // `(*Config).Server` symptom (str-qo1.9 (b)). A pointer-receiver method
 // with no discovered constructor must yield an executable plan (zero-value
