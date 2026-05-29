@@ -72,21 +72,30 @@ func extractConstructorParams(fn *ast.FuncDecl, pkg *packages.Package) []ParamIn
 		return params
 	}
 
+	filtered := make([]ParamInfo, 0, len(params))
 	index := 0
 	for _, field := range fn.Type.Params.List {
+		isVariadic := false
+		if _, ok := field.Type.(*ast.Ellipsis); ok {
+			isVariadic = true
+		}
 		spelling := constructorParamTypeName(field.Type, pkg)
 		for range field.Names {
 			if index >= len(params) {
-				return params
+				return filtered
 			}
-			if spelling != "" && params[index].TypeName == nil {
+			param := params[index]
+			if spelling != "" && param.TypeName == nil {
 				typeName := spelling
-				params[index].TypeName = &typeName
+				param.TypeName = &typeName
+			}
+			if !isVariadic {
+				filtered = append(filtered, param)
 			}
 			index++
 		}
 	}
-	return params
+	return filtered
 }
 
 func constructorParamTypeName(expr ast.Expr, pkg *packages.Package) string {

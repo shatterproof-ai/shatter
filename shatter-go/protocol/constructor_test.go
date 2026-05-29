@@ -194,6 +194,48 @@ func NewAdapter(opts Options, runner *Runner, payload []byte, fixtures []Fixture
 	}
 }
 
+func TestScanConstructorsTreatsVariadicParametersAsOptional(t *testing.T) {
+	ldr, cleanup, err := newTransientLoader()
+	if err != nil {
+		t.Fatalf("newTransientLoader: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	tmpFile := filepath.Join(t.TempDir(), "variadic_ctor.go")
+	src := `package testdata
+
+type Generator struct{}
+type Handler struct{}
+
+func NewHandler(generator ...*Generator) *Handler {
+	return &Handler{}
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	pkg, err := loadPackageForAnalysis(ldr, tmpFile)
+	if err != nil {
+		t.Fatalf("loadPackageForAnalysis: %v", err)
+	}
+
+	candidates := ScanConstructors(pkg)
+	var found *ConstructorCandidate
+	for i := range candidates {
+		if candidates[i].FuncName == "NewHandler" {
+			found = &candidates[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("NewHandler not found in candidates: %v", candidateFuncNames(candidates))
+	}
+	if len(found.Parameters) != 0 {
+		t.Fatalf("NewHandler.Parameters len = %d, want 0 for optional variadic args: %+v", len(found.Parameters), found.Parameters)
+	}
+}
+
 func TestScanConstructorsExcludesMethods(t *testing.T) {
 	ldr, cleanup, err := newTransientLoader()
 	if err != nil {
