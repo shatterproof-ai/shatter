@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"bytes"
 	"go/ast"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"strings"
@@ -54,7 +56,7 @@ func classifyConstructor(fn *ast.FuncDecl, pkg *packages.Package) (ConstructorCa
 	if !isConstructorName(fn.Name.Name) && !bodyReturnsComposite(fn) {
 		return ConstructorCandidate{}, false
 	}
-	params := extractParamsWithContext(fn, pkg.TypesInfo, nil)
+	params := extractConstructorParams(fn, pkg)
 	return ConstructorCandidate{
 		FuncName:       fn.Name.Name,
 		TargetType:     targetType,
@@ -62,6 +64,58 @@ func classifyConstructor(fn *ast.FuncDecl, pkg *packages.Package) (ConstructorCa
 		ReturnsError:   returnsError,
 		ReturnsPointer: returnsPointer,
 	}, true
+}
+
+func extractConstructorParams(fn *ast.FuncDecl, pkg *packages.Package) []ParamInfo {
+	params := extractParamsWithContext(fn, pkg.TypesInfo, nil)
+	if len(params) == 0 || fn.Type.Params == nil {
+		return params
+	}
+
+	index := 0
+	for _, field := range fn.Type.Params.List {
+		spelling := constructorParamTypeName(field.Type, pkg)
+		for range field.Names {
+			if index >= len(params) {
+				return params
+			}
+			if spelling != "" && params[index].TypeName == nil {
+				typeName := spelling
+				params[index].TypeName = &typeName
+			}
+			index++
+		}
+	}
+	return params
+}
+
+func constructorParamTypeName(expr ast.Expr, pkg *packages.Package) string {
+	if expr == nil || pkg == nil || pkg.TypesInfo == nil {
+		return constructorParamASTTypeName(expr)
+	}
+	if tv, ok := pkg.TypesInfo.Types[expr]; ok && tv.Type != nil {
+		return types.TypeString(tv.Type, func(p *types.Package) string {
+			if p == nil {
+				return ""
+			}
+			if p.Path() == pkg.PkgPath {
+				return ""
+			}
+			return p.Name()
+		})
+	}
+	return constructorParamASTTypeName(expr)
+}
+
+func constructorParamASTTypeName(expr ast.Expr) string {
+	if expr == nil {
+		return ""
+	}
+	var b bytes.Buffer
+	if err := printer.Fprint(&b, token.NewFileSet(), expr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // returnsPackageType reports whether fn returns a same-package named type as
