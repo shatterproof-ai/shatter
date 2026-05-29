@@ -1377,21 +1377,28 @@ pub(crate) fn build_oracle_bundle(
     // google, custom, local) and handles the cfg(test) "mock" adapter inline.
     let oracle: Arc<dyn shatter_core::oracle::SeedOracle> = build_oracle_adapter(&config)?;
 
-    // Build a dedicated tokio runtime for background oracle queries. The
-    // CLI's main runtime is multi-threaded; the oracle runtime is a
-    // lightweight single-threaded fallback that the OracleSlotMap can
-    // spawn background queries onto without blocking the explore loop.
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("failed to build oracle runtime: {e}"))?,
-    );
+    let runtime = shared_oracle_runtime();
 
     Ok(Some(OracleBundle {
         oracle,
         config,
         runtime,
+    }))
+}
+
+fn shared_oracle_runtime() -> std::sync::Arc<tokio::runtime::Runtime> {
+    static ORACLE_RUNTIME: std::sync::OnceLock<std::sync::Arc<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+
+    std::sync::Arc::clone(ORACLE_RUNTIME.get_or_init(|| {
+        std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("shatter-llm-oracle")
+                .enable_all()
+                .build()
+                .expect("failed to build oracle runtime"),
+        )
     }))
 }
 
@@ -2088,6 +2095,26 @@ llm:
         if let Err(ref e) = result {
             panic!("mock adapter should succeed in test builds: {e}");
         }
+    }
+
+    #[tokio::test]
+    async fn build_oracle_bundle_drops_safely_in_async_context() {
+        let overrides = crate::args::LlmOverrides {
+            llm: false,
+            llm_adapter: None,
+            llm_token_budget: None,
+        };
+        let config = shatter_core::config::LlmConfig {
+            enabled: true,
+            adapter: "mock".into(),
+            ..shatter_core::config::LlmConfig::default()
+        };
+
+        let bundle = build_oracle_bundle(&overrides, Some(&config))
+            .expect("mock oracle bundle should build")
+            .expect("enabled config should produce a bundle");
+
+        drop(bundle);
     }
 
     #[test]
