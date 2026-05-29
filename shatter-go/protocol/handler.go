@@ -82,12 +82,12 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	h := &Handler{
-		reader:            scanner,
-		writer:            w,
-		log:               slog.New(newPrefixHandler(logw, level)),
-		workspace:         workspace,
-		registry:          generators.NewRegistry(),
-		setupLoader:       setup.NewLoader(),
+		reader:                scanner,
+		writer:                w,
+		log:                   slog.New(newPrefixHandler(logw, level)),
+		workspace:             workspace,
+		registry:              generators.NewRegistry(),
+		setupLoader:           setup.NewLoader(),
 		preparedHarnesses:     make(map[string]preparedExecution),
 		preparedTargets:       make(map[string]string),
 		cachedAnalyses:        make(map[string]*FunctionAnalysis),
@@ -819,6 +819,11 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	// of the instrumented subprocess harness.
 	cacheKey := file + "\x00" + *req.Function
 	cachedAnalysis := h.cachedAnalyses[cacheKey]
+	if shouldForceDirectReceiverExecution(*req.Function, cachedAnalysis) {
+		receiverAnalysis := *cachedAnalysis
+		receiverAnalysis.InvocationModel = nil
+		cachedAnalysis = &receiverAnalysis
+	}
 
 	// --- Safety policy gate (str-hy9b.G4) ---
 	// Classify the target against the default safety policy + any
@@ -1015,6 +1020,16 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		result.LoopBodyStates = buildLoopBodyStatesFromAnalysis(cachedAnalysis, result.ScopeEvents)
 	}
 	return mapExecuteResult(resp, result, timing)
+}
+
+func shouldForceDirectReceiverExecution(functionName string, analysis *FunctionAnalysis) bool {
+	if analysis == nil || analysis.InvocationModel == nil {
+		return false
+	}
+	if analysis.InvocationModel.Kind != "adapter" {
+		return false
+	}
+	return isReceiverQualifiedFunctionName(functionName)
 }
 
 // failureOutcome classifies an executor error into an InvocationOutcome. It
