@@ -202,8 +202,8 @@ func (r Runner) dockerCommand(spec Spec, launcherArgs ...string) (*PreparedComma
 		}
 	}
 	args = append(args,
-		"--mount", "type=bind,src="+state.ProjectCopy+",dst="+spec.ProjectRoot+",rw",
-		"--mount", "type=bind,src="+state.ExecutableDir+",dst=/shatter-bin,ro",
+		"--mount", "type=bind,src="+state.ProjectCopy+",dst="+spec.ProjectRoot,
+		"--mount", "type=bind,src="+state.ExecutableDir+",dst=/shatter-bin,readonly",
 		"--workdir", sandboxWorkDir(spec),
 		"--entrypoint", sandboxLauncher,
 		r.config.DockerImage,

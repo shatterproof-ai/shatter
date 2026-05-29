@@ -199,6 +199,17 @@ func TestDockerCommandUsesHardenedDefaults(t *testing.T) {
 	assertArgPair(t, args, "--workdir", projectRoot)
 	assertArgPair(t, args, "--entrypoint", "/shatter-bin/launcher")
 	assertArg(t, args, "shatter-go-runtime:test")
+
+	projectMount := "type=bind,src=" + prepared.ProjectCopy + ",dst=" + projectRoot
+	launcherMount := "type=bind,src=" + prepared.ExecutableDir + ",dst=/shatter-bin,readonly"
+	assertArgPair(t, args, "--mount", projectMount)
+	assertArgPair(t, args, "--mount", launcherMount)
+	if strings.Contains(strings.Join(args, "\n"), ",rw") {
+		t.Fatalf("docker --mount args must not use bare ,rw option:\n%s", strings.Join(args, "\n"))
+	}
+	if strings.Contains(strings.Join(args, "\n"), ",ro") {
+		t.Fatalf("docker --mount args must not use bare ,ro option:\n%s", strings.Join(args, "\n"))
+	}
 }
 
 func TestBubblewrapCommandContainsRelativeAndTmpWrites(t *testing.T) {
