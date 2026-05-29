@@ -10,7 +10,6 @@ import (
 	"pgregory.net/rapid"
 )
 
-
 func TestScanConstructorsFindsNamedCandidates(t *testing.T) {
 	ldr, cleanup, err := newTransientLoader()
 	if err != nil {
@@ -128,6 +127,70 @@ func NewService() *Service { return &Service{} }
 	}
 	if !svc.ReturnsPointer {
 		t.Errorf("NewService.ReturnsPointer = false, want true (returns *Service)")
+	}
+}
+
+func TestScanConstructorsRecordsParameterTypeNames(t *testing.T) {
+	ldr, cleanup, err := newTransientLoader()
+	if err != nil {
+		t.Fatalf("newTransientLoader: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	tmpFile := filepath.Join(t.TempDir(), "ctor_params.go")
+	src := `package testdata
+
+import "time"
+
+type Options struct{}
+type Runner struct{}
+type Fixture struct{}
+type Adapter struct{}
+
+func NewAdapter(opts Options, runner *Runner, payload []byte, fixtures []Fixture, headers map[string]string, timeout time.Duration) *Adapter {
+	return &Adapter{}
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	pkg, err := loadPackageForAnalysis(ldr, tmpFile)
+	if err != nil {
+		t.Fatalf("loadPackageForAnalysis: %v", err)
+	}
+
+	candidates := ScanConstructors(pkg)
+	var found *ConstructorCandidate
+	for i := range candidates {
+		if candidates[i].FuncName == "NewAdapter" {
+			found = &candidates[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("NewAdapter not found in candidates: %v", candidateFuncNames(candidates))
+	}
+
+	wantTypes := []string{
+		"Options",
+		"*Runner",
+		"[]byte",
+		"[]Fixture",
+		"map[string]string",
+		"time.Duration",
+	}
+	if len(found.Parameters) != len(wantTypes) {
+		t.Fatalf("NewAdapter.Parameters len = %d, want %d: %+v", len(found.Parameters), len(wantTypes), found.Parameters)
+	}
+	for i, want := range wantTypes {
+		param := found.Parameters[i]
+		if param.TypeName == nil {
+			t.Fatalf("param %d %q TypeName = nil, want %q", i, param.Name, want)
+		}
+		if *param.TypeName != want {
+			t.Errorf("param %d %q TypeName = %q, want %q", i, param.Name, *param.TypeName, want)
+		}
 	}
 }
 

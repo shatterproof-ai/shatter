@@ -87,7 +87,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v2"
+const generatorVersion = "gen-v3"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -395,7 +395,6 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 	}
 }
 
-
 // constructorCallExpr builds the argument expression string for a constructor
 // call (str-9b1q). For parameterless constructors returns "". For parameterized
 // constructors returns comma-separated Go zero-value literals matching each
@@ -413,7 +412,8 @@ func constructorCallExpr(c ConstructorCandidate) string {
 
 // goZeroLiteral returns the Go source zero literal for a type (str-9b1q).
 func goZeroLiteral(goType string) string {
-	switch goType {
+	trimmed := strings.TrimSpace(goType)
+	switch trimmed {
 	case "string":
 		return `""`
 	case "int", "int8", "int16", "int32", "int64",
@@ -428,9 +428,14 @@ func goZeroLiteral(goType string) string {
 	case "time.Duration":
 		return "0"
 	default:
-		// For unrecognized types, use the zero-value expression.
-		// This handles named types that are primitive aliases.
-		return `""`
+		if strings.HasSuffix(trimmed, ".Duration") {
+			return "0"
+		}
+		// Ask Go for the zero value of the exact type. This keeps
+		// constructor calls assignable for named structs, aliases, arrays,
+		// slices, maps, pointers, functions, and interfaces without guessing
+		// which literal form fits the type.
+		return "*new(" + trimmed + ")"
 	}
 }
 
