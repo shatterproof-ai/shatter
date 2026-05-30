@@ -1603,12 +1603,14 @@ pub async fn scan(
             &callees,
         );
 
-        let mut candidate_inputs = load_config_candidate_inputs(
+        let config_function_inputs = load_config_function_inputs(
+            analysis,
             func_name,
             &config.config_dir,
             config.max_iterations_per_function,
             config.timeout_per_fn.as_secs(),
         );
+        let mut candidate_inputs = config_function_inputs.candidate_inputs;
         // Extend with cached seeds from prior exploration runs.
         if let Some(ref cache) = config.cache
             && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -1646,7 +1648,7 @@ pub async fn scan(
             mock_params: vec![],
             setup_file: None,
             setup_level: crate::protocol::SetupLevel::Function,
-            value_sources: vec![],
+            value_sources: config_function_inputs.value_sources,
             capabilities: crate::orchestrator::FrontendCapabilities::from_raw(
                 frontend.capabilities(),
             ),
@@ -3728,12 +3730,14 @@ pub async fn parallel_scan_with_progress(
                 )
             };
 
-            let mut candidate_inputs = load_config_candidate_inputs(
+            let config_function_inputs = load_config_function_inputs(
+                analysis,
                 func_name,
                 &config.config_dir,
                 config.max_iterations_per_function,
                 config.timeout_per_fn.as_secs(),
             );
+            let mut candidate_inputs = config_function_inputs.candidate_inputs;
             // Extend with cached seeds from prior exploration runs.
             if let Some(ref cache) = config.cache
                 && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -3760,7 +3764,7 @@ pub async fn parallel_scan_with_progress(
                 mock_params: vec![],
                 setup_file: None,
                 setup_level: crate::protocol::SetupLevel::Function,
-                value_sources: vec![],
+                value_sources: config_function_inputs.value_sources,
                 capabilities: config.capabilities.clone(),
                 user_seeds: vec![],
                 candidate_inputs,
@@ -5339,16 +5343,25 @@ pub fn format_dry_run_plan(
     Ok(out)
 }
 
-/// Load per-function candidate inputs from `.shatter/config.yaml` if `config_dir` is set.
-/// Returns an empty vec on missing config or resolution errors (logged as warnings).
-fn load_config_candidate_inputs(
+#[derive(Debug, Default)]
+struct ConfigFunctionInputs {
+    candidate_inputs: Vec<Vec<serde_json::Value>>,
+    value_sources: Vec<crate::input_gen::ValueSource>,
+}
+
+/// Load per-function scan inputs from `.shatter/config.yaml` if `config_dir` is set.
+///
+/// Returns empty candidate inputs and value sources on missing config or resolution errors
+/// (logged as warnings).
+fn load_config_function_inputs(
+    analysis: &FunctionAnalysis,
     func_name: &str,
     config_dir: &Option<PathBuf>,
     max_iterations: u32,
     timeout_secs: u64,
-) -> Vec<Vec<serde_json::Value>> {
+) -> ConfigFunctionInputs {
     let Some(dir) = config_dir else {
-        return vec![];
+        return ConfigFunctionInputs::default();
     };
     match crate::config::resolve_function_config_with_inputs(
         func_name,
@@ -5358,26 +5371,32 @@ fn load_config_candidate_inputs(
         timeout_secs,
         &[],
     ) {
-        Ok(resolved) if !resolved.candidate_inputs.is_empty() => {
-            log::debug!(
-                "Scan: {} candidate input(s) from config for {}",
-                resolved.candidate_inputs.len(),
-                func_name,
-            );
-            resolved
+        Ok(resolved) => {
+            if !resolved.candidate_inputs.is_empty() {
+                log::debug!(
+                    "Scan: {} candidate input(s) from config for {}",
+                    resolved.candidate_inputs.len(),
+                    func_name,
+                );
+            }
+            let candidate_inputs = resolved
                 .candidate_inputs
                 .iter()
                 .map(|input| input.args.clone())
-                .collect()
-        }
-        Ok(_) => vec![],
-        Err(e) => {
-            log::warn!(
-                "Failed to resolve config candidate inputs for {}: {}",
-                func_name,
-                e,
+                .collect();
+            let value_sources = crate::input_gen::resolve_value_sources(
+                &analysis.params,
+                &resolved.param_generators,
+                &resolved.generators,
             );
-            vec![]
+            ConfigFunctionInputs {
+                candidate_inputs,
+                value_sources,
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to resolve config inputs for {}: {}", func_name, e,);
+            ConfigFunctionInputs::default()
         }
     }
 }
@@ -7887,6 +7906,28 @@ mod tests {
 
     // ── config candidate inputs ────────────────────────────────────
 
+    fn load_test_config_candidate_inputs(
+        func_name: &str,
+        config_dir: &Option<PathBuf>,
+        max_iterations: u32,
+        timeout_secs: u64,
+    ) -> Vec<Vec<serde_json::Value>> {
+        let analysis = make_analysis_with_params(
+            func_name,
+            vec![],
+            TypeInfo::Unknown,
+            vec![],
+        );
+        load_config_function_inputs(
+            &analysis,
+            func_name,
+            config_dir,
+            max_iterations,
+            timeout_secs,
+        )
+        .candidate_inputs
+    }
+
     #[test]
     fn load_config_candidate_inputs_returns_args_from_config() {
         let tmp = tempfile::tempdir().unwrap();
@@ -7907,7 +7948,7 @@ mod tests {
         std::fs::write(&config_path, config_yaml).unwrap();
 
         let result =
-            load_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
+            load_test_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -7919,7 +7960,7 @@ mod tests {
 
     #[test]
     fn load_config_candidate_inputs_returns_empty_without_config_dir() {
-        let result = load_config_candidate_inputs("myFunc", &None, 100, 30);
+        let result = load_test_config_candidate_inputs("myFunc", &None, 100, 30);
         assert!(result.is_empty());
     }
 
@@ -7938,9 +7979,76 @@ mod tests {
         std::fs::write(shatter_dir.join("config.yaml"), config_yaml).unwrap();
 
         let result =
-            load_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
+            load_test_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
 
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_config_function_inputs_resolves_custom_value_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shatter_dir = tmp.path().join(".shatter");
+        let generators_dir = shatter_dir.join("generators");
+        std::fs::create_dir_all(&generators_dir).unwrap();
+        let generator_path = generators_dir.join("pickpackit.rs");
+        std::fs::write(&generator_path, "// generator").unwrap();
+
+        let config_yaml = "\
+defaults:
+  generators:
+    State: generators/pickpackit.rs
+  param_generators:
+    current: generators/pickpackit.rs
+";
+        std::fs::write(shatter_dir.join("config.yaml"), config_yaml).unwrap();
+
+        let analysis = make_analysis_with_params(
+            "workspaces",
+            vec![
+                ParamInfo {
+                    name: "state".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("State".into()),
+                },
+                ParamInfo {
+                    name: "current".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("CurrentAccount".into()),
+                },
+            ],
+            TypeInfo::Unknown,
+            vec![],
+        );
+
+        let result = load_config_function_inputs(
+            &analysis,
+            "workspaces",
+            &Some(tmp.path().to_path_buf()),
+            100,
+            30,
+        );
+
+        assert_eq!(result.value_sources.len(), 2);
+        assert!(matches!(
+            &result.value_sources[0],
+            crate::input_gen::ValueSource::CustomGenerator {
+                generator_name,
+                param_name: None,
+                generator_file,
+                kind: crate::protocol::GeneratorKind::TypeName,
+            } if generator_name == "State" && generator_file.as_path() == generator_path.as_path()
+        ));
+        assert!(matches!(
+            &result.value_sources[1],
+            crate::input_gen::ValueSource::CustomGenerator {
+                generator_name,
+                param_name: Some(param_name),
+                generator_file,
+                kind: crate::protocol::GeneratorKind::ParamName,
+            } if generator_name == "current"
+                && param_name == "current"
+                && generator_file.as_path() == generator_path.as_path()
+        ));
     }
 
     // ── lazy worker spawn tests ──────────────────────────────────────
