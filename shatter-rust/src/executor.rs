@@ -194,6 +194,8 @@ pub struct HarnessKey {
     function_name: String,
     /// FNV-like hash of the serialized mocks array. Different mocks → different binary.
     mocks_hash: u64,
+    /// Hash of native generator replay metadata baked into the harness source.
+    native_replay_hash: u64,
 }
 
 impl HarnessKey {
@@ -209,8 +211,121 @@ impl HarnessKey {
             file_path: file_path.to_string(),
             function_name: function_name.to_string(),
             mocks_hash: 0,
+            native_replay_hash: 0,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct NativeReplaySpec {
+    input_index: usize,
+    module_name: String,
+    function_name: String,
+    file_path: PathBuf,
+    recipe: Value,
+}
+
+fn is_native_replay_marker(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|obj| obj.get("__shatter_native"))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+fn is_rust_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn native_replay_specs(inputs: &[Value]) -> Result<Vec<Option<NativeReplaySpec>>, ExecuteError> {
+    let mut specs = vec![None; inputs.len()];
+    for (idx, value) in inputs.iter().enumerate() {
+        if !is_native_replay_marker(value) {
+            continue;
+        }
+        let replay = value
+            .get("__shatter_replay")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ExecuteError::NonExecutable(format!(
+                    "native replay metadata missing for input {idx}"
+                ))
+            })?;
+        let language = replay
+            .get("language")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ExecuteError::NonExecutable(format!(
+                    "native replay language missing for input {idx}"
+                ))
+            })?;
+        if language != "rust" {
+            return Err(ExecuteError::NonExecutable(format!(
+                "native replay language `{language}` not supported for Rust input {idx}"
+            )));
+        }
+        let file = replay
+            .get("file")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ExecuteError::NonExecutable(format!(
+                    "native replay generator file missing for input {idx}"
+                ))
+            })?;
+        let file_path = PathBuf::from(file);
+        if !file_path.exists() {
+            return Err(ExecuteError::FileError(format!(
+                "native replay generator file not found for input {idx}: {}",
+                file_path.display()
+            )));
+        }
+        let function_name = replay
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ExecuteError::NonExecutable(format!(
+                    "native replay generator name missing for input {idx}"
+                ))
+            })?;
+        if !is_rust_identifier(function_name) {
+            return Err(ExecuteError::NonExecutable(format!(
+                "native replay generator name is not a Rust identifier for input {idx}: {function_name}"
+            )));
+        }
+        specs[idx] = Some(NativeReplaySpec {
+            input_index: idx,
+            module_name: format!("__shatter_native_gen_{idx}"),
+            function_name: function_name.to_string(),
+            file_path,
+            recipe: replay.get("recipe").cloned().unwrap_or(Value::Null),
+        });
+    }
+    Ok(specs)
+}
+
+fn native_replay_hash(specs: &[Option<NativeReplaySpec>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for spec in specs.iter().flatten() {
+        spec.input_index.hash(&mut hasher);
+        spec.module_name.hash(&mut hasher);
+        spec.function_name.hash(&mut hasher);
+        spec.file_path.hash(&mut hasher);
+        serde_json::to_string(&spec.recipe)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn shatter_rust_crate_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn rust_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("string literal serialization cannot fail")
 }
 
 /// Signature data for a single compatible function used in dispatch harness generation.
@@ -609,7 +724,13 @@ fn extract_dependencies_section(cargo_toml: &str) -> String {
 /// Generate a Cargo.toml that includes `shatter-rust-runtime` + serde + serde_json
 /// PLUS all deps from the user's crate, so the instrumented source can reference
 /// external types (e.g. `regex::Regex`) that are available in the user's crate.
-fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path, needs_tokio: bool, needs_axum: bool) -> String {
+fn generate_cargo_toml_with_user_deps(
+    user_cargo_toml: &str,
+    runtime_path: &Path,
+    needs_tokio: bool,
+    needs_axum: bool,
+    needs_shatter_rust: bool,
+) -> String {
     let forwarded = extract_dependencies_section(user_cargo_toml);
     // Axum handlers are always async, so tokio is implied by axum.
     let needs_tokio = needs_tokio || needs_axum;
@@ -625,6 +746,7 @@ fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path
             // Extract the dep name: everything before the first '=', ' ', or '.'
             let key = line.split(['=', ' ', '.']).next().unwrap_or("").trim();
             key != "serde" && key != "serde_json" && key != "libc" && key != "shatter-rust-runtime"
+                && (!needs_shatter_rust || key != "shatter-rust")
                 && (!needs_tokio || key != "tokio")
                 && !axum_keys.contains(&key)
         })
@@ -646,6 +768,12 @@ fn generate_cargo_toml_with_user_deps(user_cargo_toml: &str, runtime_path: &Path
     } else {
         ""
     };
+    let shatter_rust_dep = if needs_shatter_rust {
+        let shatter_rust_path = shatter_rust_crate_path().display().to_string().replace('\\', "/");
+        format!("shatter-rust = {{ path = \"{shatter_rust_path}\" }}\n")
+    } else {
+        String::new()
+    };
     format!(
         r#"[package]
 name = "shatter-exec-temp"
@@ -659,7 +787,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{tokio_dep}{axum_deps}{filtered}
+{tokio_dep}{axum_deps}{shatter_rust_dep}{filtered}
 "#
     )
 }
@@ -1229,7 +1357,12 @@ fn check_bin_only_compatibility(
 }
 
 /// Generate a Cargo.toml for the temp project.
-fn generate_cargo_toml(runtime_path: &Path, needs_tokio: bool, needs_axum: bool) -> String {
+fn generate_cargo_toml(
+    runtime_path: &Path,
+    needs_tokio: bool,
+    needs_axum: bool,
+    needs_shatter_rust: bool,
+) -> String {
     let runtime_path_str = runtime_path.display().to_string().replace('\\', "/");
     // Axum handlers are always async, so tokio is implied by axum.
     let needs_tokio = needs_tokio || needs_axum;
@@ -1248,6 +1381,12 @@ fn generate_cargo_toml(runtime_path: &Path, needs_tokio: bool, needs_axum: bool)
     } else {
         ""
     };
+    let shatter_rust_dep = if needs_shatter_rust {
+        let shatter_rust_path = shatter_rust_crate_path().display().to_string().replace('\\', "/");
+        format!("shatter-rust = {{ path = \"{shatter_rust_path}\" }}\n")
+    } else {
+        String::new()
+    };
     format!(
         r#"[package]
 name = "shatter-exec-temp"
@@ -1261,7 +1400,7 @@ serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 libc = "0.2"
 shatter-rust-runtime = {{ path = "{runtime_path_str}" }}
-{tokio_dep}{axum_deps}"#
+{tokio_dep}{axum_deps}{shatter_rust_dep}"#
     )
 }
 
@@ -1534,6 +1673,7 @@ fn generate_harness(
     return_type: Option<&str>,
     mocks_json: &str,
     static_mut_names: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
     is_async: bool,
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
@@ -1541,7 +1681,19 @@ fn generate_harness(
 
     h.push_str("#![allow(unused_imports)]\n");
     h.push_str("use serde_json::Value;\n\n");
+    if native_replays.iter().any(Option::is_some) {
+        h.push_str(
+            "mod shatter_rust {\n    pub mod generators {\n        pub struct GeneratorResult {\n            pub id: String,\n            pub value: Box<dyn std::any::Any + Send>,\n            pub recipe: serde_json::Value,\n        }\n    }\n}\n\n",
+        );
+    }
     h.push_str(&module_block);
+    for spec in native_replays.iter().flatten() {
+        let file_path = rust_string_literal(&spec.file_path.display().to_string());
+        h.push_str(&format!(
+            "\n#[path = {file_path}]\nmod {};\n",
+            spec.module_name
+        ));
+    }
     h.push_str("\n\nfn main() {\n");
     h.push_str(&format!(
         "    shatter_rust_runtime::run_harness_loop(r#\"{}\"#, |inputs| {{\n",
@@ -1576,7 +1728,26 @@ fn generate_harness(
     // Deserialize each input parameter from the inputs array.
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-        if let Some(ext) = classify_axum_extractor(ty) {
+        if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
+            let recipe_json = serde_json::to_string(&spec.recipe)
+                .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}")))?;
+            let recipe_literal = rust_string_literal(&recipe_json);
+            h.push_str(&format!(
+                "        let __recipe_{i}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
+            ));
+            h.push_str(&format!(
+                "        let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
+                spec.module_name, spec.function_name
+            ));
+            h.push_str(&format!(
+                "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+            ));
+            h.push_str("            Ok(value) => *value,\n");
+            h.push_str(&format!(
+                "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0, vec![]),\n"
+            ));
+            h.push_str("        };\n");
+        } else if let Some(ext) = classify_axum_extractor(ty) {
             // Axum Path/Query/Json: deserialize inner T, then wrap with the
             // extractor constructor. The wrapper types themselves are not
             // `DeserializeOwned` so `from_value::<Path<T>>` would not compile.
@@ -2008,12 +2179,14 @@ fn build_and_spawn_harness(
     runtime_path: &Path,
     needs_tokio: bool,
     needs_axum: bool,
+    needs_shatter_rust: bool,
     mut timing: Option<&mut TimingCollector>,
 ) -> Result<PersistentHarness, ExecuteError> {
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio, needs_axum);
+    let cargo_toml =
+        generate_cargo_toml(runtime_path, needs_tokio, needs_axum, needs_shatter_rust);
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -3532,7 +3705,8 @@ fn execute_function_crate_backed(
         .unwrap_or_default();
 
     let runtime_path = find_runtime_crate_path()?;
-    let cargo_toml_content = generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio, false);
+    let cargo_toml_content =
+        generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio, false, false);
 
     let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
@@ -3768,10 +3942,13 @@ pub fn execute_function_with_timing(
     }
 
     // Compute cache key before doing any expensive work.
+    let native_replays = native_replay_specs(inputs)?;
+    let native_replay_hash = native_replay_hash(&native_replays);
     let key = HarnessKey {
         file_path: file_path.to_string(),
         function_name: function_name.to_string(),
         mocks_hash: mocks_hash(mocks),
+        native_replay_hash,
     };
 
     // Fast path: harness already compiled and running.
@@ -3841,6 +4018,7 @@ pub fn execute_function_with_timing(
                 sig.return_type.as_deref(),
                 &mocks_json,
                 &static_mut_names,
+                &native_replays,
                 sig.is_async,
             )
         })?
@@ -3853,6 +4031,7 @@ pub fn execute_function_with_timing(
             sig.return_type.as_deref(),
             &mocks_json,
             &static_mut_names,
+            &native_replays,
             sig.is_async,
         )?
     };
@@ -3862,10 +4041,26 @@ pub fn execute_function_with_timing(
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
-            build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, false, Some(timing))
+            build_and_spawn_harness(
+                &harness_source,
+                &harness_dir,
+                &runtime_path,
+                sig.is_async,
+                false,
+                false,
+                Some(timing),
+            )
         })?
     } else {
-        build_and_spawn_harness(&harness_source, &harness_dir, &runtime_path, sig.is_async, false, None)?
+        build_and_spawn_harness(
+            &harness_source,
+            &harness_dir,
+            &runtime_path,
+            sig.is_async,
+            false,
+            false,
+            None,
+        )?
     };
 
     // Execute the first call
@@ -4086,6 +4281,7 @@ pub fn execute_axum_handler(
         file_path: file_path.to_string(),
         function_name: function_name.to_string(),
         mocks_hash: mocks_hash(mocks),
+        native_replay_hash: 0,
     };
 
     // Fast path: harness already compiled and running.
@@ -4129,6 +4325,7 @@ pub fn execute_axum_handler(
         &runtime_path,
         true,  // needs_tokio (always for axum)
         true,  // needs_axum
+        false, // needs_shatter_rust
         None,
     )?;
 
@@ -4227,7 +4424,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
-        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false, false);
+        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false, false, false);
         assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
@@ -4243,6 +4440,7 @@ mod tests {
             Some("& 'static str"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -4255,10 +4453,161 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness = generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[], false).unwrap();
+        let harness =
+            generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[], &[], false)
+                .unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
         assert!(harness.contains("run_harness_loop"));
+    }
+
+    #[test]
+    fn execute_replays_native_generator_inside_subprocess_harness() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("standalone.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+pub fn generated_len(value: String) -> usize {
+    value.len()
+}
+"#,
+        )
+        .expect("write source");
+        let generator_file = dir.path().join("generated_string.rs");
+        std::fs::write(
+            &generator_file,
+            r#"
+use shatter_rust::generators::GeneratorResult;
+
+pub fn GeneratedString(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    let value = recipe
+        .and_then(|v| v.get("value").and_then(|v| v.as_str()).map(ToString::to_string))
+        .unwrap_or_else(|| "fallback".to_string());
+    GeneratorResult {
+        id: "generated-string".to_string(),
+        value: Box::new(value),
+        recipe: serde_json::json!({"value": "fallback"}),
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        let input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-only-handle",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": generator_file,
+                "name": "GeneratedString",
+                "recipe": {"value": "abcdef"}
+            }
+        });
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            &source_file.to_string_lossy(),
+            "generated_len",
+            &[input],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => assert_eq!(result.return_value, Some(serde_json::json!(6))),
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping execute_replays_native_generator_inside_subprocess_harness: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_reports_native_replay_downcast_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("standalone.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+pub fn generated_len(value: String) -> usize {
+    value.len()
+}
+"#,
+        )
+        .expect("write source");
+        let generator_file = dir.path().join("wrong_type.rs");
+        std::fs::write(
+            &generator_file,
+            r#"
+use shatter_rust::generators::GeneratorResult;
+
+pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
+    GeneratorResult {
+        id: "wrong-type".to_string(),
+        value: Box::new(123_i32),
+        recipe: serde_json::Value::Null,
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        let input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-only-handle",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": generator_file,
+                "name": "WrongType",
+                "recipe": null
+            }
+        });
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            &source_file.to_string_lossy(),
+            "generated_len",
+            &[input],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                let message = result
+                    .thrown_error
+                    .as_ref()
+                    .and_then(|err| err.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                assert!(
+                    message.contains("native replay downcast failed for input 0: expected String"),
+                    "unexpected thrown_error: {:?}",
+                    result.thrown_error
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping execute_reports_native_replay_downcast_failure: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
     }
 
     // ── Async harness generation tests ──
@@ -4273,6 +4622,7 @@ mod tests {
             &["String".to_string()],
             Some("String"),
             "[]",
+            &[],
             &[],
             true,
         )
@@ -4298,6 +4648,7 @@ mod tests {
             Some("i32"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -4309,7 +4660,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_with_tokio() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false, false);
         assert!(
             toml.contains("tokio"),
             "needs_tokio=true must include tokio dep\n\ntoml:\n{toml}"
@@ -4318,7 +4669,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_without_tokio() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, false);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, false, false);
         assert!(
             !toml.contains("tokio"),
             "needs_tokio=false must not include tokio dep\n\ntoml:\n{toml}"
@@ -4375,6 +4726,7 @@ mod tests {
             Some("String"),
             "[]",
             &[],
+            &[],
             true,
         )
         .unwrap();
@@ -4403,6 +4755,7 @@ mod tests {
             None,
             "[]",
             &[],
+            &[],
             true,
         )
         .unwrap();
@@ -4429,6 +4782,7 @@ mod tests {
             &["Json<String>".to_string()],
             Some("Json<String>"),
             "[]",
+            &[],
             &[],
             true,
         )
@@ -4542,7 +4896,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_with_axum() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, true);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), false, true, false);
         assert!(
             toml.contains("axum"),
             "needs_axum=true must include axum dep\n\ntoml:\n{toml}"
@@ -4564,7 +4918,7 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_without_axum() {
-        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false);
+        let toml = generate_cargo_toml(Path::new("/fake/runtime"), true, false, false);
         assert!(
             !toml.contains("axum"),
             "needs_axum=false must not include axum dep\n\ntoml:\n{toml}"
@@ -4734,6 +5088,7 @@ mod tests {
             Some("Result < f64 , String >"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -4815,6 +5170,7 @@ fn main() {
             Some("& 'static str"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -4871,6 +5227,7 @@ fn main() {
             &["& str".to_string()],
             Some("String"),
             "[]",
+            &[],
             &[],
             false,
         )
@@ -5223,6 +5580,7 @@ fn sum_to(n: i32) -> i32 {
             Some("String"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -5401,6 +5759,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &["COUNTER".to_string()],
+            &[],
             false,
         )
         .unwrap();
@@ -5437,6 +5796,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -5467,6 +5827,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             &["i32".to_string(), "i32".to_string()],
             Some("i32"),
             "[]",
+            &[],
             &[],
             false,
         )
@@ -5501,6 +5862,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             Some("i32"),
             "[]",
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -5515,7 +5877,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     #[test]
     fn generate_harness_includes_libc_dependency() {
         let runtime_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
-        let toml = generate_cargo_toml(&runtime_path, false, false);
+        let toml = generate_cargo_toml(&runtime_path, false, false, false);
         assert!(
             toml.contains("libc"),
             "generated Cargo.toml must include libc dependency\n\ntoml:\n{toml}"
@@ -5736,7 +6098,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     fn generate_cargo_toml_includes_user_deps() {
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
         assert!(result.contains("[workspace]"), "must opt generated harness out of parent workspaces");
         assert!(result.contains("shatter-rust-runtime"), "must include runtime");
         assert!(result.contains("regex"), "must include forwarded user dep");
@@ -5748,7 +6110,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // User crate already declares serde_json and serde — must not produce duplicate keys.
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\nserde = { version = \"1\", features = [\"derive\"] }\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false);
+        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
         assert!(result.contains("regex"), "must include forwarded user dep");
         let serde_json_count = result.matches("serde_json").count();
         assert_eq!(serde_json_count, 1, "serde_json must appear exactly once, got:\n{result}");
