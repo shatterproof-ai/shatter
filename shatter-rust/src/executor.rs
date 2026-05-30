@@ -5837,6 +5837,90 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     }
 
     #[test]
+    fn execute_axum_handler_reports_native_replay_panic_without_subprocess_exit() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::State;
+
+pub async fn handler(State(value): State<String>) -> String {
+    value
+}
+"#,
+        )
+        .expect("write source");
+
+        let generator_file = dir.path().join("panic_gen.rs");
+        std::fs::write(
+            &generator_file,
+            r#"
+use shatter_rust::generators::GeneratorResult;
+
+pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
+    panic!("native replay fixture panic")
+}
+"#,
+        )
+        .expect("write generator");
+
+        let input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "panic-state",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": generator_file,
+                "name": "PanicString",
+                "recipe": null
+            }
+        });
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::AppState,
+            type_name: "State".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "handler",
+            &[input],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                let message = result
+                    .thrown_error
+                    .as_ref()
+                    .and_then(|err| err.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                assert!(
+                    message.contains("native replay fixture panic"),
+                    "panic should be reported as structured thrown_error, got {result:?}"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_reports_native_replay_panic_without_subprocess_exit: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("panic should not terminate harness subprocess: {err:?}"),
+        }
+    }
+
+    #[test]
     fn generate_axum_harness_captures_http_response() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
