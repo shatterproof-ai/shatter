@@ -4261,6 +4261,76 @@ mod tests {
         assert!(harness.contains("run_harness_loop"));
     }
 
+    #[test]
+    fn execute_replays_native_generator_inside_subprocess_harness() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("standalone.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+pub fn generated_len(value: String) -> usize {
+    value.len()
+}
+"#,
+        )
+        .expect("write source");
+        let generator_file = dir.path().join("generated_string.rs");
+        std::fs::write(
+            &generator_file,
+            r#"
+use shatter_rust::generators::GeneratorResult;
+
+pub fn GeneratedString(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    let value = recipe
+        .and_then(|v| v.get("value").and_then(|v| v.as_str()).map(ToString::to_string))
+        .unwrap_or_else(|| "fallback".to_string());
+    GeneratorResult {
+        id: "generated-string".to_string(),
+        value: Box::new(value),
+        recipe: serde_json::json!({"value": "fallback"}),
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        let input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-only-handle",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": generator_file,
+                "name": "GeneratedString",
+                "recipe": {"value": "abcdef"}
+            }
+        });
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            &source_file.to_string_lossy(),
+            "generated_len",
+            &[input],
+            &[],
+            30_000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => assert_eq!(result.return_value, Some(serde_json::json!(6))),
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping execute_replays_native_generator_inside_subprocess_harness: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
     // ── Async harness generation tests ──
 
     #[test]
