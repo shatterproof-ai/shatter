@@ -17,6 +17,7 @@ pub(crate) fn run_build_frontend(
         .ok_or_else(|| {
             "no .shatter/ directory found; pass --config or run from project root".to_string()
         })?;
+    let shatter_dir = std::fs::canonicalize(&shatter_dir).unwrap_or(shatter_dir);
 
     let config_path = shatter_dir.join("config.yaml");
     if !config_path.exists() {
