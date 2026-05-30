@@ -735,7 +735,7 @@ fn generate_cargo_toml_with_user_deps(
     // Axum handlers are always async, so tokio is implied by axum.
     let needs_tokio = needs_tokio || needs_axum;
     let axum_keys: &[&str] = if needs_axum {
-        &["axum", "tower", "http", "http-body-util"]
+        &["axum", "tower", "http", "http-body-util", "async-trait"]
     } else {
         &[]
     };
@@ -764,6 +764,7 @@ fn generate_cargo_toml_with_user_deps(
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
+            "async-trait = \"0.1\"\n",
         )
     } else {
         ""
@@ -1377,6 +1378,7 @@ fn generate_cargo_toml(
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
+            "async-trait = \"0.1\"\n",
         )
     } else {
         ""
@@ -1522,7 +1524,7 @@ enum AxumExtractor {
     /// `State<T>` — unsupported by generic wrappers (no `Deserialize` impl).
     /// The wrapper must early-return with a clear "not supported" error instead
     /// of emitting an uncompilable `serde_json::from_value::<State<T>>` call.
-    State,
+    State(String),
 }
 
 fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
@@ -1557,7 +1559,7 @@ fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
         "Path" => inner_type().map(AxumExtractor::Path),
         "Query" => inner_type().map(AxumExtractor::Query),
         "Json" => inner_type().map(AxumExtractor::Json),
-        "State" => Some(AxumExtractor::State),
+        "State" => inner_type().map(AxumExtractor::State),
         _ => None,
     }
 }
@@ -1569,7 +1571,7 @@ fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
         AxumExtractor::Path(_) => "axum::extract::Path",
         AxumExtractor::Query(_) => "axum::extract::Query",
         AxumExtractor::Json(_) => "axum::Json",
-        AxumExtractor::State => "", // unreachable: State doesn't get constructed here
+        AxumExtractor::State(_) => "", // unreachable: State doesn't get constructed here
     }
 }
 
@@ -1579,7 +1581,7 @@ fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
     let states: Vec<String> = param_types
         .iter()
         .filter_map(|ty| match classify_axum_extractor(ty) {
-            Some(AxumExtractor::State) => Some(ty.clone()),
+            Some(AxumExtractor::State(_)) => Some(ty.clone()),
             _ => None,
         })
         .collect();
@@ -1683,10 +1685,11 @@ fn generate_harness(
     h.push_str("use serde_json::Value;\n\n");
     if native_replays.iter().any(Option::is_some) {
         h.push_str(
-            "mod shatter_rust {\n    pub mod generators {\n        pub struct GeneratorResult {\n            pub id: String,\n            pub value: Box<dyn std::any::Any + Send>,\n            pub recipe: serde_json::Value,\n        }\n    }\n}\n\n",
+            "extern crate self as shatter_rust;\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n\n",
         );
     }
     h.push_str(&module_block);
+    h.push_str("\nuse crate::user_code::*;\n");
     for spec in native_replays.iter().flatten() {
         let file_path = rust_string_literal(&spec.file_path.display().to_string());
         h.push_str(&format!(
@@ -1753,7 +1756,7 @@ fn generate_harness(
             // `DeserializeOwned` so `from_value::<Path<T>>` would not compile.
             let inner = match &ext {
                 AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
-                AxumExtractor::State => unreachable!("State handled above"),
+                AxumExtractor::State(_) => unreachable!("State handled above"),
             };
             let ctor = axum_extractor_constructor(&ext);
             h.push_str(&format!(
@@ -2009,7 +2012,7 @@ fn generate_dispatch_harness(
             if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
-                    AxumExtractor::State => unreachable!("State handled above"),
+                AxumExtractor::State(_) => unreachable!("State handled above"),
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 h.push_str(&format!(
@@ -2939,7 +2942,7 @@ fn generate_crate_bridge_wrapper(
             if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
-                    AxumExtractor::State => unreachable!("State handled above"),
+                AxumExtractor::State(_) => unreachable!("State handled above"),
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 w.push_str(&format!(
@@ -4098,6 +4101,8 @@ fn generate_axum_harness(
     instrumented_source: &str,
     function_name: &str,
     mappings: &[crate::adapters::AxumExtractorMapping],
+    param_types: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
     mocks_json: &str,
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
@@ -4108,7 +4113,20 @@ fn generate_axum_harness(
     h.push_str("use axum::{Router, routing};\n");
     h.push_str("use tower::ServiceExt;\n");
     h.push_str("use http_body_util::BodyExt;\n\n");
+    if native_replays.iter().any(Option::is_some) {
+        h.push_str(
+            "extern crate self as shatter_rust;\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n\n",
+        );
+    }
     h.push_str(&module_block);
+    h.push_str("\nuse crate::user_code::*;\n");
+    for spec in native_replays.iter().flatten() {
+        let file_path = rust_string_literal(&spec.file_path.display().to_string());
+        h.push_str(&format!(
+            "\n#[path = {file_path}]\nmod {};\n",
+            spec.module_name
+        ));
+    }
     h.push_str("\n\nfn main() {\n");
     h.push_str(&format!(
         "    shatter_rust_runtime::run_harness_loop(r#\"{}\"#, |inputs| {{\n",
@@ -4135,9 +4153,19 @@ fn generate_axum_harness(
         .iter()
         .any(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams);
     let default_path = if has_path_extractor { "/test/:p0" } else { "/test" };
-    h.push_str(&format!(
-        "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).unwrap_or(\"{default_path}\");\n"
-    ));
+    let path_param_index = mappings
+        .iter()
+        .find(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams)
+        .map(|m| m.param_index);
+    if let Some(idx) = path_param_index {
+        h.push_str(&format!(
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            let segment = inputs.get({idx}).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_else(|| \"p0\".to_string());\n            format!(\"/test/{{}}\", segment)\n        }});\n"
+        ));
+    } else {
+        h.push_str(&format!(
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).unwrap_or(\"{default_path}\").to_string();\n"
+        ));
+    }
 
     // Extract query string.
     h.push_str("        let query_str = input_obj.get(\"query\").map(|v| {\n");
@@ -4155,7 +4183,17 @@ fn generate_axum_harness(
     h.push_str("        };\n\n");
 
     // Build the request.
-    h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
+    let json_param_index = mappings
+        .iter()
+        .find(|m| m.kind == crate::adapters::AxumExtractorKind::JsonBody)
+        .map(|m| m.param_index);
+    if let Some(idx) = json_param_index {
+        h.push_str(&format!(
+            "        let body_json = input_obj.get(\"body\").cloned().unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
+        ));
+    } else {
+        h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
+    }
     h.push_str("        let body_bytes = if body_json.is_null() {\n");
     h.push_str("            axum::body::Body::empty()\n");
     h.push_str("        } else {\n");
@@ -4178,7 +4216,45 @@ fn generate_axum_harness(
     h.push_str("            }\n");
     h.push_str("            req\n");
     h.push_str("        } else { request };\n");
-    h.push_str("        let request = request.body(body_bytes).unwrap();\n\n");
+    h.push_str("        let mut request = request.body(body_bytes).unwrap();\n\n");
+
+    for mapping in mappings {
+        if mapping.kind != crate::adapters::AxumExtractorKind::Unsupported {
+            continue;
+        }
+        let Some(spec) = native_replays
+            .get(mapping.param_index)
+            .and_then(|spec| spec.as_ref())
+        else {
+            continue;
+        };
+        let Some(ty) = param_types.get(mapping.param_index) else {
+            continue;
+        };
+        let recipe_json = serde_json::to_string(&spec.recipe).map_err(|e| {
+            ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}"))
+        })?;
+        let recipe_literal = rust_string_literal(&recipe_json);
+        let idx = mapping.param_index;
+        h.push_str(&format!(
+            "        let __extension_recipe_{idx}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
+        ));
+        h.push_str(&format!(
+            "        let __extension_generated_{idx} = {}::{}(Some(__extension_recipe_{idx}));\n",
+            spec.module_name, spec.function_name
+        ));
+        h.push_str(&format!(
+            "        let __extension_value_{idx}: {ty} = match __extension_generated_{idx}.value.downcast::<{ty}>() {{\n"
+        ));
+        h.push_str("            Ok(value) => *value,\n");
+        h.push_str(&format!(
+            "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for axum extension input {idx}: expected {ty}\"}})), 0.0, vec![]),\n"
+        ));
+        h.push_str("        };\n");
+        h.push_str(&format!(
+            "        request.extensions_mut().insert(__extension_value_{idx});\n"
+        ));
+    }
 
     // Build the router with the handler.
     // Determine the route method based on the HTTP method.
@@ -4199,8 +4275,54 @@ fn generate_axum_harness(
 
     // If State<T> is needed, deserialize state and attach via .with_state().
     if has_state {
-        h.push_str("        let state_value = input_obj.get(\"state\").cloned().unwrap_or(Value::Object(serde_json::Map::new()));\n");
-        h.push_str("        let app = app.with_state(serde_json::from_value(state_value).unwrap_or_default());\n");
+        let state_mapping = mappings
+            .iter()
+            .find(|m| m.kind == crate::adapters::AxumExtractorKind::AppState)
+            .expect("has_state implies a state mapping");
+        let idx = state_mapping.param_index;
+        let state_type = param_types
+            .get(idx)
+            .and_then(|ty| match classify_axum_extractor(ty) {
+                Some(AxumExtractor::State(inner)) => Some(inner),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                ExecuteError::InstrumentError(format!(
+                    "cannot determine axum state type for input {idx}"
+                ))
+            })?;
+        let Some(spec) = native_replays.get(idx).and_then(|spec| spec.as_ref()) else {
+            h.push_str(&format!(
+                "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
+            ));
+            h.push_str("        #[allow(unreachable_code)] { let _ = app; }\n");
+            h.push_str("        #[allow(unreachable_code)] { let _ = request; }\n");
+            h.push_str("    });\n");
+            h.push_str("}\n");
+            return Ok(h);
+        };
+        let recipe_json = serde_json::to_string(&spec.recipe).map_err(|e| {
+            ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}"))
+        })?;
+        let recipe_literal = rust_string_literal(&recipe_json);
+        h.push_str(&format!(
+            "        let __state_recipe_{idx}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
+        ));
+        h.push_str(&format!(
+            "        let __state_generated_{idx} = {}::{}(Some(__state_recipe_{idx}));\n",
+            spec.module_name, spec.function_name
+        ));
+        h.push_str(&format!(
+            "        let __state_value_{idx}: {state_type} = match __state_generated_{idx}.value.downcast::<{state_type}>() {{\n"
+        ));
+        h.push_str("            Ok(value) => *value,\n");
+        h.push_str(&format!(
+            "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for axum state input {idx}: expected {state_type}\"}})), 0.0, vec![]),\n"
+        ));
+        h.push_str("        };\n");
+        h.push_str(&format!(
+            "        let app = app.with_state(__state_value_{idx});\n"
+        ));
     }
 
     // Execute via oneshot inside a Tokio runtime.
@@ -4231,23 +4353,12 @@ fn generate_axum_harness(
     h.push_str("        let thrown_error = match &result {\n");
     h.push_str("            Ok(_) => None,\n");
     h.push_str("            Err(e) => {\n");
-    h.push_str("                let msg = if let Some(s) = e.downcast_ref::<String>() { s.clone() }\n");
-    h.push_str("                    else if let Some(s) = e.downcast_ref::<&str>() { s.to_string() }\n");
-    h.push_str("                    else { \"unknown panic\".to_string() };\n");
+    h.push_str("                let msg = e.clone();\n");
     h.push_str("                Some(serde_json::json!({ \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null }))\n");
     h.push_str("            }\n");
     h.push_str("        };\n\n");
 
-    h.push_str("        shatter_rust_runtime::build_result_json(\n");
-    h.push_str("            return_value,\n");
-    h.push_str("            thrown_error,\n");
-    h.push_str("            vec![],\n");
-    h.push_str("            vec![],\n");
-    h.push_str("            vec![],\n");
-    h.push_str("            vec![],\n");
-    h.push_str("            vec![],\n");
-    h.push_str("            wall_time_ms,\n");
-    h.push_str("        )\n");
+    h.push_str("        shatter_rust_runtime::build_result_json(return_value, thrown_error, wall_time_ms, vec![])\n");
     h.push_str("    });\n");
     h.push_str("}\n");
 
@@ -4276,12 +4387,15 @@ pub fn execute_axum_handler(
         return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
     }
 
+    let native_replays = native_replay_specs(inputs)?;
+    let native_replay_hash = native_replay_hash(&native_replays);
+
     // Compute cache key.
     let key = HarnessKey {
         file_path: file_path.to_string(),
         function_name: function_name.to_string(),
         mocks_hash: mocks_hash(mocks),
-        native_replay_hash: 0,
+        native_replay_hash,
     };
 
     // Fast path: harness already compiled and running.
@@ -4299,6 +4413,7 @@ pub fn execute_axum_handler(
     // Slow path: compile and spawn.
     let source = std::fs::read_to_string(path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+    let ctx = extract_fn_context(&source, function_name)?;
 
     let instr_result = instrument::instrument_source(&source, Some(function_name))
         .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
@@ -4313,6 +4428,8 @@ pub fn execute_axum_handler(
         &instr_result.source,
         function_name,
         mappings,
+        &ctx.sig.param_types,
+        &native_replays,
         &mocks_json,
     )?;
 
@@ -4621,6 +4738,7 @@ pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             r#"
 use axum::{extract::{FromRequestParts, Path, State}, Json};
 use axum::http::request::Parts;
+use async_trait::async_trait;
 
 #[derive(Clone)]
 pub struct AppStateLike {
@@ -4632,6 +4750,7 @@ pub struct CurrentAccountLike {
     pub id: u64,
 }
 
+#[async_trait]
 impl<S> FromRequestParts<S> for CurrentAccountLike
 where
     S: Send + Sync,
@@ -4887,7 +5006,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     #[test]
     fn classify_axum_state_extractor_returns_state() {
         let ext = classify_axum_extractor("State<AppState>").unwrap();
-        assert_eq!(ext, AxumExtractor::State);
+        assert_eq!(ext, AxumExtractor::State("AppState".to_string()));
     }
 
     #[test]
@@ -5127,7 +5246,15 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::JsonBody,
             type_name: "Json".to_string(),
         }];
-        let harness = generate_axum_harness(source, "create_user", &mappings, "[]").unwrap();
+        let harness = generate_axum_harness(
+            source,
+            "create_user",
+            &mappings,
+            &["Json<String>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("Router::new()"),
             "axum harness must create Router\n\nharness:\n{harness}"
@@ -5152,7 +5279,15 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::PathParams,
             type_name: "Path".to_string(),
         }];
-        let harness = generate_axum_harness(source, "get_user", &mappings, "[]").unwrap();
+        let harness = generate_axum_harness(
+            source,
+            "get_user",
+            &mappings,
+            &["Path<u64>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("/:p0"),
             "axum harness with Path extractor must use path template\n\nharness:\n{harness}"
@@ -5169,7 +5304,15 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::JsonBody,
             type_name: "Json".to_string(),
         }];
-        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        let harness = generate_axum_harness(
+            source,
+            "handler",
+            &mappings,
+            &["Json<String>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("\"POST\""),
             "harness with Json body must default to POST\n\nharness:\n{harness}"
@@ -5186,7 +5329,15 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::QueryParams,
             type_name: "Query".to_string(),
         }];
-        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        let harness = generate_axum_harness(
+            source,
+            "handler",
+            &mappings,
+            &["Query<String>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("\"GET\""),
             "harness without body extractor must default to GET\n\nharness:\n{harness}"
@@ -5203,7 +5354,22 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::AppState,
             type_name: "State".to_string(),
         }];
-        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "StringState".to_string(),
+            file_path: PathBuf::from("/tmp/string_state.rs"),
+            recipe: serde_json::Value::Null,
+        })];
+        let harness = generate_axum_harness(
+            source,
+            "handler",
+            &mappings,
+            &["State<String>".to_string()],
+            &native_replays,
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("with_state"),
             "harness with State extractor must call with_state\n\nharness:\n{harness}"
@@ -5220,7 +5386,15 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             kind: AxumExtractorKind::JsonBody,
             type_name: "Json".to_string(),
         }];
-        let harness = generate_axum_harness(source, "handler", &mappings, "[]").unwrap();
+        let harness = generate_axum_harness(
+            source,
+            "handler",
+            &mappings,
+            &["Json<String>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
         assert!(
             harness.contains("status"),
             "harness must capture HTTP status\n\nharness:\n{harness}"
