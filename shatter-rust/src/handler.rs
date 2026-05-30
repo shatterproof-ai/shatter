@@ -1285,7 +1285,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     match registry.generate(func_name, req.recipe.clone()) {
                         Ok((value, generator_id, recipe)) => {
                             resp.status = "generate".to_string();
-                            resp.value = Some(value);
+                            resp.value = Some(attach_native_replay_metadata(
+                                value,
+                                file_path,
+                                func_name,
+                                Some(recipe.clone()),
+                            ));
                             resp.generator_id = Some(generator_id);
                             resp.recipe = Some(recipe);
                             resp
@@ -1362,6 +1367,31 @@ fn is_version_compatible(version: &str) -> bool {
         (Some((rmaj, rmin)), Some((omaj, omin))) => rmaj == omaj && rmin == omin,
         _ => false,
     }
+}
+
+fn attach_native_replay_metadata(
+    mut value: serde_json::Value,
+    file_path: &str,
+    func_name: &str,
+    recipe: Option<serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut()
+        && obj
+            .get("__shatter_native")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        obj.insert(
+            "__shatter_replay".to_string(),
+            serde_json::json!({
+                "language": "rust",
+                "file": file_path,
+                "name": func_name,
+                "recipe": recipe.unwrap_or(serde_json::Value::Null),
+            }),
+        );
+    }
+    value
 }
 
 #[cfg(test)]
@@ -2095,6 +2125,28 @@ mod tests {
                 .as_deref()
                 .unwrap_or("")
                 .contains("unsupported generator file type")
+        );
+    }
+
+    #[test]
+    fn native_replay_metadata_is_embedded_in_native_sentinel() {
+        let value = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "h_0001"
+        });
+        let value = attach_native_replay_metadata(
+            value,
+            "/tmp/generators.rs",
+            "GeneratedString",
+            Some(serde_json::json!({"value": "abc"})),
+        );
+
+        assert_eq!(value["__shatter_replay"]["language"], "rust");
+        assert_eq!(value["__shatter_replay"]["file"], "/tmp/generators.rs");
+        assert_eq!(value["__shatter_replay"]["name"], "GeneratedString");
+        assert_eq!(
+            value["__shatter_replay"]["recipe"],
+            serde_json::json!({"value": "abc"})
         );
     }
 
