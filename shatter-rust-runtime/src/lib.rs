@@ -425,7 +425,21 @@ where
 
         reset();
 
-        let result = handler(&inputs);
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handler(&inputs)
+        })) {
+            Ok(result) => result,
+            Err(panic_info) => build_result_json(
+                None,
+                Some(serde_json::json!({
+                    "error_type": "runtime_error",
+                    "message": panic_message(&panic_info),
+                    "stack": null,
+                })),
+                0.0,
+                vec![],
+            ),
+        };
 
         let output = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
         println!("{output}");
@@ -463,11 +477,35 @@ where
 
         reset();
 
-        let result = handler(function_name, &inputs);
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handler(function_name, &inputs)
+        })) {
+            Ok(result) => result,
+            Err(panic_info) => build_result_json(
+                None,
+                Some(serde_json::json!({
+                    "error_type": "runtime_error",
+                    "message": panic_message(&panic_info),
+                    "stack": null,
+                })),
+                0.0,
+                vec![],
+            ),
+        };
 
         let output = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
         println!("{output}");
         let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+}
+
+fn panic_message(panic_info: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_info.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        format!("{panic_info:?}")
     }
 }
 
