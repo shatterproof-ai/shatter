@@ -5678,6 +5678,38 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     }
 
     #[test]
+    fn public_invocation_path_uses_parent_reexport_for_private_child_module() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("handlers")).expect("create handlers dir");
+        std::fs::write(src.join("lib.rs"), "pub mod handlers;\n").expect("write lib");
+        std::fs::write(
+            src.join("handlers").join("mod.rs"),
+            "mod workspaces;\npub use workspaces::{update_workspace, workspaces};\n",
+        )
+        .expect("write handlers mod");
+        let source_file = src.join("handlers").join("workspaces.rs");
+        std::fs::write(
+            &source_file,
+            "pub async fn workspaces() {}\npub async fn update_workspace() {}\n",
+        )
+        .expect("write workspaces");
+
+        let target = public_invocation_path_for_crate_file(
+            dir.path(),
+            &source_file,
+            "update_workspace",
+            "pickpackit_api",
+            "handlers::workspaces",
+        );
+
+        assert_eq!(
+            target.as_deref(),
+            Some("pickpackit_api::handlers::update_workspace")
+        );
+    }
+
+    #[test]
     fn generate_axum_harness_captures_http_response() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
