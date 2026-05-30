@@ -1010,8 +1010,8 @@ func TestAnalyzeOpaqueTypes(t *testing.T) {
 }
 
 // str-gxjs: io.Reader / io.Writer / io.ReadCloser / http.ResponseWriter /
-// *http.Request used to be flagged as opaque and the function skipped
-// before any planning attempt. Post-str-gxjs the analyzer emits
+// *http.Request / context.Context used to be flagged as opaque and the
+// function skipped before any planning attempt. The analyzer emits
 // Kind="unknown" with the canonical Go-source spelling on
 // ParamInfo.TypeName so the planner's runtime-value registry can
 // resolve a safe in-memory expression (httptest.NewRecorder() and so on).
@@ -1028,6 +1028,7 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 		{"AcceptsResponseWriter", "http.ResponseWriter"},
 		{"AcceptsRequestPointer", "*http.Request"},
 		{"AcceptsIOReadCloser", "io.ReadCloser"},
+		{"AcceptsContext", "context.Context"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.funcName, func(t *testing.T) {

@@ -1,6 +1,7 @@
 package testdata
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"net"
@@ -81,4 +82,10 @@ func AcceptsRequestPointer(r *http.Request) string {
 // post-str-gxjs synthesizable via io.NopCloser(strings.NewReader("")).
 func AcceptsIOReadCloser(rc io.ReadCloser) error {
 	return rc.Close()
+}
+
+// AcceptsContext takes a context.Context, which the runtime-value registry can
+// synthesize with context.Background().
+func AcceptsContext(ctx context.Context) error {
+	return ctx.Err()
 }

@@ -799,6 +799,9 @@ var opaqueGoTypes = map[string]map[string]bool{
 // in `synthesizableStdlibType` because Go represents it as
 // `*types.Pointer` to the named type rather than a named type itself.
 var synthesizableStdlibTypes = map[string]map[string]string{
+	"context": {
+		"Context": "context.Context",
+	},
 	"io": {
 		"Reader":     "io.Reader",
 		"Writer":     "io.Writer",
