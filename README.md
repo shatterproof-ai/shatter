@@ -241,8 +241,37 @@ Use `shatter --help` and `shatter <command> --help` for the current CLI surface.
 
 - `shatter explore`: analyze one file or function and generate inputs for distinct behaviors
 - `shatter scan`: explore a project or directory in dependency order
+- `shatter list-targets`: walk a directory and classify all source files by language and support status
 - `shatter diff` and `shatter spec-diff`: compare current behavior against a saved baseline
 - `shatter observe`, `analyze`, `solve`, and `specify`: lower-level pipeline commands for offline and staged workflows
+
+## Listing and Classifying Targets
+
+`shatter list-targets` walks a directory and classifies every source file into
+one of four categories: **selected** (supported language, passes include/exclude
+filters), **excluded** (filtered out by a pattern), **unsupported** (language
+not supported by any frontend), or **candidate_outside_policy** (supported
+language but outside the include globs).
+
+```bash
+# Show all targets in the current directory
+shatter list-targets
+
+# Filter to TypeScript files only
+shatter list-targets --language typescript src/
+
+# Apply custom include/exclude globs
+shatter list-targets --include '**/*.ts' --exclude '**/vendor/**' .
+
+# Write a machine-readable manifest to a file
+shatter list-targets --format json -o targets.json .
+
+# Render a Markdown table to stdout
+shatter list-targets --format markdown .
+```
+
+Supported languages: TypeScript, Go, Rust. All other source extensions appear
+in the `unsupported` list without stopping the command.
 
 ## Live Output and Resume
 
