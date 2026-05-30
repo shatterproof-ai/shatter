@@ -86,6 +86,7 @@ pub mod stratum;
 pub mod string_mutation;
 pub mod sym_expr;
 pub mod symbolic_unroll;
+pub mod target_manifest;
 pub mod telemetry;
 pub mod test_impact;
 pub mod test_prioritization;

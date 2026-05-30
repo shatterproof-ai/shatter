@@ -6,6 +6,7 @@ pub(crate) mod compare;
 pub(crate) mod diff;
 pub(crate) mod explore;
 pub(crate) mod init;
+pub(crate) mod list_targets;
 pub(crate) mod nondeterminism;
 pub(crate) mod observe;
 pub(crate) mod properties;
