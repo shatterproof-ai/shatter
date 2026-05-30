@@ -185,11 +185,7 @@ const AXUM_EXTRACTOR_TYPES: &[&str] = &[
 /// types) and the function gets routed through the adapter path — which then
 /// reports a concise "axum middleware not supported" reason instead of
 /// falling through to Direct and failing during compilation.
-const AXUM_MIDDLEWARE_MARKER_TYPES: &[&str] = &[
-    "Request",
-    "Next",
-    "RequestParts",
-];
+const AXUM_MIDDLEWARE_MARKER_TYPES: &[&str] = &["Request", "Next", "RequestParts"];
 
 /// Emits `rust/framework/axum-handler` at High confidence when the function
 /// is async, the file imports `axum::`, AND the function has axum extractor
@@ -409,7 +405,9 @@ pub struct AxumExtractorMapping {
 /// Reads `type_name` from each `ParamInfo` and maps recognized extractor
 /// names to their corresponding `AxumExtractorKind`. Parameters without a
 /// `type_name` or with unrecognized types are mapped to `Unsupported`.
-pub fn classify_axum_extractors(params: &[crate::protocol::ParamInfo]) -> Vec<AxumExtractorMapping> {
+pub fn classify_axum_extractors(
+    params: &[crate::protocol::ParamInfo],
+) -> Vec<AxumExtractorMapping> {
     params
         .iter()
         .enumerate()
@@ -436,6 +434,20 @@ pub fn classify_axum_extractors(params: &[crate::protocol::ParamInfo]) -> Vec<Ax
             }
         })
         .collect()
+}
+
+fn is_replayable_native_input(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|obj| {
+            obj.get("__shatter_native")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                && obj
+                    .get("__shatter_replay")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some()
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -466,19 +478,17 @@ pub fn execute_adapter_owned(
     bridge_cache: &crate::executor::CrateBridgeHarnessCache,
 ) -> Result<crate::executor::ExecuteResult, crate::executor::ExecuteError> {
     match adapter_id {
-        ADAPTER_ID_ASYNC_TOKIO | ADAPTER_ID_ASYNC_RUNTIME => {
-            crate::executor::execute_function(
-                file_path,
-                function_name,
-                inputs,
-                mocks,
-                timeout_ms,
-                None,
-                harness_cache,
-                crate_cache,
-                bridge_cache,
-            )
-        }
+        ADAPTER_ID_ASYNC_TOKIO | ADAPTER_ID_ASYNC_RUNTIME => crate::executor::execute_function(
+            file_path,
+            function_name,
+            inputs,
+            mocks,
+            timeout_ms,
+            None,
+            harness_cache,
+            crate_cache,
+            bridge_cache,
+        ),
         ADAPTER_ID_AXUM_HANDLER => {
             let analysis = analysis.ok_or_else(|| {
                 crate::executor::ExecuteError::NonExecutable(
@@ -499,7 +509,11 @@ pub fn execute_adapter_owned(
             }
             let unsupported: Vec<&str> = mappings
                 .iter()
-                .filter(|m| m.kind == AxumExtractorKind::Unsupported && !m.type_name.is_empty())
+                .filter(|m| {
+                    m.kind == AxumExtractorKind::Unsupported
+                        && !m.type_name.is_empty()
+                        && !is_replayable_native_input(inputs.get(m.param_index))
+                })
                 .map(|m| m.type_name.as_str())
                 .collect();
             if !unsupported.is_empty() {
@@ -566,7 +580,11 @@ mod tests {
     }
 
     impl AdapterRecognizer for MockRecognizer {
-        fn recognize(&self, _analysis: &FunctionAnalysis, _ctx: &FileContext) -> Option<AdapterHint> {
+        fn recognize(
+            &self,
+            _analysis: &FunctionAnalysis,
+            _ctx: &FileContext,
+        ) -> Option<AdapterHint> {
             Some(AdapterHint {
                 adapter: ExecutionAdapter {
                     id: self.adapter_id.clone(),
@@ -585,7 +603,11 @@ mod tests {
     struct NeverMatchRecognizer;
 
     impl AdapterRecognizer for NeverMatchRecognizer {
-        fn recognize(&self, _analysis: &FunctionAnalysis, _ctx: &FileContext) -> Option<AdapterHint> {
+        fn recognize(
+            &self,
+            _analysis: &FunctionAnalysis,
+            _ctx: &FileContext,
+        ) -> Option<AdapterHint> {
             None
         }
     }
@@ -715,9 +737,7 @@ mod tests {
             use_paths: vec!["tokio::spawn".into()],
             has_tokio_macro: true,
         };
-        assert!(TokioRecognizer
-            .recognize(&stub_analysis(), &ctx)
-            .is_none());
+        assert!(TokioRecognizer.recognize(&stub_analysis(), &ctx).is_none());
     }
 
     // ── AxumHandlerRecognizer tests ──
@@ -758,9 +778,7 @@ mod tests {
             use_paths: vec!["axum::Router".into()],
             has_tokio_macro: false,
         };
-        assert!(AxumHandlerRecognizer
-            .recognize(&analysis, &ctx)
-            .is_none());
+        assert!(AxumHandlerRecognizer.recognize(&analysis, &ctx).is_none());
     }
 
     #[test]
@@ -770,9 +788,7 @@ mod tests {
             use_paths: vec!["axum::extract::Json".into()],
             has_tokio_macro: false,
         };
-        assert!(AxumHandlerRecognizer
-            .recognize(&analysis, &ctx)
-            .is_none());
+        assert!(AxumHandlerRecognizer.recognize(&analysis, &ctx).is_none());
     }
 
     #[test]
@@ -797,7 +813,9 @@ mod tests {
             hint.reasons
         );
         assert!(
-            hint.reasons.iter().any(|r| r.contains("Request") && r.contains("Next")),
+            hint.reasons
+                .iter()
+                .any(|r| r.contains("Request") && r.contains("Next")),
             "reasons should list Request and Next, got: {:?}",
             hint.reasons
         );
@@ -1013,9 +1031,14 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             crate::executor::ExecuteError::FileError(msg) => {
-                assert!(msg.contains("not found"), "expected file-not-found error, got: {msg}");
+                assert!(
+                    msg.contains("not found"),
+                    "expected file-not-found error, got: {msg}"
+                );
             }
-            other => panic!("expected FileError (proving delegation to execute_function), got: {other:?}"),
+            other => panic!(
+                "expected FileError (proving delegation to execute_function), got: {other:?}"
+            ),
         }
     }
 
@@ -1169,7 +1192,10 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             crate::executor::ExecuteError::NonExecutable(msg) => {
-                assert!(msg.contains("requires cached function analysis"), "got: {msg}");
+                assert!(
+                    msg.contains("requires cached function analysis"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
         }
@@ -1219,7 +1245,10 @@ mod tests {
                     msg.contains("axum middleware not supported"),
                     "expected concise middleware reason, got: {msg}"
                 );
-                assert!(msg.contains("Request") && msg.contains("Next"), "got: {msg}");
+                assert!(
+                    msg.contains("Request") && msg.contains("Next"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
         }
@@ -1255,6 +1284,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn execute_adapter_owned_axum_allows_native_custom_extractor() {
+        use std::collections::HashMap;
+        let cache = crate::executor::HarnessCache::new(HashMap::new());
+        let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
+        let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
+        let mut analysis = stub_analysis();
+        analysis.params = vec![param_with_type_name("current", "CurrentAccountLike")];
+        let native_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-current",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": "/tmp/current_account_like.rs",
+                "name": "CurrentAccountLikeGen",
+                "recipe": null
+            }
+        });
+        let result = execute_adapter_owned(
+            ADAPTER_ID_AXUM_HANDLER,
+            "/tmp/does-not-exist.rs",
+            "test_fn",
+            &[native_input],
+            &[],
+            5000,
+            Some(&analysis),
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+        match result.unwrap_err() {
+            crate::executor::ExecuteError::FileError(msg) => {
+                assert!(msg.contains("file not found"), "got: {msg}");
+            }
+            other => panic!(
+                "expected adapter to allow native custom extractor through to executor, got: {other:?}"
+            ),
+        }
+    }
+
     // ── Property tests ──
 
     mod prop {
@@ -1262,15 +1331,13 @@ mod tests {
         use proptest::prelude::*;
 
         fn arb_param_info() -> impl Strategy<Value = ParamInfo> {
-            (
-                "[a-z_]{1,10}",
-                proptest::option::of("[A-Z][a-zA-Z]{0,15}"),
-            )
-                .prop_map(|(name, type_name)| ParamInfo {
+            ("[a-z_]{1,10}", proptest::option::of("[A-Z][a-zA-Z]{0,15}")).prop_map(
+                |(name, type_name)| ParamInfo {
                     name,
                     typ: TypeInfo::Unknown,
                     type_name,
-                })
+                },
+            )
         }
 
         proptest! {
