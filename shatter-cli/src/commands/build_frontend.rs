@@ -94,7 +94,11 @@ fn rust_project_dependency(project_root: &Path) -> Option<String> {
     let manifest = project_root.join("Cargo.toml");
     let cargo_toml = std::fs::read_to_string(&manifest).ok()?;
     let package_name = extract_package_name(&cargo_toml)?;
-    let project_path = project_root.display().to_string().replace('\\', "/");
+    let project_path = std::fs::canonicalize(project_root)
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .display()
+        .to_string()
+        .replace('\\', "/");
     Some(format!("{package_name} = {{ path = \"{project_path}\" }}\n"))
 }
 
