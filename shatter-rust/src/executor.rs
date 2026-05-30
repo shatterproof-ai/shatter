@@ -1300,6 +1300,47 @@ fn is_raw_pointer_or_extern_type(ty: &str) -> bool {
     false
 }
 
+fn crate_bridge_unsupported_reason(fn_info: &CompatFn) -> Option<String> {
+    if fn_info
+        .param_types
+        .iter()
+        .any(|ty| is_trait_object_type(ty) || is_raw_pointer_or_extern_type(ty))
+    {
+        return Some(
+            "function has trait-object, raw-pointer, or extern function parameters that cannot be synthesized from JSON"
+                .to_string(),
+        );
+    }
+
+    if let Some(reason) = axum_state_unsupported_reason(&fn_info.param_types) {
+        return Some(reason);
+    }
+
+    None
+}
+
+fn crate_bridge_serde_bound_failure_reason(build_error: &str) -> Option<&'static str> {
+    let from_value_bound = build_error.contains("serde_json::from_value")
+        && (build_error.contains("DeserializeOwned")
+            || build_error.contains("Deserialize<'de>")
+            || build_error.contains("Deserialize < 'de >"));
+    if from_value_bound {
+        return Some(
+            "function parameters are not JSON-harness compatible and may not implement DeserializeOwned",
+        );
+    }
+
+    let to_value_bound = build_error.contains("serde_json::to_value")
+        && build_error.contains("Serialize");
+    if to_value_bound {
+        return Some(
+            "return type is not JSON-harness compatible and may not implement Serialize",
+        );
+    }
+
+    None
+}
+
 /// Map a reference parameter type to its owned equivalent for deserialization.
 ///
 /// Returns `Some((owned_deser_type, owned_var_type, borrow_expr))` where:
@@ -1421,6 +1462,34 @@ fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
 /// don't implement `Serialize`.
 fn is_axum_handler_shape(param_types: &[String]) -> bool {
     param_types.iter().any(|ty| classify_axum_extractor(ty).is_some())
+}
+
+/// True if a return type is, or wraps, an Axum response wrapper.
+///
+/// Handler-shaped functions can have no extractor parameters, e.g.
+/// `async fn health() -> Json<Value>`. The generic JSON harness cannot
+/// serialize Axum's outer response wrappers directly, so these returns are
+/// treated like other Axum handlers and captured as `null` instead.
+fn is_axum_return_shape(return_type: &str) -> bool {
+    fn contains_axum_wrapper(ty: &syn::Type) -> bool {
+        match ty {
+            syn::Type::Path(type_path) => type_path.path.segments.iter().any(|seg| {
+                matches!(seg.ident.to_string().as_str(), "Json" | "Response")
+                    || match &seg.arguments {
+                        syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| {
+                            matches!(arg, syn::GenericArgument::Type(inner) if contains_axum_wrapper(inner))
+                        }),
+                        _ => false,
+                    }
+            }),
+            syn::Type::Reference(type_ref) => contains_axum_wrapper(&type_ref.elem),
+            syn::Type::Tuple(tuple) => tuple.elems.iter().any(contains_axum_wrapper),
+            _ => false,
+        }
+    }
+
+    syn::parse_str::<syn::Type>(return_type)
+        .is_ok_and(|ty| contains_axum_wrapper(&ty))
 }
 
 fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
@@ -1633,7 +1702,8 @@ fn generate_harness(
     // `serde_json::to_value` directly would fail to compile. The generic
     // wrapper path can't synthesize an HTTP roundtrip, so we drop the return
     // value (callers should use the Axum harness adapter for response capture).
-    let axum_shape = is_axum_handler_shape(param_types);
+    let axum_shape = is_axum_handler_shape(param_types)
+        || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
     h.push_str("        let (ret_val, err_val) = match result {\n");
     if return_type.is_some() && !axum_shape {
         h.push_str("            Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None),\n");
@@ -1760,7 +1830,8 @@ fn generate_dispatch_harness(
             h.push_str("            }\n");
             continue;
         }
-        let axum_shape = is_axum_handler_shape(param_types);
+        let axum_shape = is_axum_handler_shape(param_types)
+            || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
@@ -2687,7 +2758,8 @@ fn generate_crate_bridge_wrapper(
             w.push_str("}\n\n");
             continue;
         }
-        let axum_shape = is_axum_handler_shape(param_types);
+        let axum_shape = is_axum_handler_shape(param_types)
+            || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
 
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
@@ -3155,62 +3227,37 @@ fn execute_function_crate_bridge(
     let source = strip_shatter_wrapper(&raw_source);
     let mh = mocks_hash(mocks);
 
-    // Collect all functions and build the wrapper to get a stable wrapper_hash.
+    // Collect all functions so we can locate the requested target. The
+    // crate_bridge wrapper is intentionally built for one target function at a
+    // time: one non-JSON-compatible sibling in the same file must not poison
+    // execution for every other function in the dispatch harness.
     let all_fn_ctxs = extract_all_fn_contexts(&source);
     let static_mut_names = extract_static_mut_items(&source);
 
-    // For crate_bridge, generic/dyn constraints still apply (can't deserialise them),
-    // but external-type and module-path restrictions are lifted.
-    let compatible_fns: Vec<CompatFn> = all_fn_ctxs
-        .iter()
-        .filter_map(|(name, ctx)| {
-            // Only block on generics, trait objects, and raw pointer/extern fn
-            // params; allow external + module-path refs.
-            let has_generics = ctx.sig.has_generics;
-            let has_dyn = ctx.sig.param_types.iter().any(|t| is_trait_object_type(t));
-            let has_raw_ptr = ctx.sig.param_types.iter().any(|t| is_raw_pointer_or_extern_type(t));
-            if has_generics || has_dyn || has_raw_ptr {
-                None
-            } else {
-                Some(CompatFn {
-                    name: name.clone(),
-                    param_names: ctx.sig.param_names.clone(),
-                    param_types: ctx.sig.param_types.clone(),
-                    return_type: ctx.sig.return_type.clone(),
-                    is_async: ctx.sig.is_async,
-                })
-            }
-        })
-        .collect();
-
-    if !compatible_fns.iter().any(|f| f.name == function_name) {
-        // Give a precise error for the requested function.
-        if let Some((_, ctx)) = all_fn_ctxs.iter().find(|(n, _)| n == function_name) {
-            if ctx.sig.has_generics {
-                return Err(ExecuteError::NonExecutable(format!(
-                    "crate_bridge: function `{function_name}` has generic type parameters — cannot deserialise concrete inputs"
-                )));
-            }
-            if ctx.sig.param_types.iter().any(|t| is_trait_object_type(t)) {
-                return Err(ExecuteError::NonExecutable(format!(
-                    "crate_bridge: function `{function_name}` has trait object parameters — cannot deserialise from JSON"
-                )));
-            }
-            if ctx.sig.param_types.iter().any(|t| is_raw_pointer_or_extern_type(t)) {
-                return Err(ExecuteError::NonExecutable(format!(
-                    "crate_bridge: function `{function_name}` has raw pointer / extern fn parameters — cannot synthesise from JSON"
-                )));
-            }
-        }
+    let Some((_, ctx)) = all_fn_ctxs.iter().find(|(n, _)| n == function_name) else {
         return Err(ExecuteError::NonExecutable(format!(
             "function `{function_name}` not found in `{file_path}`"
         )));
+    };
+    if ctx.sig.has_generics {
+        return Err(ExecuteError::NonExecutable(format!(
+            "crate_bridge: function `{function_name}` has generic type parameters — cannot deserialise concrete inputs"
+        )));
     }
-
-    let expected_inputs = compatible_fns.iter()
-        .find(|f| f.name == function_name)
-        .map(|f| f.param_names.len())
-        .unwrap_or(0);
+    let fn_info = CompatFn {
+        name: function_name.to_string(),
+        param_names: ctx.sig.param_names.clone(),
+        param_types: ctx.sig.param_types.clone(),
+        return_type: ctx.sig.return_type.clone(),
+        is_async: ctx.sig.is_async,
+    };
+    if let Some(reason) = crate_bridge_unsupported_reason(&fn_info) {
+        return Err(ExecuteError::NonExecutable(format!(
+            "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
+        )));
+    }
+    let expected_inputs = fn_info.param_names.len();
+    let compatible_fns = vec![fn_info];
     if inputs.len() != expected_inputs {
         return Err(ExecuteError::InstrumentError(format!(
             "expected {expected_inputs} inputs for {function_name}, got {}",
@@ -3327,12 +3374,28 @@ fn execute_function_crate_bridge(
     // Shadow `timing` as mutable so we can `take()` it inside the branch.
     let mut timing = timing;
 
-    let mut harness = if let Some(t) = timing.take() {
+    let harness_result = if let Some(t) = timing.take() {
         t.record("execute.build", |t| {
             build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(t))
-        })?
+        })
     } else {
-        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)?
+        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)
+    };
+    let mut harness = match harness_result {
+        Ok(harness) => harness,
+        Err(ExecuteError::CompilationFailed(msg)) => {
+            let _ = std::fs::remove_dir_all(&harness_dir);
+            if let Some(reason) = crate_bridge_serde_bound_failure_reason(&msg) {
+                return Err(ExecuteError::NonExecutable(format!(
+                    "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
+                )));
+            }
+            return Err(ExecuteError::CompilationFailed(msg));
+        }
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&harness_dir);
+            return Err(err);
+        }
     };
 
     let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
@@ -6047,6 +6110,28 @@ fn enabled(config: Config) -> bool {
     }
 
     #[test]
+    fn crate_bridge_wrapper_skips_axum_return_capture_without_extractor_params() {
+        let fns = vec![CompatFn {
+            name: "health".to_string(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: Some("Json<Value>".to_string()),
+            is_async: true,
+        }];
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        assert!(wrapper.contains("shatter_wrap_health"));
+        assert!(wrapper.contains("\"health\" => shatter_wrap_health(inputs)"));
+        assert!(
+            !wrapper.contains("serde_json::to_value(ret_val)"),
+            "Axum response wrappers are not Serialize and must not be captured directly"
+        );
+        assert!(
+            wrapper.contains("Ok(_) => { obj.insert(\"return_value\".into(), Value::Null); }"),
+            "Axum response wrappers should still produce a well-formed execution result"
+        );
+    }
+
+    #[test]
     fn crate_bridge_wrapper_uses_super_prefix() {
         let fns = vec![
             CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
@@ -6394,6 +6479,91 @@ fn enabled(config: Config) -> bool {
         let dir = std::env::temp_dir().join(format!("shatter-31j1-{tag}-{pid}-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn crate_bridge_unsupported_sibling_does_not_poison_requested_function() {
+        let dir = unique_tmp_dir("sibling-poison");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-sibling-poison-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub mod app;\n").unwrap();
+        let target = dir.join("src/app.rs");
+        std::fs::write(
+            &target,
+            "pub struct OpaqueInput;\npub struct OpaqueOutput;\n\npub fn unsupported(_input: OpaqueInput) -> OpaqueOutput {\n    OpaqueOutput\n}\n\npub fn classify(n: i32) -> String {\n    if n > 0 { \"pos\" } else { \"nonpos\" }.to_string()\n}\n",
+        )
+        .unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            target.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(1)],
+            &[],
+            120_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let unsupported_result = execute_function_with_timing(
+            target.to_str().unwrap(),
+            "unsupported",
+            &[serde_json::json!(null)],
+            &[],
+            120_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(r) => assert_eq!(
+                r.return_value,
+                Some(serde_json::json!("pos")),
+                "supported functions must execute even when the same file has unsupported siblings",
+            ),
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("No such file")
+                    || msg.contains("spurious network error")
+                    || msg.contains("download of config.json failed")
+                    || msg.contains("Could not resolve host") =>
+            {
+                eprintln!("skipping sibling poison regression: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("expected requested function to execute despite sibling, got: {e:?}"),
+        }
+
+        match unsupported_result {
+            Err(ExecuteError::NonExecutable(msg)) => assert!(
+                msg.contains("JSON-harness compatible"),
+                "unsupported sibling should be classified clearly, got: {msg}"
+            ),
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("No such file")
+                    || msg.contains("spurious network error")
+                    || msg.contains("download of config.json failed")
+                    || msg.contains("Could not resolve host") =>
+            {
+                eprintln!("skipping unsupported classification assertion: cargo unavailable ({msg})");
+            }
+            other => panic!(
+                "expected unsupported sibling to be classified NonExecutable, got: {other:?}"
+            ),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
