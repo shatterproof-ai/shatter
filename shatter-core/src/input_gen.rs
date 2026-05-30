@@ -1288,6 +1288,55 @@ pub fn generate_inputs_with_custom(
         .collect()
 }
 
+/// Replace custom-generator parameter slots in an existing candidate input.
+///
+/// Finite seed strategies can still provide useful values for ordinary
+/// parameters, but custom-generated opaque/framework parameters must not be
+/// allowed to fall back to built-in JSON placeholders that the frontend cannot
+/// reconstruct.
+pub fn overlay_custom_inputs(
+    params: &[crate::types::ParamInfo],
+    sources: &[ValueSource],
+    mut inputs: Vec<Value>,
+    prefetched: &mut PrefetchedValues,
+    rng: &mut impl Rng,
+    caps: Option<&FrontendCapabilities>,
+) -> Vec<Value> {
+    for (idx, (param, source)) in params.iter().zip(sources.iter()).enumerate() {
+        let ValueSource::CustomGenerator {
+            generator_name,
+            generator_file,
+            ..
+        } = source
+        else {
+            continue;
+        };
+
+        let file_str = generator_file.display().to_string();
+        let value = prefetched.take(&file_str, generator_name).unwrap_or_else(|| {
+            let heuristic = if matches!(param.typ, TypeInfo::Str) {
+                heuristic_string_for_name(&param.name).or_else(|| {
+                    param
+                        .type_name
+                        .as_deref()
+                        .and_then(heuristic_string_for_name)
+                })
+            } else {
+                None
+            };
+            heuristic.map_or_else(|| generate_random_value(&param.typ, rng, caps), |v| json!(v))
+        });
+
+        if let Some(slot) = inputs.get_mut(idx) {
+            *slot = value;
+        } else {
+            inputs.push(value);
+        }
+    }
+
+    inputs
+}
+
 // ---------------------------------------------------------------------------
 // Type-aware mutation operators
 // ---------------------------------------------------------------------------
@@ -3891,6 +3940,55 @@ mod tests {
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0], json!({"name": "Alice"}));
         assert!(inputs[1].is_i64() || inputs[1].is_u64());
+    }
+
+    #[test]
+    fn overlay_custom_inputs_replaces_only_custom_slots() {
+        let params = vec![
+            ParamInfo {
+                name: "state".into(),
+                typ: TypeInfo::Opaque {
+                    label: "State".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: Some("State".into()),
+            },
+            ParamInfo {
+                name: "count".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            },
+        ];
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "State".into(),
+                param_name: None,
+                generator_file: "/gen/state.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+
+        let mut store = PrefetchedValues::new();
+        store.insert(
+            "/gen/state.rs".into(),
+            "State".into(),
+            vec![json!({"__shatter_native": true, "handle": "h_1"})],
+        );
+
+        let mut rng = seeded_rng();
+        let inputs = overlay_custom_inputs(
+            &params,
+            &sources,
+            vec![json!(null), json!(7)],
+            &mut store,
+            &mut rng,
+            None,
+        );
+
+        assert_eq!(inputs[0], json!({"__shatter_native": true, "handle": "h_1"}));
+        assert_eq!(inputs[1], json!(7));
     }
 
     #[test]

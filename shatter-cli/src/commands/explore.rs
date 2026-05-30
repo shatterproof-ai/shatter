@@ -4962,6 +4962,11 @@ pub(crate) async fn run_explore(
             } else {
                 None
             };
+            let value_sources = shatter_core::input_gen::resolve_value_sources(
+                &func.params,
+                &resolved.param_generators,
+                &resolved.generators,
+            );
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
@@ -4973,11 +4978,7 @@ pub(crate) async fn run_explore(
                 mock_params,
                 setup_file: resolved.setup.as_ref().map(|p| p.display().to_string()),
                 setup_level: resolved.setup_level,
-                value_sources: shatter_core::input_gen::resolve_value_sources(
-                    &func.params,
-                    &resolved.param_generators,
-                    &resolved.generators,
-                ),
+                value_sources,
                 capabilities: frontend_caps.clone(),
                 user_seeds: vec![],
                 candidate_inputs,

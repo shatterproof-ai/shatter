@@ -971,8 +971,22 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from(file_path.as_str()));
         let cache_key = format!("{}:{}", resolved.display(), function_name);
-        let cached_analysis = self.cached_analyses.get(&cache_key);
-        let invocation_model = cached_analysis
+        let mut analysis_for_execute = self.cached_analyses.get(&cache_key).cloned();
+        if analysis_for_execute.is_none()
+            && let Ok((mut functions, file_ctx)) = crate::analyzer::analyze_file_with_context(
+                std::path::Path::new(file_path),
+                Some(function_name),
+            )
+            && let Some(mut func) = functions.drain(..).find(|func| func.name == *function_name)
+        {
+            let hints = self.adapter_registry.recognize_all(&func, &file_ctx);
+            func.invocation_model = crate::adapters::derive_invocation_model(&hints);
+            func.adapter_hints = hints;
+            self.cached_analyses.insert(cache_key.clone(), func.clone());
+            analysis_for_execute = Some(func);
+        }
+        let invocation_model = analysis_for_execute
+            .as_ref()
             .map(|a| &a.invocation_model)
             .cloned()
             .unwrap_or_default();
@@ -989,7 +1003,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                     &req.inputs,
                     &eff_mocks,
                     self.exec_timeout_ms,
-                    cached_analysis,
+                    analysis_for_execute.as_ref(),
                     &self.harness_manager.cache,
                     &self.harness_manager.crate_cache,
                     &self.harness_manager.bridge_cache,

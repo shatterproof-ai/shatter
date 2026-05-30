@@ -43,12 +43,21 @@ pub(crate) fn run_build_frontend(
 }
 
 /// Collect native generator file paths from config for a given language extension.
-fn collect_native_generators(config: &ShatterConfig, extension: &str) -> Vec<(String, PathBuf)> {
+fn collect_native_generators(
+    shatter_dir: &Path,
+    config: &ShatterConfig,
+    extension: &str,
+) -> Vec<(String, PathBuf)> {
     let mut generators = Vec::new();
     let check = |name: &str, path_str: &str| {
         let path = Path::new(path_str);
         if path.extension().and_then(|e| e.to_str()) == Some(extension) {
-            Some((name.to_string(), path.to_path_buf()))
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                shatter_dir.join(path)
+            };
+            Some((name.to_string(), resolved))
         } else {
             None
         }
@@ -152,7 +161,7 @@ fn build_go_frontend(
     config: &ShatterConfig,
     out_dir: &Path,
 ) -> Result<(), String> {
-    let native_gens = collect_native_generators(config, "go");
+    let native_gens = collect_native_generators(shatter_dir, config, "go");
     if native_gens.is_empty() {
         return Err("no .go generators found in config.yaml; nothing to build".to_string());
     }
@@ -341,7 +350,7 @@ fn build_rust_frontend(
     config: &ShatterConfig,
     out_dir: &Path,
 ) -> Result<(), String> {
-    let native_gens = collect_native_generators(config, "rs");
+    let native_gens = collect_native_generators(shatter_dir, config, "rs");
     if native_gens.is_empty() {
         return Err("no .rs generators found in config.yaml; nothing to build".to_string());
     }

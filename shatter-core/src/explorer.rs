@@ -19,7 +19,7 @@ use crate::coverage_metrics::DiscoveryMethod;
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
 use crate::input_gen::{
     PrefetchedValues, ValueSource, generate_inputs_with_custom, generate_mock_values,
-    prefetch_custom_values,
+    overlay_custom_inputs, prefetch_custom_values,
 };
 use crate::mock_value_space::{LiveCallOutcome, LiveFirstState, classify_connection_failure};
 use crate::orchestrator::FrontendCapabilities;
@@ -1248,7 +1248,21 @@ pub async fn explore_function(
         let (inputs, strategy_idx) = {
             let _input_gen_span = tracing::info_span!("input_gen").entered();
             match meta_strategy.next(&strategy_ctx, &mut rng) {
-                Some((v, idx)) => (v, Some(idx)),
+                Some((v, idx)) => {
+                    let inputs = if use_generators {
+                        overlay_custom_inputs(
+                            &analysis.params,
+                            &config.value_sources,
+                            v,
+                            &mut prefetched,
+                            &mut rng,
+                            Some(&config.capabilities),
+                        )
+                    } else {
+                        v
+                    };
+                    (inputs, Some(idx))
+                }
                 None if use_generators => {
                     // Custom generators require an async frontend round-trip; they cannot
                     // be a standard InputStrategy, so they serve as the infinite fallback
@@ -1868,7 +1882,21 @@ async fn explore_function_with_observer_pool(
             let (inputs, strategy_idx) = {
                 let _input_gen_span = tracing::info_span!("input_gen").entered();
                 match meta_strategy.next(&strategy_ctx, &mut rng) {
-                    Some((v, idx)) => (v, Some(idx)),
+                    Some((v, idx)) => {
+                        let inputs = if use_generators {
+                            overlay_custom_inputs(
+                                &analysis.params,
+                                &config.value_sources,
+                                v,
+                                &mut prefetched,
+                                &mut rng,
+                                Some(&config.capabilities),
+                            )
+                        } else {
+                            v
+                        };
+                        (inputs, Some(idx))
+                    }
                     None if use_generators => {
                         let v = generate_inputs_with_custom(
                             &analysis.params,

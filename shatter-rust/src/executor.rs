@@ -281,6 +281,8 @@ fn native_replay_specs(inputs: &[Value]) -> Result<Vec<Option<NativeReplaySpec>>
                 file_path.display()
             )));
         }
+        let file_path = std::fs::canonicalize(&file_path)
+            .unwrap_or_else(|_| to_absolute(file_path));
         let function_name = replay
             .get("name")
             .and_then(Value::as_str)
@@ -4380,7 +4382,7 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
         if !tokens.contains("crate ::") {
             continue;
         }
-        imports.push_str(&tokens.replace("crate ::", crate_alias));
+        imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
         imports.push('\n');
     }
     imports
@@ -4428,10 +4430,19 @@ fn generate_axum_crate_harness(
         "use crate::user_code::*;\n",
         &crate_use_imports_for_harness(source, crate_alias),
     );
-    let target = if module_path.is_empty() {
+    let public_module_path = if module_path
+        .rsplit("::")
+        .next()
+        .is_some_and(|segment| segment == function_name)
+    {
+        module_path.rsplit_once("::").map(|(parent, _)| parent)
+    } else {
+        Some(module_path)
+    };
+    let target = if public_module_path.is_none_or(str::is_empty) {
         format!("{crate_alias}::{function_name}")
     } else {
-        format!("{crate_alias}::{module_path}::{function_name}")
+        format!("{crate_alias}::{}::{function_name}", public_module_path.unwrap())
     };
     harness = harness.replace(
         &format!("routing::any(user_code::{function_name})"),
@@ -4444,12 +4455,34 @@ fn generate_axum_crate_driver_cargo_toml(
     crate_name: &str,
     staging_crate: &Path,
     runtime_path: &Path,
+    user_cargo_toml: &str,
 ) -> String {
     let crate_path = staging_crate.display().to_string().replace('\\', "/");
     let runtime_path = runtime_path.display().to_string().replace('\\', "/");
+    let project_deps = rust_dependency_lines_for_driver(user_cargo_toml, crate_name);
+    let has_dep = |name: &str| project_deps.iter().any(|(dep, _)| dep == name);
+    let mut deps = String::new();
+    for (_, line) in &project_deps {
+        deps.push_str(line);
+        deps.push('\n');
+    }
+    for (name, line) in [
+        ("serde_json", r#"serde_json = "1""#),
+        ("tokio", r#"tokio = { version = "1", features = ["full"] }"#),
+        ("axum", r#"axum = { version = "0.8", features = ["json"] }"#),
+        ("tower", r#"tower = { version = "0.5", features = ["util"] }"#),
+        ("http", r#"http = "1""#),
+        ("http-body-util", r#"http-body-util = "0.1""#),
+        ("async-trait", r#"async-trait = "0.1""#),
+    ] {
+        if !has_dep(name) {
+            deps.push_str(line);
+            deps.push('\n');
+        }
+    }
     format!(
         r#"[package]
-name = "shatter-axum-exec"
+name = "shatter-exec-temp"
 version = "0.1.0"
 edition = "2021"
 
@@ -4459,15 +4492,36 @@ exclude = ["crate-shadow"]
 [dependencies]
 {crate_name} = {{ path = "{crate_path}" }}
 shatter-rust-runtime = {{ path = "{runtime_path}" }}
-serde_json = "1"
-tokio = {{ version = "1", features = ["full"] }}
-axum = {{ version = "0.7", features = ["json"] }}
-tower = {{ version = "0.5", features = ["util"] }}
-http = "1"
-http-body-util = "0.1"
-async-trait = "0.1"
+{deps}
 "#
     )
+}
+
+fn rust_dependency_lines_for_driver(cargo_toml: &str, crate_name: &str) -> Vec<(String, String)> {
+    let mut in_dependencies = false;
+    let mut deps = Vec::new();
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[dependencies]" {
+            in_dependencies = true;
+            continue;
+        }
+        if in_dependencies && trimmed.starts_with('[') {
+            break;
+        }
+        if !in_dependencies || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((name, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if matches!(name, "shatter-rust-runtime") || name == crate_name {
+            continue;
+        }
+        deps.push((name.to_string(), trimmed.to_string()));
+    }
+    deps
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4485,6 +4539,8 @@ fn execute_axum_handler_crate_backed(
         .unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
     let crate_root = crate_root_buf.as_path();
     let path = Path::new(file_path);
+    let source_path =
+        std::fs::canonicalize(path).unwrap_or_else(|_| to_absolute(path.to_path_buf()));
     let source = std::fs::read_to_string(path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
     let ctx = extract_fn_context(&source, function_name)?;
@@ -4496,7 +4552,7 @@ fn execute_axum_handler_crate_backed(
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
     let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let crate_alias = crate_name.replace('-', "_");
-    let module_path = module_path_for_crate_file(crate_root, path).ok_or_else(|| {
+    let module_path = module_path_for_crate_file(crate_root, &source_path).ok_or_else(|| {
         ExecuteError::NonExecutable(format!(
             "axum crate harness cannot map `{}` to a crate module path",
             path.display()
@@ -4566,8 +4622,12 @@ fn execute_axum_handler_crate_backed(
     })?;
     inject_crate_bridge_feature(&staging_crate.join("Cargo.toml"), &runtime_path)?;
 
-    let driver_cargo_toml =
-        generate_axum_crate_driver_cargo_toml(&crate_name, &staging_crate, &runtime_path);
+    let driver_cargo_toml = generate_axum_crate_driver_cargo_toml(
+        &crate_name,
+        &staging_crate,
+        &runtime_path,
+        &user_cargo_toml,
+    );
     let harness_result =
         build_and_spawn_crate_harness(&harness_source, &driver_cargo_toml, &harness_dir, None);
     let mut harness = match harness_result {
