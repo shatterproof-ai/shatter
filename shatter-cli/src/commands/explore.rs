@@ -4844,26 +4844,6 @@ pub(crate) async fn run_explore(
                 }
             }
 
-            // str-n10u: skip partial adapter helpers — medium-confidence adapter
-            // hints (e.g. only http.ResponseWriter) without a full adapter model.
-            if matches!(func.invocation_model, shatter_core::protocol::InvocationModel::Direct) {
-                let partial_adapter = func.adapter_hints.iter().any(|h| {
-                    h.confidence == shatter_core::nondeterminism::Confidence::Medium
-                });
-                if partial_adapter {
-                    log::debug!(
-                        "Skipping {} (partial adapter signature, not an exact handler)",
-                        func.name,
-                    );
-                    let span_lines = func
-                        .end_line
-                        .saturating_sub(func.start_line)
-                        .saturating_add(1);
-                    skipped_unexecutable.push((func.name.clone(), span_lines, vec![]));
-                    continue;
-                }
-            }
-
             // Generate mocks: passthrough in record mode, auto-mocks otherwise.
             let (auto_mocks, mock_params) = if record {
                 let passthrough =
