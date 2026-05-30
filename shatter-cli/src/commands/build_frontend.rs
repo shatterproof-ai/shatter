@@ -70,6 +70,73 @@ fn collect_native_generators(config: &ShatterConfig, extension: &str) -> Vec<(St
     generators
 }
 
+fn extract_package_name(cargo_toml: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_package = false;
+        }
+        if !in_package || !trimmed.starts_with("name") {
+            continue;
+        }
+        let (_, value) = trimmed.split_once('=')?;
+        return Some(value.trim().trim_matches('"').to_string());
+    }
+    None
+}
+
+fn rust_project_dependency(project_root: &Path) -> Option<String> {
+    let manifest = project_root.join("Cargo.toml");
+    let cargo_toml = std::fs::read_to_string(&manifest).ok()?;
+    let package_name = extract_package_name(&cargo_toml)?;
+    let project_path = project_root.display().to_string().replace('\\', "/");
+    Some(format!("{package_name} = {{ path = \"{project_path}\" }}\n"))
+}
+
+fn rust_project_dependencies(project_root: &Path) -> String {
+    let manifest = project_root.join("Cargo.toml");
+    let Ok(cargo_toml) = std::fs::read_to_string(&manifest) else {
+        return String::new();
+    };
+    let mut in_dependencies = false;
+    let mut deps = String::new();
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[dependencies]" {
+            in_dependencies = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_dependencies = false;
+        }
+        if !in_dependencies || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let key = trimmed
+            .split(['=', ' ', '.'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        if matches!(key, "serde_json" | "shatter-rust") {
+            continue;
+        }
+        deps.push_str(line);
+        deps.push('\n');
+    }
+    deps
+}
+
+fn rust_frontend_project_deps(project_root: &Path) -> String {
+    let mut deps = rust_project_dependency(project_root).unwrap_or_default();
+    deps.push_str(&rust_project_dependencies(project_root));
+    deps
+}
+
 /// Build a custom Go frontend binary with native generators compiled in.
 ///
 /// Creates a temporary Go module that imports shatter-go's protocol handler and
@@ -317,6 +384,8 @@ fn build_rust_frontend(
         ));
     }
 
+    let project_dependencies = rust_frontend_project_deps(project_root);
+
     // Write Cargo.toml
     let cargo_toml = format!(
         r#"[package]
@@ -331,6 +400,7 @@ path = "src/main.rs"
 [dependencies]
 shatter-rust = {{ path = "{}" }}
 serde_json = "1"
+{project_dependencies}
 "#,
         shatter_rust_abs.display()
     );

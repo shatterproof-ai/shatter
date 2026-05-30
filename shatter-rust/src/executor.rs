@@ -4365,6 +4365,235 @@ fn generate_axum_harness(
     Ok(h)
 }
 
+fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
+    use quote::ToTokens;
+
+    let Ok(file) = syn::parse_file(source) else {
+        return String::new();
+    };
+    let mut imports = String::new();
+    for item in file.items {
+        let syn::Item::Use(use_item) = item else {
+            continue;
+        };
+        let tokens = use_item.to_token_stream().to_string();
+        if !tokens.contains("crate ::") {
+            continue;
+        }
+        imports.push_str(&tokens.replace("crate ::", crate_alias));
+        imports.push('\n');
+    }
+    imports
+}
+
+fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<String> {
+    let rel = file_path.strip_prefix(crate_root).ok()?;
+    let rel = rel.strip_prefix("src").ok()?;
+    let mut parts: Vec<String> = rel
+        .iter()
+        .map(|part| part.to_string_lossy().to_string())
+        .collect();
+    let last = parts.last_mut()?;
+    if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
+        parts.pop();
+    } else if let Some(stripped) = last.strip_suffix(".rs") {
+        *last = stripped.to_string();
+    } else {
+        return None;
+    }
+    Some(parts.join("::"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_axum_crate_harness(
+    source: &str,
+    function_name: &str,
+    crate_alias: &str,
+    module_path: &str,
+    mappings: &[crate::adapters::AxumExtractorMapping],
+    param_types: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
+    mocks_json: &str,
+) -> Result<String, ExecuteError> {
+    let mut harness = generate_axum_harness(
+        "",
+        function_name,
+        mappings,
+        param_types,
+        native_replays,
+        mocks_json,
+    )?;
+    harness = harness.replace("#[allow(dead_code)]\nmod user_code {\n\n}", "");
+    harness = harness.replace(
+        "use crate::user_code::*;\n",
+        &crate_use_imports_for_harness(source, crate_alias),
+    );
+    let target = if module_path.is_empty() {
+        format!("{crate_alias}::{function_name}")
+    } else {
+        format!("{crate_alias}::{module_path}::{function_name}")
+    };
+    harness = harness.replace(
+        &format!("routing::any(user_code::{function_name})"),
+        &format!("routing::any({target})"),
+    );
+    Ok(harness)
+}
+
+fn generate_axum_crate_driver_cargo_toml(
+    crate_name: &str,
+    staging_crate: &Path,
+    runtime_path: &Path,
+) -> String {
+    let crate_path = staging_crate.display().to_string().replace('\\', "/");
+    let runtime_path = runtime_path.display().to_string().replace('\\', "/");
+    format!(
+        r#"[package]
+name = "shatter-axum-exec"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+exclude = ["crate-shadow"]
+
+[dependencies]
+{crate_name} = {{ path = "{crate_path}" }}
+shatter-rust-runtime = {{ path = "{runtime_path}" }}
+serde_json = "1"
+tokio = {{ version = "1", features = ["full"] }}
+axum = {{ version = "0.7", features = ["json"] }}
+tower = {{ version = "0.5", features = ["util"] }}
+http = "1"
+http-body-util = "0.1"
+async-trait = "0.1"
+"#
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_axum_handler_crate_backed(
+    file_path: &str,
+    function_name: &str,
+    inputs: &[Value],
+    mocks: &[Value],
+    timeout_ms: u64,
+    mappings: &[crate::adapters::AxumExtractorMapping],
+    cache: &HarnessCache,
+    crate_root: &Path,
+) -> Result<ExecuteResult, ExecuteError> {
+    let crate_root_buf = std::fs::canonicalize(crate_root)
+        .unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
+    let crate_root = crate_root_buf.as_path();
+    let path = Path::new(file_path);
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
+    let ctx = extract_fn_context(&source, function_name)?;
+    let native_replays = native_replay_specs(inputs)?;
+    let native_replay_hash = native_replay_hash(&native_replays);
+
+    let user_cargo_toml_path = crate_root.join("Cargo.toml");
+    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
+    let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
+    let crate_alias = crate_name.replace('-', "_");
+    let module_path = module_path_for_crate_file(crate_root, path).ok_or_else(|| {
+        ExecuteError::NonExecutable(format!(
+            "axum crate harness cannot map `{}` to a crate module path",
+            path.display()
+        ))
+    })?;
+
+    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
+    })?;
+    let instr_result = instrument::instrument_source(&source, Some(function_name))
+        .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
+    let harness_source = generate_axum_crate_harness(
+        &source,
+        function_name,
+        &crate_alias,
+        &module_path,
+        mappings,
+        &ctx.sig.param_types,
+        &native_replays,
+        &mocks_json,
+    )?;
+    let wrapper_hash = source_hash(&format!("{}{}", instr_result.source, harness_source));
+    let mh = mocks_hash(mocks);
+    let key = HarnessKey {
+        file_path: file_path.to_string(),
+        function_name: function_name.to_string(),
+        mocks_hash: mh,
+        native_replay_hash,
+    };
+
+    {
+        let mut map = cache.lock().unwrap();
+        if let Some(harness) = map.get_mut(&key) {
+            let result = harness.execute(inputs, timeout_ms)?;
+            if result
+                .thrown_error
+                .as_ref()
+                .and_then(|e| e.get("error_type"))
+                .and_then(|v| v.as_str())
+                == Some("timeout")
+            {
+                map.remove(&key);
+            }
+            return Ok(result);
+        }
+    }
+
+    let runtime_path = find_runtime_crate_path()?;
+    let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
+    std::fs::create_dir_all(&harness_dir)?;
+    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
+        ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
+    })?;
+    let rel_file = path.strip_prefix(crate_root).unwrap_or(path);
+    let staging_file = staging_crate.join(rel_file);
+    if let Some(parent) = staging_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ExecuteError::IoError(io::Error::other(format!(
+                "cannot create staging directories: {e}"
+            )))
+        })?;
+    }
+    std::fs::write(&staging_file, &instr_result.source).map_err(|e| {
+        ExecuteError::IoError(io::Error::other(format!(
+            "cannot write instrumented source to staging: {e}"
+        )))
+    })?;
+    inject_crate_bridge_feature(&staging_crate.join("Cargo.toml"), &runtime_path)?;
+
+    let driver_cargo_toml =
+        generate_axum_crate_driver_cargo_toml(&crate_name, &staging_crate, &runtime_path);
+    let harness_result =
+        build_and_spawn_crate_harness(&harness_source, &driver_cargo_toml, &harness_dir, None);
+    let mut harness = match harness_result {
+        Ok(harness) => harness,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&harness_dir);
+            return Err(err);
+        }
+    };
+
+    let result = harness.execute(inputs, timeout_ms)?;
+    let timed_out = result
+        .thrown_error
+        .as_ref()
+        .and_then(|e| e.get("error_type"))
+        .and_then(|v| v.as_str())
+        == Some("timeout");
+    if !timed_out {
+        cache.lock().unwrap().insert(key, harness);
+    } else {
+        let _ = std::fs::remove_dir_all(&harness_dir);
+    }
+
+    Ok(result)
+}
+
 /// Execute an Axum handler function via adapter-owned path.
 ///
 /// Generates an Axum-specific harness that builds a minimal `Router`,
@@ -4385,6 +4614,18 @@ pub fn execute_axum_handler(
     let path = Path::new(file_path);
     if !path.exists() {
         return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+    }
+    if let Some(crate_root) = find_crate_root(file_path) {
+        return execute_axum_handler_crate_backed(
+            file_path,
+            function_name,
+            inputs,
+            mocks,
+            timeout_ms,
+            mappings,
+            cache,
+            &crate_root,
+        );
     }
 
     let native_replays = native_replay_specs(inputs)?;
