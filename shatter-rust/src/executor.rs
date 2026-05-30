@@ -663,6 +663,18 @@ fn source_hash(content: &str) -> u64 {
     h.finish()
 }
 
+fn cached_harness_matches(
+    binary_path: &Path,
+    main_rs_path: &Path,
+    main_rs_content: &str,
+    cargo_toml_path: &Path,
+    cargo_toml_content: &str,
+) -> bool {
+    binary_path.exists()
+        && std::fs::read_to_string(main_rs_path).ok().as_deref() == Some(main_rs_content)
+        && std::fs::read_to_string(cargo_toml_path).ok().as_deref() == Some(cargo_toml_content)
+}
+
 /// Walk up from `file_path` to find the nearest directory containing a
 /// `Cargo.toml` with a `[package]` section (not just a workspace root).
 /// Returns `None` for standalone files or workspace-root-only manifests.
@@ -2321,16 +2333,19 @@ fn build_and_spawn_crate_harness(
     let target_dir = harness_dir.join("target");
     let binary_path = target_dir.join(profile_dir).join(binary_name);
 
-    // Skip recompile if binary exists and harness source is unchanged.
+    // Skip recompile if binary exists and generated build inputs are unchanged.
     let main_rs_path = src_dir.join("main.rs");
-    let already_built = binary_path.exists()
-        && std::fs::read_to_string(&main_rs_path)
-            .ok()
-            .as_deref()
-            == Some(harness_source);
+    let cargo_toml_path = harness_dir.join("Cargo.toml");
+    let already_built = cached_harness_matches(
+        &binary_path,
+        &main_rs_path,
+        harness_source,
+        &cargo_toml_path,
+        cargo_toml_content,
+    );
 
     if !already_built {
-        std::fs::write(harness_dir.join("Cargo.toml"), cargo_toml_content)?;
+        std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, harness_source)?;
 
         // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
@@ -3284,11 +3299,17 @@ fn build_and_spawn_crate_bridge_harness(
     let binary_path = target_dir.join(profile_dir).join(binary_name);
 
     let main_rs_path = src_dir.join("main.rs");
-    let already_built = binary_path.exists()
-        && std::fs::read_to_string(&main_rs_path).ok().as_deref() == Some(driver_source);
+    let cargo_toml_path = harness_dir.join("Cargo.toml");
+    let already_built = cached_harness_matches(
+        &binary_path,
+        &main_rs_path,
+        driver_source,
+        &cargo_toml_path,
+        cargo_toml_content,
+    );
 
     if !already_built {
-        std::fs::write(harness_dir.join("Cargo.toml"), cargo_toml_content)?;
+        std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, driver_source)?;
 
         cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
@@ -5833,6 +5854,38 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         assert!(
             !harness.contains("routing::any(pickpackit_api::handlers::workspaces::update_workspace)"),
             "crate Axum harness must not use the private child module path:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn cached_harness_rebuilds_when_cargo_toml_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let binary = dir.path().join("target").join("debug").join("shatter-exec-temp");
+        std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("target dir");
+        std::fs::write(&binary, "binary").expect("binary");
+        let main_rs = src.join("main.rs");
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(&main_rs, "fn main() {}\n").expect("main");
+        std::fs::write(&cargo_toml, "[dependencies]\nold = \"1\"\n").expect("cargo");
+
+        assert!(cached_harness_matches(
+            &binary,
+            &main_rs,
+            "fn main() {}\n",
+            &cargo_toml,
+            "[dependencies]\nold = \"1\"\n"
+        ));
+        assert!(
+            !cached_harness_matches(
+                &binary,
+                &main_rs,
+                "fn main() {}\n",
+                &cargo_toml,
+                "[dependencies]\nnew = \"1\"\n"
+            ),
+            "generated Cargo.toml changes must invalidate cached harness binaries"
         );
     }
 
