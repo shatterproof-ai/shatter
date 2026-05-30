@@ -4406,12 +4406,92 @@ fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<Str
     Some(parts.join("::"))
 }
 
+fn module_file_for_module_path(crate_root: &Path, module_path: &str) -> Option<PathBuf> {
+    let mut path = crate_root.join("src");
+    for segment in module_path.split("::").filter(|segment| !segment.is_empty()) {
+        path.push(segment);
+    }
+    let mod_rs = path.join("mod.rs");
+    if mod_rs.exists() {
+        return Some(mod_rs);
+    }
+    path.set_extension("rs");
+    path.exists().then_some(path)
+}
+
+fn public_reexport_name_for_child(
+    source: &str,
+    child_module: &str,
+    function_name: &str,
+) -> Option<String> {
+    let file = syn::parse_file(source).ok()?;
+    file.items.into_iter().find_map(|item| {
+        let syn::Item::Use(use_item) = item else {
+            return None;
+        };
+        if !matches!(use_item.vis, syn::Visibility::Public(_)) {
+            return None;
+        }
+        use_tree_reexports_child_function(&use_item.tree, child_module, function_name, false)
+    })
+}
+
+fn use_tree_reexports_child_function(
+    tree: &syn::UseTree,
+    child_module: &str,
+    function_name: &str,
+    in_child_module: bool,
+) -> Option<String> {
+    match tree {
+        syn::UseTree::Path(path) if !in_child_module && path.ident == "self" => {
+            use_tree_reexports_child_function(&path.tree, child_module, function_name, false)
+        }
+        syn::UseTree::Path(path) if !in_child_module && path.ident == child_module => {
+            use_tree_reexports_child_function(&path.tree, child_module, function_name, true)
+        }
+        syn::UseTree::Group(group) => group.items.iter().find_map(|tree| {
+            use_tree_reexports_child_function(tree, child_module, function_name, in_child_module)
+        }),
+        syn::UseTree::Name(name) if in_child_module && name.ident == function_name => {
+            Some(function_name.to_string())
+        }
+        syn::UseTree::Rename(rename) if in_child_module && rename.ident == function_name => {
+            Some(rename.rename.to_string())
+        }
+        syn::UseTree::Glob(_) if in_child_module => Some(function_name.to_string()),
+        _ => None,
+    }
+}
+
+fn public_invocation_path_for_crate_file(
+    crate_root: &Path,
+    file_path: &Path,
+    function_name: &str,
+    crate_alias: &str,
+    module_path: &str,
+) -> Option<String> {
+    let (parent_module_path, child_module) = module_path.rsplit_once("::")?;
+    let parent_file = module_file_for_module_path(crate_root, parent_module_path)?;
+    let source = std::fs::read_to_string(parent_file).ok()?;
+    let export_name = public_reexport_name_for_child(&source, child_module, function_name)?;
+    let canonical_source = std::fs::canonicalize(file_path).ok()?;
+    let child_file = module_file_for_module_path(crate_root, module_path)?;
+    let canonical_child = std::fs::canonicalize(child_file).ok()?;
+    if canonical_source != canonical_child {
+        return None;
+    }
+    Some(format!(
+        "{crate_alias}::{parent_module_path}::{export_name}"
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn generate_axum_crate_harness(
     source: &str,
     function_name: &str,
     crate_alias: &str,
     module_path: &str,
+    public_invocation_target: Option<&str>,
     mappings: &[crate::adapters::AxumExtractorMapping],
     param_types: &[String],
     native_replays: &[Option<NativeReplaySpec>],
@@ -4439,11 +4519,18 @@ fn generate_axum_crate_harness(
     } else {
         Some(module_path)
     };
-    let target = if public_module_path.is_none_or(str::is_empty) {
-        format!("{crate_alias}::{function_name}")
-    } else {
-        format!("{crate_alias}::{}::{function_name}", public_module_path.unwrap())
-    };
+    let target = public_invocation_target
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if public_module_path.is_none_or(str::is_empty) {
+                format!("{crate_alias}::{function_name}")
+            } else {
+                format!(
+                    "{crate_alias}::{}::{function_name}",
+                    public_module_path.unwrap()
+                )
+            }
+        });
     harness = harness.replace(
         &format!("routing::any(user_code::{function_name})"),
         &format!("routing::any({target})"),
@@ -4558,6 +4645,13 @@ fn execute_axum_handler_crate_backed(
             path.display()
         ))
     })?;
+    let public_invocation_target = public_invocation_path_for_crate_file(
+        crate_root,
+        &source_path,
+        function_name,
+        &crate_alias,
+        &module_path,
+    );
 
     let mocks_json = serde_json::to_string(mocks).map_err(|e| {
         ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
@@ -4569,6 +4663,7 @@ fn execute_axum_handler_crate_backed(
         function_name,
         &crate_alias,
         &module_path,
+        public_invocation_target.as_deref(),
         mappings,
         &ctx.sig.param_types,
         &native_replays,
@@ -5674,6 +5769,70 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         assert!(
             harness.contains("with_state"),
             "harness with State extractor must call with_state\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn public_invocation_path_uses_parent_reexport_for_private_child_module() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("handlers")).expect("create handlers dir");
+        std::fs::write(src.join("lib.rs"), "pub mod handlers;\n").expect("write lib");
+        std::fs::write(
+            src.join("handlers").join("mod.rs"),
+            "mod workspaces;\npub use workspaces::{update_workspace, workspaces};\n",
+        )
+        .expect("write handlers mod");
+        let source_file = src.join("handlers").join("workspaces.rs");
+        std::fs::write(
+            &source_file,
+            "pub async fn workspaces() {}\npub async fn update_workspace() {}\n",
+        )
+        .expect("write workspaces");
+
+        let target = public_invocation_path_for_crate_file(
+            dir.path(),
+            &source_file,
+            "update_workspace",
+            "pickpackit_api",
+            "handlers::workspaces",
+        );
+
+        assert_eq!(
+            target.as_deref(),
+            Some("pickpackit_api::handlers::update_workspace")
+        );
+    }
+
+    #[test]
+    fn generate_axum_crate_harness_uses_public_invocation_target() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let harness = generate_axum_crate_harness(
+            "use axum::extract::Path;\npub async fn update_workspace(Path(id): Path<u64>) -> String { id.to_string() }",
+            "update_workspace",
+            "pickpackit_api",
+            "handlers::workspaces",
+            Some("pickpackit_api::handlers::update_workspace"),
+            &mappings,
+            &["Path<u64>".to_string()],
+            &[None],
+            "[]",
+        )
+        .expect("generate harness");
+
+        assert!(
+            harness.contains("routing::any(pickpackit_api::handlers::update_workspace)"),
+            "crate Axum harness must mount the public re-export target:\n{harness}"
+        );
+        assert!(
+            !harness.contains("routing::any(pickpackit_api::handlers::workspaces::update_workspace)"),
+            "crate Axum harness must not use the private child module path:\n{harness}"
         );
     }
 
