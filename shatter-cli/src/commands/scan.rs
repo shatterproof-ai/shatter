@@ -601,47 +601,6 @@ pub(crate) async fn run_scan(
         }
     });
 
-    // str-n10u: skip partial adapter helpers — functions that have
-    // medium-confidence adapter hints (e.g. only http.ResponseWriter without
-    // *http.Request) but no full adapter InvocationModel. These would pass
-    // the opaque executability check (the param type is "unknown", not
-    // "opaque") but fail at execution because the planner cannot synthesize
-    // the raw adapter-domain parameter without the adapter's full wiring.
-    all_analyses.retain(|func| {
-        if !matches!(func.invocation_model, shatter_core::protocol::InvocationModel::Direct) {
-            return true;
-        }
-        let partial_adapter = func.adapter_hints.iter().any(|h| {
-            h.confidence == shatter_core::nondeterminism::Confidence::Medium
-        });
-        if !partial_adapter {
-            return true;
-        }
-        let hint_reasons: Vec<String> = func
-            .adapter_hints
-            .iter()
-            .filter(|h| h.confidence == shatter_core::nondeterminism::Confidence::Medium)
-            .flat_map(|h| h.reasons.iter().cloned())
-            .collect();
-        let reason = if hint_reasons.is_empty() {
-            format!(
-                "partial adapter signature (not an exact {} handler)",
-                func.adapter_hints[0].adapter.id,
-            )
-        } else {
-            format!(
-                "partial adapter signature — {}; not an exact handler",
-                hint_reasons.join(", "),
-            )
-        };
-        skipped_for_executability.push(SkippedFunction {
-            function_name: func.name.clone(),
-            reason,
-            category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
-        });
-        false
-    });
-
     if !skipped_for_executability.is_empty() {
         log::info!(
             "Skipped {} function(s) (unexecutable parameter types):",
@@ -2286,9 +2245,9 @@ mod tests {
     }
 
     /// Partial adapter helpers (medium-confidence hint, no full InvocationModel)
-    /// must be skipped with a descriptive reason.
+    /// remain direct functions when their parameters are executable.
     #[test]
-    fn partial_adapter_helper_skipped_with_clear_reason() {
+    fn executable_partial_adapter_helper_survives_scan_filters() {
         let partial_func = FunctionAnalysis {
             name: "writePartial".into(),
             exported: false,
@@ -2389,47 +2348,15 @@ mod tests {
                 false
             }
         });
-        // Pass 2: partial adapter helpers.
-        analyses.retain(|func| {
-            if !matches!(func.invocation_model, InvocationModel::Direct) {
-                return true;
-            }
-            let partial = func.adapter_hints.iter().any(|h| h.confidence == Confidence::Medium);
-            if !partial {
-                return true;
-            }
-            let hint_reasons: Vec<String> = func
-                .adapter_hints
-                .iter()
-                .filter(|h| h.confidence == Confidence::Medium)
-                .flat_map(|h| h.reasons.iter().cloned())
-                .collect();
-            let reason = if hint_reasons.is_empty() {
-                format!("partial adapter signature (not an exact {} handler)", func.adapter_hints[0].adapter.id)
-            } else {
-                format!("partial adapter signature — {}; not an exact handler", hint_reasons.join(", "))
-            };
-            skipped.push(SkippedFunction {
-                function_name: func.name.clone(),
-                reason,
-                category: shatter_core::scan_orchestrator::SkipCategory::Unsupported,
-            });
-            false
-        });
-
-        assert_eq!(analyses.len(), 1, "exact handler must survive both filters");
-        assert_eq!(analyses[0].name, "handleExact");
-        assert_eq!(skipped.len(), 1, "partial helper must be skipped");
-        assert_eq!(skipped[0].function_name, "writePartial");
+        assert_eq!(analyses.len(), 2, "partial and exact handlers both survive");
         assert!(
-            skipped[0].reason.contains("partial adapter signature"),
-            "skip reason should mention partial adapter: {}",
-            skipped[0].reason,
+            analyses.iter().any(|analysis| analysis.name == "writePartial"),
+            "executable partial helper must remain a direct scan target",
         );
         assert!(
-            skipped[0].reason.contains("not an exact handler"),
-            "skip reason should explain it's not an exact handler: {}",
-            skipped[0].reason,
+            analyses.iter().any(|analysis| analysis.name == "handleExact"),
+            "exact handler must keep adapter-owned scan behavior",
         );
+        assert!(skipped.is_empty(), "no executable helper should be skipped");
     }
 }
