@@ -2,6 +2,7 @@ package launcher_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
+	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
 func TestGenerateLauncherMainIsDeterministic(t *testing.T) {
@@ -212,6 +214,96 @@ chmod +x "$out"
 	}
 	if freshCount != 1 {
 		t.Fatalf("fresh builds = %d, want 1", freshCount)
+	}
+}
+
+func TestBuildLauncherWithGoModOverlayDoesNotNeedModuleUpdates(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	root := t.TempDir()
+	libDir := filepath.Join(root, "lib")
+	targetModuleDir := filepath.Join(root, "app")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatalf("mkdir lib: %v", err)
+	}
+	if err := os.MkdirAll(targetModuleDir, 0o755); err != nil {
+		t.Fatalf("mkdir app: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(libDir, "go.mod"), []byte("module example.com/lib\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write lib go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "lib.go"), []byte("package lib\n\nfunc Value() int { return 42 }\n"), 0o644); err != nil {
+		t.Fatalf("write lib.go: %v", err)
+	}
+
+	const targetGoMod = `module example.com/app
+
+go 1.23
+
+replace example.com/lib => ../lib
+`
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "go.mod"), []byte(targetGoMod), 0o644); err != nil {
+		t.Fatalf("write target go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "app.go"), []byte(`package app
+
+import "example.com/lib"
+
+func Value() int { return lib.Value() }
+`), 0o644); err != nil {
+		t.Fatalf("write app.go: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:           "example.com/app:Value",
+			SymbolName:   "Value",
+			Kind:         wrapper.TargetKindFunction,
+			HasResult:    true,
+			ResultGoType: "int",
+		},
+	}
+	hash := wrapper.DiscoveryHash(targets, nil)
+	wrapperDir := t.TempDir()
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "app", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	harnessRuntimeDir, err := filepath.Abs("../harness")
+	if err != nil {
+		t.Fatalf("resolve harness runtime: %v", err)
+	}
+	workDir := t.TempDir()
+	_, _, err = launcher.BuildLauncher(launcher.BuildOptions{
+		TargetModulePath:  "example.com/app",
+		TargetModuleDir:   targetModuleDir,
+		TargetImportPath:  "example.com/app",
+		DiscoveryHash:     hash,
+		WrapperRealPath:   wrapperPath,
+		WrapperInTreePath: filepath.Join(targetModuleDir, wrapper.WrapperFilename(hash)),
+		GeneratedDir:      filepath.Join(workDir, "generated"),
+		BinariesDir:       filepath.Join(workDir, "binaries"),
+		GoEnv:             append(os.Environ(), "GOFLAGS="),
+		UseHarnessLoop:    true,
+		HarnessRuntimeDir: harnessRuntimeDir,
+	})
+	if err != nil {
+		t.Fatalf("BuildLauncher: %v", err)
+	}
+
+	gotGoMod, err := os.ReadFile(filepath.Join(targetModuleDir, "go.mod"))
+	if err != nil {
+		t.Fatalf("read target go.mod: %v", err)
+	}
+	if string(gotGoMod) != targetGoMod {
+		t.Fatalf("target go.mod was modified:\n%s", gotGoMod)
+	}
+	if _, err := os.Stat(filepath.Join(targetModuleDir, "go.sum")); !os.IsNotExist(err) {
+		t.Fatalf("target go.sum was created or stat failed: %v", err)
 	}
 }
 
