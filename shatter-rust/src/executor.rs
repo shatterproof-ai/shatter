@@ -774,7 +774,7 @@ fn generate_cargo_toml_with_user_deps(
     };
     let axum_deps = if needs_axum {
         concat!(
-            "axum = { version = \"0.7\", features = [\"json\"] }\n",
+            "axum = { version = \"0.8\", features = [\"json\"] }\n",
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
@@ -1388,7 +1388,7 @@ fn generate_cargo_toml(
     };
     let axum_deps = if needs_axum {
         concat!(
-            "axum = { version = \"0.7\", features = [\"json\"] }\n",
+            "axum = { version = \"0.8\", features = [\"json\"] }\n",
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
@@ -4555,6 +4555,15 @@ fn generate_axum_harness(
     h.push_str(&format!(
         "        let method_str = input_obj.get(\"method\").and_then(|v| v.as_str()).unwrap_or(\"{default_method}\");\n"
     ));
+    h.push_str("        let axum_recipe_field = |field: &str| -> Option<Value> {\n");
+    h.push_str("            inputs.iter().find_map(|input| {\n");
+    h.push_str("                input.get(\"__shatter_replay\")\n");
+    h.push_str("                    .and_then(|replay| replay.get(\"recipe\"))\n");
+    h.push_str("                    .and_then(|recipe| recipe.get(\"axum\"))\n");
+    h.push_str("                    .and_then(|axum| axum.get(field))\n");
+    h.push_str("                    .cloned()\n");
+    h.push_str("            })\n");
+    h.push_str("        };\n");
 
     // Extract path.
     let path_param_index = mappings
@@ -4570,7 +4579,13 @@ fn generate_axum_harness(
     let default_path = path_inner_type
         .as_deref()
         .map(axum_route_pattern_for_path)
-        .unwrap_or_else(|| "/test".to_string());
+        .unwrap_or_else(|| {
+            if path_param_index.is_some() {
+                "/test/{p0}".to_string()
+            } else {
+                "/test".to_string()
+            }
+        });
     if let Some(idx) = path_param_index {
         let default_path_value = path_inner_type
             .as_deref()
@@ -4578,16 +4593,17 @@ fn generate_axum_harness(
             .unwrap_or_else(|| "/test/p0".to_string());
         let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    return path.to_string();\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).unwrap_or(\"{default_path}\").to_string();\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).or_else(|| axum_recipe_field(\"path\").and_then(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| \"{default_path}\".to_string());\n"
         ));
     }
 
     // Extract query string.
-    h.push_str("        let query_str = input_obj.get(\"query\").map(|v| {\n");
+    h.push_str("        let query_input = input_obj.get(\"query\").cloned().or_else(|| axum_recipe_field(\"query\"));\n");
+    h.push_str("        let query_str = query_input.as_ref().map(|v| {\n");
     h.push_str("            if let Some(s) = v.as_str() { s.to_string() }\n");
     h.push_str("            else if let Some(obj) = v.as_object() {\n");
     h.push_str("                obj.iter().map(|(k, v)| format!(\"{}={}\", k, v.as_str().unwrap_or(&v.to_string()))).collect::<Vec<_>>().join(\"&\")\n");
@@ -4619,14 +4635,14 @@ fn generate_axum_harness(
     let default_body_json_literal = rust_string_literal(&default_body_json);
     if let Some(idx) = json_param_index {
         h.push_str(&format!(
-            "        let body_json = input_obj.get(\"body\").cloned().unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
+            "        let body_json = input_obj.get(\"body\").cloned().or_else(|| axum_recipe_field(\"body\")).unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
         ));
         h.push_str(&format!(
             "        let body_json = if body_json.is_null() {{ serde_json::from_str::<Value>({default_body_json_literal}).unwrap_or(Value::Null) }} else {{ body_json }};\n"
         ));
         h.push_str("        let body_bytes = axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default());\n\n");
     } else {
-        h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
+        h.push_str("        let body_json = input_obj.get(\"body\").cloned().or_else(|| axum_recipe_field(\"body\")).unwrap_or(Value::Null);\n");
         h.push_str("        let body_bytes = if body_json.is_null() {\n");
         h.push_str("            axum::body::Body::empty()\n");
         h.push_str("        } else {\n");
@@ -5633,7 +5649,6 @@ pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             r#"
 use axum::{extract::{FromRequestParts, State}, Json};
 use axum::http::request::Parts;
-use async_trait::async_trait;
 
 #[derive(Clone)]
 pub struct AppStateLike {
@@ -5645,19 +5660,21 @@ pub struct CurrentAccountLike {
     pub id: u64,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for CurrentAccountLike
 where
     S: Send + Sync,
 {
     type Rejection = &'static str;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(parts
             .extensions
             .get::<CurrentAccountLike>()
             .cloned()
-            .ok_or("missing current account")
+            .ok_or("missing current account"))
     }
 }
 
@@ -5894,6 +5911,110 @@ pub fn RuntimeAwareState(_recipe: Option<serde_json::Value>) -> GeneratorResult 
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
                     "skipping execute_axum_handler_replays_native_state_inside_request_runtime: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_axum_handler_uses_native_recipe_path_hint() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::{Path, State};
+
+#[derive(Clone)]
+pub struct AppStateLike;
+
+pub async fn handler(State(_state): State<AppStateLike>, Path(segment): Path<u64>) -> String {
+    segment.to_string()
+}
+"#,
+        )
+        .expect("write source");
+
+        let state_generator = dir.path().join("state_gen.rs");
+        std::fs::write(
+            &state_generator,
+            r#"
+use crate::user_code::AppStateLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    GeneratorResult {
+        id: "recipe-path-state".to_string(),
+        value: Box::new(AppStateLike),
+        recipe: recipe.unwrap_or(serde_json::Value::Null),
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        let state_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "recipe-state",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": state_generator,
+                "name": "RecipePathState",
+                "recipe": {
+                    "axum": {
+                        "path": "/test/42"
+                    }
+                }
+            }
+        });
+        let mappings = vec![
+            AxumExtractorMapping {
+                param_index: 0,
+                kind: AxumExtractorKind::AppState,
+                type_name: "State".to_string(),
+            },
+            AxumExtractorMapping {
+                param_index: 1,
+                kind: AxumExtractorKind::PathParams,
+                type_name: "Path".to_string(),
+            },
+        ];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "handler",
+            &[state_input, serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!(42))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_uses_native_recipe_path_hint: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
