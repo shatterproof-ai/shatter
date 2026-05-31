@@ -173,7 +173,8 @@ impl Frontend {
             cmd.args(&config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
             for (key, value) in &config.env_vars {
                 cmd.env(key, value);
             }
@@ -495,7 +496,16 @@ impl Frontend {
             return Ok(());
         }
 
-        let response = self.send(ProtoCommand::Shutdown).await?;
+        let response = match self.send(ProtoCommand::Shutdown).await {
+            Ok(response) => response,
+            Err(error) => {
+                // The child may be busy handling a timed-out request and never
+                // read the shutdown command. Since this method consumes the
+                // frontend, force-kill here instead of relying on drop.
+                let _ = self.child.kill().await;
+                return Err(error);
+            }
+        };
 
         match response.result {
             ResponseResult::ShutdownAck => {}
