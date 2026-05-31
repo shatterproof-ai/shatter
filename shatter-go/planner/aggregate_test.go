@@ -251,9 +251,9 @@ func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	// []chan int — array of a kind PlanComposite cannot synthesize.
 	badSlice := sliceParam("ch", "[]chan int", protocol.TypeInfo{Kind: "unknown"})
-	// map[string]*sql.DB — map value is an opaque-inside-pointer that
-	// PlanComposite rejects (see the pointer-to-opaque rule in composite.go).
-	badMap := mapParam("m", "map[string]*sql.DB",
+	// map[string]*sql.DB — map value cannot be synthesized, but an empty map
+	// is still a valid bounded aggregate plan.
+	okEmptyMap := mapParam("m", "map[string]*sql.DB",
 		protocol.TypeInfo{Kind: "str"},
 		protocol.TypeInfo{Kind: "nullable", Inner: &protocol.TypeInfo{Kind: "opaque", Label: "sql.DB"}},
 	)
@@ -264,7 +264,7 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	params := []protocol.ParamInfo{
 		strParam("s"),
 		badSlice,
-		badMap,
+		okEmptyMap,
 		badStruct,
 		intParam("n"),
 	}
@@ -278,8 +278,8 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	if matrix[1] != nil {
 		t.Errorf("matrix[1] (bad slice) must be nil, got %+v", matrix[1])
 	}
-	if matrix[2] != nil {
-		t.Errorf("matrix[2] (bad map) must be nil, got %+v", matrix[2])
+	if len(matrix[2]) != 1 {
+		t.Errorf("matrix[2] (empty map) = %+v, want one empty-map plan", matrix[2])
 	}
 	if matrix[3] != nil {
 		t.Errorf("matrix[3] (bad struct) must be nil, got %+v", matrix[3])
@@ -287,8 +287,8 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	if len(matrix[4]) == 0 {
 		t.Error("matrix[4] (int) must not be empty")
 	}
-	if len(unsat) != 3 {
-		t.Fatalf("len(unsat) = %d, want 3; got %+v", len(unsat), unsat)
+	if len(unsat) != 2 {
+		t.Fatalf("len(unsat) = %d, want 2; got %+v", len(unsat), unsat)
 	}
 	for i, u := range unsat {
 		if u.Kind != protocol.UnsatisfiedRequirementKindComplexType {
