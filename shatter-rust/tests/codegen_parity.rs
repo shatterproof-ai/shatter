@@ -45,7 +45,7 @@ fn generated_slices_are_sorted_and_nonempty() {
         ("ALL_GENERATOR_KINDS", enums::ALL_GENERATOR_KINDS),
         ("ALL_BRANCH_TYPES", enums::ALL_BRANCH_TYPES),
     ];
-    for (name, values) in cases.iter().copied() {
+    for &(name, values) in cases {
         assert!(!values.is_empty(), "{name} unexpectedly empty");
         let mut sorted = values.to_vec();
         sorted.sort_unstable();

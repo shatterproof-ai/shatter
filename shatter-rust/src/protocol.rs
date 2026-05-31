@@ -1142,7 +1142,9 @@ mod tests {
     #[test]
     fn literal_value_all_variants_round_trip() {
         round_trip(&LiteralValue::Int { value: 42 });
-        round_trip(&LiteralValue::Float { value: 3.14 });
+        round_trip(&LiteralValue::Float {
+            value: std::f64::consts::PI,
+        });
         round_trip(&LiteralValue::Str {
             value: "express".into(),
         });
