@@ -4593,7 +4593,7 @@ fn generate_axum_harness(
             .unwrap_or_else(|| "/test/p0".to_string());
         let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    return path.to_string();\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    return path.to_string();\n                }}\n            }}\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
@@ -6618,6 +6618,39 @@ pub struct Nested {
         assert!(
             harness.contains("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002"),
             "null tuple Path input must fall back to parseable default UUID path segments\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_prefers_recipe_path_over_generated_path_input() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Path;\nasync fn get_user(Path((workspace_id, bundle_id)): Path<(Uuid, Uuid)>) -> String { format!(\"{workspace_id}:{bundle_id}\") }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let harness = generate_axum_harness(
+            source,
+            "get_user",
+            &mappings,
+            &["Path<(Uuid, Uuid)>".to_string()],
+            &[None],
+            "[]",
+            &[(None, source)],
+        )
+        .unwrap();
+
+        let recipe_path = harness
+            .find("axum_recipe_field(\"path\")")
+            .expect("harness must read native replay path recipe");
+        let generated_path = harness
+            .find("inputs.get(0)")
+            .expect("harness must still fall back to generated Path input");
+        assert!(
+            recipe_path < generated_path,
+            "native replay path recipe must win over generated Path input\n\nharness:\n{harness}"
         );
     }
 
