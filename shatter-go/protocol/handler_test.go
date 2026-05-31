@@ -774,6 +774,21 @@ func classify(x int) string {
 	}
 }
 
+func TestExecuteRuntimeValueTemplateCompletes(t *testing.T) {
+	file := filepath.Join("testdata", "opaque.go")
+	req := reqJSON(4, "execute", fmt.Sprintf(`"file":"%s","function":"AcceptsTemplatePointer","inputs":[null],"mocks":[]`, file))
+	resp := sendRecv(t, req)
+	if resp.Status != "execute" {
+		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.Outcome == nil {
+		t.Fatal("expected completed invocation outcome")
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		t.Fatalf("outcome status = %q, want %q (thrown: %v)", resp.Outcome.Status, OutcomeStatusCompleted, resp.Outcome.ThrownError)
+	}
+}
+
 func TestExecuteReturnsPerformanceMetrics(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "target.go")
 	src := `package main
