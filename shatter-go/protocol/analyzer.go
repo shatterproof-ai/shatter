@@ -1016,7 +1016,10 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	// intentionally overlaps the historical opaque set for `io.Writer`
 	// and friends.
 	if spelling := synthesizableStdlibType(t); spelling != "" {
-		return TypeInfo{Kind: "unknown", Label: spelling}
+		if strings.HasPrefix(spelling, "*") {
+			return TypeInfo{Kind: "unknown", Label: spelling}
+		}
+		return TypeInfo{Kind: "unknown"}
 	}
 
 	// Check for opaque resource types (channels, sockets, file handles, etc.)
