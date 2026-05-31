@@ -5487,6 +5487,76 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         }
     }
 
+    #[test]
+    fn execute_axum_handler_defaults_null_json_body_to_valid_payload() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::Json;
+
+#[derive(serde::Deserialize)]
+pub struct Payload {
+    pub name: String,
+    pub count: u32,
+    pub enabled: bool,
+}
+
+pub async fn create(Json(payload): Json<Payload>) -> String {
+    format!("{}:{}:{}", payload.name, payload.count, payload.enabled)
+}
+"#,
+        )
+        .expect("write source");
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "create",
+            &[serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "null Json<T> input should produce a valid request body, got {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!(":0:false"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_defaults_null_json_body_to_valid_payload: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
     // ── Async harness generation tests ──
 
     #[test]
