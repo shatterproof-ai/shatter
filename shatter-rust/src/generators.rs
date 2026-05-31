@@ -10,7 +10,8 @@ pub struct GeneratorResult {
 }
 
 /// Signature for custom-build native generator functions.
-pub type NativeGeneratorFn = Box<dyn Fn(Option<serde_json::Value>) -> GeneratorResult + Send + Sync>;
+pub type NativeGeneratorFn =
+    Box<dyn Fn(Option<serde_json::Value>) -> GeneratorResult + Send + Sync>;
 
 /// Stores live (non-serializable) objects returned by native generators.
 /// Core receives a sentinel JSON referencing the handle; the frontend resolves
@@ -64,7 +65,11 @@ impl HandleTable {
 
     /// Number of stored handles.
     pub fn len(&self) -> usize {
-        self.handles.lock().expect("handle table lock poisoned").map.len()
+        self.handles
+            .lock()
+            .expect("handle table lock poisoned")
+            .map
+            .len()
     }
 
     /// Whether the table is empty.
@@ -76,6 +81,7 @@ impl HandleTable {
 /// Registry dispatches generate requests to WASM plugins or native generators.
 pub struct NativeRegistry {
     generators: HashMap<String, NativeGeneratorFn>,
+    file_generators: HashMap<(String, String), NativeGeneratorFn>,
     pub handles: HandleTable,
 }
 
@@ -89,6 +95,7 @@ impl NativeRegistry {
     pub fn new() -> Self {
         Self {
             generators: HashMap::new(),
+            file_generators: HashMap::new(),
             handles: HandleTable::new(),
         }
     }
@@ -98,17 +105,42 @@ impl NativeRegistry {
         self.generators.insert(name.into(), func);
     }
 
+    /// Register a compiled-in generator function for a specific generator file.
+    pub fn register_for_file(
+        &mut self,
+        file: impl Into<String>,
+        name: impl Into<String>,
+        func: NativeGeneratorFn,
+    ) {
+        self.file_generators
+            .insert((normalize_generator_file(&file.into()), name.into()), func);
+    }
+
     /// Look up and call a native generator by name.
     /// Returns (sentinel_json, generator_id, recipe) or an error.
     pub fn generate(
         &self,
+        file: Option<&str>,
         name: &str,
         recipe: Option<serde_json::Value>,
     ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
-        let func = self
-            .generators
-            .get(name)
-            .ok_or_else(|| format!("native generator {name:?} not registered (custom build required)"))?;
+        let func = file
+            .and_then(|file| {
+                self.file_generators
+                    .get(&(normalize_generator_file(file), name.to_string()))
+            })
+            .or_else(|| self.generators.get(name))
+            .ok_or_else(|| {
+                if let Some(file) = file {
+                    format!(
+                        "native generator {name:?} from {file:?} not registered (custom build required)"
+                    )
+                } else {
+                    format!(
+                        "native generator {name:?} not registered (custom build required)"
+                    )
+                }
+            })?;
 
         let result = func(recipe);
         let handle_id = self.handles.store(result.value);
@@ -132,6 +164,12 @@ impl NativeRegistry {
     pub fn has_native(&self, name: &str) -> bool {
         self.generators.contains_key(name)
     }
+}
+
+fn normalize_generator_file(file: &str) -> String {
+    std::fs::canonicalize(file)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| file.to_string())
 }
 
 #[cfg(test)]
@@ -172,7 +210,9 @@ mod tests {
             }),
         );
 
-        let (sentinel, id, recipe) = registry.generate("TestGen", None).expect("should work");
+        let (sentinel, id, recipe) = registry
+            .generate(None, "TestGen", None)
+            .expect("should work");
         assert_eq!(id, "test-gen");
         assert_eq!(recipe, serde_json::json!({"key": "val"}));
         assert_eq!(sentinel["__shatter_native"], true);
@@ -182,7 +222,41 @@ mod tests {
     #[test]
     fn native_registry_unregistered() {
         let registry = NativeRegistry::new();
-        let err = registry.generate("Missing", None).unwrap_err();
+        let err = registry.generate(None, "Missing", None).unwrap_err();
         assert!(err.contains("not registered"));
+    }
+
+    #[test]
+    fn native_registry_dispatches_by_file_when_available() {
+        let mut registry = NativeRegistry::new();
+        registry.register(
+            "current",
+            Box::new(|_recipe| GeneratorResult {
+                id: "default".into(),
+                value: Box::new(String::from("default-value")),
+                recipe: serde_json::json!({"source": "default"}),
+            }),
+        );
+        registry.register_for_file(
+            "generators/bundle.rs",
+            "current",
+            Box::new(|_recipe| GeneratorResult {
+                id: "bundle".into(),
+                value: Box::new(String::from("bundle-value")),
+                recipe: serde_json::json!({"source": "bundle"}),
+            }),
+        );
+
+        let (_, id, recipe) = registry
+            .generate(Some("generators/bundle.rs"), "current", None)
+            .expect("file-specific generator should run");
+        assert_eq!(id, "bundle");
+        assert_eq!(recipe, serde_json::json!({"source": "bundle"}));
+
+        let (_, id, recipe) = registry
+            .generate(Some("generators/other.rs"), "current", None)
+            .expect("name fallback should run");
+        assert_eq!(id, "default");
+        assert_eq!(recipe, serde_json::json!({"source": "default"}));
     }
 }
