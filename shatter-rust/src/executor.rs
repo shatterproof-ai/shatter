@@ -4652,6 +4652,47 @@ fn generate_axum_harness(
     h.push_str("        } else { request };\n");
     h.push_str("        let mut request = request.body(body_bytes).unwrap();\n\n");
 
+    // Build the router with the handler.
+    // Determine the route method based on the HTTP method.
+    let has_state = mappings
+        .iter()
+        .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
+
+    if has_state {
+        let state_mapping = mappings
+            .iter()
+            .find(|m| m.kind == crate::adapters::AxumExtractorKind::AppState)
+            .expect("has_state implies a state mapping");
+        let idx = state_mapping.param_index;
+        let state_type = param_types
+            .get(idx)
+            .and_then(|ty| match classify_axum_extractor(ty) {
+                Some(AxumExtractor::State(inner)) => Some(inner),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                ExecuteError::InstrumentError(format!(
+                    "cannot determine axum state type for input {idx}"
+                ))
+            })?;
+        if native_replays.get(idx).and_then(|spec| spec.as_ref()).is_none() {
+            h.push_str(&format!(
+                "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
+            ));
+            h.push_str("    });\n");
+            h.push_str("}\n");
+            return Ok(h);
+        }
+    }
+
+    // Build route pattern from path extractor presence.
+    let route_pattern = default_path.as_str();
+
+    // Execute native replay and the Axum request inside the same Tokio runtime.
+    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+    h.push_str("            __tokio_rt.block_on(async move {\n");
+
     for mapping in mappings {
         if mapping.kind != crate::adapters::AxumExtractorKind::Unsupported {
             continue;
@@ -4690,15 +4731,6 @@ fn generate_axum_harness(
         ));
     }
 
-    // Build the router with the handler.
-    // Determine the route method based on the HTTP method.
-    let has_state = mappings
-        .iter()
-        .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
-
-    // Build route pattern from path extractor presence.
-    let route_pattern = default_path.as_str();
-
     h.push_str(&format!(
         "        let app = Router::new().route(\"{route_pattern}\", routing::any(user_code::{function_name}));\n"
     ));
@@ -4721,16 +4753,10 @@ fn generate_axum_harness(
                     "cannot determine axum state type for input {idx}"
                 ))
             })?;
-        let Some(spec) = native_replays.get(idx).and_then(|spec| spec.as_ref()) else {
-            h.push_str(&format!(
-                "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
-            ));
-            h.push_str("        #[allow(unreachable_code)] { let _ = app; }\n");
-            h.push_str("        #[allow(unreachable_code)] { let _ = request; }\n");
-            h.push_str("    });\n");
-            h.push_str("}\n");
-            return Ok(h);
-        };
+        let spec = native_replays
+            .get(idx)
+            .and_then(|spec| spec.as_ref())
+            .expect("validated axum state native replay");
         let recipe_json = serde_json::to_string(&spec.recipe).map_err(|e| {
             ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}"))
         })?;
@@ -4755,10 +4781,6 @@ fn generate_axum_harness(
         ));
     }
 
-    // Execute via oneshot inside a Tokio runtime.
-    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
-    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str("            __tokio_rt.block_on(async {\n");
     h.push_str("                let response = app.oneshot(request).await.unwrap();\n");
     h.push_str("                let status = response.status().as_u16();\n");
     h.push_str("                let headers: serde_json::Map<String, Value> = response.headers().iter()\n");
@@ -5775,6 +5797,103 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
                     "skipping execute_axum_handler_replays_native_state_and_extension_values: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_axum_handler_replays_native_state_inside_request_runtime() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::State;
+
+#[derive(Clone)]
+pub struct AppStateLike {
+    pub value: String,
+}
+
+pub async fn handler(State(state): State<AppStateLike>) -> String {
+    state.value
+}
+"#,
+        )
+        .expect("write source");
+
+        let state_generator = dir.path().join("state_gen.rs");
+        std::fs::write(
+            &state_generator,
+            r#"
+use crate::user_code::AppStateLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn RuntimeAwareState(_recipe: Option<serde_json::Value>) -> GeneratorResult {
+    tokio::runtime::Handle::try_current()
+        .expect("native replay ran outside tokio request runtime");
+    GeneratorResult {
+        id: "runtime-aware-state".to_string(),
+        value: Box::new(AppStateLike { value: "runtime-ok".to_string() }),
+        recipe: serde_json::Value::Null,
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        let input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "runtime-state",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": state_generator,
+                "name": "RuntimeAwareState",
+                "recipe": null
+            }
+        });
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::AppState,
+            type_name: "State".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "handler",
+            &[input],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("runtime-ok"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_replays_native_state_inside_request_runtime: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
