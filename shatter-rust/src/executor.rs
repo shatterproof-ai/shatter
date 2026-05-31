@@ -2457,6 +2457,10 @@ fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> Pat
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-crate-bridge-{key:016x}")))
 }
 
+fn crate_bridge_target_dir(harness_dir: &Path) -> PathBuf {
+    harness_dir.join("target")
+}
+
 /// Create an isolated staging copy of a user crate for crate_bridge compilation.
 ///
 /// Copies the source tree, `Cargo.toml`, `build.rs`, and `.cargo/` to
@@ -6906,6 +6910,31 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert!(
             target.is_absolute(),
             "standalone_target_dir must be absolute for CARGO_TARGET_DIR correctness, got: {target:?}"
+        );
+    }
+
+    #[test]
+    fn crate_bridge_target_dir_uses_shared_cache_env() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        let cache_root = std::env::temp_dir().join("shatter-test-crate-bridge-cache");
+        let cache_str = cache_root.to_string_lossy().into_owned();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
+
+        let harness_dir = cache_root
+            .join("rust")
+            .join("crate-bridge")
+            .join("0123456789abcdef");
+        let target = crate_bridge_target_dir(&harness_dir);
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
+        assert_eq!(
+            target,
+            cache_root.join("rust").join("crate-bridge").join("target"),
+            "crate-bridge harnesses should share dependency build artifacts instead of creating one target tree per harness key"
+        );
+        assert!(
+            !target.starts_with(&harness_dir),
+            "target dir {target:?} must not be nested under per-harness cache key {harness_dir:?}"
         );
     }
 
