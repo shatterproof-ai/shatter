@@ -1642,6 +1642,243 @@ fn axum_default_path_value_for_path(inner_ty: &str) -> String {
     format!("/test/{segments}")
 }
 
+fn axum_json_default_value(type_sources: &[(Option<&str>, &str)], inner_ty: &str) -> Value {
+    let structs = collect_struct_defs(type_sources);
+    let mut seen = HashSet::new();
+    axum_json_default_for_type_str(inner_ty, &structs, &mut seen)
+}
+
+fn collect_struct_defs(type_sources: &[(Option<&str>, &str)]) -> HashMap<String, syn::ItemStruct> {
+    let mut found = Vec::new();
+    let mut bare_counts: HashMap<String, usize> = HashMap::new();
+    for (module_path, source) in type_sources {
+        let Ok(file) = syn::parse_file(source) else {
+            continue;
+        };
+        for item in file.items {
+            if let syn::Item::Struct(item_struct) = item {
+                let bare = item_struct.ident.to_string();
+                *bare_counts.entry(bare).or_insert(0) += 1;
+                found.push((module_path.map(str::to_string), item_struct));
+            }
+        }
+    }
+    let mut structs = HashMap::new();
+    for (module_path, item_struct) in found {
+        let bare = item_struct.ident.to_string();
+        if bare_counts.get(&bare) == Some(&1) {
+            structs.insert(bare.clone(), item_struct.clone());
+        }
+        if let Some(module_path) = module_path {
+            structs.insert(format!("{module_path}::{bare}"), item_struct.clone());
+            structs.insert(format!("crate::{module_path}::{bare}"), item_struct);
+        }
+    }
+    structs
+}
+
+fn axum_json_default_for_type_str(
+    ty: &str,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    let Ok(parsed) = syn::parse_str::<syn::Type>(ty) else {
+        return Value::Object(serde_json::Map::new());
+    };
+    axum_json_default_for_type(&parsed, structs, seen)
+}
+
+fn axum_json_default_for_type(
+    ty: &syn::Type,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    let syn::Type::Path(type_path) = ty else {
+        return Value::Null;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Value::Null;
+    };
+    let bare_name = segment.ident.to_string();
+    match bare_name.as_str() {
+        "String" => return Value::String(String::new()),
+        "bool" => return Value::Bool(false),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+        | "i128" | "isize" => return serde_json::json!(0),
+        "f32" | "f64" => return serde_json::json!(0.0),
+        "Uuid" => return Value::String("00000000-0000-0000-0000-000000000001".to_string()),
+        "NaiveDate" => return Value::String("1970-01-01".to_string()),
+        "DateTime" => return Value::String("1970-01-01T00:00:00Z".to_string()),
+        "Vec" | "HashSet" | "BTreeSet" => return Value::Array(Vec::new()),
+        "HashMap" | "BTreeMap" => return Value::Object(serde_json::Map::new()),
+        "Option" => return Value::Null,
+        _ => {}
+    }
+
+    for key in axum_type_lookup_keys(type_path) {
+        if !seen.insert(key.clone()) {
+            return Value::Null;
+        }
+        if let Some(item_struct) = structs.get(&key) {
+            let value = axum_json_default_for_struct(item_struct, structs, seen);
+            seen.remove(&key);
+            return value;
+        }
+        seen.remove(&key);
+    }
+    Value::Object(serde_json::Map::new())
+}
+
+fn axum_type_lookup_keys(type_path: &syn::TypePath) -> Vec<String> {
+    let mut keys = Vec::new();
+    let path = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    if !path.is_empty() {
+        keys.push(path);
+    }
+    if let Some(last) = type_path.path.segments.last() {
+        let bare = last.ident.to_string();
+        if keys.first() != Some(&bare) {
+            keys.push(bare);
+        }
+    }
+    keys
+}
+
+fn axum_json_default_for_struct(
+    item_struct: &syn::ItemStruct,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    match &item_struct.fields {
+        syn::Fields::Named(fields) => {
+            let rename_all_camel = serde_rename_all_camel_case(&item_struct.attrs);
+            let mut object = serde_json::Map::new();
+            for field in &fields.named {
+                let Some(ident) = &field.ident else {
+                    continue;
+                };
+                if serde_field_has_attr(&field.attrs, &["skip", "skip_deserializing"]) {
+                    continue;
+                }
+                let value = axum_json_default_for_type(&field.ty, structs, seen);
+                if serde_field_has_attr(&field.attrs, &["flatten"]) {
+                    if let Value::Object(flattened) = value {
+                        object.extend(flattened);
+                    }
+                    continue;
+                }
+                if serde_field_has_attr(&field.attrs, &["default"]) || type_is_option(&field.ty) {
+                    continue;
+                }
+                let key = serde_field_name(ident.to_string(), &field.attrs, rename_all_camel);
+                object.insert(key, value);
+            }
+            Value::Object(object)
+        }
+        syn::Fields::Unnamed(fields) => Value::Array(
+            fields
+                .unnamed
+                .iter()
+                .map(|field| axum_json_default_for_type(&field.ty, structs, seen))
+                .collect(),
+        ),
+        syn::Fields::Unit => Value::Null,
+    }
+}
+
+fn type_is_option(ty: &syn::Type) -> bool {
+    matches!(
+        ty,
+        syn::Type::Path(type_path)
+            if type_path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Option")
+    )
+}
+
+fn serde_field_has_attr(attrs: &[syn::Attribute], names: &[&str]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if names.iter().any(|name| meta.path.is_ident(name)) {
+                found = true;
+            }
+            Ok(())
+        });
+        found
+    })
+}
+
+fn serde_rename_all_camel_case(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename_all") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                found = lit.value() == "camelCase";
+            }
+            Ok(())
+        });
+        found
+    })
+}
+
+fn serde_field_name(name: String, attrs: &[syn::Attribute], rename_all_camel: bool) -> String {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let mut rename = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                rename = Some(lit.value());
+            }
+            Ok(())
+        });
+        if let Some(rename) = rename {
+            return rename;
+        }
+    }
+    if rename_all_camel {
+        snake_to_lower_camel(&name)
+    } else {
+        name
+    }
+}
+
+fn snake_to_lower_camel(name: &str) -> String {
+    let mut parts = name.split('_');
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    let mut camel = first.to_string();
+    for part in parts {
+        let mut chars = part.chars();
+        if let Some(first_char) = chars.next() {
+            camel.extend(first_char.to_uppercase());
+            camel.push_str(chars.as_str());
+        }
+    }
+    camel
+}
+
 /// Returns the fully-qualified Axum constructor expression to wrap an inner
 /// deserialized value into the extractor type, e.g. `axum::extract::Path`.
 fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
@@ -4274,6 +4511,7 @@ fn generate_axum_harness(
     param_types: &[String],
     native_replays: &[Option<NativeReplaySpec>],
     mocks_json: &str,
+    type_sources: &[(Option<&str>, &str)],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(8192);
@@ -4368,18 +4606,33 @@ fn generate_axum_harness(
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::JsonBody)
         .map(|m| m.param_index);
+    let default_body_json = json_param_index
+        .and_then(|idx| param_types.get(idx))
+        .and_then(|ty| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::Json(inner)) => Some(axum_json_default_value(type_sources, &inner)),
+            _ => None,
+        })
+        .unwrap_or(Value::Null);
+    let default_body_json = serde_json::to_string(&default_body_json).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize default axum JSON body: {e}"))
+    })?;
+    let default_body_json_literal = rust_string_literal(&default_body_json);
     if let Some(idx) = json_param_index {
         h.push_str(&format!(
             "        let body_json = input_obj.get(\"body\").cloned().unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
         ));
+        h.push_str(&format!(
+            "        let body_json = if body_json.is_null() {{ serde_json::from_str::<Value>({default_body_json_literal}).unwrap_or(Value::Null) }} else {{ body_json }};\n"
+        ));
+        h.push_str("        let body_bytes = axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default());\n\n");
     } else {
         h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
+        h.push_str("        let body_bytes = if body_json.is_null() {\n");
+        h.push_str("            axum::body::Body::empty()\n");
+        h.push_str("        } else {\n");
+        h.push_str("            axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default())\n");
+        h.push_str("        };\n\n");
     }
-    h.push_str("        let body_bytes = if body_json.is_null() {\n");
-    h.push_str("            axum::body::Body::empty()\n");
-    h.push_str("        } else {\n");
-    h.push_str("            axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default())\n");
-    h.push_str("        };\n\n");
 
     h.push_str("        let request = http::Request::builder()\n");
     h.push_str("            .method(method_str)\n");
@@ -4671,6 +4924,7 @@ fn generate_axum_crate_harness(
     param_types: &[String],
     native_replays: &[Option<NativeReplaySpec>],
     mocks_json: &str,
+    type_sources: &[(Option<&str>, &str)],
 ) -> Result<String, ExecuteError> {
     let mut harness = generate_axum_harness(
         "",
@@ -4679,6 +4933,7 @@ fn generate_axum_crate_harness(
         param_types,
         native_replays,
         mocks_json,
+        type_sources,
     )?;
     harness = harness.replace("#[allow(dead_code)]\nmod user_code {\n\n}", "");
     harness = harness.replace(
@@ -4791,6 +5046,38 @@ fn rust_dependency_lines_for_driver(cargo_toml: &str, crate_name: &str) -> Vec<(
     deps
 }
 
+fn crate_rust_type_sources(crate_root: &Path) -> Vec<(Option<String>, String)> {
+    let src = crate_root.join("src");
+    let mut sources = Vec::new();
+    collect_rust_sources(crate_root, &src, &mut sources);
+    sources
+}
+
+fn collect_rust_sources(
+    crate_root: &Path,
+    dir: &Path,
+    sources: &mut Vec<(Option<String>, String)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_rust_sources(crate_root, &path, sources);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            && let Ok(source) = std::fs::read_to_string(&path)
+        {
+            let module_path = module_path_for_crate_file(crate_root, &path);
+            sources.push((module_path, source));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_axum_handler_crate_backed(
     file_path: &str,
@@ -4838,6 +5125,11 @@ fn execute_axum_handler_crate_backed(
     })?;
     let instr_result = instrument::instrument_source(&source, Some(function_name))
         .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
+    let type_sources = crate_rust_type_sources(crate_root);
+    let type_source_refs = type_sources
+        .iter()
+        .map(|(module_path, source)| (module_path.as_deref(), source.as_str()))
+        .collect::<Vec<_>>();
     let harness_source = generate_axum_crate_harness(
         &source,
         function_name,
@@ -4848,6 +5140,7 @@ fn execute_axum_handler_crate_backed(
         &ctx.sig.param_types,
         &native_replays,
         &mocks_json,
+        &type_source_refs,
     )?;
     let wrapper_hash = source_hash(&format!("{}{}", instr_result.source, harness_source));
     let mh = mocks_hash(mocks);
@@ -5010,6 +5303,7 @@ pub fn execute_axum_handler(
         &ctx.sig.param_types,
         &native_replays,
         &mocks_json,
+        &[(None, source.as_str())],
     )?;
 
     let harness_dir = make_harness_dir();
@@ -5487,6 +5781,191 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         }
     }
 
+    #[test]
+    fn execute_axum_handler_defaults_null_json_body_to_valid_payload() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::Json;
+
+#[derive(serde::Deserialize)]
+pub struct Payload {
+    pub name: String,
+    pub count: u32,
+    pub enabled: bool,
+}
+
+pub async fn create(Json(payload): Json<Payload>) -> String {
+    format!("{}:{}:{}", payload.name, payload.count, payload.enabled)
+}
+"#,
+        )
+        .expect("write source");
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "create",
+            &[serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "null Json<T> input should produce a valid request body, got {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!(":0:false"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_defaults_null_json_body_to_valid_payload: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_axum_handler_sends_literal_null_json_body_for_option_payload() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::Json;
+
+pub async fn maybe(Json(payload): Json<Option<String>>) -> String {
+    if payload.is_none() { "none".to_string() } else { "some".to_string() }
+}
+"#,
+        )
+        .expect("write source");
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::JsonBody,
+            type_name: "Json".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "maybe",
+            &[serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "null Json<Option<T>> should be sent as literal JSON null, got {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("none"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_sends_literal_null_json_body_for_option_payload: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn axum_json_default_uses_qualified_structs_and_unique_bare_fallback() {
+        let domain = r#"
+pub struct Duplicate {
+    pub label: String,
+}
+"#;
+        let other = r#"
+pub struct Duplicate {
+    pub count: u32,
+}
+"#;
+        let type_sources = &[(Some("domain"), domain), (Some("other"), other)];
+
+        assert_eq!(
+            axum_json_default_value(type_sources, "crate::domain::Duplicate"),
+            serde_json::json!({"label": ""})
+        );
+        assert_eq!(
+            axum_json_default_value(type_sources, "Duplicate"),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn axum_json_default_respects_serde_skip_flatten_and_camel_case() {
+        let source = r#"
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outer {
+    pub label: String,
+    #[serde(skip_deserializing)]
+    pub server_only: String,
+    #[serde(flatten)]
+    pub nested: Nested,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Nested {
+    pub owner_person_id: String,
+}
+"#;
+
+        assert_eq!(
+            axum_json_default_value(&[(None, source)], "Outer"),
+            serde_json::json!({"label": "", "ownerPersonId": ""})
+        );
+    }
+
     // ── Async harness generation tests ──
 
     #[test]
@@ -5825,6 +6304,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -5858,6 +6338,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Path<u64>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -5887,6 +6368,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Path<(Uuid, Uuid)>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -5916,6 +6398,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -5941,6 +6424,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Query<String>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -5973,6 +6457,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["State<String>".to_string()],
             &native_replays,
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
@@ -6032,6 +6517,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &["Path<u64>".to_string()],
             &[None],
             "[]",
+            &[],
         )
         .expect("generate harness");
 
@@ -6178,6 +6664,7 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[(None, source)],
         )
         .unwrap();
         assert!(
