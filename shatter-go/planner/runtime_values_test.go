@@ -70,6 +70,7 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 		{"time.Time", []string{"time.Time{}", "time.Now()"}, "time"},
 		{"http.Header", []string{"http.Header{}"}, "net/http"},
 		{"*template.Template", []string{`template.Must(template.New("shatter").Parse("{}"))`}, "text/template"},
+		{"wazero.Runtime", []string{`wazero.NewRuntime(context.Background())`}, "github.com/tetratelabs/wazero"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typeName, func(t *testing.T) {

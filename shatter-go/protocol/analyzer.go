@@ -786,8 +786,9 @@ var opaqueGoTypes = map[string]map[string]bool{
 	"database/sql": {"DB": true, "Tx": true, "Rows": true},
 }
 
-// synthesizableStdlibTypes lists stdlib named types the Go planner can
-// satisfy without user hints via the runtime-value registry (str-gxjs).
+// synthesizableStdlibTypes lists named types the Go planner can satisfy without
+// user hints via the runtime-value registry (str-gxjs). It started with stdlib
+// types but also includes selected external runtime values.
 // Each entry maps `pkg.Path() / type name` to the canonical Go-source
 // spelling used by `planner.LookupRuntimeValue`.
 //
@@ -813,6 +814,9 @@ var synthesizableStdlibTypes = map[string]map[string]string{
 	},
 	"net/http": {
 		"ResponseWriter": "http.ResponseWriter",
+	},
+	"github.com/tetratelabs/wazero": {
+		"Runtime": "wazero.Runtime",
 	},
 }
 
@@ -1020,10 +1024,7 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	// intentionally overlaps the historical opaque set for `io.Writer`
 	// and friends.
 	if spelling := synthesizableStdlibType(t); spelling != "" {
-		if strings.HasPrefix(spelling, "*") {
-			return TypeInfo{Kind: "unknown", Label: spelling}
-		}
-		return TypeInfo{Kind: "unknown"}
+		return TypeInfo{Kind: "unknown", Label: spelling}
 	}
 
 	// Check for opaque resource types (channels, sockets, file handles, etc.)

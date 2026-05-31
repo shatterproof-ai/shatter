@@ -108,7 +108,7 @@ func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, m
 	if p.Type.Element == nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, "slice TypeInfo missing element")
 	}
-	elemZero, err := synthesizeFieldValue(*p.Type.Element, DefaultMaxCompositeDepth)
+	elemZero, err := synthesizeFieldValue(*p.Type.Element, DefaultMaxCompositeDepth, newCompositeImportSet())
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, err.Error())
 	}
@@ -127,11 +127,11 @@ func planMapAggregate(targetID string, paramIndex int, p protocol.ParamInfo, max
 	if !ok {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, "map TypeInfo missing key or value")
 	}
-	keyZero, err := synthesizeFieldValue(keyType, DefaultMaxCompositeDepth)
+	keyZero, err := synthesizeFieldValue(keyType, DefaultMaxCompositeDepth, newCompositeImportSet())
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map key: %s", err.Error()))
 	}
-	valueZero, err := synthesizeFieldValue(valueType, DefaultMaxCompositeDepth)
+	valueZero, err := synthesizeFieldValue(valueType, DefaultMaxCompositeDepth, newCompositeImportSet())
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map value: %s", err.Error()))
 	}
