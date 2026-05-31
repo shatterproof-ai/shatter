@@ -226,10 +226,11 @@ func TestAnalyzeFormatAnyAcceptsEmptyInterface(t *testing.T) {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	// str-23mc: even the empty interface (interface{}/any) is opaque —
-	// the core cannot construct a meaningful concrete value for it.
-	if fn.Params[0].Type.Kind != "opaque" {
-		t.Errorf("interface{} param type = %q, want opaque", fn.Params[0].Type.Kind)
+	if fn.Params[0].Type.Kind != "unknown" {
+		t.Errorf("interface{} param type = %q, want unknown", fn.Params[0].Type.Kind)
+	}
+	if fn.Params[0].Type.Label != "interface" {
+		t.Errorf("interface{} param label = %q, want interface", fn.Params[0].Type.Label)
 	}
 }
 
@@ -1179,15 +1180,17 @@ func containsTypeLabel(t TypeInfo, needle string) bool {
 	return false
 }
 
-func TestAnalyzePlainInterfaceReturnsOpaque(t *testing.T) {
+func TestAnalyzePlainInterfaceReturnsUnknown(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsPlainInterface")
 	if err != nil {
 		t.Fatalf("AnalyzeFile: %v", err)
 	}
 	fn := results[0]
-	// str-23mc: plain (non-synthesizable) interfaces are opaque.
-	if fn.Params[0].Type.Kind != "opaque" {
-		t.Errorf("plain interface type = %q, want opaque", fn.Params[0].Type.Kind)
+	if fn.Params[0].Type.Kind != "unknown" {
+		t.Errorf("plain interface type = %q, want unknown", fn.Params[0].Type.Kind)
+	}
+	if fn.Params[0].Type.Label != "interface" {
+		t.Errorf("plain interface label = %q, want interface", fn.Params[0].Type.Label)
 	}
 }
 

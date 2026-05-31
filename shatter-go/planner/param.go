@@ -130,7 +130,7 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 
 	family, ok := classifyParamFamily(p)
 	if !ok {
-		if opts.JSONEncodeInterfaceParams[p.Name] && isEmptyInterfaceParam(p) {
+		if isEmptyInterfaceParam(p) {
 			return jsonInterfaceValuePlans(paramIndex, p, maxPlans), nil
 		}
 		if aggPlans, aggUnsat := planAggregateWithOptions(targetID, paramIndex, p, maxPlans, aggregateOptions{

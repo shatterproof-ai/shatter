@@ -24,6 +24,7 @@ const (
 	compositeZeroBool       = "false"
 	compositeZeroNilPointer = "nil"
 	compositeZeroByteSlice  = "nil"
+	compositeZeroInterface  = `"value"`
 )
 
 // CompositeOptions bundles caller inputs for composite-literal synthesis.
@@ -162,6 +163,9 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 	case "bool":
 		return compositeZeroBool, nil
 	case "array":
+		if t.Element != nil && isEmptyInterfaceType(*t.Element) {
+			return compositeZeroNilPointer, nil
+		}
 		if t.Element != nil && t.Element.Kind == "int" {
 			return compositeZeroByteSlice, nil
 		}
@@ -190,6 +194,9 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 		}
 		return compositeZeroNilPointer, nil
 	case "object":
+		if isMapTypeInfo(t) {
+			return compositeZeroNilPointer, nil
+		}
 		// Non-pointer nested struct: emit an elided-type composite literal
 		// (Go allows `Outer{Inner: {X: 0}}` without naming Inner's type),
 		// at a cost of one further depth level.
@@ -207,6 +214,9 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "unknown":
+		if isEmptyInterfaceType(t) {
+			return compositeZeroInterface, nil
+		}
 		if isRegisteredPointerRuntimeValue(t.Label) {
 			return compositeZeroNilPointer, nil
 		}
@@ -226,11 +236,21 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 			return rv.Expression, nil
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
-	case "opaque", "union":
+	case "opaque":
+		if isEmptyInterfaceType(t) {
+			return compositeZeroInterface, nil
+		}
+		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
+	case "union":
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	default:
 		return "", fmt.Errorf("unsupported field kind %q", t.Kind)
 	}
+}
+
+func isEmptyInterfaceType(t protocol.TypeInfo) bool {
+	return (t.Kind == "opaque" || t.Kind == "unknown") &&
+		(t.Label == "interface" || t.Label == "interface{}" || t.Label == "any")
 }
 
 func isRegisteredPointerRuntimeValue(typeName string) bool {

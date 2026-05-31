@@ -164,6 +164,25 @@ func TestPlanComposite_AllPrimitiveFamilies(t *testing.T) {
 	}
 }
 
+func TestPlanComposite_EmptyInterfaceAndJSONContainerFields(t *testing.T) {
+	req := objectType(
+		field("Value", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
+		field("Items", protocol.TypeInfo{Kind: "array", Element: &protocol.TypeInfo{Kind: "unknown", Label: "interface"}}),
+		field("Meta", objectType(
+			field("_key", protocol.TypeInfo{Kind: "str"}),
+			field("_value", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
+		)),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.JSONish", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.JSONish{Value: "value", Items: nil, Meta: nil}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+}
+
 func TestPlanComposite_RuntimeValueField_EmitsExpressionAndImports(t *testing.T) {
 	req := objectType(
 		field("rt", protocol.TypeInfo{Kind: "unknown", Label: "wazero.Runtime"}),

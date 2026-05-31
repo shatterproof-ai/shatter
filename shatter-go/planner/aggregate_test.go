@@ -146,6 +146,74 @@ func TestPlanParam_MapOfPrimitives_EmitsOneEntryLiteral(t *testing.T) {
 	}
 }
 
+func TestPlanParam_MapAndSliceOfInterface_EmitJSONLikeExpressions(t *testing.T) {
+	cases := []struct {
+		name     string
+		param    protocol.ParamInfo
+		wantExpr string
+	}{
+		{
+			name: "map_string_any",
+			param: mapParam("m", "map[string]any",
+				protocol.TypeInfo{Kind: "str"},
+				protocol.TypeInfo{Kind: "unknown", Label: "interface"},
+			),
+			wantExpr: `map[string]any{"": "value"}`,
+		},
+		{
+			name:     "slice_any",
+			param:    sliceParam("xs", "[]any", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
+			wantExpr: `[]any{"value"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plans, u := planner.PlanParam(testTargetID, 0, tc.param, planner.ParamPlanOptions{})
+			if u != nil {
+				t.Fatalf("unexpected unsatisfied: %+v", u)
+			}
+			var found bool
+			for _, p := range plans {
+				if p.Kind != protocol.ValuePlanKindRuntimeValue {
+					t.Errorf("plan Kind = %q, want %q", p.Kind, protocol.ValuePlanKindRuntimeValue)
+				}
+				expr, err := decodeExpression(p.Literal)
+				if err != nil {
+					t.Errorf("plan Literal is not a JSON string: %v (%s)", err, string(p.Literal))
+					continue
+				}
+				if expr == tc.wantExpr {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing expression %q in plans %+v", tc.wantExpr, plans)
+			}
+		})
+	}
+}
+
+func TestPlanParam_MapWithUnsynthesizableEntryTypes_StillEmitsEmptyMap(t *testing.T) {
+	param := mapParam("m", "map[string]fmt.Stringer",
+		protocol.TypeInfo{Kind: "str"},
+		protocol.TypeInfo{Kind: "opaque", Label: "fmt.Stringer"},
+	)
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("len(plans) = %d, want only the empty-map plan; plans=%+v", len(plans), plans)
+	}
+	expr, err := decodeExpression(plans[0].Literal)
+	if err != nil {
+		t.Fatalf("plan Literal is not a JSON string: %v (%s)", err, string(plans[0].Literal))
+	}
+	if expr != "map[string]fmt.Stringer{}" {
+		t.Fatalf("expression = %q, want empty map", expr)
+	}
+}
+
 // AC3: Struct-typed parameter emits one ValuePlan built by PlanComposite.
 func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 	param := structParam("req", "pkg.Req",
@@ -183,9 +251,9 @@ func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	// []chan int — array of a kind PlanComposite cannot synthesize.
 	badSlice := sliceParam("ch", "[]chan int", protocol.TypeInfo{Kind: "unknown"})
-	// map[string]*sql.DB — map value is an opaque-inside-pointer that
-	// PlanComposite rejects (see the pointer-to-opaque rule in composite.go).
-	badMap := mapParam("m", "map[string]*sql.DB",
+	// map[string]*sql.DB — map value cannot be synthesized, but an empty map
+	// is still a valid bounded aggregate plan.
+	okEmptyMap := mapParam("m", "map[string]*sql.DB",
 		protocol.TypeInfo{Kind: "str"},
 		protocol.TypeInfo{Kind: "nullable", Inner: &protocol.TypeInfo{Kind: "opaque", Label: "sql.DB"}},
 	)
@@ -196,7 +264,7 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	params := []protocol.ParamInfo{
 		strParam("s"),
 		badSlice,
-		badMap,
+		okEmptyMap,
 		badStruct,
 		intParam("n"),
 	}
@@ -210,8 +278,8 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	if matrix[1] != nil {
 		t.Errorf("matrix[1] (bad slice) must be nil, got %+v", matrix[1])
 	}
-	if matrix[2] != nil {
-		t.Errorf("matrix[2] (bad map) must be nil, got %+v", matrix[2])
+	if len(matrix[2]) != 1 {
+		t.Errorf("matrix[2] (empty map) = %+v, want one empty-map plan", matrix[2])
 	}
 	if matrix[3] != nil {
 		t.Errorf("matrix[3] (bad struct) must be nil, got %+v", matrix[3])
@@ -219,8 +287,8 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 	if len(matrix[4]) == 0 {
 		t.Error("matrix[4] (int) must not be empty")
 	}
-	if len(unsat) != 3 {
-		t.Fatalf("len(unsat) = %d, want 3; got %+v", len(unsat), unsat)
+	if len(unsat) != 2 {
+		t.Fatalf("len(unsat) = %d, want 2; got %+v", len(unsat), unsat)
 	}
 	for i, u := range unsat {
 		if u.Kind != protocol.UnsatisfiedRequirementKindComplexType {
