@@ -131,6 +131,44 @@ functions:
 	}
 }
 
+func TestLoad_GoRuntimeValuesSection(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+go_runtime_values:
+  "fixture.CompiledModule":
+    expression: |
+      func() fixture.CompiledModule {
+        return fixture.CompiledModule{}
+      }()
+    imports:
+      - context
+      - zolem.dev/zolem/internal/fixture
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(file.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", file.Warnings)
+	}
+	rv, ok := file.GoRuntimeValues["fixture.CompiledModule"]
+	if !ok {
+		t.Fatalf("GoRuntimeValues missing fixture.CompiledModule: %+v", file.GoRuntimeValues)
+	}
+	if !strings.Contains(rv.Expression, "return fixture.CompiledModule{}") {
+		t.Errorf("Expression = %q, want configured Go expression", rv.Expression)
+	}
+	wantImports := []string{"context", "zolem.dev/zolem/internal/fixture"}
+	if len(rv.Imports) != len(wantImports) {
+		t.Fatalf("Imports = %v, want %v", rv.Imports, wantImports)
+	}
+	for i, want := range wantImports {
+		if rv.Imports[i] != want {
+			t.Errorf("Imports[%d] = %q, want %q", i, rv.Imports[i], want)
+		}
+	}
+}
+
 // AC4 — unknown keys must warn without failing. Both top-level and
 // per-function unknown keys are surfaced through File.Warnings.
 func TestLoad_UnknownKeys_WarnButNotFail(t *testing.T) {

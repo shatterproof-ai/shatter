@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 )
 
@@ -30,6 +31,10 @@ const (
 // mapTypeNamePrefix is the leading substring a Go map's TypeName carries.
 const mapTypeNamePrefix = "map["
 
+type aggregateOptions struct {
+	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
+}
+
 // PlanAggregate synthesizes ValuePlans for slice, map, and struct parameters.
 //
 // The returned triple has three states:
@@ -42,16 +47,26 @@ const mapTypeNamePrefix = "map["
 // maxPlans caps the returned slice. maxPlans <= 0 is treated as 1 so that
 // at least one plan is returned when synthesis succeeds.
 func PlanAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
+	return planAggregateWithOptions(targetID, paramIndex, p, maxPlans, aggregateOptions{})
+}
+
+func planAggregateWithOptions(
+	targetID string,
+	paramIndex int,
+	p protocol.ParamInfo,
+	maxPlans int,
+	opts aggregateOptions,
+) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
 	if maxPlans <= 0 {
 		maxPlans = 1
 	}
 	switch classifyAggregate(p) {
 	case aggregateSlice:
-		return planSliceAggregate(targetID, paramIndex, p, maxPlans)
+		return planSliceAggregate(targetID, paramIndex, p, maxPlans, opts)
 	case aggregateMap:
-		return planMapAggregate(targetID, paramIndex, p, maxPlans)
+		return planMapAggregate(targetID, paramIndex, p, maxPlans, opts)
 	case aggregateStruct:
-		return planStructAggregate(targetID, paramIndex, p, maxPlans)
+		return planStructAggregate(targetID, paramIndex, p, maxPlans, opts)
 	default:
 		return nil, nil
 	}
@@ -103,12 +118,14 @@ func isMapTypeInfo(t protocol.TypeInfo) bool {
 
 // planSliceAggregate emits the zero-length and one-element ValuePlans for a
 // slice parameter. An unsupported element type produces an unsatisfied.
-func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
+func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int, opts aggregateOptions) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
 	typeName := *p.TypeName
 	if p.Type.Element == nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, "slice TypeInfo missing element")
 	}
-	elemZero, err := synthesizeFieldValue(*p.Type.Element, DefaultMaxCompositeDepth, newCompositeImportSet())
+	elemZero, err := synthesizeFieldValue(*p.Type.Element, DefaultMaxCompositeDepth, newCompositeImportSet(), CompositeOptions{
+		ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues,
+	})
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, err.Error())
 	}
@@ -121,17 +138,18 @@ func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, m
 
 // planMapAggregate emits the empty-map and one-entry ValuePlans for a map
 // parameter. Unsupported key or value types produce an unsatisfied.
-func planMapAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
+func planMapAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int, opts aggregateOptions) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
 	typeName := *p.TypeName
 	keyType, valueType, ok := mapKeyValueTypes(p.Type)
 	if !ok {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, "map TypeInfo missing key or value")
 	}
-	keyZero, err := synthesizeFieldValue(keyType, DefaultMaxCompositeDepth, newCompositeImportSet())
+	compositeOpts := CompositeOptions{ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues}
+	keyZero, err := synthesizeFieldValue(keyType, DefaultMaxCompositeDepth, newCompositeImportSet(), compositeOpts)
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map key: %s", err.Error()))
 	}
-	valueZero, err := synthesizeFieldValue(valueType, DefaultMaxCompositeDepth, newCompositeImportSet())
+	valueZero, err := synthesizeFieldValue(valueType, DefaultMaxCompositeDepth, newCompositeImportSet(), compositeOpts)
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map value: %s", err.Error()))
 	}
@@ -146,9 +164,11 @@ func planMapAggregate(targetID string, paramIndex int, p protocol.ParamInfo, max
 // the existing composite-literal synthesizer. The pkgImport metadata is not
 // carried on the ValuePlan today; callers that need it consult PlanComposite
 // directly.
-func planStructAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
+func planStructAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int, opts aggregateOptions) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
 	typeName := *p.TypeName
-	composite, unsat := PlanComposite(targetID, typeName, "", p.Type, CompositeOptions{})
+	composite, unsat := PlanComposite(targetID, typeName, "", p.Type, CompositeOptions{
+		ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues,
+	})
 	if unsat != nil {
 		return nil, unsat
 	}

@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/shatter-dev/shatter/shatter-go/config"
 )
 
 // TestWrapperGoType_SelectorImportRecordedOnASTFallback is the str-qo1.13
@@ -330,6 +332,50 @@ func TestGenerateWrapper_RuntimeValueSubstitutesWazeroCompiledModule(t *testing.
 	}
 	if strings.Contains(out, "json.Unmarshal(inputs[0], &compiled)") {
 		t.Errorf("wrapper still decodes wazero compiled module from inputs; source:\n%s", out)
+	}
+}
+
+func TestGenerateWrapper_ConfiguredRuntimeValueSubstitutesExactType(t *testing.T) {
+	importSet := make(map[string]struct{})
+	params := []WrapperParam{{Name: "mod", GoType: "fixture.CompiledModule"}}
+	expr := `func() fixture.CompiledModule { return fixture.CompiledModule{} }()`
+	applyRuntimeValueBindings(params, importSet, map[string]config.GoRuntimeValueConfig{
+		"fixture.CompiledModule": {
+			Expression: expr,
+			Imports:    []string{"zolem.dev/zolem/internal/fixture"},
+		},
+	})
+	if got := params[0].RuntimeValueExpr; got != expr {
+		t.Fatalf("RuntimeValueExpr = %q, want %q", got, expr)
+	}
+	if _, ok := importSet["zolem.dev/zolem/internal/fixture"]; !ok {
+		t.Fatalf("importSet = %v, want configured fixture import", importSet)
+	}
+
+	targets := []WrapperTarget{{
+		ID:         "example.com/svc:UseModule",
+		SymbolName: "UseModule",
+		Kind:       TargetKindFunction,
+		Parameters: params,
+		Imports:    keysOf(importSet),
+	}}
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, `var mod fixture.CompiledModule = func() fixture.CompiledModule { return fixture.CompiledModule{} }()`) {
+		t.Errorf("wrapper missing configured runtime assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &mod)") {
+		t.Errorf("wrapper still decodes configured runtime value from inputs; source:\n%s", out)
+	}
+}
+
+func TestApplyRuntimeValueBindings_ConfiguredSamePackageType(t *testing.T) {
+	params := []WrapperParam{{Name: "mod", GoType: "CompiledModule"}}
+	expr := `func() CompiledModule { return CompiledModule{} }()`
+	applyRuntimeValueBindingsForPackage(params, map[string]struct{}{}, map[string]config.GoRuntimeValueConfig{
+		"fixture.CompiledModule": {Expression: expr},
+	}, "fixture")
+	if params[0].RuntimeValueExpr != expr {
+		t.Fatalf("RuntimeValueExpr = %q, want same-package configured expression", params[0].RuntimeValueExpr)
 	}
 }
 
