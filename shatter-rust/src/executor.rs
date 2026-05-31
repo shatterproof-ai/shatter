@@ -4598,7 +4598,7 @@ edition = "2021"
 exclude = ["crate-shadow"]
 
 [dependencies]
-{crate_name} = {{ path = "{crate_path}" }}
+{crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
 shatter-rust-runtime = {{ path = "{runtime_path}" }}
 {deps}
 "#
@@ -7494,6 +7494,21 @@ fn enabled(config: Config) -> bool {
         let toml = generate_crate_bridge_cargo_toml("my-crate", std::path::Path::new("/some/path"), false);
         assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
         assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
+    }
+
+    #[test]
+    fn axum_crate_driver_cargo_toml_activates_crate_bridge_feature() {
+        let toml = generate_axum_crate_driver_cargo_toml(
+            "my_crate",
+            std::path::Path::new("/some/path"),
+            std::path::Path::new("/runtime"),
+            "[dependencies]\nserde_json = \"1\"\n",
+        );
+
+        assert!(
+            toml.contains(r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#),
+            "Axum crate driver must activate the staged crate feature so instrumented modules can see shatter-rust-runtime\n\n{toml}"
+        );
     }
 
     #[test]
