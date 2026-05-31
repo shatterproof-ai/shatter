@@ -18,6 +18,28 @@ import (
 	"sort"
 )
 
+// wazeroCompiledModuleExpression builds a tiny module with one exported memory
+// and one match function. It mirrors the scan-process ownership used for
+// wazero.Runtime: Shatter currently has no runtime-value teardown hook, so the
+// generated runtime and compiled module live for the wrapper process lifetime.
+const wazeroCompiledModuleExpression = `func() wazero.CompiledModule {
+	ctx := context.Background()
+	rt := wazero.NewRuntime(ctx)
+	compiled, err := rt.CompileModule(ctx, []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01,
+		0x7d, 0x03, 0x02, 0x01, 0x00, 0x05, 0x03, 0x01,
+		0x00, 0x01, 0x07, 0x12, 0x02, 0x06, 0x6d, 0x65,
+		0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, 0x05, 0x6d,
+		0x61, 0x74, 0x63, 0x68, 0x00, 0x00, 0x0a, 0x09,
+		0x01, 0x07, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3f, 0x0b,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return compiled
+}()`
+
 // Candidate is a single registered expression for a parameter type that
 // cannot be expressed as a JSON literal.
 //
@@ -140,6 +162,16 @@ var registry = map[string][]Candidate{
 		{
 			Expression: `wazero.NewRuntime(context.Background())`,
 			TypeHint:   "wazero.Runtime",
+			Imports:    []string{"context", "github.com/tetratelabs/wazero"},
+		},
+	},
+	// str-iek0: wazero.CompiledModule is backed by a live wazero runtime
+	// compiled from a tiny deterministic WASM binary. The expression owns the
+	// runtime for the wrapper process lifetime until teardown support exists.
+	"wazero.CompiledModule": {
+		{
+			Expression: wazeroCompiledModuleExpression,
+			TypeHint:   "wazero.CompiledModule",
 			Imports:    []string{"context", "github.com/tetratelabs/wazero"},
 		},
 	},

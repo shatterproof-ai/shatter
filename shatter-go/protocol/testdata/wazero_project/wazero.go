@@ -27,6 +27,10 @@ type Generator struct {
 	compiled wazero.CompiledModule
 }
 
+func NewGenerator(compiled wazero.CompiledModule) Generator {
+	return Generator{compiled: compiled}
+}
+
 func NewRunner(rt wazero.Runtime) Runner {
 	return Runner{rt: rt}
 }

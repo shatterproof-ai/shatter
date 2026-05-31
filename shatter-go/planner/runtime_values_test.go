@@ -80,8 +80,12 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 				t.Fatalf("len(rvs) = %d, want %d", len(rvs), len(tc.wantExprs))
 			}
 			for i, want := range tc.wantExprs {
-				if !strings.Contains(rvs[i].Expression, want) {
-					t.Errorf("rvs[%d].Expression = %q, want to contain %q", i, rvs[i].Expression, want)
+				if tc.typeName == "wazero.CompiledModule" {
+					if !strings.Contains(rvs[i].Expression, want) {
+						t.Errorf("rvs[%d].Expression = %q, want to contain %q", i, rvs[i].Expression, want)
+					}
+				} else if rvs[i].Expression != want {
+					t.Errorf("rvs[%d].Expression = %q, want %q", i, rvs[i].Expression, want)
 				}
 				if rvs[i].TypeHint != tc.typeName {
 					t.Errorf("rvs[%d].TypeHint = %q, want %q", i, rvs[i].TypeHint, tc.typeName)
