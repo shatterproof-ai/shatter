@@ -237,6 +237,9 @@ impl TypeInfo {
                 }
             }
             TypeInfo::Object { fields } => {
+                if is_map_encoding(fields) {
+                    return None;
+                }
                 for (name, t) in fields {
                     path.push(PathSegment::Field(name.clone()));
                     if let Some(result) = t.find_opaque_node(path) {
@@ -282,6 +285,13 @@ impl TypeInfo {
             | TypeInfo::Unknown => None,
         }
     }
+}
+
+fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
+    matches!(
+        fields,
+        [key, value] if key.0 == "_key" && value.0 == "_value"
+    )
 }
 
 /// Metadata about a function parameter.
@@ -723,6 +733,26 @@ mod tests {
                 PathSegment::Field("svc".into()),
             ]
         );
+    }
+
+    #[test]
+    fn find_opaque_node_ignores_map_value_shape() {
+        let typ = TypeInfo::Object {
+            fields: vec![
+                ("_key".into(), TypeInfo::Str),
+                (
+                    "_value".into(),
+                    TypeInfo::Opaque {
+                        label: "interface".into(),
+                        static_opacity: None,
+                        medium_opacity: None,
+                    },
+                ),
+            ],
+        };
+        let mut path = vec![PathSegment::Param("m".into())];
+        assert!(typ.find_opaque_node(&mut path).is_none());
+        assert_eq!(path, vec![PathSegment::Param("m".into())]);
     }
 
     #[test]

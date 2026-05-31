@@ -193,6 +193,27 @@ func TestPlanParam_MapAndSliceOfInterface_EmitJSONLikeExpressions(t *testing.T) 
 	}
 }
 
+func TestPlanParam_MapWithUnsynthesizableEntryTypes_StillEmitsEmptyMap(t *testing.T) {
+	param := mapParam("m", "map[string]fmt.Stringer",
+		protocol.TypeInfo{Kind: "str"},
+		protocol.TypeInfo{Kind: "opaque", Label: "fmt.Stringer"},
+	)
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("len(plans) = %d, want only the empty-map plan; plans=%+v", len(plans), plans)
+	}
+	expr, err := decodeExpression(plans[0].Literal)
+	if err != nil {
+		t.Fatalf("plan Literal is not a JSON string: %v (%s)", err, string(plans[0].Literal))
+	}
+	if expr != "map[string]fmt.Stringer{}" {
+		t.Fatalf("expression = %q, want empty map", expr)
+	}
+}
+
 // AC3: Struct-typed parameter emits one ValuePlan built by PlanComposite.
 func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 	param := structParam("req", "pkg.Req",

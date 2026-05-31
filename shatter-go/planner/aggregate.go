@@ -136,27 +136,25 @@ func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, m
 	return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
 }
 
-// planMapAggregate emits the empty-map and one-entry ValuePlans for a map
-// parameter. Unsupported key or value types produce an unsatisfied.
+// planMapAggregate emits the empty-map and, when key/value synthesis succeeds,
+// one-entry ValuePlans for a map parameter.
 func planMapAggregate(targetID string, paramIndex int, p protocol.ParamInfo, maxPlans int, opts aggregateOptions) ([]protocol.ValuePlan, *protocol.UnsatisfiedRequirement) {
 	typeName := *p.TypeName
 	keyType, valueType, ok := mapKeyValueTypes(p.Type)
 	if !ok {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, "map TypeInfo missing key or value")
 	}
+	expressions := []string{typeName + "{}"}
 	compositeOpts := CompositeOptions{ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues}
 	keyZero, err := synthesizeFieldValue(keyType, DefaultMaxCompositeDepth, newCompositeImportSet(), compositeOpts)
 	if err != nil {
-		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map key: %s", err.Error()))
+		return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
 	}
 	valueZero, err := synthesizeFieldValue(valueType, DefaultMaxCompositeDepth, newCompositeImportSet(), compositeOpts)
 	if err != nil {
-		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, fmt.Sprintf("map value: %s", err.Error()))
+		return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
 	}
-	expressions := []string{
-		typeName + "{}",
-		typeName + "{" + keyZero + ": " + valueZero + "}",
-	}
+	expressions = append(expressions, typeName+"{"+keyZero+": "+valueZero+"}")
 	return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
 }
 
