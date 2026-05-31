@@ -198,11 +198,20 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 			return compositeZeroInt, nil
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
-	case "opaque", "unknown", "union":
+	case "unknown":
+		if isRegisteredPointerRuntimeValue(t.Label) {
+			return compositeZeroNilPointer, nil
+		}
+		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
+	case "opaque", "union":
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	default:
 		return "", fmt.Errorf("unsupported field kind %q", t.Kind)
 	}
+}
+
+func isRegisteredPointerRuntimeValue(typeName string) bool {
+	return strings.HasPrefix(typeName, "*") && len(LookupRuntimeValue(typeName)) > 0
 }
 
 func labelOr(primary, fallback string) string {

@@ -126,6 +126,13 @@ var registry = map[string][]Candidate{
 			Imports:    []string{"bytes", "net/http/httptest"},
 		},
 	},
+	"*template.Template": {
+		{
+			Expression: `template.Must(template.New("shatter").Parse("{}"))`,
+			TypeHint:   "*template.Template",
+			Imports:    []string{"text/template"},
+		},
+	},
 }
 
 // Lookup returns the ordered runtime-value candidates registered for

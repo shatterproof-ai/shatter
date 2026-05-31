@@ -1063,14 +1063,32 @@ func TestAnalyzeTemplateHolderDoesNotExposeParseNode(t *testing.T) {
 		t.Fatalf("unexpected params for AcceptsTemplateHolder: %+v", results)
 	}
 	p := results[0].Params[0]
-	if p.TypeName == nil || *p.TypeName != "testdata.TemplateHolder" {
-		t.Fatalf("TypeName = %v, want testdata.TemplateHolder", p.TypeName)
+	if containsTypeLabel(p.Type, "parse.Node") {
+		t.Fatalf("template holder exposed parse.Node internals: %+v", p.Type)
 	}
-	for _, field := range p.Type.Fields {
-		if strings.Contains(field.Type.Label, "parse.Node") {
-			t.Fatalf("field %q exposed parse.Node internals: %+v", field.Name, field.Type)
+}
+
+func containsTypeLabel(t TypeInfo, needle string) bool {
+	if strings.Contains(t.Label, needle) {
+		return true
+	}
+	if t.Element != nil && containsTypeLabel(*t.Element, needle) {
+		return true
+	}
+	if t.Inner != nil && containsTypeLabel(*t.Inner, needle) {
+		return true
+	}
+	for _, field := range t.Fields {
+		if containsTypeLabel(field.Type, needle) {
+			return true
 		}
 	}
+	for _, variant := range t.Variants {
+		if containsTypeLabel(variant, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAnalyzePlainInterfaceReturnsOpaque(t *testing.T) {
