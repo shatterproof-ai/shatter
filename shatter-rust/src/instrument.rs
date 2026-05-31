@@ -215,6 +215,14 @@ impl Instrumentor {
         })
     }
 
+    fn line_hit_stmt(&self, line: u32) -> Stmt {
+        let tokens: TokenStream = quote! {
+            shatter_rust_runtime::line_hit(#line);
+        };
+        syn::parse2(tokens)
+            .unwrap_or_else(|_| syn::parse2(quote! { ; }).expect("semicolon should parse"))
+    }
+
     fn loop_enter_stmt(&mut self) -> Stmt {
         let id = self.next_loop_id();
         let tokens: TokenStream = quote! {
@@ -241,6 +249,11 @@ impl VisitMut for Instrumentor {
             self.inside_target = true;
         }
 
+        if node.sig.constness.is_none() {
+            let line = self.line_of(node);
+            node.block.stmts.insert(0, self.line_hit_stmt(line));
+        }
+
         // Visit the function body
         syn::visit_mut::visit_item_fn_mut(self, node);
 
@@ -259,6 +272,11 @@ impl VisitMut for Instrumentor {
             }
         } else {
             self.inside_target = true;
+        }
+
+        if node.sig.constness.is_none() {
+            let line = self.line_of(node);
+            node.block.stmts.insert(0, self.line_hit_stmt(line));
         }
 
         syn::visit_mut::visit_impl_item_fn_mut(self, node);
@@ -599,6 +617,35 @@ fn check(x: i32) -> bool {
     }
 
     #[test]
+    fn function_entry_records_line_hit() {
+        let source = r#"
+fn check(x: i32) -> i32 {
+    x + 1
+}
+"#;
+        let result = instrument_fn(source, "check");
+        assert!(
+            result.source.contains("line_hit"),
+            "instrumented function should record entry line execution"
+        );
+    }
+
+    #[test]
+    fn const_function_entry_does_not_record_line_hit() {
+        let source = r#"
+const fn answer() -> i32 {
+    42
+}
+"#;
+        let result = instrument_fn(source, "answer");
+        assert!(
+            !result.source.contains("line_hit"),
+            "const function entry must not call non-const runtime hooks"
+        );
+        rustc_check(&result.source).expect("instrumented branchless const fn must compile");
+    }
+
+    #[test]
     fn while_loop_is_instrumented() {
         let source = r#"
 fn count_up(mut n: i32) -> i32 {
@@ -823,6 +870,7 @@ impl Foo {
 #[allow(dead_code)]
 mod shatter_rust_runtime {
     pub fn branch_hit(_id: u32, _line: u32, _cond: bool, _json: &str) {}
+    pub fn line_hit(_line: u32) {}
     pub fn loop_enter(_id: u32) {}
     pub fn mock_call<T>(_name: &str, real: impl FnOnce() -> T) -> T { real() }
 }

@@ -1578,6 +1578,70 @@ fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
     }
 }
 
+fn axum_path_segment_types(inner_ty: &str) -> Vec<String> {
+    let parsed: syn::Type = match syn::parse_str(inner_ty) {
+        Ok(parsed) => parsed,
+        Err(_) => return vec![inner_ty.to_string()],
+    };
+    match parsed {
+        syn::Type::Tuple(tuple) if !tuple.elems.is_empty() => tuple
+            .elems
+            .iter()
+            .map(|elem| {
+                use quote::ToTokens;
+                elem.to_token_stream().to_string()
+            })
+            .collect(),
+        other => {
+            use quote::ToTokens;
+            vec![other.to_token_stream().to_string()]
+        }
+    }
+}
+
+fn axum_default_path_segment(ty: &str, index: usize) -> String {
+    let normalized = ty.replace(' ', "");
+    if normalized.ends_with("Uuid") || normalized.contains("::Uuid") {
+        format!("00000000-0000-0000-0000-{value:012}", value = index + 1)
+    } else if matches!(
+        normalized.as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+    ) {
+        (index + 1).to_string()
+    } else {
+        format!("p{index}")
+    }
+}
+
+fn axum_route_pattern_for_path(inner_ty: &str) -> String {
+    let segments = axum_path_segment_types(inner_ty);
+    let placeholders = (0..segments.len())
+        .map(|idx| format!("{{p{idx}}}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("/test/{placeholders}")
+}
+
+fn axum_default_path_value_for_path(inner_ty: &str) -> String {
+    let segments = axum_path_segment_types(inner_ty)
+        .iter()
+        .enumerate()
+        .map(|(idx, ty)| axum_default_path_segment(ty, idx))
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("/test/{segments}")
+}
+
 /// Returns the fully-qualified Axum constructor expression to wrap an inner
 /// deserialized value into the extractor type, e.g. `axum::extract::Path`.
 fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
@@ -4255,17 +4319,28 @@ fn generate_axum_harness(
     ));
 
     // Extract path.
-    let has_path_extractor = mappings
-        .iter()
-        .any(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams);
-    let default_path = if has_path_extractor { "/test/:p0" } else { "/test" };
     let path_param_index = mappings
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams)
         .map(|m| m.param_index);
+    let path_inner_type = path_param_index
+        .and_then(|idx| param_types.get(idx))
+        .and_then(|ty| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::Path(inner)) => Some(inner),
+            _ => None,
+        });
+    let default_path = path_inner_type
+        .as_deref()
+        .map(axum_route_pattern_for_path)
+        .unwrap_or_else(|| "/test".to_string());
     if let Some(idx) = path_param_index {
+        let default_path_value = path_inner_type
+            .as_deref()
+            .map(axum_default_path_value_for_path)
+            .unwrap_or_else(|| "/test/p0".to_string());
+        let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            let segment = inputs.get({idx}).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_else(|| \"p0\".to_string());\n            format!(\"/test/{{}}\", segment)\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
@@ -4369,11 +4444,7 @@ fn generate_axum_harness(
         .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
 
     // Build route pattern from path extractor presence.
-    let route_pattern = if has_path_extractor {
-        default_path
-    } else {
-        "/test"
-    };
+    let route_pattern = default_path.as_str();
 
     h.push_str(&format!(
         "        let app = Router::new().route(\"{route_pattern}\", routing::any(user_code::{function_name}));\n"
@@ -5244,7 +5315,7 @@ pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
         std::fs::write(
             &source_file,
             r#"
-use axum::{extract::{FromRequestParts, Path, State}, Json};
+use axum::{extract::{FromRequestParts, State}, Json};
 use axum::http::request::Parts;
 use async_trait::async_trait;
 
@@ -5282,10 +5353,9 @@ pub struct Payload {
 pub async fn combo(
     State(state): State<AppStateLike>,
     current: CurrentAccountLike,
-    Path(id): Path<u64>,
     Json(payload): Json<Payload>,
 ) -> String {
-    format!("{}:{}:{}:{}", state.prefix, current.id, id, payload.name)
+    format!("{}:{}:{}", state.prefix, current.id, payload.name)
 }
 "#,
         )
@@ -5371,11 +5441,6 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             },
             AxumExtractorMapping {
                 param_index: 2,
-                kind: AxumExtractorKind::PathParams,
-                type_name: "Path".to_string(),
-            },
-            AxumExtractorMapping {
-                param_index: 3,
                 kind: AxumExtractorKind::JsonBody,
                 type_name: "Json".to_string(),
             },
@@ -5389,7 +5454,6 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &[
                 state_input,
                 current_input,
-                serde_json::json!(7),
                 serde_json::json!({"name": "kit"}),
             ],
             &[],
@@ -5411,7 +5475,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
                 );
                 assert_eq!(
                     result.return_value.as_ref().and_then(|v| v.get("body")),
-                    Some(&serde_json::json!("pack:42:7:kit"))
+                    Some(&serde_json::json!("pack:42:kit"))
                 );
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
@@ -5797,8 +5861,41 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         )
         .unwrap();
         assert!(
-            harness.contains("/:p0"),
-            "axum harness with Path extractor must use path template\n\nharness:\n{harness}"
+            harness.contains("/{p0}"),
+            "axum harness with Path extractor must use Axum 0.7+ path template\n\nharness:\n{harness}"
+        );
+        assert!(
+            !harness.contains("/:p0"),
+            "axum harness must not use legacy colon path template\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_with_tuple_path_uses_matching_route_segments() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Path;\nasync fn get_user(Path((workspace_id, bundle_id)): Path<(Uuid, Uuid)>) -> String { format!(\"{workspace_id}:{bundle_id}\") }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let harness = generate_axum_harness(
+            source,
+            "get_user",
+            &mappings,
+            &["Path<(Uuid, Uuid)>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
+        assert!(
+            harness.contains("/test/{p0}/{p1}"),
+            "tuple Path extractor must mount the same number of route segments as tuple fields\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002"),
+            "null tuple Path input must fall back to parseable default UUID path segments\n\nharness:\n{harness}"
         );
     }
 
@@ -7810,6 +7907,54 @@ fn enabled(config: Config) -> bool {
                 if cargo_build_unavailable(&msg) =>
             {
                 eprintln!("skipping crate_bridge_executes_private_function: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_bridge_reports_executed_branch_lines() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-coverage");
+        let src_file = write_test_crate(
+            &dir,
+            "mod config {\n    #[derive(serde::Deserialize, serde::Serialize)]\n    pub(crate) struct Config { pub(crate) enabled: bool }\n}\n\nuse crate::config::Config;\n\nfn classify(config: Config) -> &'static str {\n    if config.enabled { \"enabled\" } else { \"disabled\" }\n}\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!({"enabled": true})],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!("enabled")),
+                    "classify({{enabled: true}}) should return 'enabled'"
+                );
+                assert!(
+                    r.lines_executed.iter().any(|line| *line > 0),
+                    "crate_bridge should report executed source lines for instrumented branches"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg))
+                if cargo_build_unavailable(&msg) =>
+            {
+                eprintln!("skipping crate_bridge_reports_executed_branch_lines: cargo unavailable ({msg})");
             }
             Err(e) => panic!("unexpected error: {e:?}"),
         }
