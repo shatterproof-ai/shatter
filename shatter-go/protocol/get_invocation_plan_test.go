@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
 
 // Minimal inline planner func used by tests to avoid pulling in the planner
@@ -39,9 +41,30 @@ func stubPlanner(
 
 func runWithPlanner(t *testing.T, planner PlannerFunc, requests ...string) []Response {
 	t.Helper()
+	return runWithPlannerHandler(t, NewHandler, planner, requests...)
+}
+
+func runWithPlannerWorkspace(t *testing.T, planner PlannerFunc, requests ...string) []Response {
+	t.Helper()
+	ws, err := workspace.Initialize(workspace.ResolveOptions{RepoOverrideRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("initialize workspace: %v", err)
+	}
+	return runWithPlannerHandler(t, func(r io.Reader, w io.Writer, logw io.Writer) *Handler {
+		return NewHandlerWithWorkspace(r, w, logw, ws)
+	}, planner, requests...)
+}
+
+func runWithPlannerHandler(
+	t *testing.T,
+	newHandler func(io.Reader, io.Writer, io.Writer) *Handler,
+	planner PlannerFunc,
+	requests ...string,
+) []Response {
+	t.Helper()
 	input := strings.NewReader(strings.Join(requests, "\n") + "\n")
 	var output bytes.Buffer
-	handler := NewHandler(input, &output, io.Discard)
+	handler := newHandler(input, &output, io.Discard)
 	handler.RegisterPlanner(planner)
 	if err := handler.Run(); err != nil {
 		t.Fatalf("handler.Run: %v", err)
@@ -136,4 +159,65 @@ func TestStubPlannerLookupUsesCachedAnalysis(t *testing.T) {
 	// Regression: verify the lookup closure resolves last-analyzed files.
 	// Uses the testdata helper tree if available, else skips.
 	_ = stubPlanner // ensure stubPlanner compiles and is usable in other tests
+}
+
+func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
+	file := "testdata/opaque.go"
+
+	var captured *TargetContext
+	planner := func(
+		requirements []InvocationRequirement,
+		lookup func(string) *TargetContext,
+	) ([]InvocationPlan, []UnsatisfiedRequirement) {
+		if len(requirements) != 1 {
+			t.Fatalf("requirements len = %d, want 1", len(requirements))
+		}
+		captured = lookup(requirements[0].TargetID)
+		return nil, nil
+	}
+
+	analyzeReq := reqJSON(1, "analyze", `"file":"`+file+`","function":"MarshalPlainInterface"`)
+	planReq := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:MarshalPlainInterface"}]`)
+	responses := runWithPlannerWorkspace(t, planner, analyzeReq, planReq)
+	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
+		t.Fatalf("get_invocation_plan response = %+v", responses)
+	}
+	if got := responses[0].Functions[0].Params[0].Type; got.Kind == "opaque" {
+		t.Fatalf("MarshalPlainInterface param type = %+v, want planner-satisfiable non-opaque type", got)
+	}
+	if captured == nil {
+		t.Fatal("planner lookup did not capture target context")
+	}
+	if !captured.JSONEncodeInterfaceParams["v"] {
+		t.Fatalf("JSONEncodeInterfaceParams = %+v, want v marked", captured.JSONEncodeInterfaceParams)
+	}
+}
+
+func TestBuildTargetContextDoesNotMarkJSONDecodeInterfaceParams(t *testing.T) {
+	file := "testdata/opaque.go"
+
+	var captured *TargetContext
+	planner := func(
+		requirements []InvocationRequirement,
+		lookup func(string) *TargetContext,
+	) ([]InvocationPlan, []UnsatisfiedRequirement) {
+		captured = lookup(requirements[0].TargetID)
+		return nil, nil
+	}
+
+	analyzeReq := reqJSON(1, "analyze", `"file":"`+file+`","function":"DecodePlainInterface"`)
+	planReq := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:DecodePlainInterface"}]`)
+	responses := runWithPlannerWorkspace(t, planner, analyzeReq, planReq)
+	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
+		t.Fatalf("get_invocation_plan response = %+v", responses)
+	}
+	if got := responses[0].Functions[0].Params[1].Type; got.Kind != "opaque" {
+		t.Fatalf("DecodePlainInterface destination type = %+v, want opaque", got)
+	}
+	if captured == nil {
+		t.Fatal("planner lookup did not capture target context")
+	}
+	if captured.JSONEncodeInterfaceParams["v"] {
+		t.Fatalf("JSONEncodeInterfaceParams = %+v, decode destination should not be marked", captured.JSONEncodeInterfaceParams)
+	}
 }

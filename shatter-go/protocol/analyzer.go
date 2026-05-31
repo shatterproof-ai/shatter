@@ -646,6 +646,7 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 		return []ParamInfo{}
 	}
 	var params []ParamInfo
+	jsonEncodeInterfaceParams := discoverJSONEncodeInterfaceParams(info, fn)
 	for _, field := range fn.Type.Params.List {
 		ti := goTypeFromExprWithContext(field.Type, info, fc)
 		// str-gxjs: when the param is a synthesizable stdlib type
@@ -664,6 +665,9 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 			param := ParamInfo{
 				Name: name.Name,
 				Type: ti,
+			}
+			if jsonEncodeInterfaceParams[param.Name] && isTypeInfoEmptyInterface(param.Type) {
+				param.Type = TypeInfo{Kind: "unknown", Label: "interface"}
 			}
 			if typeParamName := typeParamTypeName(field.Type, info); typeParamName != "" {
 				param.TypeName = &typeParamName

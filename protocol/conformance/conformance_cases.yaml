@@ -99,7 +99,6 @@ cases:
       file: "test-session.ts"
       scope: "test-session"
       level: "session"
-      project_root: "."
       parent_context: null
     expect:
       # Real frontends may return error for nonexistent file paths
@@ -152,7 +151,6 @@ cases:
         generator: "TestGen"
         seed: 42
         config: {}
-      project_root: "."
     expect:
       # Noop returns a value, real frontends may return error for nonexistent files
       status_oneof: [generate, error]
@@ -473,7 +471,7 @@ cases:
       command: analyze
       file: "protocol/conformance/fixtures/go/handler.go"
       function: "Serve"
-      project_root: "."
+      project_root: "protocol/conformance/fixtures/go"
     expect:
       status_oneof: [analyze, error]
       required_fields_by_status:

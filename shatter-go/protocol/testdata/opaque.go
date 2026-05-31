@@ -3,6 +3,7 @@ package testdata
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -69,6 +70,24 @@ func AcceptsPlainInterface(v interface{}) string {
 		return "nil"
 	}
 	return "non-nil"
+}
+
+// MarshalPlainInterface exercises the JSON-encoding empty-interface pattern
+// used by helper functions such as zolem's writeJSONObject.
+func MarshalPlainInterface(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+// EncodePlainInterface exercises json.NewEncoder(...).Encode(v) for empty
+// interface parameters.
+func EncodePlainInterface(w io.Writer, v any) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
+// DecodePlainInterface is intentionally out of scope for the first
+// interface-candidate slice; decode destinations require pointer synthesis.
+func DecodePlainInterface(r *http.Request, v any) error {
+	return json.NewDecoder(r.Body).Decode(v)
 }
 
 // AcceptsRequestPointer takes a *http.Request. The Body field is an

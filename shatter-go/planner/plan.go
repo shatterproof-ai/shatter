@@ -182,6 +182,9 @@ func planOne(
 	if len(ctx.InterfaceImplsByParam) > 0 {
 		paramOpts.InterfaceImplsByParam = ctx.InterfaceImplsByParam
 	}
+	if len(ctx.JSONEncodeInterfaceParams) > 0 {
+		paramOpts.JSONEncodeInterfaceParams = ctx.JSONEncodeInterfaceParams
+	}
 	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
@@ -220,6 +223,9 @@ func planMethod(
 	// str-4v9h: propagate interface impl candidates for method targets too.
 	if len(ctx.InterfaceImplsByParam) > 0 {
 		paramOpts.InterfaceImplsByParam = ctx.InterfaceImplsByParam
+	}
+	if len(ctx.JSONEncodeInterfaceParams) > 0 {
+		paramOpts.JSONEncodeInterfaceParams = ctx.JSONEncodeInterfaceParams
 	}
 	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
 }

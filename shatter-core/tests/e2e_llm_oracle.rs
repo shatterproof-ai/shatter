@@ -12,7 +12,7 @@ use std::sync::Arc;
 use shatter_core::config::LlmConfig;
 use shatter_core::coverage_metrics::DiscoveryMethod;
 use shatter_core::frontend::{DEFAULT_REQUEST_TIMEOUT, Frontend, FrontendConfig};
-use shatter_core::oracle::{OracleSlotMap, OracleStats};
+use shatter_core::oracle::OracleSlotMap;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, OracleHandle};
 use shatter_core::protocol::{
     Command as ProtoCommand, ResponseResult,
@@ -198,7 +198,7 @@ async fn llm_candidate_reaches_new_equivalence_class() {
     assert!(result.oracle_stats.is_some(), "result should include oracle_stats");
 
     // Check if any discovery was attributed to LlmOracle.
-    let llm_discoveries: Vec<_> = result
+    let _llm_discoveries: Vec<_> = result
         .discoveries
         .iter()
         .filter(|(_, method)| matches!(method, DiscoveryMethod::LlmOracle))
@@ -365,7 +365,6 @@ async fn token_budget_halts_new_requests() {
 #[tokio::test]
 async fn concurrency_cap_respected() {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Mutex;
     use async_trait::async_trait;
     use shatter_core::oracle::{OracleContext, OracleResponse, SeedOracle};
 

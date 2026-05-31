@@ -1675,6 +1675,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	// typed as imported interfaces. The defining package must already be
 	// loaded in pkg.Imports (satisfied when the consumer imports the type).
 	ctx.InterfaceImplsByParam = discoverInterfaceImplCandidates(pkg, fn)
+	ctx.JSONEncodeInterfaceParams = discoverJSONEncodeInterfaceParams(pkg.TypesInfo, fn)
 
 	return ctx
 }

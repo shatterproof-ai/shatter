@@ -58,6 +58,11 @@ type ParamPlanOptions struct {
 	// interface's defining package and passes them here. PlanParam routes
 	// these through PlanInterfaceImpls.
 	InterfaceImplsByParam map[string][]protocol.InterfaceParamCandidate
+	// JSONEncodeInterfaceParams marks empty-interface parameters that flow
+	// directly into encoding/json encode APIs. Those parameters get a bounded
+	// deterministic JSON-serializable candidate family instead of remaining
+	// opaque. Decode-style destinations are intentionally not included.
+	JSONEncodeInterfaceParams map[string]bool
 	// MaxPlansPerParam caps each parameter's ValuePlan slice. Zero means
 	// DefaultMaxParamValuePlans.
 	MaxPlansPerParam int
@@ -121,6 +126,9 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 
 	family, ok := classifyParamFamily(p)
 	if !ok {
+		if opts.JSONEncodeInterfaceParams[p.Name] && isEmptyInterfaceParam(p) {
+			return jsonInterfaceValuePlans(paramIndex, p, maxPlans), nil
+		}
 		if aggPlans, aggUnsat := PlanAggregate(targetID, paramIndex, p, maxPlans); aggPlans != nil {
 			return aggPlans, nil
 		} else if aggUnsat != nil {
@@ -348,6 +356,36 @@ func byteSliceFamily() paramFamily {
 			{kind: protocol.ValuePlanKindLiteral, literal: json.RawMessage(`""`)},         // empty slice
 		},
 	}
+}
+
+func isEmptyInterfaceParam(p protocol.ParamInfo) bool {
+	label := paramTypeLabel(p)
+	return (p.Type.Kind == "opaque" || p.Type.Kind == "unknown") && (label == "interface" || label == "interface{}" || label == "any")
+}
+
+func jsonInterfaceValuePlans(paramIndex int, p protocol.ParamInfo, maxPlans int) []protocol.ValuePlan {
+	candidates := []json.RawMessage{
+		json.RawMessage(`{"key":"value"}`),
+		json.RawMessage(`["value"]`),
+		json.RawMessage(`"value"`),
+		json.RawMessage(`true`),
+		json.RawMessage(`1.5`),
+		json.RawMessage(`null`),
+	}
+	if maxPlans > len(candidates) {
+		maxPlans = len(candidates)
+	}
+	plans := make([]protocol.ValuePlan, 0, maxPlans)
+	for i := 0; i < maxPlans; i++ {
+		plans = append(plans, protocol.ValuePlan{
+			ParamIndex: paramIndex,
+			ParamName:  p.Name,
+			Kind:       protocol.ValuePlanKindLiteral,
+			Literal:    candidates[i],
+			TypeHint:   "interface{}",
+		})
+	}
+	return plans
 }
 
 func paramUnsupportedDetail(p protocol.ParamInfo) string {
