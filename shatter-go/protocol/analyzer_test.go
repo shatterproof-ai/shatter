@@ -977,11 +977,11 @@ func TestAnalyzeOpaqueTypes(t *testing.T) {
 		// The analyzer emits Kind="unknown" with TypeName set on the
 		// ParamInfo; the opaque categorization moves to a separate
 		// assertion in TestAnalyzeSynthesizableStdlibTypes.
-		{"AcceptsIOReader", "r", "unknown", ""},
-		{"AcceptsIOWriter", "w", "unknown", ""},
+		{"AcceptsIOReader", "r", "unknown", "io.Reader"},
+		{"AcceptsIOWriter", "w", "unknown", "io.Writer"},
 		{"AcceptsSqlDB", "db", "opaque", "sql.DB"},
 		{"AcceptsSqlTx", "tx", "opaque", "sql.Tx"},
-		{"AcceptsResponseWriter", "w", "unknown", ""},
+		{"AcceptsResponseWriter", "w", "unknown", "http.ResponseWriter"},
 		{"AcceptsNetListener", "ln", "opaque", "net.Listener"},
 	}
 
@@ -1071,6 +1071,30 @@ func TestAnalyzeSynthesizableWazeroRuntime(t *testing.T) {
 	}
 	if *p.TypeName != "wazero.Runtime" {
 		t.Errorf("TypeName = %q, want wazero.Runtime", *p.TypeName)
+	}
+}
+
+func TestAnalyzeStructFieldPreservesWazeroRuntimeType(t *testing.T) {
+	results, err := AnalyzeFile(filepath.Join("testdata", "wazero_project", "wazero.go"), "AcceptsRunner")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) != 1 {
+		t.Fatalf("unexpected params for AcceptsRunner: %+v", results)
+	}
+	p := results[0].Params[0]
+	if p.Type.Kind != "object" {
+		t.Fatalf("runner type kind = %q, want object", p.Type.Kind)
+	}
+	if len(p.Type.Fields) != 1 {
+		t.Fatalf("runner fields = %+v, want exactly rt", p.Type.Fields)
+	}
+	rtField := p.Type.Fields[0]
+	if rtField.Name != "rt" {
+		t.Fatalf("field name = %q, want rt", rtField.Name)
+	}
+	if rtField.Type.Kind != "unknown" || rtField.Type.Label != "wazero.Runtime" {
+		t.Fatalf("rt field type = %+v, want unknown wazero.Runtime", rtField.Type)
 	}
 }
 

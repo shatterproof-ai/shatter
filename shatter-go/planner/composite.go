@@ -85,7 +85,7 @@ func PlanComposite(targetID, typeName, pkgImport string, t protocol.TypeInfo, op
 	if pkgImport != "" {
 		imports.add(pkgImport)
 	}
-	expr, err := synthesizeStructLiteral(typeName, t, maxDepth)
+	expr, err := synthesizeStructLiteral(typeName, t, maxDepth, imports)
 	if err != nil {
 		return nil, &protocol.UnsatisfiedRequirement{
 			Kind:     protocol.UnsatisfiedRequirementKindComplexType,
@@ -104,8 +104,8 @@ func PlanComposite(targetID, typeName, pkgImport string, t protocol.TypeInfo, op
 // (`typeName{F: v, ...}`) for a struct TypeInfo at the given remaining
 // depth budget. Returns an error describing the first offending field when
 // the struct cannot be synthesized.
-func synthesizeStructLiteral(typeName string, t protocol.TypeInfo, depth int) (string, error) {
-	body, err := synthesizeStructBody(t, typeName, depth)
+func synthesizeStructLiteral(typeName string, t protocol.TypeInfo, depth int, imports *compositeImportSet) (string, error) {
+	body, err := synthesizeStructBody(t, typeName, depth, imports)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +116,7 @@ func synthesizeStructLiteral(typeName string, t protocol.TypeInfo, depth int) (s
 // literal. When called for a top-level struct the caller prepends the
 // qualified type name; when called for a nested field the caller relies on
 // Go's elided-type composite literal and prepends nothing.
-func synthesizeStructBody(t protocol.TypeInfo, context string, depth int) (string, error) {
+func synthesizeStructBody(t protocol.TypeInfo, context string, depth int, imports *compositeImportSet) (string, error) {
 	if t.Kind != "object" {
 		return "", fmt.Errorf("type %s is not a struct (kind=%q)", labelOr(context, "struct"), t.Kind)
 	}
@@ -132,7 +132,7 @@ func synthesizeStructBody(t protocol.TypeInfo, context string, depth int) (strin
 		}
 		b.WriteString(f.Name)
 		b.WriteString(": ")
-		val, err := synthesizeFieldValue(f.Type, depth-1)
+		val, err := synthesizeFieldValue(f.Type, depth-1, imports)
 		if err != nil {
 			return "", fmt.Errorf("field %q: %w", f.Name, err)
 		}
@@ -146,7 +146,7 @@ func synthesizeStructBody(t protocol.TypeInfo, context string, depth int) (strin
 // TypeInfo. depth is the budget remaining for any further recursion the
 // field's type would require (i.e. the caller has already debited one
 // level for the enclosing struct).
-func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
+func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImportSet) (string, error) {
 	switch t.Kind {
 	case "str":
 		return compositeZeroString, nil
@@ -185,7 +185,7 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 		// Non-pointer nested struct: emit an elided-type composite literal
 		// (Go allows `Outer{Inner: {X: 0}}` without naming Inner's type),
 		// at a cost of one further depth level.
-		return synthesizeStructBody(t, "nested struct", depth)
+		return synthesizeStructBody(t, "nested struct", depth, imports)
 	case "complex":
 		// str-cfsa: go_uint covers uint/uint16/uint32/uint64 struct fields;
 		// emit zero (a valid non-negative value for any unsigned width).
@@ -199,6 +199,12 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int) (string, error) {
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "unknown":
+		if candidates := LookupRuntimeValue(t.Label); len(candidates) > 0 {
+			for _, imp := range candidates[0].Imports {
+				imports.add(imp)
+			}
+			return candidates[0].Expression, nil
+		}
 		if isRegisteredPointerRuntimeValue(t.Label) {
 			return compositeZeroNilPointer, nil
 		}

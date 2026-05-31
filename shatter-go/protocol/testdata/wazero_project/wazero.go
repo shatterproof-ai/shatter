@@ -12,3 +12,15 @@ import (
 func AcceptsWazeroRuntime(rt wazero.Runtime) error {
 	return rt.Close(context.Background())
 }
+
+type Runner struct {
+	rt wazero.Runtime
+}
+
+func NewRunner(rt wazero.Runtime) Runner {
+	return Runner{rt: rt}
+}
+
+func AcceptsRunner(r Runner) bool {
+	return r.rt != nil
+}
