@@ -2,6 +2,12 @@ use std::path::{Path, PathBuf};
 
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeGeneratorConfig {
+    name: String,
+    path: PathBuf,
+}
+
 /// Build a custom frontend binary with user-provided native generators.
 pub(crate) fn run_build_frontend(
     language: &str,
@@ -47,8 +53,10 @@ fn collect_native_generators(
     shatter_dir: &Path,
     config: &ShatterConfig,
     extension: &str,
-) -> Vec<(String, PathBuf)> {
+    include_function_level: bool,
+) -> Vec<NativeGeneratorConfig> {
     let mut generators = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let check = |name: &str, path_str: &str| {
         let path = Path::new(path_str);
         if path.extension().and_then(|e| e.to_str()) == Some(extension) {
@@ -57,23 +65,50 @@ fn collect_native_generators(
             } else {
                 shatter_dir.join(path)
             };
-            Some((name.to_string(), resolved))
+            Some(NativeGeneratorConfig {
+                name: name.to_string(),
+                path: resolved,
+            })
         } else {
             None
+        }
+    };
+
+    let mut push = |entry: NativeGeneratorConfig| {
+        if seen.insert((entry.name.clone(), entry.path.clone())) {
+            generators.push(entry);
         }
     };
 
     if let Some(ref type_gens) = config.defaults.generators {
         for (name, path_str) in type_gens {
             if let Some(entry) = check(name, path_str) {
-                generators.push(entry);
+                push(entry);
             }
         }
     }
     if let Some(ref param_gens) = config.defaults.param_generators {
         for (name, path_str) in param_gens {
             if let Some(entry) = check(name, path_str) {
-                generators.push(entry);
+                push(entry);
+            }
+        }
+    }
+    if include_function_level {
+        for function_config in config.functions.values() {
+            if let Some(ref type_gens) = function_config.generators {
+                for (name, path_str) in type_gens {
+                    if let Some(entry) = check(name, path_str) {
+                        push(entry);
+                    }
+                }
+            }
+            if let Some(ref param_gens) = function_config.param_generators {
+                for (name, path_str) in param_gens {
+                    if let Some(entry) = check(name, path_str) {
+                        push(entry);
+                    }
+                }
             }
         }
     }
@@ -109,7 +144,9 @@ fn rust_project_dependency(project_root: &Path) -> Option<String> {
         .display()
         .to_string()
         .replace('\\', "/");
-    Some(format!("{package_name} = {{ path = \"{project_path}\" }}\n"))
+    Some(format!(
+        "{package_name} = {{ path = \"{project_path}\" }}\n"
+    ))
 }
 
 fn rust_project_dependencies(project_root: &Path) -> String {
@@ -131,11 +168,7 @@ fn rust_project_dependencies(project_root: &Path) -> String {
         if !in_dependencies || trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let key = trimmed
-            .split(['=', ' ', '.'])
-            .next()
-            .unwrap_or("")
-            .trim();
+        let key = trimmed.split(['=', ' ', '.']).next().unwrap_or("").trim();
         if matches!(key, "serde_json" | "shatter-rust") {
             continue;
         }
@@ -151,6 +184,10 @@ fn rust_frontend_project_deps(project_root: &Path) -> String {
     deps
 }
 
+fn rust_string_literal(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
 /// Build a custom Go frontend binary with native generators compiled in.
 ///
 /// Creates a temporary Go module that imports shatter-go's protocol handler and
@@ -161,7 +198,7 @@ fn build_go_frontend(
     config: &ShatterConfig,
     out_dir: &Path,
 ) -> Result<(), String> {
-    let native_gens = collect_native_generators(shatter_dir, config, "go");
+    let native_gens = collect_native_generators(shatter_dir, config, "go", false);
     if native_gens.is_empty() {
         return Err("no .go generators found in config.yaml; nothing to build".to_string());
     }
@@ -194,11 +231,11 @@ fn build_go_frontend(
 
     // Resolve generator file paths and copy them
     let project_root = shatter_dir.parent().unwrap_or(Path::new("."));
-    for (_name, rel_path) in &native_gens {
-        let src = if rel_path.is_absolute() {
-            rel_path.clone()
+    for generator in &native_gens {
+        let src = if generator.path.is_absolute() {
+            generator.path.clone()
         } else {
-            project_root.join(rel_path)
+            project_root.join(&generator.path)
         };
         let filename = src
             .file_name()
@@ -212,11 +249,11 @@ fn build_go_frontend(
     let usergens_pkg = "package usergens\n";
     // Check if any copied file already declares `package usergens`; if not,
     // they might declare a different package. We'll write a minimal file.
-    let has_package_decl = native_gens.iter().any(|(_, rel_path)| {
-        let src = if rel_path.is_absolute() {
-            rel_path.clone()
+    let has_package_decl = native_gens.iter().any(|generator| {
+        let src = if generator.path.is_absolute() {
+            generator.path.clone()
         } else {
-            project_root.join(rel_path)
+            project_root.join(&generator.path)
         };
         std::fs::read_to_string(&src)
             .map(|s| s.contains("package usergens"))
@@ -229,7 +266,8 @@ fn build_go_frontend(
 
     // Generate main.go with generator registrations.
     let mut registrations = String::new();
-    for (name, _) in &native_gens {
+    for generator in &native_gens {
+        let name = &generator.name;
         registrations.push_str(&format!(
             "\thandler.Registry().RegisterNative(\"{name}\", usergens.{name})\n"
         ));
@@ -350,7 +388,7 @@ fn build_rust_frontend(
     config: &ShatterConfig,
     out_dir: &Path,
 ) -> Result<(), String> {
-    let native_gens = collect_native_generators(shatter_dir, config, "rs");
+    let native_gens = collect_native_generators(shatter_dir, config, "rs", true);
     if native_gens.is_empty() {
         return Err("no .rs generators found in config.yaml; nothing to build".to_string());
     }
@@ -382,19 +420,21 @@ fn build_rust_frontend(
     let project_root = shatter_dir.parent().unwrap_or(Path::new("."));
     let mut mod_declarations = String::new();
     let mut registrations = String::new();
-    for (name, rel_path) in &native_gens {
-        let src = if rel_path.is_absolute() {
-            rel_path.clone()
+    for (idx, generator) in native_gens.iter().enumerate() {
+        let src = if generator.path.is_absolute() {
+            generator.path.clone()
         } else {
-            project_root.join(rel_path)
+            project_root.join(&generator.path)
         };
-        let mod_name = name.to_lowercase();
+        let mod_name = format!("generator_{idx}");
         let filename = format!("{mod_name}.rs");
         std::fs::copy(&src, src_dir.join(&filename))
             .map_err(|e| format!("failed to copy {}: {e}", src.display()))?;
         mod_declarations.push_str(&format!("mod {mod_name};\n"));
+        let registration_file = rust_string_literal(&src.display().to_string());
+        let name = &generator.name;
         registrations.push_str(&format!(
-            "    registry.register(\"{name}\", Box::new({mod_name}::{name}));\n"
+            "    registry.register_for_file({registration_file}, \"{name}\", Box::new({mod_name}::{name}));\n"
         ));
     }
 
@@ -516,4 +556,52 @@ fn locate_shatter_rust_source() -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shatter_core::config::{DefaultsConfig, FunctionConfig};
+    use std::collections::HashMap;
+
+    #[test]
+    fn collect_native_generators_includes_function_level_entries() {
+        let shatter_dir = Path::new(".shatter");
+        let mut defaults = DefaultsConfig::default();
+        defaults.generators = Some(HashMap::from([(
+            "State".to_string(),
+            "generators/default.rs".to_string(),
+        )]));
+        defaults.param_generators = Some(HashMap::from([(
+            "current".to_string(),
+            "generators/current.rs".to_string(),
+        )]));
+        let function_config = FunctionConfig {
+            param_generators: Some(HashMap::from([(
+                "current".to_string(),
+                "generators/bundle.rs".to_string(),
+            )])),
+            ..FunctionConfig::default()
+        };
+        let config = ShatterConfig {
+            defaults,
+            functions: HashMap::from([("**/bundles.rs::get_bundle".to_string(), function_config)]),
+            ..ShatterConfig::default()
+        };
+
+        let generators = collect_native_generators(shatter_dir, &config, "rs", true);
+
+        assert!(generators.iter().any(|generator| {
+            generator.name == "State"
+                && generator.path == PathBuf::from(".shatter/generators/default.rs")
+        }));
+        assert!(generators.iter().any(|generator| {
+            generator.name == "current"
+                && generator.path == PathBuf::from(".shatter/generators/current.rs")
+        }));
+        assert!(generators.iter().any(|generator| {
+            generator.name == "current"
+                && generator.path == PathBuf::from(".shatter/generators/bundle.rs")
+        }));
+    }
 }

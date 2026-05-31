@@ -50,7 +50,6 @@ fn exec_timeout_from_env() -> u64 {
     }
 }
 
-
 /// Read the harness cache directory from `SHATTER_HARNESS_CACHE` env var.
 /// Returns `None` if unset or empty.
 fn harness_cache_from_env() -> Option<String> {
@@ -836,7 +835,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             return resp;
         }
 
-        let prepare_id = crate::executor::compute_prepare_id(&file_path, &function_name, &req.mocks);
+        let prepare_id =
+            crate::executor::compute_prepare_id(&file_path, &function_name, &req.mocks);
 
         // Idempotent: return immediately if already prepared with same id.
         if self.prepared_harnesses.contains_key(&prepare_id) {
@@ -874,12 +874,15 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
 
         match build_result {
             Ok(()) => {
-                self.prepared_harnesses.insert(prepare_id.clone(), PreparedHarnessInfo {
-                    file_path,
-                    function_name,
-                    mocks: req.mocks.clone(),
-                    harness_mode: req.harness_mode.clone(),
-                });
+                self.prepared_harnesses.insert(
+                    prepare_id.clone(),
+                    PreparedHarnessInfo {
+                        file_path,
+                        function_name,
+                        mocks: req.mocks.clone(),
+                        harness_mode: req.harness_mode.clone(),
+                    },
+                );
                 resp.status = "prepare".to_string();
                 resp.prepare_id = Some(prepare_id);
                 self.finalize_response(resp, timing.as_mut())
@@ -1296,7 +1299,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Some("rs") => {
                 if let Some(ref registry) = self.native_registry {
-                    match registry.generate(func_name, req.recipe.clone()) {
+                    match registry.generate(Some(file_path), func_name, req.recipe.clone()) {
                         Ok((value, generator_id, recipe)) => {
                             resp.status = "generate".to_string();
                             resp.value = Some(attach_native_replay_metadata(
@@ -1479,7 +1482,10 @@ mod tests {
             msg.starts_with("preflight_failed: missing_cargo_toml: "),
             "unexpected message: {msg}"
         );
-        assert!(msg.contains("Cargo.toml"), "message missing Cargo.toml: {msg}");
+        assert!(
+            msg.contains("Cargo.toml"),
+            "message missing Cargo.toml: {msg}"
+        );
     }
 
     #[test]
@@ -1507,7 +1513,13 @@ mod tests {
         }
         // Both responses carry the *first* root's detail because the failure is sticky.
         let detail = format!("{}/Cargo.toml", root);
-        assert!(responses[1].message.as_deref().unwrap_or("").contains(&detail));
+        assert!(
+            responses[1]
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains(&detail)
+        );
     }
 
     #[test]
@@ -1520,7 +1532,8 @@ mod tests {
         );
         // Execute carries no project_root; it must inherit the sticky failure
         // (and would inherit last_project_root anyway).
-        let execute = r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[]}"#;
+        let execute =
+            r#"{"protocol_version":"0.1.0","id":2,"command":"execute","function":"f","inputs":[]}"#;
         let responses = conversation(&[&analyze, execute]);
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0].code.as_deref(), Some(ERR_PREFLIGHT_FAILED));
@@ -1642,9 +1655,7 @@ mod tests {
 
     #[test]
     fn prepare_without_file_returns_error() {
-        let resp = send_recv(
-            r#"{"protocol_version":"0.1.0","id":1,"command":"prepare"}"#,
-        );
+        let resp = send_recv(r#"{"protocol_version":"0.1.0","id":1,"command":"prepare"}"#);
         assert_eq!(resp.status, "error");
         assert_eq!(resp.code.as_deref(), Some("invalid_request"));
     }
