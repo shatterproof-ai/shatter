@@ -379,10 +379,10 @@ func TestAnalyzeScaleSliceExtractsRangeBranch(t *testing.T) {
 
 func TestAnalyzeSelectBranches(t *testing.T) {
 	tests := []struct {
-		name       string
-		funcName   string
-		wantCount  int
-		wantCases  []struct {
+		name      string
+		funcName  string
+		wantCount int
+		wantCases []struct {
 			conditionText string
 			branchType    string
 		}
@@ -1029,6 +1029,7 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 		{"AcceptsRequestPointer", "*http.Request"},
 		{"AcceptsIOReadCloser", "io.ReadCloser"},
 		{"AcceptsContext", "context.Context"},
+		{"AcceptsTemplatePointer", "*template.Template"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.funcName, func(t *testing.T) {
@@ -1050,6 +1051,25 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 				t.Errorf("TypeName = %q, want %q", *p.TypeName, tc.wantTypeName)
 			}
 		})
+	}
+}
+
+func TestAnalyzeTemplateHolderDoesNotExposeParseNode(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsTemplateHolder")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) != 1 {
+		t.Fatalf("unexpected params for AcceptsTemplateHolder: %+v", results)
+	}
+	p := results[0].Params[0]
+	if p.TypeName == nil || *p.TypeName != "testdata.TemplateHolder" {
+		t.Fatalf("TypeName = %v, want testdata.TemplateHolder", p.TypeName)
+	}
+	for _, field := range p.Type.Fields {
+		if strings.Contains(field.Type.Label, "parse.Node") {
+			t.Fatalf("field %q exposed parse.Node internals: %+v", field.Name, field.Type)
+		}
 	}
 }
 

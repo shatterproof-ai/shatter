@@ -69,6 +69,7 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 		{"*http.Request", []string{`httptest.NewRequest("GET", "/", bytes.NewReader(nil))`}, "net/http/httptest"},
 		{"time.Time", []string{"time.Time{}", "time.Now()"}, "time"},
 		{"http.Header", []string{"http.Header{}"}, "net/http"},
+		{"*template.Template", []string{`template.Must(template.New("shatter").Parse("{}"))`}, "text/template"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typeName, func(t *testing.T) {
