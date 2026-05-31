@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 )
@@ -113,6 +114,62 @@ func runtimeValuePlans(paramIndex int, p protocol.ParamInfo, maxPlans int) []pro
 		})
 	}
 	return plans
+}
+
+func configuredRuntimeValuePlans(
+	paramIndex int,
+	p protocol.ParamInfo,
+	configured map[string]config.GoRuntimeValueConfig,
+	maxPlans int,
+) []protocol.ValuePlan {
+	if maxPlans == 0 {
+		maxPlans = 1
+	}
+	typeName := runtimeValueTypeName(p)
+	if typeName == "" {
+		return nil
+	}
+	rv, ok := configuredRuntimeValue(typeName, configured)
+	if !ok {
+		return nil
+	}
+	literal, err := json.Marshal(rv.Expression)
+	if err != nil {
+		return nil
+	}
+	if maxPlans < 1 {
+		return nil
+	}
+	return []protocol.ValuePlan{{
+		ParamIndex: paramIndex,
+		ParamName:  p.Name,
+		Kind:       protocol.ValuePlanKindRuntimeValue,
+		Literal:    literal,
+		TypeHint:   typeName,
+	}}
+}
+
+func configuredRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig) (config.GoRuntimeValueConfig, bool) {
+	if len(configured) == 0 {
+		return config.GoRuntimeValueConfig{}, false
+	}
+	rv, ok := configured[strings.TrimSpace(typeName)]
+	if !ok || strings.TrimSpace(rv.Expression) == "" {
+		return config.GoRuntimeValueConfig{}, false
+	}
+	return rv, true
+}
+
+func configuredPointerRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig) bool {
+	typeName = strings.TrimSpace(typeName)
+	if !strings.HasPrefix(typeName, "*") {
+		return false
+	}
+	if _, ok := configuredRuntimeValue(typeName, configured); ok {
+		return true
+	}
+	_, ok := configuredRuntimeValue(strings.TrimPrefix(typeName, "*"), configured)
+	return ok
 }
 
 // generatorPlans returns ValuePlans for the runtime-value registry entry

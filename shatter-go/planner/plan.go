@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 )
 
@@ -69,6 +70,9 @@ type PerTargetHints struct {
 	// source expression that should replace it at execute time. Consumed
 	// via ResolveMockSpecs.
 	Mocks map[string]string
+	// ConfiguredRuntimeValues supplies exact type-spelling runtime values from
+	// the project-level go_runtime_values config section.
+	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
 }
 
 // MockSpec is the planner's representation of a single hint_config_v1 mock
@@ -219,7 +223,7 @@ func planMethod(
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}
 	}
 
-	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
+	paramOpts := paramOptionsForRequirement(req.TargetID, opts)
 	// str-4v9h: propagate interface impl candidates for method targets too.
 	if len(ctx.InterfaceImplsByParam) > 0 {
 		paramOpts.InterfaceImplsByParam = ctx.InterfaceImplsByParam
@@ -239,6 +243,9 @@ func paramOptionsForRequirement(targetID string, opts PlanRequirementsOptions) P
 		}
 		if len(hints.Generators) > 0 {
 			paramOpts.GeneratorsByName = hints.Generators
+		}
+		if len(hints.ConfiguredRuntimeValues) > 0 {
+			paramOpts.ConfiguredRuntimeValues = hints.ConfiguredRuntimeValues
 		}
 	}
 	return paramOpts

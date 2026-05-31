@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 )
 
@@ -52,6 +53,9 @@ type ParamPlanOptions struct {
 	// generator before falling back to primitive families. This is the
 	// hint_config_v1 generators surface (str-hy9b.G3 AC3).
 	GeneratorsByName map[string]string
+	// ConfiguredRuntimeValues supplies exact type-spelling runtime values from
+	// the project .shatter/config.yaml go_runtime_values section.
+	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
 	// InterfaceImplsByParam maps parameter names to discovered interface
 	// implementation candidates (str-4v9h). When a parameter is typed as an
 	// imported interface, the handler discovers constructors from the
@@ -129,12 +133,17 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		if opts.JSONEncodeInterfaceParams[p.Name] && isEmptyInterfaceParam(p) {
 			return jsonInterfaceValuePlans(paramIndex, p, maxPlans), nil
 		}
-		if aggPlans, aggUnsat := PlanAggregate(targetID, paramIndex, p, maxPlans); aggPlans != nil {
+		if aggPlans, aggUnsat := planAggregateWithOptions(targetID, paramIndex, p, maxPlans, aggregateOptions{
+			ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues,
+		}); aggPlans != nil {
 			return aggPlans, nil
 		} else if aggUnsat != nil {
 			return nil, aggUnsat
 		}
 		if runtimePlans := runtimeValuePlans(paramIndex, p, maxPlans); len(runtimePlans) > 0 {
+			return runtimePlans, nil
+		}
+		if runtimePlans := configuredRuntimeValuePlans(paramIndex, p, opts.ConfiguredRuntimeValues, maxPlans); len(runtimePlans) > 0 {
 			return runtimePlans, nil
 		}
 		if fbPlans, fbUnsat := PlanFallback(targetID, paramIndex, p, maxPlans); fbPlans != nil {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/planner"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"pgregory.net/rapid"
@@ -154,6 +155,37 @@ func TestPlanParam_RuntimeValueFallback_BeforeUnsatisfied(t *testing.T) {
 	}
 	if plans[0].Kind != protocol.ValuePlanKindRuntimeValue {
 		t.Errorf("Kind = %q, want runtime_value", plans[0].Kind)
+	}
+}
+
+func TestPlanParam_ConfiguredRuntimeValueFallback(t *testing.T) {
+	expr := `func() fixture.CompiledModule { return fixture.CompiledModule{} }()`
+	plans, u := planner.PlanParam(testTargetID, 0, runtimeValueParam("mod", "fixture.CompiledModule"), planner.ParamPlanOptions{
+		ConfiguredRuntimeValues: map[string]config.GoRuntimeValueConfig{
+			"fixture.CompiledModule": {
+				Expression: expr,
+				Imports:    []string{"zolem.dev/zolem/internal/fixture"},
+			},
+		},
+	})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("len(plans) = %d, want 1", len(plans))
+	}
+	if plans[0].Kind != protocol.ValuePlanKindRuntimeValue {
+		t.Errorf("Kind = %q, want runtime_value", plans[0].Kind)
+	}
+	if plans[0].TypeHint != "fixture.CompiledModule" {
+		t.Errorf("TypeHint = %q, want fixture.CompiledModule", plans[0].TypeHint)
+	}
+	var gotExpr string
+	if err := json.Unmarshal(plans[0].Literal, &gotExpr); err != nil {
+		t.Fatalf("Literal %q not a JSON string: %v", string(plans[0].Literal), err)
+	}
+	if gotExpr != expr {
+		t.Errorf("expression = %q, want %q", gotExpr, expr)
 	}
 }
 

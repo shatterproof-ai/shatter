@@ -24,12 +24,21 @@ import (
 // the caller can log them without failing the request. The slice is empty
 // when the file is absent or fully recognized.
 type File struct {
-	Functions map[string]FunctionConfig `yaml:"functions"`
+	Functions       map[string]FunctionConfig       `yaml:"functions"`
+	GoRuntimeValues map[string]GoRuntimeValueConfig `yaml:"go_runtime_values,omitempty"`
 
 	// Warnings is the human-readable list of non-fatal config issues
 	// surfaced during Load. It is populated even when Functions parses
 	// successfully so partial-configuration drift is visible.
 	Warnings []string `yaml:"-"`
+}
+
+// GoRuntimeValueConfig is a user-supplied runtime value for an exact Go type.
+// Expression is pasted as a Go expression at wrapper/planner call sites, and
+// Imports lists unaliased import paths required by the expression.
+type GoRuntimeValueConfig struct {
+	Expression string   `yaml:"expression"`
+	Imports    []string `yaml:"imports,omitempty"`
 }
 
 // FunctionConfig is the per-target entry. Only known sections are decoded;
@@ -251,7 +260,8 @@ func globMatch(pattern, target string) (bool, bool) {
 // function entry. Anything else is reported via File.Warnings.
 var (
 	knownTopLevelKeys = map[string]struct{}{
-		"functions": {},
+		"functions":         {},
+		"go_runtime_values": {},
 	}
 	knownFunctionKeys = map[string]struct{}{
 		"policy":     {},

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/planner"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"pgregory.net/rapid"
@@ -217,6 +218,52 @@ func TestPlanComposite_CompiledModuleField_EmitsExpressionAndImports(t *testing.
 		if !found {
 			t.Errorf("Imports = %v, want to include %q", plan.Imports, imp)
 		}
+	}
+}
+
+func TestPlanComposite_ConfiguredRuntimeValueField_EmitsExpressionAndImports(t *testing.T) {
+	expr := `func() fixture.CompiledModule { return fixture.CompiledModule{} }()`
+	req := objectType(
+		field("Module", protocol.TypeInfo{Kind: "unknown", Label: "fixture.CompiledModule"}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Fixture", "example.com/pkg", req, planner.CompositeOptions{
+		ConfiguredRuntimeValues: map[string]config.GoRuntimeValueConfig{
+			"fixture.CompiledModule": {
+				Expression: expr,
+				Imports:    []string{"zolem.dev/zolem/internal/fixture"},
+			},
+		},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	wantExpr := `pkg.Fixture{Module: func() fixture.CompiledModule { return fixture.CompiledModule{} }()}`
+	if plan.Expression != wantExpr {
+		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
+	}
+	if !strings.Contains(strings.Join(plan.Imports, "\n"), "zolem.dev/zolem/internal/fixture") {
+		t.Errorf("Imports = %v, want configured fixture import", plan.Imports)
+	}
+}
+
+func TestPlanComposite_ConfiguredRuntimeValuePointerField_EmitsNil(t *testing.T) {
+	inner := protocol.TypeInfo{Kind: "unknown", Label: "fixture.CompiledModule"}
+	req := objectType(
+		field("Module", protocol.TypeInfo{Kind: "nullable", Inner: &inner}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Fixture", "example.com/pkg", req, planner.CompositeOptions{
+		ConfiguredRuntimeValues: map[string]config.GoRuntimeValueConfig{
+			"fixture.CompiledModule": {
+				Expression: `func() fixture.CompiledModule { return fixture.CompiledModule{} }()`,
+				Imports:    []string{"zolem.dev/zolem/internal/fixture"},
+			},
+		},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if plan.Expression != `pkg.Fixture{Module: nil}` {
+		t.Errorf("Expression = %q, want pointer field nil", plan.Expression)
 	}
 }
 

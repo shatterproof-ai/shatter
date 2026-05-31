@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
@@ -25,17 +26,21 @@ type fileContext struct {
 	implementors map[string][]string
 	// pkgPath is the import path of the package being analyzed.
 	pkgPath string
+	// configuredRuntimeValues maps exact Go source type spellings to
+	// project-configured runtime values.
+	configuredRuntimeValues map[string]config.GoRuntimeValueConfig
 }
 
 // buildFileContext scans every file in the package to populate a fileContext
 // with exported function names and interface implementors. Using the full
 // package syntax (not just the target file) lets constructor suppression and
 // interface-implementation lookups see siblings in multi-file packages.
-func buildFileContext(pkgName string, syntaxFiles []*ast.File, info *types.Info) *fileContext {
+func buildFileContext(pkgName string, syntaxFiles []*ast.File, info *types.Info, runtimeValues map[string]config.GoRuntimeValueConfig) *fileContext {
 	fc := &fileContext{
-		exportedFuncNames: make(map[string]bool),
-		implementors:      make(map[string][]string),
-		pkgPath:           pkgName,
+		exportedFuncNames:       make(map[string]bool),
+		implementors:            make(map[string][]string),
+		pkgPath:                 pkgName,
+		configuredRuntimeValues: runtimeValues,
 	}
 
 	var interfaceDefs []*ast.TypeSpec
@@ -254,9 +259,14 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 		return nil, fmt.Errorf("target file %q not found in loaded package syntax", absoluteFilePath)
 	}
 
+	projectConfig, err := config.Load(absoluteFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
 	info := pkg.TypesInfo
 	finishTypeCheck := timing.Start("analyze.typecheck")
-	fc := buildFileContext(pkg.Name, pkg.Syntax, info)
+	fc := buildFileContext(pkg.Name, pkg.Syntax, info, projectConfig.GoRuntimeValues)
 	finishTypeCheck()
 
 	var results []FunctionAnalysis
@@ -659,6 +669,9 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 		if info != nil {
 			if tv, ok := info.Types[field.Type]; ok {
 				synthSpelling = synthesizableStdlibType(tv.Type)
+				if synthSpelling == "" {
+					synthSpelling = configuredRuntimeValueSpelling(tv.Type, fc)
+				}
 			}
 		}
 		for _, name := range field.Names {
@@ -699,6 +712,35 @@ func typeParamTypeName(expr ast.Expr, info *types.Info) string {
 		return tp.Obj().Name()
 	}
 	return ""
+}
+
+func configuredRuntimeValueSpelling(t types.Type, fc *fileContext) string {
+	if fc == nil || len(fc.configuredRuntimeValues) == 0 {
+		return ""
+	}
+	spelling := namedGoSourceSpelling(t)
+	if spelling == "" {
+		return ""
+	}
+	if _, ok := fc.configuredRuntimeValues[spelling]; ok {
+		return spelling
+	}
+	return ""
+}
+
+func namedGoSourceSpelling(t types.Type) string {
+	named, ok := t.(*types.Named)
+	if !ok {
+		return ""
+	}
+	obj := named.Obj()
+	if obj == nil {
+		return ""
+	}
+	if pkg := obj.Pkg(); pkg != nil && pkg.Name() != "" {
+		return pkg.Name() + "." + obj.Name()
+	}
+	return obj.Name()
 }
 
 func extractReturnType(fn *ast.FuncDecl, info *types.Info) TypeInfo {
@@ -1025,6 +1067,9 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	// intentionally overlaps the historical opaque set for `io.Writer`
 	// and friends.
 	if spelling := synthesizableStdlibType(t); spelling != "" {
+		return TypeInfo{Kind: "unknown", Label: spelling}
+	}
+	if spelling := configuredRuntimeValueSpelling(t, fc); spelling != "" {
 		return TypeInfo{Kind: "unknown", Label: spelling}
 	}
 

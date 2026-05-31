@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 )
 
@@ -616,7 +617,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// json.Unmarshal block. Without this, a target taking context.Context
 	// would compile and link but the param would be the zero interface
 	// value (`nil`), panicking on first use.
-	applyRuntimeValueBindings(params, importSet)
+	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg), pkg.Name)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -712,13 +713,35 @@ func syntheticParamName(index int) string {
 // and `io.Discard`) collapse to the first one — the wrapper produces a
 // single fixed expression per param at build time; per-input variation
 // would require a wrapper-side switch and is outside this change.
-func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struct{}) {
+func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struct{}, configuredValues ...map[string]config.GoRuntimeValueConfig) {
+	var configured map[string]config.GoRuntimeValueConfig
+	if len(configuredValues) > 0 {
+		configured = configuredValues[0]
+	}
+	applyRuntimeValueBindingsForPackage(params, importSet, configured, "")
+}
+
+func applyRuntimeValueBindingsForPackage(
+	params []WrapperParam,
+	importSet map[string]struct{},
+	configured map[string]config.GoRuntimeValueConfig,
+	pkgName string,
+) {
 	for i := range params {
 		if params[i].IsVariadic {
 			continue
 		}
 		candidates := runtimeval.Lookup(params[i].GoType)
 		if len(candidates) == 0 {
+			if rv, ok := configuredRuntimeValue(params[i].GoType, configured, pkgName); ok {
+				params[i].RuntimeValueExpr = rv.Expression
+				for _, imp := range rv.Imports {
+					if imp != "" {
+						importSet[imp] = struct{}{}
+					}
+				}
+				continue
+			}
 			// str-4cqz: function-typed parameters have no JSON
 			// representation; attempting to unmarshal a JSON input into
 			// a `func(...)` slot produces a "cannot unmarshal X into Go
@@ -740,6 +763,36 @@ func applyRuntimeValueBindings(params []WrapperParam, importSet map[string]struc
 			}
 		}
 	}
+}
+
+func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {
+	if fn == nil || pkg == nil || pkg.Fset == nil {
+		return nil
+	}
+	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	if sourceFile == "" {
+		return nil
+	}
+	file, err := config.Load(sourceFile)
+	if err != nil {
+		return nil
+	}
+	return file.GoRuntimeValues
+}
+
+func configuredRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig, pkgName string) (config.GoRuntimeValueConfig, bool) {
+	if len(configured) == 0 {
+		return config.GoRuntimeValueConfig{}, false
+	}
+	trimmed := strings.TrimSpace(typeName)
+	rv, ok := configured[trimmed]
+	if !ok && pkgName != "" && !strings.Contains(trimmed, ".") && !strings.HasPrefix(trimmed, "*") {
+		rv, ok = configured[pkgName+"."+trimmed]
+	}
+	if !ok || strings.TrimSpace(rv.Expression) == "" {
+		return config.GoRuntimeValueConfig{}, false
+	}
+	return rv, true
 }
 
 // isFuncTypeSpelling reports whether goType is a Go function-type spelling

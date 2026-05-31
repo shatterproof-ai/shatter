@@ -92,7 +92,11 @@ func hintConfigResolver(lookup func(string) *protocol.TargetContext) func(string
 			return planner.PerTargetHints{}
 		}
 		entry := file.MatchTarget(analysis.SourceFile, analysis.Name)
-		return translateHintConfig(entry)
+		hints := translateHintConfig(entry)
+		if len(file.GoRuntimeValues) > 0 {
+			hints.ConfiguredRuntimeValues = file.GoRuntimeValues
+		}
+		return hints
 	}
 }
 

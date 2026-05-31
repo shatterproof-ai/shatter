@@ -1378,6 +1378,61 @@ func TestStaticOpacityHeuristics(t *testing.T) {
 	}
 }
 
+func TestAnalyzeConfiguredRuntimeValueBypassesStaticOpacity(t *testing.T) {
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/configured\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(moduleRoot, ".shatter"), 0o755); err != nil {
+		t.Fatalf("mkdir .shatter: %v", err)
+	}
+	configBody := `
+go_runtime_values:
+  "configured.Secret":
+    expression: configured.NewSecretForShatter()
+    imports:
+      - example.com/configured
+`
+	if err := os.WriteFile(filepath.Join(moduleRoot, ".shatter", "config.yaml"), []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	sourcePath := filepath.Join(moduleRoot, "secret.go")
+	source := `package configured
+
+type Secret struct {
+	hidden int
+}
+
+func UseSecret(s Secret) int {
+	return s.hidden
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	fns, err := AnalyzeFile(sourcePath, "UseSecret")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(fns) != 1 || len(fns[0].Params) != 1 {
+		t.Fatalf("analysis shape = %+v, want one function with one param", fns)
+	}
+	p := fns[0].Params[0]
+	if p.Type.Kind != "unknown" {
+		t.Fatalf("Type.Kind = %q, want unknown for configured runtime value", p.Type.Kind)
+	}
+	if p.Type.Label != "configured.Secret" {
+		t.Errorf("Type.Label = %q, want configured.Secret", p.Type.Label)
+	}
+	if p.Type.StaticOpacity != "" {
+		t.Errorf("StaticOpacity = %q, want empty", p.Type.StaticOpacity)
+	}
+	if p.TypeName == nil || *p.TypeName != "configured.Secret" {
+		t.Fatalf("TypeName = %v, want configured.Secret", p.TypeName)
+	}
+}
+
 // --- Medium-confidence opacity heuristics ---
 
 func TestMediumOpacityHeuristics(t *testing.T) {
